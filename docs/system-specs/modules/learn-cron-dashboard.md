@@ -1,6 +1,6 @@
 # Self-Learning, Cron & Dashboard Modules
 
-Last Updated: 2026-07-27 (the Kiro prerequisite gate no longer flashes first-run setup at returning users: the dashboard mounts immediately with sessions paused instead of rendering setup chrome for an unresolved check, `initial_setup_complete` is readable before any probe (derived from the data home) and survives the probe-failure backstop. Gateway boot also no longer scales with installed-app count — app backends spawn concurrently with an ownership-confirmed early exit (~5.6s → ~2.9s on one real home). Prior — provider CLI resolution relaxed to a user-trust model: `gh`/`glab` are resolved from the well-known install dirs and then the ambient `PATH`, the user's own Homebrew/asdf install is accepted, and only foreign-owned, world-writable, or agent-writable-tree binaries are refused — `KIROCREW_PROVIDER_BIN_STRICT=1` restores the old root-owned rule. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP)
+Last Updated: 2026-07-28 (foreign-agent import rescoped to the industry-consensus set: conversation-transcript import removed, `instructions` and `denied_commands` added, imported instruction/persona-directive text rewritten into the memory hierarchy, a hard dry-run contract, and user-selectable skip/rename/overwrite conflict strategies; the authoritative contract now lives in `docs/system-specs/modules/onboarding-import.md`. Prior — the Kiro prerequisite gate no longer flashes first-run setup at returning users: the dashboard mounts immediately with sessions paused instead of rendering setup chrome for an unresolved check, `initial_setup_complete` is readable before any probe (derived from the data home) and survives the probe-failure backstop. Gateway boot also no longer scales with installed-app count — app backends spawn concurrently with an ownership-confirmed early exit (~5.6s → ~2.9s on one real home). Prior — provider CLI resolution relaxed to a user-trust model: `gh`/`glab` are resolved from the well-known install dirs and then the ambient `PATH`, the user's own Homebrew/asdf install is accepted, and only foreign-owned, world-writable, or agent-writable-tree binaries are refused — `KIROCREW_PROVIDER_BIN_STRICT=1` restores the old root-owned rule. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP)
 
 ## Overview
 
@@ -251,6 +251,12 @@ unsupported schedule semantics and are never approximated into cron.
 
 ## Foreign-Agent First-Run Import
 
+**Authoritative contract:** `docs/system-specs/modules/onboarding-import.md`.
+That spec owns the scope (including the explicit non-goals), the destination
+mapping into the memory hierarchy, the dry-run contract, the conflict
+strategies, and the per-source layout assumptions. This section covers only how
+the flow is surfaced through the dashboard and where it sits in onboarding.
+
 The dashboard can scan and selectively merge local setup from exactly five
 foreign agents: **Codex, Claude Code, MeshClaw, OpenClaw, and Hermes**. Quick is
 not a source and must not appear as an import option.
@@ -259,13 +265,25 @@ The only selectable categories are:
 
 | Category | Import contract |
 |----------|-----------------|
-| Sessions | Visible user/assistant text only; closed generated keys via `ConversationLog` |
+| Instructions | User-authored rules + persona *directives* → `lessons.jsonl` (capped at 50 so import cannot evict the user's own lessons) |
 | Memories | Durable memories/preferences through native writers and limits |
 | Workspaces | Valid, existing, non-sensitive local directories only |
 | MCP servers | Secret-free stdio/HTTP definitions; managed servers protected |
 | Skills | User-authored only; source-namespaced and symlink-safe |
+| Denied commands | Deny rules only — an allow-list is never imported |
 | Schedules | Compatible native schedules; always imported disabled; semantic dedup |
 | Settings | Explicit non-security allowlist only; existing KiroCrew values win |
+
+**Sessions are not a category.** Conversation transcripts are deliberately not
+imported — see `onboarding-import.md` → "Not migrated" for the rationale, and
+"Session-import removal" for what that removal covers.
+
+The dashboard MUST present a dry-run review before any apply, and MUST offer the
+conflict strategy (`skip` default, `rename`, `overwrite`) for the categories that
+support it. Item state is exactly the four writer statuses mapped to three
+outcomes (`accepted` / `deduplicated` / `rejected`) plus non-attempted
+`skipped` entries; the UI must not invent a fifth state, and aggregate counts
+must be derived from `item_outcomes` rather than reported independently.
 
 ### Supported foreign format snapshot
 
@@ -278,18 +296,21 @@ diagnostics rather than guessed.
 
 | Source | Root resolution | Recognized layouts |
 |--------|-----------------|--------------------|
-| Codex | `CODEX_HOME`, else `~/.codex` | `sessions/**/*.jsonl` and `archived_sessions/**/*.jsonl` (sessions/workspaces); `config.toml` (workspaces/MCP/settings); `skills/**/SKILL.md` except `.system` (skills). `sqlite/codex-dev.db` automations and unstable memory stores are diagnostic-only. |
-| Claude Code | `CLAUDE_CONFIG_DIR`, then `CLAUDE_HOME`, else `~/.claude`; `~/.claude.json` is also recognized | `projects/**/*.jsonl` except runtime/subagent/tool-result trees (sessions/workspaces); root and discovered-workspace settings/MCP JSON files (workspaces/MCP/settings); root and `<workspace>/.claude/skills` packages (skills); root/project `memory` or `memories` Markdown (memories). `CLAUDE.md`, rules, tasks, and schedules are not imported. |
-| MeshClaw | `MESHCLAW_HOME`, else `~/.meshclaw` | `sessions/**/*.jsonl` (sessions/workspaces); `config.json` and `mcp.json` (workspaces/MCP/settings); `recent_projects.json`, `workspace_dir`, and `project_dir` (workspaces); resolved workspace `skills` and Markdown memory trees (skills/memories); supported `memory.db` semantic/episodic tables (memories); `crons.json` and `cron/jobs.json` (schedules). |
-| OpenClaw | `OPENCLAW_STATE_DIR`; else `OPENCLAW_HOME/.openclaw[-profile]`; else `~/.openclaw[-profile]`, with existing `~/.clawdbot` fallback for the default profile | Explicit/default JSON5 config (workspaces/MCP/settings); human-owned `agents/<agent>/sessions/*.jsonl` with matching `sessions.json` provenance (sessions/workspaces); explicit, configured, profile, state, and per-agent workspace roots containing `skills`, `memory`, or `MEMORY.md` (skills/memories); `cron/jobs.json` (schedules). Native session/schedule SQLite stores are diagnostic-only. |
-| Hermes Agent | `HERMES_HOME`, then `HERMES_AGENT_HOME`, then `HERMES_CONFIG_DIR`; else existing `%LOCALAPPDATA%/hermes`; else `~/.hermes`. Scan the root plus at most 50 non-link directories from a bounded `profiles/*` enumeration; report overflow without consuming the rest of a large directory. | First supported `state.db`, `hermes.db`, or `sessions.db` session schema (sessions/workspaces); exact `memories/MEMORY.md` and `memories/USER.md` (memories); `config.yaml` or `config.yml` (MCP/settings); active local `skills/**/SKILL.md` packages after managed/cache exclusions (skills); `cron/jobs.json` (schedules). `memory_store.db` is diagnostic-only. |
+| Codex | `CODEX_HOME`, else `~/.codex` | `config.toml` (workspaces/MCP/settings); `AGENTS.md` (instructions); `memories/*.md` (memories); `skills/**/SKILL.md` except `.system` (skills). Session trees, `sqlite/codex-dev.db` automations, and unstable memory stores are not imported. |
+| Claude Code | `CLAUDE_CONFIG_DIR`, then `CLAUDE_HOME`, else `~/.claude`; `~/.claude.json` is also recognized | Root and workspace settings/MCP JSON files (workspaces/MCP/settings, and `permissions.deny` Bash rules → denied commands); root and `<workspace>/.claude/skills` packages (skills); root/project `memory` or `memories` Markdown (memories); `CLAUDE.md` and `rules/*.md` (instructions). Session trees (`projects/**/*.jsonl`), tasks, and schedules are not imported. |
+| MeshClaw | `MESHCLAW_HOME`, else `~/.meshclaw` | `config.json` and `mcp.json` (workspaces/MCP/settings); `recent_projects.json`, `workspace_dir`, and `project_dir` (workspaces); resolved workspace `skills` and Markdown memory trees (skills/memories); supported `memory.db` semantic/episodic tables (memories); `crons.json` and `cron/jobs.json` (schedules). |
+| OpenClaw | `OPENCLAW_STATE_DIR`; else `OPENCLAW_HOME/.openclaw[-profile]`; else `~/.openclaw[-profile]`, with existing `~/.clawdbot` fallback for the default profile | Explicit/default JSON5 config (workspaces/MCP/settings); `SOUL.md` directive body, `MEMORY.md`, and `USER.md` (instructions/memories); explicit, configured, profile, state, and per-agent workspace roots containing `skills`, `memory`, or `MEMORY.md` (skills/memories); `cron/jobs.json` (schedules). Native session/schedule SQLite stores are not imported. |
+| Hermes Agent | `HERMES_HOME`, then `HERMES_AGENT_HOME`, then `HERMES_CONFIG_DIR`; else existing `%LOCALAPPDATA%/hermes`; else `~/.hermes`. Scan the root plus at most 50 non-link directories from a bounded `profiles/*` enumeration; report overflow without consuming the rest of a large directory. | Exact `memories/MEMORY.md` and `memories/USER.md` (memories), plus `SOUL.md` (instructions); `config.yaml` or `config.yml` (MCP/settings); active local `skills/**/SKILL.md` packages after managed/cache and `*-imports/` re-import exclusions (skills); `cron/jobs.json` (schedules). `memory_store.db` is diagnostic-only. |
 
 The import is merge-only, idempotent, and provenance-tracked. It never
-overwrites an existing KiroCrew item; conflicts preserve the KiroCrew version.
-A durable ledger records imported source-item identity so a retry or later
-manual import reports already-imported/deduplicated items rather than copying
-them again. Scan and apply treat every source tree as read-only and leave it
-byte-for-byte untouched.
+overwrites an existing KiroCrew item **under the default `skip` strategy**;
+conflicts preserve the KiroCrew version. `rename` imports alongside the existing
+item under a derived name, and `overwrite` replaces it only after writing a
+restore copy under `imports/replaced/<timestamp>/` — both require an explicit
+user choice, and neither is reachable by default. A durable ledger records
+imported source-item identity so a retry or later manual import reports
+already-imported/deduplicated items rather than copying them again. Scan and
+apply treat every source tree as read-only and leave it byte-for-byte untouched.
 
 Traversal is bounded by the importer file and directory-entry ceilings. A
 skill package is rejected when the ceiling prevents observing its complete
@@ -298,10 +319,12 @@ contain exactly one representable trigger family (cron, interval, or one-shot);
 mixed triggers are skipped as ambiguous.
 
 Unsupported and secret-bearing items are included only in skipped/reporting
-counts and reasons; they are not copied. The excluded set includes hooks, native
-agents/personas, raw instructions/system prompts, credentials and secret-bearing
-MCP fields, security/governance configuration, and scheduler/provider/runtime
-state.
+counts and reasons; they are not copied. The excluded set includes conversation
+transcripts, hooks, native agent definitions, a foreign persona's *identity*
+role (its directive text is imported as memory instead — see
+`onboarding-import.md`), foreign system prompts, allow-lists, credentials and
+secret-bearing MCP fields, security/governance configuration, and
+scheduler/provider/runtime state.
 
 ### Authenticated API contract
 

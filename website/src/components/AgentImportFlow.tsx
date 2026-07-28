@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   Brain,
   CalendarClock,
   Check,
@@ -14,7 +15,6 @@ import {
   FolderOpen,
   Import,
   Loader2,
-  MessageCircle,
   Plug,
   RefreshCw,
   Settings2,
@@ -41,7 +41,7 @@ const SUPPORTED_SOURCE_IDS = new Set([
   'hermes',
 ])
 const SUPPORTED_CATEGORY_IDS = new Set([
-  'sessions',
+  'instructions',
   'memories',
   'workspaces',
   'mcp_servers',
@@ -50,7 +50,7 @@ const SUPPORTED_CATEGORY_IDS = new Set([
   'settings',
 ])
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
-  sessions: MessageCircle,
+  instructions: BookOpen,
   memories: Brain,
   workspaces: FolderOpen,
   mcp_servers: Plug,
@@ -651,8 +651,8 @@ export default function AgentImportFlow({
                 Bring your crew with you.
               </h1>
               <p className="mt-5 max-w-[270px] text-sm leading-relaxed text-accent-fg/80">
-                Move supported sessions, memories, workspaces, MCP servers, skills,
-                schedules, and safe settings into KiroCrew.
+                Move supported instructions, memories, workspaces, MCP servers,
+                skills, schedules, and safe settings into KiroCrew.
               </p>
             </div>
             <p className="mt-8 text-[12px] font-medium text-accent-fg/75">

@@ -15,7 +15,6 @@ from typing import Any
 import pytest
 
 from kiro_crew.cron import CronService
-from kiro_crew.history import ConversationLog
 from kiro_crew.vector_memory import VectorMemoryStore
 
 
@@ -148,7 +147,7 @@ class TestSourceDetection:
             "hermes",
         )
         assert api.CATEGORY_IDS == (
-            "sessions",
+            "instructions",
             "memories",
             "workspaces",
             "mcp_servers",
@@ -325,28 +324,7 @@ class TestPreview:
         project.mkdir(parents=True)
         secret = "sk-ant-api03-this-must-never-leave-preview"
         project_toml = str(project).replace("\\", "\\\\")
-        _write_jsonl(
-            codex / "sessions" / "2026" / "rollout.jsonl",
-            [
-                {
-                    "type": "response_item",
-                    "payload": {
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": "private prompt"}],
-                    },
-                    "cwd": str(project),
-                },
-                {
-                    "type": "response_item",
-                    "payload": {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": "private answer"}],
-                    },
-                },
-            ],
-        )
+        codex.mkdir(parents=True, exist_ok=True)
         (codex / "config.toml").write_text(
             "\n".join(
                 [
@@ -371,7 +349,6 @@ class TestPreview:
         serialized = json.dumps(plan)
 
         assert counts == {
-            "sessions": 1,
             "workspaces": 1,
             "skills": 1,
         }
@@ -385,8 +362,6 @@ class TestPreview:
         )
         assert "telemetry" not in serialized
         assert secret not in serialized
-        assert str(project) not in serialized
-        assert "private prompt" not in serialized
         assert plan["secret_count"] >= 2
 
     def test_codex_archives_user_skills_and_unstable_memory_are_classified(
@@ -394,10 +369,7 @@ class TestPreview:
     ) -> None:
         home = tmp_path / "home"
         codex = home / ".codex"
-        _write_jsonl(
-            codex / "archived_sessions" / "archived.jsonl",
-            [{"role": "user", "content": "archived question"}],
-        )
+        codex.mkdir(parents=True, exist_ok=True)
         (codex / "memories_1.sqlite").write_bytes(b"not a stable public schema")
         bundled_skill = codex / "skills" / ".system" / "bundled"
         bundled_skill.mkdir(parents=True)
@@ -408,7 +380,7 @@ class TestPreview:
 
         plan = _api().preview_import(home=home, env={})
 
-        assert _categories(plan, "codex") == {"sessions": 1, "skills": 1}
+        assert _categories(plan, "codex") == {"skills": 1}
         assert plan["unsupported_count"] >= 1
         assert any(
             item["source_id"] == "codex"
@@ -486,161 +458,12 @@ class TestPreview:
             for item in plan["skipped"]
         )
 
-    def test_jsonl_line_limit_excludes_entire_incomplete_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        api = _api()
-        monkeypatch.setattr(api, "_MAX_JSONL_LINES", 2)
-        _write_jsonl(
-            tmp_path / "home" / ".meshclaw" / "sessions" / "truncated.jsonl",
-            [
-                {"session_id": "chat", "role": "user", "content": "first message"},
-                {"session_id": "chat", "role": "assistant", "content": "second message"},
-                {"session_id": "chat", "role": "user", "content": "unread message"},
-            ],
-        )
-
-        plan = api.preview_import(home=tmp_path / "home", env={})
-
-        assert "sessions" not in _categories(plan, "meshclaw")
-        assert any(
-            item["source_id"] == "meshclaw"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "line_count_limit"
-            for item in plan["skipped"]
-        )
-
-    def test_malformed_jsonl_excludes_entire_file_and_its_workspaces(self, tmp_path: Path) -> None:
-        workspace = tmp_path / "project"
-        workspace.mkdir()
-        transcript = tmp_path / "home" / ".meshclaw" / "sessions" / "partial.jsonl"
-        transcript.parent.mkdir(parents=True)
-        transcript.write_text(
-            json.dumps(
-                {
-                    "role": "user",
-                    "content": "valid prefix",
-                    "cwd": str(workspace),
-                }
-            )
-            + "\n"
-            + '{"role":"assistant","content":"partial',
-            encoding="utf-8",
-        )
-
-        plan = _api().preview_import(home=tmp_path / "home", env={})
-
-        assert "sessions" not in _categories(plan, "meshclaw")
-        assert "workspaces" not in _categories(plan, "meshclaw")
-        assert any(
-            item["source_id"] == "meshclaw"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "invalid_jsonl_record"
-            for item in plan["skipped"]
-        )
-
-    def test_jsonl_message_limit_excludes_only_capped_conversation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        api = _api()
-        monkeypatch.setattr(api, "_MAX_MESSAGES_PER_SESSION", 1)
-        _write_jsonl(
-            tmp_path / "home" / ".meshclaw" / "sessions" / "capped.jsonl",
-            [
-                {"session_id": "capped", "role": "user", "content": "first capped message"},
-                {"session_id": "capped", "role": "assistant", "content": "second capped message"},
-                {"session_id": "complete", "role": "user", "content": "complete message"},
-            ],
-        )
-
-        plan = _select(
-            api.preview_import(home=tmp_path / "home", env={}),
-            ("meshclaw", "sessions"),
-        )
-        result = api.apply_import(plan, data_home=tmp_path / "destination")
-        persisted = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in (tmp_path / "destination" / "sessions").glob("*.jsonl")
-        )
-
-        assert _categories(api.preview_import(home=tmp_path / "home", env={}), "meshclaw") == {
-            "sessions": 1
-        }
-        assert "complete message" in persisted
-        assert "first capped message" not in persisted
-        assert "second capped message" not in persisted
-        assert result["imported"]["sessions"] == 1
-        assert any(
-            item["source_id"] == "meshclaw"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "message_count_limit"
-            for item in result["skipped"]
-        )
-
-    def test_mirrored_transcripts_deduplicate_without_changing_growing_file_identity(
-        self, tmp_path: Path
-    ) -> None:
-        home = tmp_path / "home"
-        sessions = home / ".meshclaw" / "sessions"
-        primary = sessions / "a-primary.jsonl"
-        mirror = sessions / "z-mirror.jsonl"
-        _write_jsonl(
-            primary,
-            [
-                {"role": "user", "content": "What is the release status?"},
-                {"role": "assistant", "content": "The release is ready."},
-            ],
-        )
-        _write_jsonl(
-            mirror,
-            [
-                {
-                    "payload": {
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": "What is the release status?"}],
-                    }
-                },
-                {
-                    "payload": {
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": "The release is ready."}],
-                    }
-                },
-            ],
-        )
-        primary_stat = primary.stat()
-        os.utime(mirror, ns=(primary_stat.st_atime_ns, primary_stat.st_mtime_ns + 1_000_000))
-
-        first_plan = _select(
-            _api().preview_import(home=home, env={}),
-            ("meshclaw", "sessions"),
-        )
-        first = _api().apply_import(first_plan, data_home=tmp_path / "destination")
-        mirror.unlink()
-        with primary.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps({"role": "assistant", "content": "A later update."}) + "\n")
-        second_plan = _select(
-            _api().preview_import(home=home, env={}),
-            ("meshclaw", "sessions"),
-        )
-        second = _api().apply_import(second_plan, data_home=tmp_path / "destination")
-        session_files = list((tmp_path / "destination" / "sessions").glob("*.jsonl"))
-        persisted = "\n".join(path.read_text(encoding="utf-8") for path in session_files)
-
-        assert _categories(_api().preview_import(home=home, env={}), "meshclaw") == {"sessions": 1}
-        assert first["imported"]["sessions"] == 1
-        assert second["imported"]["sessions"] == 0
-        assert second["already_imported"] >= 1
-        assert len(session_files) == 1
-        assert "A later update." not in persisted
-
     def test_source_filter_limits_preview_and_selection(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
-        _write_jsonl(home / ".codex" / "sessions" / "a.jsonl", [{"role": "user", "content": "x"}])
-        _write_jsonl(
-            home / ".meshclaw" / "sessions" / "b.jsonl",
-            [{"role": "user", "content": "y"}],
-        )
+        for root, name in ((home / ".codex", "codex-skill"), (home / ".meshclaw", "mc-skill")):
+            skill = root / ("skills" if name.startswith("codex") else "workspace/skills") / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
 
         plan = _api().preview_import(source_ids=["meshclaw"], home=home, env={})
 
@@ -759,37 +582,24 @@ class TestPreview:
         plan = _api().preview_import(home=home, env={})
 
         assert _categories(plan, "claude_code") == {
-            "sessions": 1,
             "memories": 1,
             "workspaces": 1,
             "mcp_servers": 1,
             "skills": 1,
         }
         assert _categories(plan, "openclaw") == {
-            "sessions": 1,
             "mcp_servers": 1,
             "schedules": 1,
             "settings": 1,
         }
+        # Hermes workspaces used to be recovered from the session database's
+        # ``cwd`` column; with transcripts out of scope only ``projects.db`` and
+        # explicit config contribute workspaces, and this fixture has neither.
         assert _categories(plan, "hermes") == {
-            "sessions": 1,
-            "workspaces": 1,
             "mcp_servers": 1,
             "skills": 1,
             "settings": 1,
         }
-
-    def test_unknown_hermes_database_schema_is_diagnosed_not_guessed(self, tmp_path: Path) -> None:
-        hermes = tmp_path / "home" / ".hermes"
-        hermes.mkdir(parents=True)
-        with sqlite3.connect(hermes / "hermes.db") as connection:
-            connection.execute("CREATE TABLE opaque_state (payload BLOB)")
-
-        plan = _api().preview_import(home=tmp_path / "home", env={})
-
-        assert "sessions" not in _categories(plan, "hermes")
-        assert plan["unsupported_count"] >= 1
-        assert any(item["source_id"] == "hermes" for item in plan["skipped"])
 
     def test_openclaw_nested_mcp_and_current_session_db_are_classified(
         self, tmp_path: Path
@@ -808,12 +618,9 @@ class TestPreview:
         plan = _api().preview_import(home=tmp_path / "home", env={})
 
         assert _categories(plan, "openclaw") == {"mcp_servers": 1}
-        assert any(
-            item["source_id"] == "openclaw"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "unsupported_session_database"
-            for item in plan["skipped"]
-        )
+        # Conversation history is not an import category, so the agent's session
+        # database is neither opened nor reported.
+        assert not any(item["category_id"] == "sessions" for item in plan["skipped"])
 
     def test_openclaw_reads_explicit_and_legacy_config_paths(self, tmp_path: Path) -> None:
         state = tmp_path / "openclaw-state"
@@ -939,155 +746,6 @@ class TestPreview:
             for item in plan["skipped"]
         )
 
-    @pytest.mark.parametrize("created_via", ["operator", "channel", "talk"])
-    def test_openclaw_imports_registry_backed_human_sessions(
-        self, tmp_path: Path, created_via: str
-    ) -> None:
-        state = tmp_path / "home" / ".openclaw"
-        _write_openclaw_session(
-            state,
-            session_id=created_via,
-            entry_updates={"createdVia": created_via},
-        )
-
-        plan = _api().preview_import(home=tmp_path / "home", env={})
-
-        assert _categories(plan, "openclaw") == {"sessions": 1}
-
-    @pytest.mark.parametrize(
-        ("session_key", "entry_updates"),
-        [
-            ("agent:main:main", {"createdVia": "api"}),
-            ("agent:main:main", {"createdActor": {"type": "agent"}}),
-            ("agent:main:main", {"parentSessionKey": "agent:main:parent"}),
-            ("agent:main:main", {"spawnedBy": "agent:main:parent"}),
-            ("agent:main:main", {"runtimeOwner": "gateway"}),
-            ("agent:main:main", {"completionOwnerSessionKey": "agent:main:parent"}),
-            ("agent:main:main", {"pluginOwnerId": "runtime-plugin"}),
-            (
-                "agent:main:main",
-                {
-                    "forkSource": {
-                        "sessionKey": "agent:main:parent",
-                        "sessionId": "parent-session",
-                    }
-                },
-            ),
-            ("cron:daily", {}),
-            ("agent:main:subagent:worker", {}),
-            ("acp:main", {}),
-            ("acp-bridge:main", {}),
-            ("hook:stop", {}),
-            ("node:worker", {}),
-            ("heartbeat:main", {}),
-            ("internal-session-effects:main", {}),
-        ],
-        ids=[
-            "created-via",
-            "nonhuman-actor",
-            "parented",
-            "spawned",
-            "runtime-owned",
-            "completion-owned",
-            "plugin-owned",
-            "fork-lineage",
-            "cron-key",
-            "subagent-key",
-            "acp-key",
-            "acp-bridge-key",
-            "hook-key",
-            "node-key",
-            "heartbeat-key",
-            "internal-effects-key",
-        ],
-    )
-    def test_openclaw_rejects_non_user_session_provenance(
-        self,
-        tmp_path: Path,
-        session_key: str,
-        entry_updates: dict[str, object],
-    ) -> None:
-        state = tmp_path / "home" / ".openclaw"
-        _write_openclaw_session(
-            state,
-            session_key=session_key,
-            entry_updates=entry_updates,
-        )
-
-        plan = _api().preview_import(home=tmp_path / "home", env={})
-
-        assert "sessions" not in _categories(plan, "openclaw")
-        assert any(
-            item["source_id"] == "openclaw"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "session_provenance_rejected"
-            for item in plan["skipped"]
-        )
-
-    def test_openclaw_rejects_missing_and_ambiguous_session_provenance(
-        self, tmp_path: Path
-    ) -> None:
-        missing_state = tmp_path / "missing-home" / ".openclaw"
-        _write_jsonl(
-            missing_state / "agents" / "main" / "sessions" / "orphan.jsonl",
-            [{"role": "user", "content": "orphaned session"}],
-        )
-        ambiguous_state = tmp_path / "ambiguous-home" / ".openclaw"
-        transcript = _write_openclaw_session(ambiguous_state)
-        entry = {
-            "sessionId": transcript.stem,
-            "sessionFile": transcript.name,
-            "createdVia": "operator",
-            "createdActor": {"type": "human"},
-        }
-        (transcript.parent / "sessions.json").write_text(
-            json.dumps(
-                {
-                    "agent:main:one": entry,
-                    "agent:main:two": entry,
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        missing_plan = _api().preview_import(home=tmp_path / "missing-home", env={})
-        ambiguous_plan = _api().preview_import(home=tmp_path / "ambiguous-home", env={})
-
-        for plan in (missing_plan, ambiguous_plan):
-            assert "sessions" not in _categories(plan, "openclaw")
-            assert any(
-                item["source_id"] == "openclaw"
-                and item["category_id"] == "sessions"
-                and item["reason"] == "session_provenance_missing_or_ambiguous"
-                for item in plan["skipped"]
-            )
-
-    @pytest.mark.parametrize(
-        "filename",
-        [
-            "session.trajectory.jsonl",
-            "session.checkpoint.123e4567-e89b-12d3-a456-426614174000.jsonl",
-            "session.deleted.2026-07-26.jsonl",
-            "session.reset.2026-07-26.jsonl",
-        ],
-        ids=["trajectory", "checkpoint", "deleted-archive", "reset-archive"],
-    )
-    def test_openclaw_excludes_session_artifacts_and_archives(
-        self, tmp_path: Path, filename: str
-    ) -> None:
-        state = tmp_path / "home" / ".openclaw"
-        transcript = _write_openclaw_session(state)
-        artifact = transcript.with_name(filename)
-        transcript.rename(artifact)
-        registry = json.loads((artifact.parent / "sessions.json").read_text(encoding="utf-8"))
-        registry["agent:main:main"]["sessionId"] = artifact.name[: -len(".jsonl")]
-        registry["agent:main:main"]["sessionFile"] = artifact.name
-        (artifact.parent / "sessions.json").write_text(json.dumps(registry), encoding="utf-8")
-
-        plan = _api().preview_import(home=tmp_path / "home", env={})
-
-        assert "sessions" not in _categories(plan, "openclaw")
-
     def test_openclaw_canonical_databases_are_safely_diagnosed_not_opened(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1108,12 +766,18 @@ class TestPreview:
 
         plan = api.preview_import(home=tmp_path / "home", env={})
 
+        # The agent session database is no longer probed at all (transcripts are
+        # out of scope), so only the schedule database is diagnosed here. The
+        # monkeypatched ``sqlite3.connect`` still guards the real invariant: an
+        # unsupported database must be classified from its filesystem metadata
+        # without ever being opened.
         assert any(
             item["source_id"] == "openclaw"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "unsafe_database_sidecar"
+            and item["category_id"] == "schedules"
+            and item["reason"] == "unsupported_schedule_database"
             for item in plan["skipped"]
         )
+        assert not any(item["category_id"] == "sessions" for item in plan["skipped"])
         assert any(
             item["source_id"] == "openclaw"
             and item["category_id"] == "schedules"
@@ -1141,7 +805,7 @@ class TestPreview:
                 f"Remember {skill_name}.",
                 encoding="utf-8",
             )
-            (workspace / "AGENTS.md").write_text("Do not import instructions.\n", encoding="utf-8")
+            (workspace / "AGENTS.md").write_text("Always run the tests.\n", encoding="utf-8")
         state.mkdir(parents=True, exist_ok=True)
         (state / "openclaw.json").write_text(
             json.dumps(
@@ -1164,11 +828,15 @@ class TestPreview:
         plan = _api().preview_import(home=tmp_path / "home", env={})
 
         assert _categories(plan, "openclaw") == {
+            "instructions": 1,
             "memories": 3,
             "workspaces": 3,
             "skills": 3,
         }
-        assert not any(
+        # Identical AGENTS.md text across three workspaces collapses to ONE
+        # directive: the instruction key carries a content digest, so the
+        # in-scan dedupe folds the duplicates.
+        assert any(
             item["source_id"] == "openclaw" and item["category_id"] == "instructions"
             for item in plan["selection"]
         )
@@ -1536,245 +1204,43 @@ class TestPreview:
             for item in plan["skipped"]
         )
 
-    def test_claude_runtime_files_do_not_consume_the_session_file_cap(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_claude_rules_and_project_instructions_are_imported(self, tmp_path: Path) -> None:
         api = _api()
-        monkeypatch.setattr(api, "_MAX_FILES", 1)
-        projects = tmp_path / "home" / ".claude" / "projects" / "project"
-        live = projects / "chat.jsonl"
-        runtime = projects / "subagents" / "worker.jsonl"
-        _write_jsonl(live, [{"role": "user", "content": "live conversation"}])
-        _write_jsonl(runtime, [{"role": "user", "content": "runtime conversation"}])
-        os.utime(live, ns=(1_000_000_000, 1_000_000_000))
-        os.utime(runtime, ns=(2_000_000_000, 2_000_000_000))
-
-        plan = api.preview_import(home=tmp_path / "home", env={})
-
-        assert _categories(plan, "claude_code") == {"sessions": 1}
-        assert any(
-            item["source_id"] == "claude_code"
-            and item["category_id"] == "runtime"
-            and item["reason"] == "runtime_sessions_excluded"
-            and item["count"] == 1
-            for item in plan["skipped"]
-        )
-
-    def test_session_file_cap_keeps_newest_files(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        api = _api()
-        monkeypatch.setattr(api, "_MAX_FILES", 1)
-        projects = tmp_path / "home" / ".claude" / "projects" / "project"
-        older = projects / "a-old.jsonl"
-        newer = projects / "z-new.jsonl"
-        _write_jsonl(older, [{"role": "user", "content": "old"}])
-        _write_jsonl(newer, [{"role": "user", "content": "new"}])
-        os.utime(older, ns=(1_000_000_000, 1_000_000_000))
-        os.utime(newer, ns=(2_000_000_000, 2_000_000_000))
-
-        scan = api._scan_source(
-            "claude_code",
-            tmp_path / "home" / ".claude",
-            tmp_path / "home",
-        )
-
-        assert [message[1] for message in scan.items["sessions"][0].payload] == ["new"]
-
-    def test_claude_excludes_synthetic_sidechain_meta_and_tool_result_records(
-        self, tmp_path: Path
-    ) -> None:
-        home = tmp_path / "home"
-        transcript = home / ".claude" / "projects" / "project" / "chat.jsonl"
-        _write_jsonl(
-            transcript,
-            [
-                {
-                    "type": "user",
-                    "userType": "external",
-                    "message": {"role": "user", "content": "visible external question"},
-                },
-                {
-                    "type": "assistant",
-                    "message": {"role": "assistant", "content": "visible assistant answer"},
-                },
-                {
-                    "type": "user",
-                    "isMeta": True,
-                    "message": {"role": "user", "content": "hidden metadata text"},
-                },
-                {
-                    "type": "assistant",
-                    "isSidechain": True,
-                    "message": {"role": "assistant", "content": "hidden sidechain text"},
-                },
-                {
-                    "type": "user",
-                    "toolUseResult": {"status": "complete"},
-                    "message": {"role": "user", "content": "hidden tool result text"},
-                },
-                {
-                    "type": "user",
-                    "userType": "internal",
-                    "message": {"role": "user", "content": "hidden internal user text"},
-                },
-            ],
-        )
-        plan = _select(
-            _api().preview_import(home=home, env={}),
-            ("claude_code", "sessions"),
-        )
-
-        _api().apply_import(plan, data_home=tmp_path / "destination")
-        persisted = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in (tmp_path / "destination" / "sessions").glob("*.jsonl")
-        )
-
-        assert "visible external question" in persisted
-        assert "visible assistant answer" in persisted
-        assert "hidden metadata text" not in persisted
-        assert "hidden sidechain text" not in persisted
-        assert "hidden tool result text" not in persisted
-        assert "hidden internal user text" not in persisted
-
-    def test_claude_discovers_user_skills_from_transcript_workspace(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        workspace = tmp_path / "project"
-        workspace.mkdir()
-        _write_jsonl(
-            home / ".claude" / "projects" / "encoded-project" / "chat.jsonl",
-            [{"role": "user", "content": "hello", "cwd": str(workspace)}],
-        )
-        skill = workspace / ".claude" / "skills" / "review"
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text("# Workspace review\n", encoding="utf-8")
-
-        plan = _api().preview_import(home=home, env={})
-
-        assert _categories(plan, "claude_code") == {
-            "sessions": 1,
-            "workspaces": 1,
-            "skills": 1,
-        }
-
-    def test_codex_session_record_contributes_all_scalar_and_workspace_roots(
-        self, tmp_path: Path
-    ) -> None:
-        home = tmp_path / "home"
-        workspaces = [tmp_path / f"workspace-{index}" for index in range(7)]
-        for workspace in workspaces:
-            workspace.mkdir()
-        _write_jsonl(
-            home / ".codex" / "sessions" / "rollout.jsonl",
-            [
-                {
-                    "type": "response_item",
-                    "cwd": str(workspaces[0]),
-                    "project": str(workspaces[1]),
-                    "payload": {
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": "inspect every workspace"}],
-                        "project_path": str(workspaces[2]),
-                        "workspace_path": str(workspaces[3]),
-                        "projectPath": str(workspaces[4]),
-                        "workspace_roots": [
-                            str(workspaces[5]),
-                            str(workspaces[6]),
-                        ],
-                    },
-                }
-            ],
-        )
-
-        plan = _api().preview_import(home=home, env={})
-
-        assert _categories(plan, "codex") == {
-            "sessions": 1,
-            "workspaces": 7,
-        }
-
-    def test_claude_loads_project_configs_from_transcript_workspace(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         claude = home / ".claude"
         workspace = tmp_path / "project"
         workspace.mkdir()
-        _write_jsonl(
-            claude / "projects" / "encoded-project" / "chat.jsonl",
-            [
-                {
-                    "type": "user",
-                    "message": {"role": "user", "content": "workspace question"},
-                    "cwd": str(workspace),
-                }
-            ],
+        claude.mkdir(parents=True, exist_ok=True)
+        (claude / ".claude.json").write_text(
+            json.dumps({"projects": {str(workspace): {}}}), encoding="utf-8"
         )
-        (workspace / ".mcp.json").write_text(
-            json.dumps({"mcpServers": {"workspace-helper": {"command": "workspace-mcp"}}}),
-            encoding="utf-8",
-        )
-        project_settings = workspace / ".claude"
-        project_settings.mkdir()
-        (project_settings / "settings.json").write_text(
-            json.dumps({"dashboard": {"theme_mode": "dark"}}),
-            encoding="utf-8",
-        )
-        (project_settings / "settings.local.json").write_text(
-            json.dumps({"dashboard": {"theme_mode": "light"}}),
-            encoding="utf-8",
-        )
-
-        plan = _api().preview_import(home=home, env={})
-        selected = _select(
-            plan,
-            ("claude_code", "mcp_servers"),
-            ("claude_code", "settings"),
-        )
-        _api().apply_import(selected, data_home=tmp_path / "destination")
-        mcp = json.loads((tmp_path / "destination" / "mcp.json").read_text(encoding="utf-8"))
-        config = json.loads((tmp_path / "destination" / "config.json").read_text(encoding="utf-8"))
-
-        assert _categories(plan, "claude_code") == {
-            "sessions": 1,
-            "workspaces": 1,
-            "mcp_servers": 1,
-            "settings": 1,
-        }
-        assert mcp["mcpServers"]["workspace-helper"]["command"] == "workspace-mcp"
-        assert config["dashboard"]["theme_mode"] == "light"
-
-    def test_claude_rules_and_project_instructions_are_diagnosed(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        claude = home / ".claude"
-        workspace = tmp_path / "project"
-        workspace.mkdir()
-        _write_jsonl(
-            claude / "projects" / "encoded-project" / "chat.jsonl",
-            [{"role": "user", "content": "hello", "cwd": str(workspace)}],
-        )
+        (claude / "CLAUDE.md").write_text("Always squash before opening a PR.\n", encoding="utf-8")
         rules = claude / "rules"
         rules.mkdir()
-        (rules / "global.md").write_text("# Global instructions\n", encoding="utf-8")
-        (workspace / "CLAUDE.md").write_text("# Project instructions\n", encoding="utf-8")
+        (rules / "global.md").write_text("Never force-push a shared branch.\n", encoding="utf-8")
+        (workspace / "CLAUDE.md").write_text("Run the linter first.\n", encoding="utf-8")
 
-        plan = _api().preview_import(home=home, env={})
+        plan = api.preview_import(home=home, env={})
 
-        diagnostics = [
-            item
+        # Root CLAUDE.md, rules/global.md, and the workspace CLAUDE.md all become
+        # directives — no longer reported as an unsupported category.
+        assert _categories(plan, "claude_code")["instructions"] == 3
+        assert not any(
+            item["category_id"] == "instructions" and item["reason"] == "unsupported_category"
             for item in plan["skipped"]
-            if item["source_id"] == "claude_code"
-            and item["category_id"] == "instructions"
-            and item["reason"] == "unsupported_category"
-        ]
-        assert diagnostics == [
-            {
-                "source_id": "claude_code",
-                "category_id": "instructions",
-                "reason": "unsupported_category",
-                "count": 2,
-            }
-        ]
+        )
+
+        destination = tmp_path / "destination"
+        result = api.apply_import(plan, data_home=destination)
+
+        assert result["imported"]["instructions"] == 3
+        rules_text = (destination / "lessons.jsonl").read_text(encoding="utf-8")
+        assert "Always squash before opening a PR." in rules_text
+        assert "Never force-push a shared branch." in rules_text
+        assert "Run the linter first." in rules_text
+        # Instructions must NEVER land in the consolidator-replaced tiers.
+        assert not (destination / "workspace" / "memory" / "preferences.md").exists()
+        assert not (destination / "workspace" / "memory" / "projects.md").exists()
 
     def test_claude_package_mcp_names_receive_stable_safe_aliases(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -1808,14 +1274,7 @@ class TestPreview:
     ) -> None:
         home = tmp_path / "home"
         claude = home / ".claude"
-        _write_jsonl(
-            claude / "projects" / "project" / "chat.jsonl",
-            [{"role": "user", "content": "live conversation"}],
-        )
-        _write_jsonl(
-            claude / "projects" / "project" / "subagents" / "worker.jsonl",
-            [{"role": "user", "content": "runtime subagent conversation"}],
-        )
+        claude.mkdir(parents=True, exist_ok=True)
         (claude / "settings.json").write_text(
             json.dumps({"dashboard": {"theme_mode": "dark"}}),
             encoding="utf-8",
@@ -1826,22 +1285,15 @@ class TestPreview:
         )
         plan = _select(
             _api().preview_import(home=home, env={}),
-            ("claude_code", "sessions"),
             ("claude_code", "settings"),
         )
 
         result = _api().apply_import(plan, data_home=tmp_path / "destination")
         config = json.loads((tmp_path / "destination" / "config.json").read_text(encoding="utf-8"))
-        persisted = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in (tmp_path / "destination" / "sessions").glob("*.jsonl")
-        )
 
         assert config["dashboard"]["theme_mode"] == "light"
-        assert "live conversation" in persisted
-        assert "runtime subagent conversation" not in persisted
         assert result["imported"] == {
-            "sessions": 1,
+            "instructions": 0,
             "memories": 0,
             "workspaces": 0,
             "mcp_servers": 0,
@@ -1849,122 +1301,8 @@ class TestPreview:
             "schedules": 0,
             "settings": 1,
         }
-        assert any(
-            item["source_id"] == "claude_code"
-            and item["category_id"] == "runtime"
-            and item["reason"] == "runtime_sessions_excluded"
-            for item in result["skipped"]
-        )
-
-    def test_hermes_uses_user_sessions_for_messages_workspaces_and_jobs(
-        self, tmp_path: Path
-    ) -> None:
-        home = tmp_path / "home"
-        hermes = home / ".hermes"
-        hermes.mkdir(parents=True)
-        project = tmp_path / "project"
-        project.mkdir()
-        with sqlite3.connect(hermes / "state.db") as connection:
-            connection.executescript(
-                f"""
-                CREATE TABLE sessions (
-                    id TEXT PRIMARY KEY,
-                    source TEXT,
-                    parent_session_id TEXT,
-                    cwd TEXT
-                );
-                CREATE TABLE messages (
-                    id INTEGER PRIMARY KEY,
-                    session_id TEXT,
-                    role TEXT,
-                    content TEXT,
-                    timestamp INTEGER,
-                    active INTEGER,
-                    compacted INTEGER
-                );
-                INSERT INTO sessions VALUES ('chat-1', 'cli', NULL, '{project.as_posix()}');
-                INSERT INTO messages VALUES
-                    (2, 'chat-1', 'assistant', 'second active message', 20, 1, 0),
-                    (1, 'chat-1', 'user', 'first active message', 10, 1, 0),
-                    (3, 'chat-1', 'user', 'inactive message', 30, 0, 0),
-                    (4, 'chat-1', 'assistant', 'compacted message', 40, 1, 1);
-                """
-            )
-        jobs = hermes / "cron" / "jobs.json"
-        jobs.parent.mkdir()
-        jobs.write_text(
-            json.dumps(
-                {
-                    "jobs": [
-                        {
-                            "name": "status review",
-                            "prompt": "review status",
-                            "schedule": {
-                                "kind": "cron",
-                                "expr": "0 9 * * *",
-                                "timezone": "UTC",
-                            },
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-        plan = _select(
-            _api().preview_import(home=home, env={}),
-            ("hermes", "sessions"),
-            ("hermes", "workspaces"),
-            ("hermes", "schedules"),
-        )
-
-        result = _api().apply_import(plan, data_home=tmp_path / "destination")
-        persisted = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in (tmp_path / "destination" / "sessions").glob("*.jsonl")
-        )
-        config = json.loads((tmp_path / "destination" / "config.json").read_text(encoding="utf-8"))
-        jobs = CronService(base_dir=tmp_path / "destination").list_jobs(include_disabled=True)
-
-        assert persisted.index("first active message") < persisted.index("second active message")
-        assert "inactive message" not in persisted
-        assert "compacted message" in persisted
-        assert config["workspaces"]["project"]["dir"] == str(project.resolve())
-        assert [(job.name, job.enabled) for job in jobs] == [("status review", False)]
-        assert result["imported"]["sessions"] == 1
-        assert result["imported"]["workspaces"] == 1
-        assert result["imported"]["schedules"] == 1
-
-    def test_hermes_database_uses_database_size_cap_not_generic_file_cap(
-        self, tmp_path: Path
-    ) -> None:
-        hermes = tmp_path / "home" / ".hermes"
-        hermes.mkdir(parents=True)
-        database = hermes / "state.db"
-        with sqlite3.connect(database) as connection:
-            connection.executescript(
-                """
-                CREATE TABLE sessions (
-                    id TEXT PRIMARY KEY,
-                    source TEXT,
-                    parent_session_id TEXT
-                );
-                CREATE TABLE messages (
-                    id INTEGER PRIMARY KEY,
-                    session_id TEXT,
-                    role TEXT,
-                    content TEXT
-                );
-                INSERT INTO sessions VALUES ('chat', 'cli', NULL);
-                INSERT INTO messages VALUES (1, 'chat', 'user', 'large database message');
-                CREATE TABLE padding (data BLOB);
-                """
-            )
-            connection.execute("INSERT INTO padding VALUES (zeroblob(?))", (9 * 1024 * 1024,))
-
-        plan = _api().preview_import(home=tmp_path / "home", env={})
-
-        assert 8 * 1024 * 1024 < database.stat().st_size < 64 * 1024 * 1024
-        assert _categories(plan, "hermes") == {"sessions": 1}
+        # No session transcript is ever written to the destination.
+        assert not (tmp_path / "destination" / "sessions").exists()
 
     def test_hermes_unreadable_profiles_directory_is_diagnosed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2018,189 +1356,6 @@ class TestPreview:
             and item["reason"] == "profile_count_limit"
             for item in plan["skipped"]
         )
-
-    @pytest.mark.parametrize(
-        "database_name",
-        [
-            "state.db",
-            "profiles/review/state.db",
-        ],
-    )
-    def test_hermes_databases_reject_unsafe_sidecars_before_open(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        database_name: str,
-    ) -> None:
-        api = _api()
-        hermes = tmp_path / "home" / ".hermes"
-        hermes.mkdir(parents=True)
-        database = hermes / database_name
-        database.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(database) as connection:
-            connection.execute("CREATE TABLE messages (role TEXT, content TEXT)")
-            connection.execute(
-                "INSERT INTO messages VALUES (?, ?)",
-                ("user", "database message"),
-            )
-        Path(f"{database}-shm").mkdir()
-
-        def fail_if_opened(*_args: object, **_kwargs: object) -> None:
-            raise AssertionError("unsafe SQLite database was opened")
-
-        monkeypatch.setattr(api.sqlite3, "connect", fail_if_opened)
-
-        plan = api.preview_import(home=tmp_path / "home", env={})
-
-        assert "sessions" not in _categories(plan, "hermes")
-        assert any(
-            item["source_id"] == "hermes"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "unsafe_database_sidecar"
-            for item in plan["skipped"]
-        )
-
-    def test_hermes_database_row_cap_excludes_all_partial_transcripts(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        api = _api()
-        monkeypatch.setattr(api, "_MAX_DB_ROWS", 2)
-        hermes = tmp_path / "home" / ".hermes"
-        hermes.mkdir(parents=True)
-        with sqlite3.connect(hermes / "state.db") as connection:
-            connection.executescript(
-                """
-                CREATE TABLE sessions (
-                    id TEXT PRIMARY KEY,
-                    source TEXT,
-                    parent_session_id TEXT
-                );
-                CREATE TABLE messages (
-                    id INTEGER PRIMARY KEY,
-                    session_id TEXT,
-                    role TEXT,
-                    content TEXT
-                );
-                INSERT INTO sessions VALUES ('chat', 'cli', NULL);
-                INSERT INTO messages VALUES
-                    (1, 'chat', 'user', 'first message'),
-                    (2, 'chat', 'assistant', 'second message'),
-                    (3, 'chat', 'user', 'third message');
-                """
-            )
-
-        plan = api.preview_import(home=tmp_path / "home", env={})
-
-        assert "sessions" not in _categories(plan, "hermes")
-        assert any(
-            item["source_id"] == "hermes"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "row_count_limit"
-            for item in plan["skipped"]
-        )
-
-    def test_openclaw_session_enumeration_has_one_shared_budget(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        api = _api()
-        monkeypatch.setattr(api, "_MAX_FILES", 2)
-        root = tmp_path / "home" / ".openclaw"
-        for agent_id in ("first", "second"):
-            sessions = root / "agents" / agent_id / "sessions"
-            sessions.mkdir(parents=True)
-            _write_openclaw_session(
-                root,
-                agent_id=agent_id,
-                session_id=f"{agent_id}-session",
-                session_key=f"agent:{agent_id}:main",
-            )
-
-        plan = api.preview_import(home=tmp_path / "home", env={})
-
-        assert _categories(plan, "openclaw").get("sessions", 0) <= 2
-        assert any(
-            item["source_id"] == "openclaw"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "file_count_limit"
-            for item in plan["skipped"]
-        )
-
-    def test_hermes_message_cap_excludes_only_the_capped_transcript(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        api = _api()
-        monkeypatch.setattr(api, "_MAX_MESSAGES_PER_SESSION", 1)
-        hermes = tmp_path / "home" / ".hermes"
-        hermes.mkdir(parents=True)
-        with sqlite3.connect(hermes / "state.db") as connection:
-            connection.executescript(
-                """
-                CREATE TABLE sessions (
-                    id TEXT PRIMARY KEY,
-                    source TEXT,
-                    parent_session_id TEXT
-                );
-                CREATE TABLE messages (
-                    id INTEGER PRIMARY KEY,
-                    session_id TEXT,
-                    role TEXT,
-                    content TEXT
-                );
-                INSERT INTO sessions VALUES
-                    ('capped', 'cli', NULL),
-                    ('complete', 'cli', NULL);
-                INSERT INTO messages VALUES
-                    (1, 'capped', 'user', 'capped first message'),
-                    (2, 'capped', 'assistant', 'capped second message'),
-                    (3, 'complete', 'user', 'complete message');
-                """
-            )
-        plan = _select(
-            api.preview_import(home=tmp_path / "home", env={}),
-            ("hermes", "sessions"),
-        )
-
-        result = api.apply_import(plan, data_home=tmp_path / "destination")
-        persisted = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in (tmp_path / "destination" / "sessions").glob("*.jsonl")
-        )
-
-        assert _categories(plan, "hermes") == {"sessions": 1}
-        assert "complete message" in persisted
-        assert "capped first message" not in persisted
-        assert "capped second message" not in persisted
-        assert result["imported"]["sessions"] == 1
-
-    def test_hermes_deeply_nested_message_is_skipped(self, tmp_path: Path) -> None:
-        hermes = tmp_path / "home" / ".hermes"
-        hermes.mkdir(parents=True)
-        nested_json = "[" * 2000 + "]" * 2000
-        with sqlite3.connect(hermes / "state.db") as connection:
-            connection.executescript(
-                """
-                CREATE TABLE sessions (
-                    id TEXT PRIMARY KEY,
-                    source TEXT,
-                    parent_session_id TEXT
-                );
-                CREATE TABLE messages (
-                    id INTEGER PRIMARY KEY,
-                    session_id TEXT,
-                    role TEXT,
-                    content TEXT
-                );
-                """
-            )
-            connection.execute("INSERT INTO sessions VALUES ('deep', 'cli', NULL)")
-            connection.execute(
-                "INSERT INTO messages VALUES (1, 'deep', 'user', ?)",
-                (nested_json,),
-            )
-
-        plan = _api().preview_import(home=tmp_path / "home", env={})
-
-        assert "sessions" not in _categories(plan, "hermes")
 
     def test_hermes_cron_output_markdown_is_not_a_schedule(self, tmp_path: Path) -> None:
         output = tmp_path / "home" / ".hermes" / "cron" / "output" / "run.md"
@@ -2321,98 +1476,6 @@ class TestPreview:
         plan = api.preview_import(home=tmp_path / "home", env={})
 
         assert _categories(plan, "hermes") == {}
-
-    def test_hermes_sessions_require_user_provenance_and_source_workspaces(
-        self, tmp_path: Path
-    ) -> None:
-        hermes = tmp_path / "home" / ".hermes"
-        hermes.mkdir(parents=True)
-        accepted_workspace = tmp_path / "accepted-workspace"
-        rejected_workspace = tmp_path / "rejected-workspace"
-        accepted_workspace.mkdir()
-        rejected_workspace.mkdir()
-        with sqlite3.connect(hermes / "state.db") as connection:
-            connection.executescript(
-                f"""
-                CREATE TABLE sessions (
-                    id TEXT PRIMARY KEY,
-                    source TEXT,
-                    parent_session_id TEXT,
-                    cwd TEXT
-                );
-                CREATE TABLE messages (
-                    id INTEGER PRIMARY KEY,
-                    session_id TEXT,
-                    role TEXT,
-                    content TEXT
-                );
-                INSERT INTO sessions VALUES
-                    ('accepted', 'cli', NULL, '{accepted_workspace.as_posix()}'),
-                    ('parented', 'cli', 'accepted', '{rejected_workspace.as_posix()}'),
-                    ('subagent', 'subagent', NULL, '{rejected_workspace.as_posix()}'),
-                    ('tool', 'tool', NULL, '{rejected_workspace.as_posix()}'),
-                    ('cron', 'cron', NULL, '{rejected_workspace.as_posix()}'),
-                    ('empty', '', NULL, '{rejected_workspace.as_posix()}');
-                INSERT INTO messages(session_id, role, content) VALUES
-                    ('accepted', 'user', 'accepted user session'),
-                    ('parented', 'user', 'parented runtime session'),
-                    ('subagent', 'assistant', 'subagent runtime session'),
-                    ('tool', 'assistant', 'tool runtime session'),
-                    ('cron', 'assistant', 'cron runtime session'),
-                    ('empty', 'user', 'unattributed session');
-                """
-            )
-
-        plan = _select(
-            _api().preview_import(home=tmp_path / "home", env={}),
-            ("hermes", "sessions"),
-            ("hermes", "workspaces"),
-        )
-        _api().apply_import(plan, data_home=tmp_path / "destination")
-        persisted = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in (tmp_path / "destination" / "sessions").glob("*.jsonl")
-        )
-
-        assert _categories(plan, "hermes") == {"sessions": 1, "workspaces": 1}
-        assert "accepted user session" in persisted
-        assert "runtime session" not in persisted
-        assert "unattributed session" not in persisted
-        assert any(
-            item["source_id"] == "hermes"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "runtime_session_excluded"
-            for item in plan["skipped"]
-        )
-        assert any(
-            item["source_id"] == "hermes"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "parented_session_excluded"
-            for item in plan["skipped"]
-        )
-
-    def test_hermes_legacy_messages_without_sessions_are_diagnosed_not_imported(
-        self, tmp_path: Path
-    ) -> None:
-        hermes = tmp_path / "home" / ".hermes"
-        hermes.mkdir(parents=True)
-        with sqlite3.connect(hermes / "state.db") as connection:
-            connection.execute(
-                "CREATE TABLE messages (conversation_id TEXT, role TEXT, content TEXT)"
-            )
-            connection.execute(
-                "INSERT INTO messages VALUES ('legacy', 'user', 'legacy guessed session')"
-            )
-
-        plan = _api().preview_import(home=tmp_path / "home", env={})
-
-        assert "sessions" not in _categories(plan, "hermes")
-        assert any(
-            item["source_id"] == "hermes"
-            and item["category_id"] == "sessions"
-            and item["reason"] == "missing_session_provenance"
-            for item in plan["skipped"]
-        )
 
     def test_hermes_native_schedules_import_with_runtime_fields_ignored(
         self, tmp_path: Path
@@ -3083,275 +2146,6 @@ class TestApply:
             ]["disabled"]
             is True
         )
-
-    def test_sessions_import_visible_text_only_and_are_idempotent(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        source = home / ".meshclaw" / "sessions" / "chat.jsonl"
-        _write_jsonl(
-            source,
-            [
-                {"role": "user", "content": "visible question", "tools": ["shell rm -rf /"]},
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "thinking", "thinking": "private reasoning"},
-                        {"type": "text", "text": "visible answer"},
-                        {"type": "tool_use", "name": "shell", "input": {"command": "secret cmd"}},
-                    ],
-                },
-                {"role": "tool", "content": "private tool output"},
-                {"role": "system", "content": "private system prompt"},
-            ],
-        )
-        data_home = tmp_path / "destination"
-        conversation_log = ConversationLog(data_home / "sessions")
-        plan = _select(
-            _api().preview_import(home=home, env={}),
-            ("meshclaw", "sessions"),
-        )
-
-        first = _api().apply_import(
-            plan,
-            data_home=data_home,
-            conversation_log=conversation_log,
-        )
-        second = _api().apply_import(
-            plan,
-            data_home=data_home,
-            conversation_log=conversation_log,
-        )
-        messages = []
-        for path in (data_home / "sessions").glob("*.jsonl"):
-            messages.extend(
-                json.loads(line)
-                for line in path.read_text(encoding="utf-8").splitlines()
-                if line and json.loads(line).get("_type") != "metadata"
-            )
-
-        assert [(message["role"], message["content"]) for message in messages] == [
-            ("user", "visible question"),
-            ("assistant", "visible answer"),
-        ]
-        assert "private reasoning" not in json.dumps(messages)
-        assert "private tool output" not in json.dumps(messages)
-        assert "secret cmd" not in json.dumps(messages)
-        assert first["imported"]["sessions"] == 1
-        assert second["imported"]["sessions"] == 0
-        assert second["already_imported"] >= 1
-        ledger = json.loads(
-            (data_home / "imports" / "foreign-agent-imports.json").read_text(encoding="utf-8")
-        )
-        records = list(ledger["records"].values())
-        assert len(records) == 1
-        destination_key = records[0]["destination_key"]
-        assert destination_key.startswith("imported-meshclaw-")
-        assert conversation_log.has_log(destination_key)
-        session_path = next((data_home / "sessions").glob("*.jsonl"))
-        metadata = json.loads(session_path.read_text(encoding="utf-8").splitlines()[0])
-        assert metadata["closed"] is True
-
-    def test_non_text_envelopes_are_excluded_from_jsonl_and_sqlite(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        _write_jsonl(
-            home / ".meshclaw" / "sessions" / "chat.jsonl",
-            [
-                {"role": "user", "content": "visible JSONL message"},
-                {
-                    "type": "tool_result",
-                    "role": "user",
-                    "content": "private JSONL tool result",
-                },
-            ],
-        )
-        hermes = home / ".hermes"
-        hermes.mkdir(parents=True)
-        with sqlite3.connect(hermes / "state.db") as connection:
-            connection.executescript(
-                """
-                CREATE TABLE sessions (
-                    id TEXT PRIMARY KEY,
-                    source TEXT,
-                    parent_session_id TEXT
-                );
-                CREATE TABLE messages (
-                    id INTEGER PRIMARY KEY,
-                    session_id TEXT,
-                    role TEXT,
-                    content TEXT
-                );
-                INSERT INTO sessions VALUES ('chat', 'cli', NULL);
-                """
-            )
-            connection.executemany(
-                "INSERT INTO messages VALUES (?, 'chat', 'user', ?)",
-                [
-                    (1, "visible SQLite message"),
-                    (
-                        2,
-                        json.dumps(
-                            {
-                                "type": "tool_result",
-                                "content": "private SQLite tool result",
-                            }
-                        ),
-                    ),
-                ],
-            )
-        data_home = tmp_path / "destination"
-        plan = _select(
-            _api().preview_import(home=home, env={}),
-            ("meshclaw", "sessions"),
-            ("hermes", "sessions"),
-        )
-
-        _api().apply_import(plan, data_home=data_home)
-        persisted = "\n".join(
-            path.read_text(encoding="utf-8") for path in (data_home / "sessions").glob("*.jsonl")
-        )
-
-        assert "visible JSONL message" in persisted
-        assert "visible SQLite message" in persisted
-        assert "private JSONL tool result" not in persisted
-        assert "private SQLite tool result" not in persisted
-
-    def test_partial_deterministic_session_is_repaired_before_ledgering(
-        self, tmp_path: Path
-    ) -> None:
-        home = tmp_path / "home"
-        _write_jsonl(
-            home / ".meshclaw" / "sessions" / "chat.jsonl",
-            [
-                {"role": "user", "content": "first visible message"},
-                {"role": "assistant", "content": "second visible message"},
-            ],
-        )
-        data_home = tmp_path / "destination"
-        conversation_log = ConversationLog(data_home / "sessions")
-        plan = _select(
-            _api().preview_import(home=home, env={}),
-            ("meshclaw", "sessions"),
-        )
-        item = (
-            _api()
-            ._scan_source(
-                "meshclaw",
-                home / ".meshclaw",
-                home,
-            )
-            .items["sessions"][0]
-        )
-        destination_key = _api()._session_destination_key(item)
-        conversation_log.append(destination_key, "user", "first visible message")
-
-        result = _api().apply_import(
-            plan,
-            data_home=data_home,
-            conversation_log=conversation_log,
-        )
-
-        assert [
-            (message["role"], message["content"])
-            for message in conversation_log.read_messages(destination_key)
-        ] == [
-            ("user", "first visible message"),
-            ("assistant", "second visible message"),
-        ]
-        assert result["imported"]["sessions"] == 1
-        assert (data_home / "imports" / "foreign-agent-imports.json").is_file()
-
-    def test_session_append_failure_removes_partial_session_and_skips_ledger(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        home = tmp_path / "home"
-        _write_jsonl(
-            home / ".meshclaw" / "sessions" / "chat.jsonl",
-            [
-                {"role": "user", "content": "first visible message"},
-                {"role": "assistant", "content": "second visible message"},
-            ],
-        )
-        data_home = tmp_path / "destination"
-        conversation_log = ConversationLog(data_home / "sessions")
-        real_append = conversation_log.append
-        append_count = 0
-
-        def fail_second_append(*args: object, **kwargs: object) -> None:
-            nonlocal append_count
-            append_count += 1
-            if append_count == 2:
-                raise OSError("injected append failure")
-            real_append(*args, **kwargs)
-
-        monkeypatch.setattr(conversation_log, "append", fail_second_append)
-        plan = _select(
-            _api().preview_import(home=home, env={}),
-            ("meshclaw", "sessions"),
-        )
-
-        result = _api().apply_import(
-            plan,
-            data_home=data_home,
-            conversation_log=conversation_log,
-        )
-
-        assert append_count == 2
-        assert list((data_home / "sessions").glob("*.jsonl")) == []
-        assert not (data_home / "imports" / "foreign-agent-imports.json").exists()
-        assert result["imported"]["sessions"] == 0
-        assert result["item_outcomes"][0]["outcome"] == "rejected"
-
-    def test_hermes_sqlite_json_blocks_import_visible_text_only(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        hermes = home / ".hermes"
-        hermes.mkdir(parents=True)
-        with sqlite3.connect(hermes / "hermes.db") as connection:
-            connection.executescript(
-                """
-                CREATE TABLE sessions (
-                    id TEXT PRIMARY KEY,
-                    source TEXT,
-                    parent_session_id TEXT
-                );
-                CREATE TABLE messages (
-                    id INTEGER PRIMARY KEY,
-                    session_id TEXT,
-                    role TEXT,
-                    content TEXT
-                );
-                INSERT INTO sessions VALUES ('c1', 'cli', NULL);
-                """
-            )
-            connection.execute(
-                "INSERT INTO messages(session_id, role, content) VALUES (?, ?, ?)",
-                (
-                    "c1",
-                    "assistant",
-                    json.dumps(
-                        [
-                            {"type": "text", "text": "visible database answer"},
-                            {
-                                "type": "tool_use",
-                                "name": "shell",
-                                "input": {"command": "private database command"},
-                            },
-                        ]
-                    ),
-                ),
-            )
-        data_home = tmp_path / "destination"
-        plan = _select(
-            _api().preview_import(home=home, env={}),
-            ("hermes", "sessions"),
-        )
-
-        _api().apply_import(plan, data_home=data_home)
-        persisted = "\n".join(
-            path.read_text(encoding="utf-8") for path in (data_home / "sessions").glob("*.jsonl")
-        )
-
-        assert "visible database answer" in persisted
-        assert "private database command" not in persisted
-        assert "tool_use" not in persisted
 
     def test_mcp_secret_fields_reject_the_entire_server_definition(self, tmp_path: Path) -> None:
         secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
@@ -4708,3 +3502,322 @@ class TestConservativeParsingRegressions:
         scan = api._Scan("hermes", tmp_path, tmp_path)
         data = api._read_simple_yaml(config, anchor, scan)
         assert data.get("mcpServers", {}).get("docs", {}).get("command") == "docs-mcp"
+
+
+class TestSessionImportRemoved:
+    """Conversation transcripts are deliberately out of scope.
+
+    See docs/system-specs/modules/onboarding-import.md → "Not migrated". These
+    tests are the regression floor for that decision: an upstream sync that
+    re-adds a session scanner or writer must fail here.
+    """
+
+    def test_sessions_is_not_a_public_category(self) -> None:
+        api = _api()
+
+        assert "sessions" not in api.CATEGORY_IDS
+        assert "sessions" not in api._CATEGORY_LABELS
+
+    def test_no_session_scanner_or_writer_remains(self) -> None:
+        api = _api()
+
+        for removed in (
+            "_jsonl_session_items",
+            "_add_sessions_and_workspaces",
+            "_write_session",
+            "_session_destination_key",
+            "_openclaw_session_paths",
+            "_openclaw_session_provenance_is_user_owned",
+            "_scan_hermes_db",
+            "_message_from_record",
+        ):
+            assert not hasattr(api, removed), f"{removed} was re-introduced"
+
+    def test_transcripts_are_never_scanned_or_written(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        # A transcript in every source's canonical session location.
+        _write_jsonl(
+            home / ".codex" / "sessions" / "a.jsonl",
+            [{"role": "user", "content": "codex secret talk"}],
+        )
+        _write_jsonl(
+            home / ".claude" / "projects" / "p" / "c.jsonl",
+            [{"role": "user", "content": "claude secret talk"}],
+        )
+        _write_jsonl(
+            home / ".meshclaw" / "sessions" / "m.jsonl",
+            [{"role": "user", "content": "meshclaw secret talk"}],
+        )
+        _write_openclaw_session(home / ".openclaw")
+
+        plan = api.preview_import(home=home, env={})
+        serialized = json.dumps(plan)
+
+        for source_id in ("codex", "claude_code", "meshclaw", "openclaw"):
+            assert "sessions" not in _categories(plan, source_id)
+        assert "secret talk" not in serialized
+
+        # Selecting everything the plan offers must still write no session log.
+        destination = tmp_path / "destination"
+        api.apply_import(plan, data_home=destination)
+        assert not (destination / "sessions").exists()
+
+    def test_claude_workspaces_come_from_configuration_not_transcripts(
+        self, tmp_path: Path
+    ) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        claude = home / ".claude"
+        claude.mkdir(parents=True)
+        transcript_only = tmp_path / "transcript-only"
+        transcript_only.mkdir()
+        configured = tmp_path / "configured"
+        configured.mkdir()
+        # A workspace that exists ONLY in a transcript's cwd must not be picked
+        # up; one declared in configuration must be.
+        _write_jsonl(
+            claude / "projects" / "p" / "c.jsonl",
+            [{"role": "user", "content": "hi", "cwd": str(transcript_only)}],
+        )
+        (claude / ".claude.json").write_text(
+            json.dumps({"projects": {str(configured): {}}}), encoding="utf-8"
+        )
+
+        plan = api.preview_import(home=home, env={})
+
+        # The preview deliberately does not expose workspace paths, so assert on
+        # what actually lands in config.json after apply.
+        assert _categories(plan, "claude_code")["workspaces"] == 1
+        destination = tmp_path / "destination"
+        api.apply_import(plan, data_home=destination)
+        registered = {
+            entry["dir"]
+            for entry in json.loads((destination / "config.json").read_text(encoding="utf-8"))[
+                "workspaces"
+            ].values()
+        }
+
+        assert registered == {str(configured.resolve())}
+        assert str(transcript_only.resolve()) not in registered
+
+    def test_stale_session_ledger_records_are_inert(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        skill = home / ".codex" / "skills" / "review"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Review\n", encoding="utf-8")
+        destination = tmp_path / "destination"
+        ledger_path = destination / api._LEDGER_RELATIVE_PATH
+        ledger_path.parent.mkdir(parents=True)
+        # A ledger written by a version that still imported sessions. The
+        # version is NOT bumped, so every other category's records survive.
+        ledger_path.write_text(
+            json.dumps(
+                {
+                    "version": api._LEDGER_VERSION,
+                    "records": {
+                        "f"
+                        * 64: {
+                            "source_id": "codex",
+                            "category_id": "sessions",
+                            "imported_at": "2026-07-01T00:00:00+00:00",
+                            "destination_key": "imported-codex-ffffffffffffffff",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        plan = api.preview_import(home=home, env={})
+        result = api.apply_import(plan, data_home=destination)
+
+        assert result["imported"]["skills"] == 1
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        # The stale record is preserved, never consulted, and never re-imported.
+        assert "f" * 64 in ledger["records"]
+
+    def test_ledger_is_not_rewritten_once_per_item(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        for name in ("one", "two", "three"):
+            skill = home / ".codex" / "skills" / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+        destination = tmp_path / "destination"
+        plan = api.preview_import(home=home, env={})
+        ledger_path = destination / api._LEDGER_RELATIVE_PATH
+
+        writes: list[str] = []
+        real_write_json = api._write_json
+
+        def counting_write_json(path: Path, data: object) -> None:
+            if Path(path) == ledger_path:
+                writes.append(str(path))
+            real_write_json(path, data)
+
+        original = api._write_json
+        api._write_json = counting_write_json  # type: ignore[assignment]
+        try:
+            result = api.apply_import(plan, data_home=destination)
+        finally:
+            api._write_json = original  # type: ignore[assignment]
+
+        assert result["imported"]["skills"] == 3
+        # Flushed per source/category (plus the final ``finally`` flush), NOT
+        # once per item — a whole-file rewrite per item is O(n**2).
+        assert len(writes) < 3
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        assert len(ledger["records"]) == 3
+
+
+class TestInstructionImport:
+    """Instructions land in the durable memory tiers, never in prefs/projects.
+
+    See docs/system-specs/modules/onboarding-import.md → "Destination mapping".
+    """
+
+    def test_soul_directives_import_but_persona_role_does_not(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        hermes = home / ".hermes"
+        hermes.mkdir(parents=True)
+        (hermes / "SOUL.md").write_text(
+            "# Identity\n\nYou are Aria, a laconic assistant.\n\n"
+            "Always cite a file path when you reference code.\n",
+            encoding="utf-8",
+        )
+
+        plan = api.preview_import(home=home, env={})
+        destination = tmp_path / "destination"
+        result = api.apply_import(plan, data_home=destination)
+
+        assert result["imported"]["instructions"] >= 1
+        lessons = (destination / "lessons.jsonl").read_text(encoding="utf-8")
+        assert "Always cite a file path" in lessons
+        # The DIRECTIVE text is imported as a lesson; the persona ROLE is not —
+        # nothing is written to a persona/system-prompt surface. That surface is
+        # theme-pack persona, gated by capabilities.theme_persona.
+        for forbidden in ("persona.md", "prompt.md", "SOUL.md"):
+            assert not (destination / forbidden).exists()
+
+    def test_instruction_import_cannot_evict_the_users_own_lessons(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        codex = home / ".codex"
+        codex.mkdir(parents=True)
+        # Far more directives than import is allowed to contribute.
+        paragraphs = "\n\n".join(
+            f"Directive number {index} that is long enough to be kept." for index in range(200)
+        )
+        (codex / "AGENTS.md").write_text(paragraphs + "\n", encoding="utf-8")
+
+        plan = api.preview_import(home=home, env={})
+        count = _categories(plan, "codex")["instructions"]
+
+        # LessonStore prunes OLDEST-first at 200, so an unbounded import would
+        # silently evict the user's own accumulated corrections.
+        assert count == api._MAX_IMPORTED_LESSONS
+        assert any(
+            item["category_id"] == "instructions" and item["reason"] == "instruction_count_limit"
+            for item in plan["skipped"]
+        )
+
+    def test_credential_bearing_instruction_is_dropped(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        codex = home / ".codex"
+        codex.mkdir(parents=True)
+        (codex / "AGENTS.md").write_text(
+            "Deploy with the key AKIAIOSFODNN7EXAMPLE when releasing.\n",
+            encoding="utf-8",
+        )
+
+        plan = api.preview_import(home=home, env={})
+
+        assert "instructions" not in _categories(plan, "codex")
+        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(plan)
+        assert any(
+            item["category_id"] == "instructions"
+            and item["reason"] == "credential_bearing_instruction"
+            for item in plan["skipped"]
+        )
+
+    def test_reimport_of_the_same_directive_is_idempotent(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        codex = home / ".codex"
+        codex.mkdir(parents=True)
+        (codex / "AGENTS.md").write_text("Prefer stdlib over new deps.\n", encoding="utf-8")
+        destination = tmp_path / "destination"
+
+        first = api.apply_import(api.preview_import(home=home, env={}), data_home=destination)
+        second = api.apply_import(api.preview_import(home=home, env={}), data_home=destination)
+
+        assert first["imported"]["instructions"] == 1
+        assert second["imported"]["instructions"] == 0
+        assert second["already_imported"] >= 1
+        lines = [
+            line
+            for line in (destination / "lessons.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 1
+
+
+class TestTransitiveReimport:
+    """A source's OWN importer output must not be re-imported through it.
+
+    Hermes ships `hermes import-agent` / `hermes claw migrate`, which write
+    foreign skills into `skills/<source>-imports/`. Importing those from Hermes
+    duplicates what the original source already contributes, and NEITHER dedupe
+    layer catches it: the fingerprint is source-scoped and the destination dirs
+    differ, so not even a conflict is reported.
+    """
+
+    def test_hermes_reimport_dirs_are_excluded(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        hermes = home / ".hermes"
+        # Hermes's own skill, plus three it imported from other agents.
+        own = hermes / "skills" / "hermes-own"
+        own.mkdir(parents=True)
+        (own / "SKILL.md").write_text("# Hermes own\n", encoding="utf-8")
+        for directory in api._FOREIGN_REIMPORT_SKILL_DIRS:
+            imported = hermes / "skills" / directory / "foo"
+            imported.mkdir(parents=True)
+            (imported / "SKILL.md").write_text("# Foo\n", encoding="utf-8")
+
+        plan = api.preview_import(home=home, env={})
+
+        # Only Hermes's own skill is offered.
+        assert _categories(plan, "hermes") == {"skills": 1}
+        destination = tmp_path / "destination"
+        api.apply_import(plan, data_home=destination)
+        installed = {
+            path.parent.name for path in (destination / "skills" / "imported").rglob("SKILL.md")
+        }
+        assert installed == {"hermes-own"}
+
+    def test_the_original_source_still_imports_the_shared_skill(self, tmp_path: Path) -> None:
+        api = _api()
+        home = tmp_path / "home"
+        # Same skill present in Claude Code (the original) and in Hermes's
+        # claude-code-imports/ (Hermes's copy). Exactly one must be imported.
+        original = home / ".claude" / "skills" / "foo"
+        original.mkdir(parents=True)
+        (original / "SKILL.md").write_text("# Foo\n", encoding="utf-8")
+        copied = home / ".hermes" / "skills" / "claude-code-imports" / "foo"
+        copied.mkdir(parents=True)
+        (copied / "SKILL.md").write_text("# Foo\n", encoding="utf-8")
+
+        plan = api.preview_import(home=home, env={})
+        destination = tmp_path / "destination"
+        api.apply_import(plan, data_home=destination)
+
+        skill_dirs = sorted(
+            str(path.parent.relative_to(destination / "skills" / "imported"))
+            for path in (destination / "skills" / "imported").rglob("SKILL.md")
+        )
+        assert skill_dirs == ["claude_code/foo"]

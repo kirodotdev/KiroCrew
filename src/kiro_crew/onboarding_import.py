@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import heapq
 import json
 import logging
 import math
@@ -14,7 +13,7 @@ import sqlite3
 import stat
 import tempfile
 from collections.abc import Iterable, Mapping
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import islice
@@ -75,7 +74,7 @@ class _NoAliasSafeLoader(yaml.SafeLoader):
 
 SOURCE_IDS = ("codex", "claude_code", "meshclaw", "openclaw", "hermes")
 CATEGORY_IDS = (
-    "sessions",
+    "instructions",
     "memories",
     "workspaces",
     "mcp_servers",
@@ -92,7 +91,7 @@ _SOURCE_NAMES = {
     "hermes": "Hermes Agent",
 }
 _CATEGORY_LABELS = {
-    "sessions": "Sessions",
+    "instructions": "Instructions",
     "memories": "Memories",
     "workspaces": "Workspaces",
     "mcp_servers": "MCP servers",
@@ -107,37 +106,37 @@ _SOURCE_ROOTS = {
     "hermes": (("HERMES_HOME", "HERMES_AGENT_HOME", "HERMES_CONFIG_DIR"), ".hermes"),
 }
 _OPENCLAW_LEGACY_ROOTS = (".clawdbot",)
-_CLAUDE_RUNTIME_PARTS = frozenset({"subagents", "subagent", "runtime", "tool-results"})
+# Directory names a foreign agent's OWN importer uses for skills it pulled in
+# from a third agent (Hermes: ``hermes import-agent`` / ``hermes claw migrate``).
+_FOREIGN_REIMPORT_SKILL_DIRS = (
+    "claude-code-imports",
+    "codex-imports",
+    "openclaw-imports",
+)
 _OPENCLAW_PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-_OPENCLAW_CREATED_VIA = frozenset({"operator", "channel", "talk"})
-_OPENCLAW_RUNTIME_NAMESPACES = frozenset(
-    {
-        "cron",
-        "subagent",
-        "acp",
-        "acp-bridge",
-        "hook",
-        "node",
-        "heartbeat",
-        "internal-session-effects",
-    }
-)
-_OPENCLAW_SESSION_OWNERSHIP_FIELDS = frozenset(
-    {
-        "completionownersessionkey",
-        "forkedfromparent",
-        "forksource",
-        "pluginownerid",
-    }
-)
-_OPENCLAW_CHECKPOINT_RE = re.compile(
-    r"\.checkpoint\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-" r"[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$",
-    re.IGNORECASE,
-)
-_HERMES_RUNTIME_SESSION_SOURCES = frozenset({"subagent", "tool", "cron"})
 _HERMES_SKILL_EXCLUDED_PARTS = frozenset(
-    {".archive", ".hub", "dependency", "dependencies", "cache", ".cache"}
+    {
+        ".archive",
+        ".hub",
+        "dependency",
+        "dependencies",
+        "cache",
+        ".cache",
+        # Hermes ships its own importer, which writes FOREIGN skills into these
+        # dirs. Importing them from Hermes would duplicate what the original
+        # source already contributes, and neither dedupe layer can catch it: the
+        # fingerprint is source-scoped (``hermes`` != ``claude_code``) and the
+        # destination differs too (``skills/imported/hermes/`` vs
+        # ``skills/imported/claude_code/``), so not even a conflict is reported.
+        # The originals are still on disk, so excluding these loses nothing.
+        *_FOREIGN_REIMPORT_SKILL_DIRS,
+    }
 )
+# Import's own ceiling on lessons. ``LessonStore`` prunes OLDEST-first at 200,
+# so an unbounded instruction import would silently evict the user's own
+# accumulated corrections. See docs/system-specs/modules/onboarding-import.md.
+_MAX_IMPORTED_LESSONS = 50
+_MIN_INSTRUCTION_CHARS = 10
 _LEDGER_VERSION = 1
 _PLAN_VERSION = 1
 _LEDGER_RELATIVE_PATH = Path("imports") / "foreign-agent-imports.json"
@@ -146,9 +145,6 @@ _MAX_FILE_BYTES = 8 * 1024 * 1024
 _MAX_SKILL_BYTES = 256 * 1024
 _MAX_YAML_BYTES = 1024 * 1024
 _MAX_TOTAL_BYTES = 64 * 1024 * 1024
-_MAX_JSONL_LINES = 10_000
-_MAX_LINE_BYTES = 256 * 1024
-_MAX_MESSAGES_PER_SESSION = 1_000
 _MAX_TEXT_CHARS = 100_000
 _MAX_DB_BYTES = 64 * 1024 * 1024
 _MAX_DB_ROWS = 10_000
@@ -290,23 +286,6 @@ _MANAGED_MCP_NAMES = frozenset(
         "meshclaw-cron",
         "openclaw-core",
         "openclaw-cron",
-    }
-)
-_VISIBLE_ROLES = frozenset({"user", "assistant"})
-_VISIBLE_TEXT_TYPES = frozenset(
-    {"text", "input_text", "output_text", "user_message", "assistant_message"}
-)
-_NON_TEXT_TYPES = frozenset(
-    {
-        "thinking",
-        "reasoning",
-        "tool",
-        "tool_call",
-        "tool_use",
-        "tool_result",
-        "function_call",
-        "function_result",
-        "computer_initialize_state",
     }
 )
 
@@ -568,7 +547,6 @@ def _walk_files(
         return []
     remaining = max(0, _MAX_FILES - scan.files_seen.get(category, 0)) if count_files else _MAX_FILES
     candidates: list[Path] = []
-    session_candidates: list[tuple[float, str, Path]] = []
     omitted = 0
     excluded_count = 0
     visited_entries = 0
@@ -581,7 +559,7 @@ def _walk_files(
             break
         kept_dirs: list[str] = []
         exhausted = False
-        for dirname in sorted(dirnames, reverse=category == "sessions"):
+        for dirname in sorted(dirnames):
             if visited_entries >= _MAX_WALK_ENTRIES:
                 traversal_omitted += len(dirnames) - len(kept_dirs) + len(filenames)
                 exhausted = True
@@ -598,7 +576,7 @@ def _walk_files(
         if exhausted:
             dirnames[:] = []
             break
-        for index, filename in enumerate(sorted(filenames, reverse=category == "sessions")):
+        for index, filename in enumerate(sorted(filenames)):
             if visited_entries >= _MAX_WALK_ENTRIES:
                 traversal_omitted += len(filenames) - index
                 exhausted = True
@@ -621,40 +599,15 @@ def _walk_files(
                 if parts & excluded_parts:
                     excluded_count += 1
                     continue
-            if category == "sessions":
-                try:
-                    candidate_mtime = candidate.stat().st_mtime
-                except OSError:
-                    candidate_mtime = 0
-                entry = (candidate_mtime, str(candidate), candidate)
-                if len(session_candidates) < remaining:
-                    heapq.heappush(session_candidates, entry)
-                elif remaining and entry > session_candidates[0]:
-                    heapq.heapreplace(session_candidates, entry)
-                else:
-                    omitted += 1
+            if len(candidates) < remaining:
+                candidates.append(candidate)
             else:
-                if len(candidates) < remaining:
-                    candidates.append(candidate)
-                else:
-                    omitted += 1
+                omitted += 1
         if exhausted:
             break
-    if category == "sessions":
-        candidates = [entry[2] for entry in session_candidates]
     if excluded_count and excluded_category and excluded_reason:
         scan.diagnostic(excluded_category, excluded_reason, count=excluded_count)
-    if category == "sessions":
-
-        def _mtime(path: Path) -> float:
-            try:
-                return path.stat().st_mtime
-            except OSError:
-                return 0
-
-        candidates.sort(key=_mtime, reverse=True)
-    else:
-        candidates.sort(key=lambda path: str(path).casefold())
+    candidates.sort(key=lambda path: str(path).casefold())
     if omitted and count_files:
         scan.diagnostic(category, "file_count_limit", count=omitted)
     if traversal_omitted:
@@ -875,166 +828,6 @@ def _read_simple_yaml(path: Path, anchor: Path, scan: _Scan) -> dict[str, Any]:
         scan.diagnostic("settings", "invalid_config")
         return {}
     return result if isinstance(result, dict) else {}
-
-
-def _extract_visible_content(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if not isinstance(value, list):
-        return ""
-    parts: list[str] = []
-    for block in value:
-        if isinstance(block, str):
-            parts.append(block)
-            continue
-        if not isinstance(block, dict):
-            continue
-        block_type = str(block.get("type", "")).lower()
-        if block_type in _NON_TEXT_TYPES:
-            continue
-        if block_type and block_type not in _VISIBLE_TEXT_TYPES:
-            continue
-        text = block.get("text")
-        if not isinstance(text, str) and block_type in _VISIBLE_TEXT_TYPES:
-            text = block.get("content")
-        if isinstance(text, str):
-            parts.append(text)
-    return "\n".join(part for part in parts if part)
-
-
-def _message_from_record(record: Any, scan: _Scan) -> tuple[str, str] | None:
-    if not isinstance(record, dict):
-        return None
-    record_type = str(record.get("type", "")).lower()
-    if record_type in _NON_TEXT_TYPES:
-        return None
-    candidates = [record]
-    for key in ("payload", "message"):
-        child = record.get(key)
-        if isinstance(child, dict):
-            candidates.insert(0, child)
-    for candidate in candidates:
-        candidate_type = str(candidate.get("type", "")).lower()
-        if candidate_type in _NON_TEXT_TYPES:
-            continue
-        role = candidate.get("role")
-        if not isinstance(role, str) or role.lower() not in _VISIBLE_ROLES:
-            fallback_type = record.get("type")
-            role = fallback_type if isinstance(fallback_type, str) else ""
-        role = role.lower()
-        if role not in _VISIBLE_ROLES:
-            continue
-        content = candidate.get("content")
-        if content is None:
-            content = candidate.get("text")
-        text = _extract_visible_content(content)
-        if not text and isinstance(content, str):
-            text = content
-        cleaned = _sanitize_text(text, scan) if text else ""
-        if cleaned:
-            return role, cleaned
-    return None
-
-
-def _claude_record_is_excluded(record: Any) -> bool:
-    if not isinstance(record, dict):
-        return False
-    if record.get("isMeta") is True or record.get("isSidechain") is True:
-        return True
-    if "toolUseResult" in record:
-        return True
-    if "userType" in record:
-        user_type = record.get("userType")
-        return not isinstance(user_type, str) or user_type.casefold() != "external"
-    return False
-
-
-def _record_workspaces(record: Any) -> list[str]:
-    if not isinstance(record, dict):
-        return []
-    workspaces: list[str] = []
-    for container in (record, record.get("payload"), record.get("message")):
-        if not isinstance(container, dict):
-            continue
-        for key in ("cwd", "project", "project_path", "workspace_path", "projectPath"):
-            value = container.get(key)
-            if isinstance(value, str) and value.strip():
-                workspaces.append(value.strip())
-        roots = container.get("workspace_roots")
-        if isinstance(roots, list):
-            workspaces.extend(
-                value.strip() for value in roots if isinstance(value, str) and value.strip()
-            )
-    return workspaces
-
-
-def _jsonl_session_items(
-    paths: list[Path],
-    anchor: Path,
-    scan: _Scan,
-) -> tuple[list[_Item], set[str]]:
-    items: list[_Item] = []
-    workspaces: set[str] = set()
-    for path in paths:
-        content = _read_bytes(path, anchor, scan, "sessions")
-        if content is None:
-            continue
-        groups: dict[str, list[tuple[str, str]]] = {}
-        file_workspaces: set[str] = set()
-        incomplete_file = False
-        capped_groups: set[str] = set()
-        for line_number, raw_line in enumerate(content.splitlines()):
-            if line_number >= _MAX_JSONL_LINES:
-                scan.diagnostic("sessions", "line_count_limit")
-                incomplete_file = True
-                break
-            if not raw_line.strip():
-                continue
-            if len(raw_line) > _MAX_LINE_BYTES:
-                scan.diagnostic("sessions", "line_too_large")
-                incomplete_file = True
-                continue
-            try:
-                record = json.loads(raw_line)
-            except json.JSONDecodeError:
-                scan.diagnostic("sessions", "invalid_jsonl_record")
-                incomplete_file = True
-                continue
-            if scan.source_id == "claude_code" and _claude_record_is_excluded(record):
-                continue
-            for record_workspace in _record_workspaces(record):
-                if len(workspaces) + len(file_workspaces) >= _MAX_WORKSPACES:
-                    break
-                file_workspaces.add(record_workspace)
-            message = _message_from_record(record, scan)
-            if message is None:
-                continue
-            group_value = ""
-            if isinstance(record, dict):
-                for key in ("session_id", "sessionId", "conversation_id", "conversationId"):
-                    if isinstance(record.get(key), (str, int)):
-                        group_value = str(record[key])
-                        break
-            group = group_value or "file"
-            messages = groups.setdefault(group, [])
-            if len(messages) < _MAX_MESSAGES_PER_SESSION:
-                messages.append(message)
-            else:
-                scan.diagnostic("sessions", "message_count_limit")
-                capped_groups.add(group)
-        if incomplete_file:
-            continue
-        workspaces.update(file_workspaces)
-        try:
-            relative = str(path.relative_to(anchor))
-        except ValueError:
-            relative = path.name
-        for group, messages in groups.items():
-            if not messages or group in capped_groups:
-                continue
-            key = f"session\0{group}" if group != "file" else f"file\0{relative}"
-            items.append(_Item(scan.source_id, "sessions", key, messages))
-    return items, workspaces
 
 
 def _workspace_item(scan: _Scan, workspace: str) -> str | None:
@@ -1458,6 +1251,83 @@ def _add_memory_files(scan: _Scan, paths: list[tuple[Path, Path]]) -> None:
                     "importance": 0.5,
                 },
             )
+
+
+def _instruction_paragraphs(text: str, scan: _Scan) -> list[str]:
+    """Split an instruction document into individually-injectable directives.
+
+    Reuses the memory chunker's paragraph packing so a directive and its
+    memory-tier sibling are bounded identically, then keeps only paragraphs that
+    read as instructions rather than narrative. A heading-only line carries no
+    directive on its own and is dropped.
+    """
+
+    directives: list[str] = []
+    for chunk in _memory_chunks(text, scan):
+        for paragraph in chunk.split("\n\n"):
+            candidate = paragraph.strip()
+            if len(candidate) < _MIN_INSTRUCTION_CHARS:
+                continue
+            lines = [line.strip() for line in candidate.splitlines() if line.strip()]
+            if not lines or all(line.startswith("#") for line in lines):
+                continue
+            directives.append(candidate)
+    return directives
+
+
+def _add_instruction_files(
+    scan: _Scan,
+    paths: list[tuple[Path, Path]],
+) -> None:
+    """Project user-authored instruction documents onto KiroCrew's memory tiers.
+
+    ``CLAUDE.md`` / ``AGENTS.md`` and the DIRECTIVE body of a persona document
+    (OpenClaw / Hermes ``SOUL.md``) are the least replaceable thing a user owns,
+    so they land in ``lessons.jsonl`` — the highest-priority durable tier
+    (see docs/system-specs/modules/onboarding-import.md). The persona *role* is
+    deliberately NOT imported: KiroCrew's persona surface is theme-pack persona,
+    governed by ``capabilities.theme_persona``, and no foreign text may become
+    system-prompt identity through this path.
+
+    ``preferences.md`` / ``projects.md`` are NOT valid destinations — the memory
+    consolidator replaces both wholesale, so an import there is destroyed on the
+    next consolidation run.
+    """
+
+    seen: set[str] = set()
+    emitted = 0
+    for path, anchor in paths:
+        marker = os.path.normcase(os.path.abspath(str(path)))
+        if marker in seen or not path.is_file():
+            continue
+        seen.add(marker)
+        content = _read_text(path, anchor, scan, "instructions")
+        if content is None:
+            continue
+        cleaned = _sanitize_text(content, scan)
+        # Mirror the memory gate: only an actual redaction drops the file, not
+        # the size-cap truncation of an otherwise clean one.
+        if cleaned != content[:_MAX_TEXT_CHARS].strip():
+            scan.diagnostic("instructions", "credential_bearing_instruction")
+            continue
+        if contains_injection(cleaned):
+            scan.diagnostic("instructions", "injection_instruction_excluded")
+            continue
+        try:
+            relative = str(path.relative_to(anchor))
+        except ValueError:
+            relative = path.name
+        for index, directive in enumerate(_instruction_paragraphs(cleaned, scan)):
+            if emitted >= _MAX_IMPORTED_LESSONS:
+                scan.diagnostic("instructions", "instruction_count_limit")
+                return
+            digest = hashlib.sha256(directive.encode()).hexdigest()
+            scan.add(
+                "instructions",
+                f"{relative}\0{index}\0{digest}",
+                {"kind": "lesson", "rule": directive},
+            )
+            emitted += 1
 
 
 def _add_memories(scan: _Scan, roots: list[Path]) -> None:
@@ -1911,38 +1781,6 @@ def _diagnose_unsupported_config(scan: _Scan, configs: list[dict[str, Any]]) -> 
             scan.diagnostic("settings", "security_setting_excluded")
 
 
-def _add_sessions_and_workspaces(
-    scan: _Scan,
-    paths: list[Path],
-    anchor: Path,
-) -> set[str]:
-    items, workspaces = _jsonl_session_items(paths, anchor, scan)
-    scan.items["sessions"].extend(items)
-    accepted: set[str] = set()
-    for workspace in sorted(workspaces)[:_MAX_WORKSPACES]:
-        canonical = _workspace_item(scan, workspace)
-        if canonical:
-            accepted.add(canonical)
-    return accepted
-
-
-def _without_runtime_sessions(scan: _Scan, paths: list[Path], anchor: Path) -> list[Path]:
-    accepted: list[Path] = []
-    excluded = 0
-    for path in paths:
-        try:
-            parts = {part.casefold() for part in path.relative_to(anchor).parts}
-        except ValueError:
-            parts = set()
-        if parts & {"subagents", "subagent", "runtime", "tool-results"}:
-            excluded += 1
-            continue
-        accepted.append(path)
-    if excluded:
-        scan.diagnostic("runtime", "runtime_sessions_excluded", count=excluded)
-    return accepted
-
-
 def _scan_codex_automations(scan: _Scan) -> None:
     path = scan.root / "sqlite" / "codex-dev.db"
     if not path.is_file():
@@ -1985,14 +1823,6 @@ def _scan_codex_automations(scan: _Scan) -> None:
 
 def _scan_codex(scan: _Scan) -> None:
     root = scan.root
-    session_paths = _walk_files(root / "sessions", scan, "sessions", suffixes=(".jsonl",))
-    session_paths += _walk_files(
-        root / "archived_sessions",
-        scan,
-        "sessions",
-        suffixes=(".jsonl",),
-    )
-    _add_sessions_and_workspaces(scan, session_paths, root)
     configs = _parse_configs(scan, [(root / "config.toml", root, "toml")])
     _diagnose_unsupported_config(scan, configs)
     for config in configs:
@@ -2012,8 +1842,7 @@ def _scan_codex(scan: _Scan) -> None:
         scan.diagnostic("hooks", "unsupported_category", unsupported=True)
     if (root / "agents").exists():
         scan.diagnostic("agents", "unsupported_category", unsupported=True)
-    if (root / "AGENTS.md").exists():
-        scan.diagnostic("instructions", "unsupported_category", unsupported=True)
+    _add_instruction_files(scan, [(root / "AGENTS.md", root)])
     _scan_codex_automations(scan)
     settings: dict[str, Any] = {}
     for config in configs:
@@ -2024,16 +1853,23 @@ def _scan_codex(scan: _Scan) -> None:
 
 def _scan_claude(scan: _Scan) -> None:
     root = scan.root
-    sessions = _walk_files(
-        root / "projects",
+    # Workspaces come from explicit configuration ONLY. Session transcripts are
+    # not imported (see docs/system-specs/modules/onboarding-import.md), so the
+    # former "reverse the workspace list out of session records" path is gone.
+    # That means the root configs must be parsed FIRST to learn the workspaces,
+    # then each workspace's own config files are parsed in a second pass.
+    root_configs = _parse_configs(
         scan,
-        "sessions",
-        suffixes=(".jsonl",),
-        excluded_parts=_CLAUDE_RUNTIME_PARTS,
-        excluded_category="runtime",
-        excluded_reason="runtime_sessions_excluded",
+        [
+            (root / "settings.local.json", root, "json"),
+            (root / "settings.json", root, "json"),
+            (root / ".claude.json", root, "json"),
+            (root.parent / ".claude.json", root.parent, "json"),
+        ],
     )
-    workspaces = _add_sessions_and_workspaces(scan, sessions, root)
+    workspaces: set[str] = set()
+    for config in root_configs:
+        workspaces.update(_collect_project_paths(config))
     project_configs: list[tuple[Path, Path, str]] = []
     for workspace_value in sorted(workspaces):
         workspace_path = Path(workspace_value)
@@ -2044,16 +1880,7 @@ def _scan_claude(scan: _Scan) -> None:
                 (workspace_path / ".mcp.json", workspace_path, "json"),
             ]
         )
-    configs = _parse_configs(
-        scan,
-        project_configs
-        + [
-            (root / "settings.local.json", root, "json"),
-            (root / "settings.json", root, "json"),
-            (root / ".claude.json", root, "json"),
-            (root.parent / ".claude.json", root.parent, "json"),
-        ],
-    )
+    configs = root_configs + _parse_configs(scan, project_configs)
     _diagnose_unsupported_config(scan, configs)
     for config in configs:
         for configured_workspace in _collect_project_paths(config):
@@ -2072,25 +1899,20 @@ def _scan_claude(scan: _Scan) -> None:
     _add_memories(scan, memory_roots)
     if (root / "tasks").exists():
         scan.diagnostic("runtime", "runtime_state_excluded")
-    instruction_count = int((root / "CLAUDE.md").is_file())
-    instruction_count += len(
-        _walk_files(
+    instruction_paths: list[tuple[Path, Path]] = [(root / "CLAUDE.md", root)]
+    instruction_paths += [
+        (path, root)
+        for path in _walk_files(
             root / "rules",
             scan,
             "instructions",
             suffixes=(".md", ".markdown"),
         )
-    )
-    instruction_count += sum(
-        1 for workspace in workspaces if (Path(workspace) / "CLAUDE.md").is_file()
-    )
-    if instruction_count:
-        scan.diagnostic(
-            "instructions",
-            "unsupported_category",
-            unsupported=True,
-            count=instruction_count,
-        )
+    ]
+    instruction_paths += [
+        (Path(workspace) / "CLAUDE.md", Path(workspace)) for workspace in sorted(workspaces)
+    ]
+    _add_instruction_files(scan, instruction_paths)
     settings: dict[str, Any] = {}
     for config in configs:
         _merge_missing(settings, _settings_from(config, "claude_code"))
@@ -2100,8 +1922,7 @@ def _scan_claude(scan: _Scan) -> None:
 
 def _scan_meshclaw(scan: _Scan) -> None:
     root = scan.root
-    sessions = _walk_files(root / "sessions", scan, "sessions", suffixes=(".jsonl",))
-    workspaces = _add_sessions_and_workspaces(scan, sessions, root)
+    workspaces: set[str] = set()
     configs = _parse_configs(
         scan,
         [
@@ -2136,6 +1957,16 @@ def _scan_meshclaw(scan: _Scan) -> None:
     skill_roots = [root / "workspace" / "skills"]
     skill_roots.extend(Path(workspace) / "skills" for workspace in sorted(workspaces))
     _add_skills(scan, skill_roots)
+    # MeshClaw's workspace holds arbitrary user documents, so only the canonical
+    # instruction filenames are read — never a blind sweep of every .md there.
+    _add_instruction_files(
+        scan,
+        [
+            (base / filename, base)
+            for base in (root / "workspace", *(Path(w) for w in sorted(workspaces)))
+            for filename in ("AGENTS.md", "CLAUDE.md")
+        ],
+    )
     has_memory_db = _scan_meshclaw_memory_db(scan)
     _add_memories(scan, [root / "workspace" / "memory"])
     if not has_memory_db:
@@ -2212,7 +2043,7 @@ def _openclaw_agent_dirs(scan: _Scan) -> list[Path]:
     agents_root = scan.root / "agents"
     if not agents_root.is_dir() or _is_link_like(agents_root):
         if _is_link_like(agents_root):
-            scan.diagnostic("sessions", "symlink_rejected")
+            scan.diagnostic("workspaces", "symlink_rejected")
         return []
     children: list[Path] = []
     truncated = False
@@ -2225,139 +2056,15 @@ def _openclaw_agent_dirs(scan: _Scan) -> list[Path]:
     except OSError:
         return []
     if truncated:
-        scan.diagnostic("sessions", "agent_count_limit", count=1)
+        scan.diagnostic("workspaces", "agent_count_limit", count=1)
     agent_dirs: list[Path] = []
     for child in sorted(children, key=lambda path: path.name.casefold()):
         if _is_link_like(child):
-            scan.diagnostic("sessions", "symlink_rejected")
+            scan.diagnostic("workspaces", "symlink_rejected")
             continue
         if child.is_dir():
             agent_dirs.append(child)
     return agent_dirs
-
-
-def _openclaw_session_artifact(path: Path) -> bool:
-    name = path.name.casefold()
-    return (
-        name.endswith(".trajectory.jsonl")
-        or _OPENCLAW_CHECKPOINT_RE.search(name) is not None
-        or ".deleted." in name
-        or name.endswith(".deleted.jsonl")
-        or ".reset." in name
-        or name.endswith(".reset.jsonl")
-    )
-
-
-def _openclaw_registry_map(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict):
-        return {}
-    sessions = data.get("sessions")
-    if isinstance(sessions, dict):
-        return sessions
-    return data
-
-
-def _openclaw_entry_matches_file(entry: dict[str, Any], path: Path) -> bool:
-    references: list[Path] = []
-    session_id = entry.get("sessionId")
-    if isinstance(session_id, str) and session_id:
-        references.append(path.parent / f"{session_id}.jsonl")
-    session_file = entry.get("sessionFile")
-    if isinstance(session_file, str) and session_file:
-        referenced_file = Path(session_file)
-        references.append(
-            referenced_file if referenced_file.is_absolute() else path.parent / referenced_file
-        )
-    if not references:
-        return False
-    path_marker = os.path.normcase(os.path.abspath(str(path)))
-    return all(
-        os.path.normcase(os.path.abspath(str(reference))) == path_marker for reference in references
-    )
-
-
-def _openclaw_session_provenance_is_user_owned(
-    session_key: str,
-    entry: dict[str, Any],
-) -> bool:
-    namespaces = {part for part in re.split(r"[:/]", session_key.casefold()) if part}
-    if namespaces & _OPENCLAW_RUNTIME_NAMESPACES:
-        return False
-    created_via = entry.get("createdVia")
-    if not isinstance(created_via, str) or created_via.casefold() not in _OPENCLAW_CREATED_VIA:
-        return False
-    actor = entry.get("createdActor")
-    if not isinstance(actor, dict) or str(actor.get("type", "")).casefold() != "human":
-        return False
-    for key, value in entry.items():
-        folded = key.casefold().replace("_", "")
-        if (
-            folded.startswith("parent")
-            or folded.startswith("spawn")
-            or folded.startswith("runtime")
-            or folded in _OPENCLAW_SESSION_OWNERSHIP_FIELDS
-        ) and value not in (None, "", False, [], {}):
-            return False
-    return True
-
-
-def _openclaw_session_paths(scan: _Scan, agent_dirs: list[Path]) -> list[Path]:
-    accepted: list[Path] = []
-    remaining_entries = _MAX_FILES
-    for agent_dir in agent_dirs:
-        if remaining_entries <= 0:
-            break
-        sessions_root = agent_dir / "sessions"
-        if not sessions_root.is_dir() or _is_link_like(sessions_root):
-            if _is_link_like(sessions_root):
-                scan.diagnostic("sessions", "symlink_rejected")
-            continue
-        registry_path = sessions_root / "sessions.json"
-        registry: dict[str, Any] = {}
-        if registry_path.is_file():
-            registry = _openclaw_registry_map(
-                _read_json(registry_path, scan.root, scan, "sessions")
-            )
-        candidates: list[Path] = []
-        truncated = False
-        try:
-            for child in sessions_root.iterdir():
-                if remaining_entries <= 0:
-                    truncated = True
-                    break
-                remaining_entries -= 1
-                if child.name.casefold().endswith(".jsonl"):
-                    candidates.append(child)
-        except OSError:
-            continue
-        if truncated:
-            scan.diagnostic("sessions", "file_count_limit", count=1)
-        for path in sorted(candidates, key=lambda path: path.name.casefold()):
-            if _openclaw_session_artifact(path):
-                scan.diagnostic("sessions", "session_artifact_excluded")
-                continue
-            matches = [
-                (session_key, entry)
-                for session_key, entry in registry.items()
-                if isinstance(session_key, str)
-                and isinstance(entry, dict)
-                and _openclaw_entry_matches_file(entry, path)
-            ]
-            if len(matches) != 1:
-                scan.diagnostic(
-                    "sessions",
-                    "session_provenance_missing_or_ambiguous",
-                )
-                continue
-            session_key, entry = matches[0]
-            if not _openclaw_session_provenance_is_user_owned(session_key, entry):
-                scan.diagnostic("sessions", "session_provenance_rejected")
-                continue
-            if _safe_regular_file(path, scan.root, scan, "sessions"):
-                accepted.append(path)
-    if remaining_entries == 0:
-        scan.diagnostic("sessions", "file_count_limit", count=1)
-    return accepted
 
 
 def _openclaw_workspace_source(scan: _Scan, raw_path: str | Path) -> Path | None:
@@ -2399,15 +2106,6 @@ def _diagnose_openclaw_database(
 def _scan_openclaw(scan: _Scan) -> None:
     root = scan.root
     agent_dirs = _openclaw_agent_dirs(scan)
-    sessions = _openclaw_session_paths(scan, agent_dirs)
-    _add_sessions_and_workspaces(scan, sessions, root)
-    for agent_dir in agent_dirs:
-        _diagnose_openclaw_database(
-            scan,
-            agent_dir / "agent" / "openclaw-agent.sqlite",
-            "sessions",
-            "unsupported_session_database",
-        )
     _diagnose_openclaw_database(
         scan,
         root / "openclaw.sqlite",
@@ -2453,6 +2151,16 @@ def _scan_openclaw(scan: _Scan) -> None:
     _add_memory_files(
         scan,
         [(workspace / "MEMORY.md", workspace) for workspace in ordered_workspaces],
+    )
+    # SOUL.md's DIRECTIVE text becomes lessons; its persona ROLE is not imported
+    # (see _add_instruction_files). AGENTS.md is a plain instruction document.
+    _add_instruction_files(
+        scan,
+        [
+            (workspace / filename, workspace)
+            for workspace in ordered_workspaces
+            for filename in ("SOUL.md", "AGENTS.md")
+        ],
     )
     if (root / "agents").exists():
         scan.diagnostic("agents", "unsupported_category", unsupported=True)
@@ -2783,29 +2491,6 @@ def _scan_meshclaw_memory_db(scan: _Scan) -> bool:
     return True
 
 
-def _sqlite_visible_text(content: str) -> str:
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        return content
-    except RecursionError:
-        return ""
-    if isinstance(parsed, str):
-        return parsed
-    if isinstance(parsed, list):
-        return _extract_visible_content(parsed)
-    if isinstance(parsed, dict):
-        block_type = str(parsed.get("type", "")).lower()
-        if block_type in _NON_TEXT_TYPES:
-            return ""
-        if block_type in _VISIBLE_TEXT_TYPES:
-            return _extract_visible_content([parsed])
-        value = parsed.get("content")
-        if isinstance(value, (str, list)):
-            return _extract_visible_content(value) if isinstance(value, list) else value
-    return ""
-
-
 def _sqlite_workspace_values(
     connection: sqlite3.Connection,
     table: str,
@@ -2822,116 +2507,6 @@ def _sqlite_workspace_values(
         for (workspace,) in rows:
             if isinstance(workspace, str):
                 _workspace_item(scan, workspace)
-
-
-def _scan_hermes_db(scan: _Scan, root: Path) -> None:
-    candidates = [
-        path
-        for path in (root / "state.db", root / "hermes.db", root / "sessions.db")
-        if path.is_file()
-    ]
-    if not candidates:
-        return
-    path = candidates[0]
-    with _open_snapshot_db(path, root, scan, "sessions") as connection:
-        if connection is None:
-            return
-        try:
-            tables = {
-                str(row[0]) for row in connection.execute(_SQLITE_TABLE_NAMES_QUERY).fetchall()
-            }
-            if "messages" not in tables:
-                scan.diagnostic("sessions", "unsupported_database_schema", unsupported=True)
-                return
-            message_columns = _sqlite_columns(connection, "messages")
-            if not {"session_id", "role", "content"} <= message_columns:
-                scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
-                return
-            if "sessions" not in tables:
-                scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
-                return
-            session_columns = _sqlite_columns(connection, "sessions")
-            if not {"id", "source", "parent_session_id"} <= session_columns:
-                scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
-                return
-
-            workspace_columns = [
-                name
-                for name in ("cwd", "git_repo_root", "project_path", "workdir", "workspace")
-                if name in session_columns
-            ]
-            selected_session_columns = ["id", "source", "parent_session_id", *workspace_columns]
-            connection.execute("BEGIN")
-            session_rows = connection.execute(
-                "SELECT "
-                + ", ".join(f'"{name}"' for name in selected_session_columns)
-                + ' FROM "sessions" ORDER BY "id" LIMIT ?',
-                (_MAX_DB_ROWS + 1,),
-            ).fetchall()
-            if len(session_rows) > _MAX_DB_ROWS:
-                scan.diagnostic("sessions", "row_count_limit")
-                return
-
-            filters = ['"session_id" IS ?']
-            if "active" in message_columns:
-                filters.append('"active" = 1')
-            where = " WHERE " + " AND ".join(filters)
-            ordering = [
-                name for name in ("timestamp", "created_at", "id") if name in message_columns
-            ]
-            order_by = (
-                " ORDER BY " + ", ".join(f'"{name}"' for name in ordering) if ordering else ""
-            )
-            remaining_rows = _MAX_DB_ROWS
-            for row in session_rows:
-                values = dict(zip(selected_session_columns, row))
-                session_id = values["id"]
-                source = values["source"]
-                parent_session_id = values["parent_session_id"]
-                if not isinstance(source, str) or not source.strip():
-                    scan.diagnostic("sessions", "runtime_session_excluded")
-                    continue
-                if source.strip().casefold() in _HERMES_RUNTIME_SESSION_SOURCES:
-                    scan.diagnostic("sessions", "runtime_session_excluded")
-                    continue
-                if parent_session_id is not None:
-                    scan.diagnostic("sessions", "parented_session_excluded")
-                    continue
-
-                for column in workspace_columns:
-                    workspace = values.get(column)
-                    if isinstance(workspace, str):
-                        _workspace_item(scan, workspace)
-
-                rows = connection.execute(
-                    f'SELECT "role", "content" FROM "messages"{where}{order_by} LIMIT ?',
-                    (session_id, remaining_rows + 1),
-                ).fetchall()
-                if len(rows) > remaining_rows:
-                    scan.diagnostic("sessions", "row_count_limit")
-                    continue
-                remaining_rows -= len(rows)
-                messages: list[tuple[str, str]] = []
-                capped = False
-                for role, content in rows:
-                    if not isinstance(role, str) or role.casefold() not in _VISIBLE_ROLES:
-                        continue
-                    if not isinstance(content, str):
-                        continue
-                    cleaned = _sanitize_text(_sqlite_visible_text(content), scan)
-                    if not cleaned:
-                        continue
-                    if len(messages) >= _MAX_MESSAGES_PER_SESSION:
-                        capped = True
-                        continue
-                    messages.append((role.casefold(), cleaned))
-                if capped:
-                    scan.diagnostic("sessions", "message_count_limit")
-                    continue
-                if messages:
-                    scan.add("sessions", f"sqlite\0{session_id}", messages)
-        except sqlite3.Error:
-            scan.diagnostic("sessions", "unsupported_database_schema", unsupported=True)
 
 
 def _scan_hermes_projects_db(scan: _Scan, root: Path) -> None:
@@ -3045,8 +2620,6 @@ def _hermes_managed_skill_names(scan: _Scan, root: Path) -> frozenset[str]:
 
 def _scan_hermes(scan: _Scan) -> None:
     roots = _hermes_roots(scan)
-    for root in roots:
-        _scan_hermes_db(scan, root)
     _add_memory_files(
         scan,
         [
@@ -3055,6 +2628,7 @@ def _scan_hermes(scan: _Scan) -> None:
             for filename in ("MEMORY.md", "USER.md")
         ],
     )
+    _add_instruction_files(scan, [(root / "SOUL.md", root) for root in roots])
     unsupported_memory_databases = sum(
         int(os.path.lexists(root / "memory_store.db")) for root in roots
     )
@@ -3110,19 +2684,6 @@ def _scan_hermes(scan: _Scan) -> None:
 def _deduplicate_items(scan: _Scan) -> None:
     for category in CATEGORY_IDS:
         items = scan.items[category]
-        if category == "sessions":
-            canonical_by_transcript: dict[str, _Item] = {}
-            for item in items:
-                transcript = hashlib.sha256(
-                    json.dumps(item.payload, ensure_ascii=False, separators=(",", ":")).encode(
-                        "utf-8"
-                    )
-                ).hexdigest()
-                existing = canonical_by_transcript.get(transcript)
-                if existing is None or item.key < existing.key:
-                    canonical_by_transcript[transcript] = item
-            canonical_ids = {id(item) for item in canonical_by_transcript.values()}
-            items = [item for item in items if id(item) in canonical_ids]
         unique: list[_Item] = []
         seen: set[str] = set()
         for item in items:
@@ -3389,56 +2950,36 @@ def _record_ledger(
     records[item.fingerprint] = record
 
 
-def _session_destination_key(item: _Item) -> str:
-    return f"imported-{item.source_id}-{item.fingerprint[:16]}"
+def _write_instruction(item: _Item, lesson_store: Any) -> str:
+    """Append one imported directive to the highest-priority durable tier.
 
+    ``LessonStore.save`` is itself exact-rule deduplicating, so a re-import is
+    naturally idempotent; this reports ``existing`` for that case so the ledger
+    still records it and the outcome is ``deduplicated`` rather than a false
+    ``accepted``.
+    """
 
-def _write_session(item: _Item, conversation_log: Any) -> str:
-    key = _session_destination_key(item)
-    update_metadata = getattr(conversation_log, "update_metadata", None)
-    if not callable(update_metadata):
-        raise TypeError("conversation log does not support metadata updates")
-    lock_factory = getattr(conversation_log, "_locked", None)
-    lock = lock_factory(key) if callable(lock_factory) else nullcontext()
-    with lock:
-        has_log = getattr(conversation_log, "has_log", None)
-        if callable(has_log) and has_log(key):
-            read_messages = getattr(conversation_log, "read_messages", None)
-            rewrite_session = getattr(conversation_log, "rewrite_session", None)
-            if not callable(read_messages) or not callable(rewrite_session):
-                update_metadata(key, {"closed": True})
+    if lesson_store is None:
+        return "rejected"
+    rule = str(item.payload.get("rule", "")).strip()
+    if not rule:
+        return "rejected"
+    from kiro_crew.learn import Lesson
+
+    load_all = getattr(lesson_store, "load_all", None)
+    if callable(load_all):
+        normalized = rule.lower()
+        for existing in load_all():
+            if str(getattr(existing, "rule", "")).lower().strip() == normalized:
                 return "existing"
-            existing = read_messages(key)
-            expected = [{"role": role, "content": content} for role, content in item.payload]
-            normalized = [
-                {"role": message.get("role"), "content": message.get("content")}
-                for message in existing
-                if isinstance(message, dict)
-            ]
-            if normalized == expected:
-                update_metadata(key, {"closed": True})
-                return "existing"
-            if len(normalized) < len(expected) and normalized == expected[: len(normalized)]:
-                rewrite_session(key, expected)
-                update_metadata(key, {"closed": True})
-                return "imported"
-            return "conflict"
-        init = getattr(conversation_log, "init", None)
-        if callable(init):
-            init()
-        try:
-            for role, content in item.payload:
-                conversation_log.append(key, role, content)
-            update_metadata(key, {"closed": True})
-        except BaseException:
-            delete_session = getattr(conversation_log, "delete_session", None)
-            if callable(delete_session):
-                try:
-                    delete_session(key)
-                except Exception:
-                    logger.warning("Failed to roll back imported session", exc_info=True)
-            raise
-        return "imported"
+    lesson_store.save(
+        Lesson(
+            ts=datetime.now(timezone.utc).isoformat(),
+            rule=rule,
+            category="preference",
+        )
+    )
+    return "imported"
 
 
 def _write_memory(
@@ -3711,9 +3252,9 @@ def apply_import(
     plan: dict[str, Any],
     *,
     data_home: Path | None = None,
-    conversation_log: Any = None,
     cron_service: Any = None,
     vector_store: VectorMemoryStore | None = None,
+    lesson_store: Any = None,
 ) -> dict[str, Any]:
     """Apply selected source/category pairs with merge-only, idempotent writes."""
     destination = Path(data_home) if data_home is not None else config_dir()
@@ -3726,6 +3267,12 @@ def apply_import(
     ledger_path = destination / _LEDGER_RELATIVE_PATH
     ledger = _load_ledger(ledger_path)
     records = ledger["records"]
+    # The ledger is rewritten WHOLE (atomic temp-file + rename), so flushing it
+    # once per item is O(n**2) in serialization and rename cost for a large
+    # import. Flush once per source/category instead, and once more in the
+    # ``finally`` below, so an interrupted apply still cannot re-import an item
+    # it already wrote.
+    ledger_dirty = False
     imported = {category: 0 for category in CATEGORY_IDS}
     already_imported = 0
     item_outcomes: list[dict[str, str]] = []
@@ -3761,14 +3308,14 @@ def apply_import(
                 if diagnostic not in skipped:
                     skipped.append(diagnostic)
 
-    if conversation_log is None and any(category == "sessions" for _source, category in selected):
-        from kiro_crew.history import ConversationLog
-
-        conversation_log = ConversationLog(destination / "sessions")
     if cron_service is None and any(category == "schedules" for _source, category in selected):
         from kiro_crew.cron import CronService
 
         cron_service = CronService(base_dir=destination)
+    if lesson_store is None and any(category == "instructions" for _source, category in selected):
+        from kiro_crew.learn import LessonStore
+
+        lesson_store = LessonStore(base_dir=destination)
 
     owned_vector_store: VectorMemoryStore | None = None
     needs_vector_store = any(
@@ -3782,6 +3329,12 @@ def apply_import(
         owned_vector_store.embed_fn = make_sync_embed_fn()
         owned_vector_store.init()
         vector_store = owned_vector_store
+
+    def _flush_ledger() -> None:
+        nonlocal ledger_dirty
+        if ledger_dirty:
+            _write_json(ledger_path, ledger)
+            ledger_dirty = False
 
     try:
         for source_id, category in sorted(selected):
@@ -3800,8 +3353,8 @@ def apply_import(
                     continue
                 status = "skipped"
                 try:
-                    if category == "sessions":
-                        status = _write_session(item, conversation_log)
+                    if category == "instructions":
+                        status = _write_instruction(item, lesson_store)
                     elif category == "memories":
                         status = _write_memory(item, destination, vector_store)
                     elif category == "workspaces":
@@ -3831,14 +3384,8 @@ def apply_import(
                     item_outcomes.append({**outcome, "outcome": "rejected"})
                     continue
                 if status in ("imported", "existing"):
-                    _record_ledger(
-                        ledger,
-                        item,
-                        destination_key=(
-                            _session_destination_key(item) if category == "sessions" else ""
-                        ),
-                    )
-                    _write_json(ledger_path, ledger)
+                    _record_ledger(ledger, item)
+                    ledger_dirty = True
                     if status == "imported":
                         imported[category] += 1
                         item_outcomes.append({**outcome, "outcome": "accepted"})
@@ -3863,7 +3410,9 @@ def apply_import(
                         }
                     )
                     item_outcomes.append({**outcome, "outcome": "rejected"})
+            _flush_ledger()
     finally:
+        _flush_ledger()
         if owned_vector_store is not None:
             owned_vector_store.close()
 

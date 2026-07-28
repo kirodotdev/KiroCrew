@@ -92,8 +92,8 @@ async def test_scan_runs_preview_off_event_loop_and_returns_result(monkeypatch) 
                     "root": "/Users/alice/.claude",
                     "categories": [
                         {
-                            "id": "sessions",
-                            "label": "Sessions",
+                            "id": "skills",
+                            "label": "Skills",
                             "count": 2,
                             "selected": True,
                         }
@@ -102,7 +102,7 @@ async def test_scan_runs_preview_off_event_loop_and_returns_result(monkeypatch) 
             ],
             "source_ids": source_ids,
             "off_thread": threading.get_ident() != event_loop_thread,
-            "selection": [{"source_id": "claude_code", "category_id": "sessions"}],
+            "selection": [{"source_id": "claude_code", "category_id": "skills"}],
             "skipped": [
                 {
                     "source_id": "claude_code",
@@ -131,10 +131,10 @@ async def test_scan_runs_preview_off_event_loop_and_returns_result(monkeypatch) 
                 "detected": True,
                 "categories": [
                     {
-                        "id": "sessions",
-                        "label": "Sessions",
+                        "id": "skills",
+                        "label": "Skills",
                         "count": 2,
-                        "description": "Visible user and assistant messages",
+                        "description": "User-authored skills and supporting files",
                     }
                 ],
             }
@@ -167,10 +167,10 @@ async def test_scan_runs_preview_off_event_loop_and_returns_result(monkeypatch) 
         {},
         {"sources": "claude_code"},
         {"sources": []},
-        {"sources": [{"id": "", "categories": ["sessions"]}]},
-        {"sources": [{"id": "claude_code", "categories": "sessions"}]},
+        {"sources": [{"id": "", "categories": ["skills"]}]},
+        {"sources": [{"id": "claude_code", "categories": "skills"}]},
         {"sources": [{"id": "claude_code", "categories": []}]},
-        {"sources": [{"id": "unknown", "categories": ["sessions"]}]},
+        {"sources": [{"id": "unknown", "categories": ["skills"]}]},
         {"sources": [{"id": "claude_code", "categories": ["unknown"]}]},
     ],
 )
@@ -220,17 +220,17 @@ async def test_apply_runs_off_thread_with_state_dependencies(monkeypatch) -> Non
     module = _handler_module()
     audit = _AuditLog()
     event_loop_thread = threading.get_ident()
-    conversation_log = object()
     cron_service = object()
     vector_memory = object()
+    lesson_store = object()
     state = SimpleNamespace(
-        conversation_log=conversation_log,
         crons=cron_service,
+        lessons=lesson_store,
         context_builder=SimpleNamespace(memory=SimpleNamespace(vector_store=vector_memory)),
     )
     request_body = {
         "sources": [
-            {"id": "claude_code", "categories": ["sessions", "memories"]},
+            {"id": "claude_code", "categories": ["skills", "memories"]},
         ]
     }
     fresh_plan = {
@@ -238,16 +238,16 @@ async def test_apply_runs_off_thread_with_state_dependencies(monkeypatch) -> Non
             {
                 "id": "claude_code",
                 "categories": [
-                    {"id": "sessions", "selected": True},
-                    {"id": "memories", "selected": True},
                     {"id": "skills", "selected": True},
+                    {"id": "memories", "selected": True},
+                    {"id": "workspaces", "selected": True},
                 ],
             }
         ],
         "selection": [
-            {"source_id": "claude_code", "category_id": "sessions"},
-            {"source_id": "claude_code", "category_id": "memories"},
             {"source_id": "claude_code", "category_id": "skills"},
+            {"source_id": "claude_code", "category_id": "memories"},
+            {"source_id": "claude_code", "category_id": "workspaces"},
         ],
     }
     preview_calls: list[list[str] | None] = []
@@ -259,9 +259,9 @@ async def test_apply_runs_off_thread_with_state_dependencies(monkeypatch) -> Non
 
     def apply_import(
         received_plan,
-        conversation_log=None,
         cron_service=None,
         vector_store=None,
+        lesson_store=None,
     ):
         received.update(
             {
@@ -269,14 +269,14 @@ async def test_apply_runs_off_thread_with_state_dependencies(monkeypatch) -> Non
                 "category_selections": [
                     category["selected"] for category in received_plan["sources"][0]["categories"]
                 ],
-                "has_conversation_log": conversation_log is state.conversation_log,
                 "has_cron_service": cron_service is state.crons,
                 "has_vector_store": vector_store is state.context_builder.memory.vector_store,
+                "has_lesson_store": lesson_store is state.lessons,
                 "off_thread": threading.get_ident() != event_loop_thread,
             }
         )
         return {
-            "imported": {"sessions": 2, "memories": 1},
+            "imported": {"skills": 2, "memories": 1},
             "imported_count": 3,
             "already_imported": 1,
             "conflicts": [{"reason": "destination_conflict"}],
@@ -285,13 +285,13 @@ async def test_apply_runs_off_thread_with_state_dependencies(monkeypatch) -> Non
             "item_outcomes": [
                 {
                     "source_id": "claude_code",
-                    "category_id": "sessions",
+                    "category_id": "skills",
                     "item_hash": "a" * 64,
                     "outcome": "accepted",
                 },
                 {
                     "source_id": "claude_code",
-                    "category_id": "sessions",
+                    "category_id": "skills",
                     "item_hash": "b" * 64,
                     "outcome": "deduplicated",
                 },
@@ -324,13 +324,13 @@ async def test_apply_runs_off_thread_with_state_dependencies(monkeypatch) -> Non
     }
     assert received == {
         "selection": [
-            {"source_id": "claude_code", "category_id": "sessions"},
+            {"source_id": "claude_code", "category_id": "skills"},
             {"source_id": "claude_code", "category_id": "memories"},
         ],
         "category_selections": [True, True, False],
-        "has_conversation_log": True,
         "has_cron_service": True,
         "has_vector_store": True,
+        "has_lesson_store": True,
         "off_thread": True,
     }
     assert preview_calls == [["claude_code"]]
@@ -338,7 +338,7 @@ async def test_apply_runs_off_thread_with_state_dependencies(monkeypatch) -> Non
         event for event in audit.events if event["operation"] == "onboarding.import.item"
     ]
     assert [event["outcome"] for event in item_events] == ["accepted", "deduplicated"]
-    assert item_events[0]["resources"] == f"claude_code:sessions:{'a' * 64}"
+    assert item_events[0]["resources"] == f"claude_code:skills:{'a' * 64}"
     assert audit.events[-1]["outcome"] == "completed"
 
 
@@ -450,16 +450,16 @@ async def test_apply_uses_none_for_unavailable_state_dependencies(monkeypatch) -
 
     def apply_import(
         plan,
-        conversation_log=None,
         cron_service=None,
         vector_store=None,
+        lesson_store=None,
     ):
         received.update(
             {
                 "plan": plan,
-                "conversation_log": conversation_log,
                 "cron_service": cron_service,
                 "vector_store": vector_store,
+                "lesson_store": lesson_store,
             }
         )
         return {"ok": True}
@@ -501,9 +501,9 @@ async def test_apply_uses_none_for_unavailable_state_dependencies(monkeypatch) -
             ],
             "selection": [{"source_id": "codex", "category_id": "settings"}],
         },
-        "conversation_log": None,
         "cron_service": None,
         "vector_store": None,
+        "lesson_store": None,
     }
 
 
@@ -580,7 +580,7 @@ async def test_import_failures_do_not_expose_private_details(
     monkeypatch.setattr(module, "_sel", lambda: audit)
     kwargs: dict[str, object] = {"headers": {"X-Test-User": "owner"}}
     if method == "post":
-        kwargs["json"] = {"sources": [{"id": "claude_code", "categories": ["sessions"]}]}
+        kwargs["json"] = {"sources": [{"id": "claude_code", "categories": ["skills"]}]}
 
     async with TestClient(TestServer(_make_app(module))) as client:
         response = await getattr(client, method)(path, **kwargs)

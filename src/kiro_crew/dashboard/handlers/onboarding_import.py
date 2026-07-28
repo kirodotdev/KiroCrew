@@ -26,7 +26,7 @@ _SOURCE_IDS = frozenset(
 )
 _CATEGORY_IDS = frozenset(
     {
-        "sessions",
+        "instructions",
         "memories",
         "workspaces",
         "mcp_servers",
@@ -43,7 +43,6 @@ _SOURCE_NAMES = {
     "hermes": "Hermes Agent",
 }
 _CATEGORY_NAMES = {
-    "sessions": "Sessions",
     "memories": "Memories",
     "workspaces": "Workspaces",
     "mcp_servers": "MCP servers",
@@ -55,9 +54,10 @@ _CATEGORY_NAMES = {
     "instructions": "Instructions",
     "credentials": "Credentials",
     "runtime": "Runtime state",
+    "sessions": "Conversation history",
 }
 _CATEGORY_DESCRIPTIONS = {
-    "sessions": "Visible user and assistant messages",
+    "instructions": "Your own rules, as high-priority memory",
     "memories": "Durable preferences and memories",
     "workspaces": "Existing local project folders",
     "mcp_servers": "Server definitions, imported disabled",
@@ -340,9 +340,9 @@ def _apply_response(result: object) -> dict[str, Any]:
 def _apply_import(
     source_ids: list[str],
     selected: set[tuple[str, str]],
-    conversation_log: object | None,
     cron_service: object | None,
     vector_store: object | None,
+    lesson_store: object | None,
 ) -> object:
     backend = _backend()
     plan = _select_fresh_plan(
@@ -351,9 +351,9 @@ def _apply_import(
     )
     return backend.apply_import(
         plan,
-        conversation_log=conversation_log,
         cron_service=cron_service,
         vector_store=vector_store,
+        lesson_store=lesson_store,
     )
 
 
@@ -484,8 +484,8 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid request"}, status=400)
 
     state = request.app.get("state")
-    conversation_log = getattr(state, "conversation_log", None)
     cron_service = getattr(state, "crons", None)
+    lesson_store = getattr(state, "lessons", None)
     vector_store = getattr(state, "vector_memory", None)
     if vector_store is None:
         context_builder = getattr(state, "context_builder", None)
@@ -503,9 +503,9 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
                             _apply_import,
                             source_ids,
                             config_selected,
-                            conversation_log,
                             cron_service,
                             vector_store,
+                            lesson_store,
                         )
                     )
             if mcp_selected:
@@ -516,9 +516,9 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
                         _apply_import,
                         source_ids,
                         mcp_selected,
-                        conversation_log,
                         cron_service,
                         vector_store,
+                        lesson_store,
                     )
                 )
                 await asyncio.to_thread(_rebuild_agent_config)
