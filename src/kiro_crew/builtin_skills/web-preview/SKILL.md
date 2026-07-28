@@ -44,6 +44,14 @@ If you forget the marker but mention a localhost URL in prose (e.g. "serving at
 http://localhost:5173"), the dashboard will still try to pick up the newest such
 URL — but the marker is precise, so prefer it.
 
+## The marker is for the user — verify it yourself too
+
+The marker only points the user's panel at the URL; it gives you no pixels. If
+the server is showing a front-end change **you** just made, also run the
+`web-verify` skill: navigate the same loopback URL with the Playwright browser,
+screenshot the surface you changed, read the frame, and embed it in chat. Don't
+hand over a preview and call the change verified.
+
 ## Example
 
 After starting a static server:

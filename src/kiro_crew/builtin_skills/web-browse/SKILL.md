@@ -33,8 +33,7 @@ come from the external `@playwright/mcp` package, which may not be installed.
    from the conversation — you don't need the user to paste it).
 2. `browser_navigate` to it (use `waitUntil: "domcontentloaded"` for SPAs).
 3. `browser_take_screenshot` — this streams the frame into the Browser panel.
-   (This is the one case where a screenshot is the point, so the usual
-   "don't screenshot unless asked" rule does not apply here.)
+   (One frame is enough; the point is that the user sees the page.)
 4. Tell the user it's showing in the Browser panel, in one line.
 
 ## View vs. operate
@@ -50,6 +49,8 @@ come from the external `@playwright/mcp` package, which may not be installed.
 ## Not this skill
 
 - **Local dev / static server** (localhost, a site the user is building) →
-  that's the `web-preview` skill (a loopback iframe), not Playwright.
+  that's the `web-preview` skill (a loopback iframe), not Playwright. If you are
+  checking a front-end change **you** just made on a loopback URL, that's the
+  `web-verify` skill (navigate + screenshot + read the frame).
 - **Just reading text** with no need to show the page → `web_fetch` is cheaper;
   only use the browser when the user wants to *see* the rendered page.

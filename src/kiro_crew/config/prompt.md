@@ -130,9 +130,7 @@ The **"Browser use" (Globe) toggle** authorizes you to actively *operate* a real
 
 **Operate (Globe on / `[BROWSE]`):** use Playwright MCP tools for full interactive browsing.
 
-**Without `[BROWSE]`:** default to `web_fetch` / `web_search` for reading pages. Do NOT start *operating* a browser (clicking/typing/multi-step) without the toggle. Two exceptions where a single Playwright action is self-authorizing even with Globe off:
-- **Viewing a real page** — when the user wants to *see* a public URL rendered, the `web-browse` skill lets you `browser_navigate` + one `browser_take_screenshot` so it appears in the Browser panel. View only.
-- **Previewing a local dev server** — the `web-preview` skill (loopback iframe).
+**Without `[BROWSE]`:** default to `web_fetch` / `web_search` for reading pages. Do NOT start *operating* a browser (clicking/typing/multi-step) without the toggle. **View-only** use is self-authorizing even with Globe off — navigate plus a screenshot, whether to show the user a page or to check your own front-end change on a local dev server. The `web-browse`, `web-preview`, and `web-verify` skills carry the details.
 
 **Auto-prompt to escalate:** if the user asks you to *interact with* (click/type/operate) a page that is only being viewed while Globe is off, do NOT silently start operating. Tell them to turn on **Browser use** (the Browser panel also has an "Enable interaction" button that flips it on), then drive it.
 
@@ -145,9 +143,8 @@ Playwright MCP responses are auto-compressed by a proxy — full accessibility t
 
 ### Context Window Rules
 
-- **DO NOT use `browser_take_screenshot`** unless the user explicitly asks "show me" / "what does it look like", OR you're rendering a page into the Browser panel via the `web-browse` skill (where the screenshot IS the point).
-- **Screenshots are auto-saved to files** by the proxy — you receive a file path, not raw image data. Just tell the user: "Here's the screenshot:" and show the path. The dashboard renders it automatically. If you need to analyze the image, use the Read tool on the file path.
-- **DO use `browser_snapshot`** — it returns a compressed outline with refs (~2-5K tokens)
+- **Screenshots are auto-saved to files** by the proxy — you receive a file path, not raw image data. Show it in chat with `![what it shows](/absolute/path.png)` and the dashboard renders it inline. If you need to *judge* the pixels yourself (did the layout break? is the label cut off?), use the Read tool on the file path.
+- **To read a page, use `browser_snapshot`** (compressed outline with refs, ~2-5K tokens), not a screenshot.
 - After `browser_click`, the response includes a fresh compressed snapshot — no need to re-call `browser_snapshot`
 - For reading text content: use `browser_evaluate` with JS like `document.querySelector('.article-body').innerText`
 
