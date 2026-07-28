@@ -1,5 +1,10 @@
 import { test, expect } from '@playwright/test'
 
+// Prompt sentinels understood by the stub ACP backend. Keep in sync with
+// SLOW_TRIGGER / SLOW_NOACK_TRIGGER in src/kiro_crew/testing/fake_acp_backend.py.
+const SLOW = '[[SLOW]]'
+const SLOW_NOACK = '[[SLOW_NOACK]]'
+
 // @needs-agent: these specs drive a live agent turn (send/stream/soft-stop),
 // so they require model/agent credentials the credential-less CI gateway
 // lacks. Tagged so the default gating run (grepInvert /@needs-agent/ in
@@ -130,86 +135,87 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
 /**
  * Soft-stop E2E tests.
  *
- * These tests require the backend running with:
- *   KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777
- * per TEST_README.md. If the gateway is not running, tests will fail on
- * navigation timeout — that is acceptable for offline development.
+ * Driven by the stub ACP backend (src/kiro_crew/testing/fake_acp_backend.py), so
+ * these need no model credentials: [[SLOW]] streams a long turn that DOES honour
+ * session/cancel, answering stopReason:"cancelled" — the ack the host waits for.
+ * They were @needs-live-agent while the stub dropped session/cancel entirely.
+ *
+ * Assertions target the stop button's escalation testid and StopEventCard's
+ * data-state rather than label text: the state is the contract, the wording is
+ * not. The previous `/stop/i` role selector is now a strict-mode violation —
+ * three buttons carry "stop" in their accessible name.
  */
-test.describe('Soft-Stop E2E Tests', { tag: '@needs-live-agent' }, () => {
+const STOP_CARD = '[data-testid="stop-event-card"]'
+
+test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/chat', { waitUntil: 'domcontentloaded' })
     await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
   })
 
   test('stop mid-tool-call triggers pulsing', async ({ page }) => {
-    // Send a message that will trigger a tool call
+    // A cancel-aware slow turn, so the Stop button stays live long enough to click.
     const messageInput = page.getByPlaceholder(/message/i)
-    await messageInput.fill('Run a long command: sleep 30')
+    await messageInput.fill(`Run a long command: sleep 30 ${SLOW}`)
     await page.keyboard.press('Enter')
 
     // Wait for the stop button to appear (agent is running)
-    const stopButton = page.getByRole('button', { name: /stop/i })
+    const stopButton = page.getByTestId('stop-button-armed')
     await expect(stopButton).toBeVisible({ timeout: 15000 })
 
-    // Click stop — should enter pulsing state
+    // Click stop — should enter the pulsing "stopping" state
     await stopButton.click()
 
-    // The stop button or a stopping indicator should show pulsing/stopping state
-    // Check for the pulsing animation class or the Stopping text
-    await expect(
-      page.locator('[class*="pulse"], [class*="stopping"], :text("Stopping")')
-        .first()
-    ).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('stop-button-pulsing')).toBeVisible({ timeout: 5000 })
   })
 
   test('stop resolves to Stopped on soft ack', async ({ page }) => {
-    // Send a message to start a turn
     const messageInput = page.getByPlaceholder(/message/i)
-    await messageInput.fill('Hello, please respond slowly')
+    await messageInput.fill(`Hello, please respond slowly ${SLOW}`)
     await page.keyboard.press('Enter')
 
-    // Wait for agent to be running
-    const stopButton = page.getByRole('button', { name: /stop/i })
+    const stopButton = page.getByTestId('stop-button-armed')
     await expect(stopButton).toBeVisible({ timeout: 15000 })
-
-    // Click stop
     await stopButton.click()
 
-    // Wait for the stop event card to resolve — soft ack shows [Stopped]
-    await expect(
-      page.locator(':text("Stopped")').first()
-    ).toBeVisible({ timeout: 15000 })
-  })
-
-  test('stop resolves to Stop Failed on budget expiry', async ({ page }) => {
-    // Intercept the stop endpoint to simulate a timeout scenario by
-    // setting a very short budget that the agent cannot meet
-    await page.route('**/api/config', async (route) => {
-      const response = await route.fetch()
-      const json = await response.json()
-      // Override budget to minimum so timeout is near-certain
-      if (json.agent) {
-        json.agent.soft_stop_budget_secs = 0.5
-      }
-      await route.fulfill({ json })
+    // The stub acks the cancel, so the card resolves to [Stopped].
+    await expect(page.locator(`${STOP_CARD}[data-state="stopped"]`).first()).toBeVisible({
+      timeout: 15000,
     })
+  })
+})
 
-    // Send a message that triggers a long tool call
+/**
+ * Budget-expiry soft-stop, still excluded.
+ *
+ * The stub CAN withhold the cancel ack ([[SLOW_NOACK]] streams a long turn and
+ * ignores session/cancel), which is the agent half of this scenario. What blocks
+ * it is the host half: `agent.soft_stop_budget_secs` is read server-side in
+ * session.py stop_turn(), so the `page.route('**\/api/config')` override this
+ * test used to carry never changed the enforced budget. Observed behaviour with
+ * the default budget is that the card stays in `stopping` well past Playwright's
+ * 30s per-test timeout, so the run fails on timeout rather than on the assertion.
+ *
+ * To enable: give the harness gateway a small `agent.soft_stop_budget_secs`
+ * (config, not a client-side route intercept), then retag to @needs-agent and
+ * assert on data-state="stop_failed_reset". Left dark rather than shipped with a
+ * long sleep or a raised timeout that would only mask the timing question.
+ */
+test.describe('Soft-Stop budget expiry', { tag: '@needs-live-agent' }, () => {
+  test('stop resolves to Stop Failed on budget expiry', async ({ page }) => {
+    await page.goto('/chat', { waitUntil: 'domcontentloaded' })
+    await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
+
     const messageInput = page.getByPlaceholder(/message/i)
-    await messageInput.fill('Run a very long command: sleep 120')
+    await messageInput.fill(`Run a very long command: sleep 120 ${SLOW_NOACK}`)
     await page.keyboard.press('Enter')
 
-    // Wait for agent to be running
-    const stopButton = page.getByRole('button', { name: /stop/i })
+    const stopButton = page.getByTestId('stop-button-armed')
     await expect(stopButton).toBeVisible({ timeout: 15000 })
-
-    // Click stop
     await stopButton.click()
 
-    // With a 0.5s budget the agent likely cannot ack in time →
-    // card should show [Stop Failed, Session Reset]
-    await expect(
-      page.locator(':text("Stop Failed"), :text("Session Reset")').first()
-    ).toBeVisible({ timeout: 15000 })
+    await expect(page.locator(`${STOP_CARD}[data-state="stop_failed_reset"]`).first()).toBeVisible({
+      timeout: 15000,
+    })
   })
 })

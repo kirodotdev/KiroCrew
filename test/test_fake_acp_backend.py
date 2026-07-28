@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import io
 import json
+import queue
+import time
 from typing import Any
+
+import pytest
 
 from kiro_crew.testing import fake_acp_backend as fake
 
@@ -44,7 +48,9 @@ def test_session_new_returns_session_id(monkeypatch):
 
 def test_unknown_request_gets_empty_result(monkeypatch):
     buf = _capture(monkeypatch)
-    fake._handle({"jsonrpc": "2.0", "id": 3, "method": "session/set_mode", "params": {}})
+    fake._handle(
+        {"jsonrpc": "2.0", "id": 3, "method": "session/set_mode", "params": {}}
+    )
     (msg,) = _messages(buf)
     assert msg == {"jsonrpc": "2.0", "id": 3, "result": {}}
 
@@ -52,7 +58,9 @@ def test_unknown_request_gets_empty_result(monkeypatch):
 def test_response_and_notification_are_ignored(monkeypatch):
     buf = _capture(monkeypatch)
     # A response to one of our requests (has id, no method) -> ignored.
-    fake._handle({"jsonrpc": "2.0", "id": fake._PERMISSION_REQ_ID, "result": {"outcome": {}}})
+    fake._handle(
+        {"jsonrpc": "2.0", "id": fake._PERMISSION_REQ_ID, "result": {"outcome": {}}}
+    )
     # A notification (has method, no id) -> nothing to answer.
     fake._handle({"jsonrpc": "2.0", "method": "session/cancel", "params": {}})
     assert _messages(buf) == []
@@ -65,7 +73,10 @@ def test_plain_prompt_streams_reply_then_end_turn(monkeypatch):
             "jsonrpc": "2.0",
             "id": 4,
             "method": "session/prompt",
-            "params": {"sessionId": "s1", "prompt": [{"type": "text", "text": "hello"}]},
+            "params": {
+                "sessionId": "s1",
+                "prompt": [{"type": "text", "text": "hello"}],
+            },
         }
     )
     msgs = _messages(buf)
@@ -84,12 +95,16 @@ def test_tool_prompt_emits_tool_call_without_permission(monkeypatch):
             "jsonrpc": "2.0",
             "id": 5,
             "method": "session/prompt",
-            "params": {"prompt": [{"type": "text", "text": f"go {fake.TOOL_TRIGGER} now"}]},
+            "params": {
+                "prompt": [{"type": "text", "text": f"go {fake.TOOL_TRIGGER} now"}]
+            },
         }
     )
     msgs = _messages(buf)
     updates = [
-        m["params"]["update"]["sessionUpdate"] for m in msgs if m.get("method") == "session/update"
+        m["params"]["update"]["sessionUpdate"]
+        for m in msgs
+        if m.get("method") == "session/update"
     ]
     assert updates == ["tool_call", "tool_call_update", "agent_message_chunk"]
     assert not any(m.get("method") == "session/request_permission" for m in msgs)
@@ -110,7 +125,10 @@ def test_permission_prompt_raises_request_permission(monkeypatch):
     assert len(perms) == 1
     assert perms[0]["id"] == fake._PERMISSION_REQ_ID
     assert perms[0]["params"]["toolCall"]["toolCallId"] == fake._TOOL_CALL_ID
-    assert {o["optionId"] for o in perms[0]["params"]["options"]} == {"allow_once", "reject_once"}
+    assert {o["optionId"] for o in perms[0]["params"]["options"]} == {
+        "allow_once",
+        "reject_once",
+    }
 
 
 def test_prompt_text_handles_missing_and_nontext_blocks():
@@ -164,3 +182,198 @@ def test_main_processes_messages_until_eof(monkeypatch):
     )
     fake.main()
     assert [m["id"] for m in _messages(buf)] == [1, 2]
+
+
+# --------------------------------------------------------------------------- #
+# Negative paths: cancel, errors, alternate stop reasons, gated permission.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def _drain_inbox():
+    """The inbox is module state; keep it from leaking between tests."""
+    while True:
+        try:
+            fake._INBOX.get_nowait()
+        except queue.Empty:
+            break
+    yield
+    while True:
+        try:
+            fake._INBOX.get_nowait()
+        except queue.Empty:
+            break
+
+
+@pytest.fixture
+def fast_slow_stream(monkeypatch):
+    """Shrink the slow stream so the timing-based paths run instantly."""
+    monkeypatch.setattr(fake, "SLOW_CHUNKS", 3)
+    monkeypatch.setattr(fake, "SLOW_CHUNK_DELAY_SECS", 0)
+
+
+def _prompt(text: str, req_id: int = 100, session_id: str = "s1") -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "session/prompt",
+        "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": text}]},
+    }
+
+
+def test_error_trigger_replies_with_jsonrpc_error(monkeypatch):
+    buf = _capture(monkeypatch)
+    fake._handle(_prompt(fake.ERROR_TRIGGER))
+    (msg,) = _messages(buf)
+    assert msg["id"] == 100
+    assert "result" not in msg
+    assert msg["error"]["code"] == fake.ERROR_CODE
+    assert msg["error"]["message"] == fake.ERROR_MESSAGE
+
+
+@pytest.mark.parametrize(
+    ("trigger", "expected"),
+    [("MAX_TOKENS_TRIGGER", "max_tokens"), ("REFUSAL_TRIGGER", "refusal")],
+)
+def test_alternate_stop_reasons(monkeypatch, trigger, expected):
+    buf = _capture(monkeypatch)
+    fake._handle(_prompt(getattr(fake, trigger)))
+    msgs = _messages(buf)
+    # The canned reply still streams; only the terminal stopReason differs.
+    assert msgs[0]["params"]["update"]["content"]["text"] == fake.REPLY_TEXT
+    assert msgs[-1]["result"]["stopReason"] == expected
+
+
+def test_slow_prompt_streams_many_chunks_then_end_turn(monkeypatch, fast_slow_stream):
+    buf = _capture(monkeypatch)
+    fake._handle(_prompt(fake.SLOW_TRIGGER))
+    msgs = _messages(buf)
+    chunks = [m for m in msgs if m.get("method") == "session/update"]
+    assert len(chunks) == 3
+    assert chunks[0]["params"]["update"]["content"]["text"].startswith(
+        fake.SLOW_CHUNK_TEXT
+    )
+    assert msgs[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_slow_prompt_honours_cancel_with_cancelled_stop_reason(
+    monkeypatch, fast_slow_stream
+):
+    buf = _capture(monkeypatch)
+    fake._INBOX.put(
+        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
+    )
+    fake._handle(_prompt(fake.SLOW_TRIGGER))
+    msgs = _messages(buf)
+    assert msgs[-1]["result"]["stopReason"] == "cancelled"
+
+
+def test_cancel_for_a_different_session_is_not_honoured(monkeypatch, fast_slow_stream):
+    buf = _capture(monkeypatch)
+    fake._INBOX.put(
+        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "other"}}
+    )
+    fake._handle(_prompt(fake.SLOW_TRIGGER))
+    assert _messages(buf)[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_slow_noack_ignores_cancel(monkeypatch, fast_slow_stream):
+    """The soft-stop-budget-expiry path: a queued cancel must NOT be acked."""
+    buf = _capture(monkeypatch)
+    fake._INBOX.put(
+        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
+    )
+    fake._handle(_prompt(fake.SLOW_NOACK_TRIGGER))
+    assert _messages(buf)[-1]["result"]["stopReason"] == "end_turn"
+
+
+def _permission_answer(option_id: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": fake._PERMISSION_REQ_ID,
+        "result": {"outcome": {"outcome": "selected", "optionId": option_id}},
+    }
+
+
+@pytest.mark.parametrize(
+    ("option_id", "expected_status"),
+    [("allow_once", "completed"), ("reject_once", "failed")],
+)
+def test_gated_permission_reflects_the_hosts_answer(
+    monkeypatch, option_id, expected_status
+):
+    buf = _capture(monkeypatch)
+    fake._INBOX.put(_permission_answer(option_id))
+    fake._handle(_prompt(fake.GATED_PERMISSION_TRIGGER))
+    msgs = _messages(buf)
+    assert any(m.get("method") == "session/request_permission" for m in msgs)
+    updates = [m for m in msgs if m.get("method") == "session/update"]
+    tool_update = next(
+        u
+        for u in updates
+        if u["params"]["update"]["sessionUpdate"] == "tool_call_update"
+    )
+    assert tool_update["params"]["update"]["status"] == expected_status
+
+
+def test_gated_permission_cancelled_outcome_fails_the_tool_call(monkeypatch):
+    buf = _capture(monkeypatch)
+    fake._INBOX.put(
+        {
+            "jsonrpc": "2.0",
+            "id": fake._PERMISSION_REQ_ID,
+            "result": {"outcome": {"outcome": "cancelled"}},
+        }
+    )
+    fake._handle(_prompt(fake.GATED_PERMISSION_TRIGGER))
+    tool_update = next(
+        m
+        for m in _messages(buf)
+        if m.get("method") == "session/update"
+        and m["params"]["update"]["sessionUpdate"] == "tool_call_update"
+    )
+    assert tool_update["params"]["update"]["status"] == "failed"
+
+
+def test_gated_permission_times_out_without_blocking(monkeypatch):
+    """No answer must never hang the turn -- it completes instead."""
+    monkeypatch.setattr(fake, "PERMISSION_WAIT_SECS", 0.05)
+    buf = _capture(monkeypatch)
+    fake._handle(_prompt(fake.GATED_PERMISSION_TRIGGER))
+    msgs = _messages(buf)
+    tool_update = next(
+        m
+        for m in msgs
+        if m.get("method") == "session/update"
+        and m["params"]["update"]["sessionUpdate"] == "tool_call_update"
+    )
+    assert tool_update["params"]["update"]["status"] == "completed"
+    assert msgs[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_ungated_permission_does_not_wait(monkeypatch):
+    """The pre-existing fire-and-forget path must stay non-blocking."""
+    monkeypatch.setattr(fake, "PERMISSION_WAIT_SECS", 30.0)
+    buf = _capture(monkeypatch)
+    started = time.monotonic()
+    fake._handle(_prompt(fake.PERMISSION_TRIGGER))
+    assert time.monotonic() - started < 1.0
+    assert _messages(buf)[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_poll_inbox_puts_back_non_matching_messages():
+    keep = {"jsonrpc": "2.0", "method": "session/other", "params": {}}
+    fake._INBOX.put(keep)
+    assert fake._poll_inbox(lambda m: m.get("method") == "session/cancel") is None
+    assert fake._INBOX.get_nowait() == keep
+
+
+def test_pump_stdin_forwards_messages_then_the_eof_sentinel(monkeypatch):
+    monkeypatch.setattr(
+        fake.sys,
+        "stdin",
+        io.StringIO('{"jsonrpc":"2.0","id":1,"method":"initialize"}\n'),
+    )
+    fake._pump_stdin()
+    assert fake._INBOX.get_nowait()["id"] == 1
+    assert fake._INBOX.get_nowait() is None

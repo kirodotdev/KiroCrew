@@ -6,7 +6,12 @@ import { test as setup } from '@playwright/test'
  * saved state so tokens never appear in test-level traces or videos.
  */
 
-const STATE_PATH = 'playwright/.auth/state.json'
+// Honour the same override playwright.config.ts reads for `storageState`, so a
+// caller can point writer and reader at one non-default path. Without this the
+// writer always clobbered the default file, which makes concurrent runs against
+// separate ephemeral gateways race: each run's cookies are bound to its own
+// port + token, so the last writer wins and the losers see "session expired".
+const STATE_PATH = process.env.PLAYWRIGHT_STORAGE_STATE || 'playwright/.auth/state.json'
 
 setup('authenticate', async ({ page }) => {
   const token = process.env.PLAYWRIGHT_TOKEN

@@ -3,11 +3,13 @@ import { test, expect } from '@playwright/test'
 /**
  * E2E test for the "Fork session" feature.
  *
- * Runs against a real gateway on localhost:5476. Exercises the full round-trip:
- * send message → wait for assistant reply → click fork button → verify new tab.
+ * Exercises the full round-trip: send message → wait for assistant reply →
+ * click fork button → verify new tab.
  *
- * Skipped gracefully if no assistant reply arrives within the timeout, since
- * the live kiro-cli session may be unavailable in some CI environments.
+ * Tagged @needs-agent, so it runs only when an agent turn is available. The e2e
+ * harness supplies one by pointing KIROCREW_KIRO_BIN at the stub ACP backend,
+ * which answers deterministically and offline. A missing reply is a failure, not
+ * an environment gap.
  */
 
 test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
@@ -40,13 +42,12 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
 
     // Fork button (title="Fork conversation from here") only renders on
     // assistant messages, so its visibility is a clean signal that the
-    // assistant replied. Skip if kiro-cli doesn't respond in time.
+    // assistant replied. This used to `test.skip` on a timeout, which reported
+    // green while verifying nothing. The spec is @needs-agent, so it only runs
+    // when an agent is wired, and the harness wires the stub ACP backend, which
+    // always answers. A missing reply is therefore a real failure.
     const forkButton = page.getByTitle('Fork conversation from here').first()
-    try {
-      await forkButton.waitFor({ state: 'visible', timeout: 60000 })
-    } catch {
-      test.skip(true, 'No assistant reply within 60s — skipping fork E2E')
-    }
+    await expect(forkButton).toBeVisible({ timeout: 60000 })
 
     await forkButton.hover()
     // GIF-only pauses: skip in normal CI to keep tests fast.

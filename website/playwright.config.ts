@@ -15,16 +15,14 @@ export default defineConfig({
   // slowdown in any other spec still surfaces fast instead of silently passing
   // within a 3x window.
   // Gating: by default exclude @needs-agent (chat, fork — need a model/agent
-  // turn the credential-less CI gateway lacks) and @quarantine (session-tags-e2e
-  // — a known worker-crasher pending root-cause). The default run is therefore
-  // the credential-less, crash-free green set. PLAYWRIGHT_RUN_AGENT_SPECS=1 (set
+  // turn the credential-less CI gateway lacks). The default run is therefore
+  // the credential-less green set. PLAYWRIGHT_RUN_AGENT_SPECS=1 (set
   // by a harness that wires a fake ACP backend) re-includes the @needs-agent
   // specs. @needs-live-agent (soft-stop interruption) needs true live-agent
   // semantics a fake can't model yet, so it stays excluded either way.
-  // @quarantine also always stays excluded.
   grepInvert: process.env.PLAYWRIGHT_RUN_AGENT_SPECS
-    ? /@quarantine|@needs-live-agent/
-    : /@needs-agent|@quarantine|@needs-live-agent/,
+    ? /@needs-live-agent/
+    : /@needs-agent|@needs-live-agent/,
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5476',
     trace: 'on-first-retry',

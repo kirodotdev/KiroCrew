@@ -2,8 +2,9 @@ import { test, expect, Page, APIRequestContext } from '@playwright/test'
 
 /**
  * Comprehensive headless-browser test of the Trello-style sidebar columns +
- * tag vocabulary. Each test is isolated — it creates its own columns/tags/
- * slots with unique names and cleans up at the end.
+ * tag vocabulary. Each test creates its own columns/tags/slots with unique
+ * names. Columns are wiped per test (see resetColumns + HARNESS_GATEWAY);
+ * seeded slots are NOT deleted, so this spec is harness-gateway only.
  */
 
 async function primeBrowser(page: Page, width = 1400) {
@@ -14,6 +15,34 @@ async function primeBrowser(page: Page, width = 1400) {
   }, width)
   await page.setViewportSize({ width: 1800, height: 1000 })
 }
+
+// The board/list view toggle is not a standalone control: it lives as a menu
+// item inside the sidebar header "More options" menu. Selector and 15s wait
+// mirror session-tags.spec.ts, which covers the same control.
+const HEADER_MENU = 'button[aria-haspopup="menu"][aria-label="More options"]'
+
+/** Wait for the sidebar header to render. Used as a "/chat is interactive" signal. */
+async function waitForSidebarHeader(page: Page) {
+  await page.locator(HEADER_MENU).first().waitFor({ timeout: 15_000 })
+}
+
+/** Flip board <-> list view via the header menu item. */
+async function toggleBoardView(page: Page) {
+  const headerMenu = page.locator(HEADER_MENU).first()
+  await headerMenu.waitFor({ timeout: 15_000 })
+  await headerMenu.click()
+  await page.getByRole('menuitem', { name: /switch to (board|list) view/i }).click()
+}
+
+// resetColumns() deletes EVERY tag column, not just ones this spec created, so
+// it is gated on an EXPLICIT ephemeral-harness marker -- same contract and same
+// reasoning as session-tags-folders.spec.ts. test/test_playwright_e2e.py sets
+// KIROCREW_E2E_EPHEMERAL for the throwaway tmp-home gateway it spawns. Token
+// presence alone is NOT a safe signal: it is also the normal state when
+// authenticating to a real token-protected gateway, so a developer pointing this
+// suite at their live gateway (to debug a failure) must never lose their columns.
+// Absent the marker the whole describe skips rather than wiping user state.
+const HARNESS_GATEWAY = !!process.env.KIROCREW_E2E_EPHEMERAL
 
 async function resetColumns(request: APIRequestContext) {
   const list = await (await request.get('/api/chat/tag-columns')).json()
@@ -31,12 +60,12 @@ async function seedSlotWithTag(request: APIRequestContext, title: string, tagNam
 
 test.describe.configure({ mode: 'serial' })
 
-// @quarantine: this spec hard-crashes the chromium worker on its first failure
-// (a worker crash, not a retryable timeout), which aborts every subsequent
-// spec in the run. Excluded from the default gating set via grepInvert in
-// playwright.config.ts until the crash is root-caused. Tracked as a follow-up.
-test.describe('E2E: sidebar tag columns', { tag: '@quarantine' }, () => {
+test.describe('E2E: sidebar tag columns', () => {
   test.beforeEach(async ({ page }) => {
+    test.skip(
+      !HARNESS_GATEWAY,
+      'destructive tag-column wipes require the ephemeral harness gateway (KIROCREW_E2E_EPHEMERAL)',
+    )
     await primeBrowser(page)
   })
 
@@ -50,7 +79,7 @@ test.describe('E2E: sidebar tag columns', { tag: '@quarantine' }, () => {
       localStorage.setItem('mc-chat-config', JSON.stringify(cfg))
     })
     await page.goto('/chat')
-    await page.waitForSelector('[data-testid="board-toggle"]')
+    await waitForSidebarHeader(page)
     await expect(page.locator('[data-testid="column-strip"]')).toHaveCount(0)
     const row = page.locator(`[data-slot-key="${slotKey}"]`)
     await expect(row).toBeVisible()
@@ -64,9 +93,9 @@ test.describe('E2E: sidebar tag columns', { tag: '@quarantine' }, () => {
       localStorage.setItem('mc-chat-config', JSON.stringify(cfg))
     })
     await page.goto('/chat')
-    await page.waitForSelector('[data-testid="board-toggle"]')
+    await waitForSidebarHeader(page)
     // Toggle ON
-    await page.click('[data-testid="board-toggle"]')
+    await toggleBoardView(page)
     await page.waitForSelector('[data-testid="column-strip"]', { timeout: 5_000 })
     await expect.poll(async () => (await (await request.get('/api/chat/tag-columns')).json()).length).toBeGreaterThan(0)
   })
@@ -103,7 +132,7 @@ test.describe('E2E: sidebar tag columns', { tag: '@quarantine' }, () => {
     await page.locator(`[data-testid="column-edit-${col.id}"]`).click()
     const tags2 = await (await request.get('/api/chat/tags')).json()
     const doneId2 = tags2.find((t: { name: string }) => t.name === 'Done').id
-    await page.locator(`[data-testid="tag-row-${doneId2}"] button[role="menuitemcheckbox"]`).click()
+    await page.locator(`[data-testid="tag-row-${doneId2}"] button[role="checkbox"]`).click()
     await page.waitForTimeout(300)
     // Column now shows only Done-tagged slot
     await expect(page.locator(`[data-testid="column-${col.id}"] [data-slot-key="${doneKey}"]`)).toBeVisible()
@@ -355,14 +384,14 @@ test.describe('E2E: sidebar tag columns', { tag: '@quarantine' }, () => {
     await expect(page.locator(`[data-testid="column-${colB.id}"]`)).toBeVisible()
 
     // Toggle OFF via header button
-    await page.click('[data-testid="board-toggle"]')
+    await toggleBoardView(page)
     await expect(page.locator('[data-testid="column-strip"]')).toHaveCount(0)
     // Backend columns are NOT deleted
     const persisted = await (await request.get('/api/chat/tag-columns')).json()
     expect(persisted.map((c: { id: string }) => c.id)).toEqual(expect.arrayContaining([colA.id, colB.id]))
 
     // Toggle ON again → both columns restored
-    await page.click('[data-testid="board-toggle"]')
+    await toggleBoardView(page)
     await page.waitForSelector(`[data-testid="column-${colA.id}"]`)
     await expect(page.locator(`[data-testid="column-${colB.id}"]`)).toBeVisible()
   })
