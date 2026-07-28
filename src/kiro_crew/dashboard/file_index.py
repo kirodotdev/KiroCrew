@@ -7,6 +7,7 @@ import logging
 import os
 import time
 
+from kiro_crew import platform_compat
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
@@ -92,10 +93,15 @@ class FileIndex:
     def _walk(self) -> tuple[list[tuple[str, str, str, int, int]], bool]:
         entries: list[tuple[str, str, str, int, int]] = []
         truncated = False
+        # macOS: if this index is rooted at bare $HOME, prune the TCC-gated
+        # folders. This walk re-runs every _REFRESH_SECS, so without the prune
+        # a dismissed consent dialog would be re-triggered on every refresh.
+        tcc_skip = platform_compat.tcc_protected_dirs_for_walk(self.root)
         for dirpath, dirnames, filenames in os.walk(self.root):
             dirnames[:] = [
                 d for d in dirnames
                 if not d.startswith(".") and d not in _SKIP_DIRS
+                and not (dirpath == self.root and d in tcc_skip)
             ]
             for fname in filenames:
                 if len(entries) >= _MAX_ENTRIES:

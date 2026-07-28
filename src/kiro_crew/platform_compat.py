@@ -69,6 +69,66 @@ _SUBPROCESS_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # child tree taskkill /T-reapable. Add DETACHED_PROCESS to the flags for a
 # fully detached, console-less child (e.g. the gateway respawn).
 
+# ── macOS TCC-protected home subdirectories ──
+# macOS gates these home subdirectories behind TCC (Transparency, Consent and
+# Control). The FIRST read of any one of them by a given app triggers a modal
+# "…would like to access files in your Downloads folder" prompt, and consent is
+# recorded PER (app, folder) pair — so incidentally touching three of them
+# during one operation produces THREE separate prompts, not one.
+#
+# Nothing KiroCrew does at startup needs these folders: they are only ever
+# reached INCIDENTALLY, by a breadth-first walk that was rooted at $HOME as a
+# catch-all fallback (the @-mention file picker's search root). Pruning them
+# from such unscoped walks removes the prompts entirely, which is strictly
+# better than pre-declaring NS*FolderUsageDescription strings — those change
+# the prompt's wording but still prompt, once per folder.
+#
+# This does NOT restrict a user's EXPLICIT navigation: an operation whose root
+# the user named (a project dir, or a browse request for ~/Downloads itself) is
+# scoped by definition and never consults this set. macOS still shows its own
+# one-time prompt for that deliberate access, which is the expected contract.
+#
+# Names only (no leading path): matched against a single path component so the
+# same set works for both os.walk dirname pruning and scandir entry filtering.
+TCC_PROTECTED_HOME_DIRS: frozenset[str] = frozenset({
+    "Downloads", "Documents", "Desktop", "Pictures", "Movies", "Music",
+})
+# Deliberately NOT included: ``Library``. It is not TCC-gated, so pruning it
+# removes zero prompts — while ``~/Library/CloudStorage/<Provider>/`` (modern
+# OneDrive / Google Drive / Dropbox mounts) and ``~/Library/Mobile Documents/``
+# (iCloud Drive) are common project homes, so hiding it costs real search hits.
+# Keep this set to exactly the folders macOS actually gates.
+
+
+def tcc_protected_dirs_for_walk(root: str | os.PathLike) -> frozenset[str]:
+    """Return the TCC-protected dir names to prune when walking *root*.
+
+    Empty off macOS (no TCC), and empty unless *root* is the user's home
+    directory itself: a walk the user explicitly scoped to ``~/Downloads`` (or
+    to a project that happens to live under it) must still see its own
+    contents. Only the incidental ``$HOME``-as-fallback walk is pruned.
+
+    Callers MUST pass the same ``str`` they hand to :func:`os.walk` — the
+    returned names are compared against ``os.walk``'s ``dirpath``, which is
+    byte-identical to the ``top`` argument it was given.
+
+    On any resolution failure this returns the empty set, i.e. it prunes
+    nothing. That degrades to today's behavior (a prompt may appear) rather
+    than silently hiding a directory the caller asked for.
+    """
+    if not IS_MACOS:
+        return frozenset()
+    try:
+        if os.path.realpath(root) != os.path.realpath(os.path.expanduser("~")):
+            return frozenset()
+    except (OSError, ValueError):
+        # OSError: EACCES / ELOOP / ENAMETOOLONG on an exotic path.
+        # ValueError: realpath() rejects a path containing a null byte — NOT an
+        # OSError subclass, so it would otherwise escape to the caller and 500
+        # the /api/file-search request (same class as agent.py's guard).
+        return frozenset()
+    return TCC_PROTECTED_HOME_DIRS
+
 
 def ensure_utf8_console() -> None:
     """Make stdout/stderr UTF-8 on Windows so KiroCrew's emoji output can't crash it.

@@ -383,6 +383,44 @@ Requires a paid Apple Developer account ($99/yr) for the Developer ID cert and
 notary access. Without one, distribute via Homebrew cask or instruct users to
 clear the quarantine flag.
 
+## macOS folder-access (TCC) prompts
+
+macOS gates `~/Downloads`, `~/Documents`, `~/Desktop`, `~/Pictures`, `~/Movies`
+and `~/Music` behind **TCC** (Transparency, Consent and Control). The first time
+an app reads one of them, macOS shows a modal *"KiroCrew would like to access
+files in your Downloads folder"*, and consent is recorded **per (app, folder)
+pair** — so an operation that incidentally touches three of those folders
+produces **three separate prompts**, one after another.
+
+Nothing KiroCrew does at startup needs those folders. They were only ever
+reached *incidentally*, by the `@`-mention file picker's filesystem walk when it
+fell back to bare `$HOME` as a catch-all search root (no project selected). That
+single unscoped walk descended into `Downloads`/`Documents`/`Desktop` and
+tripped one prompt each.
+
+Those walks now prune the TCC-protected folders when — and only when — the walk
+root is `$HOME` itself
+(`platform_compat.tcc_protected_dirs_for_walk`, applied in
+`dashboard/file_index.py` and the `/api/file-search` fallback). Two consequences
+worth knowing:
+
+- **Explicit access is unaffected.** If you point KiroCrew at a project inside
+  `~/Documents`, browse to `~/Downloads` directly, or even name `$HOME` itself as
+  the project, the root is scoped by definition and is walked in full — only the
+  *unscoped* `$HOME` fallback prunes. macOS still shows its own one-time prompt
+  for that deliberate access — that is the expected OS contract, and granting it
+  once is enough.
+- **Pre-declaring usage strings would not have fixed this.** Adding
+  `NSDocumentsFolderUsageDescription` and friends to `Info.plist` only changes
+  the *wording* of each prompt; it does not reduce the count. Not reading the
+  folders is what removes the prompts.
+
+A signed, stable bundle identity matters here too: TCC keys consent off the
+app's code-signing identity, so an ad-hoc/unsigned local build can be treated as
+a *different* app after a rebuild and re-prompt for grants you already gave.
+Distributing the signed + notarized DMG (above) keeps grants sticky across
+updates.
+
 ## Remote tunnel mode
 
 The desktop app can also connect to a gateway running on a **remote** host (e.g.

@@ -22,6 +22,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.multipart import BodyPartReader
 
+from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform import redact_via_context as redact
@@ -1933,10 +1934,21 @@ async def api_file_search(request: web.Request) -> web.Response:
         for root_dir in safe_roots:
             if walked >= max_scan or len(results) >= max_collect:
                 break
+            # macOS: when this root is the bare $HOME fallback, prune the
+            # TCC-gated folders. Reaching into them would pop one consent
+            # modal PER folder for a search the user scoped to nothing.
+            # ``scoped`` means the user NAMED this root (?project= / ?workspace=),
+            # so even ``project=$HOME`` is deliberate and is searched in full.
+            tcc_skip = (
+                frozenset() if scoped
+                else platform_compat.tcc_protected_dirs_for_walk(root_dir)
+            )
             for dirpath, dirnames, filenames in os.walk(root_dir):
                 dirnames[:] = [
                     d for d in dirnames
-                    if not d.startswith(".") and d not in skip_dirs
+                    if not d.startswith(".")
+                    and d not in skip_dirs
+                    and not (dirpath == root_dir and d in tcc_skip)
                 ]
                 for fname in filenames:
                     if walked >= max_scan or len(results) >= max_collect:
