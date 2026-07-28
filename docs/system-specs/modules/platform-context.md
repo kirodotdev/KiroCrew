@@ -211,12 +211,28 @@ Policy shape (`admission_policy.json`):
 {
   "mode": "enforce",
   "require_signature": true,
-  "trust_keys": {"p13n": "<publisher key>"},
+  "require_policy_signature": true,
+  "trust_keys": {"p13n": "<publisher key>", "fleet-control": "<issuer key>"},
   "approved": ["enterprise"],
   "banned": ["some-rogue-plugin"],
   "capability_ceiling": {"egress": ["*.example.com"], "tools": ["enterprise-mcp"]}
 }
 ```
+
+**This policy is also the trust root for the security ceiling.**
+`require_policy_signature` (default `false`) additionally demands a *verified*
+`identity.signature` on `security_policy.json`, keyed by that document's
+`identity.issuer` in the same `trust_keys` map — one key store, not two. It is a
+**separate** flag from `require_signature` on purpose: a fleet that signs its
+plugins has not thereby promised to sign its governance ceiling, and conflating
+them would break managed fleets on upgrade. The flag lives here rather than inside
+the security policy because a document cannot be the authority on whether it must
+be authentic. `canonical_signing_bytes` / `hmac_signature` are shared by both
+checks so the two trust roots cannot drift apart. The governance loader reads
+these two fields through `read_policy_trust_root()` — a **side-effect-free**
+reader that records no posture and emits no SEL, because unlike
+`load_admission_policy` (once per process at boot) it runs on a repeating path.
+See `governance.md` → "Policy authenticity".
 
 > What admission does NOT do: it gates the *plugin contract boundary*, not a
 > source-editing user. For a managed fleet the enforced root of trust is the

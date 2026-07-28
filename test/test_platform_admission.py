@@ -493,3 +493,195 @@ class TestDiscoveryGate:
         result = discover_companion_context("amazon", None)
         assert result is sentinel
         assert (tmp_path / "admission_policy.json").exists()
+
+
+class TestPolicySignatureTrustRoot:
+    """``require_policy_signature`` + ``trust_keys`` as the security-policy trust root.
+
+    The flag lives HERE (the fleet-controlled admission policy) rather than inside
+    ``security_policy.json`` because a document cannot be the authority on whether
+    it must be authentic — see ``governance._policy_trust_settings``.
+    """
+
+    def test_defaults_off_so_existing_policies_keep_working(self):
+        assert AdmissionPolicy().require_policy_signature is False
+        assert AdmissionPolicy.open_default().require_policy_signature is False
+
+    def test_parsed_from_policy_document(self):
+        policy = AdmissionPolicy.from_dict(
+            {"require_policy_signature": True, "trust_keys": {"fleet-control": "k"}}
+        )
+        assert policy.require_policy_signature is True
+        assert policy.trust_keys == {"fleet-control": "k"}
+
+    def test_independent_of_plugin_require_signature(self):
+        # A fleet that signs its PLUGINS has not thereby promised to sign its
+        # governance ceiling; conflating the two would break managed fleets on
+        # upgrade.
+        policy = AdmissionPolicy.from_dict({"require_signature": True})
+        assert policy.require_signature is True
+        assert policy.require_policy_signature is False
+
+    def test_fail_closed_default_leaves_policy_signature_advisory(self, monkeypatch, tmp_path):
+        # Deliberate: an absent/unreadable ADMISSION policy must not additionally
+        # abort boot through the governance path. Plugin admission fails closed in
+        # its own domain; the security policy keeps its own fail-closed rules.
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
+        monkeypatch.setattr(
+            "kiro_crew.platform.admission._policy_default_path", lambda: tmp_path / "nope.json"
+        )
+        from kiro_crew.platform.admission import load_admission_policy
+
+        policy = load_admission_policy()
+        assert policy.require_signature is True  # plugins: fail closed
+        assert policy.require_policy_signature is False  # governance: stays advisory
+
+    def test_seeded_default_body_declares_the_flag_off(self):
+        import kiro_crew.platform.admission as adm
+
+        assert adm._DEFAULT_POLICY_BODY["require_policy_signature"] is False
+
+    def test_non_string_trust_keys_are_dropped_not_stringified(self):
+        # GPT finding: a blanket str(v) turned a malformed entry into a PREDICTABLE
+        # signing secret — {"fleet": null} became the literal key "None", so anyone
+        # guessing that a fleet left a null could forge a signature that verifies
+        # for that issuer (mutation-confirmed). An empty string is the same hazard.
+        # Such an entry is an authoring mistake, not a key: drop it, so the issuer
+        # has NO key, nothing verifies, and the caller fails closed.
+        policy = AdmissionPolicy.from_dict(
+            {"trust_keys": {"a": None, "b": 12, "c": "", "d": ["x"], "ok": "real-secret"}}
+        )
+        assert policy.trust_keys == {"ok": "real-secret"}
+
+    def test_malformed_trust_keys_container_is_ignored(self):
+        assert AdmissionPolicy.from_dict({"trust_keys": "not-a-dict"}).trust_keys == {}
+        assert AdmissionPolicy.from_dict({"trust_keys": None}).trust_keys == {}
+
+    @pytest.mark.parametrize("shape", [[], None, "a string", 123])
+    def test_non_object_policy_raises_valueerror_not_attributeerror(self, shape):
+        # ``[]`` / ``null`` / ``"str"`` are valid JSON, so a malformed trust root
+        # arrives shaped wrong rather than failing to parse. Callers catch broken
+        # shapes deliberately; they should not have to enumerate incidental
+        # AttributeErrors leaking from the first ``.get``.
+        with pytest.raises(ValueError):
+            AdmissionPolicy.from_dict(shape)
+
+
+class TestSharedSigningPrimitives:
+    def test_manifest_payload_uses_shared_canonicalization(self):
+        from kiro_crew.platform.admission import canonical_signing_bytes
+
+        m = PluginManifest(name="p", publisher="pub", version="1")
+        expected = canonical_signing_bytes(
+            {"name": "p", "publisher": "pub", "version": "1", "capabilities": {}}
+        )
+        assert m.signing_payload() == expected
+
+    def test_canonicalization_is_key_order_stable(self):
+        from kiro_crew.platform.admission import canonical_signing_bytes
+
+        assert canonical_signing_bytes({"a": 1, "b": 2}) == canonical_signing_bytes(
+            {"b": 2, "a": 1}
+        )
+
+    def test_hmac_signature_matches_stdlib(self):
+        from kiro_crew.platform.admission import hmac_signature
+
+        expected = hmac.new(b"k", b"payload", hashlib.sha256).hexdigest()
+        assert hmac_signature("k", b"payload") == expected
+
+
+class TestReadPolicyTrustRoot:
+    """``read_policy_trust_root`` is the side-effect-free reader (not the audited one)."""
+
+    def test_reads_flag_and_keys_from_env_path(self, monkeypatch, tmp_path):
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        adm = tmp_path / "admission_policy.json"
+        adm.write_text(
+            json.dumps({"require_policy_signature": True, "trust_keys": {"iss": "k"}})
+        )
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+        policy = read_policy_trust_root()
+        assert policy.require_policy_signature is True
+        assert policy.trust_keys == {"iss": "k"}
+
+    def test_missing_trust_root_stays_permissive(self, monkeypatch, tmp_path):
+        # An absent trust root — at the default path or an explicitly configured
+        # one — is "no operator opted in", so verification stays advisory and every
+        # existing install keeps working with no key to provision.
+        from kiro_crew.platform import admission as adm_mod
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(tmp_path / "gone.json"))
+        assert read_policy_trust_root().require_policy_signature is False
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
+        monkeypatch.setattr(
+            adm_mod, "_policy_default_path", lambda: tmp_path / "admission_policy.json"
+        )
+        assert read_policy_trust_root().require_policy_signature is False
+
+    @pytest.mark.parametrize("shape", ['{"require_policy_signature": true,  TRUNC', "[]", "null"])
+    def test_unreadable_policy_reads_as_no_optin(self, monkeypatch, tmp_path, shape):
+        """A corrupt/malformed trust root yields the permissive default. Deliberate.
+
+        An attacker who can write this file is outside the policy-signature threat
+        model (see the threat-model note in ``governance.md``) — they would set the
+        flag to ``false``, which parses fine — so fail-closing on a *malformed* file
+        catches only a clumsy version of an attack the design concedes, while turning
+        a non-atomic fleet push or a hand-edit typo into an unbootable host.  Plugin
+        admission still fails closed on the same file in its own domain
+        (``load_admission_policy``); this reader must not additionally make the
+        security ceiling unloadable through a second path.
+        """
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        adm = tmp_path / "admission_policy.json"
+        adm.write_text(shape)
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+        policy = read_policy_trust_root()
+        assert policy.require_policy_signature is False
+        assert policy.trust_keys == {}
+
+    def test_absent_policy_returns_permissive_not_fail_closed(self, monkeypatch, tmp_path):
+        # Deliberately NOT _fail_closed_policy(): an admission-policy problem is
+        # already handled in admission's own domain and must not make the security
+        # ceiling unloadable through a second path.
+        import kiro_crew.platform.admission as adm_mod
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
+        monkeypatch.setattr(adm_mod, "_policy_default_path", lambda: tmp_path / "nope.json")
+        policy = read_policy_trust_root()
+        assert policy.require_policy_signature is False
+        assert policy.trust_keys == {}
+        assert policy.require_signature is False
+
+    def test_unreadable_policy_does_not_raise(
+        self, monkeypatch, tmp_path
+    ):
+        # Never raising is the reader's contract — a corrupt trust root must not
+        # take down the security-ceiling load path as well.
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        bad = tmp_path / "admission_policy.json"
+        bad.write_text("{ not json")
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(bad))
+        policy = read_policy_trust_root()
+        assert policy.require_policy_signature is False
+        assert policy.trust_keys == {}
+
+    def test_does_not_record_posture_or_incident(self, monkeypatch, tmp_path):
+        # The whole reason this function exists: load_admission_policy records the
+        # dashboard posture + a critical SEL, which is wrong on a repeating path.
+        import kiro_crew.platform.admission as adm_mod
+        from kiro_crew.platform import governance_health
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        governance_health.reset()
+        monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
+        monkeypatch.setattr(adm_mod, "_policy_default_path", lambda: tmp_path / "nope.json")
+        read_policy_trust_root()
+        assert governance_health.governance_status() == "unknown"
+        assert governance_health.last_incident() is None
+        governance_health.reset()

@@ -46,7 +46,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Mapping, Optional
 
 from kiro_crew.config.paths import config_dir
 
@@ -72,6 +72,18 @@ def _policy_default_path() -> Path:
     module-level constant.
     """
     return config_dir() / _POLICY_DEFAULT_LEAF
+
+
+def policy_trust_root_path() -> Path:
+    """The admission-policy path this host reads: the env override, else the default.
+
+    The one public resolver for "where is the trust root", so a reader outside this
+    module (``governance._policy_signature_required``) does not have to re-derive the
+    env-wins precedence from private names — two copies of that rule is how a reader
+    ends up checking a different file than the loader.
+    """
+    raw = os.environ.get(_POLICY_ENV, "").strip()
+    return Path(raw) if raw else _policy_default_path()
 
 
 def _seed_marker_path() -> Path:
@@ -105,6 +117,34 @@ def _coerce_str_list(value: object) -> List[str]:
     if isinstance(value, (list, tuple)):
         return [str(item) for item in value]
     return []
+
+
+def canonical_signing_bytes(body: Mapping[str, object]) -> bytes:
+    """The ONE canonicalization every KiroCrew trust-root signature is taken over.
+
+    Sorted keys + compact separators + UTF-8, so the same logical document always
+    produces the same bytes regardless of how a signing tool serialized it
+    (key order, indentation, whitespace).  Shared by
+    :meth:`PluginManifest.signing_payload` and
+    ``governance.policy_signing_payload`` on purpose: two independently-written
+    canonicalizers is how a signer and a verifier silently diverge, and a reviewer
+    can only check "are these consistent?" cheaply when there is one function to
+    read.  Callers are responsible for excluding the signature field itself from
+    *body* (a signature cannot cover itself).
+    """
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def hmac_signature(secret: str, payload: bytes) -> str:
+    """Compute the expected HMAC-SHA256 hex digest over *payload*.
+
+    POC symmetric primitive shared by the plugin-manifest and security-policy
+    checks.  A production implementation swaps this for an asymmetric verify
+    against a publisher/issuer public key pinned in the policy; the shape (the
+    trust root holds the key, the signed document holds only the signature) is
+    unchanged, which is why both call sites route through one helper.
+    """
+    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
 
 def _normalize_name(name: str) -> str:
@@ -146,13 +186,40 @@ class PluginManifest:
 
     def signing_payload(self) -> bytes:
         """Canonical bytes the signature covers (manifest minus the signature)."""
-        body = {
+        body: Dict[str, object] = {
             "name": self.name,
             "publisher": self.publisher,
             "version": self.version,
             "capabilities": {k: sorted(v) for k, v in sorted(self.capabilities.items())},
         }
-        return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return canonical_signing_bytes(body)
+
+
+def _coerce_trust_keys(raw: object) -> Dict[str, str]:
+    """Keep only usable secrets: a non-empty ``str`` value per issuer/publisher.
+
+    A blanket ``str(v)`` would turn a malformed entry into a **predictable signing
+    secret**: ``{"trust_keys": {"fleet": null}}`` becomes the literal key ``"None"``
+    (and ``12`` becomes ``"12"``), so anyone who can guess that a fleet left a null
+    in its trust root can forge a signature that verifies for that issuer.  An
+    empty string is the same hazard.  Such an entry is a fleet-authoring mistake,
+    not a key, so it is DROPPED rather than coerced: the issuer then has no key,
+    no signature can verify for it, and the caller fails closed — the safe
+    direction, and the same one a missing entry already takes.
+    """
+    out: Dict[str, str] = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        if isinstance(v, str) and v:
+            out[str(k)] = v
+        else:
+            logger.warning(
+                "admission trust_keys[%r] is not a non-empty string; dropping it "
+                "(no signature can verify for this issuer)",
+                str(k),
+            )
+    return out
 
 
 @dataclass(frozen=True)
@@ -161,7 +228,19 @@ class AdmissionPolicy:
 
     mode: str = MODE_OPEN
     require_signature: bool = False
+    # Require a VERIFIED signature on the security policy (``security_policy.json``)
+    # itself, not just on plugins.  Deliberately a SEPARATE flag from
+    # ``require_signature`` (which gates plugin manifests): a fleet that signs its
+    # plugins has not thereby promised to sign its governance ceiling, and
+    # conflating the two would break existing managed fleets on upgrade.  Lives
+    # HERE rather than inside the security policy because a document cannot be the
+    # authority on whether it must be authentic — see
+    # ``governance.load_security_policy``.
+    require_policy_signature: bool = False
     # publisher -> shared secret (POC: HMAC; real impl: publisher public key).
+    # Shared by BOTH signature checks: a plugin manifest is keyed by its
+    # ``publisher``, a security policy by its ``identity.issuer``, so an operator
+    # maintains ONE key store rather than two.
     trust_keys: Dict[str, str] = field(default_factory=dict)
     # Marketplace allowlist. None = no allowlist (any non-banned plugin). A
     # present (even empty) list = only these names are admitted.
@@ -179,11 +258,19 @@ class AdmissionPolicy:
 
     @staticmethod
     def from_dict(d: dict) -> "AdmissionPolicy":
+        if not isinstance(d, dict):
+            # ``[]`` / ``null`` / ``"a string"`` are all valid JSON, so a malformed
+            # trust root reaches here shaped wrong rather than failing to parse.
+            # Raise a ValueError instead of leaking an AttributeError from the first
+            # ``.get`` — callers catch broken-trust-root shapes deliberately, and
+            # they should not have to enumerate incidental attribute errors to do it.
+            raise ValueError(f"admission policy must be a JSON object, got {type(d).__name__}")
         approved = d.get("approved", None)
         return AdmissionPolicy(
             mode=str(d.get("mode", MODE_OPEN)),
             require_signature=bool(d.get("require_signature", False)),
-            trust_keys={str(k): str(v) for k, v in (d.get("trust_keys") or {}).items()},
+            require_policy_signature=bool(d.get("require_policy_signature", False)),
+            trust_keys=_coerce_trust_keys(d.get("trust_keys")),
             approved=(_coerce_str_list(approved) if approved is not None else None),
             banned=_coerce_str_list(d.get("banned", [])),
             capability_ceiling={
@@ -215,6 +302,7 @@ class AdmissionDecision:
 _DEFAULT_POLICY_BODY: Dict[str, object] = {
     "mode": MODE_OPEN,
     "require_signature": False,
+    "require_policy_signature": False,
     "banned": [],
     "capability_ceiling": {},
     "_comment": (
@@ -222,7 +310,9 @@ _DEFAULT_POLICY_BODY: Dict[str, object] = {
         "Deleting this file DISABLES plugin admission (fail-closed): "
         "load_admission_policy() then returns MODE_ENFORCE with an empty allowlist "
         "and the dashboard governance indicator shows Disabled. To restrict "
-        "admission, set mode='enforce' and populate 'approved' / 'require_signature'."
+        "admission, set mode='enforce' and populate 'approved' / 'require_signature'. "
+        "'require_policy_signature' additionally demands a VERIFIED signature on "
+        "security_policy.json, keyed by its identity.issuer in 'trust_keys'."
     ),
 }
 
@@ -435,6 +525,50 @@ def load_admission_policy() -> AdmissionPolicy:
     return policy
 
 
+def read_policy_trust_root() -> "AdmissionPolicy":
+    """Read the admission policy for its TRUST-ROOT fields only, side-effect-free.
+
+    Distinct from :func:`load_admission_policy` on purpose.  That function is the
+    plugin-admission decision path: it records the dashboard admission posture and
+    emits a **critical** ``governance_degraded`` SEL when the policy is
+    absent/unreadable — correct exactly once per process at boot, and wrong for any
+    other reader.  The governance loader needs only ``require_policy_signature`` +
+    ``trust_keys``, and it runs on paths that repeat (``gatewayd`` re-loads the
+    security policy per app call), so reusing the audited loader would flip the
+    governance indicator to degraded and append a critical audit record on every
+    such call.
+
+    On an absent, unreadable, or malformed policy this returns the plain permissive
+    default (``require_policy_signature=False``, no keys) rather than
+    :func:`_fail_closed_policy`: an admission-policy problem is already handled —
+    loudly and fail-closed — in admission's own domain (``load_admission_policy``
+    refuses to admit plugins off the same file), and it must not additionally make
+    the security ceiling unloadable through a second path.
+
+    Deliberately NOT fail-closed on a corrupt file.  An attacker able to write this
+    file is outside the policy-signature threat model — they would set the flag to
+    ``false``, which parses fine — so fail-closing on a *malformed* file would only
+    catch a clumsy version of an attack the design concedes, at the cost of turning
+    a non-atomic fleet push or a hand-edit typo into an unbootable host.  Corruption
+    here is a reliability event: log it, stay predictable, let ``kirocrew doctor``
+    report it.  Never raises.
+    """
+    path = policy_trust_root_path()
+    try:
+        return AdmissionPolicy.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        logger.debug("no admission trust root at %s", path)
+        return AdmissionPolicy()
+    except Exception:
+        logger.warning(
+            "admission trust root at %s is unreadable or malformed; treating the "
+            "policy-signature requirement as unset (kirocrew doctor reports this)",
+            path,
+            exc_info=True,
+        )
+        return AdmissionPolicy()
+
+
 def _read_plugin_manifest(ep: "importlib.metadata.EntryPoint") -> Optional[PluginManifest]:
     """Read a plugin's manifest WITHOUT importing its module.
 
@@ -487,9 +621,7 @@ def _signature_valid(manifest: PluginManifest, policy: AdmissionPolicy) -> bool:
     secret = policy.trust_keys.get(manifest.publisher)
     if not secret:
         return False
-    expected = hmac.new(
-        secret.encode("utf-8"), manifest.signing_payload(), hashlib.sha256
-    ).hexdigest()
+    expected = hmac_signature(secret, manifest.signing_payload())
     return hmac.compare_digest(expected, manifest.signature)
 
 

@@ -292,6 +292,80 @@ async def test_app_call_denied_by_governance_mcp_scope(apps_flag_on, spool_tmp, 
         await live.aclose()
 
 
+async def test_app_call_denied_when_the_reloaded_policy_signature_is_bad(
+    apps_flag_on, spool_tmp, tmp_path, monkeypatch
+):
+    """A policy TAMPERED after boot must not widen an app callback.
+
+    This path re-reads the policy per call for freshness, so boot's verification of
+    the original bytes says nothing about what it loads now. Under a genuine
+    ``require_policy_signature`` opt-in a non-verified reload denies.
+    """
+    from kiro_crew.platform.admission import hmac_signature
+    from kiro_crew.platform.governance import policy_signing_payload
+
+    adm = tmp_path / "admission_policy.json"
+    adm.write_text(json.dumps({
+        "require_policy_signature": True, "trust_keys": {"fleet": "k"},
+    }))
+    monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+    body = {
+        "version": 1,
+        "boot": {"fail_closed": True},
+        "mcp": {"mode": "deny", "deny": []},
+        "identity": {"issuer": "fleet"},
+    }
+    body["identity"]["signature"] = hmac_signature("k", policy_signing_payload(body))
+    body["mcp"]["deny"].append("@never/matched")  # tampered AFTER signing
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps(body))
+    monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(policy))
+    live = await _spawn_pooled_server()
+    try:
+        spool_id = _spool_record()
+        reply = await handle_app_call(live.pool, {
+            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
+            # A tool the (tampered) policy does NOT deny — so a pass here would be a
+            # real bypass, not an incidental allowlist miss.
+            "tool": "draw", "arguments": {},
+        })
+        assert reply["type"] == "app-call-rejected"
+        assert "signature" in reply["reason"]
+    finally:
+        await live.aclose()
+
+
+async def test_app_call_is_not_denied_when_no_policy_is_readable_here(
+    apps_flag_on, spool_tmp, tmp_path, monkeypatch
+):
+    """A bundle-only enterprise host must not have every callback denied.
+
+    gatewayd is not the composition process — it never runs ``boot_platform``, so it
+    loads the policy with no ``bundled_loader`` and cannot see a companion-bundled
+    ceiling. ``None`` here is the NORMAL result on such a host, not evidence the
+    policy is gone, so the signature gate must not fire on it.
+    """
+    adm = tmp_path / "admission_policy.json"
+    adm.write_text(json.dumps({
+        "require_policy_signature": True, "trust_keys": {"fleet": "k"},
+    }))
+    monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+    monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance._policy_home_path", lambda: tmp_path / "nope.json"
+    )
+    live = await _spawn_pooled_server()
+    try:
+        spool_id = _spool_record()
+        reply = await handle_app_call(live.pool, {
+            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
+            "tool": "draw", "arguments": {},
+        })
+        assert reply["type"] == "app-result"
+    finally:
+        await live.aclose()
+
+
 async def test_app_call_governance_evaluation_error_fails_closed(apps_flag_on, spool_tmp, tmp_path, monkeypatch):
     """A broken governance load DENIES the app call (opposite polarity from
     Plane A's soft fail-open — this path has no always-on deny floor)."""

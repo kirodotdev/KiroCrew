@@ -48,6 +48,7 @@ from kiro_crew.platform.defaults import (
 from kiro_crew.platform.discovery import discover_companion_context, plugin_entry_points
 from kiro_crew.platform.governance import (
     assert_governance_paths_protected,
+    assert_policy_signature_satisfied,
     load_security_policy,
 )
 from kiro_crew.platform.profile import resolve_profile
@@ -191,6 +192,13 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     # ceiling.  Independent of the deny-pattern floor (which assert_security_floor
     # covers) — fail closed at boot if a refactor ever dropped them.
     assert_governance_paths_protected()
+
+    # Mandated-signature absence gate: a fleet that set require_policy_signature
+    # must actually HAVE a policy. Runs on the FINAL context — after the companion
+    # supplied its bundled ceiling — because that is the first point at which "no
+    # policy at any tier" is decidable; load_security_policy() runs once per
+    # composition pass and cannot tell whether it is the last word.
+    assert_policy_signature_satisfied(ctx.governance)
 
     # Governance floor gate (Validation rules 3 & 7 / combined-order ABORT step):
     # when an enterprise ceiling is present, every bound profile must be at least

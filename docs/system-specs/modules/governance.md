@@ -111,6 +111,140 @@ is **pure-Python and structural** (it does not depend on `jsonschema`, which is
 an optional, possibly-absent dependency) so a malformed policy never silently
 degrades to ungoverned.
 
+## Policy authenticity (`identity.signature`)
+
+Without a signature check, a policy's integrity rests entirely on **filesystem
+permissions** — adequate for the single-user host that owns its own ceiling, but
+not for a managed fleet where the operator is not the local user and the local
+user can edit the file. `load_security_policy` therefore verifies an optional
+detached `identity.signature`, mirroring `admission._signature_valid` rather than
+inventing a second scheme.
+
+| Piece | Where | Notes |
+|---|---|---|
+| Canonical payload | `policy_signing_payload()` | Routes through `admission.canonical_signing_bytes` — the **same** sorted-keys/compact-separators/UTF-8 canonicalization `PluginManifest.signing_payload` uses, so the two trust roots cannot drift |
+| Primitive | `admission.hmac_signature` | HMAC-SHA256 + `hmac.compare_digest`. POC symmetric; an asymmetric verify swaps in behind the same helper |
+| Trust key | admission policy `trust_keys[<issuer>]` | The **existing** operator-controlled key store — one store, not two |
+| Opt-in | admission policy `require_policy_signature` | Separate from the plugin-facing `require_signature` |
+| Verdict | `GovernanceCeiling.signature_state` | `verified` / `unverified` / `unsigned` / `unchecked` |
+
+**Coverage** is the whole document minus `identity.signature` (a signature cannot
+cover itself). `identity.issuer` **is** covered, so a validly-signed policy cannot
+be re-labelled as issued by someone else. Signing the raw document rather than a
+projection of the parsed ceiling is deliberate: it covers keys *this build does
+not know* — a companion-registered scope, a future schema addition — so removing
+or editing one is still detected, and it keeps the payload scope-name-agnostic
+(adding a scope stays a `SCOPE_CATALOG` data change). Because coverage is
+byte-canonical over the *parsed* JSON, re-indenting or reordering keys does not
+break a signature while changing any value or key does.
+
+**Why the trust key comes from the admission policy** and not from
+`security_policy.json` itself: a document must not be the authority on whether it
+has to be authentic. A `require_signature` flag inside the security policy would
+be self-referential — an attacker rewriting the policy would simply clear it. The
+admission policy is already this package's fleet-controlled trust root, already
+carries `trust_keys`, and is already on the `is_sensitive_path` keystone, so the
+governance trust root inherits every protection the plugin trust root has.
+`_policy_trust_settings()` reads through **`admission.read_policy_trust_root()`**,
+a deliberately side-effect-free reader — *not* `load_admission_policy`, which
+records the dashboard admission posture and emits a **critical**
+`governance_degraded` SEL on an absent policy. That is correct once per process at
+boot and wrong here, because `gatewayd` re-loads the security policy **per app
+call** (`mcp_gateway/app_call.py`), so reusing the audited loader would flip the
+governance indicator to degraded and append a critical audit record on every app
+call. It never raises, and on an absent/unreadable admission policy it yields no
+keys and a `False` opt-in: an admission-policy problem is already handled loudly
+and fail-closed in admission's own domain, and it must not additionally make the
+security ceiling unloadable through a second path.
+
+**Advisory by default, fail-closed on opt-in.** With `require_policy_signature`
+unset (the default, and the seeded value), an unsigned or unverifiable policy
+still loads and still governs — every existing standalone install and every
+existing policy file keeps working unchanged, with no key to provision. This is
+the compatibility contract: verification adds *reporting*, not a new way for a
+working install to stop booting. With the flag set, a non-`verified` verdict
+raises `PlatformCompositionError` and **aborts boot** (plus a `failed_closed`
+governance-health mark), matching the module's existing fail-closed discipline for
+a wrong version, a missing `boot` object, or an unknown governed key.
+
+**All three tiers are verified — none is exempt.** When `require_policy_signature`
+is OFF (the default, and what the `amazon` edition ships), verification is advisory
+at every tier: an unsigned policy — bundled or on disk — still loads and still
+governs, so existing installs are unchanged. When it is ON, every tier must present
+a signature that verifies against a trust key, or boot aborts.
+
+The companion-bundled tier is **not** exempt: the plugin-admission manifest
+signature covers only the manifest fields (`name` / `publisher` / `version` /
+`capabilities` — see `admission.PluginManifest.signing_payload`), **not** the bytes
+of the packaged `security_policy.json`. So "covered by admission" never actually
+protected the resource — a tampered bundled policy would have loaded unchecked. An
+edition that opts into `require_policy_signature` therefore signs its bundled policy
+like any other governed tier.
+
+And a **missing** policy does not satisfy the requirement: with
+`require_policy_signature` ON and no policy present at any tier, boot aborts rather
+than returning an ungoverned host — otherwise a mandated-signature fleet that lost
+or never shipped its policy file would silently run with no ceiling at all, the
+exact failure the flag exists to prevent.
+
+**Load computes the verdict; one gate enforces it.** `_verify_policy_signature`
+records each tier's `signature_state` as it loads, and never raises.
+`assert_policy_signature_satisfied` is the single enforcement point, called by boot
+on the **final composed context** alongside the other governance floor gates. It
+rejects both failure shapes: a surviving ceiling whose state is not `verified`, and
+no ceiling at all.
+
+The split is what makes tier precedence work. `load_security_policy` walks
+env → companion bundle → operator home and runs more than once per boot with
+different arguments — the core calls it with no `bundled_loader`, a companion
+edition re-invokes it with one. A raise inside the loader fires on whichever tier
+that particular pass happened to reach, so an enterprise host with an unsigned home
+file and a correctly signed companion bundle aborted on the *lower-precedence* tier
+the core's pass fell through to, even though the bundle is what the final ceiling
+comes from. Only the composed result knows which tier won, so only the composed
+result can be judged.
+
+`gatewayd`'s per-app-call reload calls the gate too, on the ceiling that reload
+produced, so a policy tampered with *after* boot cannot widen an app callback — boot
+verified the original bytes, which says nothing about what the reload just read.
+
+**Residual gap — absence is not decidable in `gatewayd`.** That gate is applied only
+when the reload returns a ceiling. The daemon is not the composition process: it
+never runs `boot_platform`, so it loads with no `bundled_loader` and cannot see a
+companion-bundled ceiling. `None` there is the *normal* result on a bundle-only
+enterprise host, not evidence the policy is gone, so refusing on it would deny every
+app callback. Deletion is therefore caught at boot but not mid-session; closing that
+means handing `gatewayd` the composed ceiling instead of re-reading the file, which
+is pre-existing behavior and a separate change.
+
+**A broken trust root reads as no opt-in, on purpose.** An admission file that is
+absent, unreadable, or not a JSON object leaves verification advisory rather than
+failing closed. That is not a gap: an attacker who can write `admission_policy.json`
+is outside this threat model (see below) and would simply set the flag to `false`,
+which parses fine — so fail-closing on a *malformed* file would catch only a clumsy
+variant of an attack the design already concedes, while turning a non-atomic fleet
+push or a hand-edit typo into an unbootable host. Corruption there is a reliability
+event: it is logged at WARNING, plugin admission independently fails closed on the
+same file, and `kirocrew doctor` reports it.
+
+
+**Threat model.** This detects **offline / at-rest tampering and substitution** of
+a policy file by anyone without the issuer's key: a widened ceiling, a stripped
+scope, a swapped file, a policy re-labelled to a different issuer. It does **not**
+defend against an attacker who holds the trust key, and it is **not** a
+confinement boundary for a local process running as the operator — such a process
+can edit the admission policy (clearing the opt-in) as easily as the security
+policy. The `is_sensitive_path` keystone remains the control that stops the
+*agent* from reaching either file; signing is what makes a fleet-pushed ceiling
+tamper-**evident** to the host that loads it. Symmetric HMAC also means the
+verifier holds a secret capable of *producing* signatures, so key distribution is
+the residual weakness an asymmetric successor removes.
+
+`kirocrew policy show` prints the verdict verbatim
+(`GovernanceCeiling.signature_summary()`) so an operator can tell an established
+issuer from a decorative one — it previously printed a bare `issuer` that no check
+had ever established.
+
 ## Boot composition
 
 `build_default_context` (the single chokepoint backing both a real boot and the
@@ -837,8 +971,9 @@ operation / item / reason are redacted via `redact_via_context` **before** `log`
 ## CLI
 
 `kirocrew policy {show | validate | explain <scope> <item> | profile <name>}` —
-read-only operator diagnostics. `explain` traces the rule/layer/reason and the
-live gate verdict. Deliberately **not** exposed as an MCP tool: it surfaces
+read-only operator diagnostics. `show` reports the ceiling's **proven** provenance
+(`signed and verified` / `signed but UNVERIFIED` / `unsigned`) rather than a bare
+issuer string. `explain` traces the rule/layer/reason and the live gate verdict. Deliberately **not** exposed as an MCP tool: it surfaces
 governance internals that the agent (the governed subject) should not enumerate.
 
 ## Companion (separate package, separate CR)
@@ -852,7 +987,11 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 
 - `platform/governance.py` — archetypes, catalog, loader, evaluator
   (`resolve`, `resolve_ordinal`, `gate_decision`, `assert_governance_floor`,
-  `compose_profiles`, `resolve_pinned_commands` + `COMMANDS_SCOPE` force-pins).
+  `compose_profiles`, `resolve_pinned_commands` + `COMMANDS_SCOPE` force-pins,
+  `policy_signing_payload` + the `identity.signature` verification path).
+- `platform/admission.py` — `canonical_signing_bytes` / `hmac_signature` (shared
+  by both trust roots), `require_policy_signature` / `trust_keys`, and
+  `read_policy_trust_root` (the side-effect-free trust-root reader).
 - `platform/governance_profiles.py` — `ProfileStore` (hot-reload),
   `resolve_active_scope`, `governance_permits`, `governance_floor_ordinal`,
   `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on),
@@ -873,7 +1012,10 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 ## Tests
 
 `test_governance_policy.py` (archetypes + loader + evaluator + E1–E13 vectors +
-extensibility), `test_governance_boot.py` (compose at boot), 
+extensibility + the `identity.signature` states, the opt-in fail-closed gate, and
+the `policy show` provenance reporting), `test_platform_admission.py`
+(`require_policy_signature` / shared signing primitives),
+`test_governance_boot.py` (compose at boot), 
 `test_governance_self_protection.py` (keystone), `test_governance_profiles.py`
 (resolution + binding + hot-reload + fail-closed reload dispositions),
 `test_governance_gate.py` (Plane A enforcement + audit),

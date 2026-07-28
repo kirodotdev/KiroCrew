@@ -196,10 +196,31 @@ def _governance_denial(
     try:
         # circular import: platform.governance imports gateway-adjacent modules;
         # loaded per-call (also keeps the policy read fresh). Keep lazy.
-        from kiro_crew.platform.governance import load_security_policy, resolve
+        from kiro_crew.platform.governance import (
+            assert_policy_signature_satisfied,
+            load_security_policy,
+            resolve,
+        )
         from kiro_crew.platform.governance_profiles import resolve_active_scope
 
         ceiling = load_security_policy()
+        # Enforce the signature mandate on the ceiling this LIVE re-read produced —
+        # but only when it produced one. A tampered policy file must not widen an
+        # app callback just because this path re-reads it after boot already
+        # verified the original (the raise lands in the except clause below, which
+        # denies — the correct polarity here).
+        #
+        # Gated on `is not None` deliberately. This daemon is not the composition
+        # process: it never runs ``boot_platform``, so it calls
+        # ``load_security_policy()`` with no ``bundled_loader`` and cannot see a
+        # companion-bundled ceiling. ``None`` here therefore does NOT mean "the
+        # policy is gone" — on a bundle-only enterprise host it is the normal
+        # result, and refusing on it would deny every app callback. Absence stays
+        # decidable only where composition happened (boot); closing that residual
+        # gap means handing gatewayd the composed ceiling instead of re-reading the
+        # file, which is pre-existing behavior and a separate change.
+        if ceiling is not None:
+            assert_policy_signature_satisfied(ceiling)
         profile = resolve_active_scope(session_key, agent=agent)
         if ceiling is None and profile is None:
             return None  # ungoverned standalone host — permits, as on Plane A

@@ -1011,7 +1011,12 @@ def _policy(args: argparse.Namespace) -> None:
         if ceiling is None:
             print("No enterprise security policy is active (editable secure-defaults).")
             return
-        print(f"🛡️  Security policy v{ceiling.version} (issuer: {ceiling.identity_issuer or '—'})")
+        # Report the PROVEN provenance, not the claimed one: printing a bare
+        # issuer implied a trust decision nothing had made.  signature_summary()
+        # distinguishes verified / signed-but-unverified / unsigned so an operator
+        # can tell an established issuer from a decorative one.
+        print(f"🛡️  Security policy v{ceiling.version}")
+        print(f"   provenance: {ceiling.signature_summary()}")
         print(
             f"   boot: require_sandbox={ceiling.boot.require_sandbox} "
             f"allow_terminal={ceiling.boot.allow_terminal} fail_closed={ceiling.boot.fail_closed}"
