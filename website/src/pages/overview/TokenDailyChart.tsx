@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useState } from 'react'
+import { formatCost } from '../../utils/formatCost'
 
 export type TokenBucket = {
   input: number
@@ -201,7 +202,7 @@ export function TokenDailyChart({
                 <div>In: {fmtNum(d.input)} · Out: {fmtNum(d.output)}</div>
                 {d.cacheRead > 0 && <div>Cache read: {fmtNum(d.cacheRead)}</div>}
                 {d.cacheCreate > 0 && <div>Cache create: {fmtNum(d.cacheCreate)}</div>}
-                {d.costUsd > 0 && <div>Cost: ${d.costUsd.toFixed(4)}</div>}
+                {d.costUsd > 0 && <div>Cost: {formatCost(d.costUsd)}</div>}
                 {(providerSel !== ALL || effectiveModel !== ALL) && (
                   <div className="mt-1 pt-1 border-t border-border text-muted">
                     {providerSel !== ALL && <div>Provider: {providerSel}</div>}

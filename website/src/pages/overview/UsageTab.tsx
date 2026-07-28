@@ -4,6 +4,7 @@ import { Card, CardTitle, Badge } from '../../components/ui'
 import { useProvider } from '../../providers'
 import type { NormalizedUsage } from '../../providers'
 import { TokenDailyChart } from './TokenDailyChart'
+import { formatCost } from '../../utils/formatCost'
 
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -61,7 +62,7 @@ export default function UsageTab() {
             {data.tokens.cacheCreation > 0 && <Row label="Cache creation" value={fmtNum(data.tokens.cacheCreation)} />}
             {data.tokens.cacheRead > 0 && <Row label="Cache read" value={fmtNum(data.tokens.cacheRead)} />}
             <Row label="Total tokens" value={fmtNum(data.tokens.total)} />
-            {data.costUsd != null && <Row label="Total cost" value={`$${data.costUsd.toFixed(4)}`} />}
+            {data.costUsd != null && <Row label="Total cost" value={formatCost(data.costUsd)} />}
             {data.totalTurns != null && data.totalTurns > 0 && <Row label="Total turns" value={data.totalTurns} />}
             {data.totalDurationMs != null && data.totalDurationMs > 0 && <Row label="Total API time" value={`${(data.totalDurationMs / 1000).toFixed(1)}s`} />}
           </div>

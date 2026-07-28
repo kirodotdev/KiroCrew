@@ -14,6 +14,7 @@ import InfoTip from '../components/InfoTip'
 import { useProvider } from '../providers'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
+import { formatCost } from '../utils/formatCost'
 
 function fmtTokens(n: number): string {
   return n >= 1_000_000 ? (n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1) + 'M' : (n / 1_000).toFixed(0) + 'K'
@@ -403,7 +404,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       {hasOverage && <span className="text-muted">Overage credits: <span className="text-warn font-medium">{overage.toFixed(1)}</span></span>}
                     </div>
                     <div className="flex gap-3">
-                      <span className="text-muted">Est. cost: <span className="text-text-strong font-medium">${usage.cost_usd?.toFixed(2) ?? '—'}</span></span>
+                      <span className="text-muted">Est. cost: <span className="text-text-strong font-medium">{formatCost(usage.cost_usd)}</span></span>
                       {usage.overage_rate && <span className="text-muted">${usage.overage_rate}/req</span>}
                     </div>
                   </div>

@@ -8,6 +8,7 @@ import { PageHeader, Card, CardTitle, StatCard, Btn, Input, Toggle , Badge} from
 import StyledSelect from '../components/StyledSelect'
 import InfoTip from '../components/InfoTip'
 import { safeHttpUrl } from '../lib/safeUrl'
+import { formatCost } from '../utils/formatCost'
 
 const BASE = '/api/deploy'
 
@@ -230,7 +231,7 @@ export default function ArtifactDeployPage() {
         <StatCard label="Profiles" value={profiles.length} />
         <StatCard label="Active Deployments" value={totalDeployments} accent />
         <StatCard label="Ready to Deploy" value={draftWebapps.length} delay={60} />
-        <StatCard label="Est. Cost (not a bill)" value={estCost > 0 ? `≤ $${estCost.toFixed(4)}` : '~$0'} delay={120} />
+        <StatCard label="Est. Cost (not a bill)" value={estCost > 0 ? `≤ ${formatCost(estCost)}` : formatCost(0)} delay={120} />
       </div>
 
       {notice && (
