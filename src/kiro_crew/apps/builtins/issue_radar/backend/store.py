@@ -80,6 +80,66 @@ def repo_slug_dir_name(owner: str, repo: str) -> str:
     return f"{owner}/{repo}"
 
 
+# ── provider-scoped storage ─────────────────────────────────────────────────
+#
+# Issue Radar was GitHub-only, so a repo's data lived at
+# ``<data>/repos/{owner}/{repo}``. GitLab adds two dimensions to a repo's
+# identity -- the provider and, for self-managed instances, the HOST -- and both
+# must be part of the storage path, because ``group/project`` names an entirely
+# different project on gitlab.com than on a private instance, and a GitLab group
+# can share a name with a GitHub owner.
+#
+# Public GitHub keeps its ORIGINAL path. That is what makes this change
+# migration-free: an install that has been triaging GitHub issues keeps every
+# cache, setting, and investigation note exactly where it already is, and a bug
+# in the new layout cannot corrupt existing data because the new layout is only
+# ever entered by a non-GitHub key.
+#
+# Everything else is rooted under a reserved segment that a GitHub owner can
+# never produce: ``parse_github_repo_url`` constrains owners to
+# ``[A-Za-z0-9._-]+``, so no ``@``. Without that guarantee a repo literally named
+# after the reserved segment could be made to collide with the provider subtree.
+_PROVIDER_SUBTREE = "@providers"
+
+
+def _host_slug(host: str) -> str:
+    """Filesystem-safe form of a host[:port].
+
+    A port makes the host ``gitlab.internal:8443``, and ``:`` is not a legal path
+    character on Windows. The whole app is POSIX-only at the CLI layer, but store
+    functions are exercised on Windows in CI, so the separator is folded to ``_``
+    here rather than leaving a path that only fails on one platform.
+    """
+    return (host or "").lower().replace(":", "_")
+
+
+def provider_root(
+    owner: str = "",
+    repo: str = "",
+    root: Path | None = None,
+    *,
+    provider: str = "github",
+    host: str = "github.com",
+) -> Path:
+    """The data root that scopes one provider+host's repositories.
+
+    Pass the result as ``root=`` to any per-repo store function and its whole
+    subtree (caches, settings, watch state, investigations) lands under this
+    provider instead of GitHub's legacy tree. Threading the scope through the
+    ``root`` parameter every store function ALREADY accepts is deliberate: it
+    keeps the ~40 cache functions byte-identical, so their behaviour -- and their
+    tests -- cannot regress while GitLab support is added.
+
+    ``owner``/``repo`` are accepted and unused so callers can pass a repo key
+    positionally without special-casing; the scope depends only on provider+host.
+    """
+    del owner, repo
+    base = data_dir(root)
+    if provider == "github" and host == "github.com":
+        return base  # legacy layout — existing data stays exactly where it is
+    return base / _PROVIDER_SUBTREE / provider / _host_slug(host)
+
+
 def repo_data_dir(owner: str, repo: str, root: Path | None = None) -> Path:
     d = data_dir(root) / "repos" / owner / repo
     d.mkdir(parents=True, exist_ok=True)
@@ -385,54 +445,148 @@ def read_members_cache(owner: str, repo: str, root: Path | None = None) -> dict 
 
 
 def list_connected_repos(root: Path | None = None) -> list[dict[str, Any]]:
-    """Return the connected-repo list from config.json (``[]`` if none)."""
-    return read_config(root).get("repos", [])
+    """Return the connected-repo list from config.json (``[]`` if none).
+
+    Entries written before GitLab support carry no ``provider``/``host``, so both
+    are filled in on read rather than being left absent. Doing it here -- the one
+    function every reader goes through -- means no caller (route, watcher, or UI)
+    has to know that a legacy entry means GitHub.
+    """
+    repos = read_config(root).get("repos", [])
+    for entry in repos:
+        if isinstance(entry, dict):
+            entry.setdefault("provider", "github")
+            entry.setdefault("host", "github.com")
+    return repos
 
 
-def is_repo_connected(owner: str, repo: str, root: Path | None = None) -> bool:
-    config = read_config(root)
-    return any(r["owner"] == owner and r["repo"] == repo for r in config.get("repos", []))
+def is_repo_connected(
+    owner: str,
+    repo: str,
+    root: Path | None = None,
+    *,
+    provider: str = "github",
+    host: str = "github.com",
+) -> bool:
+    """Whether this exact provider+host+owner+repo is connected.
+
+    This is the app's authorization gate, not a convenience lookup: routes accept
+    ``owner``/``repo`` straight from the query string WITHOUT charset validation
+    and rely on this returning False for anything that was not deliberately
+    connected from a parsed URL. Including provider+host in the match is therefore
+    load-bearing -- without it, a request naming an allowlisted self-managed
+    project could be served against gitlab.com (or against GitHub) at the same
+    path.
+    """
+    return any(
+        _same_repo(r, owner, repo, provider=provider, host=host)
+        for r in list_connected_repos(root)
+    )
 
 
-def add_connected_repo(owner: str, repo: str, *, permissions: dict | None = None, root: Path | None = None) -> None:
-    """Add (owner, repo) to config.json's repo list. Idempotent.
+def find_connected_repo(
+    owner: str,
+    repo: str,
+    root: Path | None = None,
+    *,
+    provider: str = "github",
+    host: str = "github.com",
+) -> dict[str, Any] | None:
+    """The config entry for this exact provider+host+owner+repo, or ``None``.
 
-    Stores the repo's GitHub ``permissions`` object (admin/maintain/push/pull/
-    triage) so the UI can badge Read/Write access without a live call; updates
-    it on reconnect if a fresh value is supplied.
+    The read-only counterpart to :func:`is_repo_connected`, for callers that need
+    the entry's payload (notably its cached ``permissions``) and not just whether
+    it exists. Public so callers do not reach into :func:`_same_repo`.
+    """
+    for entry in list_connected_repos(root):
+        if _same_repo(entry, owner, repo, provider=provider, host=host):
+            return entry
+    return None
 
-    Identity is CASE-INSENSITIVE. GitHub names are case-preserving but not
-    case-sensitive, so ``acme/widget`` and ``Acme/Widget`` are one repo — a
-    case-sensitive match appended a second entry for it, and that duplicate then
-    carried its own independent caches and triage settings. The first spelling
-    connected stays the stored one, so existing entries are never rewritten.
+
+def add_connected_repo(
+    owner: str,
+    repo: str,
+    *,
+    permissions: dict | None = None,
+    provider: str = "github",
+    host: str = "github.com",
+    root: Path | None = None,
+) -> None:
+    """Add a repo to config.json's repo list. Idempotent.
+
+    Stores the repo's ``permissions`` object (admin/maintain/push/pull/triage) so
+    the UI can badge Read/Write access without a live call; updates it on
+    reconnect if a fresh value is supplied.
+
+    Identity is CASE-INSENSITIVE for the owner/repo pair. GitHub names are
+    case-preserving but not case-sensitive, so ``acme/widget`` and ``Acme/Widget``
+    are one repo -- a case-sensitive match appended a second entry for it, and that
+    duplicate then carried its own independent caches and triage settings. The
+    first spelling connected stays the stored one, so existing entries are never
+    rewritten.
+
+    GitLab project paths ARE case-sensitive, but folding case here would only ever
+    merge two entries a user cannot distinguish in the UI anyway, and treating the
+    two providers differently would mean two identity rules to keep in sync. The
+    conservative single rule is kept.
     """
     with _config_lock(root):
         config = read_config(root)
         repos = config.setdefault("repos", [])
-        existing = next((r for r in repos if _same_repo(r, owner, repo)), None)
+        existing = next(
+            (r for r in repos if _same_repo(r, owner, repo, provider=provider, host=host)), None
+        )
         if existing is None:
-            repos.append({"owner": owner, "repo": repo, "enabled": True, "permissions": permissions})
+            repos.append(
+                {
+                    "owner": owner,
+                    "repo": repo,
+                    "provider": provider,
+                    "host": host,
+                    "enabled": True,
+                    "permissions": permissions,
+                }
+            )
         elif permissions is not None:
             existing["permissions"] = permissions
         write_config(config, root)
 
 
-def _same_repo(entry: dict, owner: str, repo: str) -> bool:
-    """Case-insensitive owner/repo identity for a config entry."""
+def _same_repo(
+    entry: dict, owner: str, repo: str, *, provider: str = "github", host: str = "github.com"
+) -> bool:
+    """Provider-, host-, and case-insensitive-name identity for a config entry.
+
+    An entry missing ``provider``/``host`` predates GitLab support and therefore
+    means public GitHub; it is treated as such rather than as a non-match, so
+    already-connected repos keep working after an upgrade.
+    """
+    entry_provider = str(entry.get("provider") or "github").lower()
+    entry_host = str(entry.get("host") or "github.com").lower()
     return (
-        str(entry.get("owner", "")).casefold() == owner.casefold()
+        entry_provider == provider.lower()
+        and entry_host == host.lower()
+        and str(entry.get("owner", "")).casefold() == owner.casefold()
         and str(entry.get("repo", "")).casefold() == repo.casefold()
     )
 
 
-def set_repo_permissions(owner: str, repo: str, permissions: dict | None, *, root: Path | None = None) -> None:
+def set_repo_permissions(
+    owner: str,
+    repo: str,
+    permissions: dict | None,
+    *,
+    provider: str = "github",
+    host: str = "github.com",
+    root: Path | None = None,
+) -> None:
     """Persist a repo's permissions object into its config entry (self-heal path
     for repos connected before permissions were tracked)."""
     with _config_lock(root):
         config = read_config(root)
         for r in config.get("repos", []):
-            if _same_repo(r, owner, repo):
+            if _same_repo(r, owner, repo, provider=provider, host=host):
                 r["permissions"] = permissions
         write_config(config, root)
 
@@ -504,10 +658,17 @@ def _normalize_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def read_repo_settings(owner: str, repo: str, root: Path | None = None) -> dict[str, Any]:
+def read_repo_settings(
+    owner: str,
+    repo: str,
+    root: Path | None = None,
+    *,
+    provider: str = "github",
+    host: str = "github.com",
+) -> dict[str, Any]:
     """Return the normalized triage settings for a repo (defaults if unset)."""
     for r in read_config(root).get("repos", []):
-        if r["owner"] == owner and r["repo"] == repo:
+        if _same_repo(r, owner, repo, provider=provider, host=host):
             return _normalize_settings(r.get("settings"))
     return dict(DEFAULT_REPO_SETTINGS)
 
@@ -528,6 +689,7 @@ class SettingsConflict(Exception):
 def write_repo_settings(
     owner: str, repo: str, settings: dict[str, Any], *,
     expected_revision: int | None = None, root: Path | None = None,
+    provider: str = "github", host: str = "github.com",
 ) -> dict[str, Any]:
     """Persist (after normalizing) a repo's triage settings into its config entry.
 
@@ -540,7 +702,7 @@ def write_repo_settings(
     with _config_lock(root):
         config = read_config(root)
         for r in config.get("repos", []):
-            if r["owner"] == owner and r["repo"] == repo:
+            if _same_repo(r, owner, repo, provider=provider, host=host):
                 current = _normalize_settings(r.get("settings"))
                 if expected_revision is not None and expected_revision != current["revision"]:
                     raise SettingsConflict(current)
@@ -555,7 +717,8 @@ _SETTINGS_LABEL_ROLES = ("triage_labels", "good_first_issue_labels")
 
 
 def add_setting_label(
-    owner: str, repo: str, role: str, label: str, *, root: Path | None = None
+    owner: str, repo: str, role: str, label: str, *, root: Path | None = None,
+    provider: str = "github", host: str = "github.com",
 ) -> dict[str, Any]:
     """Append ONE label to a repo's triage-label role, under the config lock.
 
@@ -575,7 +738,7 @@ def add_setting_label(
     with _config_lock(root):
         config = read_config(root)
         for r in config.get("repos", []):
-            if r["owner"] == owner and r["repo"] == repo:
+            if _same_repo(r, owner, repo, provider=provider, host=host):
                 current = _normalize_settings(r.get("settings"))
                 if label not in current[role]:
                     current[role] = [*current[role], label]
@@ -629,19 +792,34 @@ def write_watch_state(
     )
 
 
-def remove_connected_repo(owner: str, repo: str, *, root: Path | None = None) -> bool:
+def remove_connected_repo(
+    owner: str,
+    repo: str,
+    *,
+    root: Path | None = None,
+    provider: str = "github",
+    host: str = "github.com",
+) -> bool:
     """Disconnect a repo: drop it from config.json and delete its local cache
-    dir. Local-only — nothing on GitHub is touched. Returns True if a repo was
-    removed, False if it was not connected."""
+    dir. Local-only — nothing on the provider is touched. Returns True if a repo
+    was removed, False if it was not connected.
+
+    The cache dir is resolved through :func:`provider_root`, so disconnecting a
+    GitLab project deletes ITS subtree and can never rmtree a same-named GitHub
+    repo's data.
+    """
     with _config_lock(root):
         config = read_config(root)
         repos = config.get("repos", [])
-        kept = [r for r in repos if not (r["owner"] == owner and r["repo"] == repo)]
+        kept = [
+            r for r in repos if not _same_repo(r, owner, repo, provider=provider, host=host)
+        ]
         if len(kept) == len(repos):
             return False
         config["repos"] = kept
         write_config(config, root)
-    cache_dir = repo_data_dir(owner, repo, root)
+    scope = provider_root(root=root, provider=provider, host=host)
+    cache_dir = repo_data_dir(owner, repo, scope)
     if cache_dir.exists():
         shutil.rmtree(cache_dir, ignore_errors=True)
     # Clean up the now-empty owner dir if this was the last repo for that owner.
@@ -1182,13 +1360,32 @@ def _now_iso() -> str:
 now_iso = _now_iso
 
 
-def investigation_path(owner: str, repo: str, number: int, root: Path | None = None) -> Path:
-    return repo_data_dir(owner, repo, root) / f"investigation-{int(number)}.json"
+def investigation_path(
+    owner: str, repo: str, number: int, root: Path | None = None, *, kind: str = "issue"
+) -> Path:
+    """Path of one item's investigation record.
+
+    ``kind`` is the record's NAMESPACE, not the item's type, and the caller is
+    responsible for having folded it (see ``provider.investigation_kind``). It
+    exists because a number does not always identify an item on its own: GitHub
+    draws issues and pull requests from ONE sequence, so ``#5`` is unique, while
+    GitLab keeps two -- issue ``#5`` and merge request ``!5`` are unrelated items.
+    Sharing one file between them would make "Review MR !5" resume issue #5's
+    session and overwrite its findings.
+
+    ``"issue"`` deliberately keeps the historical filename, so every existing
+    record (all of which are GitHub's, where the namespace is shared) is found
+    exactly where it was written and nothing needs migrating.
+    """
+    suffix = "" if kind == "issue" else f"{kind}-"
+    return repo_data_dir(owner, repo, root) / f"investigation-{suffix}{int(number)}.json"
 
 
-def read_investigation(owner: str, repo: str, number: int, root: Path | None = None) -> dict | None:
-    """Return an issue's investigation record, or None if never investigated."""
-    path = investigation_path(owner, repo, number, root)
+def read_investigation(
+    owner: str, repo: str, number: int, root: Path | None = None, *, kind: str = "issue"
+) -> dict | None:
+    """Return an item's investigation record, or None if never investigated."""
+    path = investigation_path(owner, repo, number, root, kind=kind)
     if not path.is_file():
         return None
     try:
@@ -1231,7 +1428,8 @@ def _normalize_findings(raw: Any) -> dict[str, Any] | None:
 
 
 def write_investigation(
-    owner: str, repo: str, number: int, patch: dict[str, Any], *, root: Path | None = None
+    owner: str, repo: str, number: int, patch: dict[str, Any], *,
+    root: Path | None = None, kind: str = "issue",
 ) -> dict[str, Any]:
     """Upsert an issue's investigation record, MERGING ``patch`` into any
     existing record (last-writer-wins per field). ``started_at`` is stamped once
@@ -1242,11 +1440,11 @@ def write_investigation(
     open stamp) is valid. Returns the stored record."""
     number = int(number)
     now = _now_iso()
-    lock_path = investigation_path(owner, repo, number, root).with_suffix(".lock")
+    lock_path = investigation_path(owner, repo, number, root, kind=kind).with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "w") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
-            existing = read_investigation(owner, repo, number, root) or {}
+            existing = read_investigation(owner, repo, number, root, kind=kind) or {}
 
             record: dict[str, Any] = {
                 "owner": owner,
@@ -1271,7 +1469,10 @@ def write_investigation(
             if "findings" in patch:
                 record["findings"] = _normalize_findings(patch.get("findings"))
 
-            atomic_write(investigation_path(owner, repo, number, root), json.dumps(record, indent=2))
+            atomic_write(
+                investigation_path(owner, repo, number, root, kind=kind),
+                json.dumps(record, indent=2),
+            )
     return record
 
 

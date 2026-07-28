@@ -44,7 +44,10 @@ import {
   issueRadarApi,
   type Issue, type Reactions, type TimelineEvent, type DetailLabel,
   type SuggestedLabel, type IssueDetailResponse, type IssuesResponse,
+  type RepoRef,
 } from '../api'
+import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
+import { providerTerms } from '../lib/links'
 
 /** A relative timestamp that flips to the absolute local date-time when
  * clicked (and always shows it on hover). Within the last 24h it reads
@@ -305,11 +308,11 @@ function CommentCard({
 
 /** Icon + colour + inline sentence for a non-comment timeline event. */
 function eventVisual(
-  ev: TimelineEvent, owner: string, repo: string, colorByName: Map<string, string>,
+  ev: TimelineEvent, repoRef: RepoRef, colorByName: Map<string, string>,
 ): { Icon: LucideIcon; color: string; body: React.ReactNode } {
   const who = <span className="font-medium text-text">{ev.actor ?? 'someone'}</span>
   const person = (login?: string | null) => <span className="font-medium text-text">{login ?? 'someone'}</span>
-  const commitUrl = ev.commit_id ? `https://github.com/${owner}/${repo}/commit/${ev.commit_id}` : undefined
+  const commitUrl = ev.commit_id ? commitUrlFor(repoRef, ev.commit_id) : undefined
   const labelChip = ev.label
     ? <LabelChip name={ev.label.name} color={ev.label.color || colorByName.get(ev.label.name) || '888888'} small />
     : null
@@ -359,7 +362,8 @@ function eventVisual(
           <>
             {who} referenced this in{' '}
             <a href={ev.source?.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
-              {ev.source?.is_pr ? 'PR' : 'issue'} #{ev.source?.number}
+              {ev.source?.is_pr ? providerTerms(repoRef).changeRequestShort : 'issue'}
+              {providerTerms(repoRef).sigil}{ev.source?.number}
             </a>{' '}
             <span className="text-muted">{ev.source?.title}</span>
           </>
@@ -403,21 +407,23 @@ function refStateTint(state: string): string {
  *
  * A row into the ACTIVE repo opens in the in-app reference sheet, exactly like a
  * reference clicked in the body (see RefLink). A cross-reference from a DIFFERENT
- * repo — which the timeline does surface — keeps opening on GitHub, because the
- * detail panes are bound to the active repo's labels, roster and permissions. */
+ * repo — which the timeline does surface — keeps opening on its own provider,
+ * because the detail panes are bound to the active repo's labels, roster and
+ * permissions. */
 function RelatedLinks({ items }: { items: RelatedRef[] }) {
   const { active, openRef } = useIssueRadar()
-  const { owner, repo } = active
+  const terms = providerTerms(active)
   return (
     <section className="mb-6">
       <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-3 font-medium">
-        <Link2 size={12} /> Linked pull requests &amp; issues
+        <Link2 size={12} /> Linked {terms.changeRequestPlural} &amp; issues
         <span className="text-muted normal-case tracking-normal opacity-70">· {items.length}</span>
       </div>
       <div className="flex flex-col gap-1.5">
         {items.map((r) => {
-          const kind = r.is_pr ? 'PR' : 'issue'
-          const target = parseRepoRef(r.url, owner, repo)
+          const kind = r.is_pr ? terms.changeRequestShort : 'issue'
+          const sigil = r.is_pr ? terms.sigil : '#'
+          const target = parseRepoRef(r.url, active)
           return (
             <a
               key={r.url}
@@ -425,8 +431,8 @@ function RelatedLinks({ items }: { items: RelatedRef[] }) {
               target="_blank"
               rel="noreferrer"
               title={target
-                ? `Open ${kind} #${r.number} here`
-                : `Open ${kind} #${r.number} on GitHub`}
+                ? `Open ${kind} ${sigil}${r.number} here`
+                : `Open ${kind} ${sigil}${r.number} on ${terms.providerName}`}
               onClick={target
                 ? (e) => {
                   // Modified clicks stay the browser's: open-in-new-tab must work.
@@ -442,10 +448,12 @@ function RelatedLinks({ items }: { items: RelatedRef[] }) {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[13px] text-text group-hover:text-accent leading-snug line-clamp-2 break-words">
-                  {r.title || `${r.is_pr ? 'Pull request' : 'Issue'} #${r.number}`}
+                  {r.title || `${r.is_pr ? terms.changeRequestTitle : 'Issue'} ${sigil}${r.number}`}
                 </span>
                 <span className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[11.5px] text-muted">
-                  <span className="font-mono">{r.is_pr ? 'PR' : 'Issue'} #{r.number}</span>
+                  <span className="font-mono">
+                    {r.is_pr ? terms.changeRequestShort : 'Issue'}{sigil}{r.number}
+                  </span>
                   {r.state && <span>· {r.state}</span>}
                   {r.actor && <span>· by {r.actor}</span>}
                   {r.created_at && (
@@ -486,6 +494,10 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
     active, colorByName, memberRoleByLogin, repoLabels, countByLabel, canWrite, stateFilter,
   } = useIssueRadar()
   const { owner, repo } = active
+  const scopeKey = repoScopeKey(active)
+  // GitLab calls a change request a merge request, and its CLI is `glab` — the
+  // pane's own copy follows the active repo's provider.
+  const terms = providerTerms(active)
   const queryClient = useQueryClient()
 
   // Reset transient per-issue UI (label edit mode, close menu) when the pane
@@ -516,7 +528,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   // False until this pane has fetched the CURRENT item once; see queryFn.
   const fetchedOnceRef = useRef(false)
   useEffect(() => { fetchedOnceRef.current = false }, [owner, repo, issue.number])
-  const detailKey = ['issue-radar', 'issue', owner, repo, issue.number]
+  const detailKey = ['issue-radar', 'issue', scopeKey, issue.number]
   // The lifecycle the POLL rate is derived from: whatever the pane last read,
   // falling back to the list row. A pane opened from a cross-reference starts
   // from a placeholder row with no real state, and any list row can be minutes
@@ -532,7 +544,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
       const useRefresh = refreshRef.current || fetchedOnceRef.current
       refreshRef.current = false
       fetchedOnceRef.current = true
-      return issueRadarApi.issueDetail(owner, repo, issue.number, { refresh: useRefresh })
+      return issueRadarApi.issueDetail(active, issue.number, { refresh: useRefresh })
     },
     // A CLOSED issue backs off by an order of magnitude: only late commentary can
     // still arrive, and each poll costs a fully-paginated timeline read.
@@ -545,11 +557,11 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   // regenerate button forces a recompute via ?refresh=1 (same ref trick).
   const aiRefreshRef = useRef(false)
   const aiQuery = useQuery({
-    queryKey: ['issue-radar', 'issue-ai', owner, repo, issue.number],
+    queryKey: ['issue-radar', 'issue-ai', scopeKey, issue.number],
     queryFn: () => {
       const useRefresh = aiRefreshRef.current
       aiRefreshRef.current = false
-      return issueRadarApi.issueAi(owner, repo, issue.number, { refresh: useRefresh })
+      return issueRadarApi.issueAi(active, issue.number, { refresh: useRefresh })
     },
     staleTime: Infinity,  // server owns freshness; don't refetch on window focus
   })
@@ -636,13 +648,13 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   // match, so the change survives a reload / repo switch.
   const labelMutation = useMutation({
     mutationFn: (vars: { add: string[]; remove: string[] }) =>
-      issueRadarApi.applyLabels(owner, repo, issue.number, vars.add, vars.remove),
+      issueRadarApi.applyLabels(active, issue.number, vars.add, vars.remove),
     onSuccess: (res) => {
       queryClient.setQueryData<IssueDetailResponse>(detailKey, (old) =>
         old ? { ...old, detail: { ...old.detail, labels: res.labels } } : old)
       const names = res.labels.map((l) => l.name)
       queryClient.setQueryData<IssuesResponse>(
-        ['issue-radar', 'issues', owner, repo, stateFilter],
+        ['issue-radar', 'issues', scopeKey, stateFilter],
         (old) => old
           ? { ...old, issues: old.issues.map((i) => i.number === issue.number ? { ...i, labels: names } : i) }
           : old,
@@ -661,7 +673,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
 
   const stateMutation = useMutation({
     mutationFn: (vars: { state: 'open' | 'closed'; reason?: 'completed' | 'not_planned' }) =>
-      issueRadarApi.setIssueState(owner, repo, issue.number, vars.state, vars.reason),
+      issueRadarApi.setIssueState(active, issue.number, vars.state, vars.reason),
     onSuccess: (res) => {
       queryClient.setQueryData<IssueDetailResponse>(detailKey, (old) =>
         old ? { ...old, detail: { ...old.detail, state: res.state, state_reason: res.state_reason } } : old)
@@ -674,7 +686,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
       // a refresh reconciles cleanly.
       for (const sf of ['open', 'closed'] as const) {
         queryClient.setQueryData<IssuesResponse>(
-          ['issue-radar', 'issues', owner, repo, sf],
+          ['issue-radar', 'issues', scopeKey, sf],
           (old) => old
             ? { ...old, issues: old.issues.map((i) => i.number === issue.number ? { ...i, state: res.state } : i) }
             : old,
@@ -706,7 +718,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               <StatePill state={state} reason={stateReason} />
               {/* Copy-link + issue number, sitting right after the state pill.
                   The copy button writes the URL to the clipboard; the #number
-                  itself links out to GitHub (this pair replaces the old
+                  itself links out to the provider (this pair replaces the old
                   standalone GitHub button). */}
               <span className="inline-flex items-center gap-1">
                 <button
@@ -721,7 +733,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                   href={detail?.url ?? issue.url}
                   target="_blank"
                   rel="noreferrer"
-                  title="Open on GitHub"
+                  title={`Open on ${terms.providerName}`}
                   className="font-mono text-muted hover:text-accent hover:underline"
                 >
                   #{issue.number}
@@ -741,7 +753,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                 prompt names the issue by title, so firing it from a placeholder
                 row would persist a session titled "#0" with a malformed context
                 line. */}
-            {!awaitingFirstPaint && <InvestigateButton owner={owner} repo={repo} issue={actionIssue} />}
+            {!awaitingFirstPaint && <InvestigateButton repoRef={active} issue={actionIssue} />}
             {canWrite && stateKnown && (
               <StateActions
                 state={state}
@@ -754,7 +766,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               onClick={refreshDetail}
               disabled={detailQuery.isFetching}
               aria-label="Refresh issue details"
-              title="Re-fetch this issue + its timeline from GitHub"
+              title={`Re-fetch this issue + its timeline from ${terms.providerName}`}
               className="inline-flex items-center text-muted hover:text-text disabled:opacity-30 cursor-pointer bg-transparent p-1"
             >
               <RefreshCw size={14} className={detailQuery.isFetching ? 'animate-spin' : ''} />
@@ -816,7 +828,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                   </TimelineRow>
                 )
               }
-              const { Icon, color, body: evBody } = eventVisual(ev, owner, repo, colorByName)
+              const { Icon, color, body: evBody } = eventVisual(ev, active, colorByName)
               return (
                 <TimelineRow key={i} time={ev.created_at} icon={<Icon size={13} />} iconColor={color} connector={!isOldest} pulse={isNewest}>
                   <div className="text-[12.5px] text-muted leading-snug pt-1">{evBody}</div>
@@ -839,7 +851,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               {assignees.length > 0 ? (
                 <div className="flex flex-col gap-1">
                   {assignees.map((a) => (
-                    <a key={a} href={`https://github.com/${a}`} target="_blank" rel="noreferrer" className="text-text hover:text-accent hover:underline truncate">
+                    <a key={a} href={userUrlFor(active, a)} target="_blank" rel="noreferrer" className="text-text hover:text-accent hover:underline truncate">
                       {a}
                     </a>
                   ))}

@@ -11,7 +11,8 @@
 // detail streams in. Kept dependency-free (no React, no DOM) so it is directly
 // unit-testable.
 import { maskInlineCode } from '../../../hooks/useBlockAssembler'
-import type { Issue, PullRequest } from '../api'
+import type { Issue, PullRequest, RepoRef as RepoIdentity } from '../api'
+import { changeUrlFor, isGitlab, issueUrlFor, repoWebUrl } from './links'
 
 /** Which detail pane renders a reference target. */
 export type RefKind = 'issue' | 'pull'
@@ -22,71 +23,112 @@ export interface RepoRef {
   number: number
 }
 
-/** Hosts whose `/owner/repo/...` paths are GitHub. Issue Radar identifies a repo
- * by owner/repo only (no host field — it follows `gh`'s default host), so an
- * Enterprise host is deliberately NOT matched: `acme.ghe.com/o/r#5` is a
- * different repo from `github.com/o/r#5` and must keep opening externally. */
-const GITHUB_HOSTS = new Set(['github.com', 'www.github.com'])
-
-/** Path segment → pane. GitHub's canonical PR path is `/pull/<n>`; `/pulls/<n>`
- * is accepted because it redirects there and appears in hand-written links. */
+/** Path segment → pane, per provider. GitHub's canonical PR path is `/pull/<n>`;
+ * `/pulls/<n>` is accepted because it redirects there and appears in hand-written
+ * links. GitLab nests both under `/-/` and calls the change request a
+ * `merge_requests`. */
 const KIND_BY_SEGMENT: Record<string, RefKind> = {
   issues: 'issue',
   pull: 'pull',
   pulls: 'pull',
 }
 
+const GITLAB_KIND_BY_SEGMENT: Record<string, RefKind> = {
+  issues: 'issue',
+  merge_requests: 'pull',
+}
+
+/** Whether a link's host is the repo's own host.
+ *
+ * `www.github.com` is folded onto `github.com` because it is an official alias
+ * for the same repo, and links in the wild use it. That fold is deliberately NOT
+ * applied to any other host: on a self-managed instance `www.<host>` may be a
+ * different server entirely, and inventing an alias rule there would open a pane
+ * bound to the connected project for an item that is not it. */
+function sameHost(hrefHost: string, repoHost: string, repo: RepoIdentity): boolean {
+  const a = hrefHost.toLowerCase()
+  const b = repoHost.toLowerCase()
+  if (a === b) return true
+  if (isGitlab(repo)) return false
+  const fold = (h: string) => (h === 'www.github.com' ? 'github.com' : h)
+  return fold(a) === fold(b) && fold(b) === 'github.com'
+}
+
 /**
- * Resolve `href` to a reference INTO `owner/repo`, or null when it points
- * anywhere else (another repo, another host, a discussion, a non-numeric path).
+ * Resolve `href` to a reference INTO the ACTIVE repo, or null when it points
+ * anywhere else (another repo, another host, another provider, a discussion, a
+ * non-numeric path).
  *
- * Only absolute http(s) GitHub URLs match. A relative href is deliberately not
- * resolved against any base: in a GitHub body it resolves against the *repo*
- * page, which this module has no way to distinguish from a dashboard-relative
- * link, and guessing wrong would hijack an unrelated click.
+ * Matching is anchored on the repo's OWN web URL rather than on a hard-coded
+ * github.com set, because a repo's host is now part of its identity: the same
+ * `group/project` path exists on gitlab.com and on every self-managed instance,
+ * and opening one in a pane bound to the other would show the wrong item's
+ * labels, roster and permissions. An Enterprise/self-managed host therefore
+ * matches when it IS the active repo's host, and never otherwise.
  *
- * Owner/repo are compared case-insensitively (GitHub treats them that way, so
- * `/KiroDotDev/KiroCrew/issues/5` is the same target as the lowercase form).
- * Trailing segments (`/files`, `/commits`), query strings and `#issuecomment-…`
- * fragments are ignored — they all address the same issue or PR.
+ * Only absolute http(s) URLs match. A relative href is deliberately not resolved
+ * against any base: in a body it resolves against the *repo* page, which this
+ * module has no way to distinguish from a dashboard-relative link, and guessing
+ * wrong would hijack an unrelated click.
+ *
+ * Owner/repo are compared case-insensitively (both providers treat the path that
+ * way for lookup, so `/KiroDotDev/KiroCrew/issues/5` is the same target as the
+ * lowercase form). GitLab's nested namespace is compared as a whole, so a
+ * sibling project one level up cannot match. Trailing segments (`/files`,
+ * `/commits`), query strings and `#note-…` fragments are ignored — they all
+ * address the same issue or change request.
  */
 export function parseRepoRef(
   href: string | null | undefined,
-  owner: string,
-  repo: string,
+  repo: RepoIdentity | null | undefined,
 ): RepoRef | null {
-  if (!href || !owner || !repo) return null
+  if (!href || !repo?.owner || !repo?.repo) return null
 
   let url: URL
+  let base: URL
   try {
     url = new URL(href)
+    base = new URL(repoWebUrl(repo))
   } catch {
     return null  // relative or malformed — not a resolvable cross-reference
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
-  if (!GITHUB_HOSTS.has(url.hostname.toLowerCase())) return null
+  if (!sameHost(url.hostname, base.hostname, repo)) return null
+  if (url.port !== base.port) return null
 
   const segments = url.pathname.split('/').filter(Boolean)
-  if (segments.length < 4) return null
-  const [hrefOwner, hrefRepo, kindSegment, numberSegment] = segments
-  if (hrefOwner.toLowerCase() !== owner.toLowerCase()) return null
-  if (hrefRepo.toLowerCase() !== repo.toLowerCase()) return null
+  const baseSegments = base.pathname.split('/').filter(Boolean)
+  // The repo's own path prefix must match in full: on GitLab it is a nested
+  // namespace, so comparing only the first segment would accept a different
+  // project in the same group.
+  if (segments.length < baseSegments.length + 2) return null
+  for (let i = 0; i < baseSegments.length; i++) {
+    if (segments[i].toLowerCase() !== baseSegments[i].toLowerCase()) return null
+  }
 
-  const kind = KIND_BY_SEGMENT[kindSegment]
+  const rest = segments.slice(baseSegments.length)
+  const gitlab = isGitlab(repo)
+  // GitLab addresses a project's own pages under `/-/`; a link without it is not
+  // an issue/MR path on that provider.
+  if (gitlab) {
+    if (rest[0] !== '-') return null
+    rest.shift()
+  }
+  const [kindSegment, numberSegment] = rest
+  const kind = (gitlab ? GITLAB_KIND_BY_SEGMENT : KIND_BY_SEGMENT)[kindSegment]
   if (!kind) return null
-  if (!/^[0-9]+$/.test(numberSegment)) return null
+  if (!numberSegment || !/^[0-9]+$/.test(numberSegment)) return null
   const number = Number(numberSegment)
   if (!Number.isSafeInteger(number) || number <= 0) return null
 
   return { kind, number }
 }
 
-/** The canonical GitHub URL for a reference — used for the sheet's "open on
- * GitHub" escape hatch and as the placeholder row's `url` until the real detail
- * (which carries GitHub's own url) lands. */
-export function refUrl(owner: string, repo: string, ref: RepoRef): string {
-  const segment = ref.kind === 'pull' ? 'pull' : 'issues'
-  return `https://github.com/${owner}/${repo}/${segment}/${ref.number}`
+/** The canonical URL for a reference ON THE REPO'S OWN PROVIDER — used for the
+ * sheet's "open externally" escape hatch and as the placeholder row's `url` until
+ * the real detail (which carries the provider's own url) lands. */
+export function refUrl(repo: RepoIdentity, ref: RepoRef): string {
+  return ref.kind === 'pull' ? changeUrlFor(repo, ref.number) : issueUrlFor(repo, ref.number)
 }
 
 /** Stable identity for a stack entry (also the React key). */
@@ -173,16 +215,20 @@ const SHORTHAND_RE = /(^|[^\w/&[(#])#(\d{1,7})(?!\w)/g
  * pasted full URL. GitHub renders the same shorthand on its own web UI; the raw
  * markdown the API returns carries only the literal text.
  *
- * The target is always the `/issues/<n>` form, because the shorthand does not say
- * which it is: the reference UI resolves issue-vs-PR from the ref summary, and
+ * The target is always the `/issues/<n>` form. On GitHub the shorthand does not
+ * say which it is: the reference UI resolves issue-vs-PR from the ref summary, and
  * GitHub itself redirects `/issues/<n>` to `/pull/<n>` for a PR, so the link is
- * still correct if it is ever followed externally.
+ * still correct if it is ever followed externally. On GitLab `#<n>` is
+ * unambiguous — a merge request is referenced as `!<n>` — so the issue path is
+ * exactly right there. GitLab's `!<n>` shorthand is deliberately NOT linkified:
+ * `!` is also ordinary prose and markdown image syntax, and a wrong claim on a
+ * click is worse than leaving it plain text.
  *
  * Code, autolinks, raw HTML and existing markdown links are masked out first, so
  * nothing inside them is rewritten.
  */
-export function linkifyIssueRefs(source: string, owner: string, repo: string): string {
-  if (!source || !owner || !repo) return source
+export function linkifyIssueRefs(source: string, repo: RepoIdentity | null | undefined): string {
+  if (!source || !repo?.owner || !repo?.repo) return source
   if (!source.includes('#')) return source
   const masked = maskMarkdown(source)
 
@@ -195,7 +241,7 @@ export function linkifyIssueRefs(source: string, owner: string, repo: string): s
     const end = m.index + m[0].length
     const number = Number(m[2])
     if (!Number.isSafeInteger(number) || number <= 0) continue
-    edits.push({ start, end, text: `[#${number}](${refUrl(owner, repo, { kind: 'issue', number })})` })
+    edits.push({ start, end, text: `[#${number}](${refUrl(repo, { kind: 'issue', number })})` })
   }
   if (edits.length === 0) return source
 
@@ -215,12 +261,12 @@ export function linkifyIssueRefs(source: string, owner: string, repo: string): s
  * a placeholder must not fabricate one (a literal `#<n>` title would read as real
  * content for the length of the fetch). */
 export function placeholderIssue(
-  owner: string, repo: string, number: number, state?: string,
+  repo: RepoIdentity, number: number, state?: string,
 ): Issue {
   return {
     number,
     title: '',
-    url: refUrl(owner, repo, { kind: 'issue', number }),
+    url: refUrl(repo, { kind: 'issue', number }),
     labels: [],
     comments: 0,
     updated_at: '',
@@ -237,12 +283,12 @@ export function placeholderIssue(
  * real detail corrects both on arrival. The PR pane has no state-write action, so
  * unlike the issue side there is nothing here to clobber. */
 export function placeholderPull(
-  owner: string, repo: string, number: number, state?: string,
+  repo: RepoIdentity, number: number, state?: string,
 ): PullRequest {
   return {
     number,
     title: '',
-    url: refUrl(owner, repo, { kind: 'pull', number }),
+    url: refUrl(repo, { kind: 'pull', number }),
     state: state ?? 'open',
     draft: false,
     labels: [],

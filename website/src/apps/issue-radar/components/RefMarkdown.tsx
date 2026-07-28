@@ -22,15 +22,14 @@ import RefLink from './RefLink'
 
 export default function RefMarkdown({ content }: { content: string }) {
   const { active } = useIssueRadar()
-  const { owner, repo } = active
 
-  const linkified = useMemo(() => linkifyIssueRefs(content, owner, repo), [content, owner, repo])
+  const linkified = useMemo(() => linkifyIssueRefs(content, active), [content, active])
 
   const override = useCallback<LinkOverride>(({ href, children }) => {
-    const target = parseRepoRef(href, owner, repo)
+    const target = parseRepoRef(href, active)
     if (!target) return null
     return <RefLink target={target} href={href}>{children}</RefLink>
-  }, [owner, repo])
+  }, [active])
 
   return (
     <LinkOverrideCtx.Provider value={override}>

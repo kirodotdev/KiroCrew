@@ -24,6 +24,43 @@ import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlparse
 
+from .errors import (
+    ProviderCliError,
+    ProviderPermissionError,
+    ProviderSetupError,
+    PrSearchError,
+    RepoUrlError,
+)
+
+# ── exception aliases ────────────────────────────────────────────────────────
+#
+# The canonical classes live in ``errors`` so ``gitlab_client`` raises the SAME
+# objects and ``routes.py``'s 26 ``except github_client.GhCliError`` clauses keep
+# working for both providers. These are aliases, NOT subclasses: a subclass would
+# mean a GitLab failure escaped those handlers as an unhandled 500.
+#
+# The historical names are kept because they are the documented surface every
+# route and test already uses:
+#
+#   GhCliError        -- gh is missing, unauthenticated, timed out, or the API failed
+#   GhSetupError      -- the HOST is not set up (binary absent / no auth session);
+#                        carries ``reason`` ("not_installed" | "not_authenticated")
+#                        so the connect dialog offers instructions, not a raw error
+#   GhPermissionError -- HTTP 403 for want of a permission, so the members path can
+#                        fall back to the derived roster and writes can map to 403
+#   RepoUrlError      -- the URL is not a well-formed repo link (maps to 400)
+GhCliError = ProviderCliError
+GhSetupError = ProviderSetupError
+GhPermissionError = ProviderPermissionError
+
+__all__ = [
+    "GhCliError",
+    "GhPermissionError",
+    "GhSetupError",
+    "PrSearchError",
+    "RepoUrlError",
+]
+
 GH_TIMEOUT_SEC = 20.0
 # Open issues are loaded in FULL via --paginate, which can span many pages on a
 # busy repo (kirodotdev/Kiro ~2.6k open → ~26 pages), so it gets a much larger
@@ -32,45 +69,6 @@ GH_TIMEOUT_SEC = 20.0
 GH_PAGINATE_TIMEOUT_SEC = 120.0
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-
-
-class RepoUrlError(ValueError):
-    """Raised when a repo URL is not a well-formed https://github.com/<owner>/<repo> link."""
-
-
-class GhCliError(RuntimeError):
-    """Raised when ``gh`` is missing, unauthenticated, times out, or the API call fails."""
-
-
-class GhSetupError(GhCliError):
-    """Raised when ``gh`` cannot be used because the HOST is not set up — the
-    binary is absent (or not in a trusted directory), or the CLI has no
-    authenticated session.
-
-    Distinct from a generic :class:`GhCliError` (network blip, API 500) because
-    the fix is a user action, not a retry: the connect dialog turns ``reason``
-    into install / ``gh auth login`` instructions instead of showing a raw error
-    string. A subclass of ``GhCliError`` so existing ``except GhCliError``
-    handlers keep working.
-
-    ``reason`` is ``"not_installed"`` or ``"not_authenticated"``.
-    """
-
-    def __init__(self, message: str, *, reason: str) -> None:
-        super().__init__(message)
-        self.reason = reason
-
-
-class GhPermissionError(GhCliError):
-    """Raised when ``gh`` returns HTTP 403 because the caller lacks the required
-    permission — either a read endpoint out of reach (notably listing
-    collaborators without push access) or a write call (label edit / close /
-    reopen) rejected for want of the triage/push right.
-
-    A subclass of :class:`GhCliError` so existing ``except GhCliError`` handlers
-    still catch it, but distinguishable so callers can degrade gracefully: the
-    members path falls back to the issue-derived set, and the write routes
-    special-case it into an HTTP 403 rather than a generic 502."""
 
 
 def parse_github_repo_url(link: str) -> tuple[str, str]:
@@ -1802,10 +1800,6 @@ _PR_STATE_QUALIFIERS = {
     "merged": ["is:merged"],
     "closed": ["is:closed", "is:unmerged"],
 }
-
-
-class PrSearchError(ValueError):
-    """Raised when a PR search is asked for with an invalid login or state."""
 
 
 def build_pr_search_query(

@@ -28,12 +28,16 @@ import PrList from './components/PrList'
 import PrDetail from './components/PrDetail'
 import SettingsView from './views/SettingsView'
 import { dashboardComponent } from './views/registry'
+import { providerTerms } from './lib/links'
 
 // Module-level so the hook's memoised resolver isn't invalidated every render.
 const RAIL_COLLAPSE: CollapseConfig = { width: COLLAPSED_RAIL_WIDTH, storageKey: RAIL_COLLAPSED_KEY }
 
 export default function Workspace() {
-  const { mainView, dashboardTab, activeIssue, activePull } = useIssueRadar()
+  const { mainView, dashboardTab, activeIssue, activePull, active } = useIssueRadar()
+  // Provider vocabulary: GitLab calls these merge requests, and calling them
+  // pull requests in a GitLab workspace is simply wrong copy.
+  const terms = providerTerms(active)
   const rail = useColumnResize(
     RAIL_WIDTH_KEY, loadRailWidth, MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, RAIL_COLLAPSE, loadRailCollapsed,
   )
@@ -88,7 +92,7 @@ export default function Workspace() {
               : (
                 <div className="h-full flex flex-col items-center justify-center text-muted gap-2">
                   <GitPullRequest size={26} strokeWidth={1.5} className="opacity-50" />
-                  <div className="text-[13px]">Select a Pull Request to see its details.</div>
+                  <div className="text-[13px]">Select a {terms.changeRequestTitle} to see its details.</div>
                 </div>
               )}
           </main>

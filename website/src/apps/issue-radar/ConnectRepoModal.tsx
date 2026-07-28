@@ -1,3 +1,4 @@
+import type { ActiveRepo } from './lib/types'
 // Connect-a-repo modal — the LAST slide of the WelcomeCarousel (the connect
 // card) lifted out on its own and overlaid on top of the current Issue Radar
 // view (typically the Settings page), which shows through as a blurred
@@ -31,7 +32,7 @@ export default function ConnectRepoModal({
   onConnected,
   onClose,
 }: {
-  onConnected: (repo: { owner: string; repo: string }) => void
+  onConnected: (repo: ActiveRepo) => void
   onClose: () => void
 }) {
   // This modal only ever renders inside <IssueRadarProvider> (see

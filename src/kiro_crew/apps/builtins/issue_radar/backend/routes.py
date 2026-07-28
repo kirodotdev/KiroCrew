@@ -65,11 +65,126 @@ from functools import partial, wraps
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.issue_radar.backend import github_client, store, watch
+from kiro_crew.apps.builtins.issue_radar.backend import github_client, provider, store, watch
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
+
+# Re-exported so the module's own `except GhCliError` clauses read
+# as provider-neutral, which they now are: both clients raise these exact classes
+# (see backend/errors.py — they are aliases, not parallel hierarchies).
+GhCliError = github_client.GhCliError
+GhPermissionError = github_client.GhPermissionError
+GhSetupError = github_client.GhSetupError
+
+
+def _account_key(request: web.Request) -> provider.RepoKey:
+    """A provider+host key with NO repo, for account-scoped endpoints.
+
+    ``/me`` and ``/recent-repos`` ask the provider CLI about the CURRENT USER
+    rather than about a connected repo, so they cannot go through
+    ``store.is_repo_connected``. The host is still never trusted from the
+    client: it is normalized here and re-authorized against the operator's
+    allowlist at the spawn boundary, which is what stops a crafted host reaching
+    an arbitrary GitLab instance on an endpoint that has no connected-repo gate.
+    """
+    return provider.key_from_parts(
+        "", "", request.query.get("provider"), request.query.get("host")
+    )
+
+
+def _key_from_request(request: web.Request) -> provider.RepoKey:
+    """Build a :class:`provider.RepoKey` from a request's query string.
+
+    ``provider``/``host`` are OPTIONAL and default to public GitHub, so a client
+    that predates GitLab support -- including a cached older frontend bundle --
+    keeps working unchanged.
+
+    Neither value is trusted here. ``normalize_provider`` collapses anything
+    unknown to ``github``, ``normalize_host`` pins a GitHub key's host so a
+    crafted host cannot become part of a cache path, and the GitLab host is
+    re-authorized against the operator's allowlist at the spawn boundary on every
+    single call. The gate that actually decides whether this request may touch a
+    repo is ``store.is_repo_connected``, which now matches on provider+host too.
+    """
+    return provider.key_from_parts(
+        (request.query.get("owner") or "").strip(),
+        (request.query.get("repo") or "").strip(),
+        request.query.get("provider"),
+        request.query.get("host"),
+    )
+
+
+def _str_field(body: dict, key: str) -> str:
+    """A trimmed string body field, or ``""`` for anything that is not a string.
+
+    ``(body.get(key) or "").strip()`` raises AttributeError on a truthy non-string
+    (``{"owner": 1}``, ``{"owner": []}``), which surfaces as a 500 for what is
+    plainly a malformed request. Callers treat ``""`` as missing and return 400."""
+    value = body.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _key_from_body(body: dict) -> provider.RepoKey:
+    """Body counterpart to :func:`_key_from_request` (for POST/PUT/DELETE).
+
+    Non-string ``owner``/``repo`` become ``""`` rather than being coerced, exactly
+    as :func:`_str_field` does. ``str(value)`` would stringify a Mock, a list or an
+    int into something that passes the "missing" check and then fails the
+    connected-repo gate instead — turning a plainly malformed request from a 400
+    into a 404 (or a 500 when the value reaches json.dumps). Callers treat ``""``
+    as missing and answer 400.
+    """
+    return provider.key_from_parts(
+        _str_field(body, "owner"),
+        _str_field(body, "repo"),
+        body.get("provider"),
+        body.get("host"),
+    )
+
+
+def _scope(key: provider.RepoKey):
+    """The store root that scopes ``key``'s on-disk data.
+
+    EVERY per-repo store call in this module passes this as ``root=``. Omitting it
+    would silently read or write the GitHub tree for a GitLab project, so the
+    helper exists to make the correct call the short one.
+    """
+    return store.provider_root(root=None, provider=key.provider, host=key.host)
+
+
+async def _st(key: provider.RepoKey, fn, *args, **kwargs):
+    """Run a per-repo ``store`` function off-loop, scoped to ``key``'s data root.
+
+    Every per-repo store call in this module goes through here. The point is not
+    brevity -- it is that forgetting the scope is otherwise invisible: a plain
+    ``store.read_issues_cache(owner, repo)`` for a GitLab project silently reads
+    the GitHub tree and returns another repo's cached issues. Funnelling the calls
+    means the omission is impossible to write by accident, and a test asserts no
+    ``asyncio.to_thread(store.…)`` call survives outside this helper.
+
+    Config-level functions (connected-repo records, per-repo settings) are NOT
+    routed through here: they are keyed by provider+host inside ``config.json``
+    rather than by data root, and are called directly with those arguments.
+    """
+    return await asyncio.to_thread(partial(fn, *args, root=_scope(key), **kwargs))
+
+
+def _identity(key: provider.RepoKey) -> dict[str, str]:
+    """The identity fields every response echoes back.
+
+    The frontend round-trips these on the next request, so a repo the user is
+    viewing cannot drift to a different provider mid-session.
+    """
+    return {"owner": key.owner, "repo": key.repo, "provider": key.provider, "host": key.host}
+
+
+def _connected(key: provider.RepoKey) -> bool:
+    """Whether ``key`` is a connected repo (the authorization gate)."""
+    return store.is_repo_connected(
+        key.owner, key.repo, provider=key.provider, host=key.host
+    )
 
 
 def _require_enabled(handler):
@@ -130,7 +245,7 @@ def _parse_item_number(raw: str) -> tuple[int, web.Response | None]:
     return number, None
 
 
-def _load_members(owner: str, repo: str) -> tuple[list[dict], str]:
+def _load_members(key: provider.RepoKey) -> tuple[list[dict], str]:
     """Load the repo's member roster and its source.
 
     Primary: the authoritative COLLABORATORS roster (needs push access) —
@@ -142,31 +257,48 @@ def _load_members(owner: str, repo: str) -> tuple[list[dict], str]:
     Synchronous (subprocess + disk) — call via ``asyncio.to_thread``. A
     non-permission ``GhCliError`` (network/timeout) propagates so the route can
     surface it rather than silently degrading.
+
+    On GitLab the primary path is readable by any project member (and includes
+    members inherited from ancestor groups), so the fallback is effectively
+    GitHub-only -- and ``gitlab_client.derive_members`` deliberately returns an
+    empty roster rather than inventing one from issue authors, who on a public
+    GitLab project may be strangers.
     """
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
+    scope = _scope(key)
     try:
-        collaborators = github_client.list_repo_collaborators(owner, repo)
+        collaborators = client.list_repo_collaborators(owner, repo, **pkw)
         members = [
             {"login": c["login"], "role": c.get("role_name") or "member"}
             for c in collaborators if c.get("login")
         ]
         members.sort(key=lambda m: m["login"].lower())
         source = "collaborators"
-    except github_client.GhPermissionError:
+    except GhPermissionError:
         # Read-only repo: fall back to the issue-derived set (best effort).
-        open_issues = store.read_issues_cache(owner, repo, state="open") or []
-        closed_issues = store.read_issues_cache(owner, repo, state="closed") or []
+        open_issues = store.read_issues_cache(owner, repo, scope, state="open") or []
+        closed_issues = store.read_issues_cache(owner, repo, scope, state="closed") or []
         members = [
             {"login": m["login"], "role": m["association"]}
-            for m in github_client.derive_members(open_issues + closed_issues)
+            for m in client.derive_members(open_issues + closed_issues)
         ]
         source = "derived"
-    store.write_members_cache(owner, repo, members, source=source)
+    store.write_members_cache(owner, repo, members, root=scope, source=source)
     return members, source
 
 
 async def _handle_connect(request: web.Request) -> web.Response:
-    """POST /connect — validate a repo URL against the user's `gh` session,
-    then persist it to config.json. Does not fetch issues (see /issues)."""
+    """POST /connect — validate a repo URL against the user's provider CLI
+    session, then persist it to config.json. Does not fetch issues (see /issues).
+
+    The URL alone determines the provider and host: ``provider.parse_repo_url``
+    dispatches on the URL's host and rejects any GitLab instance that is not
+    gitlab.com or in the operator's ``dashboard.gitlab_hosts`` allowlist. The
+    client cannot nominate a provider here -- that is what keeps a connected-repo
+    record, and therefore every later request authorized against it, honest.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -179,22 +311,39 @@ async def _handle_connect(request: web.Request) -> web.Response:
         return web.json_response({"error": "missing 'url'"}, status=400)
 
     try:
-        owner, repo = github_client.parse_github_repo_url(url)
+        # Off-loop: on a non-github.com URL this reads the operator's
+        # ``dashboard.gitlab_hosts`` allowlist, and ``KiroCrewConfig.load()`` is
+        # synchronous file I/O + validation. Cheap per call, but it is the
+        # gateway's single event loop, and every other blocking call in this
+        # module is already threaded for the same reason.
+        key = await asyncio.to_thread(provider.parse_repo_url, url)
     except github_client.RepoUrlError as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
+
     try:
-        summary = await asyncio.to_thread(github_client.verify_repo_access, owner, repo)
-    except github_client.GhCliError as exc:
-        # Upstream/auth problem (gh not installed/authed, repo not found or
+        summary = await asyncio.to_thread(partial(client.verify_repo_access, owner, repo, **pkw))
+    except GhCliError as exc:
+        # Upstream/auth problem (CLI not installed/authed, repo not found or
         # private-without-access, network/timeout) — not a client input error.
         return web.json_response({"error": str(exc)}, status=502)
 
-    await asyncio.to_thread(store.add_connected_repo, owner, repo, permissions=summary.get("permissions"))
+    await asyncio.to_thread(
+        partial(
+            store.add_connected_repo,
+            owner,
+            repo,
+            permissions=summary.get("permissions"),
+            provider=key.provider,
+            host=key.host,
+        )
+    )
 
     return web.json_response({
-        "owner": owner,
-        "repo": repo,
+        **_identity(key),
         "full_name": summary.get("full_name", f"{owner}/{repo}"),
         "private": summary.get("private", False),
         "open_issues_count": summary.get("open_issues_count", 0),
@@ -225,15 +374,19 @@ LIST_POLL_MAX_STALENESS_SEC = 600.0
 # makes concurrent polls join one in-flight probe instead of each issuing their
 # own.
 _PROBE_COALESCE_SEC = 15.0
-_probe_memo: dict[tuple[str, str, str], tuple[float, dict]] = {}
-_probe_inflight: dict[tuple[str, str, str], "asyncio.Future[dict]"] = {}
+# (provider, host, owner, repo, kind) — the provider and host are part of the key
+# because the same owner/repo path exists on GitHub, on gitlab.com, and on every
+# self-managed instance.
+_ProbeKey = tuple[str, str, str, str, str]
+_probe_memo: dict[_ProbeKey, tuple[float, dict]] = {}
+_probe_inflight: dict[_ProbeKey, "asyncio.Future[dict]"] = {}
 # Guards the two maps ONLY. It is deliberately never held across the probe call
 # itself: a global lock around a 20s-timeout `gh` invocation would make one slow
 # repo's probe stall every other repo's and kind's poll response.
 _probe_lock = asyncio.Lock()
 
 
-def _remember_probe(key: tuple[str, str, str], task: "asyncio.Future[dict]") -> None:
+def _remember_probe(key: _ProbeKey, task: "asyncio.Future[dict]") -> None:
     """Done-callback: publish a finished probe and retire its in-flight entry.
 
     Runs on the event loop with no awaits, so it cannot interleave with the
@@ -248,15 +401,27 @@ def _remember_probe(key: tuple[str, str, str], task: "asyncio.Future[dict]") -> 
         _probe_memo[key] = (time.time(), task.result())
 
 
-async def _coalesced_probe(owner: str, repo: str, kind: str) -> dict:
-    """``github_client.probe_open_list`` with a short shared-result window.
+async def _coalesced_probe(repo_key: provider.RepoKey, kind: str) -> dict:
+    """The provider's ``probe_open_list`` with a short shared-result window.
 
     Concurrent callers for the SAME key join one in-flight probe; callers for
     different keys never wait on each other.
 
-    Raises :class:`github_client.GhCliError` like the underlying call.
+    The memo key includes the provider and host, not just owner/repo: the same
+    ``group/project`` path exists on GitHub, on gitlab.com, and on every
+    self-managed instance, so keying on the slug alone would let one repo's probe
+    be served as another's and a list be declared unchanged on the strength of a
+    different server's answer.
+
+    Raises :class:`GhCliError` like the underlying call.
     """
-    key = (owner.lower(), repo.lower(), kind)
+    key = (
+        repo_key.provider,
+        repo_key.host,
+        repo_key.owner.lower(),
+        repo_key.repo.lower(),
+        kind,
+    )
     async with _probe_lock:
         now = time.time()
         for stale_key, (taken_at, _) in list(_probe_memo.items()):
@@ -268,7 +433,15 @@ async def _coalesced_probe(owner: str, repo: str, kind: str) -> dict:
         task = _probe_inflight.get(key)
         if task is None:
             task = asyncio.ensure_future(
-                asyncio.to_thread(github_client.probe_open_list, owner, repo, kind)
+                asyncio.to_thread(
+                    partial(
+                        provider.client_for(repo_key).probe_open_list,
+                        repo_key.owner,
+                        repo_key.repo,
+                        kind,
+                        **provider.call_kwargs(repo_key),
+                    )
+                )
             )
             _probe_inflight[key] = task
             task.add_done_callback(partial(_remember_probe, key))
@@ -278,7 +451,7 @@ async def _coalesced_probe(owner: str, repo: str, kind: str) -> dict:
 
 
 async def _poll_can_serve_cache(
-    owner: str, repo: str, kind: str, state: str, snapshot: dict
+    repo_key: provider.RepoKey, kind: str, state: str, snapshot: dict
 ) -> tuple[bool, dict | None]:
     """Decide whether a ``poll=1`` request can be answered from the cache.
 
@@ -300,8 +473,8 @@ async def _poll_can_serve_cache(
         # a request to a decision that is already made.
         return False, None
     try:
-        probe = await _coalesced_probe(owner, repo, kind)
-    except github_client.GhCliError:
+        probe = await _coalesced_probe(repo_key, kind)
+    except GhCliError:
         # Probe unavailable → keep serving the cache. Refetching on every failed
         # probe would turn a sustained probe outage (an exhausted search quota,
         # say) into exactly the paginated-fetch-per-minute drain this path exists
@@ -322,8 +495,10 @@ async def _handle_issues(request: web.Request) -> web.Response:
     pays the paginated fetch when the probe says something moved (see
     ``_poll_can_serve_cache``).
     """
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     if not owner or not repo:
         return web.json_response({"error": "missing ?owner= and ?repo="}, status=400)
 
@@ -331,40 +506,42 @@ async def _handle_issues(request: web.Request) -> web.Response:
     if state not in ("open", "closed"):
         return web.json_response({"error": "state must be 'open' or 'closed'"}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     force_refresh = request.query.get("refresh") == "1"
     is_poll = request.query.get("poll") == "1"
-    snapshot = None if force_refresh else await asyncio.to_thread(
-        store.read_issues_snapshot, owner, repo, state=state
+    snapshot = None if force_refresh else await _st(
+        key, store.read_issues_snapshot, owner, repo, state=state
     )
     probe: dict | None = None
     if snapshot is not None and is_poll:
-        serve_cache, probe = await _poll_can_serve_cache(owner, repo, "issue", state, snapshot)
+        serve_cache, probe = await _poll_can_serve_cache(key, "issue", state, snapshot)
         if not serve_cache:
             snapshot = None
     if snapshot is not None:
         return web.json_response({
-            "owner": owner, "repo": repo, "state": state,
+            **_identity(key), "state": state,
             "issues": snapshot["rows"], "from_cache": True,
         })
 
-    fetch = github_client.list_open_issues if state == "open" else github_client.list_closed_issues
+    fetch = client.list_open_issues if state == "open" else client.list_closed_issues
     try:
         # Fetch and store under ONE lock: a label applied between the two would
         # otherwise be overwritten by this pre-fetch snapshot, so a change the user
         # just made would vanish from the list (see store.refresh_issues_cache).
         # The poll fingerprint rides along so rows and probe land in one write.
-        issues = await asyncio.to_thread(
-            store.refresh_issues_cache, owner, repo, lambda: fetch(owner, repo), state=state,
-            probe=probe,
+        issues = await _st(
+            key, store.refresh_issues_cache, owner, repo,
+            lambda: fetch(owner, repo, **pkw), state=state, probe=probe,
         )
-    except github_client.GhCliError as exc:
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
-    return web.json_response({"owner": owner, "repo": repo, "state": state, "issues": issues, "from_cache": False})
+    return web.json_response(
+        {**_identity(key), "state": state, "issues": issues, "from_cache": False}
+    )
 
 
 async def _handle_labels(request: web.Request) -> web.Response:
@@ -374,18 +551,20 @@ async def _handle_labels(request: web.Request) -> web.Response:
     Each label carries its GitHub-configured colour so the frontend can render
     the left-rail filter column and issue chips in the repo's real colours.
     """
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     if not owner or not repo:
         return web.json_response({"error": "missing ?owner= and ?repo="}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     force_refresh = request.query.get("refresh") == "1"
-    cached = None if force_refresh else await asyncio.to_thread(store.read_labels_cache, owner, repo)
+    cached = None if force_refresh else await _st(key, store.read_labels_cache, owner, repo)
     if cached is not None:
         return web.json_response({"owner": owner, "repo": repo, "labels": cached, "from_cache": True})
 
@@ -393,11 +572,11 @@ async def _handle_labels(request: web.Request) -> web.Response:
         # Fetch and store under ONE lock, so a label created between the two cannot
         # be overwritten by this pre-fetch snapshot and left invisible in every
         # picker (see store.refresh_labels_cache).
-        labels = await asyncio.to_thread(
-            store.refresh_labels_cache, owner, repo,
-            lambda: github_client.list_repo_labels(owner, repo),
+        labels = await _st(
+            key, store.refresh_labels_cache, owner, repo,
+            lambda: client.list_repo_labels(owner, repo, **pkw),
         )
-    except github_client.GhCliError as exc:
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
     return web.json_response({"owner": owner, "repo": repo, "labels": labels, "from_cache": False})
@@ -412,18 +591,18 @@ async def _handle_members(request: web.Request) -> web.Response:
     inferred from issue authors. The response carries a ``source`` marker
     (``collaborators`` | ``derived``) so the UI can note when it's the fallback.
     """
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
     if not owner or not repo:
         return web.json_response({"error": "missing ?owner= and ?repo="}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     force_refresh = request.query.get("refresh") == "1"
-    cached = None if force_refresh else await asyncio.to_thread(store.read_members_cache, owner, repo)
+    cached = None if force_refresh else await _st(key, store.read_members_cache, owner, repo)
     if cached is not None:
         return web.json_response({
             "owner": owner, "repo": repo,
@@ -431,8 +610,8 @@ async def _handle_members(request: web.Request) -> web.Response:
         })
 
     try:
-        members, source = await asyncio.to_thread(_load_members, owner, repo)
-    except github_client.GhCliError as exc:
+        members, source = await asyncio.to_thread(_load_members, key)
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
     return web.json_response({
         "owner": owner, "repo": repo, "members": members, "source": source, "from_cache": False,
@@ -450,31 +629,70 @@ async def _handle_repos(request: web.Request) -> web.Response:
     for r in repos:
         if r.get("permissions"):
             continue
+        # Each entry carries its own provider+host, so a mixed GitHub/GitLab
+        # switcher self-heals every row against the right server rather than
+        # asking GitHub about a GitLab project.
+        entry_key = provider.key_from_parts(
+            str(r.get("owner") or ""), str(r.get("repo") or ""), r.get("provider"), r.get("host")
+        )
+        entry_client = provider.client_for(entry_key)
         try:
-            summary = await asyncio.to_thread(github_client.verify_repo_access, r["owner"], r["repo"])
-        except github_client.GhCliError:
+            summary = await asyncio.to_thread(
+                partial(
+                    entry_client.verify_repo_access,
+                    entry_key.owner,
+                    entry_key.repo,
+                    **provider.call_kwargs(entry_key),
+                )
+            )
+        except GhCliError:
             continue
         perms = summary.get("permissions")
         r["permissions"] = perms
-        await asyncio.to_thread(store.set_repo_permissions, r["owner"], r["repo"], perms)
+        await asyncio.to_thread(
+            partial(
+                store.set_repo_permissions,
+                entry_key.owner,
+                entry_key.repo,
+                perms,
+                provider=entry_key.provider,
+                host=entry_key.host,
+            )
+        )
     return web.json_response({"repos": repos})
 
 
 async def _handle_me(request: web.Request) -> web.Response:
-    """GET /me — the authenticated `gh` user's login (for the "requested/assigned
-    to me" filters). Returns {"login": null} rather than erroring if gh can't
-    resolve a login, so the UI can just hide those filters gracefully."""
+    """GET /me[?provider=&host=] — the authenticated user's login on that
+    provider (for the "requested/assigned to me" filters).
+
+    Provider-scoped, because the login is NOT portable: the same person is
+    ``alice`` on GitHub and possibly ``alice.smith`` on a company GitLab. Serving
+    the GitHub login while a GitLab project is active would silently make those
+    filters match nobody — a wrong answer with no error, which is why the
+    provider rides on the request instead of being assumed.
+
+    Returns ``{"login": null}`` rather than erroring if the CLI cannot resolve a
+    login, so the UI just hides those filters.
+    """
+    key = _account_key(request)
     try:
-        login = await asyncio.to_thread(github_client.get_current_login)
-    except github_client.GhCliError:
+        login = await asyncio.to_thread(
+            partial(provider.client_for(key).get_current_login, **provider.call_kwargs(key))
+        )
+    except GhCliError:
         return web.json_response({"login": None})
-    return web.json_response({"login": login})
+    return web.json_response({"login": login, "provider": key.provider, "host": key.host})
 
 
 async def _handle_recent_repos(request: web.Request) -> web.Response:
-    """GET /recent-repos[?days=<d>] — repos the `gh` user personally
-    CONTRIBUTED to within the last ``days`` (default 30), newest contribution
-    first, for the connect dialog's picker.
+    """GET /recent-repos[?days=<d>&provider=&host=] — repos the current user
+    personally CONTRIBUTED to within the last ``days`` (default 30), newest
+    contribution first, for the connect dialog's picker.
+
+    On GitLab "contributed to" is answered by project MEMBERSHIP ordered by last
+    activity, which is both cheaper and more accurate than GitHub's public event
+    feed — see ``gitlab_client.list_contributed_repos``.
 
     Each row carries ``last_contributed_at`` (that user's own latest
     contribution to the repo) and is flagged ``connected`` so the picker can
@@ -483,6 +701,9 @@ async def _handle_recent_repos(request: web.Request) -> web.Response:
     is worse than a one-second wait. A `gh` failure is a 502 (upstream/auth),
     matching /issues.
     """
+    key = _account_key(request)
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     raw_days = (request.query.get("days") or "").strip()
     try:
         days = int(raw_days) if raw_days else github_client.CONTRIB_WINDOW_DAYS
@@ -499,15 +720,15 @@ async def _handle_recent_repos(request: web.Request) -> web.Response:
         )
 
     try:
-        login = await asyncio.to_thread(github_client.get_current_login)
-    except github_client.GhSetupError as exc:
+        login = await asyncio.to_thread(partial(client.get_current_login, **pkw))
+    except GhSetupError as exc:
         # Host isn't set up (no gh, or no session). Not an error the user can
         # retry away — answer 200 with a reason so the dialog can render install
         # / `gh auth login` instructions and keep the manual URL field usable.
         return web.json_response(
             {"repos": [], "setup_required": exc.reason, "error": str(exc)}
         )
-    except github_client.GhCliError as exc:
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
     if not login:
         # No resolvable login means no event feed to read. An empty list (not a
@@ -516,13 +737,13 @@ async def _handle_recent_repos(request: web.Request) -> web.Response:
 
     try:
         repos, truncated = await asyncio.to_thread(
-            github_client.list_contributed_repos, login, within_days=days
+            partial(client.list_contributed_repos, login, within_days=days, **pkw)
         )
-    except github_client.GhSetupError as exc:
+    except GhSetupError as exc:
         return web.json_response(
             {"repos": [], "setup_required": exc.reason, "error": str(exc)}
         )
-    except github_client.GhCliError as exc:
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
     # Case-INSENSITIVE identity: GitHub owner/repo names are case-preserving
@@ -536,30 +757,40 @@ async def _handle_recent_repos(request: web.Request) -> web.Response:
     connected = {
         _key(r.get("owner"), r.get("repo"))
         for r in await asyncio.to_thread(store.list_connected_repos)
+        if str(r.get("provider") or "github") == key.provider
+        and str(r.get("host") or "github.com") == key.host
     }
     for r in repos:
         r["connected"] = _key(r.get("owner"), r.get("repo")) in connected
+        # Echoed so the picker can build a connect URL and a repo ref without
+        # re-deriving which provider the list came from.
+        r["provider"] = key.provider
+        r["host"] = key.host
 
     # `truncated` tells the UI not to present the list as exhaustive — see
     # list_contributed_repos.
-    return web.json_response({"repos": repos, "truncated": truncated})
+    return web.json_response(
+        {"repos": repos, "truncated": truncated, "provider": key.provider, "host": key.host}
+    )
 
 
 async def _handle_get_settings(request: web.Request) -> web.Response:
     """GET /settings?owner=<o>&repo=<r> — the repo's local triage settings
     (triage labels, unlabeled-is-untriaged toggle, good-first-issue labels).
     Returns defaults for a connected repo that has never been configured."""
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
     if not owner or not repo:
         return web.json_response({"error": "missing ?owner= and ?repo="}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
-    settings = await asyncio.to_thread(store.read_repo_settings, owner, repo)
+    settings = await asyncio.to_thread(
+        partial(store.read_repo_settings, owner, repo, provider=key.provider, host=key.host)
+    )
     return web.json_response({"owner": owner, "repo": repo, "settings": settings})
 
 
@@ -575,8 +806,8 @@ async def _handle_put_settings(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
 
-    owner = _str_field(body, "owner")
-    repo = _str_field(body, "repo")
+    key = _key_from_body(body)
+    owner, repo = key.owner, key.repo
     if not owner or not repo:
         return web.json_response({"error": "missing 'owner'/'repo'"}, status=400)
 
@@ -602,7 +833,15 @@ async def _handle_put_settings(request: web.Request) -> web.Response:
 
     try:
         saved = await asyncio.to_thread(
-            store.write_repo_settings, owner, repo, settings, expected_revision=expected
+            partial(
+                store.write_repo_settings,
+                owner,
+                repo,
+                settings,
+                expected_revision=expected,
+                provider=key.provider,
+                host=key.host,
+            )
         )
     except store.SettingsConflict as conflict:
         return web.json_response(
@@ -624,12 +863,14 @@ async def _handle_disconnect(request: web.Request) -> web.Response:
     """DELETE /repos?owner=<o>&repo=<r> — disconnect a repo. Drops it from
     config.json and deletes its local issue/label cache. Local-only: nothing on
     GitHub is changed and the user's `gh` auth is untouched."""
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
     if not owner or not repo:
         return web.json_response({"error": "missing ?owner= and ?repo="}, status=400)
 
-    removed = await asyncio.to_thread(store.remove_connected_repo, owner, repo)
+    removed = await asyncio.to_thread(
+        partial(store.remove_connected_repo, owner, repo, provider=key.provider, host=key.host)
+    )
     if not removed:
         return web.json_response({"error": f"{owner}/{repo} is not connected"}, status=404)
     return web.json_response({"ok": True, "owner": owner, "repo": repo})
@@ -643,8 +884,10 @@ async def _handle_issue_detail(request: web.Request) -> web.Response:
     ``number`` is parsed as an int before it reaches ``gh``, so it can't inject
     path segments; access is gated on the repo already being connected (same
     guard as /issues)."""
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     number_raw = (request.query.get("number") or "").strip()
     if not owner or not repo or not number_raw:
         return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
@@ -653,14 +896,14 @@ async def _handle_issue_detail(request: web.Request) -> web.Response:
     if number_error is not None:
         return number_error
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     force_refresh = request.query.get("refresh") == "1"
-    cached = None if force_refresh else await asyncio.to_thread(
-        store.read_issue_detail_cache, owner, repo, number
+    cached = None if force_refresh else await _st(
+        key, store.read_issue_detail_cache, owner, repo, number
     )
     if cached is not None and cached.get("detail") is not None:
         return web.json_response({
@@ -670,12 +913,14 @@ async def _handle_issue_detail(request: web.Request) -> web.Response:
         })
 
     try:
-        detail = await asyncio.to_thread(github_client.get_issue_detail, owner, repo, number)
-        timeline = await asyncio.to_thread(github_client.list_issue_timeline, owner, repo, number)
-    except github_client.GhCliError as exc:
+        detail = await asyncio.to_thread(partial(client.get_issue_detail, owner, repo, number, **pkw))
+        timeline = await asyncio.to_thread(
+            partial(client.list_issue_timeline, owner, repo, number, **pkw)
+        )
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
-    await asyncio.to_thread(store.write_issue_detail_cache, owner, repo, number, detail, timeline)
+    await _st(key, store.write_issue_detail_cache, owner, repo, number, detail, timeline)
     return web.json_response({
         "owner": owner, "repo": repo, "number": number,
         "detail": detail, "timeline": timeline, "from_cache": False,
@@ -693,8 +938,10 @@ async def _handle_pulls(request: web.Request) -> web.Response:
     the frontend splits them on ``merged_at``). Pass refresh=1 to force a fresh
     ``gh`` fetch, or poll=1 for the probe-gated client-poll path.
     """
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     if not owner or not repo:
         return web.json_response({"error": "missing ?owner= and ?repo="}, status=400)
 
@@ -702,37 +949,37 @@ async def _handle_pulls(request: web.Request) -> web.Response:
     if state not in ("open", "closed"):
         return web.json_response({"error": "state must be 'open' or 'closed'"}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     force_refresh = request.query.get("refresh") == "1"
     is_poll = request.query.get("poll") == "1"
-    snapshot = None if force_refresh else await asyncio.to_thread(
-        store.read_pulls_snapshot, owner, repo, state=state
+    snapshot = None if force_refresh else await _st(
+        key, store.read_pulls_snapshot, owner, repo, state=state
     )
     probe: dict | None = None
     if snapshot is not None and is_poll:
-        serve_cache, probe = await _poll_can_serve_cache(owner, repo, "pr", state, snapshot)
+        serve_cache, probe = await _poll_can_serve_cache(key, "pr", state, snapshot)
         if not serve_cache:
             snapshot = None
     if snapshot is not None:
         return web.json_response({
-            "owner": owner, "repo": repo, "state": state,
+            **_identity(key), "state": state,
             "pulls": snapshot["rows"], "from_cache": True,
         })
 
-    fetch = github_client.list_open_pulls if state == "open" else github_client.list_closed_pulls
+    fetch = client.list_open_pulls if state == "open" else client.list_closed_pulls
     try:
-        pulls = await asyncio.to_thread(fetch, owner, repo)
-    except github_client.GhCliError as exc:
+        pulls = await asyncio.to_thread(partial(fetch, owner, repo, **pkw))
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
     # One extra GraphQL call adds each row's diff size + aggregate check state
     # (the REST list carries neither). Best effort — a failure leaves the rows
     # un-enriched rather than failing the list.
-    pulls = await asyncio.to_thread(github_client.enrich_pulls, owner, repo, pulls, state)
+    pulls = await asyncio.to_thread(partial(client.enrich_pulls, owner, repo, pulls, state, **pkw))
 
     # Only PERSIST fully-enriched rows. The list cache has no TTL, so caching a
     # row whose enrichment failed would keep serving "diff/check state unknown"
@@ -741,11 +988,13 @@ async def _handle_pulls(request: web.Request) -> web.Response:
     # the next plain request would serve those older rows — so the stale entry is
     # dropped too. The response itself still goes out: the list is useful without
     # the card decoration.
-    if github_client.enrichment_complete(pulls):
-        await asyncio.to_thread(store.write_pulls_cache, owner, repo, pulls, state=state, probe=probe)
+    if client.enrichment_complete(pulls):
+        await _st(key, store.write_pulls_cache, owner, repo, pulls, state=state, probe=probe)
     else:
-        await asyncio.to_thread(store.drop_pulls_cache, owner, repo, state)
-    return web.json_response({"owner": owner, "repo": repo, "state": state, "pulls": pulls, "from_cache": False})
+        await _st(key, store.drop_pulls_cache, owner, repo, state)
+    return web.json_response(
+        {**_identity(key), "state": state, "pulls": pulls, "from_cache": False}
+    )
 
 
 async def _handle_pulls_search(request: web.Request) -> web.Response:
@@ -760,8 +1009,10 @@ async def _handle_pulls_search(request: web.Request) -> web.Response:
     required. Live call (not cached) — mirrors /recent-repos: the result is only
     read while a person filter is on, and a stale answer is worse than the wait.
     """
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     if not owner or not repo:
         return web.json_response({"error": "missing ?owner= and ?repo="}, status=400)
 
@@ -770,14 +1021,14 @@ async def _handle_pulls_search(request: web.Request) -> web.Response:
     assignee = (request.query.get("assignee") or "").strip() or None
     review_requested = (request.query.get("review_requested") or "").strip() or None
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     try:
         pulls = await asyncio.to_thread(
-            github_client.search_pulls, owner, repo, state=state, author=author,
+            partial(client.search_pulls, owner, repo, **pkw), state=state, author=author,
             assignee=assignee, review_requested=review_requested,
             # One MORE than we will return, so "was anything left out?" is answered
             # by fact rather than by `len(rows) == cap` — a person with exactly the
@@ -787,7 +1038,7 @@ async def _handle_pulls_search(request: web.Request) -> web.Response:
     except github_client.PrSearchError as exc:
         # Bad state / invalid login / no person qualifier — a client input error.
         return web.json_response({"error": str(exc)}, status=400)
-    except github_client.GhCliError as exc:
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
     truncated = len(pulls) > github_client.PR_SEARCH_MAX
@@ -796,7 +1047,9 @@ async def _handle_pulls_search(request: web.Request) -> web.Response:
     # Search rows carry no diff size or check state, so the cards would lose their
     # bottom row the moment a person filter is on. Enrich BY NUMBER (not by state)
     # because a search hit can rank outside the recently-updated window.
-    pulls = await asyncio.to_thread(github_client.enrich_pulls_by_number, owner, repo, pulls)
+    pulls = await asyncio.to_thread(
+        partial(client.enrich_pulls_by_number, owner, repo, pulls, **pkw)
+    )
 
     return web.json_response({
         "owner": owner, "repo": repo, "state": state,
@@ -822,8 +1075,10 @@ async def _handle_pull_detail(request: web.Request) -> web.Response:
 
     ``number`` is parsed as an int before it reaches ``gh``, so it can't inject
     path segments; access is gated on the repo already being connected."""
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     number_raw = (request.query.get("number") or "").strip()
     if not owner or not repo or not number_raw:
         return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
@@ -832,14 +1087,14 @@ async def _handle_pull_detail(request: web.Request) -> web.Response:
     if number_error is not None:
         return number_error
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     force_refresh = request.query.get("refresh") == "1"
-    cached = None if force_refresh else await asyncio.to_thread(
-        store.read_pr_detail_cache, owner, repo, number, None,
+    cached = None if force_refresh else await _st(
+        key, store.read_pr_detail_cache, owner, repo, number,
         max_age_sec=store.PR_DETAIL_CACHE_TTL_SEC,
     )
     if cached is not None and cached.get("detail") is not None:
@@ -847,7 +1102,7 @@ async def _handle_pull_detail(request: web.Request) -> web.Response:
             "owner": owner, "repo": repo, "number": number,
             "detail": cached["detail"], "timeline": cached.get("timeline", []),
             "checks": cached.get("checks", []),
-            "checks_summary": github_client.summarize_checks(cached.get("checks") or []),
+            "checks_summary": client.summarize_checks(cached.get("checks") or []),
             "from_cache": True,
         })
 
@@ -859,28 +1114,28 @@ async def _handle_pull_detail(request: web.Request) -> web.Response:
         # PR-flavoured timeline is issue events PLUS inline code-anchored review
         # comments, which the issues timeline endpoint does not carry.
         detail, timeline = await asyncio.gather(
-            asyncio.to_thread(github_client.get_pr_detail, owner, repo, number),
-            asyncio.to_thread(github_client.list_pr_timeline, owner, repo, number),
+            asyncio.to_thread(partial(client.get_pr_detail, owner, repo, number, **pkw)),
+            asyncio.to_thread(partial(client.list_pr_timeline, owner, repo, number, **pkw)),
         )
         # Automated checks hang off the PR's head commit, whose sha the detail
         # call already returned — so no extra PR round-trip. A PR with no head
         # sha (deleted fork branch) simply has no checks.
         head_sha = detail.get("head_sha")
         checks = (
-            await asyncio.to_thread(github_client.list_pr_checks, owner, repo, head_sha)
+            await asyncio.to_thread(partial(client.list_pr_checks, owner, repo, head_sha, **pkw))
             if head_sha else []
         )
-    except github_client.GhCliError as exc:
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
-    await asyncio.to_thread(store.write_pr_detail_cache, owner, repo, number, detail, timeline, checks)
+    await _st(key, store.write_pr_detail_cache, owner, repo, number, detail, timeline, checks)
     # Write the fresh check state back onto the PR's LIST row too, so the card
     # and the sidebar cannot disagree: the detail pane re-reads checks every
     # couple of minutes, and without this the card kept whatever the last list
     # refresh computed.
-    checks_summary = github_client.summarize_checks(checks)
-    await asyncio.to_thread(
-        store.apply_pr_checks_to_list_cache, owner, repo, number, checks_summary
+    checks_summary = client.summarize_checks(checks)
+    await _st(
+        key, store.apply_pr_checks_to_list_cache, owner, repo, number, checks_summary
     )
     return web.json_response({
         "owner": owner, "repo": repo, "number": number,
@@ -904,9 +1159,12 @@ async def _handle_ref_summary(request: web.Request) -> web.Response:
 
     Cache-first with a short TTL (``store.REF_SUMMARY_CACHE_TTL_SEC``), so
     freshness is the route's property. Same guards as every other read: the
-    number is parsed as an int before it reaches ``gh``, and access is gated on
-    the repo already being connected.
+    number is parsed as an int before it reaches the provider CLI, and access is
+    gated on the repo already being connected.
     """
+    key = _key_from_request(request)
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     owner = (request.query.get("owner") or "").strip()
     repo = (request.query.get("repo") or "").strip()
     number_raw = (request.query.get("number") or "").strip()
@@ -917,31 +1175,33 @@ async def _handle_ref_summary(request: web.Request) -> web.Response:
     if number_error is not None:
         return number_error
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     force_refresh = request.query.get("refresh") == "1"
-    cached = None if force_refresh else await asyncio.to_thread(
-        store.read_ref_summary_cache, owner, repo, number, None,
+    cached = None if force_refresh else await _st(
+        key, store.read_ref_summary_cache, owner, repo, number,
         max_age_sec=store.REF_SUMMARY_CACHE_TTL_SEC,
     )
     if cached is not None:
         return web.json_response({
-            "owner": owner, "repo": repo, "number": number,
-            "summary": cached, "from_cache": True,
+            "owner": owner, "repo": repo, "provider": key.provider, "host": key.host,
+            "number": number, "summary": cached, "from_cache": True,
         })
 
     try:
-        summary = await asyncio.to_thread(github_client.get_ref_summary, owner, repo, number)
-    except github_client.GhCliError as exc:
+        summary = await asyncio.to_thread(
+            partial(client.get_ref_summary, owner, repo, number, **pkw)
+        )
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
-    await asyncio.to_thread(store.write_ref_summary_cache, owner, repo, number, summary)
+    await _st(key, store.write_ref_summary_cache, owner, repo, number, summary)
     return web.json_response({
-        "owner": owner, "repo": repo, "number": number,
-        "summary": summary, "from_cache": False,
+        "owner": owner, "repo": repo, "provider": key.provider, "host": key.host,
+        "number": number, "summary": summary, "from_cache": False,
     })
 
 
@@ -960,8 +1220,8 @@ def _has_write_access(perms: dict | None) -> bool:
     )
 
 
-def _repo_can_write(owner: str, repo: str) -> bool | None:
-    """Best-effort "can the current gh user edit issues on this repo?".
+def _repo_can_write(key: provider.RepoKey) -> bool | None:
+    """Best-effort "can the current provider user edit issues on this repo?".
 
     Prefers the permissions stored at connect time (fast, no network); if the
     repo entry has none, fetches once and self-heals the store. Returns ``None``
@@ -969,18 +1229,25 @@ def _repo_can_write(owner: str, repo: str) -> bool | None:
     (``is not True`` → 403), so a transient permissions-read failure shows the
     repo as read-only until the next successful refresh rather than allowing an
     unauthenticated write. This is deliberately fail-closed: a brief period of
-    degraded write access is preferable to a single unauthorized mutation."""
-    for r in store.list_connected_repos():
-        if r.get("owner") == owner and r.get("repo") == repo:
-            perms = r.get("permissions")
-            if isinstance(perms, dict):
-                return _has_write_access(perms)
-            break
+    degraded write access is preferable to a single unauthorized mutation.
+
+    On GitLab the permission object is derived from the caller's effective access
+    level (project access or inherited group access, whichever is higher), with
+    Reporter mapping to ``triage`` and Developer to ``push`` -- so the same
+    ``_has_write_access`` gate applies unchanged."""
+    owner, repo = key.owner, key.repo
+    entry = store.find_connected_repo(owner, repo, provider=key.provider, host=key.host)
+    if entry is not None:
+        perms = entry.get("permissions")
+        if isinstance(perms, dict):
+            return _has_write_access(perms)
     try:
-        perms = github_client.get_repo_permissions(owner, repo)
-    except github_client.GhCliError:
+        perms = provider.client_for(key).get_repo_permissions(
+            owner, repo, **provider.call_kwargs(key)
+        )
+    except GhCliError:
         return None
-    store.set_repo_permissions(owner, repo, perms)
+    store.set_repo_permissions(owner, repo, perms, provider=key.provider, host=key.host)
     return _has_write_access(perms)
 
 
@@ -1119,26 +1386,32 @@ async def _compute_issue_ai(
     return {"summary": summary, "suggested_labels": suggested}
 
 
-async def _load_detail_for_ai(owner: str, repo: str, number: int) -> dict:
-    """Return an issue's detail dict, cache-first, fetching from ``gh`` on miss
-    (does not write the detail cache — that is /issue's job, which also stores the
-    timeline)."""
-    cached = await asyncio.to_thread(store.read_issue_detail_cache, owner, repo, number)
+async def _load_detail_for_ai(key: provider.RepoKey, number: int) -> dict:
+    """Return an issue's detail dict, cache-first, fetching from the provider on
+    miss (does not write the detail cache — that is /issue's job, which also
+    stores the timeline)."""
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
+    cached = await _st(key, store.read_issue_detail_cache, owner, repo, number)
     if cached is not None and cached.get("detail") is not None:
         return cached["detail"]
-    return await asyncio.to_thread(github_client.get_issue_detail, owner, repo, number)
+    return await asyncio.to_thread(partial(client.get_issue_detail, owner, repo, number, **pkw))
 
 
-async def _load_labels_for_ai(owner: str, repo: str) -> list[dict]:
+async def _load_labels_for_ai(key: provider.RepoKey) -> list[dict]:
     """Return the repo's labels, cache-first, fetching + caching on miss."""
-    cached = await asyncio.to_thread(store.read_labels_cache, owner, repo)
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
+    cached = await _st(key, store.read_labels_cache, owner, repo)
     if cached is not None:
         return cached
     # Fetch and store under ONE lock, so a label created between the two cannot be
     # overwritten by this pre-fetch snapshot and left invisible in every picker.
-    labels = await asyncio.to_thread(
-        store.refresh_labels_cache, owner, repo,
-        lambda: github_client.list_repo_labels(owner, repo),
+    labels = await _st(
+        key, store.refresh_labels_cache, owner, repo,
+        lambda: client.list_repo_labels(owner, repo, **pkw),
     )
     return labels
 
@@ -1152,8 +1425,8 @@ async def _handle_issue_ai(request: web.Request) -> web.Response:
     the issue is instant. Read-only feature — no permission gate; the summary is
     informational and suggestions are just proposals until the user applies
     them via /labels/apply."""
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
     number_raw = (request.query.get("number") or "").strip()
     if not owner or not repo or not number_raw:
         return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
@@ -1161,14 +1434,14 @@ async def _handle_issue_ai(request: web.Request) -> web.Response:
     if number_error is not None:
         return number_error
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     force_refresh = request.query.get("refresh") == "1"
-    cached = None if force_refresh else await asyncio.to_thread(
-        store.read_issue_ai_cache, owner, repo, number
+    cached = None if force_refresh else await _st(
+        key, store.read_issue_ai_cache, owner, repo, number
     )
     if cached is not None:
         return web.json_response({
@@ -1180,9 +1453,9 @@ async def _handle_issue_ai(request: web.Request) -> web.Response:
         })
 
     try:
-        detail = await _load_detail_for_ai(owner, repo, number)
-        labels = await _load_labels_for_ai(owner, repo)
-    except github_client.GhCliError as exc:
+        detail = await _load_detail_for_ai(key, number)
+        labels = await _load_labels_for_ai(key)
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
     try:
@@ -1199,7 +1472,7 @@ async def _handle_issue_ai(request: web.Request) -> web.Response:
     # caching that would strand the user on an empty card until they manually
     # regenerate, so instead we skip the cache and let the next open retry.
     if ai.get("summary") or ai.get("suggested_labels"):
-        await asyncio.to_thread(store.write_issue_ai_cache, owner, repo, number, ai)
+        await _st(key, store.write_issue_ai_cache, owner, repo, number, ai)
     return web.json_response({
         "owner": owner, "repo": repo, "number": number,
         "summary": ai["summary"], "suggested_labels": ai["suggested_labels"],
@@ -1446,8 +1719,10 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
     result against a fingerprint of those inputs. Re-opening an unchanged PR is
     instant; a new comment, push, or flipped check earns a fresh summary with no
     user action. Read-only and informational — nothing downstream acts on it."""
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     number_raw = (request.query.get("number") or "").strip()
     if not owner or not repo or not number_raw:
         return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
@@ -1455,7 +1730,7 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
     if number_error is not None:
         return number_error
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
@@ -1467,8 +1742,8 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
     # reopen where both queries refetch at once) could fingerprint indefinitely
     # stale inputs and confidently return the old summary. A forced regenerate
     # skips the cache entirely.
-    cached_detail = None if force_refresh else await asyncio.to_thread(
-        store.read_pr_detail_cache, owner, repo, number, None,
+    cached_detail = None if force_refresh else await _st(
+        key, store.read_pr_detail_cache, owner, repo, number,
         max_age_sec=store.PR_DETAIL_CACHE_TTL_SEC,
     )
     if cached_detail is not None and cached_detail.get("detail") is not None:
@@ -1478,24 +1753,24 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
     else:
         try:
             detail, timeline = await asyncio.gather(
-                asyncio.to_thread(github_client.get_pr_detail, owner, repo, number),
-                asyncio.to_thread(github_client.list_pr_timeline, owner, repo, number),
+                asyncio.to_thread(partial(client.get_pr_detail, owner, repo, number, **pkw)),
+                asyncio.to_thread(partial(client.list_pr_timeline, owner, repo, number, **pkw)),
             )
             sha = detail.get("head_sha")
             checks = await asyncio.to_thread(
-                github_client.list_pr_checks, owner, repo, sha
+                partial(client.list_pr_checks, owner, repo, sha, **pkw)
             ) if sha else []
-        except github_client.GhCliError as exc:
+        except GhCliError as exc:
             return web.json_response({"error": str(exc)}, status=502)
         # Freshly read — store it so the detail pane and the next fingerprint see
         # the same bytes this summary was built from.
-        await asyncio.to_thread(
-            store.write_pr_detail_cache, owner, repo, number, detail, timeline, checks
+        await _st(
+            key, store.write_pr_detail_cache, owner, repo, number, detail, timeline, checks
         )
 
     fingerprint = _pr_ai_fingerprint(detail, timeline, checks)
-    cached = None if force_refresh else await asyncio.to_thread(
-        store.read_pr_ai_cache, owner, repo, number, fingerprint=fingerprint
+    cached = None if force_refresh else await _st(
+        key, store.read_pr_ai_cache, owner, repo, number, fingerprint=fingerprint
     )
     if cached is not None:
         return web.json_response({
@@ -1518,8 +1793,8 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
     # model returned prose we couldn't parse, and caching it would strand the user
     # on an empty card until they manually regenerate.
     if summary:
-        await asyncio.to_thread(
-            store.write_pr_ai_cache, owner, repo, number,
+        await _st(
+            key, store.write_pr_ai_cache, owner, repo, number,
             {"summary": summary, "fingerprint": fingerprint},
         )
     return web.json_response({
@@ -1532,7 +1807,7 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
 
 
 def _apply_label_change(
-    owner: str, repo: str, number: int, add: list[str], remove: list[str]
+    key: provider.RepoKey, number: int, add: list[str], remove: list[str]
 ) -> list[dict] | None:
     """Apply one issue's whole label change and patch the caches, serialized.
 
@@ -1545,35 +1820,40 @@ def _apply_label_change(
 
     Returns the issue's authoritative label set, or ``None`` when every operation
     was a no-op removal (GitHub 404s a label that is not on the issue and the
-    remaining set is then unknown) so the caller can re-read it.
+    remaining set is then unknown) so the caller can re-read it. GitLab always
+    reports the authoritative set, so that path is GitHub-only in practice.
 
-    Cache failures are logged, never raised: the change is already on GitHub, and
-    reporting the apply as failed would send the user to redo it."""
-    with store.issue_write_lock(owner, repo, number):
+    Cache failures are logged, never raised: the change is already applied on the
+    provider, and reporting the apply as failed would send the user to redo it."""
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
+    scope = _scope(key)
+    with store.issue_write_lock(owner, repo, number, scope):
         final_labels: list[dict] | None = None
         for name in remove:
-            result = github_client.remove_issue_label(owner, repo, number, name)
+            result = client.remove_issue_label(owner, repo, number, name, **pkw)
             if result is not None:
                 final_labels = result
         if add:
-            final_labels = github_client.add_issue_labels(owner, repo, number, add)
+            final_labels = client.add_issue_labels(owner, repo, number, add, **pkw)
         if final_labels is None:
             # Every removal 404'd (the labels were already absent), so GitHub told
             # us nothing about the remaining set. Read it authoritatively HERE,
             # inside the lock, so the cache is repaired too — doing it after the
             # lock released left stale labels surviving reloads.
             try:
-                final_labels = github_client.get_issue_detail(
+                final_labels = client.get_issue_detail(
                     owner, repo, number
                 ).get("labels", [])
-            except github_client.GhCliError:
+            except GhCliError:
                 logger.warning(
                     "tagging: could not re-read labels for %s#%s after a no-op removal",
                     f"{owner}/{repo}", number, exc_info=True,
                 )
                 return None
         try:
-            store.apply_label_change_to_caches(owner, repo, number, final_labels)
+            store.apply_label_change_to_caches(owner, repo, number, final_labels, root=scope)
         except Exception:
             logger.warning(
                 "tagging: cache patch failed after a label change on %s#%s",
@@ -1582,7 +1862,7 @@ def _apply_label_change(
         return final_labels
 
 
-def _reread_labels_and_patch(owner: str, repo: str, number: int) -> list[dict]:
+def _reread_labels_and_patch(key: provider.RepoKey, number: int) -> list[dict]:
     """Re-read one issue's authoritative labels AND patch the caches, under the lock.
 
     The retry for the one case `_apply_label_change` cannot resolve itself: every
@@ -1594,17 +1874,21 @@ def _reread_labels_and_patch(owner: str, repo: str, number: int) -> list[dict]:
     Read and patch happen inside the same per-issue lock, so the value written is
     the value read: a concurrent writer either finished before us (we read its
     result) or waits for us (it overwrites with its own newer read)."""
-    with store.issue_write_lock(owner, repo, number):
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
+    scope = _scope(key)
+    with store.issue_write_lock(owner, repo, number, scope):
         try:
-            labels = github_client.get_issue_detail(owner, repo, number).get("labels", [])
-        except github_client.GhCliError:
+            labels = client.get_issue_detail(owner, repo, number, **pkw).get("labels", [])
+        except GhCliError:
             logger.warning(
                 "tagging: could not re-read labels for %s#%s",
                 f"{owner}/{repo}", number, exc_info=True,
             )
             return []
         try:
-            store.apply_label_change_to_caches(owner, repo, number, labels)
+            store.apply_label_change_to_caches(owner, repo, number, labels, root=scope)
         except Exception:
             logger.warning(
                 "tagging: cache patch failed after re-reading labels for %s#%s",
@@ -1629,8 +1913,8 @@ async def _handle_labels_apply(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
 
-    owner = (body.get("owner") or "").strip()
-    repo = (body.get("repo") or "").strip()
+    key = _key_from_body(body)
+    owner, repo = key.owner, key.repo
     number = body.get("number")
     if not owner or not repo:
         return web.json_response({"error": "missing 'owner'/'repo'"}, status=400)
@@ -1647,13 +1931,13 @@ async def _handle_labels_apply(request: web.Request) -> web.Response:
     if not add and not remove:
         return web.json_response({"error": "nothing to change (empty add/remove)"}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     target = f"{owner}/{repo}#{number}"
-    if (await asyncio.to_thread(_repo_can_write, owner, repo)) is not True:
+    if (await asyncio.to_thread(_repo_can_write, key)) is not True:
         _audit("apply_labels", target, "denied", error="no confirmed write access")
         return web.json_response(
             {"error": "This repo is connected read-only — you need triage or push access to edit labels."},
@@ -1662,8 +1946,8 @@ async def _handle_labels_apply(request: web.Request) -> web.Response:
 
     # Guard: only labels that exist on the repo may be ADDED (no label creation).
     try:
-        repo_labels = await _load_labels_for_ai(owner, repo)
-    except github_client.GhCliError as exc:
+        repo_labels = await _load_labels_for_ai(key)
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
     known = {lab.get("name") for lab in repo_labels}
     unknown = [n for n in add if n not in known]
@@ -1674,12 +1958,12 @@ async def _handle_labels_apply(request: web.Request) -> web.Response:
 
     try:
         final_labels = await asyncio.to_thread(
-            _apply_label_change, owner, repo, number, add, remove
+            partial(_apply_label_change, key, number, add, remove)
         )
-    except github_client.GhPermissionError as exc:
+    except GhPermissionError as exc:
         _audit("apply_labels", target, "denied", error=str(exc))
         return web.json_response({"error": str(exc)}, status=403)
-    except github_client.GhCliError as exc:
+    except GhCliError as exc:
         _audit("apply_labels", target, "failure", error=str(exc))
         return web.json_response({"error": str(exc)}, status=502)
 
@@ -1689,7 +1973,7 @@ async def _handle_labels_apply(request: web.Request) -> web.Response:
         # too: returning a read the cache never saw is how a removed label came back
         # on the next reload.
         final_labels = await asyncio.to_thread(
-            _reread_labels_and_patch, owner, repo, number
+            partial(_reread_labels_and_patch, key, number)
         )
 
     # The cache was patched inside the locked step above. Pruning the Tagging queue
@@ -1700,7 +1984,7 @@ async def _handle_labels_apply(request: web.Request) -> web.Response:
     # the detail pane also clears it from the dashboard.
     if final_labels:
         try:
-            await asyncio.to_thread(store.drop_tagging_suggestions, owner, repo, [number])
+            await _st(key, store.drop_tagging_suggestions, owner, repo, [number])
         except Exception:
             logger.warning(
                 "tagging: could not prune the suggestion for %s#%s",
@@ -1726,8 +2010,10 @@ async def _handle_issue_state(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
 
-    owner = (body.get("owner") or "").strip()
-    repo = (body.get("repo") or "").strip()
+    key = _key_from_body(body)
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     number = body.get("number")
     if not owner or not repo:
         return web.json_response({"error": "missing 'owner'/'repo'"}, status=400)
@@ -1748,13 +2034,13 @@ async def _handle_issue_state(request: web.Request) -> web.Response:
     else:
         state_reason = None
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     target = f"{owner}/{repo}#{number}"
-    if (await asyncio.to_thread(_repo_can_write, owner, repo)) is not True:
+    if (await asyncio.to_thread(_repo_can_write, key)) is not True:
         _audit("issue_state", target, "denied", error="no confirmed write access")
         return web.json_response(
             {"error": "This repo is connected read-only — you need triage or push access to close/reopen issues."},
@@ -1763,17 +2049,17 @@ async def _handle_issue_state(request: web.Request) -> web.Response:
 
     try:
         result = await asyncio.to_thread(
-            github_client.set_issue_state, owner, repo, number, state, state_reason
+            partial(client.set_issue_state, owner, repo, number, state, state_reason, **pkw)
         )
-    except github_client.GhPermissionError as exc:
+    except GhPermissionError as exc:
         _audit("issue_state", target, "denied", error=str(exc))
         return web.json_response({"error": str(exc)}, status=403)
-    except github_client.GhCliError as exc:
+    except GhCliError as exc:
         _audit("issue_state", target, "failure", error=str(exc))
         return web.json_response({"error": str(exc)}, status=502)
 
-    await asyncio.to_thread(
-        store.apply_state_change_to_caches, owner, repo, number,
+    await _st(
+        key, store.apply_state_change_to_caches, owner, repo, number,
         result.get("state", state), result.get("state_reason"),
     )
     _audit("issue_state", f"{target}->{result.get('state', state)}", "ok")
@@ -1793,12 +2079,27 @@ async def _handle_issue_state(request: web.Request) -> web.Response:
 # ledger, no GitHub write.
 
 
+def _item_kind(raw: object) -> str | None:
+    """Validate an item-kind field (``issue`` / ``pull``), defaulting to ``issue``.
+
+    ``None`` means invalid, so the caller answers 400 rather than silently reading
+    the wrong record: on GitLab the kind is part of an item's identity, and
+    quietly falling back to "issue" would resume the wrong session.
+    """
+    if raw is None or raw == "":
+        return "issue"
+    return raw if isinstance(raw, str) and raw in provider.ITEM_KINDS else None
+
+
 async def _handle_get_investigation(request: web.Request) -> web.Response:
-    """GET /investigation?owner=<o>&repo=<r>&number=<n> — the local investigation
-    record for one issue (session link + status + findings), or ``null`` when the
-    issue has never been investigated. Read-only, no permission gate."""
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    """GET /investigation?owner=<o>&repo=<r>&number=<n>[&kind=issue|pull] — the
+    local investigation record for one item (session link + status + findings), or
+    ``null`` when it has never been investigated. Read-only, no permission gate.
+
+    ``kind`` defaults to ``issue`` and only changes the answer on GitLab, where
+    issues and merge requests have independent number sequences."""
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
     number_raw = (request.query.get("number") or "").strip()
     if not owner or not repo or not number_raw:
         return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
@@ -1806,21 +2107,34 @@ async def _handle_get_investigation(request: web.Request) -> web.Response:
     if number_error is not None:
         return number_error
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
-    record = await asyncio.to_thread(store.read_investigation, owner, repo, number)
+    item_kind = _item_kind(request.query.get("kind"))
+    if item_kind is None:
+        return web.json_response({"error": "'kind' must be 'issue' or 'pull'"}, status=400)
+
+    record = await _st(
+        key, store.read_investigation, owner, repo, number,
+        kind=provider.investigation_kind(key, item_kind),
+    )
     return web.json_response({
-        "owner": owner, "repo": repo, "number": number,
+        **_identity(key), "number": number, "kind": item_kind,
         "investigation": record,
     })
 
 
 async def _handle_put_investigation(request: web.Request) -> web.Response:
-    """PUT /investigation {"owner","repo","number", slot_key?, folder_id?,
-    status?, findings?} — upsert an issue's investigation record.
+    """PUT /investigation {"owner","repo","number", kind?, slot_key?, folder_id?,
+    status?, findings?} — upsert one item's investigation record.
+
+    ``kind`` (``issue`` / ``pull``, default ``issue``) is part of the record's
+    identity on GitLab, where a merge request's number is drawn from a different
+    sequence than an issue's. An agent PUT that omits it therefore addresses the
+    ISSUE with that number -- which is why the seed prompts emit it (see
+    ``lib/links.ts:recordIdentityJson``).
 
     Called by the Investigate button to link the freshly-created chat session
     (``slot_key`` + ``folder_id``), and again on resume to bump the "last opened"
@@ -1836,8 +2150,8 @@ async def _handle_put_investigation(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
 
-    owner = (body.get("owner") or "").strip()
-    repo = (body.get("repo") or "").strip()
+    key = _key_from_body(body)
+    owner, repo = key.owner, key.repo
     number = body.get("number")
     if not owner or not repo:
         return web.json_response({"error": "missing 'owner'/'repo'"}, status=400)
@@ -1845,14 +2159,23 @@ async def _handle_put_investigation(request: web.Request) -> web.Response:
     if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
         return web.json_response({"error": "'number' must be a positive integer"}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
+    item_kind = _item_kind(body.get("kind"))
+    if item_kind is None:
+        return web.json_response({"error": "'kind' must be 'issue' or 'pull'"}, status=400)
+
     patch = {k: body[k] for k in ("slot_key", "folder_id", "status", "findings") if k in body}
-    saved = await asyncio.to_thread(store.write_investigation, owner, repo, number, patch)
-    return web.json_response({"owner": owner, "repo": repo, "number": number, "investigation": saved})
+    saved = await _st(
+        key, store.write_investigation, owner, repo, number, patch,
+        kind=provider.investigation_kind(key, item_kind),
+    )
+    return web.json_response({
+        **_identity(key), "number": number, "kind": item_kind, "investigation": saved,
+    })
 
 
 # ── AI label recommendations (repo-level taxonomy proposal) ──────────────────
@@ -2073,24 +2396,27 @@ async def _compute_label_recommendations(
 
 
 async def _load_open_issues_for_reco(
-    owner: str, repo: str, *, refresh: bool = False
+    key: provider.RepoKey, *, refresh: bool = False
 ) -> list[dict]:
     """Return the repo's open issues, cache-first (fetch + cache on miss).
 
     ``refresh`` bypasses the cache — the Tagging queue needs it because labels are
     routinely added on GitHub itself, and a cache-first read keeps showing those
     issues as untagged no matter how many times the user reloads."""
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     if not refresh:
-        cached = await asyncio.to_thread(store.read_issues_cache, owner, repo, state="open")
+        cached = await _st(key, store.read_issues_cache, owner, repo, state="open")
         if cached is not None:
             return cached
     # Fetch and store under ONE lock. Locking only the write would let an apply
     # patch the cache between the two and then be overwritten by this pre-write
     # snapshot, so a label the user just applied would vanish from the dashboard.
-    return await asyncio.to_thread(
-        store.refresh_issues_cache,
+    return await _st(
+        key, store.refresh_issues_cache,
         owner, repo,
-        lambda: github_client.list_open_issues(owner, repo),
+        lambda: client.list_open_issues(owner, repo, **pkw),
         state="open",
     )
 
@@ -2099,17 +2425,17 @@ async def _handle_get_recommendations(request: web.Request) -> web.Response:
     """GET /recommendations?owner=<o>&repo=<r> — the cached label recommendations
     for a repo, or ``recommendations: null`` if none have been generated yet.
     Read-only; NEVER runs the model (that is the POST). No permission gate."""
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
     if not owner or not repo:
         return web.json_response({"error": "missing ?owner= and ?repo="}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
-    cached = await asyncio.to_thread(store.read_recommendations_cache, owner, repo)
+    cached = await _st(key, store.read_recommendations_cache, owner, repo)
     return web.json_response({
         "owner": owner, "repo": repo,
         "recommendations": cached["recommendations"] if cached else None,
@@ -2130,20 +2456,20 @@ async def _handle_generate_recommendations(request: web.Request) -> web.Response
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
 
-    owner = (body.get("owner") or "").strip()
-    repo = (body.get("repo") or "").strip()
+    key = _key_from_body(body)
+    owner, repo = key.owner, key.repo
     if not owner or not repo:
         return web.json_response({"error": "missing 'owner'/'repo'"}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     try:
-        existing_labels = await _load_labels_for_ai(owner, repo)
-        issues = await _load_open_issues_for_reco(owner, repo)
-    except github_client.GhCliError as exc:
+        existing_labels = await _load_labels_for_ai(key)
+        issues = await _load_open_issues_for_reco(key)
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
     try:
@@ -2159,7 +2485,7 @@ async def _handle_generate_recommendations(request: web.Request) -> web.Response
 
     generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     payload = {"recommendations": result["recommendations"], "generated_at": generated_at}
-    await asyncio.to_thread(store.write_recommendations_cache, owner, repo, payload)
+    await _st(key, store.write_recommendations_cache, owner, repo, payload)
     return web.json_response({
         "owner": owner, "repo": repo,
         "recommendations": payload["recommendations"],
@@ -2315,16 +2641,6 @@ async def _compute_tagging_suggestions(
     return out
 
 
-def _str_field(body: dict, key: str) -> str:
-    """A trimmed string body field, or ``""`` for anything that is not a string.
-
-    ``(body.get(key) or "").strip()`` raises AttributeError on a truthy non-string
-    (``{"owner": 1}``, ``{"owner": []}``), which surfaces as a 500 for what is
-    plainly a malformed request. Callers treat ``""`` as missing and return 400."""
-    value = body.get(key)
-    return value.strip() if isinstance(value, str) else ""
-
-
 async def _handle_get_tagging(request: web.Request) -> web.Response:
     """GET /tagging?owner=<o>&repo=<r>[&refresh=1] — the untagged queue plus
     whatever label suggestions are already cached for it.
@@ -2337,24 +2653,24 @@ async def _handle_get_tagging(request: web.Request) -> web.Response:
     Returns the issues as ROWS, not just numbers. The frontend used to resolve
     numbers against the shared issue list, which follows the user's open/closed
     filter — so entering Tagging from a Closed filter showed an empty queue."""
-    owner = (request.query.get("owner") or "").strip()
-    repo = (request.query.get("repo") or "").strip()
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
     if not owner or not repo:
         return web.json_response({"error": "missing ?owner= and ?repo="}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     try:
         issues = await _load_open_issues_for_reco(
-            owner, repo, refresh=request.query.get("refresh") == "1"
+            key, refresh=request.query.get("refresh") == "1"
         )
-    except github_client.GhCliError as exc:
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
-    cached = await asyncio.to_thread(store.read_tagging_cache, owner, repo)
+    cached = await _st(key, store.read_tagging_cache, owner, repo)
     suggestions = cached["suggestions"] if cached else {}
     rows = [
         {
@@ -2430,23 +2746,23 @@ async def _handle_generate_tagging(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
 
-    owner = _str_field(body, "owner")
-    repo = _str_field(body, "repo")
+    key = _key_from_body(body)
+    owner, repo = key.owner, key.repo
     if not owner or not repo:
         return web.json_response({"error": "missing 'owner'/'repo'"}, status=400)
     requested = body.get("numbers")
     if requested is not None and not isinstance(requested, list):
         return web.json_response({"error": "'numbers' must be an array"}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     try:
-        labels = await _load_labels_for_ai(owner, repo)
-        issues = await _load_open_issues_for_reco(owner, repo)
-    except github_client.GhCliError as exc:
+        labels = await _load_labels_for_ai(key)
+        issues = await _load_open_issues_for_reco(key)
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
     if not labels:
         return web.json_response(
@@ -2466,14 +2782,14 @@ async def _handle_generate_tagging(request: web.Request) -> web.Response:
         }
         batch = [i for i in untagged if i.get("number") in wanted]
     else:
-        cached = await asyncio.to_thread(store.read_tagging_cache, owner, repo)
+        cached = await _st(key, store.read_tagging_cache, owner, repo)
         done = set((cached or {}).get("suggestions") or {})
         batch = [i for i in untagged if str(i.get("number")) not in done]
     remaining = max(0, len(batch) - _TAG_BATCH_MAX)
     batch = batch[:_TAG_BATCH_MAX]
 
     if not batch:
-        cached = await asyncio.to_thread(store.read_tagging_cache, owner, repo)
+        cached = await _st(key, store.read_tagging_cache, owner, repo)
         return web.json_response({
             "owner": owner, "repo": repo,
             "suggestions": (cached or {}).get("suggestions") or {},
@@ -2496,8 +2812,8 @@ async def _handle_generate_tagging(request: web.Request) -> web.Response:
     # never advance.
     analyzed = [int(i["number"]) for i in batch if isinstance(i.get("number"), int)]
     merged_batch = {str(n): produced.get(str(n), []) for n in analyzed}
-    result = await asyncio.to_thread(
-        store.merge_tagging_suggestions, owner, repo, merged_batch
+    result = await _st(
+        key, store.merge_tagging_suggestions, owner, repo, merged_batch
     )
     return web.json_response({
         "owner": owner, "repo": repo,
@@ -2527,8 +2843,8 @@ async def _handle_labels_apply_bulk(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
 
-    owner = _str_field(body, "owner")
-    repo = _str_field(body, "repo")
+    key = _key_from_body(body)
+    owner, repo = key.owner, key.repo
     changes = body.get("changes")
     if not owner or not repo:
         return web.json_response({"error": "missing 'owner'/'repo'"}, status=400)
@@ -2566,13 +2882,13 @@ async def _handle_labels_apply_bulk(request: web.Request) -> web.Response:
     if not parsed:
         return web.json_response({"error": "nothing to apply (no labels in any change)"}, status=400)
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     target = f"{owner}/{repo}"
-    if (await asyncio.to_thread(_repo_can_write, owner, repo)) is not True:
+    if (await asyncio.to_thread(_repo_can_write, key)) is not True:
         _audit("apply_labels_bulk", target, "denied", error="no confirmed write access")
         return web.json_response(
             {"error": "This repo is connected read-only — you need triage or push access to edit labels."},
@@ -2583,8 +2899,8 @@ async def _handle_labels_apply_bulk(request: web.Request) -> web.Response:
     # be added. Checked before ANY write so a bad name fails the whole request
     # instead of leaving half the batch applied.
     try:
-        repo_labels = await _load_labels_for_ai(owner, repo)
-    except github_client.GhCliError as exc:
+        repo_labels = await _load_labels_for_ai(key)
+    except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
     known = {lab.get("name") for lab in repo_labels}
     unknown = sorted({n for _, names in parsed for n in names if n not in known})
@@ -2598,13 +2914,13 @@ async def _handle_labels_apply_bulk(request: web.Request) -> web.Response:
     for number, names in parsed:
         try:
             final_labels = await asyncio.to_thread(
-                _apply_label_change, owner, repo, number, names, []
+                partial(_apply_label_change, key, number, names, [])
             )
-        except github_client.GhPermissionError as exc:
+        except GhPermissionError as exc:
             _audit("apply_labels_bulk", f"{target}#{number}", "denied", error=str(exc))
             failed.append({"number": number, "error": str(exc)})
             continue
-        except github_client.GhCliError as exc:
+        except GhCliError as exc:
             _audit("apply_labels_bulk", f"{target}#{number}", "failure", error=str(exc))
             failed.append({"number": number, "error": str(exc)})
             continue
@@ -2619,8 +2935,8 @@ async def _handle_labels_apply_bulk(request: web.Request) -> web.Response:
     if applied:
         # Same reasoning: pruning the queue is bookkeeping, not part of the write.
         try:
-            await asyncio.to_thread(
-                store.drop_tagging_suggestions, owner, repo, [r["number"] for r in applied]
+            await _st(
+                key, store.drop_tagging_suggestions, owner, repo, [r["number"] for r in applied]
             )
         except Exception:
             logger.warning(
@@ -2645,8 +2961,10 @@ async def _handle_create_label(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
 
-    owner = (body.get("owner") or "").strip()
-    repo = (body.get("repo") or "").strip()
+    key = _key_from_body(body)
+    owner, repo = key.owner, key.repo
+    client = provider.client_for(key)
+    pkw = provider.call_kwargs(key)
     name = str(body.get("name") or "").strip()
     if not owner or not repo:
         return web.json_response({"error": "missing 'owner'/'repo'"}, status=400)
@@ -2657,13 +2975,13 @@ async def _handle_create_label(request: web.Request) -> web.Response:
         color = "888888"
     description = str(body.get("description") or "").strip()[:100]
 
-    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+    if not await asyncio.to_thread(_connected, key):
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
     target = f"{owner}/{repo}:{name}"
-    if (await asyncio.to_thread(_repo_can_write, owner, repo)) is not True:
+    if (await asyncio.to_thread(_repo_can_write, key)) is not True:
         _audit("create_label", target, "denied", error="no confirmed write access")
         return web.json_response(
             {"error": "This repo is connected read-only — you need triage or push access to create labels."},
@@ -2672,16 +2990,16 @@ async def _handle_create_label(request: web.Request) -> web.Response:
 
     try:
         label = await asyncio.to_thread(
-            github_client.create_label, owner, repo, name, color, description
+            partial(client.create_label, owner, repo, name, color, description, **pkw)
         )
-    except github_client.GhPermissionError as exc:
+    except GhPermissionError as exc:
         _audit("create_label", target, "denied", error=str(exc))
         return web.json_response({"error": str(exc)}, status=403)
-    except github_client.GhCliError as exc:
+    except GhCliError as exc:
         _audit("create_label", target, "failure", error=str(exc))
         return web.json_response({"error": str(exc)}, status=502)
 
-    await asyncio.to_thread(store.add_label_to_cache, owner, repo, label)
+    await _st(key, store.add_label_to_cache, owner, repo, label)
     _audit("create_label", target, "ok")
     return web.json_response({"owner": owner, "repo": repo, "label": label, "created": True})
 
@@ -2705,8 +3023,8 @@ async def _handle_add_settings_label(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
 
-    owner = _str_field(body, "owner")
-    repo = _str_field(body, "repo")
+    key = _key_from_body(body)
+    owner, repo = key.owner, key.repo
     role = _str_field(body, "role")
     label = _str_field(body, "label")
     if not owner or not repo:
@@ -2715,7 +3033,17 @@ async def _handle_add_settings_label(request: web.Request) -> web.Response:
         return web.json_response({"error": "missing 'role'/'label'"}, status=400)
 
     try:
-        settings = await asyncio.to_thread(store.add_setting_label, owner, repo, role, label)
+        settings = await asyncio.to_thread(
+            partial(
+                store.add_setting_label,
+                owner,
+                repo,
+                role,
+                label,
+                provider=key.provider,
+                host=key.host,
+            )
+        )
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except KeyError:

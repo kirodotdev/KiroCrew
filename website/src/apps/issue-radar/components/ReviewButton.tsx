@@ -10,22 +10,25 @@
 // share one number sequence per repo, so they cannot collide on `number`.
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileSearch } from 'lucide-react'
-import { issueRadarApi, type InvestigationResponse, type PullRequest } from '../api'
+import { issueRadarApi, type InvestigationResponse, type PullRequest, RepoRef } from '../api'
 import { useReviewPr } from '../lib/review'
 import AgentSessionButton from './AgentSessionButton'
+import { providerTerms, repoScopeKey } from '../lib/links'
 
 export default function ReviewButton({
-  owner, repo, pull,
+  repoRef, pull,
 }: {
-  owner: string
-  repo: string
+  repoRef: RepoRef
   pull: PullRequest
 }) {
+  const { owner, repo } = repoRef
+  const scopeKey = repoScopeKey(repoRef)
+  const terms = providerTerms(repoRef)
   const queryClient = useQueryClient()
-  const key = ['issue-radar', 'investigation', owner, repo, pull.number]
+  const key = ['issue-radar', 'investigation', scopeKey, 'pull', pull.number]
   const recordQuery = useQuery({
     queryKey: key,
-    queryFn: () => issueRadarApi.getInvestigation(owner, repo, pull.number),
+    queryFn: () => issueRadarApi.getInvestigation(repoRef, pull.number, 'pull'),
     staleTime: 30_000,
   })
   const record = recordQuery.data?.investigation ?? null
@@ -38,10 +41,10 @@ export default function ReviewButton({
 
   const onClick = async () => {
     if (busy || unresolved) return
-    const saved = await reviewPr(owner, repo, pull, record)
+    const saved = await reviewPr(repoRef, pull, record)
     if (saved) {
       queryClient.setQueryData<InvestigationResponse>(key, {
-        owner, repo, number: pull.number, investigation: saved,
+        owner, repo, number: pull.number, kind: 'pull', investigation: saved,
       })
     }
   }
@@ -58,9 +61,9 @@ export default function ReviewButton({
       startHint={
         recordQuery.isError
           ? 'Could not check for an existing review session — retrying on refresh'
-          : 'Open an AI code-review chat session for this Pull Request'
+          : `Open an AI code-review chat session for this ${terms.changeRequestTitle}`
       }
-      resumeHint="Resume the AI code-review chat session for this Pull Request"
+      resumeHint={`Resume the AI code-review chat session for this ${terms.changeRequestTitle}`}
       // The review agent only DRAFTS comments for you — it records nothing, so a
       // status pill would sit on "Reviewing" forever. Resume is the only state
       // worth showing.

@@ -25,8 +25,12 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Check, Orbit, RefreshCw, SquareKanban } from 'lucide-react'
-import { issueRadarApi, type GhSetupReason, type RecentRepo } from './api'
+import {
+  issueRadarApi, type GhSetupReason, type RecentRepo, type RepoRef, type SourceProvider,
+} from './api'
+import { providerTerms } from './lib/links'
 import { relativeTimeOrDate } from './lib/format'
+import type { ActiveRepo } from './lib/types'
 import GithubLogo from '../../components/icons/GithubLogo'
 import GitlabLogo from '../../components/icons/GitlabLogo'
 
@@ -95,7 +99,10 @@ export function repoIdentity(text: string): string | null {
  * so submitting a folded `acme/widget` for an already-connected `Acme/Widget`
  * appends a SECOND entry with its own caches and settings. Folding is for
  * comparison only — see repoIdentity. */
-export function parseRepoRef(text: string): { owner: string; repo: string } | null {
+export function parseRepoRef(
+  text: string,
+  provider: ProviderId = 'github',
+): { owner: string; repo: string } | null {
   const trimmed = text.trim()
   if (!trimmed) return null
   // Tolerate a bare `owner/repo` and a scheme-less host, which is what people
@@ -103,9 +110,13 @@ export function parseRepoRef(text: string): { owner: string; repo: string } | nu
   // hostname, so it is treated as an owner on github.com.
   const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
   const looksHostless = !hasScheme && !trimmed.split('/')[0].includes('.')
+  // A hostless shorthand resolves against the SELECTED provider's public host —
+  // assuming github.com while the GitLab panel is open would connect a different
+  // project entirely.
+  const defaultHost = provider === 'gitlab' ? 'gitlab.com' : 'github.com'
   const withScheme = hasScheme
     ? trimmed
-    : looksHostless ? `https://github.com/${trimmed}` : `https://${trimmed}`
+    : looksHostless ? `https://${defaultHost}/${trimmed}` : `https://${trimmed}`
   let host: string
   let path: string
   try {
@@ -115,12 +126,25 @@ export function parseRepoRef(text: string): { owner: string; repo: string } | nu
   } catch {
     return null
   }
-  if (host && host !== 'github.com') return null
+  // Only the provider's PUBLIC host is recognised here. A self-managed GitLab is
+  // deliberately not shorthand-parsed: the client has no view of the operator's
+  // `dashboard.gitlab_hosts` allowlist, so guessing would produce a canonical URL
+  // the server then rejects. Such a URL is submitted verbatim instead, and the
+  // server's allowlist decision is the honest answer the user sees.
+  if (host && host !== defaultHost) return null
+  // Everything from GitLab's `/-/` routing marker onward is a page within the
+  // project, not part of its path, so a pasted issues/MR tab still resolves.
+  const marker = path.toLowerCase().indexOf('/-/')
+  const projectPath = marker >= 0 ? path.slice(0, marker) : path
   // Trailing slashes come off FIRST: `.../repo.git/` would otherwise keep its
   // `.git` (the anchor never matches) and count as a second, distinct repo.
-  const parts = path.replace(/\/+$/, '').replace(/\.git$/i, '').split('/').filter(Boolean)
+  const parts = projectPath.replace(/\/+$/, '').replace(/\.git$/i, '').split('/').filter(Boolean)
   if (parts.length < 2) return null
-  return { owner: parts[0], repo: parts[1] }
+  // GitLab projects live in nested groups, so the namespace is EVERY segment but
+  // the last — truncating to the first would address a different project.
+  return provider === 'gitlab'
+    ? { owner: parts.slice(0, -1).join('/'), repo: parts[parts.length - 1] }
+    : { owner: parts[0], repo: parts[1] }
 }
 
 interface Provider {
@@ -138,7 +162,7 @@ interface Provider {
 // (board / orbit) reads acceptably until either provider is actually wired up.
 const PROVIDERS: Provider[] = [
   { id: 'github', label: 'GitHub', icon: <GithubLogo size={18} />, available: true },
-  { id: 'gitlab', label: 'GitLab', icon: <GitlabLogo size={18} />, available: false },
+  { id: 'gitlab', label: 'GitLab', icon: <GitlabLogo size={18} />, available: true },
   { id: 'jira', label: 'Jira', icon: <SquareKanban size={18} />, available: false },
   { id: 'linear', label: 'Linear', icon: <Orbit size={18} />, available: false },
 ]
@@ -177,7 +201,7 @@ export interface ConnectFlow {
  * Lifted into a hook (not kept inside the panel) because both hosts render the
  * Connect button OUTSIDE the panel body — the carousel in its nav row, the
  * modal in its footer. */
-export function useConnectFlow(onConnected: (repo: { owner: string; repo: string }) => void): ConnectFlow {
+export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): ConnectFlow {
   const queryClient = useQueryClient()
   const [provider, setProvider] = useState<ProviderId | null>(null)
   const [url, setUrl] = useState('')
@@ -202,10 +226,11 @@ export function useConnectFlow(onConnected: (repo: { owner: string; repo: string
    * against what was actually dispatched rather than what's left selected. */
   const targetCountRef = useRef(0)
 
+  const publicHost = provider === 'gitlab' ? 'gitlab.com' : 'github.com'
   const targets = useMemo<ConnectTarget[]>(() => {
     const out: ConnectTarget[] = [...picked].map((fullName) => ({
       key: fullName,
-      url: `https://github.com/${fullName}`,
+      url: `https://${publicHost}/${fullName}`,
       label: fullName,
     }))
     const typed = url.trim()
@@ -222,13 +247,13 @@ export function useConnectFlow(onConnected: (repo: { owner: string; repo: string
         // owner/repo verbatim, so a folded name would be persisted as a second,
         // separate repo. Unparseable text is submitted as-is so the server's
         // error stays the honest one.
-        const ref = parseRepoRef(typed)
-        const url = ref ? `https://github.com/${ref.owner}/${ref.repo}` : typed
+        const ref = parseRepoRef(typed, provider ?? 'github')
+        const url = ref ? `https://${publicHost}/${ref.owner}/${ref.repo}` : typed
         out.push({ key: `${URL_TARGET_PREFIX}${typed}`, url, label: typed })
       }
     }
     return out
-  }, [picked, url])
+  }, [picked, url, provider, publicHost])
 
   const connectMutation = useMutation({
     mutationFn: async (list: ConnectTarget[]) => {
@@ -238,7 +263,11 @@ export function useConnectFlow(onConnected: (repo: { owner: string; repo: string
       // that DID connect.
       const failures: string[] = []
       const succeeded: string[] = []
-      let first: { owner: string; repo: string } | null = null
+      // Carries provider + host, which the backend resolved from the URL. Dropping
+      // them here would hand the app a GitHub-shaped ref for a GitLab project, and
+      // every later request would be authorized against the wrong provider — a
+      // 404 "not connected" on a repo that was just connected successfully.
+      let first: ActiveRepo | null = null
       for (let i = 0; i < list.length; i++) {
         // Checked BEFORE each request, so at most the in-flight one completes.
         if (cancelledRef.current) break
@@ -246,7 +275,14 @@ export function useConnectFlow(onConnected: (repo: { owner: string; repo: string
         try {
           const res = await issueRadarApi.connect(list[i].url)
           succeeded.push(list[i].key)
-          if (!first) first = { owner: res.owner, repo: res.repo }
+          if (!first) {
+            first = {
+              owner: res.owner,
+              repo: res.repo,
+              provider: res.provider,
+              host: res.host,
+            }
+          }
         } catch (e) {
           failures.push(`${list[i].label}: ${(e as Error).message}`)
         }
@@ -335,13 +371,19 @@ export function useConnectFlow(onConnected: (repo: { owner: string; repo: string
  * would just fail the same way) and the whole right column becomes the setup
  * notice. */
 export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
-  const expanded = flow.provider === 'github'
+  // Both wired providers expand into the two-column body. Jira/Linear stay
+  // collapsed because they are still placeholders.
+  const expanded = flow.provider === 'github' || flow.provider === 'gitlab'
+  const scopeProvider = flow.provider === 'gitlab' ? ('gitlab' as const) : ('github' as const)
 
   const query = useQuery({
-    queryKey: ['issue-radar', 'recent-repos', RECENT_WINDOW_DAYS],
-    queryFn: () => issueRadarApi.recentRepos(RECENT_WINDOW_DAYS),
-    // Only fetch once the GitHub panel is actually open, and don't re-shell out
-    // to `gh` on every window focus.
+    // Keyed by provider: the two lists come from different accounts on different
+    // CLIs, so sharing one cache entry would show GitHub repos in the GitLab
+    // picker (and mark the wrong ones "Connected").
+    queryKey: ['issue-radar', 'recent-repos', RECENT_WINDOW_DAYS, scopeProvider],
+    queryFn: () => issueRadarApi.recentRepos(RECENT_WINDOW_DAYS, { provider: scopeProvider }),
+    // Only fetch once a wired provider's panel is actually open, and don't
+    // re-shell out to the CLI on every window focus.
     enabled: expanded,
     refetchOnWindowFocus: false,
   })
@@ -427,6 +469,11 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
               error={query.isError ? (query.error as Error).message : null}
               detail={query.data?.error ?? null}
               onRetry={() => query.refetch()}
+              // The setup notice names a CLI, and the two providers use
+              // different ones — telling a GitLab user to install `gh` sends
+              // them to set up the wrong tool on the one screen meant to
+              // unblock them.
+              scopeProvider={scopeProvider}
             />
 
             {!setupRequired && (
@@ -441,7 +488,7 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
                   onChange={(e) => flow.setUrl(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') flow.submit() }}
                   disabled={flow.pending}
-                  placeholder="https://github.com/<owner>/<repo>"
+                  placeholder="https://github.com/<owner>/<repo> or https://gitlab.com/<group>/<project>"
                   className="w-full box-border text-[12.5px] px-3 py-2 rounded-md bg-bg text-text border border-border font-mono disabled:opacity-50"
                 />
               </div>
@@ -498,6 +545,7 @@ function ProviderRow({ provider, selected, onSelect }: {
  * empty, loaded — occupies exactly the same box. */
 function RecentRepoPicker({
   picked, onToggle, repos, truncated, setupRequired, isLoading, error, detail, onRetry, disabled,
+  scopeProvider,
 }: {
   picked: Set<string>
   onToggle: (fullName: string) => void
@@ -510,6 +558,9 @@ function RecentRepoPicker({
   onRetry: () => void
   /** True while a connect is in flight — rows stop accepting changes. */
   disabled: boolean
+  /** Which provider's account this picker is listing — drives the CLI named by
+   * the setup notice. */
+  scopeProvider: SourceProvider
 }) {
   const showList = !isLoading && !error && !setupRequired
   // Never claim a count when the feed was truncated: repos contributed to
@@ -553,7 +604,9 @@ function RecentRepoPicker({
             {error}
           </div>
         )}
-        {setupRequired && <GhSetupNotice detail={detail} onRetry={onRetry} />}
+        {setupRequired && (
+          <ProviderSetupNotice detail={detail} onRetry={onRetry} provider={scopeProvider} />
+        )}
         {showList && repos.length === 0 && (
           <div className="text-xs text-muted h-full flex items-center justify-center text-center px-3 leading-[1.6]">
             {/* Never claim the month was empty when the feed was truncated: the
@@ -578,24 +631,35 @@ function RecentRepoPicker({
   )
 }
 
-/** Shown instead of the repo list when the host has no usable `gh`. Issue Radar
- * reads GitHub exclusively through the user's own CLI session, so there is no
- * in-app fallback and nothing to connect — one plain "set it up" message, the
- * same for every underlying cause (binary missing, rejected by trust
- * validation, or not signed in). The server's specific diagnostic stays in the
- * collapsible Details block for anyone who needs it.
+/** Shown instead of the repo list when the host has no usable provider CLI.
+ * Issue Radar reads each provider exclusively through the user's own CLI
+ * session, so there is no in-app fallback and nothing to connect — one plain
+ * "set it up" message, the same for every underlying cause (binary missing,
+ * rejected by trust validation, or not signed in). The server's specific
+ * diagnostic stays in the collapsible Details block for anyone who needs it.
+ *
+ * The CLI is named from the PROVIDER being connected, not hard-coded: this is
+ * the one screen whose whole job is unblocking the user, so naming `gh` to
+ * someone connecting GitLab sends them to install the wrong tool and leaves them
+ * exactly as stuck after following the instructions.
  *
  * Left-aligned and top-anchored: centred text in a tall box reads as a stray
  * fragment floating mid-column, and it broke alignment with the provider list
  * across the divider. */
-function GhSetupNotice({ detail, onRetry }: { detail: string | null; onRetry: () => void }) {
+function ProviderSetupNotice({ detail, onRetry, provider }: {
+  detail: string | null; onRetry: () => void; provider: SourceProvider
+}) {
+  const terms = providerTerms({ provider } as RepoRef)
   return (
     <div className="flex flex-col items-start gap-2 text-left pr-2">
       <AlertCircle size={18} className="text-danger flex-shrink-0" />
-      <p className="text-[13px] font-semibold text-text">Please set up the GitHub CLI</p>
+      <p className="text-[13px] font-semibold text-text">
+        Please set up the {terms.providerName} CLI
+      </p>
       <p className="text-[11.5px] text-muted leading-[1.6]">
-        Issue Radar reads GitHub through your own <code>gh</code> session. Install and sign in to{' '}
-        <code>gh</code>, then{' '}
+        Issue Radar reads {terms.providerName} through your own <code>{terms.cli}</code> session.
+        Install and sign in to{' '}
+        <code>{terms.cli}</code>, then{' '}
         <button
           onClick={onRetry}
           className="underline text-accent bg-transparent border-0 p-0 cursor-pointer text-[11.5px]"

@@ -44,13 +44,13 @@ describe('issueRadarApi.putSettings', () => {
     }))
 
     await expect(
-      issueRadarApi.putSettings('o', 'r', { ...SETTINGS, revision: 4 }),
+      issueRadarApi.putSettings({ owner: 'o', repo: 'r' }, { ...SETTINGS, revision: 4 }),
     ).rejects.toBeInstanceOf(SettingsConflictError)
 
     // The caller needs the newer document to rebase onto, so it must survive the
     // throw — a generic Error would lose it.
     try {
-      await issueRadarApi.putSettings('o', 'r', { ...SETTINGS, revision: 4 })
+      await issueRadarApi.putSettings({ owner: 'o', repo: 'r' }, { ...SETTINGS, revision: 4 })
       throw new Error('expected a conflict')
     } catch (e) {
       expect(e).toBeInstanceOf(SettingsConflictError)
@@ -61,7 +61,7 @@ describe('issueRadarApi.putSettings', () => {
 
   it('still throws a plain Error for other failures', async () => {
     fetchMock.mockResolvedValue(jsonResponse(500, { error: 'boom' }))
-    const err = await issueRadarApi.putSettings('o', 'r', SETTINGS).catch((e) => e)
+    const err = await issueRadarApi.putSettings({ owner: 'o', repo: 'r' }, SETTINGS).catch((e) => e)
     expect(err).toBeInstanceOf(Error)
     expect(err).not.toBeInstanceOf(SettingsConflictError)
     expect((err as Error).message).toBe('boom')
@@ -69,7 +69,7 @@ describe('issueRadarApi.putSettings', () => {
 
   it('returns the parsed body on success', async () => {
     fetchMock.mockResolvedValue(jsonResponse(200, { owner: 'o', repo: 'r', settings: SETTINGS }))
-    await expect(issueRadarApi.putSettings('o', 'r', SETTINGS))
+    await expect(issueRadarApi.putSettings({ owner: 'o', repo: 'r' }, SETTINGS))
       .resolves.toEqual({ owner: 'o', repo: 'r', settings: SETTINGS })
   })
 })
@@ -86,19 +86,19 @@ describe('issueRadarApi.generateTagging', () => {
     // field, which the backend reads as an omission and answers with a full
     // automatic batch.
     fetchMock.mockResolvedValue(jsonResponse(200, okBody))
-    await issueRadarApi.generateTagging('o', 'r', [])
+    await issueRadarApi.generateTagging({ owner: 'o', repo: 'r' }, [])
     expect(sentBody()).toEqual({ owner: 'o', repo: 'r', numbers: [] })
   })
 
   it('omits numbers only when it is undefined', async () => {
     fetchMock.mockResolvedValue(jsonResponse(200, okBody))
-    await issueRadarApi.generateTagging('o', 'r')
+    await issueRadarApi.generateTagging({ owner: 'o', repo: 'r' })
     expect(sentBody()).toEqual({ owner: 'o', repo: 'r' })
   })
 
   it('passes a populated selection through', async () => {
     fetchMock.mockResolvedValue(jsonResponse(200, okBody))
-    await issueRadarApi.generateTagging('o', 'r', [7, 8])
+    await issueRadarApi.generateTagging({ owner: 'o', repo: 'r' }, [7, 8])
     expect(sentBody()).toEqual({ owner: 'o', repo: 'r', numbers: [7, 8] })
   })
 })
@@ -110,12 +110,41 @@ describe('issueRadarApi.tagging', () => {
       suggestions: {}, generated_at: null, batch_size: 50, label_counts: {}, titles: {},
     }
     fetchMock.mockResolvedValue(jsonResponse(200, body))
-    await issueRadarApi.tagging('o', 'r')
+    await issueRadarApi.tagging({ owner: 'o', repo: 'r' })
     expect(fetchMock.mock.calls[0][0]).not.toContain('refresh=1')
 
     fetchMock.mockClear()
     fetchMock.mockResolvedValue(jsonResponse(200, body))
-    await issueRadarApi.tagging('o', 'r', { refresh: true })
+    await issueRadarApi.tagging({ owner: 'o', repo: 'r' }, { refresh: true })
     expect(fetchMock.mock.calls[0][0]).toContain('refresh=1')
+  })
+})
+
+describe('issueRadarApi investigation records', () => {
+  // On GitLab, issue #5 and merge request !5 are unrelated items drawn from
+  // independent sequences. If the item kind never reaches the wire, both resolve
+  // to one record: clicking "Review" on MR !5 resumes issue #5's chat session and
+  // overwrites its findings. The component tests mock this client, so the kind
+  // silently vanishing is exactly the kind of break only a boundary test sees.
+  const GL = { owner: 'group/sub', repo: 'svc', provider: 'gitlab' as const, host: 'gitlab.com' }
+
+  it('sends the item kind when reading a record', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { investigation: null }))
+    await issueRadarApi.getInvestigation(GL, 5, 'pull')
+    expect(fetchMock.mock.calls[0][0]).toContain('kind=pull')
+  })
+
+  it('defaults a read to the issue sequence', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { investigation: null }))
+    await issueRadarApi.getInvestigation(GL, 5)
+    expect(fetchMock.mock.calls[0][0]).toContain('kind=issue')
+  })
+
+  it('sends the item kind when writing a record', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { investigation: null }))
+    await issueRadarApi.saveInvestigation(GL, 5, { status: 'investigating' }, 'pull')
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.kind).toBe('pull')
+    expect(body.provider).toBe('gitlab')
   })
 })

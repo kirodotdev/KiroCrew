@@ -4,6 +4,7 @@ import { useIssueRadar } from '../context'
 import { PR_SORT_FIELDS } from '../lib/format'
 import FilterRow from './FilterRow'
 import LabelPalette from './LabelPalette'
+import { providerTerms } from '../lib/links'
 
 /** Body of the "Pull requests" accordion section: Sort options, the state
  * (open / merged / closed) + draft / mine / review toggles, and the label
@@ -21,7 +22,11 @@ export default function PrFiltersSection() {
     me, anyPrFilterActive, clearPrFilters,
     repoLabels, countByPrLabel, prSelectedLabels, togglePrLabel,
     labelsLoading, labelsError,
+    active,
   } = useIssueRadar()
+  // Provider vocabulary: GitLab calls these merge requests, and calling them
+  // pull requests in a GitLab workspace is simply wrong copy.
+  const terms = providerTerms(active)
 
   // Labels ordered by their PR-usage count (most-used first) — the PR analogue
   // of the issue-scoped sortedRepoLabels.
@@ -105,7 +110,7 @@ export default function PrFiltersSection() {
             label="Created by member"
             active={prCreatedByMember}
             disabled={!hasMemberPulls}
-            disabledHint="No repo members found among these pull requests"
+            disabledHint={`No repo members found among these ${terms.changeRequestPlural}`}
             onToggle={togglePrCreatedByMember}
           />
         </div>

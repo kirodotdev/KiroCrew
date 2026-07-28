@@ -35,7 +35,10 @@ import {
   issueRadarApi,
   type PullRequest, type TimelineEvent, type PrCheck, type DetailLabel,
   type PullDetailResponse,
+  type RepoRef,
 } from '../api'
+import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
+import { providerTerms } from '../lib/links'
 
 /** A relative timestamp that flips to the absolute local date-time on click
  * (and shows it on hover). Renders nothing for a missing/unparseable value. */
@@ -170,18 +173,22 @@ function CollapsibleBody({ body }: { body: string }) {
  * `opening` marks the PR DESCRIPTION: it renders in FULL, while every other
  * comment is clamped to ~3 lines and expands on click (see CollapsibleBody). */
 function CommentCard({
-  author, when, body, opening, role, assoc,
+  author, when, body, opening, role, assoc, repoRef,
 }: {
   author: string | null; when?: string; body?: string; opening?: boolean
   role?: string | null; assoc?: string | null
+  repoRef: RepoRef
 }) {
+  const terms = providerTerms(repoRef)
   const text = body?.trim() ? body : ''
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden">
       <div className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-bg-elevated/60 text-[12.5px] flex-wrap">
         <span className="font-semibold text-text-strong">{author ?? 'ghost'}</span>
         <MemberBadge role={role} assoc={assoc} />
-        <span className="text-muted">{opening ? 'opened this Pull Request' : 'commented'}</span>
+        <span className="text-muted">
+          {opening ? `opened this ${terms.changeRequestTitle}` : 'commented'}
+        </span>
         <span className="text-muted">· {when ? <RelTime iso={when} /> : ''}</span>
       </div>
       <div className="px-3.5 py-3">
@@ -246,11 +253,11 @@ function TimelineRow({
 
 /** Icon + colour + inline sentence for a non-comment PR timeline event. */
 function eventVisual(
-  ev: TimelineEvent, owner: string, repo: string, colorByName: Map<string, string>,
+  ev: TimelineEvent, repoRef: RepoRef, colorByName: Map<string, string>,
   roleByLogin?: Map<string, string>,
 ): { Icon: LucideIcon; color: string; body: React.ReactNode } {
   const who = <span className="font-medium text-text">{ev.actor ?? 'someone'}</span>
-  const commitUrl = ev.commit_id ? `https://github.com/${owner}/${repo}/commit/${ev.commit_id}` : undefined
+  const commitUrl = ev.commit_id ? commitUrlFor(repoRef, ev.commit_id) : undefined
   const labelChip = ev.label
     ? <LabelChip name={ev.label.name} color={ev.label.color || colorByName.get(ev.label.name) || '888888'} small />
     : null
@@ -298,7 +305,11 @@ function eventVisual(
     case 'unassigned':
       return { Icon: UserMinus, color: 'text-muted', body: <>{who} unassigned {ev.assignee ?? 'someone'}</> }
     case 'closed':
-      return { Icon: CircleSlash, color: 'text-danger', body: <>{who} closed this Pull Request</> }
+      return {
+        Icon: CircleSlash,
+        color: 'text-danger',
+        body: <>{who} closed this {providerTerms(repoRef).changeRequestTitle}</>,
+      }
     case 'reopened':
       return { Icon: CircleDot, color: 'text-ok', body: <>{who} reopened this</> }
     case 'renamed':
@@ -315,7 +326,8 @@ function eventVisual(
           <>
             {who} referenced this in{' '}
             <a href={ev.source?.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
-              {ev.source?.is_pr ? 'PR' : 'issue'} #{ev.source?.number}
+              {ev.source?.is_pr ? providerTerms(repoRef).changeRequestShort : 'issue'}
+              {providerTerms(repoRef).sigil}{ev.source?.number}
             </a>
           </>
         ),
@@ -468,7 +480,9 @@ function AutoReviewChecks(
 
 export default function PrDetail({ pull }: { pull: PullRequest }) {
   const { active, colorByName, memberRoleByLogin } = useIssueRadar()
-  const { owner, repo } = active
+  const scopeKey = repoScopeKey(active)
+  // GitLab calls these merge requests; the whole pane's copy follows the ref.
+  const terms = providerTerms(active)
 
   const [copied, setCopied] = useState(false)
   const copyLink = async () => {
@@ -481,7 +495,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
 
   const queryClient = useQueryClient()
   const refreshRef = useRef(false)
-  const detailKey = ['issue-radar', 'pull', owner, repo, pull.number]
+  const detailKey = ['issue-radar', 'pull', scopeKey, pull.number]
   // The lifecycle the POLL rate is derived from: whatever the pane last read, not
   // the list row it was opened from (which can be minutes old by then).
   const cachedDetail = queryClient.getQueryData<PullDetailResponse>(detailKey)?.detail
@@ -496,7 +510,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
       // poll. The header button still forces a read on demand.
       const useRefresh = refreshRef.current
       refreshRef.current = false
-      return issueRadarApi.pullDetail(owner, repo, pull.number, { refresh: useRefresh })
+      return issueRadarApi.pullDetail(active, pull.number, { refresh: useRefresh })
     },
     // Derived from the LATEST detail when it has arrived, falling back to the list
     // row: a PR merged elsewhere while the pane is open must start backing off
@@ -518,10 +532,10 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
     // patchRow matches on PR number only — so opening repo A's #7 would overwrite
     // repo B's #7.
     queryClient.setQueriesData<{ pulls?: PullRequest[] }>(
-      { queryKey: ['issue-radar', 'pulls', owner, repo] }, patchRow,
+      { queryKey: ['issue-radar', 'pulls', scopeKey] }, patchRow,
     )
     queryClient.setQueriesData<{ pulls?: PullRequest[] }>(
-      { queryKey: ['issue-radar', 'pulls-search', owner, repo] }, patchRow,
+      { queryKey: ['issue-radar', 'pulls-search', scopeKey] }, patchRow,
     )
     function patchRow(old: { pulls?: PullRequest[] } | undefined) {
       if (!old?.pulls?.some((p) => p.number === pull.number)) return old
@@ -539,7 +553,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
         )),
       }
     }
-  }, [summary, pull.number, owner, repo, queryClient])
+  }, [summary, pull.number, scopeKey, queryClient])
 
   const detail = detailQuery.data?.detail
   const timeline = asArray<TimelineEvent>(detailQuery.data?.timeline)
@@ -558,11 +572,11 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
   // whether it predates the latest activity.
   const aiRefreshRef = useRef(false)
   const aiQuery = useQuery({
-    queryKey: ['issue-radar', 'pull-ai', owner, repo, pull.number],
+    queryKey: ['issue-radar', 'pull-ai', scopeKey, pull.number],
     queryFn: () => {
       const useRefresh = aiRefreshRef.current
       aiRefreshRef.current = false
-      return issueRadarApi.pullAi(owner, repo, pull.number, { refresh: useRefresh })
+      return issueRadarApi.pullAi(active, pull.number, { refresh: useRefresh })
     },
     enabled: Boolean(detail),
     // The server owns freshness (its input fingerprint decides whether a request
@@ -659,13 +673,13 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               <span className="inline-flex items-center gap-1">
                 <button
                   onClick={copyLink}
-                  title={copied ? 'Link copied' : 'Copy link to this Pull Request'}
-                  aria-label="Copy link to this Pull Request"
+                  title={copied ? 'Link copied' : `Copy link to this ${terms.changeRequestTitle}`}
+                  aria-label={`Copy link to this ${terms.changeRequestTitle}`}
                   className="inline-flex items-center -ml-0.5 p-0.5 cursor-pointer bg-transparent text-muted hover:text-accent"
                 >
                   {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
                 </button>
-                <a href={detail?.url ?? pull.url} target="_blank" rel="noreferrer" title="Open on GitHub" className="font-mono text-muted hover:text-accent hover:underline">
+                <a href={detail?.url ?? pull.url} target="_blank" rel="noreferrer" title={`Open on ${terms.providerName}`} className="font-mono text-muted hover:text-accent hover:underline">
                   #{pull.number}
                 </a>
               </span>
@@ -680,12 +694,12 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
           <div className="flex-shrink-0 flex items-center gap-1.5">
             {/* Same reason as IssueDetail's Investigate: the review seed prompt
                 names the PR by title. */}
-            {!awaitingFirstPaint && <ReviewButton owner={owner} repo={repo} pull={actionPull} />}
+            {!awaitingFirstPaint && <ReviewButton repoRef={active} pull={actionPull} />}
             <button
               onClick={refreshDetail}
               disabled={detailQuery.isFetching}
-              aria-label="Refresh Pull Request details"
-              title="Re-fetch this PR + its timeline from GitHub"
+              aria-label={`Refresh ${terms.changeRequestTitle} details`}
+              title={`Re-fetch this ${terms.changeRequestShort} + its timeline from ${terms.providerName}`}
               className="inline-flex items-center text-muted hover:text-text disabled:opacity-30 cursor-pointer bg-transparent p-1"
             >
               <RefreshCw size={14} className={detailQuery.isFetching ? 'animate-spin' : ''} />
@@ -718,14 +732,24 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               // compared too — the summary names failing checks, so CI going red
               // after it was written is exactly when it misleads most.
               staleSince={staleSummarySince}
-              subject="Pull Request"
+              subject={terms.changeRequestTitle}
             />
 
             {/* Description — pinned to the top, NOT on the timeline. */}
             <div className="mb-6">
               {awaitingFirstPaint
                 ? <CommentCardSkeleton />
-                : <CommentCard opening author={author} when={createdAt} body={body} role={authorRole} assoc={association} />}
+                : (
+                  <CommentCard
+                    opening
+                    author={author}
+                    when={createdAt}
+                    body={body}
+                    role={authorRole}
+                    assoc={association}
+                    repoRef={active}
+                  />
+                )}
             </div>
 
             {/* Activity timeline — newest first, latest node pulsing. */}
@@ -758,6 +782,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                       </div>
                     )}
                     <CommentCard
+                      repoRef={active}
                       author={ev.actor}
                       when={ev.created_at}
                       body={ev.body}
@@ -767,7 +792,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                   </TimelineRow>
                 )
               }
-              const { Icon, color, body: evBody } = eventVisual(ev, owner, repo, colorByName, memberRoleByLogin)
+              const { Icon, color, body: evBody } = eventVisual(ev, active, colorByName, memberRoleByLogin)
               return (
                 <TimelineRow key={i} time={ev.created_at} icon={<Icon size={13} />} iconColor={color} connector={!isOldest} pulse={isNewest}>
                   <div className="text-[12.5px] text-muted leading-snug pt-1">{evBody}</div>
@@ -802,7 +827,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               {reviewers.length > 0 ? (
                 <div className="flex flex-col gap-1">
                   {reviewers.map((a) => (
-                    <a key={a} href={`https://github.com/${a}`} target="_blank" rel="noreferrer" className="text-text hover:text-accent hover:underline truncate">
+                    <a key={a} href={userUrlFor(active, a)} target="_blank" rel="noreferrer" className="text-text hover:text-accent hover:underline truncate">
                       {a}
                     </a>
                   ))}
@@ -814,7 +839,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               {assignees.length > 0 ? (
                 <div className="flex flex-col gap-1">
                   {assignees.map((a) => (
-                    <a key={a} href={`https://github.com/${a}`} target="_blank" rel="noreferrer" className="text-text hover:text-accent hover:underline truncate">
+                    <a key={a} href={userUrlFor(active, a)} target="_blank" rel="noreferrer" className="text-text hover:text-accent hover:underline truncate">
                       {a}
                     </a>
                   ))}

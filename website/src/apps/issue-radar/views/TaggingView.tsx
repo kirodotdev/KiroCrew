@@ -11,6 +11,7 @@ import { asArray } from '../lib/format'
 import ReadOnlyTag from '../components/ReadOnlyTag'
 import UntaggedIssueCard from './tagging/UntaggedIssueCard'
 import LabelsPanel, { settingsKeyForCategory } from './tagging/LabelsPanel'
+import { repoScopeKey } from '../lib/links'
 
 /** Tagging dashboard — bulk-label triage for the issues that have no labels at all.
  *
@@ -49,12 +50,13 @@ function TaggingDashboard() {
     active, repoLabels, canWrite, labelsLoading, labelsError, toggleLabel, openIssues,
   } = useIssueRadar()
   const { owner, repo } = active
+  const scopeKey = repoScopeKey(active)
   const qc = useQueryClient()
-  const taggingKey = useMemo(() => ['issue-radar', 'tagging', owner, repo], [owner, repo])
+  const taggingKey = useMemo(() => ['issue-radar', 'tagging', scopeKey], [scopeKey])
 
   const taggingQuery = useQuery({
     queryKey: taggingKey,
-    queryFn: () => issueRadarApi.tagging(owner, repo),
+    queryFn: () => issueRadarApi.tagging(active),
   })
 
   // Memoized: `stagedFor` and the derived counts depend on this map, and a fresh
@@ -167,12 +169,12 @@ function TaggingDashboard() {
    * A plain refetch re-served the same cached issue list, so an issue labelled on
    * GitHub itself never left the queue however many times you pressed reload. */
   const reload = useMutation({
-    mutationFn: () => issueRadarApi.tagging(owner, repo, { refresh: true }),
+    mutationFn: () => issueRadarApi.tagging(active, { refresh: true }),
     onSuccess: (res) => {
       qc.setQueryData<TaggingResponse>(taggingKey, res)
       // The refreshed issue set is the app's too. Queue-keyed state is reconciled
       // by the effect below, which covers this refetch and every other one.
-      qc.invalidateQueries({ queryKey: ['issue-radar', 'issues', owner, repo] })
+      qc.invalidateQueries({ queryKey: ['issue-radar', 'issues', scopeKey] })
     },
   })
 
@@ -237,7 +239,7 @@ function TaggingDashboard() {
     }
   }
   const generate = useMutation({
-    mutationFn: (numbers?: number[]) => issueRadarApi.generateTagging(owner, repo, numbers),
+    mutationFn: (numbers?: number[]) => issueRadarApi.generateTagging(active, numbers),
     onMutate: () => setGenError(null),
     onSuccess: applyGenerated,
     onError: (e: Error) => setGenError(e.message),
@@ -270,7 +272,7 @@ function TaggingDashboard() {
     const done = new Set(rows.map((r) => r.number))
     setSelected((prev) => new Set([...prev].filter((n) => !done.has(n))))
     // The labelled issues are no longer untagged anywhere else in the app.
-    qc.invalidateQueries({ queryKey: ['issue-radar', 'issues', owner, repo] })
+    qc.invalidateQueries({ queryKey: ['issue-radar', 'issues', scopeKey] })
     // Mark the queue response stale too, but do NOT refetch: the rows must stay
     // put so the list does not jump. Without this the response stayed fresh for
     // its whole staleTime, so a remount reset `applied` while restoring the stale
@@ -280,7 +282,7 @@ function TaggingDashboard() {
 
   const applyOne = useMutation({
     mutationFn: ({ number, add }: { number: number; add: string[] }) =>
-      issueRadarApi.applyLabels(owner, repo, number, add, []),
+      issueRadarApi.applyLabels(active, number, add, []),
     onMutate: ({ number }) => {
       setRowErrors((p) => {
         const { [number]: _dropped, ...rest } = p
@@ -316,7 +318,7 @@ function TaggingDashboard() {
         failed: [] as BulkApplyResponse['failed'],
       }
       for (let i = 0; i < changes.length; i += BULK_CHUNK) {
-        const res = await issueRadarApi.applyLabelsBulk(owner, repo, changes.slice(i, i + BULK_CHUNK))
+        const res = await issueRadarApi.applyLabelsBulk(active, changes.slice(i, i + BULK_CHUNK))
         merged.applied.push(...res.applied)
         merged.failed.push(...res.failed)
         // Reconcile as we go. If a LATER chunk rejects, the mutation's onSuccess
@@ -382,8 +384,8 @@ function TaggingDashboard() {
   const onLabelCreated = (rec: LabelRecommendation) => {
     const key = settingsKeyForCategory(rec.category)
     if (!key) return
-    issueRadarApi.addSettingLabel(owner, repo, key, rec.name)
-      .then((res) => qc.setQueryData(['issue-radar', 'settings', owner, repo], res))
+    issueRadarApi.addSettingLabel(active, key, rec.name)
+      .then((res) => qc.setQueryData(['issue-radar', 'settings', scopeKey], res))
       .catch((e: Error) => setSettingsError(
         `"${rec.name}" was created on GitHub, but this repo's local triage settings `
         + `could not be updated: ${e.message}`,
@@ -433,8 +435,7 @@ function TaggingDashboard() {
 
       {/* The repo's tag vocabulary — what it uses, and what it's missing. */}
       <LabelsPanel
-        owner={owner}
-        repo={repo}
+        repoRef={active}
         labels={repoLabels}
         labelsKnown={labelsKnown}
         countByLabel={labelCounts}

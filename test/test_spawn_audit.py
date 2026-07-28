@@ -135,6 +135,37 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # The jq filters are hardcoded module constants, and `gh api` is bounded
         # to api.github.com, so no binary/cwd/host is agent-selected.
         "apps/builtins/issue_radar/backend/github_client.py::_gh_run",
+        # Issue Radar GitLab access — the glab counterpart of _gh_run, and benign
+        # for the same reasons, with ONE extra agent-reachable input that gh does
+        # not have: the HOST.
+        # ALL glab calls funnel through ONE chokepoint, _glab_run: a fixed
+        # `glab api` list-argv (never shell=True). glab supplies the host's OWN
+        # authenticated session, so it CANNOT be sandbox-routed (the sandbox would
+        # hide ~/.config/glab + the keychain, breaking auth). As defense-in-depth
+        # WITHIN this benign classification, _glab_run resolves glab through the
+        # shared provider policy (refusing a binary owned by another user, a
+        # world-writable one, or one inside the agent-writable project tree) and
+        # passes a MINIMAL env, so unrelated secrets never reach the child.
+        # The agent-reachable inputs:
+        #   • the HOST — the one input with no gh analogue, and the reason this
+        #     entry is not simply "same as gh". It is re-authorized against the
+        #     operator's dashboard.gitlab_hosts allowlist INSIDE _glab_run on
+        #     every call (not just at /connect), is REQUIRED rather than
+        #     defaulted so a forgotten argument fails loudly instead of silently
+        #     targeting gitlab.com, and is pinned into the child's GITLAB_HOST so
+        #     a self-managed default in glab's own config cannot redirect a bare
+        #     API path to another instance. The ambient GITLAB_TOKEN is withheld
+        #     for any non-gitlab.com host, so a gitlab.com credential cannot be
+        #     sent to a private server;
+        #   • owner/repo (the project namespace) — charset-validated per segment
+        #     by gitlab_client.parse_gitlab_repo_url at /connect, then URL-encoded
+        #     into GitLab's single :id path parameter; read routes additionally
+        #     gate on store.is_repo_connected, which matches on provider+host too;
+        #   • the issue / merge-request iid — coerced via int() before the path;
+        #   • write bodies (label names / state events) — sent as a JSON stdin
+        #     body (--input -), never argv.
+        # No binary or cwd is agent-selected.
+        "apps/builtins/issue_radar/backend/gitlab_client.py::_glab_run",
         "apps/builtins/workflows/server.py::handle_run",
         # _start_run's worker spawns argv that is ALWAYS pre-wrapped by its
         # callers through sandboxed_spawn_argv (sync wraps each step with

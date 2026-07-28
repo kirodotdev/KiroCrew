@@ -13,16 +13,20 @@
 // file-explorer / auto-research import the store + api client directly).
 //
 // The per-item record is the SAME store on both sides
-// (``investigation-{number}.json`` via /api/apps/issue-radar/investigation).
-// That is safe rather than sloppy: GitHub issues and pull requests share ONE
-// number sequence per repo, so a PR and an issue can never collide on
-// ``number`` — no parallel PR-only store is needed.
+// (via /api/apps/issue-radar/investigation), NAMESPACED by item kind. On GitHub
+// the namespace is shared and the filename keeps its historical
+// ``investigation-{number}.json`` form: issues and pull requests are drawn from
+// ONE number sequence per repo, so they cannot collide. GitLab numbers them
+// independently — issue ``#5`` and merge request ``!5`` are unrelated items — so a
+// change request passes ``kind: 'pull'`` and gets its own record. Omitting it
+// there would make "Review MR !5" resume issue #5's session and overwrite its
+// findings.
 import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../../../store'
 import { createSlot, switchSlot, deleteSlot } from '../../../store/chatSlice'
 import { api } from '../../../api/client'
-import { issueRadarApi, type InvestigationRecord } from '../api'
+import { issueRadarApi, type InvestigationRecord, type ItemKind, RepoRef } from '../api'
 
 /** One folder per connected repo groups all its sessions. */
 const FOLDER_PREFIX = 'Issue Radar - '
@@ -44,7 +48,7 @@ async function resolveFolderId(repo: string): Promise<string> {
   return created.id
 }
 
-/** One request to open (or resume) a session for a GitHub item. */
+/** One request to open (or resume) a session for one provider item. */
 /** True when an error means the slot no longer exists (a 404 from the slot
  * detail fetch), as opposed to a transient failure reaching the gateway. */
 function isMissingSlot(e: unknown): boolean {
@@ -53,10 +57,13 @@ function isMissingSlot(e: unknown): boolean {
 }
 
 export interface OpenSessionArgs {
-  owner: string
-  repo: string
-  /** Issue OR pull-request number (one shared sequence — see the module note). */
+  repoRef: RepoRef
+  /** Issue OR change-request number. */
   number: number
+  /** Which sequence `number` belongs to. Defaults to `issue`; a change request
+   * must pass `pull`, because on GitLab the two are numbered independently and a
+   * shared record would resume the wrong session. */
+  kind?: ItemKind
   /** Slot title, already formatted (e.g. "#123 · Fix the thing"). */
   title: string
   /** The fully-built seed prompt for the first turn. */
@@ -80,7 +87,7 @@ export function useAgentSession(): UseAgentSession {
   const [error, setError] = useState<Error | null>(null)
 
   const openSession = useCallback(
-    async ({ owner, repo, number, title, prompt, existing }: OpenSessionArgs): Promise<InvestigationRecord | null> => {
+    async ({ repoRef, number, kind = 'issue', title, prompt, existing }: OpenSessionArgs): Promise<InvestigationRecord | null> => {
       setBusy(true)
       // Set once a slot exists but is not yet linked to an investigation record;
       // cleared on success. See the rollback in the catch below.
@@ -105,14 +112,14 @@ export function useAgentSession(): UseAgentSession {
             if (!isMissingSlot(e)) throw e
           }
           if (resumed) {
-            const res = await issueRadarApi.saveInvestigation(owner, repo, number, {})
+            const res = await issueRadarApi.saveInvestigation(repoRef, number, {}, kind)
             navigate('/chat')
             return res.investigation
           }
         }
 
         // ── Fresh session: folder → slot (filed) → seed+run → link.
-        const folderId = await resolveFolderId(repo)
+        const folderId = await resolveFolderId(repoRef.repo)
         const slot = await dispatch(createSlot({ folder_id: folderId })).unwrap()
         // The slot is persisted but not yet linked to an investigation record, so
         // a failure before the seed leaves an EMPTY session behind — and the next
@@ -140,11 +147,11 @@ export function useAgentSession(): UseAgentSession {
           await dispatch(deleteSlot(slot.key)).unwrap().catch(() => {})
           throw new Error(`could not seed the session (HTTP ${(seeded as Response).status})`)
         }
-        const res = await issueRadarApi.saveInvestigation(owner, repo, number, {
+        const res = await issueRadarApi.saveInvestigation(repoRef, number, {
           slot_key: slot.key,
           folder_id: folderId,
           status: 'investigating',
-        })
+        }, kind)
         await dispatch(switchSlot(slot.key)).unwrap().catch(() => {})
         navigate('/chat')
         return res.investigation

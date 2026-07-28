@@ -18,6 +18,7 @@ import {
 import type {
   ActiveRepo, DashboardTab, ExpandedSection, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter,
 } from './lib/types'
+import { repoScopeKey } from './lib/links'
 import {
   asArray, coerceDashboardTab, coerceSortKey, consumeAutoSelectFirstIssue, LIST_POLL_MS, loadUiState, saveUiState,
 } from './lib/format'
@@ -205,6 +206,7 @@ export function IssueRadarProvider({
 }) {
   const queryClient = useQueryClient()
   const { owner, repo } = active
+  const scopeKey = repoScopeKey(active)
 
   // The active repo's GitHub permissions, used to gate the write UI (label
   // edits + close/reopen). Sourced from the connected-repo list (populated at
@@ -307,7 +309,13 @@ export function IssueRadarProvider({
     prReviewRequestedByMe, prDraftOnly, prCreatedByMember, prStateFilter, prSortKey, prSortDir,
   ])
 
-  const meQuery = useQuery({ queryKey: ['issue-radar', 'me'], queryFn: () => issueRadarApi.me() })
+  // Keyed on the provider + host, not global: the login is not portable across
+  // providers, and a cached GitHub login served for a GitLab project would make
+  // the "assigned/requested to me" filters silently match nobody.
+  const meQuery = useQuery({
+    queryKey: ['issue-radar', 'me', active.provider || 'github', active.host || 'github.com'],
+    queryFn: () => issueRadarApi.me({ provider: active.provider, host: active.host }),
+  })
   const me = meQuery.data?.login ?? null
 
   // A LIST query polls on ``LIST_POLL_MS``, but its route is cache-first with no
@@ -328,31 +336,31 @@ export function IssueRadarProvider({
     [queryClient],
   )
 
-  const issuesKey = ['issue-radar', 'issues', owner, repo, stateFilter] as const
+  const issuesKey = ['issue-radar', 'issues', scopeKey, stateFilter] as const
   const issuesQuery = useQuery({
     queryKey: issuesKey,
-    queryFn: () => issueRadarApi.issues(owner, repo, { state: stateFilter, poll: isRefetch(issuesKey) }),
+    queryFn: () => issueRadarApi.issues(active, { state: stateFilter, poll: isRefetch(issuesKey) }),
     // react-query pauses this while the window is unfocused
     // (refetchIntervalInBackground defaults to false), so a backgrounded tab
     // costs nothing.
     refetchInterval: LIST_POLL_MS,
   })
   const labelsQuery = useQuery({
-    queryKey: ['issue-radar', 'labels', owner, repo],
-    queryFn: () => issueRadarApi.labels(owner, repo),
+    queryKey: ['issue-radar', 'labels', scopeKey],
+    queryFn: () => issueRadarApi.labels(active),
   })
   // Members are DERIVED server-side from the cached issues, so only fetch after
   // the issues query has succeeded: by then a fresh fetch has already built the
   // member cache (or the prior issue cache is present to derive from), and we
   // never trigger a second full open-issues fetch just to compute members.
   const membersQuery = useQuery({
-    queryKey: ['issue-radar', 'members', owner, repo],
-    queryFn: () => issueRadarApi.members(owner, repo),
+    queryKey: ['issue-radar', 'members', scopeKey],
+    queryFn: () => issueRadarApi.members(active),
     enabled: issuesQuery.isSuccess,
   })
   const settingsQuery = useQuery({
-    queryKey: ['issue-radar', 'settings', owner, repo],
-    queryFn: () => issueRadarApi.getSettings(owner, repo),
+    queryKey: ['issue-radar', 'settings', scopeKey],
+    queryFn: () => issueRadarApi.getSettings(active),
   })
   const repoSettings = settingsQuery.data?.settings ?? DEFAULT_REPO_SETTINGS
 
@@ -379,21 +387,21 @@ export function IssueRadarProvider({
   // before /me lands, every time a persisted person filter is restored.
   const prPersonFilterRequested = prAuthoredByMe || prAssignedToMe || prReviewRequestedByMe
   const prPersonFilterActive = !!me && prPersonFilterRequested
-  const pullsKey = ['issue-radar', 'pulls', owner, repo, prFetchState] as const
+  const pullsKey = ['issue-radar', 'pulls', scopeKey, prFetchState] as const
   const pullsQuery = useQuery({
     queryKey: pullsKey,
-    queryFn: () => issueRadarApi.pulls(owner, repo, { state: prFetchState, poll: isRefetch(pullsKey) }),
+    queryFn: () => issueRadarApi.pulls(active, { state: prFetchState, poll: isRefetch(pullsKey) }),
     // The two PR sources are MUTUALLY EXCLUSIVE, and only one of them is ever
     // read (see `pulls` below). Enabling both while a person filter is on would
-    // poll GitHub twice a minute to fill a cache nothing renders.
+    // poll the provider twice a minute to fill a cache nothing renders.
     enabled: prSurfaceActive && !prPersonFilterRequested,
     // Same cache-busting refetch as the issue list.
     refetchInterval: LIST_POLL_MS,
   })
   const refreshPullsMutation = useMutation({
-    mutationFn: () => issueRadarApi.pulls(owner, repo, { refresh: true, state: prFetchState }),
+    mutationFn: () => issueRadarApi.pulls(active, { refresh: true, state: prFetchState }),
     onSuccess: (data) => {
-      queryClient.setQueryData(['issue-radar', 'pulls', owner, repo, prFetchState], data)
+      queryClient.setQueryData(['issue-radar', 'pulls', scopeKey, prFetchState], data)
     },
   })
 
@@ -405,31 +413,31 @@ export function IssueRadarProvider({
   }
   const pullsSearchQuery = useQuery({
     queryKey: [
-      'issue-radar', 'pulls-search', owner, repo, prStateFilter,
+      'issue-radar', 'pulls-search', scopeKey, prStateFilter,
       prSearchArgs.author ?? '', prSearchArgs.assignee ?? '', prSearchArgs.reviewRequested ?? '',
     ],
-    queryFn: () => issueRadarApi.searchPulls(owner, repo, prSearchArgs),
+    queryFn: () => issueRadarApi.searchPulls(active, prSearchArgs),
     enabled: prSurfaceActive && prPersonFilterActive,
     // The search route is uncached server-side, so a plain refetch already goes
-    // to GitHub — no refresh flag needed here. Gated on the surface as well as
-    // the filter: a person filter left on while the user works elsewhere in the
-    // app must not keep polling GitHub search in the background.
+    // to the provider — no refresh flag needed here. Gated on the surface as well
+    // as the filter: a person filter left on while the user works elsewhere in
+    // the app must not keep polling provider search in the background.
     refetchInterval: LIST_POLL_MS,
   })
 
   const refreshMutation = useMutation({
     mutationFn: async () => {
       const [issues, labels] = await Promise.all([
-        issueRadarApi.issues(owner, repo, { refresh: true, state: stateFilter }),
-        issueRadarApi.labels(owner, repo, { refresh: true }),
+        issueRadarApi.issues(active, { refresh: true, state: stateFilter }),
+        issueRadarApi.labels(active, { refresh: true }),
       ])
       return { issues, labels }
     },
     onSuccess: ({ issues, labels }) => {
-      queryClient.setQueryData(['issue-radar', 'issues', owner, repo, stateFilter], issues)
-      queryClient.setQueryData(['issue-radar', 'labels', owner, repo], labels)
+      queryClient.setQueryData(['issue-radar', 'issues', scopeKey, stateFilter], issues)
+      queryClient.setQueryData(['issue-radar', 'labels', scopeKey], labels)
       // A fresh issues fetch rebuilds the member cache server-side; re-read it.
-      queryClient.invalidateQueries({ queryKey: ['issue-radar', 'members', owner, repo] })
+      queryClient.invalidateQueries({ queryKey: ['issue-radar', 'members', scopeKey] })
     },
   })
 

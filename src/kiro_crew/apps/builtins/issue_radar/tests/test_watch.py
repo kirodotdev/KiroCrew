@@ -19,7 +19,12 @@ from unittest import mock
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.issue_radar.backend import watch
+from kiro_crew.apps.builtins.issue_radar.backend import provider, store, watch
+
+# The watcher is provider-dispatched, so every poll needs an explicit repo
+# key. GitHub is used here so these tests keep asserting the ORIGINAL
+# behaviour (legacy storage layout, github.com links) unchanged.
+_KEY = provider.key_from_parts("o", "r")
 
 
 class _FakeState:
@@ -45,11 +50,13 @@ class TestPollRepo(unittest.IsolatedAsyncioTestCase):
             {"number": 5, "title": "e", "url": "u5"},
             {"number": 3, "title": "c", "url": "u3"},
         ]
-        with mock.patch.object(watch.github_client, "list_recent_open_issues", return_value=recent), \
+        with mock.patch.object(provider.client_for(_KEY), "list_recent_open_issues", return_value=recent), \
              mock.patch.object(watch.store, "read_watch_state", return_value={}), \
              mock.patch.object(watch.store, "write_watch_state") as wws:
-            await watch._poll_repo(_fake_app(state), "o", "r")
-        wws.assert_called_once_with("o", "r", 5)  # seeded to current max
+            await watch._poll_repo(_fake_app(state), _KEY)
+        wws.assert_called_once_with(
+                "o", "r", 5, root=store.provider_root(root=None)
+            )  # seeded to current max
         self.assertEqual(state.notes, [])          # but nothing announced
 
     async def test_notify_on_new_issues(self):
@@ -59,11 +66,13 @@ class TestPollRepo(unittest.IsolatedAsyncioTestCase):
             {"number": 101, "title": "new A", "url": "u101"},
             {"number": 100, "title": "old", "url": "u100"},
         ]
-        with mock.patch.object(watch.github_client, "list_recent_open_issues", return_value=recent), \
+        with mock.patch.object(provider.client_for(_KEY), "list_recent_open_issues", return_value=recent), \
              mock.patch.object(watch.store, "read_watch_state", return_value={"last_seen_number": 100}), \
              mock.patch.object(watch.store, "write_watch_state") as wws:
-            await watch._poll_repo(_fake_app(state), "o", "r")
-        wws.assert_called_once_with("o", "r", 102)  # mark advanced before notify
+            await watch._poll_repo(_fake_app(state), _KEY)
+        wws.assert_called_once_with(
+                "o", "r", 102, root=store.provider_root(root=None)
+            )  # mark advanced before notify
         self.assertEqual(len(state.notes), 1)
         note = state.notes[0]
         self.assertEqual(note["meta"]["count"], 2)
@@ -74,30 +83,30 @@ class TestPollRepo(unittest.IsolatedAsyncioTestCase):
     async def test_no_notify_when_nothing_new(self):
         state = _FakeState()
         recent = [{"number": 100, "title": "x", "url": "u"}]
-        with mock.patch.object(watch.github_client, "list_recent_open_issues", return_value=recent), \
+        with mock.patch.object(provider.client_for(_KEY), "list_recent_open_issues", return_value=recent), \
              mock.patch.object(watch.store, "read_watch_state", return_value={"last_seen_number": 100}), \
              mock.patch.object(watch.store, "write_watch_state") as wws:
-            await watch._poll_repo(_fake_app(state), "o", "r")
+            await watch._poll_repo(_fake_app(state), _KEY)
         wws.assert_not_called()
         self.assertEqual(state.notes, [])
 
     async def test_single_new_issue_body(self):
         state = _FakeState()
         recent = [{"number": 7, "title": "Solo", "url": "u7"}]
-        with mock.patch.object(watch.github_client, "list_recent_open_issues", return_value=recent), \
+        with mock.patch.object(provider.client_for(_KEY), "list_recent_open_issues", return_value=recent), \
              mock.patch.object(watch.store, "read_watch_state", return_value={"last_seen_number": 6}), \
              mock.patch.object(watch.store, "write_watch_state"):
-            await watch._poll_repo(_fake_app(state), "o", "r")
+            await watch._poll_repo(_fake_app(state), _KEY)
         self.assertEqual(len(state.notes), 1)
         self.assertIn("New issue #7", state.notes[0]["body"])
         self.assertEqual(state.notes[0]["meta"]["url"], "u7")
 
     async def test_empty_fetch_is_noop(self):
         state = _FakeState()
-        with mock.patch.object(watch.github_client, "list_recent_open_issues", return_value=[]), \
+        with mock.patch.object(provider.client_for(_KEY), "list_recent_open_issues", return_value=[]), \
              mock.patch.object(watch.store, "read_watch_state", return_value={}) as rws, \
              mock.patch.object(watch.store, "write_watch_state") as wws:
-            await watch._poll_repo(_fake_app(state), "o", "r")
+            await watch._poll_repo(_fake_app(state), _KEY)
         rws.assert_not_called()
         wws.assert_not_called()
         self.assertEqual(state.notes, [])
@@ -114,7 +123,7 @@ class TestPollSweep(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(watch, "is_app_enabled", return_value=True), \
              mock.patch.object(watch.store, "list_connected_repos", return_value=[{"owner": "o", "repo": "r"}]), \
              mock.patch.object(watch.store, "read_repo_settings", return_value={"notify_on_new_issue": False}), \
-             mock.patch.object(watch.github_client, "list_recent_open_issues") as lri:
+             mock.patch.object(provider.client_for(_KEY), "list_recent_open_issues") as lri:
             await watch._poll_once(_fake_app(_FakeState()))
         lri.assert_not_called()
 
@@ -122,7 +131,7 @@ class TestPollSweep(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(watch, "is_app_enabled", return_value=True), \
              mock.patch.object(watch.store, "list_connected_repos", return_value=[{"owner": "o", "repo": "r"}]), \
              mock.patch.object(watch.store, "read_repo_settings", return_value={"notify_on_new_issue": True}), \
-             mock.patch.object(watch.github_client, "list_recent_open_issues", return_value=[]) as lri:
+             mock.patch.object(provider.client_for(_KEY), "list_recent_open_issues", return_value=[]) as lri:
             await watch._poll_once(_fake_app(_FakeState()))
         lri.assert_called_once()
 

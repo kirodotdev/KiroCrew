@@ -40,6 +40,18 @@ from kiro_crew.apps.builtins.issue_radar.backend import routes, store
 PROBE_TARGET = "kiro_crew.apps.builtins.issue_radar.backend.github_client.probe_open_list"
 
 
+def _key(owner: str, repo: str):
+    """The GitHub repo key these tests exercise.
+
+    The poll path is provider-dispatched now, so it takes a key rather than a
+    loose owner/repo pair. GitHub is used throughout here so these tests keep
+    asserting the ORIGINAL probe behaviour unchanged.
+    """
+    from kiro_crew.apps.builtins.issue_radar.backend import provider
+
+    return provider.key_from_parts(owner, repo)
+
+
 def _snapshot(probe=None, age_sec=0.0, rows=None):
     return {"rows": rows if rows is not None else [], "probe": probe, "age_sec": age_sec}
 
@@ -256,7 +268,7 @@ class TestPollCanServeCache(unittest.TestCase):
     @staticmethod
     def _decide(kind, state, snapshot, **probe_kwargs):
         with mock.patch(PROBE_TARGET, **probe_kwargs) as probe:
-            out = asyncio.run(routes._poll_can_serve_cache("o", "r", kind, state, snapshot))
+            out = asyncio.run(routes._poll_can_serve_cache(_key("o", "r"), kind, state, snapshot))
         return out, probe
 
     def test_unchanged_probe_serves_the_cache(self):
@@ -357,7 +369,7 @@ class TestProbeCoalescing(unittest.TestCase):
             async def three_polls():
                 snap = _snapshot(dict(reading))
                 return [
-                    await routes._poll_can_serve_cache("o", "r", "issue", "open", snap)
+                    await routes._poll_can_serve_cache(_key("o", "r"), "issue", "open", snap)
                     for _ in range(3)
                 ]
             results = asyncio.run(three_polls())
@@ -369,9 +381,9 @@ class TestProbeCoalescing(unittest.TestCase):
         with mock.patch(PROBE_TARGET, return_value=reading) as probe:
             async def mixed():
                 snap = _snapshot(dict(reading))
-                await routes._poll_can_serve_cache("o", "r", "issue", "open", snap)
-                await routes._poll_can_serve_cache("o", "r", "pr", "open", snap)
-                await routes._poll_can_serve_cache("o", "other", "issue", "open", snap)
+                await routes._poll_can_serve_cache(_key("o", "r"), "issue", "open", snap)
+                await routes._poll_can_serve_cache(_key("o", "r"), "pr", "open", snap)
+                await routes._poll_can_serve_cache(_key("o", "other"), "issue", "open", snap)
             asyncio.run(mixed())
         self.assertEqual(probe.call_count, 3)
 
@@ -380,11 +392,11 @@ class TestProbeCoalescing(unittest.TestCase):
         with mock.patch(PROBE_TARGET, return_value=reading) as probe:
             async def two_polls_apart():
                 snap = _snapshot(dict(reading))
-                await routes._poll_can_serve_cache("o", "r", "issue", "open", snap)
+                await routes._poll_can_serve_cache(_key("o", "r"), "issue", "open", snap)
                 # Age the memo entry past the window instead of sleeping.
                 key, (taken_at, val) = next(iter(routes._probe_memo.items()))
                 routes._probe_memo[key] = (taken_at - routes._PROBE_COALESCE_SEC - 1, val)
-                await routes._poll_can_serve_cache("o", "r", "issue", "open", snap)
+                await routes._poll_can_serve_cache(_key("o", "r"), "issue", "open", snap)
             asyncio.run(two_polls_apart())
         self.assertEqual(probe.call_count, 2)
 
@@ -405,11 +417,11 @@ class TestProbeCoalescing(unittest.TestCase):
             async def two_at_once():
                 snap = _snapshot(dict(reading))
                 first = asyncio.create_task(
-                    routes._poll_can_serve_cache("o", "r", "issue", "open", snap)
+                    routes._poll_can_serve_cache(_key("o", "r"), "issue", "open", snap)
                 )
                 await asyncio.to_thread(started.wait, 5)
                 second = asyncio.create_task(
-                    routes._poll_can_serve_cache("o", "r", "issue", "open", snap)
+                    routes._poll_can_serve_cache(_key("o", "r"), "issue", "open", snap)
                 )
                 await asyncio.sleep(0)  # let the second reach the shared future
                 release.set()
@@ -437,14 +449,14 @@ class TestProbeCoalescing(unittest.TestCase):
             async def overlap():
                 snap = _snapshot(dict(reading))
                 slow = asyncio.create_task(
-                    routes._poll_can_serve_cache("o", "slow", "issue", "open", snap)
+                    routes._poll_can_serve_cache(_key("o", "slow"), "issue", "open", snap)
                 )
                 await asyncio.to_thread(blocked.wait, 5)
                 # No timeout escape hatch on purpose: if this serializes behind
                 # the blocked probe it deadlocks until `release`, and asserting on
                 # a wall-clock margin would just make the test flaky on CI.
                 fast = await asyncio.wait_for(
-                    routes._poll_can_serve_cache("o", "fast", "issue", "open", snap), 5,
+                    routes._poll_can_serve_cache(_key("o", "fast"), "issue", "open", snap), 5,
                 )
                 release.set()
                 return fast, await slow
@@ -468,7 +480,7 @@ class TestProbeCoalescing(unittest.TestCase):
             async def cancel_then_poll():
                 snap = _snapshot(dict(reading))
                 doomed = asyncio.create_task(
-                    routes._poll_can_serve_cache("o", "r", "issue", "open", snap)
+                    routes._poll_can_serve_cache(_key("o", "r"), "issue", "open", snap)
                 )
                 await asyncio.to_thread(started.wait, 5)
                 doomed.cancel()
@@ -480,7 +492,7 @@ class TestProbeCoalescing(unittest.TestCase):
                     if routes._probe_memo:
                         break
                     await asyncio.sleep(0.01)
-                return await routes._poll_can_serve_cache("o", "r", "issue", "open", snap)
+                return await routes._poll_can_serve_cache(_key("o", "r"), "issue", "open", snap)
             serve, _ = asyncio.run(cancel_then_poll())
         self.assertTrue(serve)
         probe.assert_called_once()  # the second poll reused the cancelled one's reading
@@ -498,7 +510,10 @@ class _HandlerCase(unittest.TestCase):
         # redirected at the store so nothing touches the real app data dir.
         self._patches = [
             mock.patch.object(store, "repo_data_dir", lambda o, r, root=None: self._repo_dir(o, r)),
-            mock.patch.object(store, "is_repo_connected", lambda o, r: True),
+            mock.patch.object(
+                store, "is_repo_connected",
+                lambda o, r, root=None, **kw: True,
+            ),
         ]
         for p in self._patches:
             p.start()
@@ -611,7 +626,7 @@ class TestPullsHandlerPolling(_HandlerCase):
         fresh = [{"number": 2, "title": "fresh"}]
         with mock.patch(PROBE_TARGET, return_value=moved), \
                 mock.patch.object(gh, "list_open_pulls", return_value=fresh) as fetch, \
-                mock.patch.object(gh, "enrich_pulls", side_effect=lambda o, r, p, s: p), \
+                mock.patch.object(gh, "enrich_pulls", side_effect=lambda o, r, p, s, **kw: p), \
                 mock.patch.object(gh, "enrichment_complete", return_value=True):
             resp = asyncio.run(routes._handle_pulls(self._get("/pulls?owner=o&repo=r&poll=1")))
         body = self._body(resp)
@@ -634,7 +649,7 @@ class TestPullsHandlerPolling(_HandlerCase):
         self._seed(probe=dict(self.READING))
         with mock.patch(PROBE_TARGET) as probe, \
                 mock.patch.object(gh, "list_open_pulls", return_value=[]) as fetch, \
-                mock.patch.object(gh, "enrich_pulls", side_effect=lambda o, r, p, s: p), \
+                mock.patch.object(gh, "enrich_pulls", side_effect=lambda o, r, p, s, **kw: p), \
                 mock.patch.object(gh, "enrichment_complete", return_value=True):
             resp = asyncio.run(routes._handle_pulls(self._get("/pulls?owner=o&repo=r&refresh=1")))
         self.assertFalse(self._body(resp)["from_cache"])
@@ -651,7 +666,7 @@ class TestPullsHandlerPolling(_HandlerCase):
         )
         with mock.patch(PROBE_TARGET, return_value=dict(self.READING)) as probe, \
                 mock.patch.object(gh, "list_open_pulls", return_value=[]) as fetch, \
-                mock.patch.object(gh, "enrich_pulls", side_effect=lambda o, r, p, s: p), \
+                mock.patch.object(gh, "enrich_pulls", side_effect=lambda o, r, p, s, **kw: p), \
                 mock.patch.object(gh, "enrichment_complete", return_value=True):
             resp = asyncio.run(routes._handle_pulls(self._get("/pulls?owner=o&repo=r&poll=1")))
         self.assertFalse(self._body(resp)["from_cache"])

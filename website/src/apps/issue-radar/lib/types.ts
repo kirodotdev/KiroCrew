@@ -1,9 +1,22 @@
+import type { SourceProvider } from '../api'
+
 // Shared Issue Radar UI types. Kept dependency-free so every module (context,
 // components, views) can import from here without creating import cycles.
 
+/** The repo the workspace is pointed at.
+ *
+ * `provider`/`host` are part of the IDENTITY, not decoration: they ride on every
+ * request, and a `group/project` path names a different project on gitlab.com
+ * than on a self-managed instance. They are optional so a value persisted before
+ * GitLab support still loads — absent means public GitHub, which is what it was.
+ *
+ * Structurally a `RepoRef` (see `api.ts`), so it can be passed straight to any
+ * API call without rebuilding it. */
 export interface ActiveRepo {
   owner: string
   repo: string
+  provider?: SourceProvider
+  host?: string
 }
 
 /** Sort fields the issue list supports. Exported as a list so persisted state
@@ -42,7 +55,10 @@ export type GeneralAnchor = 'account' | 'repos'
  * connected repo gets its own `{kind:'repo'}` page. */
 export type SettingsTarget =
   | { kind: 'general'; anchor?: GeneralAnchor }
-  | { kind: 'repo'; owner: string; repo: string }
+  // Carries the provider identity for the same reason `ActiveRepo` does: the
+  // settings pane reads and writes THIS repo's settings, and owner/repo alone
+  // would address the wrong one on a mixed install.
+  | { kind: 'repo'; owner: string; repo: string; provider?: SourceProvider; host?: string }
 
 export type StateFilter = 'open' | 'closed'
 

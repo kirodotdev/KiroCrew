@@ -148,7 +148,17 @@ export function loadActiveRepo(): ActiveRepo | null {
     const raw = localStorage.getItem(ACTIVE_KEY)
     if (!raw) return null
     const p = JSON.parse(raw)
-    if (p && typeof p.owner === 'string' && typeof p.repo === 'string') return p
+    // Only owner/repo are required: a value persisted before GitLab support has
+    // no provider/host, and rejecting it would silently drop the user's repo on
+    // upgrade. The absent fields mean public GitHub, which is what it was.
+    if (p && typeof p.owner === 'string' && typeof p.repo === 'string') {
+      return {
+        owner: p.owner,
+        repo: p.repo,
+        ...(typeof p.provider === 'string' ? { provider: p.provider } : {}),
+        ...(typeof p.host === 'string' ? { host: p.host } : {}),
+      }
+    }
   } catch {
     /* corrupted value — ignore */
   }

@@ -32,7 +32,12 @@ import pytest
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
-from kiro_crew.apps.builtins.issue_radar.backend import routes, store
+from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
+
+# The route helpers are provider-dispatched now, so they take a repo key
+# rather than a loose owner/repo pair. GitHub is used throughout here, so
+# every assertion below keeps its original meaning.
+_KEY = provider.key_from_parts("o", "r")
 
 
 class TestTaggingCache(unittest.TestCase):
@@ -320,7 +325,7 @@ async def test_bulk_apply_reports_partial_failure_and_prunes_only_applied():
         mock.patch.object(store, "apply_label_change_to_caches"),
         mock.patch.object(
             store, "drop_tagging_suggestions",
-            side_effect=lambda o, r, numbers: dropped.append(list(numbers)),
+            side_effect=lambda o, r, numbers, **kw: dropped.append(list(numbers)),
         ),
     ):
         resp = await routes._handle_labels_apply_bulk(_bulk_request({
@@ -567,7 +572,7 @@ class TestGenerateTaggingRoute(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 store, "merge_tagging_suggestions",
-                side_effect=lambda o, r, batch: (
+                side_effect=lambda o, r, batch, **kw: (
                     merged.append(batch) or {"suggestions": batch, "generated_at": "t"}
                 ),
             ),
@@ -660,7 +665,7 @@ class TestSingleApplyPrunesTheQueue(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(store, "apply_label_change_to_caches"),
             mock.patch.object(
                 store, "drop_tagging_suggestions",
-                side_effect=lambda o, r, numbers: dropped.append(list(numbers)),
+                side_effect=lambda o, r, numbers, **kw: dropped.append(list(numbers)),
             ),
         ):
             resp = await routes._handle_labels_apply(
@@ -1485,7 +1490,7 @@ class TestRefreshPathsUseTheAtomicHelper(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(store, "write_labels_cache", unlocked),
             mock.patch.object(gh, "list_repo_labels", return_value=self.LABELS),
         ):
-            got = await routes._load_labels_for_ai("o", "r")
+            got = await routes._load_labels_for_ai(_KEY)
         self.assertEqual(got, self.LABELS)
         refreshed.assert_called_once()
         unlocked.assert_not_called()
@@ -1498,7 +1503,7 @@ class TestRefreshPathsUseTheAtomicHelper(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(store, "refresh_issues_cache", refreshed),
             mock.patch.object(gh, "list_open_issues", return_value=self.ISSUES),
         ):
-            await routes._load_open_issues_for_reco("o", "r", refresh=True)
+            await routes._load_open_issues_for_reco(_KEY, refresh=True)
         refreshed.assert_called_once()
         read.assert_not_called()
 
@@ -1601,9 +1606,9 @@ class TestSameIssueApplyIsSerialized(unittest.TestCase):
         ):
             threads = [
                 threading.Thread(target=routes._apply_label_change,
-                                 args=("o", "r", 7, ["a"], [])),
+                                 args=(_KEY, 7, ["a"], [])),
                 threading.Thread(target=routes._apply_label_change,
-                                 args=("o", "r", 7, ["b"], [])),
+                                 args=(_KEY, 7, ["b"], [])),
             ]
             for t in threads:
                 t.start()
@@ -1661,7 +1666,7 @@ class TestNoOpRemovalRepairsTheCache(unittest.TestCase):
             mock.patch.object(store, "apply_label_change_to_caches",
                               side_effect=lambda o, r, n, labels, **kw: patched.append(labels)),
         ):
-            got = routes._apply_label_change("o", "r", 7, [], ["already-gone"])
+            got = routes._apply_label_change(_KEY, 7, [], ["already-gone"])
 
         self.assertEqual(got, self.LABELS)
         self.assertEqual(patched, [self.LABELS], "cache was not repaired")
@@ -1678,7 +1683,7 @@ class TestNoOpRemovalRepairsTheCache(unittest.TestCase):
             mock.patch.object(gh, "get_issue_detail", side_effect=gh.GhCliError("boom")),
             mock.patch.object(store, "apply_label_change_to_caches", patch),
         ):
-            got = routes._apply_label_change("o", "r", 7, [], ["already-gone"])
+            got = routes._apply_label_change(_KEY, 7, [], ["already-gone"])
         # Better to leave the cache alone than to write a guess into it.
         self.assertIsNone(got)
         patch.assert_not_called()

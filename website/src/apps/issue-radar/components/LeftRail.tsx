@@ -9,6 +9,7 @@ import PrFiltersSection from './PrFiltersSection'
 import SettingsSection from './SettingsSection'
 import ReadOnlyTag, { isReadOnly } from './ReadOnlyTag'
 import RepoSwitcher from './RepoSwitcher'
+import { providerTerms } from '../lib/links'
 
 /** The left rail: a prominent repo switcher pinned at the top, then a
  * four-section accordion (Dashboards / Issues / Pull requests / Settings) that
@@ -28,9 +29,20 @@ export default function LeftRail({
   const {
     expanded, dashboardTab, active, repos, openDashboard, openIssues, openPulls, openSettings,
   } = useIssueRadar()
+  // Provider vocabulary: GitLab calls these merge requests, and calling them
+  // pull requests in a GitLab workspace is simply wrong copy.
+  const terms = providerTerms(active)
 
   if (collapsed) {
-    const activeEntry = repos.find((r) => r.owner === active.owner && r.repo === active.repo)
+    // Matched on the FULL identity, not just owner/repo: on a mixed install the
+    // same slug can exist on two providers, and a loose match would badge the
+    // collapsed rail with the other repo's write access.
+    const activeEntry = repos.find(
+      (r) => r.owner === active.owner
+        && r.repo === active.repo
+        && (r.provider || 'github') === (active.provider || 'github')
+        && (r.host || 'github.com') === (active.host || 'github.com'),
+    )
     return (
       <CollapsedRail
         width={width}
@@ -71,7 +83,7 @@ export default function LeftRail({
       </AccordionSection>
 
       <AccordionSection
-        title="Pull requests"
+        title={terms.changeRequestPluralTitle}
         icon={GitPullRequest}
         expanded={expanded === 'pulls'}
         onToggle={() => openPulls()}

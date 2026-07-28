@@ -1,6 +1,7 @@
 import { User, Library, Plus, type LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
-import GithubLogo from '../../../components/icons/GithubLogo'
+import { ProviderLogo } from './ProviderBadge'
+import { type RepoRef } from '../api'
 import { useIssueRadar } from '../context'
 import type { GeneralAnchor } from '../lib/types'
 
@@ -41,13 +42,13 @@ export default function SettingsSection() {
           {repos.map((r) => (
             <NavItem
               key={`${r.owner}/${r.repo}`}
-              github
+              repoRef={r}
               label={`${r.owner}/${r.repo}`}
               active={
                 inSettings && settingsTarget.kind === 'repo'
                 && settingsTarget.owner === r.owner && settingsTarget.repo === r.repo
               }
-              onClick={() => openSettings({ kind: 'repo', owner: r.owner, repo: r.repo })}
+              onClick={() => openSettings({ kind: 'repo', owner: r.owner, repo: r.repo, provider: r.provider, host: r.host })}
             />
           ))}
           <button
@@ -63,8 +64,11 @@ export default function SettingsSection() {
   )
 }
 
-function NavItem({ icon: Icon, github, label, active, onClick }: {
-  icon?: LucideIcon; github?: boolean; label: string; active: boolean; onClick: () => void
+function NavItem({ icon: Icon, repoRef, label, active, onClick }: {
+  // `repoRef` replaces the old `github` boolean: a repo row now shows ITS OWN
+  // provider mark, which a boolean could not express once there were two.
+  icon?: LucideIcon; repoRef?: Pick<RepoRef, 'provider'>; label: string
+  active: boolean; onClick: () => void
 }) {
   return (
     <button
@@ -74,8 +78,8 @@ function NavItem({ icon: Icon, github, label, active, onClick }: {
         active ? 'bg-accent-subtle text-text font-medium' : 'text-muted hover:bg-bg-hover'
       }`}
     >
-      {github
-        ? <GithubLogo size={14} className="flex-shrink-0" />
+      {repoRef
+        ? <ProviderLogo repoRef={repoRef} size={14} />
         : Icon
           ? <Icon size={14} className={`flex-shrink-0 ${active ? 'text-accent' : ''}`} />
           : null}

@@ -2,8 +2,9 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Plus, RefreshCw, Wand2 } from 'lucide-react'
 import {
-  issueRadarApi, type LabelRecommendation, type RepoLabel, type RepoSettings,
+  issueRadarApi, type LabelRecommendation, type RepoLabel, type RepoSettings, type RepoRef,
 } from '../../api'
+import { issueUrlFor, repoScopeKey } from '../../lib/links'
 import { asArray, readableText, hexToRgba } from '../../lib/format'
 import ReadOnlyTag from '../../components/ReadOnlyTag'
 import ShimmerLine from '../../components/ShimmerLine'
@@ -24,10 +25,9 @@ import ShimmerLine from '../../components/ShimmerLine'
  * Radar knows that is what it means.
  */
 export default function LabelsPanel({
-  owner, repo, labels, labelsKnown, countByLabel, canWrite, titleOf, onPick, onCreated,
+  repoRef, labels, labelsKnown, countByLabel, canWrite, titleOf, onPick, onCreated,
 }: {
-  owner: string
-  repo: string
+  repoRef: RepoRef
   labels: RepoLabel[]
   /** False while the repo's label set is loading or its query failed. An empty
    * `labels` alone cannot tell "this repo has no labels" from "we don't know",
@@ -44,7 +44,9 @@ export default function LabelsPanel({
   onCreated?: (rec: LabelRecommendation) => void
 }) {
   const qc = useQueryClient()
-  const key = ['issue-radar', 'recommendations', owner, repo]
+  const { owner, repo } = repoRef
+  const scopeKey = repoScopeKey(repoRef)
+  const key = ['issue-radar', 'recommendations', scopeKey]
 
   const ranked = useMemo(
     () => labels
@@ -55,25 +57,25 @@ export default function LabelsPanel({
 
   const recoQuery = useQuery({
     queryKey: key,
-    queryFn: () => issueRadarApi.getRecommendations(owner, repo),
+    queryFn: () => issueRadarApi.getRecommendations(repoRef),
   })
   const recommendations = recoQuery.data?.recommendations ?? null
   const generate = useMutation({
-    mutationFn: () => issueRadarApi.generateRecommendations(owner, repo),
+    mutationFn: () => issueRadarApi.generateRecommendations(repoRef),
     onSuccess: (res) => qc.setQueryData(key, res),
   })
 
   const [created, setCreated] = useState<Set<string>>(new Set())
   const createLabel = useMutation({
     mutationFn: (rec: LabelRecommendation) =>
-      issueRadarApi.createLabel(owner, repo, {
+      issueRadarApi.createLabel(repoRef, {
         name: rec.name, color: rec.color, description: rec.description,
       }),
     onSuccess: (_res, rec) => {
       setCreated((prev) => new Set(prev).add(rec.name))
       // The label now exists on GitHub — refresh every picker that reads the
       // repo's label set, including the untagged queue, which can now stage it.
-      qc.invalidateQueries({ queryKey: ['issue-radar', 'labels', owner, repo] })
+      qc.invalidateQueries({ queryKey: ['issue-radar', 'labels', scopeKey] })
       onCreated?.(rec)
     },
   })
@@ -89,8 +91,8 @@ export default function LabelsPanel({
    * cached at connect time. Writes into the SHARED labels query the context owns,
    * so one click updates the pickers and the untagged queue too. */
   const refreshLabels = useMutation({
-    mutationFn: () => issueRadarApi.labels(owner, repo, { refresh: true }),
-    onSuccess: (res) => qc.setQueryData(['issue-radar', 'labels', owner, repo], res),
+    mutationFn: () => issueRadarApi.labels(repoRef, { refresh: true }),
+    onSuccess: (res) => qc.setQueryData(['issue-radar', 'labels', scopeKey], res),
   })
 
   return (
@@ -242,7 +244,7 @@ export default function LabelsPanel({
                           return (
                             <a
                               key={n}
-                              href={`https://github.com/${owner}/${repo}/issues/${n}`}
+                              href={issueUrlFor(repoRef, n)}
                               target="_blank"
                               rel="noreferrer"
                               className="text-[12px] text-muted opacity-60 group-hover:opacity-90 hover:!opacity-100 hover:text-accent hover:underline transition-opacity"

@@ -77,15 +77,31 @@ beforeEach(() => {
 })
 
 describe('ConnectPanel provider rows', () => {
-  it('only GitHub is selectable; the rest are marked Soon', async () => {
+  it('GitHub and GitLab are selectable; the unwired ones are marked Soon', async () => {
     const user = userEvent.setup()
     renderHost()
-    for (const name of ['GitLab', 'Jira', 'Linear']) {
+    // Jira and Linear are still placeholders, so they must stay unselectable —
+    // an enabled row for an unwired provider would offer a connect that fails.
+    for (const name of ['Jira', 'Linear']) {
       expect(screen.getByRole('button', { name: new RegExp(name) })).toBeDisabled()
     }
-    // Nothing is fetched until GitHub is actually opened.
+    expect(screen.getByRole('button', { name: /GitLab/ })).toBeEnabled()
+    // Nothing is fetched until a provider is actually opened.
     expect(mockRecentRepos).not.toHaveBeenCalled()
     await openGithub(user)
+  })
+
+  it('asks for the selected provider’s own account when GitLab is opened', async () => {
+    // The two lists come from different accounts on different CLIs, so opening
+    // GitLab must not serve (or re-use) the GitHub picker's results.
+    const user = userEvent.setup()
+    renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await waitFor(() => expect(mockRecentRepos).toHaveBeenCalled())
+    expect(mockRecentRepos).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      expect.objectContaining({ provider: 'gitlab' }),
+    )
   })
 })
 
@@ -211,6 +227,28 @@ describe('gh setup notice', () => {
     )
     // Pasting a URL would fail the same way, so there is nothing to offer.
     expect(screen.queryByLabelText('Repository URL')).not.toBeInTheDocument()
+  })
+
+  it('names glab — not gh — when the GitLab panel needs setup', async () => {
+    // This is the one screen whose job is unblocking the user. Naming the wrong
+    // CLI sends them to install `gh`, click "check again", and stay stuck.
+    mockRecentRepos.mockResolvedValue({
+      repos: [],
+      setup_required: 'not_authenticated',
+      error: 'glab: not logged in',
+    })
+    const user = userEvent.setup()
+    renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await waitFor(() => expect(mockRecentRepos).toHaveBeenCalled())
+
+    await waitFor(() =>
+      expect(screen.getByText(/set up the GitLab CLI/i)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/set up the GitHub CLI/i)).not.toBeInTheDocument()
+    expect(screen.getAllByText('glab').length).toBeGreaterThan(0)
+    // The wrong binary must not be named anywhere in the notice.
+    expect(screen.queryByText(/^gh$/)).not.toBeInTheDocument()
   })
 })
 

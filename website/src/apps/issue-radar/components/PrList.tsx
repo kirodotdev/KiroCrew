@@ -11,6 +11,7 @@ import type { PullRequest } from '../api'
 import LabelChip from './LabelChip'
 import ListSkeleton from './ListSkeleton'
 import ListEmptyState from './ListEmptyState'
+import { providerTerms } from '../lib/links'
 
 /** Above this many rendered rows we skip the per-card enter/layout animation
  * (same rationale as IssueList — Framer's layout pass janks on large lists). */
@@ -121,7 +122,11 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
     prStateFilter, colorByName,
     selectedPull, setSelectedPull, refreshPulls, pullsRefreshing,
     prQuery, setPrQuery, pullsUpdatedAt, prPersonFilterActive, prSearchTruncatedAt,
+    active,
   } = useIssueRadar()
+  // Provider vocabulary: GitLab calls these merge requests, and calling them
+  // pull requests in a GitLab workspace is simply wrong copy.
+  const terms = providerTerms(active)
 
   const reduce = useReducedMotion()
   const animate = !reduce && sortedPulls.length <= ANIM_CAP
@@ -203,8 +208,8 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           <input
             value={prQuery}
             onChange={(e) => setPrQuery(e.target.value)}
-            placeholder="Search Pull Requests…"
-            aria-label="Search Pull Requests"
+            placeholder={`Search ${terms.changeRequestPluralTitle}…`}
+            aria-label={`Search ${terms.changeRequestPluralTitle}`}
             className="flex-1 min-w-0 bg-transparent py-2.5 text-[13px] text-text placeholder:text-muted outline-none"
           />
           {prQuery && (
@@ -225,7 +230,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           {pullsLoading && <ListSkeleton />}
           {pullsError && <div className="px-1 py-2 text-[14px] text-danger">{pullsError.message}</div>}
           {!pullsLoading && filteredPulls.length === 0 && (
-            <ListEmptyState searching={Boolean(prQuery.trim())} label="Pull Requests" />
+            <ListEmptyState searching={Boolean(prQuery.trim())} label={terms.changeRequestPluralTitle} />
           )}
           {animate ? (
             <AnimatePresence initial={false} mode="popLayout">
@@ -288,8 +293,8 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           <button
             onClick={refreshPulls}
             disabled={pullsRefreshing}
-            title="Re-fetch Pull Requests from GitHub"
-            aria-label="Refresh pull requests"
+            title={`Re-fetch ${terms.changeRequestPluralTitle} from ${terms.providerName}`}
+            aria-label={`Refresh ${terms.changeRequestPlural}`}
             className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text disabled:opacity-30"
           >
             <RefreshCw size={13} className={pullsRefreshing ? 'animate-spin' : ''} />

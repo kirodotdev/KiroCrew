@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
-from kiro_crew.apps.builtins.issue_radar.backend import routes, store
+from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
 
 
 class TestAiCache(unittest.TestCase):
@@ -181,12 +181,12 @@ class TestWritePermissionGate(unittest.TestCase):
             routes.store, "list_connected_repos",
             return_value=[{"owner": "o", "repo": "r", "permissions": {"triage": True}}],
         ):
-            self.assertTrue(routes._repo_can_write("o", "r"))
+            self.assertTrue(routes._repo_can_write(provider.key_from_parts("o", "r")))
         with mock.patch.object(
             routes.store, "list_connected_repos",
             return_value=[{"owner": "o", "repo": "r", "permissions": {"pull": True}}],
         ):
-            self.assertFalse(routes._repo_can_write("o", "r"))
+            self.assertFalse(routes._repo_can_write(provider.key_from_parts("o", "r")))
 
     def test_repo_can_write_self_heals_when_missing(self):
         with mock.patch.object(
@@ -195,7 +195,7 @@ class TestWritePermissionGate(unittest.TestCase):
         ), mock.patch.object(
             routes.github_client, "get_repo_permissions", return_value={"push": True}
         ) as fetch, mock.patch.object(routes.store, "set_repo_permissions") as heal:
-            self.assertTrue(routes._repo_can_write("o", "r"))
+            self.assertTrue(routes._repo_can_write(provider.key_from_parts("o", "r")))
             fetch.assert_called_once()
             heal.assert_called_once()
 
@@ -205,7 +205,7 @@ class TestWritePermissionGate(unittest.TestCase):
         ), mock.patch.object(
             routes.github_client, "get_repo_permissions", side_effect=gh.GhCliError("gh down")
         ):
-            self.assertIsNone(routes._repo_can_write("o", "r"))
+            self.assertIsNone(routes._repo_can_write(provider.key_from_parts("o", "r")))
 
 
 if __name__ == "__main__":

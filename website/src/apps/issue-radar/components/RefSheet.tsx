@@ -19,6 +19,7 @@ import { ChevronLeft, CircleDot, ExternalLink, GitPullRequest, Loader2, PanelRig
 import Clickable from '../../../components/Clickable'
 import { useDialogFocusTrap } from '../../../hooks/useDialogFocusTrap'
 import { useIssueRadar } from '../context'
+import { providerTerms } from '../lib/links'
 import { placeholderIssue, placeholderPull, refKey, refUrl } from '../lib/refLinks'
 import { useRefSummary } from './RefLink'
 import IssueDetail from './IssueDetail'
@@ -34,6 +35,7 @@ export default function RefSheet() {
     setSelectedIssue, setSelectedPull, openIssues, openPulls,
   } = useIssueRadar()
   const { owner, repo } = active
+  const terms = providerTerms(active)
   const reduceMotion = useReducedMotion()
   const dialogRef = useRef<HTMLDivElement>(null)
 
@@ -44,10 +46,13 @@ export default function RefSheet() {
   useDialogFocusTrap(dialogRef, onEscape)
 
   // A target reached as `#123` (or as an `/issues/123` URL) may actually be a
-  // PULL REQUEST — GitHub redirects that path — so which pane to render is
-  // decided by the ref summary, not by the link's shape. Usually already warm:
-  // the hover card on the very link that was clicked ran the same query.
-  const refQuery = useRefSummary(owner, repo, top?.number ?? 0, !!top && top.kind === 'issue')
+  // PULL REQUEST on GitHub — it shares one number sequence with issues and
+  // redirects that path — so which pane to render is decided by the ref summary,
+  // not by the link's shape. Usually already warm: the hover card on the very
+  // link that was clicked ran the same query. On GitLab the two sequences are
+  // separate (`#5` vs `!5`), so its summary always answers "issue" and the
+  // ambiguity simply does not arise.
+  const refQuery = useRefSummary(active, top?.number ?? 0, !!top && top.kind === 'issue')
   const isPr = top?.kind === 'pull' || refQuery.data?.summary.is_pr === true
   // Only the ambiguous case waits. An explicit /pull/ link renders immediately,
   // and a FAILED lookup degrades to the issue pane rather than blocking on it.
@@ -97,7 +102,7 @@ export default function RefSheet() {
             ref={dialogRef}
             role="dialog"
             aria-modal="true"
-            aria-label={`${isPr ? 'Pull request' : 'Issue'} #${top.number} in ${owner}/${repo}`}
+            aria-label={`${isPr ? terms.changeRequestTitle : 'Issue'} ${isPr ? terms.sigil : '#'}${top.number} in ${owner}/${repo}`}
             tabIndex={-1}
             initial={reduceMotion ? { opacity: 0 } : { y: '100%' }}
             animate={reduceMotion ? { opacity: 1 } : { y: 0 }}
@@ -126,7 +131,7 @@ export default function RefSheet() {
                   ? <GitPullRequest className="lucide-inline text-accent" aria-hidden="true" />
                   : <CircleDot className="lucide-inline text-accent" aria-hidden="true" />}
                 <span className="truncate">{owner}/{repo}</span>
-                <span className="font-mono text-text">#{top.number}</span>
+                <span className="font-mono text-text">{isPr ? terms.sigil : '#'}{top.number}</span>
                 {refStack.length > 1 && (
                   <span className="text-muted opacity-70">· {refStack.length} deep</span>
                 )}
@@ -143,11 +148,11 @@ export default function RefSheet() {
                   </button>
                 )}
                 <a
-                  href={refUrl(owner, repo, { kind: isPr ? 'pull' : 'issue', number: top.number })}
+                  href={refUrl(active, { kind: isPr ? 'pull' : 'issue', number: top.number })}
                   target="_blank"
                   rel="noreferrer"
-                  aria-label="Open on GitHub"
-                  title="Open on GitHub"
+                  aria-label={`Open on ${terms.providerName}`}
+                  title={`Open on ${terms.providerName}`}
                   className={ICON_BTN}
                 >
                   <ExternalLink className="lucide-inline" aria-hidden="true" />
@@ -171,8 +176,8 @@ export default function RefSheet() {
                   </div>
                 )
                 : isPr
-                  ? <PrDetail pull={listedPull ?? placeholderPull(owner, repo, top.number, refQuery.data?.summary.state)} />
-                  : <IssueDetail issue={listedIssue ?? placeholderIssue(owner, repo, top.number, refQuery.data?.summary.state)} />}
+                  ? <PrDetail pull={listedPull ?? placeholderPull(active, top.number, refQuery.data?.summary.state)} />
+                  : <IssueDetail issue={listedIssue ?? placeholderIssue(active, top.number, refQuery.data?.summary.state)} />}
             </div>
           </motion.div>
         </div>

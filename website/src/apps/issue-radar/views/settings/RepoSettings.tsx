@@ -3,11 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Bell, RefreshCw, ExternalLink, Trash2, AlertTriangle, Sparkles, ListChecks, Users, Wand2, Tags, Check, type LucideIcon,
 } from 'lucide-react'
-import GithubLogo from '../../../../components/icons/GithubLogo'
+import { ProviderLogo, ProviderHostTag } from '../../components/ProviderBadge'
 import {
   issueRadarApi, DEFAULT_REPO_SETTINGS, SettingsConflictError,
-  type RepoSettings, type RepoLabel, type Issue, type RepoMember,
+  type RepoSettings, type RepoLabel, type Issue, type RepoMember, type RepoRef,
 } from '../../api'
+import { repoWebUrl, userUrlFor, membersUrlFor, providerTerms, repoScopeKey } from '../../lib/links'
 import { useIssueRadar } from '../../context'
 import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import LabelPicker from '../../components/LabelPicker'
@@ -32,29 +33,39 @@ const ROLE_MUTED = new Set(['read'])
  * Issue Radar how this repo labels its work (which labels mean "needs triage",
  * which mark newcomer-friendly issues), plus a per-repo data refresh and a
  * local disconnect. Nothing here is written back to GitHub. */
-export default function RepoSettings({ owner, repo }: { owner: string; repo: string }) {
+export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
+  const { owner, repo } = repoRef
+  const scopeKey = repoScopeKey(repoRef)
+  const terms = providerTerms(repoRef)
   const qc = useQueryClient()
   const { repos, active, openSettings, openDashboard, switchRepo } = useIssueRadar()
-  const entry = repos.find((r) => r.owner === owner && r.repo === repo)
+  // Full-identity match: the same slug can exist on two providers, and a loose
+  // match would show the other repo's permissions and settings.
+  const entry = repos.find(
+    (r) => r.owner === owner
+      && r.repo === repo
+      && (r.provider || 'github') === (repoRef.provider || 'github')
+      && (r.host || 'github.com') === (repoRef.host || 'github.com'),
+  )
 
   const labelsQuery = useQuery({
-    queryKey: ['issue-radar', 'labels', owner, repo],
-    queryFn: () => issueRadarApi.labels(owner, repo),
+    queryKey: ['issue-radar', 'labels', scopeKey],
+    queryFn: () => issueRadarApi.labels(repoRef),
   })
   const settingsQuery = useQuery({
-    queryKey: ['issue-radar', 'settings', owner, repo],
-    queryFn: () => issueRadarApi.getSettings(owner, repo),
+    queryKey: ['issue-radar', 'settings', scopeKey],
+    queryFn: () => issueRadarApi.getSettings(repoRef),
   })
   const issuesQuery = useQuery({
-    queryKey: ['issue-radar', 'issues', owner, repo, 'open'],
-    queryFn: () => issueRadarApi.issues(owner, repo, { state: 'open' }),
+    queryKey: ['issue-radar', 'issues', scopeKey, 'open'],
+    queryFn: () => issueRadarApi.issues(repoRef, { state: 'open' }),
   })
   // Members are derived server-side from the cached issues, so wait until the
   // issues query has succeeded (by then the member cache is built) — same gate
   // as the shared context, to avoid a redundant fetch or an empty first read.
   const membersQuery = useQuery({
-    queryKey: ['issue-radar', 'members', owner, repo],
-    queryFn: () => issueRadarApi.members(owner, repo),
+    queryKey: ['issue-radar', 'members', scopeKey],
+    queryFn: () => issueRadarApi.members(repoRef),
     enabled: issuesQuery.isSuccess,
   })
 
@@ -109,7 +120,7 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
     // the user's in-flight intent.
     knownRevision.current = res.settings.revision
     serverSettings.current = res.settings
-    qc.setQueryData(['issue-radar', 'settings', owner, repo], res)
+    qc.setQueryData(['issue-radar', 'settings', scopeKey], res)
     // Retire each dirty key the server now AGREES with, rather than clearing the
     // whole set on the last edit. Blanket-clearing was wrong in one direction and
     // never clearing in the other: if save A landed while B was queued, B failed,
@@ -170,7 +181,7 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
         const revision = knownRevision.current ?? base.revision
         try {
           return {
-            res: await issueRadarApi.putSettings(owner, repo, { ...payloadFrom(base), revision }),
+            res: await issueRadarApi.putSettings(repoRef, { ...payloadFrom(base), revision }),
             seq,
           }
         } catch (e) {
@@ -180,7 +191,7 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
           knownRevision.current = e.current.revision
           serverSettings.current = e.current
           return {
-            res: await issueRadarApi.putSettings(owner, repo, payloadFrom(e.current)),
+            res: await issueRadarApi.putSettings(repoRef, payloadFrom(e.current)),
             seq,
           }
         }
@@ -241,23 +252,23 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
   const refreshMutation = useMutation({
     mutationFn: async () => {
       const [iss, lab] = await Promise.all([
-        issueRadarApi.issues(owner, repo, { refresh: true, state: 'open' }),
-        issueRadarApi.labels(owner, repo, { refresh: true }),
+        issueRadarApi.issues(repoRef, { refresh: true, state: 'open' }),
+        issueRadarApi.labels(repoRef, { refresh: true }),
       ])
       return { iss, lab }
     },
     onSuccess: ({ iss, lab }) => {
-      qc.setQueryData(['issue-radar', 'issues', owner, repo, 'open'], iss)
-      qc.setQueryData(['issue-radar', 'labels', owner, repo], lab)
+      qc.setQueryData(['issue-radar', 'issues', scopeKey, 'open'], iss)
+      qc.setQueryData(['issue-radar', 'labels', scopeKey], lab)
       // A fresh issues fetch rebuilds the member cache server-side; re-read it.
-      qc.invalidateQueries({ queryKey: ['issue-radar', 'members', owner, repo] })
+      qc.invalidateQueries({ queryKey: ['issue-radar', 'members', scopeKey] })
     },
   })
 
   // ── disconnect (local-only) ──
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const disconnectMutation = useMutation({
-    mutationFn: () => issueRadarApi.disconnect(owner, repo),
+    mutationFn: () => issueRadarApi.disconnect(repoRef),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['issue-radar', 'repos'] })
       // The connect dialog's picker caches a `connected` flag per repo, so
@@ -277,21 +288,24 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
     <div className="w-full max-w-6xl px-8 py-8">
       {/* Header */}
       <div className="flex items-center gap-3 mb-1 flex-wrap">
-        <GithubLogo size={20} className="flex-shrink-0" />
+        <ProviderLogo repoRef={repoRef} size={20} />
         <h1 className="text-[22px] font-semibold">{owner}/{repo}</h1>
+        {/* Only rendered for a self-managed instance, where it is the only thing
+            distinguishing this project from a same-named one on the public site. */}
+        <ProviderHostTag repoRef={repoRef} />
         {isReadOnly(entry?.permissions) && <ReadOnlyTag />}
         <a
-          href={`https://github.com/${owner}/${repo}`}
+          href={repoWebUrl(repoRef)}
           target="_blank"
           rel="noreferrer"
           className="text-[12px] text-muted hover:text-text inline-flex items-center gap-1"
         >
-          <ExternalLink size={12} /> Open on GitHub
+          <ExternalLink size={12} /> Open on {terms.providerName}
         </a>
         <button
           onClick={() => refreshMutation.mutate()}
           disabled={refreshMutation.isPending}
-          title="Re-fetch this repo's issues + labels from GitHub"
+          title={`Re-fetch this repo's issues + labels from ${terms.providerName}`}
           className="ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted hover:text-text disabled:opacity-40 cursor-pointer"
         >
           <RefreshCw size={13} className={refreshMutation.isPending ? 'animate-spin' : ''} /> Refresh
@@ -301,7 +315,7 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
         <p className="text-[13px] text-muted mb-4">Loading this repo's saved settings…</p>
       )}
       <p className="text-[13px] text-muted mb-4">
-        Local triage settings for this repo — they teach Issue Radar how {repo} organises its issues and are never written back to GitHub.
+        Local triage settings for this repo — they teach Issue Radar how {repo} organises its issues and are never written back to {terms.providerName}.
         {saveMutation.isPending
           ? <span className="ml-2 opacity-70">Saving…</span>
           : saveMutation.isSuccess ? <span className="ml-2 opacity-70 inline-flex items-center gap-1">Saved <Check size={12} className="lucide-inline" /></span> : null}
@@ -333,8 +347,8 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
         </SettingToggle>
         <StatLine>
           Checks about once a minute, inside KiroCrew — no cron job. It only runs while KiroCrew is
-          open and your machine is awake, using your existing <code>gh</code> sign-in (no extra
-          credentials, no GitHub webhook).
+          open and your machine is awake, using your existing <code>{terms.cli}</code> sign-in (no
+          extra credentials, no {terms.providerName} webhook).
         </StatLine>
       </Card>
 
@@ -402,7 +416,11 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
             // Only when it actually differs, though — switchRepo resets the saved
             // issue and PR filters, which would be a surprising side effect of
             // navigating within the repo you are already on.
-            if (active.owner !== owner || active.repo !== repo) switchRepo({ owner, repo })
+            const sameActive = active.owner === owner
+              && active.repo === repo
+              && (active.provider || 'github') === (repoRef.provider || 'github')
+              && (active.host || 'github.com') === (repoRef.host || 'github.com')
+            if (!sameActive) switchRepo(repoRef)
             openDashboard('tagging')
           }}
           className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover cursor-pointer bg-transparent"
@@ -419,7 +437,7 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
       <Card
         icon={Users}
         title="Members"
-        desc="Everyone with access to this repo, read from GitHub — each with their role. Shown for reference; read-only here."
+        desc={`Everyone with access to this repo, read from ${terms.providerName} — each with their role. Shown for reference; read-only here.`}
       >
         {membersLoading ? (
           <div className="text-[12px] text-muted py-1">Loading members…</div>
@@ -436,10 +454,10 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
             {members.map((m) => (
               <a
                 key={m.login}
-                href={`https://github.com/${m.login}`}
+                href={userUrlFor(repoRef, m.login)}
                 target="_blank"
                 rel="noreferrer"
-                title={`${m.login} — ${ROLE_LABEL[m.role] ?? m.role} · open on GitHub`}
+                title={`${m.login} — ${ROLE_LABEL[m.role] ?? m.role} · open on ${terms.providerName}`}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-hover pl-2.5 pr-2 py-1 text-[13px] text-text hover:border-border-strong transition-colors"
               >
                 <span className="truncate max-w-[160px]">{m.login}</span>
@@ -454,25 +472,25 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
               Without push access to {owner}/{repo}, this is an approximate list inferred from issue
               authors. The full roster and member management live on{' '}
               <a
-                href={`https://github.com/${owner}/${repo}/settings/access`}
+                href={membersUrlFor(repoRef)}
                 target="_blank"
                 rel="noreferrer"
                 className="text-accent hover:underline inline-flex items-center gap-0.5"
               >
-                GitHub <ExternalLink size={11} />
+                {terms.providerName} <ExternalLink size={11} />
               </a>.
             </>
           ) : (
             <>
-              Membership is read from GitHub and can't be changed here — to add or remove a member or
+              Membership is read from {terms.providerName} and can&apos;t be changed here — to add or remove a member or
               collaborator, manage access on{' '}
               <a
-                href={`https://github.com/${owner}/${repo}/settings/access`}
+                href={membersUrlFor(repoRef)}
                 target="_blank"
                 rel="noreferrer"
                 className="text-accent hover:underline inline-flex items-center gap-0.5"
               >
-                GitHub <ExternalLink size={11} />
+                {terms.providerName} <ExternalLink size={11} />
               </a>. It refreshes here after the next sync.
             </>
           )}
@@ -485,7 +503,7 @@ export default function RepoSettings({ owner, repo }: { owner: string; repo: str
           <AlertTriangle size={14} /> Disconnect repository
         </div>
         <p className="text-[12px] text-muted mb-3">
-          Removes {owner}/{repo} from Issue Radar and deletes its local cache. Your GitHub data and <code>gh</code> auth are untouched — you can reconnect anytime.
+          Removes {owner}/{repo} from Issue Radar and deletes its local cache. Your {terms.providerName} data and <code>{terms.cli}</code> auth are untouched — you can reconnect anytime.
         </p>
         {confirmingDelete ? (
           <div className="flex items-center gap-2 flex-wrap">

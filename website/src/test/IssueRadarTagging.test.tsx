@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+import { repoScopeKey } from '../apps/issue-radar/lib/links'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -152,7 +154,7 @@ describe('TaggingView', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /Apply 2 suggestions/ }))
     await waitFor(() => expect(api.applyLabelsBulk).toHaveBeenCalledTimes(1))
-    expect(api.applyLabelsBulk).toHaveBeenCalledWith('o', 'r', [
+    expect(api.applyLabelsBulk).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), [
       { number: 8, add: ['docs'] },
       { number: 7, add: ['bug'] },
     ])
@@ -200,7 +202,7 @@ describe('TaggingView', () => {
     await userEvent.click(screen.getByLabelText('Select issue #7'))
     await waitFor(() => expect(screen.getByRole('button', { name: /Apply 1 suggestion$/ })).toBeTruthy())
     await userEvent.click(screen.getByRole('button', { name: /Apply 1 suggestion$/ }))
-    await waitFor(() => expect(api.applyLabelsBulk).toHaveBeenCalledWith('o', 'r', [{ number: 7, add: ['bug'] }]))
+    await waitFor(() => expect(api.applyLabelsBulk).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), [{ number: 7, add: ['bug'] }]))
   })
 
   it('applies one issue on its own', async () => {
@@ -216,7 +218,7 @@ describe('TaggingView', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Apply 1 suggestion$/ })).toBeTruthy())
 
     await userEvent.click(screen.getByRole('button', { name: 'Add labels to #7' }))
-    await waitFor(() => expect(api.applyLabels).toHaveBeenCalledWith('o', 'r', 7, ['bug'], []))
+    await waitFor(() => expect(api.applyLabels).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), 7, ['bug'], []))
     await waitFor(() => expect(screen.getByText('Added')).toBeTruthy())
     expect(screen.getByText('Crash on start')).toBeTruthy()
   })
@@ -291,7 +293,7 @@ describe('TaggingView', () => {
     renderView()
     await waitFor(() => expect(screen.getByText('Labels')).toBeTruthy())
     await userEvent.click(screen.getByRole('button', { name: 'Suggest new labels' }))
-    await waitFor(() => expect(api.generateRecommendations).toHaveBeenCalledWith('o', 'r'))
+    await waitFor(() => expect(api.generateRecommendations).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' })))
   })
 
   it('shows a short reason on each suggested new label', async () => {
@@ -335,7 +337,7 @@ describe('TaggingView', () => {
 
     // And it re-analyses by explicit number rather than asking for a new slice.
     await userEvent.click(screen.getByRole('button', { name: 'Suggest again (2)' }))
-    await waitFor(() => expect(api.generateTagging).toHaveBeenCalledWith('o', 'r', [8, 7]))
+    await waitFor(() => expect(api.generateTagging).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), [8, 7]))
   })
 
   it('counts only un-analysed issues in the next slice', async () => {
@@ -357,7 +359,7 @@ describe('TaggingView', () => {
     renderView()
     await waitFor(() => expect(screen.getByText('Labels')).toBeTruthy())
     await userEvent.click(screen.getByRole('button', { name: "Re-fetch this repo's labels from GitHub" }))
-    await waitFor(() => expect(api.labels).toHaveBeenCalledWith('o', 'r', { refresh: true }))
+    await waitFor(() => expect(api.labels).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), { refresh: true }))
   })
 
   it('gives each row exactly one action, which becomes Added', async () => {
@@ -433,7 +435,7 @@ describe('TaggingView', () => {
       bulk_max: 12, generated_at: '2026-07-26T00:00:00Z',
       suggestions: Object.fromEntries(many.map((i) => [String(i.number), [{ name: 'bug', reason: 'x' }]])),
     })
-    api.applyLabelsBulk.mockImplementation((_o, _r, changes) =>
+    api.applyLabelsBulk.mockImplementation((_ref, changes) =>
       Promise.resolve({ owner: 'o', repo: 'r', applied: changes.map((c: { number: number }) => ({ number: c.number, labels: [] })), failed: [] }))
     renderView()
 
@@ -441,9 +443,9 @@ describe('TaggingView', () => {
     await userEvent.click(screen.getByRole('button', { name: /Apply 30 suggestions/ }))
     // 12, not 25: the cap is SERVED, so a hardcoded client copy would fail here.
     await waitFor(() => expect(api.applyLabelsBulk).toHaveBeenCalledTimes(3))
-    expect(api.applyLabelsBulk.mock.calls[0][2]).toHaveLength(12)
-    expect(api.applyLabelsBulk.mock.calls[1][2]).toHaveLength(12)
-    expect(api.applyLabelsBulk.mock.calls[2][2]).toHaveLength(6)
+    expect(api.applyLabelsBulk.mock.calls[0][1]).toHaveLength(12)
+    expect(api.applyLabelsBulk.mock.calls[1][1]).toHaveLength(12)
+    expect(api.applyLabelsBulk.mock.calls[2][1]).toHaveLength(6)
     // Every issue from both chunks is reported as applied.
     await waitFor(() => expect(screen.getByText(/Labelled 30 issues/)).toBeTruthy())
   })
@@ -454,7 +456,7 @@ describe('TaggingView', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Reload the untagged queue' }))
     // Labels get added on GitHub itself; a cache-first reload never notices.
     await waitFor(() =>
-      expect(api.tagging).toHaveBeenCalledWith('o', 'r', { refresh: true }))
+      expect(api.tagging).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), { refresh: true }))
   })
 
   it('keeps chunks that already landed when a later chunk rejects', async () => {
@@ -471,7 +473,7 @@ describe('TaggingView', () => {
       suggestions: Object.fromEntries(many.map((i) => [String(i.number), [{ name: 'bug', reason: 'x' }]])),
     })
     api.applyLabelsBulk
-      .mockImplementationOnce((_o, _r, changes) => Promise.resolve({
+      .mockImplementationOnce((_ref, changes) => Promise.resolve({
         owner: 'o', repo: 'r', failed: [],
         applied: changes.map((c: { number: number }) => ({ number: c.number, labels: [] })),
       }))
@@ -556,7 +558,7 @@ describe('TaggingView', () => {
     // The real endpoint returns the MERGED map, so a re-run leaves every issue
     // still analysed — which is what keeps the button in "Suggest again" mode.
     const merged = Object.fromEntries(many.map((i) => [String(i.number), []]))
-    api.generateTagging.mockImplementation((_o, _r, numbers) => Promise.resolve({
+    api.generateTagging.mockImplementation((_ref, numbers) => Promise.resolve({
       owner: 'o', repo: 'r', suggestions: merged,
       analyzed: numbers ?? [], remaining: 0, generated_at: '2026-07-26T00:00:00Z',
     }))
@@ -566,14 +568,14 @@ describe('TaggingView', () => {
     // slice — re-running the first two forever left issues 202..204 unreachable.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Suggest again (2)' })).toBeTruthy())
     await userEvent.click(screen.getByRole('button', { name: 'Suggest again (2)' }))
-    await waitFor(() => expect(api.generateTagging).toHaveBeenCalledWith('o', 'r', [200, 201]))
+    await waitFor(() => expect(api.generateTagging).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), [200, 201]))
     await userEvent.click(screen.getByRole('button', { name: 'Suggest again (2)' }))
-    await waitFor(() => expect(api.generateTagging).toHaveBeenLastCalledWith('o', 'r', [202, 203]))
+    await waitFor(() => expect(api.generateTagging).toHaveBeenLastCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), [202, 203]))
     await userEvent.click(screen.getByRole('button', { name: 'Suggest again (1)' }))
-    await waitFor(() => expect(api.generateTagging).toHaveBeenLastCalledWith('o', 'r', [204]))
+    await waitFor(() => expect(api.generateTagging).toHaveBeenLastCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), [204]))
     // …then wraps.
     await userEvent.click(screen.getByRole('button', { name: 'Suggest again (2)' }))
-    await waitFor(() => expect(api.generateTagging).toHaveBeenLastCalledWith('o', 'r', [200, 201]))
+    await waitFor(() => expect(api.generateTagging).toHaveBeenLastCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), [200, 201]))
   })
 
   it('does not skip a slice whose re-run failed', async () => {
@@ -592,7 +594,7 @@ describe('TaggingView', () => {
     // First re-run fails, second succeeds.
     api.generateTagging
       .mockRejectedValueOnce(new Error('model unavailable'))
-      .mockImplementation((_o, _r, numbers) => Promise.resolve({
+      .mockImplementation((_ref, numbers) => Promise.resolve({
         owner: 'o', repo: 'r', suggestions: merged,
         analyzed: numbers ?? [], remaining: 0, generated_at: '2026-07-26T00:00:00Z',
       }))
@@ -605,7 +607,7 @@ describe('TaggingView', () => {
     // The cursor must NOT have moved past a slice that was never analysed —
     // advancing on click left those issues unreachable until a full wrap.
     await userEvent.click(screen.getByRole('button', { name: 'Suggest again (2)' }))
-    await waitFor(() => expect(api.generateTagging).toHaveBeenLastCalledWith('o', 'r', [300, 301]))
+    await waitFor(() => expect(api.generateTagging).toHaveBeenLastCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), [300, 301]))
   })
 
   it('keeps per-issue errors reported by an earlier chunk', async () => {
@@ -622,7 +624,7 @@ describe('TaggingView', () => {
       suggestions: Object.fromEntries(many.map((i) => [String(i.number), [{ name: 'bug', reason: 'x' }]])),
     })
     api.applyLabelsBulk
-      .mockImplementationOnce((_o, _r, changes) => Promise.resolve({
+      .mockImplementationOnce((_ref, changes) => Promise.resolve({
         owner: 'o', repo: 'r',
         applied: changes.slice(1).map((c: { number: number }) => ({ number: c.number, labels: [] })),
         failed: [{ number: changes[0].number, error: 'issue is locked' }],
@@ -658,7 +660,7 @@ describe('TaggingView', () => {
     // `renamed-away` is not in the repo's label set, so it is never staged.
     expect(screen.queryByText('renamed-away')).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: /Apply 1 suggestion$/ }))
-    await waitFor(() => expect(api.applyLabelsBulk).toHaveBeenCalledWith('o', 'r', [{ number: 7, add: ['bug'] }]))
+    await waitFor(() => expect(api.applyLabelsBulk).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), [{ number: 7, add: ['bug'] }]))
   })
 
   it('reconciles queue state on a background refetch, not just a manual reload', async () => {
@@ -679,7 +681,12 @@ describe('TaggingView', () => {
       generated_at: '2026-07-26T00:00:00Z', batch_size: 50,
       label_counts: {}, bulk_max: 25, titles: TITLES,
     })
-    await qc.refetchQueries({ queryKey: ['issue-radar', 'tagging', 'o', 'r'] })
+    // Built from the real helper, not spelled out: cache keys are scoped by
+    // provider + host now, so a hand-written key would silently match nothing
+    // and this test would pass by refetching zero queries.
+    await qc.refetchQueries({
+      queryKey: ['issue-radar', 'tagging', repoScopeKey({ owner: 'o', repo: 'r' })],
+    })
 
     await waitFor(() => expect(screen.queryByText('Typo in readme')).toBeNull())
     // Selection was pruned, so Apply covers the surviving row rather than nothing.
@@ -763,7 +770,7 @@ describe('TaggingView', () => {
     await userEvent.click(screen.getByRole('button', { name: /Create the needs-triage label/ }))
 
     await waitFor(() =>
-      expect(api.addSettingLabel).toHaveBeenCalledWith('o', 'r', 'triage_labels', 'needs-triage'))
+      expect(api.addSettingLabel).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), 'triage_labels', 'needs-triage'))
     // The whole-document write must NOT be used for this any more.
     expect(api.putSettings).not.toHaveBeenCalled()
   })
@@ -832,7 +839,7 @@ describe('TaggingView', () => {
       generated_at: '2026-07-26T00:00:00Z', suggestions: merged,
     })
     api.applyLabels.mockResolvedValue({ owner: 'o', repo: 'r', number: 500, labels: [] })
-    api.generateTagging.mockImplementation((_o, _r, numbers) => Promise.resolve({
+    api.generateTagging.mockImplementation((_ref, numbers) => Promise.resolve({
       owner: 'o', repo: 'r', suggestions: merged,
       analyzed: numbers ?? [], remaining: 0, generated_at: '2026-07-26T00:00:00Z',
     }))
@@ -847,7 +854,7 @@ describe('TaggingView', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Suggest again (2)' })).toBeTruthy())
     await userEvent.click(screen.getByRole('button', { name: 'Suggest again (2)' }))
     // #500 is applied, so the slice starts at #501 — not at the applied row.
-    await waitFor(() => expect(api.generateTagging).toHaveBeenLastCalledWith('o', 'r', [501, 502]))
+    await waitFor(() => expect(api.generateTagging).toHaveBeenLastCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), [501, 502]))
   })
 
   it('clears only the row errors the current apply covers', async () => {

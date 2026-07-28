@@ -77,14 +77,14 @@ describe('issue-radar list polling', () => {
     await waitFor(() => expect(issues).toHaveBeenCalledTimes(1))
     // First fetch: no poll flag, so the route serves cache at any age and the
     // app paints without waiting on `gh`.
-    expect(issues.mock.calls[0][2]).toMatchObject({ poll: false })
+    expect(issues.mock.calls[0][1]).toMatchObject({ poll: false })
 
     await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000)
 
     await waitFor(() => expect(issues.mock.calls.length).toBeGreaterThan(1))
     // Every poll after that goes down the probe-gated path, or it would be
     // answered from the TTL-less cache and observe nothing.
-    expect(issues.mock.calls[1][2]).toMatchObject({ poll: true })
+    expect(issues.mock.calls[1][1]).toMatchObject({ poll: true })
     unmount()
   })
 
@@ -114,12 +114,12 @@ describe('issue-radar list polling', () => {
     const { unmount } = renderProvider()
 
     await waitFor(() => expect(pulls).toHaveBeenCalledTimes(1))
-    expect(pulls.mock.calls[0][2]).toMatchObject({ poll: false })
+    expect(pulls.mock.calls[0][1]).toMatchObject({ poll: false })
 
     await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000)
 
     await waitFor(() => expect(pulls.mock.calls.length).toBeGreaterThan(1))
-    expect(pulls.mock.calls[1][2]).toMatchObject({ poll: true })
+    expect(pulls.mock.calls[1][1]).toMatchObject({ poll: true })
     unmount()
   })
 

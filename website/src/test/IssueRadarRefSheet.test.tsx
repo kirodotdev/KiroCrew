@@ -177,7 +177,7 @@ describe('RefLink hover preview', () => {
     await userEvent.hover(screen.getByRole('link'))
     const card = await waitFor(() => screen.getByRole('tooltip'), { timeout: 3000 })
     await waitFor(() => expect(card.textContent).toContain('Tagging dashboard'))
-    expect(api.refSummary).toHaveBeenCalledWith(OWNER, REPO, 533)
+    expect(api.refSummary).toHaveBeenCalledWith({ owner: OWNER, repo: REPO }, 533)
     expect(card.textContent).toContain('#533')
     expect(card.textContent).toContain('alice')
     expect(card.textContent).toContain('Open')

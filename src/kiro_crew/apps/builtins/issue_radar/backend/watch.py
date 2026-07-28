@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import partial
 from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.issue_radar.backend import github_client, store
+from kiro_crew.apps.builtins.issue_radar.backend import provider, store
 from kiro_crew.apps.manager import is_app_enabled
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
@@ -106,51 +107,76 @@ async def _poll_once(app: web.Application) -> None:
         repo = entry.get("repo")
         if not owner or not repo:
             continue
-        settings = await asyncio.to_thread(store.read_repo_settings, owner, repo)
+        # Each entry carries its own provider+host, so a mixed GitHub/GitLab
+        # install polls every repo against the right server.
+        key = provider.key_from_parts(
+            str(owner), str(repo), entry.get("provider"), entry.get("host")
+        )
+        settings = await asyncio.to_thread(
+            partial(
+                store.read_repo_settings, key.owner, key.repo,
+                provider=key.provider, host=key.host,
+            )
+        )
         if not settings.get("notify_on_new_issue"):
             continue
         try:
-            await _poll_repo(app, owner, repo)
+            await _poll_repo(app, key)
         except Exception:
-            # Per-repo failure (gh/network/etc.) must not stop the sweep.
+            # Per-repo failure (CLI/network/etc.) must not stop the sweep.
             logger.warning("issue-radar watch failed for %s/%s", owner, repo, exc_info=True)
 
 
-async def _poll_repo(app: web.Application, owner: str, repo: str) -> None:
-    """Detect issues opened in ``owner/repo`` since the last poll and notify."""
+async def _poll_repo(app: web.Application, key: provider.RepoKey) -> None:
+    """Detect issues opened in ``key``'s repo since the last poll and notify."""
+    owner, repo = key.owner, key.repo
+    scope = store.provider_root(root=None, provider=key.provider, host=key.host)
     recent = await asyncio.to_thread(
-        github_client.list_recent_open_issues, owner, repo, _POLL_LIMIT
+        partial(
+            provider.client_for(key).list_recent_open_issues,
+            owner, repo, _POLL_LIMIT, **provider.call_kwargs(key),
+        )
     )
     numbers = [int(i["number"]) for i in recent if isinstance(i.get("number"), int)]
     if not numbers:
         return
     current_max = max(numbers)
 
-    state = await asyncio.to_thread(store.read_watch_state, owner, repo)
+    state = await asyncio.to_thread(store.read_watch_state, owner, repo, scope)
     last_seen = state.get("last_seen_number")
 
     if not isinstance(last_seen, int):
         # First observation for this repo: seed the high-water mark WITHOUT
         # notifying, so we don't announce the entire pre-existing backlog.
-        await asyncio.to_thread(store.write_watch_state, owner, repo, current_max)
+        await asyncio.to_thread(
+            partial(store.write_watch_state, owner, repo, current_max, root=scope)
+        )
         return
 
-    # GitHub issue/PR numbers are globally monotonic, so anything above the mark
-    # was created since the last poll.
+    # Issue numbers are monotonic per repo on GitHub and per project on GitLab
+    # (the ``iid``), so anything above the mark was created since the last poll.
     new_issues = [i for i in recent if int(i["number"]) > last_seen]
     if not new_issues:
         return
 
     # Advance the mark BEFORE notifying so a delivery hiccup can't cause the same
     # issues to be re-announced next cycle.
-    await asyncio.to_thread(store.write_watch_state, owner, repo, current_max)
-    _notify_new_issues(app, owner, repo, new_issues)
+    await asyncio.to_thread(
+        partial(store.write_watch_state, owner, repo, current_max, root=scope)
+    )
+    _notify_new_issues(app, key, new_issues)
 
 
 def _notify_new_issues(
-    app: web.Application, owner: str, repo: str, new_issues: list[dict[str, Any]]
+    app: web.Application, key: provider.RepoKey, new_issues: list[dict[str, Any]]
 ) -> None:
     """Push one dashboard notification summarizing the new issues for a repo."""
+    owner, repo = key.owner, key.repo
+    # GitLab issue pages live under /-/issues, GitHub's under /issues, so the
+    # fallback link is built from the key rather than hard-coded to github.com.
+    issues_url = (
+        f"{key.web_url()}/-/issues" if not key.is_github else f"{key.web_url()}/issues"
+    )
     state = app.get("state")
     if state is None:  # gateway state not attached (shouldn't happen post-startup)
         return
@@ -162,7 +188,7 @@ def _notify_new_issues(
     if count == 1:
         iss = ordered[0]
         body = f"New issue #{iss['number']}: {iss.get('title') or '(no title)'}"
-        url = iss.get("url") or f"https://github.com/{owner}/{repo}/issues"
+        url = iss.get("url") or issues_url
     else:
         shown = ordered[:_NOTIFY_LIST_CAP]
         listed = ", ".join(
@@ -172,7 +198,7 @@ def _notify_new_issues(
         remaining = count - len(shown)
         if remaining > 0:
             body += f" +{remaining} more"
-        url = f"https://github.com/{owner}/{repo}/issues"
+        url = issues_url
 
     try:
         # state.notify never raises (it swallows validation errors), but guard

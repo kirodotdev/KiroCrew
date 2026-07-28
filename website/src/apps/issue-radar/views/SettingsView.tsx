@@ -13,8 +13,7 @@ export default function SettingsView() {
       {settingsTarget.kind === 'repo' ? (
         <RepoSettings
           key={`${settingsTarget.owner}/${settingsTarget.repo}`}
-          owner={settingsTarget.owner}
-          repo={settingsTarget.repo}
+          repoRef={settingsTarget}
         />
       ) : (
         <GeneralSettings anchor={settingsTarget.anchor ?? 'account'} />

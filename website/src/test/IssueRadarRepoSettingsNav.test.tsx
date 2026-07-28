@@ -65,8 +65,11 @@ beforeEach(() => {
 
 function renderFor(repo: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // One stable ref object: an inline literal would be a new identity on every
+  // render, which is not how the app passes it (the ref comes from context).
+  const ref = { owner: 'o', repo }
   return render(
-    <QueryClientProvider client={qc}><RepoSettings owner="o" repo={repo} /></QueryClientProvider>,
+    <QueryClientProvider client={qc}><RepoSettings repoRef={ref} /></QueryClientProvider>,
   )
 }
 
@@ -78,7 +81,7 @@ describe('RepoSettings — autosave', () => {
     setCtx({ owner: 'o', repo: 'other-one' })
     const sent: Record<string, unknown>[] = []
     let call = 0
-    api.putSettings.mockImplementation(async (_o: string, _r: string, next: Record<string, unknown>) => {
+    api.putSettings.mockImplementation(async (_ref: unknown, next: Record<string, unknown>) => {
       sent.push(next)
       call += 1
       // The FIRST write is rejected as stale, as another tab would cause.
@@ -105,7 +108,7 @@ describe('RepoSettings — autosave', () => {
 
   it('sends the revision it read on every save', async () => {
     setCtx({ owner: 'o', repo: 'other-one' })
-    api.putSettings.mockImplementation(async (_o: string, _r: string, next: Record<string, unknown>) =>
+    api.putSettings.mockImplementation(async (_ref: unknown, next: Record<string, unknown>) =>
       ({ owner: 'o', repo: 'other-one', settings: { ...next, revision: 1 } }))
     renderFor('other-one')
 
@@ -113,7 +116,7 @@ describe('RepoSettings — autosave', () => {
     await userEvent.click(screen.getByRole('switch', { name: /new issue/i }))
     await waitFor(() => expect(api.putSettings).toHaveBeenCalled())
     // Required by the server; omitting it is a 400.
-    expect((api.putSettings.mock.calls[0][2] as { revision: number }).revision).toBe(0)
+    expect((api.putSettings.mock.calls[0][1] as { revision: number }).revision).toBe(0)
   })
 
   it('keeps an edit whose save failed when a later edit conflicts', async () => {
@@ -123,7 +126,7 @@ describe('RepoSettings — autosave', () => {
     setCtx({ owner: 'o', repo: 'other-one' })
     const sent: Record<string, unknown>[] = []
     let call = 0
-    api.putSettings.mockImplementation(async (_o: string, _r: string, next: Record<string, unknown>) => {
+    api.putSettings.mockImplementation(async (_ref: unknown, next: Record<string, unknown>) => {
       sent.push({ ...next })
       call += 1
       if (call === 1) throw new Error('network died')          // edit A fails
@@ -177,14 +180,14 @@ describe('RepoSettings — autosave', () => {
         good_first_issue_labels: [], notify_on_new_issue: false, revision: 3,
       },
     })
-    api.putSettings.mockImplementation(async (_o: string, _r: string, next: Record<string, unknown>) =>
+    api.putSettings.mockImplementation(async (_ref: unknown, next: Record<string, unknown>) =>
       ({ owner: 'o', repo: 'other-one', settings: { ...next, revision: 4 } }))
     await waitFor(() =>
       expect(screen.getByRole('switch', { name: /new issue/i })).toHaveProperty('disabled', false))
     await userEvent.click(screen.getByRole('switch', { name: /new issue/i }))
 
     await waitFor(() => expect(api.putSettings).toHaveBeenCalledTimes(1))
-    const sent = api.putSettings.mock.calls[0][2] as { revision: number; triage_labels: string[] }
+    const sent = api.putSettings.mock.calls[0][1] as { revision: number; triage_labels: string[] }
     expect(sent.revision).toBe(3)
     expect(sent.triage_labels).toEqual(['saved-role'])
   })
@@ -196,7 +199,7 @@ describe('RepoSettings — autosave', () => {
     setCtx({ owner: 'o', repo: 'other-one' })
     const sent: Record<string, unknown>[] = []
     let call = 0
-    api.putSettings.mockImplementation(async (_o: string, _r: string, next: Record<string, unknown>) => {
+    api.putSettings.mockImplementation(async (_ref: unknown, next: Record<string, unknown>) => {
       sent.push({ ...next })
       call += 1
       if (call === 1) {
@@ -234,7 +237,7 @@ describe('RepoSettings — autosave', () => {
     setCtx({ owner: 'o', repo: 'other-one' })
     const sent: Record<string, unknown>[] = []
     let call = 0
-    api.putSettings.mockImplementation(async (_o: string, _r: string, next: Record<string, unknown>) => {
+    api.putSettings.mockImplementation(async (_ref: unknown, next: Record<string, unknown>) => {
       sent.push({ ...next })
       call += 1
       if (call === 1) {
@@ -269,7 +272,7 @@ describe('RepoSettings — autosave', () => {
     let releaseFirst: () => void = () => {}
     const firstHeld = new Promise<void>((r) => { releaseFirst = r })
     let call = 0
-    api.putSettings.mockImplementation(async (_o: string, _r: string, next: Record<string, unknown>) => {
+    api.putSettings.mockImplementation(async (_ref: unknown, next: Record<string, unknown>) => {
       sent.push({ ...next })
       call += 1
       if (call === 1) await firstHeld

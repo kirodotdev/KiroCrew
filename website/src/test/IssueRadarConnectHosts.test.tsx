@@ -262,7 +262,7 @@ describe('disconnect', () => {
           onSwitch={vi.fn()}
           onAddRepo={vi.fn()}
         >
-          <RepoSettings owner="o" repo="gone" />
+          <RepoSettings repoRef={{ owner: 'o', repo: 'gone' }} />
         </IssueRadarProvider>
       </QueryClientProvider>,
     )
@@ -270,7 +270,9 @@ describe('disconnect', () => {
     await user.click(await screen.findByRole('button', { name: /Disconnect/i }))
     await user.click(await screen.findByRole('button', { name: /Confirm disconnect/i }))
 
-    await waitFor(() => expect(mockApi.disconnect).toHaveBeenCalledWith('o', 'gone'))
+    await waitFor(() => expect(mockApi.disconnect).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'o', repo: 'gone' }),
+    ))
     const keys = invalidate.mock.calls.map((c) => JSON.stringify(c[0]))
     expect(keys.some((k) => k.includes('recent-repos'))).toBe(true)
     expect(keys.some((k) => k.includes('[\"issue-radar\",\"repos\"]'))).toBe(true)

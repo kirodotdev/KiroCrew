@@ -15,7 +15,8 @@ import { useQuery } from '@tanstack/react-query'
 import { CircleCheck, CircleDot, CircleSlash, GitMerge, GitPullRequest, GitPullRequestDraft } from 'lucide-react'
 import { useIssueRadar } from '../context'
 import { relativeTimeOrDate } from '../lib/format'
-import { issueRadarApi, type RefSummary } from '../api'
+import { issueRadarApi, type RefSummary, type RepoRef as RepoIdentity } from '../api'
+import { repoScopeKey } from '../lib/links'
 import type { RepoRef } from '../lib/refLinks'
 import ShimmerLine from './ShimmerLine'
 
@@ -33,10 +34,10 @@ const CARD_GAP = 8
  * `enabled` keeps it strictly demand-driven — nothing is fetched for a reference
  * that is merely rendered.
  */
-export function useRefSummary(owner: string, repo: string, number: number, enabled: boolean) {
+export function useRefSummary(repoRef: RepoIdentity, number: number, enabled: boolean) {
   return useQuery({
-    queryKey: ['issue-radar', 'ref', owner, repo, number],
-    queryFn: () => issueRadarApi.refSummary(owner, repo, number),
+    queryKey: ['issue-radar', 'ref', repoScopeKey(repoRef), number],
+    queryFn: () => issueRadarApi.refSummary(repoRef, number),
     enabled,
     // The server owns freshness (short TTL on its own cache); re-hovering within
     // a session should be instant rather than another round trip.
@@ -105,7 +106,6 @@ export default function RefLink({
   children: React.ReactNode
 }) {
   const { active, openRef } = useIssueRadar()
-  const { owner, repo } = active
   const anchorRef = useRef<HTMLAnchorElement>(null)
   const openTimer = useRef<number | null>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -121,7 +121,7 @@ export default function RefLink({
   // rendered invisibly for one frame rather than positioned from a guess and then
   // jumped into place.
   const [cardHeight, setCardHeight] = useState<number | null>(null)
-  const summary = useRefSummary(owner, repo, target.number, rect !== null)
+  const summary = useRefSummary(active, target.number, rect !== null)
 
   const clearTimer = () => {
     if (openTimer.current !== null) {

@@ -8,22 +8,24 @@
 // Presentation is shared with the PR "Review" control (AgentSessionButton).
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Telescope } from 'lucide-react'
-import { issueRadarApi, type Issue, type InvestigationResponse } from '../api'
+import { issueRadarApi, type Issue, type InvestigationResponse, RepoRef } from '../api'
 import { useInvestigate } from '../lib/investigate'
 import AgentSessionButton from './AgentSessionButton'
+import { repoScopeKey } from '../lib/links'
 
 export default function InvestigateButton({
-  owner, repo, issue,
+  repoRef, issue,
 }: {
-  owner: string
-  repo: string
+  repoRef: RepoRef
   issue: Issue
 }) {
+  const { owner, repo } = repoRef
+  const scopeKey = repoScopeKey(repoRef)
   const queryClient = useQueryClient()
-  const key = ['issue-radar', 'investigation', owner, repo, issue.number]
+  const key = ['issue-radar', 'investigation', scopeKey, 'issue', issue.number]
   const recordQuery = useQuery({
     queryKey: key,
-    queryFn: () => issueRadarApi.getInvestigation(owner, repo, issue.number),
+    queryFn: () => issueRadarApi.getInvestigation(repoRef, issue.number),
     staleTime: 30_000,
   })
   const record = recordQuery.data?.investigation ?? null
@@ -34,7 +36,7 @@ export default function InvestigateButton({
 
   const onClick = async () => {
     if (busy || unresolved) return
-    const saved = await investigate(owner, repo, issue, record)
+    const saved = await investigate(repoRef, issue, record)
     if (saved) {
       queryClient.setQueryData<InvestigationResponse>(key, {
         owner, repo, number: issue.number, investigation: saved,

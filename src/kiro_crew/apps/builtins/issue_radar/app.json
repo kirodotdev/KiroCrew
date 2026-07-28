@@ -2,10 +2,11 @@
   "name": "issue-radar",
   "version": "0.1.0",
   "displayName": "Issue Radar",
-  "description": "An issue triage assistant that remembers what you already worked out. Connect a GitHub repository and work through its issues with AI-written summaries and suggested labels, each with the reasoning behind it, then apply the labels you agree with back to GitHub in a click. Your notes on an issue are kept in a local ledger keyed to that issue, so coming back weeks later you resume from what you found instead of re-reading the entire thread.",
+  "description": "An issue triage assistant that remembers. Browse, filter, and triage GitHub issues and GitLab issues with AI-suggested labels and per-issue investigation notes \u2014 with findings kept in a local ledger so nothing gets re-investigated.",
   "author": "kirocrew",
   "tags": [
     "github",
+    "gitlab",
     "issue-triage",
     "open-source",
     "developer-tools"
@@ -13,7 +14,7 @@
   "highlights": [
     "AI summaries and suggested labels for issues and pull requests, each with its reasoning",
     "Per-issue investigation notes kept in a local ledger so nothing gets re-investigated",
-    "Applying label changes is the only write it makes to GitHub — everything else is read-only",
+    "Applying label changes is the only write it makes to GitHub \u2014 everything else is read-only",
     "Surfaces repositories you have recently contributed to, so connecting one is a click",
     "Caches issues, labels, and members locally, refreshed on demand",
     "Works with GitHub; needs an authenticated `gh` CLI on the gateway host"
@@ -28,7 +29,12 @@
     "storage": true
   },
   "dependencies": {
-    "commands": ["gh"]
+    "commands": [
+      "gh"
+    ],
+    "optionalCommands": [
+      "glab"
+    ]
   },
   "backend": {
     "routes": "backend.routes:register_routes"

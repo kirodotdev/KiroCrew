@@ -8,6 +8,10 @@ const API = '/api/apps/issue-radar'
 export interface ConnectResponse {
   owner: string
   repo: string
+  /** Resolved by the SERVER from the URL — the client cannot nominate it. This is
+   * the identity every later request for this repo must carry. */
+  provider: SourceProvider
+  host: string
   full_name: string
   private: boolean
   open_issues_count: number
@@ -529,6 +533,10 @@ export interface BulkApplyResponse {
 export interface ConnectedRepo {
   owner: string
   repo: string
+  /** Absent on records written before GitLab support — treat as 'github'. */
+  provider?: SourceProvider
+  /** Absent on legacy records — treat as 'github.com'. */
+  host?: string
   enabled?: boolean
   permissions?: RepoPermissions | null
   settings?: RepoSettings
@@ -553,6 +561,10 @@ export interface RecentRepo {
   /** How many contribution events the user made in the window. */
   contribution_count: number
   connected: boolean
+  /** Echoed by the server so the picker can build a ref without re-deriving
+   * which provider the list came from. */
+  provider?: SourceProvider
+  host?: string
 }
 
 /** Why the host can't talk to GitHub yet, when it can't. The picker turns this
@@ -571,7 +583,12 @@ export interface RecentReposResponse {
 }
 
 export interface MeResponse {
+  /** The login on THIS provider. Not portable: the same person may be `alice` on
+   * GitHub and `alice.smith` on a company GitLab, so a login fetched for the
+   * wrong provider makes the "assigned to me" filters match nobody. */
   login: string | null
+  provider?: SourceProvider
+  host?: string
 }
 
 /** Agent-written conclusions for an investigation (all optional; populated when
@@ -601,10 +618,16 @@ export interface InvestigationRecord {
   findings: InvestigationFindings | null
 }
 
+/** Which sequence a number belongs to. Only load-bearing on GitLab, where issues
+ * and merge requests are numbered independently, so `#5` and `!5` are different
+ * items that must not share one investigation record. */
+export type ItemKind = 'issue' | 'pull'
+
 export interface InvestigationResponse {
   owner: string
   repo: string
   number: number
+  kind?: ItemKind
   /** null when the issue has never been investigated. */
   investigation: InvestigationRecord | null
 }
@@ -642,6 +665,59 @@ async function parseErrorBody(r: Response): Promise<string> {
   }
 }
 
+/** The full identity of a connected repository.
+ *
+ * Issue Radar was GitHub-only, so `owner`/`repo` used to be the whole identity.
+ * GitLab adds the provider and — for self-managed instances — the HOST, because
+ * `group/project` names an entirely different project on gitlab.com than on a
+ * private instance. Every API call therefore takes a ref rather than two loose
+ * strings, so a call cannot be made without saying WHICH repo it means.
+ *
+ * `provider`/`host` are optional and default to public GitHub server-side, so a
+ * legacy `ConnectedRepo` record (written before GitLab support) is a valid ref.
+ */
+export interface RepoRef {
+  owner: string
+  repo: string
+  provider?: SourceProvider
+  host?: string
+}
+
+/** Which forge a repo lives on. */
+export type SourceProvider = 'github' | 'gitlab'
+
+/** Which provider account an account-scoped endpoint should ask about.
+ *
+ * Separate from `RepoRef` because `/me` and `/recent-repos` are about the USER on
+ * a provider, not about a repo — there is no owner/repo to supply, and pretending
+ * there is would invite passing a half-built ref. */
+export interface AccountScope {
+  provider?: SourceProvider
+  host?: string
+}
+
+/** Query params naming an account scope. Omitted fields default to public GitHub
+ * server-side, so an absent scope is the pre-GitLab behaviour. */
+export function accountQuery(scope?: AccountScope): Record<string, string> {
+  const params: Record<string, string> = {}
+  if (scope?.provider) params.provider = scope.provider
+  if (scope?.host) params.host = scope.host
+  return params
+}
+
+/** Identity query params for a ref, for a GET request. */
+export function repoQuery(ref: RepoRef): Record<string, string> {
+  const params: Record<string, string> = { owner: ref.owner, repo: ref.repo }
+  if (ref.provider) params.provider = ref.provider
+  if (ref.host) params.host = ref.host
+  return params
+}
+
+/** Identity body fields for a ref, for a POST/PUT/DELETE request. */
+export function repoBody(ref: RepoRef): Record<string, string> {
+  return repoQuery(ref)
+}
+
 export const issueRadarApi = {
   connect: async (url: string): Promise<ConnectResponse> => {
     const r = await fetch(`${API}/connect`, {
@@ -654,8 +730,8 @@ export const issueRadarApi = {
     return r.json()
   },
 
-  issues: async (owner: string, repo: string, opts?: { refresh?: boolean; poll?: boolean; state?: 'open' | 'closed' }): Promise<IssuesResponse> => {
-    const q = new URLSearchParams({ owner, repo })
+  issues: async (ref: RepoRef, opts?: { refresh?: boolean; poll?: boolean; state?: 'open' | 'closed' }): Promise<IssuesResponse> => {
+    const q = new URLSearchParams(repoQuery(ref))
     if (opts?.state) q.set('state', opts.state)
     if (opts?.refresh) q.set('refresh', '1')
     if (opts?.poll) q.set('poll', '1')
@@ -664,8 +740,8 @@ export const issueRadarApi = {
     return r.json()
   },
 
-  issueDetail: async (owner: string, repo: string, number: number, opts?: { refresh?: boolean }): Promise<IssueDetailResponse> => {
-    const q = new URLSearchParams({ owner, repo, number: String(number) })
+  issueDetail: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<IssueDetailResponse> => {
+    const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/issue?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
@@ -674,8 +750,8 @@ export const issueRadarApi = {
 
   /** List pull requests for a repo. `state` is 'open' (default) or 'closed'
    * (closed is bounded to the 100 most-recently-updated, merged + unmerged). */
-  pulls: async (owner: string, repo: string, opts?: { refresh?: boolean; poll?: boolean; state?: 'open' | 'closed' }): Promise<PullsResponse> => {
-    const q = new URLSearchParams({ owner, repo })
+  pulls: async (ref: RepoRef, opts?: { refresh?: boolean; poll?: boolean; state?: 'open' | 'closed' }): Promise<PullsResponse> => {
+    const q = new URLSearchParams(repoQuery(ref))
     if (opts?.state) q.set('state', opts.state)
     if (opts?.refresh) q.set('refresh', '1')
     if (opts?.poll) q.set('poll', '1')
@@ -692,10 +768,10 @@ export const issueRadarApi = {
    * Rows come back in the same shape, with `base`/`head` null and
    * `requested_reviewers` empty (the search API doesn't expose them). */
   searchPulls: async (
-    owner: string, repo: string,
+    ref: RepoRef,
     opts: { state?: 'open' | 'closed' | 'merged'; author?: string; assignee?: string; reviewRequested?: string },
   ): Promise<PullsResponse> => {
-    const q = new URLSearchParams({ owner, repo })
+    const q = new URLSearchParams(repoQuery(ref))
     if (opts.state) q.set('state', opts.state)
     if (opts.author) q.set('author', opts.author)
     if (opts.assignee) q.set('assignee', opts.assignee)
@@ -707,8 +783,8 @@ export const issueRadarApi = {
 
   /** One PR's full detail + normalized timeline + changed files, cache-first;
    * pass refresh to force a fresh `gh` fetch. */
-  pullDetail: async (owner: string, repo: string, number: number, opts?: { refresh?: boolean }): Promise<PullDetailResponse> => {
-    const q = new URLSearchParams({ owner, repo, number: String(number) })
+  pullDetail: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<PullDetailResponse> => {
+    const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/pull?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
@@ -718,8 +794,8 @@ export const issueRadarApi = {
   /** Compact summary of one referenced issue/PR — one cheap request, no
    * timeline. Cache-first server-side with a short TTL; backs the reference
    * hover card and the issue-vs-PR resolution for a bare `#123`. */
-  refSummary: async (owner: string, repo: string, number: number, opts?: { refresh?: boolean }): Promise<RefSummaryResponse> => {
-    const q = new URLSearchParams({ owner, repo, number: String(number) })
+  refSummary: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<RefSummaryResponse> => {
+    const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/ref?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
@@ -728,8 +804,8 @@ export const issueRadarApi = {
 
   /** AI triage (summary + suggested labels), cache-first server-side; pass
    * refresh to force a regenerate. */
-  issueAi: async (owner: string, repo: string, number: number, opts?: { refresh?: boolean }): Promise<IssueAiResponse> => {
-    const q = new URLSearchParams({ owner, repo, number: String(number) })
+  issueAi: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<IssueAiResponse> => {
+    const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/issue-ai?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
@@ -740,8 +816,8 @@ export const issueRadarApi = {
    * check state. Cache-first server-side, and the cache self-invalidates when
    * the PR moves (new comment / push / flipped check), so no manual refresh is
    * needed to pick up changes; pass refresh to force a regenerate anyway. */
-  pullAi: async (owner: string, repo: string, number: number, opts?: { refresh?: boolean }): Promise<PrAiResponse> => {
-    const q = new URLSearchParams({ owner, repo, number: String(number) })
+  pullAi: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<PrAiResponse> => {
+    const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/pull-ai?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
@@ -751,13 +827,13 @@ export const issueRadarApi = {
   /** Apply a label change (add and/or remove). Requires triage/push access on
    * the repo (403 otherwise). Returns the issue's authoritative label set. */
   applyLabels: async (
-    owner: string, repo: string, number: number, add: string[], remove: string[],
+    ref: RepoRef, number: number, add: string[], remove: string[],
   ): Promise<ApplyLabelsResponse> => {
     const r = await fetch(`${API}/labels/apply`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner, repo, number, add, remove }),
+      body: JSON.stringify({ ...repoBody(ref), number, add, remove }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -766,29 +842,29 @@ export const issueRadarApi = {
   /** Close or reopen an issue. Requires triage/push access (403 otherwise).
    * On close, reason is 'completed' (default) or 'not_planned'. */
   setIssueState: async (
-    owner: string, repo: string, number: number,
+    ref: RepoRef, number: number,
     state: 'open' | 'closed', stateReason?: 'completed' | 'not_planned',
   ): Promise<IssueStateResponse> => {
     const r = await fetch(`${API}/issue/state`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner, repo, number, state, state_reason: stateReason }),
+      body: JSON.stringify({ ...repoBody(ref), number, state, state_reason: stateReason }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
 
-  labels: async (owner: string, repo: string, opts?: { refresh?: boolean }): Promise<LabelsResponse> => {
-    const q = new URLSearchParams({ owner, repo })
+  labels: async (ref: RepoRef, opts?: { refresh?: boolean }): Promise<LabelsResponse> => {
+    const q = new URLSearchParams(repoQuery(ref))
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/labels?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
 
-  members: async (owner: string, repo: string, opts?: { refresh?: boolean }): Promise<MembersResponse> => {
-    const q = new URLSearchParams({ owner, repo })
+  members: async (ref: RepoRef, opts?: { refresh?: boolean }): Promise<MembersResponse> => {
+    const q = new URLSearchParams(repoQuery(ref))
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/members?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
@@ -805,21 +881,26 @@ export const issueRadarApi = {
    * the connect dialog's multi-select picker. Live call (not cached).
    * `days` is required: the window belongs to the caller (see
    * RECENT_WINDOW_DAYS) so the value isn't defined in two places. */
-  recentRepos: async (days: number): Promise<RecentReposResponse> => {
-    const q = new URLSearchParams({ days: String(days) })
+  /** Repos the current user contributed to on ONE provider. `scope` names which
+   * provider/host to ask — the answer is per-account, so a GitHub list would be
+   * meaningless for a GitLab connect flow. */
+  recentRepos: async (days: number, scope?: AccountScope): Promise<RecentReposResponse> => {
+    const q = new URLSearchParams({ days: String(days), ...accountQuery(scope) })
     const r = await fetch(`${API}/recent-repos?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
 
-  me: async (): Promise<MeResponse> => {
-    const r = await fetch(`${API}/me`, { credentials: 'same-origin' })
+  /** The current user's login on ONE provider — see `MeResponse.login`. */
+  me: async (scope?: AccountScope): Promise<MeResponse> => {
+    const q = new URLSearchParams(accountQuery(scope))
+    const r = await fetch(`${API}/me?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
 
-  getSettings: async (owner: string, repo: string): Promise<SettingsResponse> => {
-    const q = new URLSearchParams({ owner, repo })
+  getSettings: async (ref: RepoRef): Promise<SettingsResponse> => {
+    const q = new URLSearchParams(repoQuery(ref))
     const r = await fetch(`${API}/settings?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -829,12 +910,12 @@ export const issueRadarApi = {
    * document is replaced, so the server refuses (409) a write built on a revision
    * that has since moved, which is what stops one tab erasing another's change.
    * A 409 throws `SettingsConflictError` carrying the newer settings. */
-  putSettings: async (owner: string, repo: string, settings: RepoSettings): Promise<SettingsResponse> => {
+  putSettings: async (ref: RepoRef, settings: RepoSettings): Promise<SettingsResponse> => {
     const r = await fetch(`${API}/settings`, {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner, repo, settings }),
+      body: JSON.stringify({ ...repoBody(ref), settings }),
     })
     if (r.status === 409) {
       const body = (await r.json().catch(() => ({}))) as { error?: string; settings?: RepoSettings }
@@ -847,8 +928,8 @@ export const issueRadarApi = {
     return r.json()
   },
 
-  disconnect: async (owner: string, repo: string): Promise<{ ok: boolean }> => {
-    const q = new URLSearchParams({ owner, repo })
+  disconnect: async (ref: RepoRef): Promise<{ ok: boolean }> => {
+    const q = new URLSearchParams(repoQuery(ref))
     const r = await fetch(`${API}/repos?${q.toString()}`, { method: 'DELETE', credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -856,8 +937,10 @@ export const issueRadarApi = {
 
   /** Read an issue's investigation record (`investigation` is null if the issue
    * has never been investigated). */
-  getInvestigation: async (owner: string, repo: string, number: number): Promise<InvestigationResponse> => {
-    const q = new URLSearchParams({ owner, repo, number: String(number) })
+  getInvestigation: async (
+    ref: RepoRef, number: number, kind: ItemKind = 'issue',
+  ): Promise<InvestigationResponse> => {
+    const q = new URLSearchParams({ ...repoQuery(ref), number: String(number), kind })
     const r = await fetch(`${API}/investigation?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -868,13 +951,13 @@ export const issueRadarApi = {
    * so a partial patch (even `{}`, which just bumps the last-opened stamp on
    * resume) is valid. */
   saveInvestigation: async (
-    owner: string, repo: string, number: number, patch: InvestigationPatch,
+    ref: RepoRef, number: number, patch: InvestigationPatch, kind: ItemKind = 'issue',
   ): Promise<InvestigationResponse> => {
     const r = await fetch(`${API}/investigation`, {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner, repo, number, ...patch }),
+      body: JSON.stringify({ ...repoBody(ref), number, kind, ...patch }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -882,8 +965,8 @@ export const issueRadarApi = {
 
   /** Read the repo's cached AI label recommendations (`recommendations` is null
    * if none generated yet). Never runs the model. */
-  getRecommendations: async (owner: string, repo: string): Promise<RecommendationsResponse> => {
-    const q = new URLSearchParams({ owner, repo })
+  getRecommendations: async (ref: RepoRef): Promise<RecommendationsResponse> => {
+    const q = new URLSearchParams(repoQuery(ref))
     const r = await fetch(`${API}/recommendations?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -891,12 +974,12 @@ export const issueRadarApi = {
 
   /** Generate (and cache) label recommendations via one model call over the
    * repo's labels + a sample of its open issues. */
-  generateRecommendations: async (owner: string, repo: string): Promise<RecommendationsResponse> => {
+  generateRecommendations: async (ref: RepoRef): Promise<RecommendationsResponse> => {
     const r = await fetch(`${API}/recommendations`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner, repo }),
+      body: JSON.stringify(repoBody(ref)),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -905,13 +988,13 @@ export const issueRadarApi = {
   /** Create a NEW label on the repo. Requires triage/push access (403
    * otherwise); idempotent if the label already exists. */
   createLabel: async (
-    owner: string, repo: string, label: { name: string; color?: string; description?: string },
+    ref: RepoRef, label: { name: string; color?: string; description?: string },
   ): Promise<CreateLabelResponse> => {
     const r = await fetch(`${API}/labels/create`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner, repo, ...label }),
+      body: JSON.stringify({ ...repoBody(ref), ...label }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -922,9 +1005,9 @@ export const issueRadarApi = {
    * Pass refresh to re-read the issues from GitHub rather than the local cache
    * (needed to notice labels added on GitHub itself). */
   tagging: async (
-    owner: string, repo: string, opts?: { refresh?: boolean },
+    ref: RepoRef, opts?: { refresh?: boolean },
   ): Promise<TaggingResponse> => {
-    const q = new URLSearchParams({ owner, repo })
+    const q = new URLSearchParams(repoQuery(ref))
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/tagging?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
@@ -935,7 +1018,7 @@ export const issueRadarApi = {
    * take the next un-analysed slice of the queue (repeat to walk a long backlog);
    * pass `numbers` to (re)analyse specific issues. */
   generateTagging: async (
-    owner: string, repo: string, numbers?: number[],
+    ref: RepoRef, numbers?: number[],
   ): Promise<GenerateTaggingResponse> => {
     const r = await fetch(`${API}/tagging`, {
       method: 'POST',
@@ -944,7 +1027,9 @@ export const issueRadarApi = {
       // `=== undefined`, not truthiness: an explicit empty array means
       // "analyse exactly these (none)", and collapsing it to an omission
       // started a whole automatic batch.
-      body: JSON.stringify(numbers === undefined ? { owner, repo } : { owner, repo, numbers }),
+      body: JSON.stringify(
+        numbers === undefined ? repoBody(ref) : { ...repoBody(ref), numbers },
+      ),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -955,14 +1040,14 @@ export const issueRadarApi = {
    * whole document, so a client read-modify-write can only serialize itself and
    * two tabs would drop each other's label. */
   addSettingLabel: async (
-    owner: string, repo: string,
+    ref: RepoRef,
     role: 'triage_labels' | 'good_first_issue_labels', label: string,
   ): Promise<SettingsResponse> => {
     const r = await fetch(`${API}/settings/role`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner, repo, role, label }),
+      body: JSON.stringify({ ...repoBody(ref), role, label }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
@@ -972,13 +1057,13 @@ export const issueRadarApi = {
    * access (403 otherwise). Resolves even when some issues fail — inspect
    * `failed` rather than assuming success. */
   applyLabelsBulk: async (
-    owner: string, repo: string, changes: { number: number; add: string[] }[],
+    ref: RepoRef, changes: { number: number; add: string[] }[],
   ): Promise<BulkApplyResponse> => {
     const r = await fetch(`${API}/labels/apply-bulk`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner, repo, changes }),
+      body: JSON.stringify({ ...repoBody(ref), changes }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()

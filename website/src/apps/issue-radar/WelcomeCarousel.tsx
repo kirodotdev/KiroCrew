@@ -1,3 +1,4 @@
+import type { ActiveRepo } from './lib/types'
 // Welcome carousel — a self-contained onboarding wizard: card shell, Back/Next
 // nav, progress dots, per-page fade-in, floating/pulsing icon animation, and
 // the FULL orbiting solar-system background decoration (8 rings, moons on
@@ -76,7 +77,7 @@ const SLIDES: Slide[] = [
 // expands in place into the repo picker, see ConnectPanel).
 const CONNECT_PAGE = SLIDES.length
 
-export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: { owner: string; repo: string }) => void }) {
+export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: ActiveRepo) => void }) {
   const [page, setPage] = useState(0)
   const flow = useConnectFlow(onConnected)
 
