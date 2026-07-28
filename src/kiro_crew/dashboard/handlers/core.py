@@ -19,7 +19,6 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
-import kiro_crew.validation as _validation_mod
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import (
     _VALID_STT_PROVIDERS,
@@ -33,7 +32,7 @@ from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
-from kiro_crew.security import SUSPICIOUS_BASH_PATTERNS
+from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
 from kiro_crew.transcribe import ensure_ffmpeg_in_path, is_available
 
 logger = logging.getLogger(__name__)
@@ -927,7 +926,20 @@ async def api_sel_verify(request: web.Request) -> web.Response:
 
 
 async def api_security_stats(_request: web.Request) -> web.Response:
-    """GET /api/security/stats — live security feature counts."""
+    """GET /api/security/stats — live security feature counts.
+
+    Every count is DERIVED from the control it describes (``security_posture``),
+    so a pill can never drift from the thing it claims to measure. ``denied_commands``
+    is the user/governance-effective count, which the posture registry deliberately
+    does not carry: the registry lists the built-in RULE TABLE (what ships), while
+    this field reports what is currently enforced after opt-outs and policy pins.
+
+    The dashboard no longer calls this — Settings → Security reads
+    ``/api/security/posture``, which carries these same counts PLUS the items behind
+    them. Kept as a stable, narrow counts-only endpoint for external/API callers.
+    Uses ``posture_counts_async`` rather than the full snapshot so serving three
+    integers does not build (and serialize) the whole ~45 KB item payload.
+    """
     denied = 0
     try:
         from kiro_crew.dashboard.handlers.security import build_denied_commands_snapshot_async
@@ -938,19 +950,25 @@ async def api_security_stats(_request: web.Request) -> web.Response:
     except Exception:
         logger.warning("Failed to load denied commands count", exc_info=True)
 
-    schemas = sum(1 for name in dir(_validation_mod) if name.endswith("_SCHEMA") and name.isupper())
-
-    # 5 output paths where redaction is applied (architectural constant from
-    # security-deep-dive.md): dashboard streaming mid-flush, dashboard streaming
-    # trailing, dashboard non-chunk messages, dashboard history save, Slack final.
+    counts = await posture_counts_async()
     return web.json_response(
         {
             "denied_commands": denied,
-            "suspicious_patterns": len(SUSPICIOUS_BASH_PATTERNS),
-            "tool_schemas": schemas,
-            "redaction_paths": 5,
+            "suspicious_patterns": counts.get("suspicious_patterns"),
+            "tool_schemas": counts.get("tool_schemas"),
+            "redaction_paths": counts.get("redaction_paths"),
         }
     )
+
+
+async def api_security_posture(_request: web.Request) -> web.Response:
+    """GET /api/security/posture — expandable detail behind each posture count.
+
+    Read-only and posture-only: control definitions and derived counts, never
+    credential material, governance rule contents, or user data. See
+    ``security_posture`` for the disclosure contract.
+    """
+    return web.json_response(await build_posture_snapshot_async())
 
 
 # ── KiroCrew Config API ──

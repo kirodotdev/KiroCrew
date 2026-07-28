@@ -489,6 +489,7 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     api_live,
     api_logout,
     api_ready,
+    api_security_posture,
     api_security_stats,
     api_sel_events,
     api_sel_verify,

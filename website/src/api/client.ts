@@ -277,6 +277,43 @@ export interface GovernancePolicyData {
   scopes: GovernanceScope[]
 }
 
+/** One concrete element behind a security-posture count. */
+export interface PostureItem {
+  /** What the control covers — a blocked path, a redaction sink, a credential family. */
+  label: string
+  /** Optional "how/where" secondary text. */
+  detail: string
+}
+
+/** One expandable security control from GET /api/security/posture.
+ *
+ *  POSTURE ONLY, by the same contract as the governance viewer: items are public
+ *  control definitions (blocked path patterns, redaction sink modules, credential
+ *  FAMILY names) and derived counts — never credential material, governance rule
+ *  contents, or user data. `count` is `items.length` server-side, so a pill can
+ *  never drift from the list it summarizes. */
+export interface PostureControl {
+  key: string
+  label: string
+  /** Noun for the count, e.g. "output paths" — rendered as `${count} ${unit}`. */
+  unit: string
+  summary: string
+  /** Repo-relative path of the module that enforces the control. */
+  source: string
+  /** null when the control could not be resolved (see `unavailable`). */
+  count: number | null
+  items: PostureItem[]
+  /** True when this control's detail could not be resolved; the rest still render. */
+  unavailable: boolean
+}
+
+/** GET /api/security/posture — expandable detail behind every posture count. */
+export interface SecurityPostureData {
+  controls: PostureControl[]
+  /** Flat `key → count` map for callers that only need the pill values. */
+  counts: Record<string, number | null>
+}
+
 let _sessionExpiredShown = false
 
 /**
@@ -663,7 +700,10 @@ export const api = {
     post('/api/onboarding/import/apply', body).then(j) as Promise<AgentImportApplyResponse>,
   onboardingImportState: (body: { completed: true }) =>
     put('/api/onboarding/import/state', body).then(jNullable) as Promise<{ ok?: boolean } | null>,
-  securityStats: () => fetch('/api/security/stats').then(j) as Promise<{ denied_commands: number; suspicious_patterns: number; tool_schemas: number; redaction_paths: number }>,
+  // Counts are derived server-side from the controls they describe, so a null
+  // means "temporarily unresolvable", never "zero".
+  securityStats: () => get('/api/security/stats').then(j) as Promise<{ denied_commands: number | null; suspicious_patterns: number | null; tool_schemas: number | null; redaction_paths: number | null }>,
+  securityPosture: () => get('/api/security/posture').then(j) as Promise<SecurityPostureData>,
   // Denied commands (Settings → Security). Every endpoint returns the full
   // refreshed snapshot so callers can seed their query cache from the response.
   deniedCommands: () => get('/api/security/denied-commands').then(j) as Promise<DeniedCommandsData>,

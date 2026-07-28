@@ -2864,6 +2864,41 @@ def is_sensitive_write_path(path_str: str, base_dir: str | None = None) -> bool:
     )
 
 
+def sensitive_home_dirs() -> tuple[str, ...]:
+    """Public, read-only view of the read+write-blocked home-relative paths.
+
+    Lets the security-posture surface (``security_posture.py``) enumerate what
+    :func:`is_sensitive_path` actually blocks without coupling to the private
+    ``_SENSITIVE_HOME_DIRS`` name — the same rationale as
+    :func:`get_credential_patterns`. Returned as a tuple so a caller cannot
+    mutate the live blocklist.
+    """
+    return tuple(_SENSITIVE_HOME_DIRS)
+
+
+def write_protected_home_paths() -> tuple[str, ...]:
+    """Public, read-only view of the write-only-protected home-relative paths.
+
+    Companion to :func:`sensitive_home_dirs` — these stay readable but must not
+    be written by an agent tool.
+    """
+    return tuple(_WRITE_PROTECTED_HOME_PATHS)
+
+
+def crew_home_prefixes() -> tuple[str, ...]:
+    """Public view of the known crew data-home prefixes.
+
+    Used to classify a sensitive path as a KiroCrew trust root vs. a third-party
+    credential store when describing the posture.
+    """
+    return tuple(_CREW_HOME_PREFIXES)
+
+
+def exfil_query_min_len() -> int:
+    """Public view of the long-query exfiltration threshold (chars)."""
+    return _EXFIL_QUERY_MIN_LEN
+
+
 # Archive/extraction destination flags (tar -C, unzip -d, rsync dest) pointing
 # INTO the governance trust-root parent (the crew data home) — an extraction
 # there can drop/overwrite ``security_policy.json`` or a ``profiles/`` entry even

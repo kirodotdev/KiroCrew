@@ -528,7 +528,16 @@ async def test_api_security_stats_uses_effective_count(home: Path, config_file: 
     resp = await api_security_stats(req)
     body = json.loads(resp.body.decode("utf-8"))
     assert body["denied_commands"] == _CATALOG_N - 1
-    assert body["redaction_paths"] == 5
+    # The remaining counts are DERIVED from the controls they describe
+    # (security_posture), not literals — this used to assert a hardcoded 5 while
+    # the real number had grown to 16. Assert the derivation, not a magic number;
+    # test_security_posture pins the per-control derivation itself.
+    from kiro_crew.security_posture import build_posture_snapshot
+
+    counts = build_posture_snapshot()["counts"]
+    assert body["redaction_paths"] == counts["redaction_paths"]
+    assert body["suspicious_patterns"] == counts["suspicious_patterns"]
+    assert body["tool_schemas"] == counts["tool_schemas"]
 
 
 def test_core_has_no_build_agent_config_import():

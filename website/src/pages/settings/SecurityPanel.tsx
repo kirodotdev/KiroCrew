@@ -6,9 +6,20 @@ import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
 import { SettingsSection, SettingsCard } from '../../components/settings'
 import Modal from '../../components/Modal'
 import InfoTip from '../../components/InfoTip'
-import { api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail } from '../../api/client'
+import { api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail, type SecurityPostureData } from '../../api/client'
+import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureDisclosure'
 
-/* ── Security feature registry (static — derived from security-deep-dive.md) ── */
+/* ── Security feature registry ──
+ *
+ * Qualitative layer descriptions ONLY. Every control whose posture is a COUNT
+ * (sensitive paths, denied commands, suspicious patterns, tool schemas,
+ * redaction paths, credential families, exfil heuristics, audit surfaces, token
+ * auth) is rendered from the live `GET /api/security/posture` registry instead —
+ * see `PostureDisclosureRow`. Hardcoded counts here had silently gone stale by
+ * several-fold — sensitive paths, bash patterns, redaction paths, and tool
+ * schemas were ALL understated — so this list must stay count-free: if a description
+ * needs a number, the control belongs in the posture registry.
+ */
 
 interface SecurityFeature {
   icon: React.ReactNode
@@ -19,22 +30,39 @@ interface SecurityFeature {
 
 const FEATURES: SecurityFeature[] = [
   { icon: <Lock size={14} />, label: 'OS-Level Sandbox', description: 'User + mount namespace isolation (Linux) / Seatbelt sandbox (macOS) hides credential paths from agent subprocesses', layer: 'Layer 0' },
-  { icon: <FileWarning size={14} />, label: 'Sensitive Path Blocking', description: '13 credential directories blocked at the hook layer before tool execution', layer: 'Layer 1' },
+  { icon: <FileWarning size={14} />, label: 'Sensitive Path Blocking', description: 'Credential directories and KiroCrew trust roots blocked at the hook layer before tool execution', layer: 'Layer 1' },
   { icon: <Terminal size={14} />, label: 'Denied Commands', description: 'Built-in regex patterns blocking destructive and credential-exfiltrating CLI operations (configurable below)', layer: 'Layer 2' },
-  { icon: <AlertTriangle size={14} />, label: 'Suspicious Bash Patterns', description: '42 patterns detecting deletion, exfiltration, and pipe-execution attacks', layer: 'Layer 2' },
-  { icon: <ScanLine size={14} />, label: 'MCP Input Validation', description: 'Type-safe schemas, unicode normalization, length limits, and unknown field rejection on all 12 tool handlers', layer: 'Layer 3' },
-  { icon: <KeyRound size={14} />, label: 'Credential Redaction', description: 'Scans all 5 output paths for plaintext and base64-encoded AWS keys, private keys, and Slack tokens', layer: 'Layer 4' },
+  { icon: <AlertTriangle size={14} />, label: 'Suspicious Bash Patterns', description: 'Detects deletion, exfiltration, and pipe-execution attack shapes in shell commands', layer: 'Layer 2' },
+  { icon: <ScanLine size={14} />, label: 'MCP Input Validation', description: 'Type-safe schemas, unicode normalization, length limits, and unknown field rejection on every tool handler', layer: 'Layer 3' },
+  { icon: <KeyRound size={14} />, label: 'Credential Redaction', description: 'Scans every output path for plaintext and base64-encoded AWS keys, private keys, and provider tokens', layer: 'Layer 4' },
   { icon: <Globe size={14} />, label: 'URL Exfiltration Detection', description: 'Domain-agnostic scanning for suspicious query strings, base64 blobs, and credential patterns in URLs', layer: 'Layer 4' },
-  { icon: <Eye size={14} />, label: 'SEL Audit Logging', description: 'Immutable security event trail across 8 surfaces with credential redaction before forwarding', layer: 'Layer 5' },
-  { icon: <Fingerprint size={14} />, label: 'Dashboard Token Auth', description: 'HMAC-SHA256 signed, IP-pinned, single-use tokens with dual expiry (5min link + 6h session)', layer: 'Auth' },
+  { icon: <Eye size={14} />, label: 'SEL Audit Logging', description: 'Immutable, HMAC-chained security event trail with credential redaction before forwarding', layer: 'Layer 5' },
+  { icon: <Fingerprint size={14} />, label: 'Dashboard Token Auth', description: 'HMAC-SHA256 signed, IP-pinned, single-use tokens with dual expiry on the link and the session', layer: 'Auth' },
   { icon: <ShieldCheck size={14} />, label: 'CSRF Protection', description: 'Origin/Referer validation on all POST/PUT/DELETE requests and WebSocket connections', layer: 'Auth' },
   { icon: <Layers size={14} />, label: 'Enterprise Grid Validation', description: 'Two-layer defense against data exfiltration to personal/external Slack workspaces', layer: 'Auth' },
   { icon: <EyeOff size={14} />, label: 'Observe Mode Isolation', description: 'Only owner/allowlisted messages recorded in shared channels — prevents context poisoning', layer: 'Auth' },
 ]
 
-const CODE_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main'
+// Shared with PostureDisclosure so the repo URL lives in exactly one place.
+const CODE_BASE = POSTURE_CODE_BASE
 
 const PINNED_TOOLTIP = "Enforced by your organization's security policy"
+
+/** Icon per posture-control key. A control the server registers that has no entry
+ *  here still renders — with a generic shield — so a new backend control is never
+ *  silently dropped from the panel just because the frontend hasn't been updated. */
+const POSTURE_ICONS: Record<string, React.ReactNode> = {
+  sensitive_paths: <FileWarning size={14} />,
+  write_protected_paths: <Lock size={14} />,
+  denied_commands: <Terminal size={14} />,
+  suspicious_patterns: <AlertTriangle size={14} />,
+  tool_schemas: <ScanLine size={14} />,
+  redaction_paths: <KeyRound size={14} />,
+  credential_families: <Fingerprint size={14} />,
+  exfil_heuristics: <Globe size={14} />,
+  audit_surfaces: <Eye size={14} />,
+  token_auth: <Fingerprint size={14} />,
+}
 
 /* ── Layer color mapping ── */
 function layerColor(layer: string): 'ok' | 'aim' | 'warn' {
@@ -497,8 +525,18 @@ export function SecurityPanel() {
   const status = useAppSelector(s => s.dashboard.status)
   const yolo = status?.yolo ?? false
   const qc = useQueryClient()
-  const { data: stats } = useQuery({ queryKey: ['security-stats'], queryFn: api.securityStats, staleTime: 60_000 })
-  const { data: dc } = useQuery<DeniedCommandsData>({ queryKey: ['denied-commands'], queryFn: api.deniedCommands })
+  const { data: dc, isError: dcError } = useQuery<DeniedCommandsData>({ queryKey: ['denied-commands'], queryFn: api.deniedCommands })
+  // The posture registry supersedes the old flat `securityStats` counts — it
+  // carries the same numbers PLUS the items behind them, so the panel reads one
+  // endpoint instead of two. Long staleTime: the controls are code-derived and
+  // only change on upgrade (the one runtime-variable count, denied_commands,
+  // comes from the `denied-commands` query above and is invalidated on mutation).
+  const { data: posture, isLoading: postureLoading, isError: postureError } = useQuery<SecurityPostureData>({
+    queryKey: ['security-posture'],
+    queryFn: api.securityPosture,
+    staleTime: 300_000,
+  })
+  const controls = posture?.controls ?? []
 
   const [confirm, setConfirm] = useState<ConfirmTarget | null>(null)
   const [ack, setAck] = useState(false)
@@ -512,7 +550,6 @@ export function SecurityPanel() {
   const applySnapshot = (snap: DeniedCommandsData) => {
     qc.setQueryData(['denied-commands'], snap)
     qc.invalidateQueries({ queryKey: ['denied-commands'] })
-    qc.invalidateQueries({ queryKey: ['security-stats'] })
   }
 
   const toggleBuiltin = useMutation({
@@ -546,6 +583,11 @@ export function SecurityPanel() {
 
   const disableAll = dc?.disable_all ?? false
   const governanceLocked = dc?.governance_locked ?? false
+  // Enabled BUILT-INS only. `dc.effective_count` is builtins + user_added, which
+  // is the right number for "rules enforced overall" but wrong for the posture
+  // row, whose denominator is the built-in table: one custom deny made it read
+  // "138 of 137 built-in rules".
+  const enabledBuiltins = (dc?.builtins ?? []).filter(r => r.enabled).length
 
   // Enabling a rule (or re-enabling all built-ins) is immediate; disabling
   // opens a confirm modal. `next` is the toggle's new value.
@@ -589,6 +631,7 @@ export function SecurityPanel() {
       {/* ── Live Security Posture ── */}
       <SettingsSection title="Live Security Posture">
         <SettingsCard>
+          {/* Non-expandable rows: single-valued modes, not counted sets. */}
           <StatusRow icon={<Lock size={14} />} label="Process Sandbox" value="Standard" variant="ok"
             href={`${CODE_BASE}/src/kiro_crew/sandbox.py`} />
           <StatusRow
@@ -597,25 +640,65 @@ export function SecurityPanel() {
             value={yolo ? 'YOLO (auto-approve)' : 'Interactive'}
             variant={yolo ? 'err' : 'ok'}
           />
-          <StatusRow icon={<Fingerprint size={14} />} label="Dashboard Auth" value="Token + IP-pinned" variant="ok"
-            href={`${CODE_BASE}/src/kiro_crew/dashboard/token_auth.py`} />
-          <StatusRow icon={<Terminal size={14} />}
-            label="Denied Commands"
-            value={dc ? `${dc.effective_count} active` : '...'}
-            variant="ok"
-          />
-          <StatusRow icon={<ScanLine size={14} />}
-            label="Input Validation"
-            value={stats ? `${stats.tool_schemas} tool schemas` : '...'}
-            variant="ok"
-            href={`${CODE_BASE}/src/kiro_crew/validation.py`}
-          />
-          <StatusRow icon={<KeyRound size={14} />}
-            label="Output Redaction"
-            value={stats ? `${stats.redaction_paths} output paths` : '...'}
-            variant="ok"
-            href={`${CODE_BASE}/src/kiro_crew/security.py`}
-          />
+
+          {/* Expandable rows, driven entirely by the live posture registry — each
+              count is derived server-side from the control it describes, and
+              clicking it reveals the concrete list. */}
+          <div className="mt-1 pt-1 border-t border-border">
+            <div className="text-[12px] text-muted pb-1 leading-relaxed">
+              Click any control to see exactly what it covers.
+            </div>
+            {postureError ? (
+              <div className="flex items-start gap-2.5 py-2">
+                <AlertTriangle size={14} className="lucide-inline text-warn shrink-0 mt-0.5" />
+                <span className="text-[12px] text-muted leading-relaxed">
+                  Security posture detail is temporarily unavailable. Enforcement is unaffected — this view could not resolve the control list for display.
+                </span>
+              </div>
+            ) : postureLoading ? (
+              <div className="text-[12px] text-muted py-2">Loading security posture…</div>
+            ) : (
+              controls.map(control => (
+                <PostureDisclosureRow
+                  key={control.key}
+                  control={control}
+                  icon={POSTURE_ICONS[control.key] ?? <ShieldCheck size={14} />}
+                  // The registry counts the SHIPPED built-in rule table; the live
+                  // effective count reflects the user's opt-outs and policy pins,
+                  // so the pill must show the latter to match what is enforced.
+                  //
+                  // Three distinct states, because conflating them misreports the
+                  // gate in one direction or the other:
+                  //   resolved  → enabledBuiltins (what is actually enforced)
+                  //   LOADING   → undefined, i.e. fall back to the server's shipped
+                  //               total. Honest while in flight: it is the real rule
+                  //               count, just not yet narrowed by opt-outs. Passing
+                  //               null here instead would paint "unavailable" over a
+                  //               fully-enforced gate — the misleading-security-signal
+                  //               failure the governance viewer also guards against.
+                  //   ERROR     → null, i.e. "unavailable". We cannot know the opt-out
+                  //               state, so claiming the shipped total is enforced
+                  //               would over-report — a rule the user disabled would
+                  //               be counted as active, indefinitely (the query has
+                  //               stopped retrying).
+                  //
+                  // Counts ENABLED BUILTINS, not `dc.effective_count`: that field is
+                  // builtins + user_added, so a single custom deny made this row read
+                  // "138 of 137 built-in rules" — a nonsense ratio against a
+                  // built-in-only denominator. Custom rules have their own card below.
+                  countOverride={control.key !== 'denied_commands'
+                    ? undefined
+                    : dc ? enabledBuiltins : dcError ? null : undefined}
+                  note={control.key === 'denied_commands' && dc
+                    ? `${enabledBuiltins} of ${dc.builtins.length} built-in rules are currently enforced, after your opt-outs and any policy pins.`
+                      + (dc.user_added.length > 0
+                        ? ` Your ${dc.user_added.length} custom ${dc.user_added.length === 1 ? 'pattern' : 'patterns'} are counted separately below.`
+                        : '')
+                    : undefined}
+                />
+              ))
+            )}
+          </div>
         </SettingsCard>
       </SettingsSection>
 

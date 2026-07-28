@@ -1848,6 +1848,7 @@ async def start_dashboard(
     app.router.add_get("/api/sel/events", handlers.api_sel_events)
     app.router.add_get("/api/sel/verify", handlers.api_sel_verify)
     app.router.add_get("/api/security/stats", handlers.api_security_stats)
+    app.router.add_get("/api/security/posture", handlers.api_security_posture)
     app.router.add_get("/api/security/denied-commands", handlers.api_denied_commands_list)
     app.router.add_patch(
         "/api/security/denied-commands/disable-all", handlers.api_denied_commands_disable_all

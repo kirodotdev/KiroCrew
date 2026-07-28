@@ -6,17 +6,12 @@ import type { DeniedCommandsData } from '../../api/client'
 /* ── api client mock ───────────────────────────────────────────────────────
  * SecurityPanel drives all its mutations through the `api` client methods.  We
  * mock those methods so no network I/O happens; each returns the (mutated)
- * snapshot the panel then re-renders from.  `securityStats` is unrelated to the
- * denied-commands surface but is queried by the status card, so it is stubbed.
+ * snapshot the panel then re-renders from.  `securityPosture` feeds the Live
+ * Security Posture card (it superseded the old flat `securityStats`, which the
+ * panel no longer queries), and `governancePolicy` feeds the ceiling viewer.
  */
 vi.mock('../../api/client', () => ({
   api: {
-    securityStats: vi.fn().mockResolvedValue({
-      denied_commands: 2,
-      suspicious_patterns: 42,
-      tool_schemas: 12,
-      redaction_paths: 5,
-    }),
     deniedCommands: vi.fn(),
     toggleBuiltinDeniedCommand: vi.fn(),
     setDeniedCommandsDisableAll: vi.fn(),
@@ -24,11 +19,12 @@ vi.mock('../../api/client', () => ({
     toggleUserDeniedCommand: vi.fn(),
     deleteUserDeniedCommand: vi.fn(),
     governancePolicy: vi.fn(),
+    securityPosture: vi.fn(),
   },
 }))
 
 import { api } from '../../api/client'
-import type { GovernancePolicyData } from '../../api/client'
+import type { GovernancePolicyData, SecurityPostureData } from '../../api/client'
 import { SecurityPanel } from './SecurityPanel'
 
 const PINNED_DESC = 'Blocks EC2 instance termination'
@@ -81,6 +77,54 @@ async function renderPanel(data: DeniedCommandsData = snapshot()) {
   return utils
 }
 
+/** A posture snapshot with one short control (no filter box) and one long enough
+ *  to trigger both the filter box and the "Show N more" truncation. */
+function posture(overrides: Partial<SecurityPostureData> = {}): SecurityPostureData {
+  const many = Array.from({ length: 30 }, (_, i) => ({
+    label: `~/.secret-${i}`,
+    detail: i === 7 ? 'Needle detail' : 'Third-party credential store',
+  }))
+  return {
+    controls: [
+      {
+        key: 'redaction_paths',
+        label: 'Output redaction',
+        unit: 'output paths',
+        summary: 'Every boundary where agent output reaches a human.',
+        source: 'src/kiro_crew/security.py',
+        count: 2,
+        items: [
+          { label: 'Dashboard live stream', detail: 'chat_runner.py — StreamRedactor' },
+          { label: 'Slack messages', detail: 'handler.py — final pass' },
+        ],
+        unavailable: false,
+      },
+      {
+        key: 'sensitive_paths',
+        label: 'Sensitive path blocking',
+        unit: 'credential paths',
+        summary: 'Paths the agent cannot read or write.',
+        source: 'src/kiro_crew/security.py',
+        count: many.length,
+        items: many,
+        unavailable: false,
+      },
+      {
+        key: 'denied_commands',
+        label: 'Denied commands',
+        unit: 'built-in rules',
+        summary: 'Destructive shell operations blocked at the gate.',
+        source: 'src/kiro_crew/security.py',
+        count: 137,
+        items: [{ label: 'Blocks stack deletion', detail: 'aws-destructive' }],
+        unavailable: false,
+      },
+    ],
+    counts: { redaction_paths: 2, sensitive_paths: 30, denied_commands: 137 },
+    ...overrides,
+  }
+}
+
 /** No-policy (standalone) governance snapshot: every scope ungoverned. */
 function govNoPolicy(overrides: Partial<GovernancePolicyData> = {}): GovernancePolicyData {
   return {
@@ -126,6 +170,7 @@ describe('SecurityPanel — denied commands', () => {
     ;(api.toggleUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.deleteUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
   })
 
   it('toggling a built-in OFF opens the confirm modal and only mutates after ack', async () => {
@@ -251,9 +296,20 @@ describe('SecurityPanel — denied commands', () => {
     expect(screen.queryByLabelText(`Delete pattern ${TOGGLE_DESC}`)).not.toBeInTheDocument()
   })
 
-  it('status row shows the effective_count', async () => {
-    await renderPanel(snapshot({ effective_count: 129 }))
-    expect(await screen.findByText('129 active')).toBeInTheDocument()
+  it('the denied-commands posture pill shows enabled built-ins, not the shipped rule total', async () => {
+    // The posture registry reports the SHIPPED built-in table (137); the pill must
+    // show what is actually enforced after opt-outs + policy pins. Counted from
+    // `dc.builtins` (1 of the 2 fixture rules disabled → 1), NOT `effective_count`,
+    // which also includes user_added and would overshoot the denominator.
+    await renderPanel(
+      snapshot({
+        builtins: snapshot().builtins.map((b, i) => (i === 0 ? { ...b, enabled: false } : b)),
+        effective_count: 129,
+      }),
+    )
+    expect(await screen.findByText('1 built-in rules')).toBeInTheDocument()
+    expect(screen.queryByText('137 built-in rules')).not.toBeInTheDocument()
+    expect(screen.queryByText('129 built-in rules')).not.toBeInTheDocument()
   })
 
   it('status rows reserve the external-link slot so every badge shares one right edge', async () => {
@@ -332,5 +388,236 @@ describe('SecurityPanel — governance policy viewer', () => {
     renderWithProviders(<SecurityPanel />)
 
     expect(await screen.findByText(/Governance status is temporarily unavailable/)).toBeInTheDocument()
+  })
+})
+
+describe('SecurityPanel — posture disclosure', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+  })
+
+  it('renders a pill per control using the server-derived count and unit', async () => {
+    renderWithProviders(<SecurityPanel />)
+
+    // The whole point of the change: the count is data, not a hardcoded literal.
+    expect(await screen.findByText('2 output paths')).toBeInTheDocument()
+    expect(screen.getByText('30 credential paths')).toBeInTheDocument()
+  })
+
+  it('items are hidden until the row is expanded, then reveal label + detail', async () => {
+    renderWithProviders(<SecurityPanel />)
+    await screen.findByText('2 output paths')
+
+    expect(screen.queryByText('Dashboard live stream')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText(/^Show Output redaction details/))
+
+    expect(await screen.findByText('Dashboard live stream')).toBeInTheDocument()
+    expect(screen.getByText('chat_runner.py — StreamRedactor')).toBeInTheDocument()
+
+    // Collapsing flips the row back to closed. Asserted via aria-expanded rather
+    // than DOM removal: AnimatePresence keeps the exiting subtree mounted until
+    // its exit transition finishes, which framer-motion does not drive to
+    // completion under the test environment's faked rAF.
+    fireEvent.click(screen.getByLabelText(/^Hide Output redaction details/))
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^Show Output redaction details/)).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      ),
+    )
+  })
+
+  it('a long list is truncated with a "Show N more" affordance and is filterable', async () => {
+    renderWithProviders(<SecurityPanel />)
+    await screen.findByText('30 credential paths')
+    fireEvent.click(screen.getByLabelText(/^Show Sensitive path blocking details/))
+
+    // 30 items > INITIAL_VISIBLE (25) → the tail is behind one click.
+    expect(await screen.findByText('~/.secret-0')).toBeInTheDocument()
+    expect(screen.queryByText('~/.secret-29')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show 5 more' }))
+    expect(screen.getByText('~/.secret-29')).toBeInTheDocument()
+
+    // The filter matches on detail text too, not just the label.
+    fireEvent.change(screen.getByLabelText('Filter Sensitive path blocking'), {
+      target: { value: 'needle' },
+    })
+    expect(screen.getByText('~/.secret-7')).toBeInTheDocument()
+    expect(screen.queryByText('~/.secret-0')).not.toBeInTheDocument()
+  })
+
+  it('a short list gets no filter box', async () => {
+    renderWithProviders(<SecurityPanel />)
+    await screen.findByText('2 output paths')
+    fireEvent.click(screen.getByLabelText(/^Show Output redaction details/))
+
+    await screen.findByText('Dashboard live stream')
+    expect(screen.queryByLabelText('Filter Output redaction')).not.toBeInTheDocument()
+  })
+
+  it('an unavailable control reads "unavailable", never a misleading zero', async () => {
+    // Regression guard: rendering `count` directly would print "0 output paths"
+    // and tell the operator a live control covers nothing.
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(
+      posture({
+        controls: [
+          {
+            key: 'redaction_paths',
+            label: 'Output redaction',
+            unit: 'output paths',
+            summary: '',
+            source: '',
+            count: null,
+            items: [],
+            unavailable: true,
+          },
+        ],
+        counts: { redaction_paths: null },
+      }),
+    )
+    renderWithProviders(<SecurityPanel />)
+
+    expect(await screen.findByText('unavailable')).toBeInTheDocument()
+    expect(screen.queryByText('0 output paths')).not.toBeInTheDocument()
+  })
+
+  it('shows a soft notice when the posture endpoint fails', async () => {
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    renderWithProviders(<SecurityPanel />)
+
+    expect(
+      await screen.findByText(/Security posture detail is temporarily unavailable/),
+    ).toBeInTheDocument()
+  })
+
+  it('does NOT paint "unavailable" on the deny gate while denied-commands is still loading', async () => {
+    // Regression: `dc?.effective_count ?? null` yielded null before the second
+    // query resolved, so a fully-enforced 137-rule gate rendered as an amber
+    // "unavailable" warning — the exact misleading-security-signal failure the
+    // governance viewer's soft notice exists to prevent. The two queries resolve
+    // independently, so posture-first is a normal interleaving.
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
+    renderWithProviders(<SecurityPanel />)
+
+    // Posture resolved; denied-commands never will.
+    expect(await screen.findByText('137 built-in rules')).toBeInTheDocument()
+    expect(screen.queryByText('unavailable')).not.toBeInTheDocument()
+  })
+
+  it('a FAILED denied-commands query reads "unavailable", not the shipped total', async () => {
+    // The loading case correctly falls back to the shipped total (still honest —
+    // just not yet narrowed by opt-outs). An ERROR must not: the query has stopped
+    // retrying, so reporting the shipped total would claim rules the user disabled
+    // are enforced, indefinitely. Over-reporting a security control is the worse
+    // direction, so this state is explicitly "unavailable".
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    renderWithProviders(<SecurityPanel />)
+
+    // Another control still resolves, proving the panel itself is fine.
+    expect(await screen.findByText('2 output paths')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('unavailable')).toBeInTheDocument())
+    expect(screen.queryByText('137 built-in rules')).not.toBeInTheDocument()
+  })
+
+  it('the deny pill counts built-ins only, so a custom rule cannot exceed the total', async () => {
+    // Regression: the row used `dc.effective_count` (builtins + user_added), so a
+    // single custom deny rendered the nonsense ratio "138 of 137 built-in rules"
+    // against a built-in-only denominator.
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({
+        // Both builtins in the fixture are enabled; effective_count adds the 1 user rule.
+        effective_count: 3,
+      }),
+    )
+    renderWithProviders(<SecurityPanel />)
+
+    expect(await screen.findByText('2 built-in rules')).toBeInTheDocument()
+    expect(screen.queryByText('3 built-in rules')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText(/^Show Denied commands details/))
+    expect(
+      await screen.findByText(/2 of 2 built-in rules are currently enforced/),
+    ).toBeInTheDocument()
+    // Custom patterns are accounted for, just not folded into the built-in ratio.
+    expect(screen.getByText(/1 custom pattern are counted separately below/)).toBeInTheDocument()
+  })
+
+  it('clearing a filter re-applies the truncation cap', async () => {
+    // Regression: `expanded` survived a filter change, so expanding a FILTERED
+    // subset and then clearing the filter rendered the whole list, defeating the
+    // INITIAL_VISIBLE DOM cap. Must expand *while filtered* to exercise it.
+    renderWithProviders(<SecurityPanel />)
+    await screen.findByText('30 credential paths')
+    fireEvent.click(screen.getByLabelText(/^Show Sensitive path blocking details/))
+
+    const filterBox = await screen.findByLabelText('Filter Sensitive path blocking')
+    // 'Third-party' matches 29 of 30 (the needle has a different detail), so the
+    // filtered set is still over the 25-item cap and has its own "Show 4 more".
+    fireEvent.change(filterBox, { target: { value: 'Third-party' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 4 more' }))
+    expect(screen.getByText('~/.secret-29')).toBeInTheDocument()
+
+    fireEvent.change(filterBox, { target: { value: '' } })
+    // Back to all 30 → truncated again rather than dumping every row.
+    expect(await screen.findByRole('button', { name: 'Show 5 more' })).toBeInTheDocument()
+    expect(screen.queryByText('~/.secret-29')).not.toBeInTheDocument()
+  })
+
+  it('the header announces the count, and an unavailable control is not a disabled button', async () => {
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(
+      posture({
+        controls: [
+          {
+            key: 'redaction_paths', label: 'Output redaction', unit: 'output paths',
+            summary: '', source: '', count: null, items: [], unavailable: true,
+          },
+          {
+            key: 'audit_surfaces', label: 'SEL audit logging', unit: 'audited surfaces',
+            summary: '', source: '', count: 2, unavailable: false,
+            items: [{ label: 'Slack handler', detail: '' }, { label: 'MCP core', detail: '' }],
+          },
+        ],
+        counts: { redaction_paths: null, audit_surfaces: 2 },
+      }),
+    )
+    renderWithProviders(<SecurityPanel />)
+
+    // The badge is the row's payload, so it belongs in the accessible name.
+    expect(
+      await screen.findByLabelText('Show SEL audit logging details — 2 audited surfaces'),
+    ).toBeInTheDocument()
+    // A control with nothing to expand is a plain row, not an aria-disabled button.
+    expect(screen.getByText('unavailable')).toBeInTheDocument()
+    expect(screen.queryByLabelText(/Output redaction details/)).not.toBeInTheDocument()
+  })
+
+  it('renders a control the frontend has no icon for (forward compatibility)', async () => {
+    // A backend that registers a new control must not have its row silently
+    // dropped just because POSTURE_ICONS has no entry for the key yet.
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(
+      posture({
+        controls: [
+          {
+            key: 'brand_new_control',
+            label: 'Brand new control',
+            unit: 'widgets',
+            summary: '',
+            source: '',
+            count: 3,
+            items: [{ label: 'thing', detail: '' }],
+            unavailable: false,
+          },
+        ],
+        counts: { brand_new_control: 3 },
+      }),
+    )
+    renderWithProviders(<SecurityPanel />)
+
+    expect(await screen.findByText('Brand new control')).toBeInTheDocument()
+    expect(screen.getByText('3 widgets')).toBeInTheDocument()
   })
 })

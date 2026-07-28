@@ -888,6 +888,33 @@ def _infer_source(session_key: str) -> str:
     return "slack"
 
 
+_AUDIT_SOURCES: tuple[str, ...] = (
+    "unknown",
+    "host",
+    "dashboard",
+    "cron",
+    "subagent",
+    "taskrunner",
+    "background",
+    "heartbeat",
+    "cli",
+    "slack",
+)
+
+
+def audit_sources() -> tuple[str, ...]:
+    """Every ``source`` value :func:`_infer_source` can stamp on an event.
+
+    This is the authoritative set of audited surfaces, consumed by the
+    security-posture view (``security_posture._audit_surface_items``) so that
+    surface count is derived rather than a hand-copied number that goes stale.
+    A drift guard in ``test_security_posture`` pins this tuple against
+    ``_infer_source``'s actual branches, so adding a surface there without adding
+    it here fails CI.
+    """
+    return _AUDIT_SOURCES
+
+
 def sel() -> SecurityEventLog:
     """Module-level accessor for the singleton SEL instance."""
     return SecurityEventLog()

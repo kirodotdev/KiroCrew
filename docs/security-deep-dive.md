@@ -217,12 +217,18 @@ Scans for plaintext AND base64-encoded credentials:
 
 Base64 detection: finds 40+ char base64 chunks, decodes, checks if decoded content matches any credential pattern.
 
-Applied on ALL 5 output paths:
-1. Dashboard streaming (mid-flush)
-2. Dashboard streaming (trailing)
-3. Dashboard non-chunk messages
-4. Dashboard history save (JSONL)
-5. Slack final response
+Applied on **every** output path — each boundary where agent output reaches a human
+or an external service. The authoritative, always-current list is the
+`redaction_paths` control in `security_posture.py` (rendered expandable in
+Settings → Security); today it covers the dashboard live stream, the thinking
+stream, the final assistant message, the slot snapshot, session history (JSONL),
+the side-panel stream, the OpenAI-compatible API, Slack messages, Slack
+cron/notification posts, subagent results, voice replies, the SEL audit log, task
+reports, vector-memory snippets, workflow injections, and onboarding import.
+
+Do **not** restate that count here as a literal — this doc previously claimed "ALL
+5 output paths" long after the real number had multiplied, and the dashboard
+repeated the stale 5 because it was hardcoded from this sentence.
 
 The `redact()` dual-pass helper composes both scanners in order (`redact_exfiltration_urls()` then `redact_credentials()`) for a single call site.
 
@@ -243,7 +249,7 @@ Suspicious URLs replaced with `[REDACTED: suspicious URL to {domain}]`.
 
 ## Layer 5: Audit Logging (SEL)
 
-Security Event Log — immutable audit trail integrated across 8 surfaces:
+Security Event Log — immutable audit trail. Every event carries a `source` stamped by `_infer_source` (published via `sel.audit_sources()`); representative surfaces:
 - Slack handler, dashboard chat, task runner, subagent
 - Background tasks, MCP core, MCP cron, API middleware
 

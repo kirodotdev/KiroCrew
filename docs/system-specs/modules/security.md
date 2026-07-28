@@ -155,7 +155,7 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 - **JWT / JWE / OAuth Bearer tokens** (cc1d6bdd; JWE hardening a8e5fe6a; JSON-aware Bearer): JWTs (`eyJ<header>.<payload>.<sig>` — `eyJ` is the base64url of the `{"` header prefix) and HTTP `Authorization: Bearer <token>` headers. The `eyJ` segment quantifier is `(?:\.[A-Za-z0-9_-]*){2,4}` so it redacts both a 3-segment signed JWT (JWS) and a 5-segment encrypted JWT (JWE, RFC 7516 — `header.encrypted_key.iv.ciphertext.tag`) as one whole token — including `dir`/`ECDH-ES` JWEs whose Encrypted Key segment is EMPTY (`header..iv.ciphertext.tag`); the earlier fixed 3-segment pattern truncated a JWE and leaked its ciphertext + tag. The JWT alternative is case-sensitive (`eyJ` is a fixed base64url prefix); the Bearer header name + scheme are matched case-insensitively via scoped `(?i:…)` groups because HTTP header names are case-insensitive (RFC 7230 §3.2), HTTP/2 mandates lowercase names, and the `Bearer` scheme is case-insensitive (RFC 6750 §2.1) — so lowercase `authorization: bearer …` from `requests`/`net/http`/HTTP2 frame logs is redacted too. The header/scheme separator is JSON-aware: an optional quote may precede the `:`/`=` and the token (`(?i:Authorization)["']?\s*[:=]\s*["']?(?i:Bearer)…`), so a serialized `{"Authorization": "Bearer <tok>"}` in a structured-log/JSON request dump is redacted, not just the raw HTTP header. Both are scoped tightly — the JWT segment class `[A-Za-z0-9_-]` cannot cross the literal `.` separators, and the Bearer token class (`[A-Za-z0-9._~+/-]+=*`, RFC 6750 `b64token`) stops at whitespace/quotes — so neither over-captures. A `Bearer` header carrying a JWT redacts as a single match (the Bearer alternative's class subsumes the JWT), while a bare JWT is caught independently (defense in depth). Bare `eyJ…` with no `.`-segments and the word `Bearer` without the `Authorization:` prefix are NOT redacted (no false positives)
 - Base64 detection: finds 40+ char base64 chunks, decodes them, checks if decoded content matches any credential pattern
 - **Bare label-less secret-key detection** (`bf7b1baf`): a 40-char AWS *secret access key* (the value paired with an `AKIA`/`ASIA` ID) is a bare base64 run with NO prefix and NO `key=` label, so the fixed-format patterns above miss it when it appears standalone (echoed alone, in a log line, in a JSON array element). A third redaction pass adds an entropy + structural heuristic: `_BARE_SECRET_RUN_RE` isolates each `[A-Za-z0-9+/]{40,}` run (word-boundary look-arounds so surrounding prose is preserved), then `_looks_like_secret_key()` applies every gate below — a token must clear ALL of them (design bias is toward NOT redacting: a false negative reverts to prior behavior, a false positive corrupts benign output). Gates, cheapest-first: (1) length is EXACTLY 40 (AWS secret-key length); (2) contains lower + upper + digit (rejects all-lower prose, ALL-UPPER constants, base32, digit runs); (3) not an all-hex run (`_HEX_ONLY_RE` rejects 40-char git SHAs and 32/64-char md5/sha256 digests — verified even for mixed-case hex that would otherwise clear the entropy gate); (4) Shannon entropy ≥ `_SECRET_ENTROPY_MIN` (4.3 bits/char — real random keys average ~4.78 and rarely drop below ~4.4, while camelCase identifiers and file paths cluster at 4.0-4.3; the canonical AWS example scores 4.66); (5) does not base64-decode to ≥85% printable ASCII (`_decodes_to_printable_text` leaves encoded-text blobs to the decode-and-scan pass); (6) structural randomness — the longest run of consecutive lowercase letters ≤ `_SECRET_MAX_LOWER_RUN` (5) AND the vowel ratio ≤ `_SECRET_MAX_VOWEL_RATIO` (0.30). Both structural gates apply to EVERY token: unlike a naive design, the presence of `/` or `+` is **not** a free pass to redact, so a 40-char mixed-case file path (e.g. `src/main/java/com/Example/FooBarBazClas1`) — which contains `/` yet is built from dictionary-word segments with long lowercase runs — stays intact. The pass scans the ORIGINAL text (stable offsets) and skips any run already redacted by pass 1/2. Tests (`test_security.py::TestBareSecretKeyRedaction`) prove true positives on real secret shapes and NO over-redaction of git SHAs, UUIDs, sha256/md5 hex, base32, prose, code identifiers, or slash-delimited file paths. **Glued-secret sliding window**: `_looks_like_secret_key()` only accepts an EXACTLY-40-char token (gate 1) — its documented boundary assumption — but `_BARE_SECRET_RUN_RE` captures the *longest* base64 run, so a real 40-char secret glued to an adjacent base64 char with no delimiter (`X`+secret, secret+`A`, `SECRET=`+secret+`ABC`, secret+`X`+secret) forms a 41+ char run that fails the exact-40 gate and would leak verbatim. Pass 3 therefore gates each captured run through `_contains_bare_secret()`, which slides a 40-char window across the run and redacts the whole run when ANY window clears every gate; this stays linear (the regex yields disjoint spans). The sliding window does not over-redact >40-char benign camelCase identifier runs (no window within them looks like a secret)
-- Applied on ALL 5 output paths: dashboard streaming (mid-flush + trailing), dashboard non-chunk messages, dashboard history save (JSONL), Slack final response
+- Applied on **every** output path — each boundary where agent output reaches a human or an external service. The authoritative list is the `redaction_paths` control in `security_posture.py` (see "Security Posture Detail Registry" below), which is what Settings → Security renders; do NOT restate the count as a literal here (this line read "ALL 5 output paths" long after the real number had multiplied, and the dashboard's hardcoded pill inherited that stale 5)
 - **Cross-chunk streaming redaction** (`StreamRedactor`): per-chunk redaction misses a credential split across a token/streaming/Slack chunk boundary (a chunk ending `...AKIA` and the next starting `IOSFODNN7...` each individually escape `redact_credentials()`, so raw fragments reach WebSocket/SSE/Slack consumers). `StreamRedactor` is a rolling-buffer redactor: it withholds the trailing run of credential-class characters (`_CRED_CLASS` — letters/digits + URL/base64/connection-string punctuation, the possible start of a not-yet-complete credential) until a non-credential-class terminator arrives or the stream ends, then rejoins and redacts before emitting on the wire. Holdback is bounded by `_STREAM_HOLDBACK_MAX = 512` (larger than the longest fixed-format credential) so a split token is always rejoined; `flush()` redacts the buffered remainder at segment/stream end. Adds at most one chunk of latency. **Streaming JWT/JWE ceiling** (round-2 + round-3): JWTs (esp. RS256/ES256 with embedded claims) routinely exceed 512 chars, so a terminal token longer than the DoS floor would otherwise be bisected — the first `len-512` chars emitted raw before `flush()` redacts only the held tail. When the withheld tail matches `_PARTIAL_JWT_TAIL_RE` (`eyJ…` optionally followed by up to FOUR `.`-separated base64url segments — `{0,4}`, so a 5-segment compact JWE escalates too, matching the batch JWE ceiling — anchored to buffer end) the cap is raised to `_STREAM_HOLDBACK_JWT_MAX = 4096` so the whole token is rejoined before emission; the 512-char floor still applies to every non-credential run. **Split-Bearer holdback** (a8e5fe6a): an `Authorization: Bearer <token>` header spans whitespace (not in `_CRED_CLASS`), so the cred-class run alone would commit the `Authorization: Bearer ` prefix and leak the token on the next chunk. `_BEARER_ANCHOR_PARTIAL_RE` (case-insensitive, JSON-aware, `\Z`-anchored, matching any prefix of an in-progress `Authorization: Bearer <token>`) makes `feed` pull the commit index back to the anchor start (`i = min(i, anchor.start())`), holding header + token together, and escalates the cap so an opaque OAuth/refresh/SSO Bearer token >512 chars (no `eyJ`) is not bisected either. **Fail-closed ceiling** (round-3): when a credential-anchored tail (JWT/JWE/Bearer) exceeds the 4096 ceiling, `feed` FAILS CLOSED — it redacts+emits the confirmed-safe prefix, appends `_REDACTED_CREDENTIAL_TAG` (`[REDACTED: credential]`, shared with the batch redactor), and DROPS the oversized tail rather than bisecting it; a plain cred-class run with NO credential anchor is still committed verbatim (bisected — no data loss, DoS bound intact)
 - Defense against write-then-execute attacks: even if the LLM tricks kiro-cli into running a credential-extracting script, the output is scrubbed before the LLM can use it in follow-up messages
 
@@ -885,11 +885,133 @@ Trust patterns are stored per-slot as session-scoped fnmatch globs (`slot._trust
 
 ### SEL Audit Logging (`sel.py`)
 
-See `docs/system-specs/modules/sel.md` for full spec. Integrated across 8 surfaces: Slack handler, dashboard chat, task runner, subagent, background tasks, MCP core, MCP cron, API middleware.
+See `docs/system-specs/modules/sel.md` for full spec. Every event carries a `source` stamped by `_infer_source`; that function's return vocabulary IS the set of audited surfaces and is published via `sel.audit_sources()` (consumed by the security-posture view, so the count is derived rather than restated here).
 
 **What counts as an auditable permission decision.** A SEL event is emitted when a decision has a *subject* — a tool/capability that was granted or denied. The audit records grants and denies, not the absence of any decision:
 
 - **Skill triggering** (`skills.py:get_triggered_skills`, runs per message) emits **one** event per call when at least one skill was injected (`outcome="triggered"`, grant) or actively excluded by a negative trigger that would otherwise have matched (`outcome="denied"`, with the excluded skills in `metadata.negated`). When no skill matched and none was negated — the overwhelmingly common case — **no event is emitted**: nothing was granted or injected into LLM context, so there is no permission decision with a subject to record (analogous to not auditing an authz check that had nothing to authorize). This is a deliberate, threat-model-reviewed choice: the prior per-skill "not_triggered" logging was a per-message synchronous-write hot-path cost, and a per-message "matched nothing" event would dwarf the real grant/deny signals and *reduce* the audit trail's usefulness rather than improve it. The message text is already captured in conversation history; skill names are not secret.
+
+### Security Posture Detail Registry (`security_posture.py`)
+
+The Settings → Security "Live Security Posture" card renders from
+`GET /api/security/posture`, whose payload is built by
+`security_posture.build_posture_snapshot()`. It exists to fix a class of bug, not
+just to add a view: the panel previously rendered **hardcoded counts** that had
+silently drifted several-fold from reality — every one of `13` sensitive paths,
+`42` suspicious patterns, `5` redaction paths, and `12` tool schemas was wrong —
+and a reader had no way to see what any count covered.
+
+**Do not write the current values into this doc.** Restating them here is how the
+original bug propagated (the dashboard's hardcoded `5` was transcribed from a doc
+sentence), and a literal added here goes stale the moment a control grows — as one
+did while this very section was being written. Read the live counts from
+`GET /api/security/posture`, or from `security_posture.posture_counts()`.
+
+**Derivation invariant.** Every control's `count` is `len(items)` — the pill and the
+expanded list can never disagree — and `items` are produced by an `items_fn`
+callable resolved **per request** against the live control.
+`api_security_stats` re-sources its counts from this registry, so there is exactly
+one place a count is computed. Controls split into two classes:
+
+- **Derived (7):** items come straight from the enforcing object —
+  `security.sensitive_home_dirs()`, `write_protected_home_paths()`,
+  `BUILTIN_DENIED_RULES`, `SUSPICIOUS_BASH_PATTERNS`, the MCP dispatch registries
+  (`MCP_CORE_SCHEMAS` / `MCP_CRON_SCHEMAS`, **not** the `*_SCHEMA` naming
+  convention — several registered tools are inline/shared schemas with no
+  module-level name), `exfil_query_min_len()`, and `sel.audit_sources()`. For these
+  drift is structurally impossible.
+- **Curated (3):** `_REDACTION_SINKS`, `_CREDENTIAL_FAMILIES`, `_EXFIL_HEURISTICS`
+  have no single live list to enumerate (a sink is a *call site*, a family is a
+  *regex alternative*, a heuristic is a *branch*). A `len()` of a hand-written
+  tuple would merely relocate the original stale-number bug into this module, so
+  each is paired with an **omission-detecting** test in
+  `test_security_posture.TestOmissionDetection`:
+  - the redaction registry is checked against **every** redactor call site in the
+    package — each module must be a registered sink or an explicitly-reasoned
+    entry in `NON_EGRESS_REDACTION_MODULES` (with a companion test rejecting stale
+    allowlist entries), so a new output path cannot be added without classifying it.
+    The detector regex must stay broad enough to see **every wrapper**
+    (`redact_and_truncate`, `redact_via_context`, qualified `security.redact(...)`,
+    `StreamRedactor`), because a form missing from it is the same omission hole one
+    level up — a narrow earlier version silently skipped the `redact_and_truncate`
+    Slack egress in `dashboard/chat_slack.py` and `slack/blocks.py`. Prefer
+    over-matching: an extra module is classified once, whereas a missed one is
+    invisible forever;
+  - each advertised credential family must have a synthetic sample that
+    `redact_credentials()` actually fires on, and the family list and sample table
+    must match exactly (so a new regex alternative without a row fails);
+  - each advertised exfil heuristic must have a URL that `scan_exfiltration_urls()`
+    actually flags, with the same exact-match requirement.
+
+  An omission is the failure mode that shipped "5 output paths" against several times that many.
+  Only a test that detects an omission catches it; a `len()` assertion never will.
+
+**Disclosure contract (posture-only, mirroring the governance viewer).** The
+payload carries public control *definitions* and derived counts only:
+
+- **Included**: blocked path patterns (the blocklist is already public in
+  `docs/security-deep-dive.md`; knowing `~/.aws` is blocked does not help reach
+  it), redaction-sink module names, credential **family** names, heuristic
+  descriptions, audited surface names, deny-rule *descriptions*.
+- **Excluded**: credential material, governance policy/profile **rule contents**
+  (the ceiling the agent is fenced from — this endpoint must not become a side
+  channel around the governance viewer's counts-only rule), user data, and the raw
+  deny **regexes** (those keep their own opt-out surface in Card A's chevron).
+- A pinned test asserts the entire JSON payload passes **both** redaction passes
+  (`redact_credentials()` **and** `redact_exfiltration_urls()`, plus the dual-pass
+  `redact()`) **unchanged** — so a description written with a live credential or
+  long-query-URL shape in it (e.g. a literal bearer-header example) fails CI
+  rather than shipping a row that renders as `[REDACTED: …]` wherever the payload
+  is itself scanned (the SEL audit log, a Slack-relayed summary). A companion test
+  proves the guard is non-vacuous.
+- The governance boundary is pinned on **provenance, not key names**: a test
+  asserts this module's source contains no reference to the governance machinery
+  (`platform.governance`, `governance_profiles`, `resolve_active_scope`,
+  `current_context`, `security_policy`/`admission_policy`). A name-only guard
+  ("no control key contains `policy`") is trivially bypassed — a control keyed
+  `ceiling_scopes` could republish literal policy deny globs and still pass it.
+  If the module cannot *reach* governance, it cannot leak it under any key name.
+
+**Honest per-sink coverage.** Most redaction sinks run both scanners; a few run
+only one (`task_reporter.py` is exfil-URL-only; `sel.py`'s on-disk writer signs
+bytes as-written, so its callers redact before `log`). Those rows say so in their
+own detail text, and a test asserts a partially-covered sink cannot be described
+without that disclosure. Likewise, the `suspicious_patterns` row states it is
+**advisory** (surfaced by the `kirocrew` history scan via `audit_bash_command`),
+not enforced at the PreToolUse gate — the gate uses the narrower
+`audit_bash_exfiltration` plus the denied-command rules.
+
+**`/api/security/stats` is retained but no longer used by the dashboard**, which
+reads `/api/security/posture` (same counts plus the items). It re-sources via
+`posture_counts_async`, which resolves every `items_fn` — so the count is still
+`len(items)` — without materializing or serializing the ~45 KB item payload to
+return three integers. A test pins the two paths to identical values so they
+cannot become a second, divergent count source.
+
+**Executor choice.** `build_posture_snapshot_async` / `posture_counts_async` offload to the dedicated
+`governance_executor` (`mc-gov`), NOT the shared default pool — the same choice
+`build_governance_policy_snapshot_async` makes, for the same reason: this GET is
+browser-triggerable, so once a control does filesystem I/O (the case the
+per-request `items_fn` design exists to keep safe) default-pool I/O would contend
+with the workers the event loop shares for DNS.
+
+**Failure isolation.** A control whose `items_fn` raises degrades to
+`{"count": null, "unavailable": true, "items": []}` and the remaining controls
+still render. The frontend shows an explicit `unavailable` badge — never `0`,
+which would tell an operator that a live control covers nothing.
+
+**Denied-commands count is the one runtime-variable pill.** The registry reports
+the **shipped** built-in rule table (137); the panel overrides that row's pill with
+the **effective** count from `GET /api/security/denied-commands` (after user
+opt-outs and governance pins), because that is what is actually enforced.
+
+**Public accessors.** `security.py` exposes `sensitive_home_dirs()`,
+`write_protected_home_paths()`, `crew_home_prefixes()`, and
+`exfil_query_min_len()` (returning tuples/ints, so a caller cannot mutate a live
+blocklist) — the same decoupling rationale as `get_credential_patterns()`: a
+future rename of the private name cannot silently turn the posture view into a
+lie. `security_posture.py` is a leaf module; the two `token_auth` TTL constants are
+imported function-locally to avoid the `kiro_crew.dashboard` package cycle.
 
 ### Frontend Security
 
