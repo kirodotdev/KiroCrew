@@ -5,6 +5,7 @@ the backend process lifecycle: spawn on enable, health-check, stop on disable.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -53,6 +54,16 @@ _HEALTH_CHECK_INTERVAL = 2.0
 # make the immediate-exit detection test flaky.
 _SPAWN_SURVIVAL_CHECKS = 8
 _SPAWN_SURVIVAL_INTERVAL = 0.2
+# Consecutive alive polls that confirm a child cleared its bind. An immediate
+# failure (EADDRINUSE) exits within the first poll or two, so this is enough to
+# distinguish "survived" from "about to die" without burning the full budget on
+# every healthy app — see _survived_spawn.
+_PID_ANCESTRY_MAX_DEPTH = 8  # bound the parent walk when proving listener ownership
+_PORT_PROBE_TIMEOUT = 0.15  # cheap loopback gate before the costly port->PID lookup
+# Ceiling on parallel boot spawns. Each one forks a sandboxed interpreter, so an
+# unbounded fan-out on a host with many installed apps would trade boot latency
+# for a CPU/memory spike at the worst possible moment.
+_BOOT_SPAWN_MAX_WORKERS = 8
 
 # Startup stale-reap timing (see _reap_stale_app_backends). The SIGTERM grace is
 # applied PER orphan, not shared across the batch.
@@ -68,8 +79,16 @@ _PS_TIMEOUT = 2  # seconds before a `ps` start-time probe is abandoned
 _allocated_ports: dict[str, int] = {}  # app_name -> port
 
 
+class PortUnavailableError(RuntimeError):
+    """A fixed manifest port is already reserved by a different app."""
+
+
 def _find_free_port() -> int:
-    """Find a free TCP port in the app range."""
+    """Find a free TCP port in the app range.
+
+    Callers that go on to SPAWN must use ``_reserve_free_port`` instead: this
+    function only probes, so two concurrent callers can be handed the same port.
+    """
     for port in range(_MIN_PORT, _MAX_PORT):
         if port in _allocated_ports.values():
             continue
@@ -80,6 +99,151 @@ def _find_free_port() -> int:
         except OSError:
             continue
     raise RuntimeError(f"No free ports in range {_MIN_PORT}-{_MAX_PORT}")
+
+
+def _survived_spawn(proc: Any, port: int | None = None) -> bool:
+    """Return whether a just-spawned child survived its initial bind.
+
+    Detects the failure this guards against — an immediate exit, e.g. EADDRINUSE
+    from a port collision — while NOT paying the full grace window when the child
+    is healthy. The old loop slept its entire ~1.6s budget on the happy path and
+    broke only on death, so every app added ~1.6s of pure boot latency; with
+    concurrent boot that was the single largest startup cost.
+
+    The early exit is driven by POSITIVE evidence: once OUR OWN child owns the
+    listening socket on *port*, it has completed the very bind whose failure this
+    function exists to catch, so waiting longer cannot change the answer.
+
+    Two things are deliberately NOT accepted as success:
+
+    * **Elapsed liveness alone** — a child that crashes a few polls in (slow
+      sandboxed interpreter, loaded host) would be mis-reported as started.
+    * **Someone else's listener** — "the port is open" is not the same claim as
+      "our child bound it". With a fixed manifest port, another app (or any
+      unrelated process) can already hold it, and our child is then the one about
+      to die of EADDRINUSE; treating that as survival would report a doomed pid as
+      started and route two apps at one backend.
+
+    Ownership accepts our pid OR any descendant of it, because the sandbox
+    launcher execs the real server as a child. When ownership cannot be
+    established at all (no port to observe, or no port->PID tool on the host), it
+    degrades to polling the full budget exactly as before.
+
+    The ownership probe shells out to lsof (~150ms), so it is gated behind a cheap
+    loopback connect and is not run on every poll: the deadline below stays honest
+    about wall-clock rather than adding the probe's cost to each interval, which
+    would otherwise make the failure path take LONGER than the original budget.
+    """
+
+    can_check_owner = port is not None and platform_compat.listening_pid_tool_available()
+    deadline = time.monotonic() + _SPAWN_SURVIVAL_CHECKS * _SPAWN_SURVIVAL_INTERVAL
+    while True:
+        time.sleep(_SPAWN_SURVIVAL_INTERVAL)
+        if proc.poll() is not None:
+            return False
+        if (
+            can_check_owner
+            # Cheap gate first: no listener at all means there is nothing to
+            # attribute, so skip the expensive port->PID lookup entirely.
+            and _port_is_listening(port)  # type: ignore[arg-type]
+            and _spawn_owns_listener(port, proc.pid)  # type: ignore[arg-type]
+        ):
+            return True
+        if time.monotonic() >= deadline:
+            return proc.poll() is None
+
+
+def _port_is_listening(port: int) -> bool:
+    """Whether anything accepts TCP connections on *port* (loopback, cheap)."""
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=_PORT_PROBE_TIMEOUT):
+            return True
+    except OSError:
+        return False
+
+
+def _listening_pids(port: int) -> list[int]:
+    """PIDs holding a LISTEN socket on *port* (best-effort, never raises)."""
+
+    try:
+        return platform_compat.find_listening_pids(port)
+    except Exception:  # noqa: BLE001 — a probe failure must never fail a spawn
+        return []
+
+
+def _pid_is_self_or_descendant_of(pid: int, ancestor: int) -> bool:
+    """Whether *pid* is *ancestor* or is descended from it (bounded walk)."""
+
+    if pid == ancestor:
+        return True
+    current = pid
+    for _ in range(_PID_ANCESTRY_MAX_DEPTH):
+        try:
+            parent = platform_compat.get_ppid(current)
+        except Exception:  # noqa: BLE001
+            return False
+        if parent <= 0:
+            return False
+        if parent == ancestor:
+            return True
+        current = parent
+    return False
+
+
+def _spawn_owns_listener(port: int, spawn_pid: int) -> bool:
+    """Whether the listener on *port* is our spawn (or one of its descendants)."""
+
+    return any(
+        _pid_is_self_or_descendant_of(pid, spawn_pid) for pid in _listening_pids(port)
+    )
+
+
+def _reserve_free_port(app_name: str) -> int:
+    """Atomically pick a free port and record it against *app_name*.
+
+    Boot starts app backends CONCURRENTLY, so selection and reservation must be
+    one critical section. Probing without reserving (the previous behavior, safe
+    only while spawns were serialized) lets two apps be handed the same port —
+    both children then bind it and the loser dies with EADDRINUSE, which is the
+    crash-loop the post-spawn survival check exists to catch. The reservation is
+    overwritten with the real port on success and cleared on failure by the
+    existing spawn bookkeeping.
+    """
+    with _lock:
+        port = _find_free_port()
+        _allocated_ports[app_name] = port
+    return port
+
+
+def _claim_port(app_name: str, port: int) -> None:
+    """Reserve a FIXED manifest port, refusing one another app already holds.
+
+    ``_find_free_port`` skips ports already in ``_allocated_ports``, but a
+    fixed-port app used to record its port only AFTER spawning. During concurrent
+    boot an auto-port app selecting inside that window could be handed the same
+    number, so one of the two children would die of EADDRINUSE and its backend
+    would stay unavailable. Claiming the fixed port up front closes that window.
+
+    The claim must also FAIL when the port is already reserved: fixed ports are
+    required to sit inside the auto range, so the reverse race is real (the auto
+    app gets there first). Recording it anyway would map two apps to one port and
+    reintroduce exactly the EADDRINUSE crash this is meant to prevent. Re-claiming
+    the SAME app's own port is idempotent, so a retry/restart is never refused.
+
+    Raises:
+        PortUnavailableError: another app already holds *port*.
+    """
+    with _lock:
+        holder = next(
+            (name for name, taken in _allocated_ports.items() if taken == port),
+            None,
+        )
+        if holder is not None and holder != app_name:
+            raise PortUnavailableError(
+                f"app {app_name} declares fixed port {port}, already reserved by {holder}"
+            )
+        _allocated_ports[app_name] = port
 
 
 # ---------------------------------------------------------------------------
@@ -278,17 +442,31 @@ def start_app_backend(app_name: str) -> AppProcess | None:
     try:
         result = _start_app_backend_body(app_name, manifest)
     except Exception:
-        with _lock:
-            cur = _processes.get(app_name)
-            if cur is not None and getattr(cur, "starting", False):
-                _processes.pop(app_name, None)
+        _clear_failed_spawn_state(app_name)
         raise
     if result is None:
-        with _lock:
-            cur = _processes.get(app_name)
-            if cur is not None and getattr(cur, "starting", False):
-                _processes.pop(app_name, None)
+        _clear_failed_spawn_state(app_name)
     return result
+
+
+def _clear_failed_spawn_state(app_name: str) -> None:
+    """Release the STARTING placeholder and any port reservation for a failed spawn.
+
+    The port must be released too, not just the placeholder: the spawn body now
+    reserves/claims a port BEFORE binding it (so concurrent boot cannot hand the
+    same number to two apps), so a failure that left the reservation behind would
+    permanently retire that port from the pool for the rest of the process — and a
+    long-lived gateway retrying a broken app would leak one port per attempt.
+    Only released when the app has no live record, so this can never revoke the
+    reservation of a successfully-running backend.
+    """
+    with _lock:
+        cur = _processes.get(app_name)
+        if cur is not None and getattr(cur, "starting", False):
+            _processes.pop(app_name, None)
+            cur = None
+        if cur is None:
+            _allocated_ports.pop(app_name, None)
 
 
 def _await_inflight_spawn(app_name: str, timeout: float = 20.0) -> AppProcess | None:
@@ -398,10 +576,12 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
             )
             return None
 
-    # Resolve port
+    # Resolve port. An auto port is RESERVED under the lock, not merely probed:
+    # boot spawns run concurrently, so select-then-spawn would hand the same port
+    # to two apps and crash-loop the loser on EADDRINUSE.
     port_str = manifest.backend.port
     if port_str == "auto":
-        port = _find_free_port()
+        port = _reserve_free_port(app_name)
     else:
         try:
             port = int(port_str)
@@ -411,8 +591,18 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                     app_name, port, _MIN_PORT, _MAX_PORT,
                 )
                 return None
+            # Claim it immediately so a concurrently-starting auto-port app cannot
+            # be handed this same number before we bind it. If that app already
+            # took the port, refuse THIS spawn rather than double-book it: the
+            # bind would fail anyway, and reporting it here names the real cause
+            # instead of surfacing an opaque EADDRINUSE crash.
+            try:
+                _claim_port(app_name, port)
+            except PortUnavailableError as exc:
+                logger.error("App %s backend cannot start: %s", app_name, exc)
+                return None
         except ValueError:
-            port = _find_free_port()
+            port = _reserve_free_port(app_name)
 
     # Prepare log directory (needed early for adopt path)
     log_dir = root / "data" / "logs"
@@ -752,11 +942,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     # (the sandbox launcher adds startup latency, so a single 0.4s check can miss a
     # crash); if it exits, surface the real reason from its log and fail (caller clears
     # the placeholder; a fresh spawn then re-runs free-port selection).
-    for _ in range(_SPAWN_SURVIVAL_CHECKS):  # default ~1.6s total
-        time.sleep(_SPAWN_SURVIVAL_INTERVAL)
-        if proc.poll() is not None:
-            break
-    if proc.poll() is not None:
+    if not _survived_spawn(proc, port):
         tail = ""
         try:
             with open(log_path, "r") as _lf:
@@ -1428,7 +1614,11 @@ def start_enabled_app_backends() -> list[str]:
         except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
             logger.warning("Boot skill reconcile failed for app %s: %s", name, exc)
 
-    started: list[str] = []
+    # Vet first, then spawn the admitted set CONCURRENTLY. Vetting is cheap and
+    # order-dependent bookkeeping; spawning is the slow part (each child is polled
+    # for a grace window), so serializing it made boot latency scale linearly with
+    # the number of installed apps.
+    admitted: list[str] = []
     for app_info in apps:
         if not app_info.get("enabled"):
             continue
@@ -1480,36 +1670,105 @@ def start_enabled_app_backends() -> list[str]:
                 except Exception as exc:
                     logger.debug("SEL audit failed for app %s boot deny: %s", name, exc)
                 continue
+        admitted.append(name)
+
+    return _start_backends_concurrently(admitted)
+
+
+def _preclaim_fixed_ports(names: list[str]) -> None:
+    """Reserve every declared fixed port before concurrent spawns are submitted.
+
+    Best-effort and non-fatal: an unreadable manifest or an out-of-range/duplicate
+    port is simply left to the spawn itself, which already validates and reports
+    it. This only removes the ordering hazard; it never decides whether an app may
+    start.
+    """
+
+    for name in names:
         try:
-            ap = start_app_backend(name)
-        except Exception as exc:  # noqa: BLE001 — boot must never crash on a single app's spawn
-            # A per-app spawn failure (e.g. sandbox.wrap_argv fail-closing when no
-            # OS-level sandbox backend is available — macOS 26 removed sandbox-exec)
-            # must NOT take down the whole gateway (Slack + dashboard + every session).
-            # Log, audit, and skip this app — same fail-isolated posture as the
-            # admission re-vet and MCP reconcile branches above.
-            logger.error(
-                "Boot: failed to start backend for app %s: %s — skipping (gateway continues)",
-                name, exc,
-            )
-            try:
-                sel().log_api_access(
-                    caller="gateway", operation="app_backend_boot",
-                    outcome="error", resources=name, error=str(exc),
-                )
-            except Exception as sel_exc:
-                logger.debug("SEL audit failed for app %s boot error: %s", name, sel_exc)
+            manifest = get_app_manifest(name)
+            if manifest is None:
+                continue
+            port_str = str(manifest.backend.port)
+            if not port_str or port_str == "auto":
+                continue
+            port = int(port_str)
+        except (AttributeError, TypeError, ValueError):
             continue
-        if ap:
-            started.append(name)
-            logger.info("Auto-started backend for app %s on port %d", name, ap.port)
-            # MCP re-registration is HEALTH-GATED: the health-check
-            # loop started by start_app_backend calls _gate_mcp_registration once /health
-            # passes, writing the HTTP MCP url with the real allocated port (which may differ
-            # from the manifest's illustrative port). Registering here — before health — is
-            # exactly what could leave a dead url for an enabled-but-never-healthy app and
-            # break every kiro-cli session. EXCEPTION: an adopted already-healthy instance
-            # runs no health loop, so register it synchronously now.
-            if ap.healthy:
-                _gate_mcp_registration(name, ap.port, healthy=True)
+        if not (_MIN_PORT <= port <= _MAX_PORT):
+            continue
+        try:
+            _claim_port(name, port)
+        except PortUnavailableError as exc:
+            # Two apps declaring the same fixed port: a real conflict the spawn
+            # path reports per app. Log once here for the boot-time picture.
+            logger.warning("Boot: fixed-port pre-claim for app %s skipped: %s", name, exc)
+
+
+def _start_backends_concurrently(names: list[str]) -> list[str]:
+    """Spawn the given app backends in parallel; return those that started.
+
+    Each app's spawn blocks on a survival grace window, so starting them one at a
+    time made boot cost roughly N x that window. They are independent (ports are
+    reserved atomically — see ``_reserve_free_port``), so they run concurrently and
+    boot costs about ONE window regardless of app count.
+
+    Declared FIXED ports are reserved up front, before any spawn is submitted.
+    A fixed port is a requirement, not a preference, so it must not be lost to an
+    auto-port app that merely happened to select it first — pre-claiming removes
+    that race entirely, leaving `PortUnavailableError` to signal only a genuine
+    conflict (two apps declaring the same port, or a foreign holder).
+
+    Failure isolation matches the previous serial loop exactly: one app's spawn
+    raising or returning None must never take down the gateway (Slack + dashboard
+    + every session) or affect the other apps.
+    """
+
+    if not names:
+        return []
+
+    _preclaim_fixed_ports(names)
+
+    started: list[str] = []
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(len(names), _BOOT_SPAWN_MAX_WORKERS),
+        thread_name_prefix="app-boot",
+    ) as pool:
+        futures = {pool.submit(start_app_backend, name): name for name in names}
+        for future in concurrent.futures.as_completed(futures):
+            name = futures[future]
+            try:
+                ap = future.result()
+            except Exception as exc:  # noqa: BLE001 — boot must never crash on one app
+                # A per-app spawn failure (e.g. sandbox.wrap_argv fail-closing when
+                # no OS-level sandbox backend is available — macOS 26 removed
+                # sandbox-exec) must NOT take down the whole gateway. Log, audit,
+                # and skip this app — same fail-isolated posture as the admission
+                # re-vet and MCP reconcile branches above.
+                logger.error(
+                    "Boot: failed to start backend for app %s: %s — skipping "
+                    "(gateway continues)",
+                    name, exc,
+                )
+                try:
+                    sel().log_api_access(
+                        caller="gateway", operation="app_backend_boot",
+                        outcome="error", resources=name, error=str(exc),
+                    )
+                except Exception as sel_exc:
+                    logger.debug("SEL audit failed for app %s boot error: %s", name, sel_exc)
+                continue
+            if ap:
+                started.append(name)
+                logger.info("Auto-started backend for app %s on port %d", name, ap.port)
+                # MCP re-registration is HEALTH-GATED: the health-check loop started
+                # by start_app_backend calls _gate_mcp_registration once /health
+                # passes, writing the HTTP MCP url with the real allocated port
+                # (which may differ from the manifest's illustrative port).
+                # Registering here — before health — is exactly what could leave a
+                # dead url for an enabled-but-never-healthy app and break every
+                # kiro-cli session. EXCEPTION: an adopted already-healthy instance
+                # runs no health loop, so register it synchronously now.
+                if ap.healthy:
+                    _gate_mcp_registration(name, ap.port, healthy=True)
     return started

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -433,6 +434,53 @@ def test_both_servers_install_the_shared_host_barrier() -> None:
             f"{name} re-introduced an inline host-validation middleware; "
             "keep the shared factory as the single exemption point"
         )
+
+
+def test_both_servers_warm_the_kiro_readiness_probe() -> None:
+    """Wiring pin: BOTH entrypoints must warm the Kiro readiness probe at boot.
+
+    Without the warm-up the cold probe (two sandboxed kiro-cli subprocesses) runs
+    on the dashboard's FIRST status request instead, which is what left returning
+    users staring at pre-resolution setup chrome. Nothing else fails if these
+    calls are dropped in an upstream sync, so pin them.
+    """
+    import inspect
+
+    from kiro_crew.dashboard import server as server_mod
+
+    for func, name in (
+        (server_mod.start_dashboard, "start_dashboard"),
+        (server_mod.start_api_server, "start_api_server"),
+    ):
+        assert "warm_up()" in inspect.getsource(func), (
+            f"{name} no longer warms the Kiro readiness probe at startup"
+        )
+
+
+@pytest.mark.asyncio
+async def test_ready_never_waits_on_the_kiro_cli_check() -> None:
+    """Readiness must not depend on Kiro CLI state.
+
+    Kiro readiness gates starting a TURN, not serving the dashboard — a
+    signed-out user is meant to get in and see the reauthentication banner — so
+    an unresolved or failing Kiro probe must never hold up readiness (or, by
+    extension, first paint).
+    """
+    for service in (
+        None,
+        SimpleNamespace(),
+        SimpleNamespace(cached_ready=False),
+        SimpleNamespace(warm_up_settled=False),
+    ):
+        state = MagicMock()
+        state.sessions = MagicMock()
+        state.kiro_prerequisite_service = service
+
+        resp = await core_mod.api_ready(_req_with_state(state))
+        assert resp.status == 200, f"{service!r} must not withhold readiness"
+        body = json.loads(resp.body)
+        assert body["ready"] is True
+        assert "kiro_probe" not in body["checks"]
 
 
 def test_api_server_resolves_bind_address_via_shared_helper() -> None:

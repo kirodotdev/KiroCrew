@@ -6,11 +6,13 @@ import os
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew.apps.backend import (
     AppProcess,
+    PortUnavailableError,
     _find_free_port,
     _is_shell_entry,
     get_app_process,
@@ -153,6 +155,471 @@ class TestPortAllocation:
     def test_find_free_port(self):
         port = _find_free_port()
         assert 9100 <= port <= 9200
+
+    def test_concurrent_allocation_never_hands_out_the_same_port(self, monkeypatch):
+        """Parallel boot spawns must not collide on one auto-allocated port.
+
+        Boot starts app backends concurrently, so two apps can select a port at
+        the same time. The allocation is reserve-then-return under one lock; if it
+        were not, both children would bind the same port and the loser would
+        crash-loop with EADDRINUSE.
+        """
+        import threading
+
+        import kiro_crew.apps.backend as bmod
+
+        with bmod._lock:
+            bmod._allocated_ports.clear()
+        ports: list[int] = []
+        errors: list[BaseException] = []
+        start = threading.Barrier(8)
+
+        def _grab(idx: int) -> None:
+            try:
+                start.wait(timeout=5)
+                ports.append(bmod._reserve_free_port(f"racer-{idx}"))
+            except BaseException as exc:  # noqa: BLE001 — surface to the assert
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_grab, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        try:
+            assert not errors, errors
+            assert len(ports) == 8
+            assert len(set(ports)) == 8, f"duplicate port handed out: {sorted(ports)}"
+        finally:
+            with bmod._lock:
+                for i in range(8):
+                    bmod._allocated_ports.pop(f"racer-{i}", None)
+
+
+class TestFixedAndAutoPortIsolation:
+    def test_boot_preclaims_fixed_ports_before_any_spawn(self, monkeypatch):
+        """A declared fixed port must not be lost to a concurrent auto-port app.
+
+        A fixed port is a requirement, not a preference. Without pre-claiming, an
+        auto worker can select that exact number first and the fixed app is then
+        refused even though other ports were free — an enabled backend left down.
+        """
+        import kiro_crew.apps.backend as bmod
+
+        fixed = bmod._MIN_PORT + 3
+        manifests = {
+            "fixed-app": SimpleNamespace(
+                backend=SimpleNamespace(port=str(fixed), entryPoint="s.py")
+            ),
+            "auto-app": SimpleNamespace(
+                backend=SimpleNamespace(port="auto", entryPoint="s.py")
+            ),
+        }
+        monkeypatch.setattr(bmod, "get_app_manifest", lambda n: manifests.get(n))
+
+        seen: dict[str, int | None] = {}
+
+        def _fake_start(app_name: str):
+            if app_name == "auto-app":
+                # What a concurrent auto spawn sees must already exclude `fixed`.
+                seen["reserved"] = bmod._allocated_ports.get("fixed-app")
+            return AppProcess(app_name=app_name, port=1, pid=1, healthy=True)
+
+        monkeypatch.setattr(bmod, "start_app_backend", _fake_start)
+        with bmod._lock:
+            bmod._allocated_ports.clear()
+        try:
+            started = bmod._start_backends_concurrently(["auto-app", "fixed-app"])
+            assert sorted(started) == ["auto-app", "fixed-app"]
+            assert seen.get("reserved") == fixed, (
+                "the fixed port was not reserved before spawns were submitted, so a "
+                "concurrent auto-port app could still take it"
+            )
+        finally:
+            with bmod._lock:
+                bmod._allocated_ports.clear()
+
+    def test_preclaim_tolerates_unreadable_or_invalid_manifests(self, monkeypatch):
+        """Pre-claiming is best-effort: it must never itself fail boot."""
+        import kiro_crew.apps.backend as bmod
+
+        manifests = {
+            "no-manifest": None,
+            "bad-port": SimpleNamespace(backend=SimpleNamespace(port="not-a-number")),
+            "out-of-range": SimpleNamespace(backend=SimpleNamespace(port="1")),
+        }
+        monkeypatch.setattr(bmod, "get_app_manifest", lambda n: manifests.get(n))
+        with bmod._lock:
+            bmod._allocated_ports.clear()
+        try:
+            bmod._preclaim_fixed_ports(list(manifests))  # must not raise
+            assert bmod._allocated_ports == {}
+        finally:
+            with bmod._lock:
+                bmod._allocated_ports.clear()
+
+    def test_a_fixed_port_app_claims_it_before_binding(self, tmp_path, app_env, monkeypatch):
+        """The SPAWN PATH must claim a fixed manifest port, not just record it later.
+
+        Boot spawns concurrently, and a fixed-port app used to record its port only
+        AFTER binding. An auto-port app selecting inside that window could be handed
+        the same number, so one of the two children would die of EADDRINUSE and its
+        backend would stay unavailable. Asserted at the real seam: the port must
+        already be reserved by the time the spawn body runs.
+        """
+        import kiro_crew.apps.backend as bmod
+
+        # Stub the OS sandbox: these tests are about PORT bookkeeping, and
+        # wrap_argv() fail-closes before that code on hosts without a backend
+        # (e.g. native Windows), which would otherwise skip the coverage.
+        monkeypatch.setattr(bmod, "wrap_argv", lambda argv, **k: (list(argv), None))
+        fixed = bmod._MIN_PORT + 7
+        src = tmp_path / "source" / "fixed-app"
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
+            "name": "fixed-app", "version": "1.0.0",
+            "displayName": "Fixed", "description": "fixed port",
+            "backend": {
+                "entryPoint": "server.py",
+                "port": str(fixed),
+                "healthCheck": "/health",
+            },
+        }))
+        (src / "server.py").write_text("import time\ntime.sleep(30)\n")
+        install_app(src)
+
+        # Freeze the spawn right after port resolution and inspect the reservation
+        # a concurrent auto-port app would see at that instant.
+        seen: dict[str, int | None] = {}
+
+        def _spy_popen(*a, **k):
+            seen["reserved"] = bmod._allocated_ports.get("fixed-app")
+            raise OSError("stop here — we only needed the pre-bind state")
+
+        monkeypatch.setattr(bmod.subprocess, "Popen", _spy_popen)
+        bmod.start_app_backend("fixed-app")
+
+        assert seen.get("reserved") == fixed, (
+            "fixed port was not reserved before the bind, so a concurrent auto-port "
+            f"app could be handed {fixed} too (saw {seen.get('reserved')!r})"
+        )
+
+    def test_a_failed_spawn_releases_its_port_reservation(self, tmp_path, app_env, monkeypatch):
+        """A failed spawn must not retire its port from the pool.
+
+        Ports are now reserved BEFORE the bind (so concurrent boot cannot double-
+        allocate), so a failure that kept the reservation would permanently burn
+        that port — and a gateway retrying a broken app would leak one per attempt.
+        """
+        import kiro_crew.apps.backend as bmod
+
+        # Stub the OS sandbox: these tests are about PORT bookkeeping, and
+        # wrap_argv() fail-closes before that code on hosts without a backend
+        # (e.g. native Windows), which would otherwise skip the coverage.
+        monkeypatch.setattr(bmod, "wrap_argv", lambda argv, **k: (list(argv), None))
+        src = _make_app_with_backend(tmp_path, name="doomed-app")
+        install_app(src)
+        # Let the real body run far enough to RESERVE a port, then fail the spawn.
+        # (Stubbing the whole body would reserve nothing and prove nothing.)
+        reserved: dict[str, int] = {}
+        real_reserve = bmod._reserve_free_port
+
+        def _spy_reserve(app_name: str) -> int:
+            port = real_reserve(app_name)
+            reserved[app_name] = port
+            return port
+
+        monkeypatch.setattr(bmod, "_reserve_free_port", _spy_reserve)
+        monkeypatch.setattr(
+            bmod.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("nope"))
+        )
+
+        assert bmod.start_app_backend("doomed-app") is None
+        assert reserved.get("doomed-app"), "the spawn must have reserved a port to release"
+        assert "doomed-app" not in bmod._allocated_ports, (
+            "a failed spawn leaked its port reservation — that port is now retired "
+            "from the pool for the life of the process"
+        )
+        assert "doomed-app" not in bmod._processes
+
+    def test_a_fixed_port_already_taken_by_another_app_is_refused(self):
+        """Claiming a fixed port must FAIL when another app already holds it.
+
+        Fixed manifest ports are required to sit inside the auto range
+        (_MIN_PORT.._MAX_PORT), so under concurrent boot an auto app can reserve
+        the very number a fixed-port app declares. Recording the claim anyway
+        leaves two apps mapped to one port; both children then bind it and the
+        loser dies of EADDRINUSE, staying unavailable.
+        """
+        import kiro_crew.apps.backend as bmod
+
+        with bmod._lock:
+            bmod._allocated_ports.clear()
+        try:
+            taken = bmod._reserve_free_port("auto-app")
+            with pytest.raises(PortUnavailableError):
+                bmod._claim_port("fixed-app", taken)
+            # The loser must not be left holding a duplicate mapping.
+            assert list(bmod._allocated_ports.values()).count(taken) == 1
+            assert "fixed-app" not in bmod._allocated_ports
+        finally:
+            with bmod._lock:
+                bmod._allocated_ports.clear()
+
+    def test_reclaiming_your_own_fixed_port_is_idempotent(self):
+        """A restart/retry of the SAME app must not be refused its own port."""
+        import kiro_crew.apps.backend as bmod
+
+        with bmod._lock:
+            bmod._allocated_ports.clear()
+        try:
+            bmod._claim_port("fixed-app", bmod._MIN_PORT)
+            bmod._claim_port("fixed-app", bmod._MIN_PORT)  # must not raise
+            assert bmod._allocated_ports["fixed-app"] == bmod._MIN_PORT
+        finally:
+            with bmod._lock:
+                bmod._allocated_ports.clear()
+
+    def test_auto_allocation_skips_ports_claimed_by_other_apps(self):
+        """The free-port scan must honor claims, not just live sockets."""
+        import kiro_crew.apps.backend as bmod
+
+        with bmod._lock:
+            bmod._allocated_ports.clear()
+        try:
+            claimed = {bmod._MIN_PORT, bmod._MIN_PORT + 1}
+            for i, port in enumerate(sorted(claimed)):
+                bmod._claim_port(f"claimer-{i}", port)
+            got = bmod._reserve_free_port("late-app")
+            assert got not in claimed
+        finally:
+            with bmod._lock:
+                bmod._allocated_ports.clear()
+
+
+def _slow_never_owns(port, pid):
+    """Stand-in for the real lsof-backed ownership probe's cost (~150ms)."""
+    time.sleep(0.15)
+    return False
+
+
+class TestBootSpawnLatency:
+    def test_survival_check_exits_early_for_a_healthy_child(self, monkeypatch):
+        """A living child must not cost the full survival window.
+
+        The poll used to sleep its whole ~1.6s budget on the happy path and only
+        break when the child DIED, so every app added ~1.6s of dead time to boot.
+        It must return as soon as the child is confirmed alive.
+        """
+        import time as real_time
+
+        import kiro_crew.apps.backend as bmod
+
+        # OUR child owns the listener — the very bind whose failure this guards.
+        monkeypatch.setattr(bmod, "_port_is_listening", lambda port: True)
+        monkeypatch.setattr(bmod, "_spawn_owns_listener", lambda port, pid: True)
+
+        class _Alive:
+            pid = 4242
+
+            def poll(self) -> None:
+                return None
+
+        started = real_time.monotonic()
+        assert bmod._survived_spawn(_Alive(), 9100) is True
+        elapsed = real_time.monotonic() - started
+        budget = bmod._SPAWN_SURVIVAL_CHECKS * bmod._SPAWN_SURVIVAL_INTERVAL
+        assert elapsed < budget, (
+            f"healthy child burned {elapsed:.2f}s of a {budget:.2f}s budget"
+        )
+
+    def test_survival_check_still_detects_a_late_exit(self, monkeypatch):
+        """Liveness alone must NOT end the wait early.
+
+        A child that crashes a few polls in (slow sandboxed interpreter on a loaded
+        host) must be reported as failed. Only OUR child owning the listener —
+        positive evidence that its own bind succeeded — may short-circuit.
+        """
+        import kiro_crew.apps.backend as bmod
+
+        monkeypatch.setattr(bmod.time, "sleep", lambda s: None)
+        monkeypatch.setattr(bmod, "_spawn_owns_listener", lambda port, pid: False)
+
+        class _DiesLate:
+            pid = 4242
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return None if self.calls < 3 else 1
+
+        assert bmod._survived_spawn(_DiesLate(), 9100) is False
+
+    def test_early_exit_requires_our_own_child_to_own_the_listener(self, monkeypatch):
+        """A listener owned by SOMEONE ELSE must not count as our bind.
+
+        Two apps on the same fixed port (or any unrelated process already holding
+        it) would otherwise let the LOSER pass this probe while it is still alive
+        and about to die of EADDRINUSE — reporting a doomed pid as started and
+        routing two apps at one backend.
+        """
+        import kiro_crew.apps.backend as bmod
+
+        monkeypatch.setattr(bmod.time, "sleep", lambda s: None)
+        # Something is listening, but it is not our child (nor its descendant).
+        monkeypatch.setattr(bmod, "_listening_pids", lambda port: [99999])
+        monkeypatch.setattr(bmod, "_pid_is_self_or_descendant_of", lambda pid, ancestor: False)
+
+        class _DiesOfCollision:
+            pid = 4242
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return None if self.calls < 4 else 1
+
+        assert bmod._survived_spawn(_DiesOfCollision(), 9100) is False
+
+    def test_early_exit_accepts_a_listener_owned_by_a_descendant(self, monkeypatch):
+        """The sandbox launcher execs the real server as a CHILD of our pid.
+
+        Ownership must therefore be satisfied by our pid OR any descendant of it,
+        or the early exit would never fire in production (where the listening pid
+        is the launcher's child, not the pid Popen returned).
+        """
+        import kiro_crew.apps.backend as bmod
+
+        monkeypatch.setattr(bmod.time, "sleep", lambda s: None)
+        monkeypatch.setattr(bmod, "_listening_pids", lambda port: [4243])
+        monkeypatch.setattr(
+            bmod, "_pid_is_self_or_descendant_of",
+            lambda pid, ancestor: pid == 4243 and ancestor == 4242,
+        )
+
+        class _Alive:
+            pid = 4242
+
+            def poll(self) -> None:
+                return None
+
+        assert bmod._survived_spawn(_Alive(), 9100) is True
+
+    def test_failure_path_never_exceeds_the_original_budget(self):
+        """The ownership probe must not stretch the wait it is embedded in.
+
+        The probe shells out to lsof (~150ms). Charging it to every poll interval
+        made the FAILURE path take ~2x the original 1.6s budget — i.e. the boot fix
+        would have regressed boot for exactly the apps that are slowest to start.
+        The loop is wall-clock bounded, so a slow probe cannot extend it.
+        """
+        import time as real_time
+
+        import kiro_crew.apps.backend as bmod
+
+        class _Alive:
+            pid = 4242
+
+            def poll(self) -> None:
+                return None
+
+        # A listener exists but is never ours, so every poll runs the slow probe.
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(bmod, "_port_is_listening", lambda port: True)
+            mp.setattr(bmod, "_spawn_owns_listener", _slow_never_owns)
+            started = real_time.monotonic()
+            assert bmod._survived_spawn(_Alive(), 9100) is True
+            elapsed = real_time.monotonic() - started
+
+        budget = bmod._SPAWN_SURVIVAL_CHECKS * bmod._SPAWN_SURVIVAL_INTERVAL
+        assert elapsed < budget * 1.6, (
+            f"failure path took {elapsed:.2f}s against a {budget:.2f}s budget"
+        )
+
+    def test_survival_check_without_a_port_polls_the_full_budget(self):
+        """No port to observe → unchanged behavior (wait out the whole window)."""
+        import time as real_time
+
+        import kiro_crew.apps.backend as bmod
+
+        class _Alive:
+            pid = 4242
+
+            def poll(self) -> None:
+                return None
+
+        started = real_time.monotonic()
+        assert bmod._survived_spawn(_Alive(), None) is True
+        elapsed = real_time.monotonic() - started
+        budget = bmod._SPAWN_SURVIVAL_CHECKS * bmod._SPAWN_SURVIVAL_INTERVAL
+        assert elapsed >= budget * 0.9, "must not short-circuit without a port"
+
+    def test_ownership_check_degrades_to_the_full_poll_without_lsof(self, monkeypatch):
+        """No port->PID tool → cannot prove ownership → keep the old behavior."""
+        import time as real_time
+
+        import kiro_crew.apps.backend as bmod
+
+        monkeypatch.setattr(
+            bmod.platform_compat, "listening_pid_tool_available", lambda: False
+        )
+        # Would short-circuit if consulted; it must not be.
+        monkeypatch.setattr(bmod, "_port_is_listening", lambda port: True)
+        monkeypatch.setattr(bmod, "_spawn_owns_listener", lambda port, pid: True)
+
+        class _Alive:
+            pid = 4242
+
+            def poll(self) -> None:
+                return None
+
+        started = real_time.monotonic()
+        assert bmod._survived_spawn(_Alive(), 9100) is True
+        elapsed = real_time.monotonic() - started
+        budget = bmod._SPAWN_SURVIVAL_CHECKS * bmod._SPAWN_SURVIVAL_INTERVAL
+        assert elapsed >= budget * 0.9, "no ownership tool → must not short-circuit"
+
+    def test_boot_starts_app_backends_concurrently(self, monkeypatch):
+        """Boot must not serialize per-app spawn latency.
+
+        N apps used to cost N x the survival window because each spawn ran to
+        completion before the next began. With 4 apps that is ~6.4s of pure boot
+        latency on the happy path.
+        """
+        import threading
+
+        import kiro_crew.apps.backend as bmod
+
+        names = [f"par-app-{i}" for i in range(4)]
+        concurrent = threading.Barrier(len(names), timeout=10)
+
+        def _fake_start(app_name: str):
+            # Every spawn must be in flight at the same moment, or this blocks
+            # until the barrier times out and raises.
+            concurrent.wait()
+            return AppProcess(app_name=app_name, port=9100, pid=1, healthy=True)
+
+        monkeypatch.setattr(bmod, "start_app_backend", _fake_start)
+        started = bmod._start_backends_concurrently(names)
+        assert sorted(started) == sorted(names)
+
+    def test_concurrent_boot_isolates_a_single_app_failure(self, monkeypatch):
+        """One app's spawn failure must never take down the others (or boot)."""
+        import kiro_crew.apps.backend as bmod
+
+        def _fake_start(app_name: str):
+            if app_name == "bad-app":
+                raise RuntimeError("sandbox unavailable")
+            if app_name == "none-app":
+                return None
+            return AppProcess(app_name=app_name, port=9100, pid=1, healthy=True)
+
+        monkeypatch.setattr(bmod, "start_app_backend", _fake_start)
+        started = bmod._start_backends_concurrently(["ok-app", "bad-app", "none-app"])
+        assert started == ["ok-app"]
 
 
 class TestAppProcess:

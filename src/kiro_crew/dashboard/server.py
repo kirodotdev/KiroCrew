@@ -1331,6 +1331,12 @@ async def start_dashboard(
         assume_ready=assume_kiro_ready,
     )
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
+    # Probe Kiro readiness during boot rather than on the dashboard's first
+    # status request: the cold probe spawns sandboxed CLI subprocesses and can
+    # take seconds, which is what made the first-run setup chrome visible to
+    # returning users. Fire-and-forget — a warm-up is never a boot dependency,
+    # and the task is cancelled by the service's shutdown hook.
+    app["kiro_prerequisite_service"].warm_up()
     state.load_folders()
     state.load_tags()
     app["port"] = port
@@ -2528,6 +2534,12 @@ async def start_api_server(
         assume_ready=assume_kiro_ready,
     )
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
+    # Probe Kiro readiness during boot rather than on the dashboard's first
+    # status request: the cold probe spawns sandboxed CLI subprocesses and can
+    # take seconds, which is what made the first-run setup chrome visible to
+    # returning users. Fire-and-forget — a warm-up is never a boot dependency,
+    # and the task is cancelled by the service's shutdown hook.
+    app["kiro_prerequisite_service"].warm_up()
     state.load_folders()
     state.load_tags()
     app["port"] = port

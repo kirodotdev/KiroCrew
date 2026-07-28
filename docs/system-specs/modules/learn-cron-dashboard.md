@@ -1,6 +1,6 @@
 # Self-Learning, Cron & Dashboard Modules
 
-Last Updated: 2026-07-27 (provider CLI resolution relaxed to a user-trust model: `gh`/`glab` are resolved from the well-known install dirs and then the ambient `PATH`, the user's own Homebrew/asdf install is accepted, and only foreign-owned, world-writable, or agent-writable-tree binaries are refused — `KIROCREW_PROVIDER_BIN_STRICT=1` restores the old root-owned rule. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP)
+Last Updated: 2026-07-27 (the Kiro prerequisite gate no longer flashes first-run setup at returning users: the dashboard mounts immediately with sessions paused instead of rendering setup chrome for an unresolved check, `initial_setup_complete` is readable before any probe (derived from the data home) and survives the probe-failure backstop. Gateway boot also no longer scales with installed-app count — app backends spawn concurrently with an ownership-confirmed early exit (~5.6s → ~2.9s on one real home). Prior — provider CLI resolution relaxed to a user-trust model: `gh`/`glab` are resolved from the well-known install dirs and then the ambient `PATH`, the user's own Homebrew/asdf install is accepted, and only foreign-owned, world-writable, or agent-writable-tree binaries are refused — `KIROCREW_PROVIDER_BIN_STRICT=1` restores the old root-owned rule. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP)
 
 ## Overview
 
@@ -512,6 +512,78 @@ control is disabled while readiness is false; folder-management controls remain
 available because they do not start an ACP session. If readiness is lost between
 a turn and its queued successor, the queued card remains intact and the current
 turn completes its normal `done`/idle lifecycle.
+
+**An unresolved check is never rendered as "setup required."** The cold probe
+spawns two sandboxed `kiro-cli` subprocesses (`--version`, then `whoami`), which
+takes long enough to read; rendering first-run setup chrome across that window
+flashed the full setup screen at returning users, who then watched it disappear.
+Two layers close that window:
+
+- **The dashboard never waits on the check.** Kiro readiness gates starting a
+  *turn*, not using Kiro Crew, so an unresolved check mounts the app immediately
+  with **sessions paused** (`statusQuery.isPending` → children under
+  `KiroReadinessProvider ready={false}`). Whichever way it resolves, the user is
+  already where they need to be: signed-out surfaces the reauthentication banner,
+  ready unpauses sessions, and only a *confirmed* first-run status shows setup.
+  `/api/ready` likewise does **not** gate on Kiro state — that would only delay
+  first paint (and would not do what it appears to: the desktop splash polls
+  `/api/status` and accepts any status `< 500`). `warm_up()` stays
+  fire-and-forget and failure-contained, and its task is cancelled by the service
+  shutdown hook; it yields `_WARM_UP_DELAY_SECS` first because its `kiro-cli`
+  spawn racing the concurrent app-backend spawns measurably lengthened and
+  destabilized boot (~2.7s → 2.8-5.6s on one real home). The delay is injectable
+  so tests need not sleep it.
+- **First-run completion is known without probing** — derived from the data home
+  at construction (`initial_setup_complete`) and echoed by the probe-failure
+  backstop, so a failed probe cannot demote a returning user to first-run. The SPA
+  also remembers completion locally (`kirocrew:kiro-setup-complete`) so a COLD
+  load with an empty query cache can still tell a returning user from a genuine
+  first run. That memory only ever suppresses first-run chrome — it never grants
+  session readiness, which stays server-driven via `ready`.
+
+Accordingly, a status-check failure for a user who has completed setup keeps the
+dashboard mounted (sessions paused) behind a nonblocking "Could not check Kiro
+CLI" banner with a **Check again** control, instead of a full-screen setup error.
+A genuine first run — nothing remembered, no established home — still gets the
+full setup gate.
+
+**Boot latency: app backends start in parallel.** `start_enabled_app_backends`
+vets apps serially (cheap) but spawns the admitted set **concurrently**
+(`_start_backends_concurrently`, capped at `_BOOT_SPAWN_MAX_WORKERS`), and each
+spawn's post-fork survival check (`_survived_spawn`) ends as soon as **our own
+child owns the listening socket** rather than always sleeping its full ~1.6s grace
+window. Previously both costs were paid serially per app, so gateway boot grew by
+~1.6s for every installed app; measured on one real data home, boot to
+`/api/ready` went from ~5.6s to ~2.9s. Three invariants make this safe:
+
+- Ports are claimed **before the bind, under the lock** — auto ports via
+  `_reserve_free_port`, and a fixed manifest port via `_claim_port`. Concurrent
+  select-then-spawn would hand the same port to two apps, and the loser would
+  crash-loop on EADDRINUSE — the exact failure the survival check exists to catch.
+  The fixed-port case matters even though every in-tree app is `"auto"`:
+  `_find_free_port` skips only ports already in `_allocated_ports`, so a fixed
+  port recorded after binding is invisible to a concurrent auto allocation.
+  Conversely, because a port is now reserved before it is bound, a FAILED spawn
+  must release it (`_clear_failed_spawn_state`) or that port is retired from the
+  pool for the life of the process — one leaked port per retry of a broken app.
+  The release is conditional on the app having no live record, so it can never
+  revoke a running backend's reservation.
+- The early exit requires **ownership**, not just an open port: `_spawn_owns_listener`
+  attributes the LISTEN socket to our pid or a descendant (the sandbox launcher
+  execs the real server as a child). "Something is listening" is a different claim
+  from "our child bound it" — with a fixed manifest port, another app or an
+  unrelated process may already hold it, making our child the one about to die of
+  EADDRINUSE; accepting that would report a doomed pid as started and route two
+  apps at one backend. Mere elapsed liveness is likewise not accepted, so a child
+  that crashes a few polls in is still caught. With no port to observe, or no
+  port→PID tool on the host, the check polls the full budget exactly as before.
+- The ownership probe shells out to `lsof` (~150ms), so it sits behind a cheap
+  loopback-connect gate and the loop is **wall-clock bounded**: charging the probe
+  to every poll interval made the failure path take ~2× the original budget, i.e.
+  it regressed boot for exactly the apps slowest to start.
+
+Per-app failure isolation is unchanged: one app raising or returning `None` never
+affects the others or boot.
 
 The query fails open for a rolling deployment whose older gateway does not yet
 provide the endpoint, preserving dashboard access during frontend/backend

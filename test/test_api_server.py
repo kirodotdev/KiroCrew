@@ -236,6 +236,10 @@ class TestStartApiServerWiring:
             assert runner.app["kiro_prerequisite_service"] is service
             assert state.kiro_prerequisite_service is service
             service_factory.assert_called_once_with(assume_ready=True)
+            # Boot-time readiness warm-up must stay wired: without it the cold
+            # probe runs on the dashboard's first status request instead, and
+            # nothing else in the suite would notice it disappearing.
+            service.warm_up.assert_called_once_with()
             # start_api_server publishes readiness only at its final return
             # boundary, after bind and secret persistence complete.
             assert state.ready is True

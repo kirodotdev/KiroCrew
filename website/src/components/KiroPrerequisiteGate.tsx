@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
@@ -20,8 +20,9 @@ import {
   type KiroPrerequisiteStatus,
 } from '../api/client'
 import { KiroReadinessProvider } from '../providers/KiroReadinessContext'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { KiroGhost } from './KiroGhost'
-import { Badge, Btn, Card, SendBtn, Skeleton } from './ui'
+import { Badge, Btn, Card, SendBtn } from './ui'
 
 const QUERY_KEY = ['kiro-prerequisite'] as const
 
@@ -273,6 +274,49 @@ function TerminalLoginCommand() {
   )
 }
 
+// Shown when the status check itself fails for a user the gateway has already
+// confirmed completed setup. Their dashboard stays mounted (sessions paused)
+// rather than being replaced by first-run setup chrome they have no use for.
+function UnavailableStatusBanner({
+  message,
+  retrying,
+  onRetry,
+}: {
+  message: string
+  retrying: boolean
+  onRetry: () => void
+}) {
+  return (
+    <aside
+      className="pointer-events-none fixed inset-x-3 top-3 z-[100] mx-auto max-w-4xl rounded-xl border border-warn/30 bg-card/95 p-4 shadow-[0_18px_55px_rgba(0,0,0,.24)] backdrop-blur-md"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-warn/10 text-warn">
+            <AlertTriangle className="lucide-inline" />
+          </span>
+          <div className="min-w-0">
+            <p className="font-semibold text-text-strong">Could not check Kiro CLI.</p>
+            <p className="mt-1 text-[13px] leading-relaxed text-muted">
+              Sessions are paused until the gateway check succeeds. Your artifacts, settings, and
+              history remain available.
+            </p>
+            <p className="mt-2 text-[13px] text-danger">{message}</p>
+          </div>
+        </div>
+        <div className="pointer-events-auto flex shrink-0 items-center gap-2 sm:justify-end">
+          <Btn type="button" disabled={retrying} onClick={onRetry}>
+            <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
+            Check again
+          </Btn>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
 function ReauthenticationBanner({
   status,
   busy,
@@ -410,18 +454,16 @@ function OwnerSetupRequired({
   )
 }
 
-function LoadingGate() {
-  return (
-    <SetupShell cardLabel="Checking Kiro CLI">
-      <div className="space-y-4 p-7 sm:p-10 lg:p-12">
-        <Skeleton className="h-4 w-28" />
-        <Skeleton className="h-10 w-64 max-w-full" />
-        <Skeleton className="h-5 w-full max-w-lg" />
-        <Skeleton className="mt-8 h-44 w-full" />
-        <Skeleton className="h-44 w-full" />
-      </div>
-    </SetupShell>
-  )
+// Local memory of first-run completion, so a COLD load (empty React Query
+// cache) can tell a returning user from a genuine first run before — or
+// without — a successful status response. The gateway remains the authority:
+// this only ever suppresses first-run setup chrome for someone the gateway
+// already confirmed had completed setup, and it never grants session
+// readiness (that stays server-driven via `ready`).
+const SETUP_COMPLETE_KEY = 'kirocrew:kiro-setup-complete'
+
+function rememberedSetupComplete(): boolean {
+  return safeGetItem(SETUP_COMPLETE_KEY) === '1'
 }
 
 function SetupStatusError({
@@ -478,33 +520,71 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     onSuccess: updateStatus,
   })
 
-  if (statusQuery.isPending) return <LoadingGate />
+  // Remember that this gateway has completed first-run setup, so a later COLD
+  // load can classify the user before (or without) a successful status
+  // response. `ready` implies setup is done, and covers gateways that report
+  // readiness without the first-run bit.
+  const setupComplete = !!statusQuery.data
+    && (statusQuery.data.initial_setup_complete || statusQuery.data.ready)
+  useEffect(() => {
+    if (setupComplete) safeSetItem(SETUP_COMPLETE_KEY, '1')
+  }, [setupComplete])
+
+  // An unresolved check is UNKNOWN — never "setup required", and never a reason
+  // to withhold the dashboard. Mount it immediately with sessions PAUSED: Kiro
+  // readiness is not a prerequisite for using Kiro Crew, only for starting a
+  // turn. Whichever way the check then resolves, the user is already where they
+  // need to be — signed out surfaces the reauthentication banner, ready unpauses
+  // sessions, and only a CONFIRMED genuine first run shows setup.
+  //
+  // This is what removes the flash at its root: previously this window rendered
+  // the setup-branded shell, so every launch showed first-run setup for as long
+  // as the gateway's two kiro-cli subprocesses took to answer. Sessions stay
+  // paused rather than optimistically enabled, and the server-side gate
+  // (reject_if_kiro_not_ready) independently 503s any turn regardless of what
+  // the client believes.
+  if (statusQuery.isPending) {
+    return <KiroReadinessProvider ready={false}>{children}</KiroReadinessProvider>
+  }
   const retrying = statusQuery.isFetching
   const retryStatus = () => { void statusQuery.refetch() }
   const prerequisite = statusQuery.data
 
   // An older gateway has no prerequisite API and must retain its existing
-  // dashboard behavior. A live gateway error is different: keep setup visible
-  // with a retry path so users do not fall through into broken chat sessions.
-  if (statusQuery.isError && !prerequisite) {
-    if (statusQuery.error instanceof ApiError && statusQuery.error.status === 404) {
-      return <KiroReadinessProvider ready>{children}</KiroReadinessProvider>
+  // dashboard behavior.
+  if (
+    statusQuery.isError
+    && !prerequisite
+    && statusQuery.error instanceof ApiError
+    && statusQuery.error.status === 404
+  ) {
+    return <KiroReadinessProvider ready>{children}</KiroReadinessProvider>
+  }
+  // No usable status: either a live gateway error or an unusable body. Both are
+  // "we cannot tell", so they share one resolution — keep setup visible with a
+  // retry path so users do not fall through into broken chat sessions, EXCEPT
+  // for a returning user, who must never be shown first-run chrome just because
+  // the check failed on a cold load. They keep their dashboard behind the same
+  // nonblocking banner an established install gets, sessions paused until the
+  // gateway confirms readiness again.
+  if (!prerequisite) {
+    const message = statusQuery.isError
+      ? (statusQuery.error?.message || 'The gateway returned an unexpected error.')
+      : 'The gateway returned no prerequisite status.'
+    if (rememberedSetupComplete()) {
+      return (
+        <>
+          <KiroReadinessProvider ready={false}>{children}</KiroReadinessProvider>
+          <UnavailableStatusBanner
+            message={message}
+            retrying={retrying}
+            onRetry={retryStatus}
+          />
+        </>
+      )
     }
     return (
-      <SetupStatusError
-        message={statusQuery.error.message || 'The gateway returned an unexpected error.'}
-        retrying={retrying}
-        onRetry={retryStatus}
-      />
-    )
-  }
-  if (!prerequisite) {
-    return (
-      <SetupStatusError
-        message="The gateway returned no prerequisite status."
-        retrying={retrying}
-        onRetry={retryStatus}
-      />
+      <SetupStatusError message={message} retrying={retrying} onRetry={retryStatus} />
     )
   }
   if (prerequisite.ready) {

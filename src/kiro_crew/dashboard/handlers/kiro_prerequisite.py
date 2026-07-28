@@ -22,15 +22,26 @@ logger = logging.getLogger(__name__)
 _LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
 
 
-def _not_ready_snapshot() -> dict[str, Any]:
+def _not_ready_snapshot(initial_setup_complete: bool = False) -> dict[str, Any]:
     """A retryable not-ready snapshot for when a status probe cannot run.
 
     Shaped exactly like ``KiroPrerequisiteService.snapshot()`` (built from the
     same dataclasses so it cannot drift), it reports the CLI as installed but
     not signed in so the dashboard shows a retry path rather than a 500 flash.
+
+    ``initial_setup_complete`` is carried through from the service so a failed
+    probe does not demote a returning user to first-run — reporting ``False``
+    here makes the SPA restore the full-screen first-run setup gate for someone
+    who finished setup long ago.
     """
 
-    result: dict[str, Any] = asdict(PrerequisiteStatus(platform="gateway", installed=True))
+    result: dict[str, Any] = asdict(
+        PrerequisiteStatus(
+            platform="gateway",
+            installed=True,
+            initial_setup_complete=initial_setup_complete,
+        )
+    )
     result["operation"] = asdict(
         OperationStatus(
             status="failed",
@@ -117,8 +128,10 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
         # full-screen "could not check Kiro CLI" gate. Report a retryable
         # not-ready snapshot so the dashboard keeps polling. (The probe layer
         # already degrades most failures; this is the last-resort backstop.)
+        # The first-run bit is read from the data home, not the probe, so it
+        # survives this path and keeps a returning user out of first-run setup.
         logger.warning("Kiro prerequisite status probe failed", exc_info=True)
-        snapshot = _not_ready_snapshot()
+        snapshot = _not_ready_snapshot(bool(service.initial_setup_complete))
     if _is_dashboard_owner(request):
         return web.json_response({**snapshot, "setup_allowed": True})
 

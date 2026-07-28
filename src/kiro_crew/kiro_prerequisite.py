@@ -64,6 +64,9 @@ _INSTALL_TIMEOUT_SECS = 5 * 60
 _LOGIN_TIMEOUT_SECS = 10 * 60
 _PROBE_TIMEOUT_SECS = 10
 _PROBE_CACHE_SECS = 2.0
+# Yield before the boot-time readiness probe so its kiro-cli spawn does not
+# contend with the concurrent app-backend spawns on the boot-critical path.
+_WARM_UP_DELAY_SECS = 3.0
 _SESSION_GUARD_REPROBE_SECS = 30.0
 _TERMINATION_GRACE_SECS = 2.0
 _WINDOWS_DESCENDANT_POLL_SECS = 0.05
@@ -1463,6 +1466,7 @@ class KiroPrerequisiteService:
         audit_writer: AuditWriter | None = None,
         clock: Callable[[], float] | None = None,
         assume_ready: bool = False,
+        warm_up_delay: float = _WARM_UP_DELAY_SECS,
     ) -> None:
         self._platform = platform_name or sys.platform
         self._environ = environ if environ is not None else os.environ
@@ -1538,6 +1542,9 @@ class KiroPrerequisiteService:
         self._operation = OperationStatus()
         self._task: asyncio.Task[None] | None = None
         self._session_probe_task: asyncio.Task[PrerequisiteStatus] | None = None
+        self._warm_up_task: asyncio.Task[None] | None = None
+        # Injectable so tests need not sleep out the real boot-contention delay.
+        self._warm_up_delay = warm_up_delay
         self._probe_lock = asyncio.Lock()
         self._last_probe_at = 0.0
         self._has_probed = False
@@ -1548,10 +1555,57 @@ class KiroPrerequisiteService:
     def operation_running(self) -> bool:
         return self._task is not None and not self._task.done()
 
+    @property
+    def initial_setup_complete(self) -> bool:
+        """Whether this data home has already completed first-run setup.
+
+        Derived from the data home at construction, so it is available BEFORE
+        any CLI probe runs. Callers use it to classify a returning user without
+        waiting on the probe, whose cold path spawns two sandboxed subprocesses
+        (``--version``, then ``whoami``) and takes long enough for the dashboard
+        to flash first-run setup chrome at someone who has used the app for
+        months.
+        """
+
+        return self._initial_setup_complete
+
     def _snapshot_dict(self) -> dict[str, Any]:
         result = asdict(self._status)
         result["operation"] = asdict(self._operation)
         return result
+
+    def warm_up(self) -> asyncio.Task[None] | None:
+        """Resolve readiness in the background shortly after gateway start.
+
+        The probe spawns two ``kiro-cli`` subprocesses, so it yields
+        ``_WARM_UP_DELAY_SECS`` first rather than running inline: racing those
+        spawns against the concurrent app-backend spawns measurably lengthened and
+        destabilized boot (~2.7s → 2.8-5.6s on one real home). Running it at all
+        means the answer is usually already there when a session is first started.
+
+        Returns the task so callers (and tests) can await it; startup itself does
+        NOT await it, and failures are contained. A warm-up is strictly an
+        optimization: the dashboard renders without waiting for it (a signed-out
+        user gets the reauthentication banner), so it must never delay boot.
+        """
+
+        if self._warm_up_task is not None:
+            return self._warm_up_task
+
+        async def _warm() -> None:
+            try:
+                if self._warm_up_delay > 0:
+                    await asyncio.sleep(self._warm_up_delay)
+                await self._probe()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The lazy probe path stays authoritative and will retry, so a
+                # failed warm-up must not fail gateway startup.
+                logger.warning("Kiro readiness warm-up failed", exc_info=True)
+
+        self._warm_up_task = asyncio.create_task(_warm())
+        return self._warm_up_task
 
     async def snapshot(self, *, force: bool = False) -> dict[str, Any]:
         if not self.operation_running:
@@ -2144,7 +2198,7 @@ class KiroPrerequisiteService:
 
     async def close(self) -> None:
         tasks: list[asyncio.Task[Any]] = []
-        for task in (self._task, self._session_probe_task):
+        for task in (self._task, self._session_probe_task, self._warm_up_task):
             if task is not None and not task.done() and task not in tasks:
                 task.cancel()
                 tasks.append(task)

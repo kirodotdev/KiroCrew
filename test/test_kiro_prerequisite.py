@@ -1548,7 +1548,11 @@ class TestKiroPrerequisiteWorkflow:
             audit_writer=_no_audit,
             clock=lambda: now[0],
         )
+        # Simulate a completed, VERIFIED probe: this test exercises the
+        # background-refresh path, which is only reached once the session gate's
+        # one-time real verification has already happened.
         service._has_probed = True
+        service._has_verified = True
         service._last_probe_at = now[0]
         now[0] += prerequisite_module._SESSION_GUARD_REPROBE_SECS + 0.1
 
@@ -1681,6 +1685,138 @@ class TestKiroPrerequisiteWorkflow:
         )
 
         assert service._initial_setup_complete is True
+
+    def test_established_installation_is_reportable_before_any_probe(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A returning user is identifiable without running a CLI probe.
+
+        The full-screen setup gate must never flash at a returning user. The
+        first-run bit is derived from the data home at construction, so it is
+        already known before the (multi-second, subprocess-backed) probe runs —
+        expose it so the dashboard can skip setup chrome on the very first
+        response.
+        """
+
+        data_home = tmp_path / "data-home"
+        session = data_home / "sessions" / "existing.jsonl"
+        session.parent.mkdir(parents=True)
+        session.write_text('{"role":"user"}\n', encoding="utf-8")
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            data_home=data_home,
+            audit_writer=_no_audit,
+        )
+
+        assert service.initial_setup_complete is True
+        assert service._has_probed is False
+
+    @pytest.mark.asyncio
+    async def test_warm_up_probes_in_background_without_blocking_caller(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Boot-time warm-up moves the cold probe off the first request.
+
+        The cold probe spawns sandboxed subprocesses and can take seconds. Doing
+        it lazily on the dashboard's first status call is what made the setup
+        gate visible long enough to read. Warming up at gateway start makes that
+        first call a cache hit, without making startup itself wait.
+        """
+
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.authenticated = True
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+            warm_up_delay=0,
+        )
+
+        warm_up = service.warm_up()
+        assert warm_up is not None
+        await warm_up
+
+        assert service._has_probed is True
+        assert service._status.ready is True
+        # The warmed result serves the first dashboard request from cache.
+        before = len(runtime.calls)
+        assert (await service.snapshot())["ready"] is True
+        assert len(runtime.calls) == before
+
+    @pytest.mark.asyncio
+    async def test_session_gate_probes_once_then_reuses_the_result(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The session gate probes once, not per turn — the hot path stays fast."""
+
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.authenticated = True
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+        )
+
+        assert await service.session_ready() is True
+        after_first = len(runtime.calls)
+        assert after_first, "the first session check must actually probe"
+
+        # Subsequent turns reuse the verified state (within the freshness window).
+        assert await service.session_ready() is True
+        assert len(runtime.calls) == after_first
+
+    @pytest.mark.asyncio
+    async def test_warm_up_failure_is_contained(self, tmp_path: Path) -> None:
+        """A failing warm-up must never take the gateway down."""
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            audit_writer=_no_audit,
+            warm_up_delay=0,
+        )
+
+        async def exploding_probe(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("probe exploded")
+
+        service._probe = exploding_probe  # type: ignore[method-assign]
+
+        warm_up = service.warm_up()
+        assert warm_up is not None
+        await warm_up  # must not raise
+
+    def test_first_run_home_reports_no_established_installation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            audit_writer=_no_audit,
+            warm_up_delay=0,
+        )
+
+        assert service.initial_setup_complete is False
 
     @pytest.mark.skipif(sys.platform == "win32", reason="requires the POSIX Kiro installer")
     @pytest.mark.asyncio
@@ -3194,6 +3330,7 @@ class TestKiroPrerequisiteHandlers:
             audit_writer=_no_audit,
         )
         service._has_probed = True
+        service._has_verified = True  # pre-verified: not exercising the gate's own probe
         broadcasts: list[tuple[str, dict[str, Any]]] = []
         refreshes: list[str] = []
         state = SimpleNamespace(
@@ -3235,6 +3372,7 @@ class TestKiroPrerequisiteHandlers:
             audit_writer=_no_audit,
         )
         service._has_probed = True
+        service._has_verified = True  # pre-verified: not exercising the gate's own probe
         state = _make_state(tmp_path)
         state.kiro_prerequisite_service = service
         state.slack_client = MagicMock()
@@ -3269,6 +3407,7 @@ class TestKiroPrerequisiteHandlers:
             clock=lambda: 1.0,
         )
         service._has_probed = True
+        service._has_verified = True  # pre-verified: not exercising the gate's own probe
         service._last_probe_at = 1.0
         messages = [
             {"role": "user", "content": "question", "ts": "u1"},
@@ -3335,6 +3474,7 @@ class TestKiroPrerequisiteHandlers:
             clock=lambda: 1.0,
         )
         service._has_probed = True
+        service._has_verified = True  # pre-verified: not exercising the gate's own probe
         service._last_probe_at = 1.0
         service._status.ready = True
 
@@ -3532,6 +3672,45 @@ class TestKiroPrerequisiteHandlers:
             ):
                 response = await getattr(client, method)(path)
                 assert response.status == 403
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_backstop_preserves_returning_user_state(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed probe must not demote a returning user to first-run.
+
+        The last-resort backstop previously reported
+        ``initial_setup_complete=False``, which makes the SPA restore the
+        full-screen first-run setup gate for someone who has used the app for
+        months. Carry the construction-time bit through instead.
+        """
+
+        data_home = tmp_path / "data-home"
+        session = data_home / "sessions" / "existing.jsonl"
+        session.parent.mkdir(parents=True)
+        session.write_text('{"role":"user"}\n', encoding="utf-8")
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            data_home=data_home,
+            audit_writer=_no_audit,
+        )
+
+        async def exploding_snapshot() -> dict[str, Any]:
+            raise RuntimeError("probe exploded")
+
+        monkeypatch.setattr(service, "snapshot", exploding_snapshot)
+
+        app = self._app(service, app_claim="")
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get("/api/kiro-prerequisite")
+            assert response.status == 200
+            body = await response.json()
+            assert body["ready"] is False
+            assert body["initial_setup_complete"] is True
 
     @pytest.mark.asyncio
     async def test_local_bootstrap_identity_is_owner_when_unconfigured(

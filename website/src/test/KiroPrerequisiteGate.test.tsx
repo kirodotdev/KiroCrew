@@ -60,6 +60,10 @@ function SessionReadinessProbe() {
 describe('KiroPrerequisiteGate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // The gate remembers first-run completion in localStorage, so each case
+    // must start from a clean slate or a prior test's completion would leak in
+    // and silently bypass the setup assertions.
+    localStorage.clear()
   })
 
   it('keeps a slow readiness poll after setup so later sign-out is detected', () => {
@@ -90,8 +94,10 @@ describe('KiroPrerequisiteGate', () => {
       </KiroPrerequisiteGate>,
     )
 
-    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
-    expect(screen.getByText('Sessions ready')).toBeInTheDocument()
+    // The dashboard mounts before the check resolves, so await the
+    // resolution-specific signal (sessions unpausing), not the dashboard itself.
+    expect(await screen.findByText('Sessions ready')).toBeInTheDocument()
+    expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
     expect(screen.queryByText('Set up Kiro')).not.toBeInTheDocument()
   })
 
@@ -276,9 +282,11 @@ describe('KiroPrerequisiteGate', () => {
       </KiroPrerequisiteGate>,
     )
 
-    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
+    // Await the banner (the resolved-status signal) — the dashboard is mounted
+    // from the first render now, so it is not a resolution signal.
+    expect(await screen.findByText('Kiro Crew needs Kiro sign-in.')).toBeInTheDocument()
+    expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
     expect(screen.getByText('Sessions paused')).toBeInTheDocument()
-    expect(screen.getByText('Kiro Crew needs Kiro sign-in.')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveClass('pointer-events-none')
     fireEvent.click(screen.getByRole('button', { name: 'Sign in to Kiro' }))
     await waitFor(() => expect(api.loginKiroPrerequisite).toHaveBeenCalledOnce())
@@ -319,8 +327,9 @@ describe('KiroPrerequisiteGate', () => {
       <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
     )
 
-    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
-    expect(screen.getByText(/gateway owner needs to restore Kiro access/)).toBeInTheDocument()
+    expect(await screen.findByText(/gateway owner needs to restore Kiro access/))
+      .toBeInTheDocument()
+    expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()
   })
 
@@ -332,6 +341,78 @@ describe('KiroPrerequisiteGate', () => {
     )
 
     expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
+  })
+
+  it('mounts the dashboard immediately while the first check is pending', async () => {
+    // The bug: the pending state rendered the full-screen SETUP shell ("Your
+    // crew is almost ready.") for the whole first round trip — which is slow
+    // because the gateway probe shells out to kiro-cli twice. A returning user
+    // saw the first-run setup screen flash and vanish.
+    //
+    // Kiro readiness gates starting a TURN, not using the dashboard, so an
+    // unresolved check must not withhold the app: mount it with sessions paused
+    // and let the resolved status add the reauth banner / unpause / (only for a
+    // confirmed first run) show setup.
+    let resolveStatus: (value: KiroPrerequisiteStatus) => void = () => {}
+    vi.mocked(api.kiroPrerequisite).mockReturnValue(
+      new Promise<KiroPrerequisiteStatus>(resolve => { resolveStatus = resolve }),
+    )
+
+    renderWithProviders(
+      <KiroPrerequisiteGate>
+        <div>Dashboard loaded</div>
+        <SessionReadinessProbe />
+      </KiroPrerequisiteGate>,
+    )
+
+    // No waiting screen and no setup chrome — the app itself is already up.
+    expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
+    expect(screen.queryByText('Your crew is almost ready.')).not.toBeInTheDocument()
+    expect(screen.queryByText('One quick setup')).not.toBeInTheDocument()
+    // Sessions stay paused until the gateway confirms readiness.
+    expect(screen.getByText('Sessions paused')).toBeInTheDocument()
+
+    resolveStatus(status({ installed: true, authenticated: true, ready: true }))
+    expect(await screen.findByText('Sessions ready')).toBeInTheDocument()
+  })
+
+  it('adds the reauth banner when a pending check resolves to signed-out', async () => {
+    let resolveStatus: (value: KiroPrerequisiteStatus) => void = () => {}
+    vi.mocked(api.kiroPrerequisite).mockReturnValue(
+      new Promise<KiroPrerequisiteStatus>(resolve => { resolveStatus = resolve }),
+    )
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+    expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
+
+    resolveStatus(status({ installed: true, initial_setup_complete: true }))
+
+    expect(await screen.findByText('Kiro Crew needs Kiro sign-in.')).toBeInTheDocument()
+    expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
+    expect(screen.queryByText('Your crew is almost ready.')).not.toBeInTheDocument()
+  })
+
+  it('never shows setup chrome to a genuine-first-run user until confirmed', async () => {
+    // The setup gate is reachable ONLY from a resolved status that actually says
+    // first-run. While unresolved, even a true first-time user sees the app
+    // rather than a setup screen that might turn out to be wrong.
+    let resolveStatus: (value: KiroPrerequisiteStatus) => void = () => {}
+    vi.mocked(api.kiroPrerequisite).mockReturnValue(
+      new Promise<KiroPrerequisiteStatus>(resolve => { resolveStatus = resolve }),
+    )
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(screen.queryByText('Set up Kiro')).not.toBeInTheDocument()
+
+    resolveStatus(status())
+
+    expect(await screen.findByText('Set up Kiro')).toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
   })
 
   it('keeps setup visible and offers retry for a live gateway error', async () => {
@@ -377,5 +458,88 @@ describe('KiroPrerequisiteGate', () => {
     expect(asSentence('Is the gateway running?')).toBe('Is the gateway running?')
     expect(asSentence('  Token required  ')).toBe('Token required.')
     expect(asSentence('')).toBe('')
+  })
+
+  it('remembers a returning user across a cold start with an erroring gateway', async () => {
+    // Second flash path, independent of the pending one: on a cold load (empty
+    // React Query cache) a gateway error has no `prerequisite` to fall back on,
+    // so the gate rendered full-screen setup-branded chrome at a user who has
+    // completed setup. The client remembers first-run completion locally, so a
+    // returning user gets the dashboard plus a reauth banner instead.
+    localStorage.setItem('kirocrew:kiro-setup-complete', '1')
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(500, 'Probe failed'))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
+    expect(screen.queryByText('Your crew is almost ready.')).not.toBeInTheDocument()
+    expect(screen.queryByText('We could not check Kiro CLI.')).not.toBeInTheDocument()
+  })
+
+  it('treats an unusable status body the same as an error for a returning user', async () => {
+    // Both no-usable-status paths (error, and a settled-but-falsy body) share one
+    // guard, so a returning user never gets first-run chrome from either.
+    localStorage.setItem('kirocrew:kiro-setup-complete', '1')
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(
+      null as unknown as KiroPrerequisiteStatus,
+    )
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('Could not check Kiro CLI.')).toBeInTheDocument()
+    expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
+    expect(screen.queryByText('Your crew is almost ready.')).not.toBeInTheDocument()
+  })
+
+  it('still surfaces an unusable status body to a first-run user', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(
+      null as unknown as KiroPrerequisiteStatus,
+    )
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('We could not check Kiro CLI.')).toBeInTheDocument()
+    expect(screen.getByText(/returned no prerequisite status/)).toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('records first-run completion so later cold starts skip setup chrome', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      ready: true,
+      initial_setup_complete: true,
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate>
+        <div>Dashboard loaded</div>
+        <SessionReadinessProbe />
+      </KiroPrerequisiteGate>,
+    )
+
+    // Wait for the resolved status to be applied (sessions unpause), then assert
+    // the completion bit was recorded — the dashboard renders before resolution.
+    expect(await screen.findByText('Sessions ready')).toBeInTheDocument()
+    expect(localStorage.getItem('kirocrew:kiro-setup-complete')).toBe('1')
+  })
+
+  it('still gates a genuine first run when no prior completion is remembered', async () => {
+    // The remembered bit must not become a blanket bypass: a true first-run
+    // user (nothing in storage) still gets the full setup gate.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status())
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('Set up Kiro')).toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
   })
 })
