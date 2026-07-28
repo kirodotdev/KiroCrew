@@ -409,6 +409,46 @@ describe('App routing', () => {
     fireEvent.keyDown(rows[0], { key: 'Enter' })
   })
 
+  it('dismisses the collapsed overflow-toggle hover label when the toggle is pressed', async () => {
+    // Regression: pressing the Apps overflow toggle in the collapsed rail left
+    // its portaled "N more" / "Show less" flyout on screen until the user
+    // clicked elsewhere. Two causes: expanding re-flows the list so the row
+    // moves out from under a stationary cursor (no mouseleave is dispatched),
+    // and the click's own focus re-armed the label. Activation must dismiss it.
+    const { fireEvent } = await import('@testing-library/react')
+    const { api } = await import('../api/client')
+    const manyApps = Array.from({ length: 10 }, (_, i) => ({
+      name: `tipapp${i}`,
+      displayName: `Tip App ${i}`,
+      enabled: true,
+      origin: 'installed',
+      manifest: { ui: { pages: [{ route: `/apps/tipapp${i}`, icon: 'Package', label: `Tip App ${i}` }] } },
+    }))
+    ;(api.listApps as ReturnType<typeof vi.fn>).mockResolvedValueOnce(manyApps)
+    localStorage.setItem('mc-nav', '1')          // collapsed (icon-only) rail
+    localStorage.setItem('mc-apps-expanded', '0')
+    renderWithProviders(<App />, { route: '/chat' })
+    const toggle = await screen.findByTitle(/more app/i)
+    // Hover -> the portaled label mounts (collapsed rows carry no inline text).
+    fireEvent.mouseEnter(toggle)
+    expect(await screen.findByText('4 more')).toBeInTheDocument()
+    // Press it the way a mouse does: pointerdown -> focus -> click. Neither the
+    // focus the press produces nor the surviving hover state may leave a label
+    // on screen — and the dismissal must be immediate, with no fade-out: the
+    // label text flips on activation, so a still-mounted fading label flashes
+    // the OPPOSITE label ("Show less") as a ghost at the old coordinates.
+    fireEvent.pointerDown(toggle)
+    fireEvent.focus(toggle)
+    act(() => { toggle.click() })
+    expect(screen.queryByText('4 more')).toBeNull()
+    expect(screen.queryByText('Show less')).toBeNull()
+    // ...and the press still did its job: dismissing the label must not swallow
+    // the toggle's own activation (the title flips once the list is expanded).
+    expect(screen.getByTitle(/show fewer apps/i)).toBeInTheDocument()
+    localStorage.removeItem('mc-nav')
+    localStorage.removeItem('mc-apps-expanded')
+  })
+
   it('renders Kiro Crew branding', () => {
     localStorage.removeItem('mc-nav') // expanded sidebar shows the brand text
     renderWithProviders(<App />, { route: '/chat' })

@@ -331,6 +331,16 @@ function useNavTip<T extends HTMLElement>(enabled: boolean) {
     setTipOn(false)
     hideTimer.current = setTimeout(() => setTip(null), 150) // keep mounted for fade-out
   }, [])
+  // Dismiss with NO fade-out, for rows whose label text changes on activation
+  // (the Apps overflow toggle flips "N more" <-> "Show less"). A fading label
+  // stays mounted through the re-render, so it would flash the OPPOSITE label
+  // as a ghost at the old coordinates before unmounting.
+  const dismissTip = useCallback(() => {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null }
+    if (rafId.current != null) { cancelAnimationFrame(rafId.current); rafId.current = null }
+    setTipOn(false)
+    setTip(null)
+  }, [])
   // While shown, follow the row on scroll/resize (capture:true catches the
   // nav's inner scroll container, which doesn't bubble scroll to window).
   // Depend on a stable boolean — not `tip` itself — so the listeners subscribe
@@ -361,7 +371,7 @@ function useNavTip<T extends HTMLElement>(enabled: boolean) {
     if (hideTimer.current) clearTimeout(hideTimer.current)
     if (rafId.current != null) cancelAnimationFrame(rafId.current)
   }, [])
-  return { tip, tipOn, rowRef, showTip, hideTip }
+  return { tip, tipOn, rowRef, showTip, hideTip, dismissTip }
 }
 
 function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId }: {
@@ -448,7 +458,7 @@ function SortableAppNavRow({ id, children }: { id: string; children: React.React
 function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
   collapsed: boolean; expanded: boolean; hiddenCount: number; onClick: () => void
 }) {
-  const { tip, tipOn, rowRef, showTip, hideTip } = useNavTip<HTMLButtonElement>(collapsed)
+  const { tip, tipOn, rowRef, showTip, hideTip, dismissTip } = useNavTip<HTMLButtonElement>(collapsed)
   // `hiddenCount === 0 && !expanded` happens when the only overflow item is the
   // active app (kept visible) — nothing is actually hidden, so the toggle just
   // offers to re-collapse rather than reveal "0 more".
@@ -459,7 +469,16 @@ function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
   return (
     <button ref={rowRef}
       className="group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none w-full"
-      onClick={onClick}
+      // Dismiss the hover label on activation, without the fade-out. Unlike a
+      // NavItem (which stays put when clicked, so the pointer is still
+      // legitimately over it), activating this toggle re-flows the Apps list and
+      // moves the row out from under a stationary cursor — no mouseleave is
+      // dispatched, so the flyout used to hang at the old coordinates until the
+      // click's focus was lost. Fading it out is not enough either: the label
+      // text flips on activation, so a fading ghost flashes the OPPOSITE label.
+      // This runs after the focus a pointer press produces (focus precedes
+      // click), so it also clears a label that focus had just re-armed.
+      onClick={() => { dismissTip(); onClick() }}
       aria-expanded={expanded}
       aria-label={titleText}
       title={titleText}
