@@ -81,5 +81,15 @@
         "label": "Voice"
       }
     }
+  },
+  "pages": {
+    "settings": {
+      "aboutPanel": {
+        "automatic_updates_unavailable_dev_build": "Automatic updates are unavailable in this build (development build).",
+        "automatic_updates_unavailable_platform": "Automatic updates are unavailable in this build on this platform.",
+        "automatic_updates_unavailable_translocated": "Automatic updates are unavailable because macOS is running this app from a temporary read-only copy. Move it to your Applications folder and reopen it.",
+        "automatic_updates_unavailable_volume": "Automatic updates are unavailable because this app is running from a read-only disk image. Move it to your Applications folder and reopen it."
+      }
+    }
   }
 }

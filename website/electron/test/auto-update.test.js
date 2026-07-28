@@ -201,6 +201,11 @@ function makeDeps(opts = {}) {
     appVersion = "1.0.0",
     osPlatform = "darwin",
     isPackaged = true,
+    // Bundle location seams. Default to a normal /Applications install so every
+    // pre-existing test keeps arming the updater; the bundle-location guard
+    // tests below drive these to the refused states.
+    resourcesPath = "/Applications/Kiro Crew.app/Contents/Resources",
+    bundleWritable = true,
   } = opts;
   const calls = { setFeedURL: [], checkForUpdates: 0, downloadUpdate: 0, quitAndInstall: [] };
   const handlers = {};
@@ -231,6 +236,10 @@ function makeDeps(opts = {}) {
     getFlavor: () => "stable",
     stopGateway: async () => {},
     osPlatform,
+    resourcesPath,
+    // Stubbed so the writable-vs-read-only axis is decided by the test, not by
+    // whatever the host filesystem happens to allow.
+    probeBundleWritable: () => bundleWritable,
     feedBase: "https://cdn.example.dev/feed",
     onUpdateState: (s) => states.push(s),
     log: { info: () => {}, warn: () => {}, error: () => {} },
@@ -388,6 +397,81 @@ test("dev (unpackaged) build returns disabled:'dev'", () => {
   const u = initAutoUpdate(deps);
   assert.strictEqual(u.disabled, "dev");
   assert.strictEqual(calls.setFeedURL.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Bundle-location guard. The macOS install is an in-place .app replacement
+// (MacUpdater -> Squirrel.Mac -> ShipIt), so a translocated copy or a read-only
+// disk image can never apply an update. electron-updater has no such check of
+// its own, so arming it there downloads every release and installs none.
+// The DECISION logic is unit-tested in bundle-location.test.js; these assert the
+// WIRING -- that a refused verdict returns the disabled surface and short-
+// circuits before any updater state is touched.
+// ---------------------------------------------------------------------------
+
+test("translocated bundle returns disabled:'translocated' and never arms the updater", () => {
+  const { deps, calls } = makeDeps({
+    resourcesPath: "/private/var/folders/ab/cd/d/AppTranslocation/UUID/d/Kiro Crew.app/Contents/Resources",
+  });
+  const u = initAutoUpdate(deps);
+  assert.strictEqual(u.disabled, "translocated");
+  assert.strictEqual(calls.setFeedURL.length, 0);
+  assert.strictEqual(deps.autoUpdater.autoDownload, undefined, "policy flags must not be applied");
+  // The whole disabled surface must stay callable: main.js invokes every one of
+  // these from an ipcMain handler, so a missing key is a renderer-visible crash.
+  assert.strictEqual(typeof u.check, "function");
+  assert.strictEqual(typeof u.download, "function");
+  assert.strictEqual(typeof u.install, "function");
+  assert.strictEqual(typeof u.getInfo, "function");
+});
+
+test("read-only volume returns disabled:'volume' and never arms the updater", () => {
+  const { deps, calls } = makeDeps({
+    resourcesPath: "/Volumes/Kiro Crew 1.0.0/Kiro Crew.app/Contents/Resources",
+    bundleWritable: false,
+  });
+  const u = initAutoUpdate(deps);
+  assert.strictEqual(u.disabled, "volume");
+  assert.strictEqual(calls.setFeedURL.length, 0);
+  assert.strictEqual(deps.autoUpdater.autoDownload, undefined, "policy flags must not be applied");
+});
+
+test("WRITABLE volume still arms: an external disk is not a read-only image", () => {
+  // Regression guard on the /Volumes prefix being too broad. An app on an
+  // external SSD or a network share lives under /Volumes and ShipIt can replace
+  // it, so refusing on the path alone would strand a legitimately updatable
+  // install with no updates and a boot-time nag.
+  const { deps, calls } = makeDeps({
+    resourcesPath: "/Volumes/External SSD/Kiro Crew.app/Contents/Resources",
+    bundleWritable: true,
+  });
+  const u = initAutoUpdate(deps);
+  assert.strictEqual(u.disabled, undefined);
+  assert.ok(calls.setFeedURL.length >= 1, "feed must be configured at init");
+  assert.strictEqual(deps.autoUpdater.autoDownload, false, "policy flags applied");
+});
+
+test("guard is macOS-only: a linux /Volumes-shaped path still arms", () => {
+  // classifyBundleLocation() returns "other" off darwin, so deb/rpm installs --
+  // which update through the package manager, not an in-place swap -- are never
+  // refused. AppImage shares the writability requirement but needs its own
+  // detection; see the comment in auto-update.js.
+  const { deps, calls } = makeDeps({
+    osPlatform: "linux",
+    resourcesPath: "/Volumes/whatever/Kiro Crew.app/Contents/Resources",
+    bundleWritable: false,
+  });
+  const u = initAutoUpdate(deps);
+  assert.strictEqual(u.disabled, undefined);
+  assert.ok(calls.setFeedURL.length >= 1, "feed must be configured at init");
+});
+
+test("an unreadable bundle path fails safe to updatable", () => {
+  // Never claim a location we cannot see: a probe that cannot run must not be
+  // read as "un-updatable", or one unreadable path disables updates fleet-wide.
+  const { deps } = makeDeps({ resourcesPath: "" });
+  const u = initAutoUpdate(deps);
+  assert.strictEqual(u.disabled, undefined);
 });
 
 // ---------------------------------------------------------------------------

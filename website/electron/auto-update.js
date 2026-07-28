@@ -33,6 +33,35 @@
 // fileUrl is absolute. That behaviour is structural but undocumented, so
 // test/auto-update.test.js pins it against the real installed library — a
 // version bump that changes it must fail CI, not strand installs in the field.
+const {
+  classifyBundleLocation,
+  containingDirForBundle,
+  canInstallUpdates,
+} = require("./bundle-location");
+
+// Can the macOS installer write the directory holding our .app (i.e. replace
+// the bundle)? electron-updater does NOT install on macOS itself: MacUpdater
+// serves the downloaded .zip over a loopback HTTP server and delegates to
+// Electron's built-in autoUpdater (Squirrel.Mac), so the install still ends in
+// ShipIt swapping the .app in place — which needs the CONTAINING directory to
+// be writable. Verified against electron-updater 6.8.9 `out/MacUpdater.js`.
+//
+// `fs` is required lazily, matching this module's style of pulling Node builtins
+// inside the function that needs them rather than at load time.
+// Fail-safe TRUE: a probe that cannot run must never be read as "un-updatable",
+// or one unreadable path would disable updates for everyone.
+function isBundleContainerWritable(resourcesPath) {
+  const dir = containingDirForBundle(resourcesPath);
+  if (!dir) return true;
+  try {
+    const fs = require("fs");
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const DEFAULT_FEED_BASE = "https://updates.crew.kiro.dev/feed";
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h while running
 const LAUNCH_CHECK_DELAY_MS = 30 * 1000; // let startup settle first
@@ -169,6 +198,13 @@ function configureUpdater(autoUpdater) {
  * @param {() => Promise<void>} deps.stopGateway - graceful, awaitable gateway stop
  * @param {string} [deps.platform]             - display arch, e.g. "darwin-arm64"
  * @param {string} [deps.osPlatform]           - process.platform override (tests)
+ * @param {string} [deps.resourcesPath]        - process.resourcesPath override
+ *   (tests). Used only to classify where the bundle runs FROM, so a
+ *   translocated / read-only-volume install can be refused an update lane.
+ * @param {(p:string) => boolean} [deps.probeBundleWritable] - writability probe
+ *   for the bundle's containing directory. Injected because the real one does
+ *   filesystem I/O: a test cannot make /Volumes/X writable, so without a seam
+ *   the "writable external disk still updates" case is unassertable.
  * @param {string} [deps.feedBase]             - override feed host
  * @param {(state:object) => void} [deps.onUpdateState] - if provided, the
  *   in-app UI drives the install prompt: state transitions are pushed here
@@ -188,6 +224,8 @@ function initAutoUpdate(deps) {
     stopGateway,
     platform = "darwin-arm64",
     osPlatform = process.platform,
+    resourcesPath = process.resourcesPath,
+    probeBundleWritable = isBundleContainerWritable,
     feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
     onUpdateState = null,
     log = console,
@@ -237,6 +275,41 @@ function initAutoUpdate(deps) {
   if (!SUPPORTED_PLATFORMS.has(osPlatform)) {
     log.info(`[update] ${osPlatform} — auto-update disabled (no publish lane yet)`);
     return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "platform" };
+  }
+  // The macOS install is an IN-PLACE replacement of the running .app:
+  // electron-updater's MacUpdater hands the downloaded zip to Electron's
+  // built-in autoUpdater (Squirrel.Mac) over a loopback server, and ShipIt
+  // swaps the bundle. From a Gatekeeper App Translocation copy, or a read-only
+  // disk image, there is no bundle it can usefully replace — so arming the
+  // updater means downloading every release and failing the swap forever, with
+  // nothing surfaced to the user. electron-updater has no check of its own here
+  // (6.8.9 has no writability, /Volumes or translocation probe anywhere), so
+  // refuse up front. A /Volumes path is NOT refused on its own: an external disk
+  // or network share lives there too and is perfectly replaceable, so the
+  // verdict rests on whether the bundle's containing directory is writable.
+  //
+  // macOS only, by construction: classifyBundleLocation() returns "other" for
+  // every non-darwin platform, so this is a no-op on Linux. That is deliberate
+  // rather than an oversight — a Linux AppImage self-replaces via `mv` into
+  // dirname($APPIMAGE) and so shares the writability requirement, but deb/rpm
+  // installs go through the package manager with privilege escalation and do
+  // not. Getting Linux right needs AppImage-vs-package detection, which is its
+  // own change; guessing here would disable updates for deb/rpm users.
+  // ... and carry the reason out as `disabled`, exactly like the dev/platform
+  // paths above: main.js merges it into the info payload it hands the renderer,
+  // so About shows "unavailable" instead of a live Check button that no-ops.
+  const bundleLocation = classifyBundleLocation(resourcesPath, { platform: osPlatform });
+  const bundleWritable = probeBundleWritable(resourcesPath);
+  if (!canInstallUpdates(bundleLocation, { bundleWritable })) {
+    log.info(`[update] running from ${bundleLocation} (writable=${bundleWritable}) — auto-update `
+      + "disabled (the installer cannot replace the bundle; move the app to /Applications)");
+    return {
+      check: () => {},
+      download: async () => {},
+      install: async () => {},
+      getInfo,
+      disabled: bundleLocation,
+    };
   }
 
   configureUpdater(autoUpdater);

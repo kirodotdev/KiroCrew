@@ -60,6 +60,7 @@
       "find-bin.js",
       "data-home.js",
       "auto-update.js",
+      "bundle-location.js",
       "gateway-auth-hint.js",
       "gateway-stop.js",
       "gateway-wait.js",

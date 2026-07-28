@@ -328,8 +328,13 @@ export function AboutPanel() {
         {isDesktop ? (
           updatesDisabled ? (
             <p className="text-sm text-muted">
-              {i18nT('pages.settings.aboutPanel.automatic_updates_are_unavailable_in_this_build')}
-              {updatesDisabled === 'dev' ? ' (development build).' : ' on this platform.'}
+              {updatesDisabled === 'dev'
+                ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_dev_build')
+                : updatesDisabled === 'translocated'
+                  ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_translocated')
+                  : updatesDisabled === 'volume'
+                    ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_volume')
+                    : i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_platform')}
             </p>
           ) : (
             <div className="flex flex-col gap-2.5">

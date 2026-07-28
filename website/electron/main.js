@@ -47,6 +47,12 @@ const { createTokenRetryHandler } = require("./token-retry");
 const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
 const { createDisplayMediaHandler } = require("./display-media");
 const { initAutoUpdate } = require("./auto-update");
+const {
+  classifyBundleLocation,
+  containingDirForBundle,
+  shouldOfferRelocation,
+  describeLocation,
+} = require("./bundle-location");
 const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort, classifyPortOwner } = require("./gateway-stop");
 const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("./gateway-wait");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
@@ -348,6 +354,74 @@ async function resolveGatewayConflict() {
   }
   glog(`takeover: ${other.appName} released :${PORT} — proceeding to spawn`);
   return "spawn";
+}
+
+// Running from a Gatekeeper App Translocation copy, or a read-only disk image,
+// is invisible at launch (all writes already redirect to ~/) but makes the
+// macOS in-place bundle swap useless — electron-updater delegates the install to
+// Squirrel.Mac, whose ShipIt replaces the running .app — so the app would
+// download every release and apply none. Surface it once and offer the
+// one-click move.
+// A /Volumes path alone is NOT enough to condemn: an external disk or network
+// share lives there too and is replaceable, so writability decides.
+// Returns the classified location so the caller can log it. Never throws — a
+// boot-time dialog failure must not reject the whole app.whenReady() chain.
+async function offerRelocationIfUnupdatable() {
+  const location = classifyBundleLocation(process.resourcesPath);
+  const dir = containingDirForBundle(process.resourcesPath);
+  let bundleWritable = true;
+  if (dir) {
+    try { fs.accessSync(dir, fs.constants.W_OK); } catch { bundleWritable = false; }
+  }
+  glog(`bundle location: ${location} writable=${bundleWritable} (resourcesPath=${process.resourcesPath || "(none)"})`);
+  if (!app.isPackaged || !shouldOfferRelocation(location, { bundleWritable })) return location;
+
+  let response = 1;
+  try {
+    ({ response } = await dialog.showMessageBox({
+      type: "warning",
+      title: "Move Kiro Crew to Applications?",
+      message: describeLocation(location, { bundleWritable }),
+      detail: "Move it to your Applications folder to receive updates. "
+        + "You can keep using it from here for now, but it will not update itself.",
+      buttons: ["Move to Applications", "Continue Anyway"],
+      defaultId: 0,
+      cancelId: 1,
+    }));
+  } catch (err) {
+    // A dialog that cannot be shown must not strand boot with no window, no
+    // gateway and no tray — degrade to "continue anyway" and log why.
+    glog(`bundle location: relocation prompt failed: ${err && err.message}`);
+    return location;
+  }
+  if (response !== 0) {
+    glog(`bundle location: user declined relocation from ${location}`);
+    return location;
+  }
+
+  // moveToApplicationsFolder RETURNS FALSE (it does not throw) when the user
+  // cancels the macOS authorization prompt — the likeliest outcome of asking to
+  // write into /Applications. Treat false and throw identically, or a cancel
+  // looks like success and the user keeps booting from the old location.
+  let moved = false;
+  try {
+    // Relaunches from /Applications on success and does not return.
+    moved = app.moveToApplicationsFolder() !== false;
+  } catch (err) {
+    glog(`bundle location: move to /Applications threw: ${err && err.message}`);
+    moved = false;
+  }
+  if (moved) return location;
+  glog("bundle location: move to /Applications did not complete");
+  try {
+    await dialog.showMessageBox({
+      type: "error",
+      message: "Could not move Kiro Crew automatically.",
+      detail: "Drag Kiro Crew into your Applications folder, then reopen it from there.",
+      buttons: ["OK"],
+    });
+  } catch { /* boot must continue even if we cannot report the failure */ }
+  return location;
 }
 
 function startGateway() {
@@ -1660,6 +1734,11 @@ process.on("unhandledRejection", (reason) => {
 });
 
 app.whenReady().then(async () => {
+  // Running from a mounted DMG or a Gatekeeper App Translocation copy looks
+  // fine at launch but can NEVER install an update (the macOS install path
+  // replaces the running .app in place). Say so once, up front, and offer the
+  // one-click move — otherwise the user silently never receives another release.
+  await offerRelocationIfUnupdatable();
   // Zoom items are explicit (not `role:`-based) so each zoom change can also
   // recenter the macOS traffic lights in the zoom-scaled header row.
   // Resolve the dashboard WebContents of the focused window. The de-tabbed
@@ -1883,7 +1962,14 @@ app.whenReady().then(async () => {
     onUpdateState: broadcastUpdateState,
   });
   // Renderer-callable bridges for Settings > About + the UpdateModal.
-  ipcMain.handle("update:get-info", () => updater.getInfo());
+  // `disabled` lives on the updater handle, NOT inside getInfo() — every
+  // disabled path returns it as a sibling key. Merge it in here, once, so
+  // Settings > About can render "why" for all four reasons (dev, platform,
+  // translocated, volume). Without this the panel's updatesDisabled branch is
+  // unreachable and a build with no update lane shows a live Check button that
+  // silently does nothing. undefined on the armed path, which reads as falsy.
+  const updaterInfo = () => ({ ...updater.getInfo(), disabled: updater.disabled });
+  ipcMain.handle("update:get-info", () => updaterInfo());
   ipcMain.handle("update:check", () => { updater.check(); return { ok: true }; });
   ipcMain.handle("update:download", () => { updater.download(); return { ok: true }; });
   ipcMain.handle("update:install", async () => { await updater.install(); return { ok: true }; });
@@ -1899,7 +1985,7 @@ app.whenReady().then(async () => {
     }
     store.set("updateChannel", c);
     updater.check();
-    return { ok: true, info: updater.getInfo() };
+    return { ok: true, info: updaterInfo() };
   });
 
   app.on("activate", () => {
