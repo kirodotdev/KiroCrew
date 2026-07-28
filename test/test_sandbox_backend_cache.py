@@ -201,6 +201,12 @@ def test_fail_closed_transient_message_advises_retry_not_optout(monkeypatch):
 def test_fail_closed_permanent_message_includes_optout_and_detail(monkeypatch):
     monkeypatch.setattr(sb, "detect_backend", lambda config_mode="auto": "none")
     monkeypatch.setattr(sb, "_allow_unsandboxed_exec", lambda: False)
+    # Pin the nesting input: this test asserts the "host genuinely has no backend"
+    # guidance, which is a DIFFERENT branch from the macOS-nesting one. Leaving it
+    # implicit made the assertion depend on whether the test host happens to be
+    # Seatbelt-confined — green on CI, red on a sandboxed dev machine.
+    monkeypatch.setattr(sb, "_macos_sandbox_state", lambda: False)
+    monkeypatch.setattr(sb, "kiro_internal_sandbox_enabled", lambda: False)
     sb._last_unshare_failure = (False, _EPERM_REASON)
     with pytest.raises(RuntimeError) as excinfo:
         sb.wrap_argv(["kiro-cli", "acp"], mode="standard")

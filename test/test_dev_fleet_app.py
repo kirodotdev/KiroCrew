@@ -1316,6 +1316,46 @@ async def test_discover_worktrees_sandbox_error_raises():
 
 
 @pytest.mark.asyncio
+async def test_discover_worktrees_sandbox_error_keeps_remedy():
+    """The actionable remedy must survive into the propagated message.
+
+    The sandbox layer appends its guidance AFTER a ~180-char preamble, so an
+    over-eager length cap here delivered the diagnosis and dropped the fix — the
+    Discovery Error banner used to end mid-word at "Probe". Guard the tail, not
+    just the prefix (the pre-existing test only checked the prefix, which is why
+    the truncation went unnoticed).
+    """
+    stderr = (
+        "sandbox unavailable: Sandbox backend unavailable and "
+        "allow_unsandboxed_exec is not set. No OS-level sandbox backend is "
+        "available on this host, and the agent subprocess cannot be safely "
+        "isolated. Probe detail: sandbox-exec probe failed (exit 71). This "
+        "host's sandbox is NOT broken: the kernel reports this process is "
+        "already inside a macOS Seatbelt sandbox that KiroCrew did not create. "
+        'Set {"sandbox": false} in ~/.kiro/settings/amazon-internal.json so '
+        "KiroCrew's own profile owns isolation, then restart the gateway."
+    )
+    assert len(stderr) > 200, "fixture must exceed the old cap to be meaningful"
+    with patch.object(mod, "_run_cmd", new=AsyncMock(return_value=(-1, "", stderr))):
+        with pytest.raises(RuntimeError) as exc:
+            await mod._discover_worktrees()
+    msg = str(exc.value)
+    assert "amazon-internal.json" in msg
+    assert not msg.endswith("Probe")
+    assert len(msg) <= mod._SANDBOX_ERR_MAX
+
+
+@pytest.mark.asyncio
+async def test_discover_worktrees_sandbox_error_is_still_bounded():
+    """An unbounded stderr is still clipped before reaching the UI."""
+    stderr = "sandbox unavailable: " + ("x" * 5000)
+    with patch.object(mod, "_run_cmd", new=AsyncMock(return_value=(-1, "", stderr))):
+        with pytest.raises(RuntimeError) as exc:
+            await mod._discover_worktrees()
+    assert len(str(exc.value)) == mod._SANDBOX_ERR_MAX
+
+
+@pytest.mark.asyncio
 async def test_discover_worktrees_normal_failure_returns_empty():
     """Non-sandbox git failures return empty list (existing behavior)."""
     with patch.object(mod, "_run_cmd", new=AsyncMock(

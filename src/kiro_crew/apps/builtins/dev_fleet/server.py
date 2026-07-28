@@ -509,6 +509,12 @@ else:
 _TRUSTED_PATH = os.pathsep.join(_TRUSTED_BIN_DIRS)
 _TRUSTED_BIN_CACHE: dict[str, str | None] = {}
 
+# Upper bound on a propagated "sandbox unavailable" message. Wide enough to
+# carry the sandbox layer's remedy sentence (the actionable half, appended after
+# a ~180-char preamble) into the Discovery Error banner, while still bounding an
+# arbitrarily long stderr.
+_SANDBOX_ERR_MAX = 900
+
 
 def _trusted_bin(name: str) -> str | None:
     """Resolve *name* to a canonical executable in a system or Homebrew bin dir.
@@ -1221,9 +1227,16 @@ async def _discover_worktrees() -> list[dict]:
     if rc != 0:
         # Propagate sandbox/git failures as a RuntimeError so callers can
         # surface the real reason instead of returning silent empty lists.
-        err_detail = (stderr or stdout or "").strip()[:200]
-        if "sandbox unavailable" in err_detail:
-            raise RuntimeError(err_detail)  # already prefixed by _run_cmd
+        raw = (stderr or stdout or "").strip()
+        if "sandbox unavailable" in raw:
+            # Do NOT clip to the generic git-error length here. The sandbox layer
+            # puts the *remedy* (which opt-in to set, or that an EPERM is a
+            # Seatbelt nesting artifact rather than a missing backend) AFTER a
+            # ~180-char preamble, so the old 200-char cap surfaced the diagnosis
+            # and swallowed the fix — the Discovery Error banner ended mid-word at
+            # "Probe". Keep a generous bound purely to stop an unbounded stderr
+            # reaching the UI.
+            raise RuntimeError(raw[:_SANDBOX_ERR_MAX])  # already prefixed by _run_cmd
         return []
     entries = _parse_worktree_porcelain(stdout)
     # `git worktree list --porcelain` always lists the primary checkout
