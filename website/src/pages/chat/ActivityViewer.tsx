@@ -146,6 +146,17 @@ function SubagentPane({ a, onClick, selected }: { a: SubagentActivity; onClick: 
   const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
   const fmtElapsed = displayElapsed >= 60 ? `${Math.floor(displayElapsed / 60)}m ${displayElapsed % 60}s` : `${displayElapsed}s`
 
+  // Inside the Subagents tab the "Subagent" prefix is redundant, and in a
+  // narrow rail it was the part that survived truncation while the actual
+  // status got clipped. Show the status; keep the full phrase as the tooltip.
+  const statusLabel = isPending
+    ? 'Pending Approval'
+    : a.status === 'tool' ? 'Running Tool'
+      : a.status === 'running' ? (a.streaming ? 'Running' : 'Starting…')
+        : a.status === 'done' ? 'Complete'
+          : a.status === 'stopped' ? 'Stopped'
+            : a.error?.includes('Cancelled') ? 'Cancelled' : 'Error'
+
   return (
     // Card-level mouse convenience that selects the subagent; it wraps its own
     // interactive controls (Cancel, collapse header) which carry the real
@@ -168,11 +179,11 @@ function SubagentPane({ a, onClick, selected }: { a: SubagentActivity; onClick: 
             }
           : {})}
       >
-        <span>{STATUS[a.status]}</span>
-        <span className="text-[13px] font-semibold text-text">Subagent {isPending ? 'Pending Approval' : a.status === 'tool' ? 'Running Tool' : a.status === 'running' ? (a.streaming ? 'Running' : 'Starting…') : a.status === 'done' ? 'Complete' : a.status === 'stopped' ? 'Stopped' : a.error?.includes('Cancelled') ? 'Cancelled' : 'Error'}</span>
-        {a.agent && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded">{a.agent}</code>}
-        {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono">{fmtElapsed}</span>}
-        {isRunning && <button className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all" onClick={onCancel}><X className="lucide-inline" /> Cancel</button>}
+        <span className="shrink-0 flex items-center">{STATUS[a.status]}</span>
+        <span className="text-[13px] font-semibold text-text truncate min-w-0" title={`Subagent ${statusLabel}`}>{statusLabel}</span>
+        {a.agent && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={a.agent}>{a.agent}</code>}
+        {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{fmtElapsed}</span>}
+        {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> Cancel</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>
       {/* Input (task) */}
@@ -251,8 +262,8 @@ function ApprovalEntry({ entry, slot }: { entry: ToolActivity; slot: string }) {
   return (
     <div className={`mx-2 mb-2 rounded-lg border overflow-hidden shadow-sm transition-all ${isResolved ? 'border-ok/40 bg-card' : 'border-warn/40 bg-warn/5'}`}>
       <div className="flex items-center gap-2 px-3 py-2">
-        <span>{isResolved ? <CheckCircle size={15} className="text-green-400" /> : <Lock size={15} className="text-muted" />}</span>
-        <span className="text-[13px] font-semibold text-text">{isResolved ? (decisionLabel[localDecision || ''] || 'Resolved') : 'Approval Needed'}</span>
+        <span className="shrink-0 flex items-center">{isResolved ? <CheckCircle size={15} className="text-green-400" /> : <Lock size={15} className="text-muted" />}</span>
+        <span className="text-[13px] font-semibold text-text truncate min-w-0">{isResolved ? (decisionLabel[localDecision || ''] || 'Resolved') : 'Approval Needed'}</span>
         <span className="text-[11px] text-muted/40 font-mono ml-auto shrink-0">{fmtTime(entry.ts)}</span>
       </div>
       {!isResolved && <div className="px-3 pb-2 text-[13px] text-muted/70">{entry.text}</div>}
@@ -814,10 +825,10 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         <div className="flex-1 overflow-y-auto py-2">
           {/* Batch controls (scale): retry failures, clear the finished pile */}
           {(failedRetryableIds.length > 0 || terminalIds.length > 0) && (
-            <div className="mx-2 mb-2 flex items-center gap-1.5">
+            <div className="mx-2 mb-2 flex flex-wrap items-center gap-1.5">
               {failedRetryableIds.length > 0 && (
                 <button
-                  className="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-accent/40 text-accent/80 hover:bg-accent/10 hover:text-accent cursor-pointer transition-all bg-transparent disabled:opacity-50"
+                  className="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-accent/40 text-accent/80 hover:bg-accent/10 hover:text-accent cursor-pointer transition-all bg-transparent disabled:opacity-50 shrink-0 whitespace-nowrap"
                   onClick={retryFailed}
                   disabled={retryingFailed}
                   data-testid="retry-failed-btn"
@@ -827,7 +838,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
               )}
               {terminalIds.length > 0 && (
                 <button
-                  className="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all bg-transparent"
+                  className="flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all bg-transparent shrink-0 whitespace-nowrap"
                   onClick={dismissDone}
                   data-testid="dismiss-done-btn"
                 >

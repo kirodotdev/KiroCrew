@@ -533,5 +533,59 @@ describe('ActivityViewer — Artifacts tab', () => {
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
     expect(await screen.findByText('Nothing produced in this session yet')).toBeInTheDocument()
   })
+
+  // Layout regression: in the narrow activity rail every header item used to be
+  // shrinkable, so "Subagent Running Tool", the elapsed clock and the Cancel
+  // button all wrapped onto two lines and blew the card's header height up.
+  // The status label is the last thing to give way (the agent chip yields
+  // first); the clock and Cancel button must hold their single line.
+  it('keeps the subagent card header on one line in a narrow rail', () => {
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    store.dispatch(openActivityToTab('subagents'))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ActivityViewer
+            toolLog={[]}
+            open
+            onToggle={vi.fn()}
+            slot="test-slot"
+            subagents={{
+              s1: {
+                id: 's1', task: 'READ-ONLY RESEARCH', agent: 'kirocrew', status: 'tool',
+                streaming: '', lastTool: 'read', startedAt: Date.now() - 239_000, elapsed: 0,
+              },
+            }}
+          />
+        </QueryClientProvider>
+      </Provider>,
+    )
+
+    // The status is the informative half, so it is what the header shows; the
+    // full phrase stays reachable as the tooltip.
+    const title = screen.getByText('Running Tool')
+    expect(title).toHaveAttribute('title', 'Subagent Running Tool')
+    expect(title.className).toContain('truncate')
+    expect(title.className).toContain('min-w-0')
+
+    // Agent chip: yields BEFORE the status label (weighted shrink) and capped,
+    // so a long agent name can neither wrap nor starve the label, the clock and
+    // the Cancel button.
+    const chip = screen.getByText('kirocrew')
+    expect(chip.className).toContain('shrink-[3]')
+    expect(chip.className).toContain('truncate')
+    expect(chip.className).toContain('min-w-0')
+
+    const clock = screen.getByText('3m 59s')
+    expect(clock.className).toContain('shrink-0')
+    expect(clock.className).toContain('whitespace-nowrap')
+
+    const cancel = screen.getByTestId('subagent-cancel-btn')
+    expect(cancel.className).toContain('shrink-0')
+    expect(cancel.className).toContain('whitespace-nowrap')
+  })
 })
 
