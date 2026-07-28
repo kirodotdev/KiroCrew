@@ -984,6 +984,96 @@ def _github_check(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _github_check_identity(
+    item: dict[str, Any], check: dict[str, Any], index: int
+) -> tuple[str, ...]:
+    """The identity two rollup rows must share to be the same check.
+
+    NOT the display name alone. ``workflow`` separates two workflows that publish
+    a check with the same job name — including every matrix leg of an Actions
+    job, since GitHub appends the matrix values to the check-run name even when
+    the workflow sets an explicit ``name:`` (``Backend Tests (3.12, 4)``), so
+    sibling shards never share an identity and one shard's failure can never be
+    folded into another's success.
+
+    The row KIND separates GitHub's two rollup shapes. ``__typename`` comes
+    straight from the GraphQL union and is present on every row ``gh`` returns; a
+    row without it (a hand-built dict) is classified from the fields each shape
+    carries — ``status``/``conclusion`` are check-run-only and ``context`` is
+    status-only. Do NOT discriminate on the absence of ``name``: a status row
+    carrying both ``context`` and ``name`` would be read as a check-run and
+    collide with a nameless one, which ``_github_check`` normalizes to the same
+    ``"Check"`` placeholder.
+
+    A check-run with NO workflow (published by an app outside Actions) is left
+    deliberately UNCOLLAPSED — its per-row detail URL, else its position, joins
+    the identity. Such rows are the one case this payload cannot adjudicate: the
+    requested ``statusCheckRollup`` fields carry no check-suite or run-attempt
+    id, so a superseded re-run is indistinguishable from a same-named check from
+    a different app. Over-counting a re-run is a cosmetic miss; collapsing two
+    apps would hide a real failure behind the other's later success, so the tie
+    breaks toward never hiding red.
+    """
+    kind = str(item.get("__typename") or "")
+    if not kind:
+        status_shaped = "context" in item and not ("status" in item or "conclusion" in item)
+        kind = "StatusContext" if status_shaped else "CheckRun"
+    if kind == "CheckRun" and not check["workflow"]:
+        return (kind, "", check["name"], check["url"] or f"#{index}")
+    return (kind, check["workflow"], check["name"])
+
+
+def _github_check_rank(check: dict[str, Any]) -> tuple[str, str]:
+    """Recency key for two rows that share a check identity.
+
+    ``startedAt`` leads: an OLDER run that finished must not outrank a NEWER one
+    that is still going (no ``completedAt`` yet), which is exactly what comparing
+    ``completedAt`` first would do — the panel would show a stale pass while its
+    replacement was mid-flight. GitHub leaves ``startedAt`` null while a check-run
+    is still QUEUED, so a started-less row that is still outstanding sorts above
+    every timestamp instead of losing to the completed run it supersedes.
+    """
+    started = str(check.get("startedAt") or "")
+    if not started and check.get("bucket") == "pending":
+        return ("\uffff", "")
+    return (started, str(check.get("completedAt") or ""))
+
+
+def _github_checks(rollup: list[Any]) -> list[dict[str, Any]]:
+    """Project GitHub's status-check rollup, keeping only the LATEST run per check.
+
+    ``statusCheckRollup`` returns EVERY check-run recorded against the head sha,
+    not one per check. The same workflow file can be dispatched twice for one sha
+    (a push immediately followed by an edit event, say), producing two check
+    suites whose jobs each contribute a row — and a concurrency group cancels the
+    first suite, so the loser lands as ``CANCELLED``. Rendering the raw rollup
+    therefore (a) inflated the totals the panel reports (observed 49 rows where
+    GitHub's own UI counted 41) and (b) let a superseded ``CANCELLED`` row roll up
+    to a red CI glyph on a pull request whose replacement run passed — a red that
+    no amount of refreshing could clear, because the stale row is genuinely still
+    in the provider payload.
+
+    GitHub's UI collapses each check to its latest run; mirror that. Identity
+    comes from ``_github_check_identity``, which is deliberately conservative:
+    anything it cannot prove is the same check stays its own row, because
+    over-counting is cosmetic while collapsing two distinct checks would hide a
+    failure behind another's success.
+
+    First-appearance order is preserved (dict insertion order survives value
+    replacement) so a re-run does not reshuffle the list under the caller.
+    """
+    best: dict[tuple[str, ...], dict[str, Any]] = {}
+    for index, item in enumerate(rollup):
+        if not isinstance(item, dict):
+            continue
+        check = _github_check(item)
+        identity = _github_check_identity(item, check, index)
+        previous = best.get(identity)
+        if previous is None or _github_check_rank(check) >= _github_check_rank(previous):
+            best[identity] = check
+    return list(best.values())
+
+
 def _github_comment(item: dict[str, Any], kind: str) -> dict[str, Any]:
     return {
         "id": str(item.get("id") or item.get("databaseId") or ""),
@@ -1419,7 +1509,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         "deletions": details.get("deletions") or 0,
         "changedFiles": details.get("changedFiles") or len(normalized_files),
         "commits": commits,
-        "checks": [_github_check(item) for item in _as_list(details.get("statusCheckRollup"))],
+        "checks": _github_checks(_as_list(details.get("statusCheckRollup"))),
         "comments": comments,
         "files": normalized_files,
         "partialSections": partial_sections,
@@ -1678,7 +1768,11 @@ async def _fetch_github_checks(ref: SourceRef) -> list[dict[str, Any]]:
     )
     if not isinstance(data, dict):
         raise SourceProviderError("GitHub returned an invalid checks payload")
-    return [_github_check(item) for item in _as_list(data.get("statusCheckRollup"))]
+    # The panel polls this endpoint while checks are pending and writes the result
+    # straight over the full payload's `checks`, so it MUST collapse identically —
+    # an uncollapsed reply here would re-inflate the counts and resurrect a
+    # superseded CANCELLED failure on the first poll after the panel opens.
+    return _github_checks(_as_list(data.get("statusCheckRollup")))
 
 
 async def _fetch_gitlab_checks(ref: SourceRef) -> list[dict[str, Any]]:
@@ -3083,8 +3177,11 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
         )
         if not isinstance(data, dict):
             return None
+        # Same projection AND the same latest-run collapsing as the full payload
+        # (`_github_checks`), so the chip glyph cannot disagree with the panel's
+        # own rollup — a superseded CANCELLED row must not paint either red.
         buckets = [
-            _github_check(item)["bucket"] for item in _as_list(data.get("statusCheckRollup"))
+            check["bucket"] for check in _github_checks(_as_list(data.get("statusCheckRollup")))
         ]
         ci = _rollup_ci(buckets)
         if ci is not None:

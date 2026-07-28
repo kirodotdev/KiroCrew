@@ -34,6 +34,250 @@ def test_github_check_active_status_is_pending_even_with_success_conclusion() ->
     assert check["bucket"] == "pending"
 
 
+def test_github_checks_keep_only_the_latest_run_per_check() -> None:
+    """One head sha can carry several runs of the same check (two dispatches of
+    the same workflow), which inflated every count the panel reported."""
+    rollup = [
+        {
+            "name": "GPT Review",
+            "workflowName": "GPT Review",
+            "status": "COMPLETED",
+            "conclusion": "CANCELLED",
+            "startedAt": "2026-07-28T21:17:23Z",
+            "completedAt": "2026-07-28T21:18:00Z",
+        },
+        {
+            "name": "GPT Review",
+            "workflowName": "GPT Review",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-07-28T21:20:44Z",
+            "completedAt": "2026-07-28T21:25:00Z",
+        },
+        {
+            "name": "GPT Review",
+            "workflowName": "GPT Review",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-07-28T21:43:12Z",
+            "completedAt": "2026-07-28T21:47:00Z",
+        },
+    ]
+
+    checks = source._github_checks(rollup)
+
+    assert [(check["name"], check["conclusion"]) for check in checks] == [("GPT Review", "SUCCESS")]
+
+
+def test_github_checks_superseded_cancellation_does_not_paint_ci_red() -> None:
+    """A concurrency-group cancellation whose replacement run passed must not
+    roll up to `failed` — that red survived every refresh, because the stale row
+    is still genuinely in the provider payload."""
+    rollup = [
+        {
+            "name": "Review",
+            "workflowName": "Review",
+            "status": "COMPLETED",
+            "conclusion": "CANCELLED",
+            "startedAt": "2026-07-28T20:56:29Z",
+            "completedAt": "2026-07-28T20:57:00Z",
+        },
+        {
+            "name": "Review",
+            "workflowName": "Review",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-07-28T20:58:05Z",
+            "completedAt": "2026-07-28T21:00:24Z",
+        },
+    ]
+
+    buckets = [check["bucket"] for check in source._github_checks(rollup)]
+
+    assert buckets == ["passed"]
+    assert source._rollup_ci(buckets) == "passed"
+
+
+def test_github_checks_queued_rerun_outranks_the_run_it_supersedes() -> None:
+    """GitHub leaves `startedAt` null while a check-run is QUEUED. Ranking that
+    row below the completed run it replaces would show a stale pass."""
+    rollup = [
+        {
+            "name": "CI",
+            "workflowName": "CI",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-07-28T20:00:00Z",
+            "completedAt": "2026-07-28T20:05:00Z",
+        },
+        {"name": "CI", "workflowName": "CI", "status": "QUEUED", "conclusion": None},
+    ]
+
+    checks = source._github_checks(rollup)
+
+    assert [check["bucket"] for check in checks] == ["pending"]
+
+
+def test_github_checks_do_not_collapse_across_publishers() -> None:
+    """Identity is (workflow, name): collapsing on the display name alone would
+    let one workflow's later success hide another's failure."""
+    rollup = [
+        {
+            "name": "Lint",
+            "workflowName": "Backend",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-07-28T20:00:00Z",
+        },
+        {
+            "name": "Lint",
+            "workflowName": "Frontend",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-07-28T20:10:00Z",
+        },
+        # A legacy commit status has no workflow and keys on ("", context).
+        {"context": "Lint", "state": "SUCCESS", "startedAt": "2026-07-28T20:20:00Z"},
+    ]
+
+    checks = source._github_checks(rollup)
+
+    assert {(check["workflow"], check["bucket"]) for check in checks} == {
+        ("Backend", "failed"),
+        ("Frontend", "passed"),
+        ("", "passed"),
+    }
+    assert source._rollup_ci([check["bucket"] for check in checks]) == "failed"
+
+
+def test_github_checks_do_not_collapse_a_commit_status_into_a_check_run() -> None:
+    """A legacy commit status and an app-published check-run both carry an empty
+    workflow, so without the row kind in the identity one publisher's later
+    success would hide the other's failure and roll the glyph up green."""
+    rollup = [
+        {
+            "__typename": "CheckRun",
+            "name": "CI",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-07-28T20:00:00Z",
+        },
+        {
+            "__typename": "StatusContext",
+            "context": "CI",
+            "state": "SUCCESS",
+            "startedAt": "2026-07-28T20:30:00Z",
+        },
+    ]
+
+    checks = source._github_checks(rollup)
+
+    assert sorted(check["bucket"] for check in checks) == ["failed", "passed"]
+    assert source._rollup_ci([check["bucket"] for check in checks]) == "failed"
+
+
+def test_github_checks_classify_untyped_rows_by_shape_not_by_name() -> None:
+    """A row without `__typename` must still be classified correctly. A status
+    row carrying both `context` and `name` used to be read as a check-run and
+    collide with a nameless check-run (both normalize to the `"Check"`
+    placeholder), letting the status success hide the check-run failure."""
+    rollup = [
+        {
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-07-28T20:00:00Z",
+        },
+        {
+            "context": "Check",
+            "name": "Check",
+            "state": "SUCCESS",
+            "startedAt": "2026-07-28T20:30:00Z",
+        },
+    ]
+
+    checks = source._github_checks(rollup)
+
+    assert sorted(check["bucket"] for check in checks) == ["failed", "passed"]
+    assert source._rollup_ci([check["bucket"] for check in checks]) == "failed"
+
+
+def test_github_checks_keep_matrix_legs_of_one_job_distinct() -> None:
+    """GitHub appends matrix values to a check-run's name even when the workflow
+    sets an explicit `name:`, so sibling shards of one job have distinct names.
+    A failing shard must never be folded into a later-starting shard's success.
+    """
+    rollup = [
+        {
+            "__typename": "CheckRun",
+            "name": "Backend Tests (3.10, 2)",
+            "workflowName": "CI",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-07-28T20:00:00Z",
+        },
+        {
+            "__typename": "CheckRun",
+            "name": "Backend Tests (3.12, 4)",
+            "workflowName": "CI",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-07-28T20:10:00Z",
+        },
+    ]
+
+    checks = source._github_checks(rollup)
+
+    assert len(checks) == 2
+    assert source._rollup_ci([check["bucket"] for check in checks]) == "failed"
+
+
+def test_github_checks_never_collapse_workflowless_check_runs() -> None:
+    """A check-run with no workflow comes from an app outside Actions, and the
+    rollup carries no check-suite or run-attempt id to tell a superseded re-run
+    from a same-named check by a different app. Leave such rows uncollapsed:
+    over-counting is cosmetic, hiding a red behind another app's green is not."""
+    rollup = [
+        {
+            "__typename": "CheckRun",
+            "name": "security/scan",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-07-28T20:00:00Z",
+            "detailsUrl": "https://app-one.example/run/1",
+        },
+        {
+            "__typename": "CheckRun",
+            "name": "security/scan",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-07-28T20:10:00Z",
+            "detailsUrl": "https://app-two.example/run/9",
+        },
+    ]
+
+    checks = source._github_checks(rollup)
+
+    assert len(checks) == 2
+    assert source._rollup_ci([check["bucket"] for check in checks]) == "failed"
+
+
+def test_github_checks_preserve_first_appearance_order() -> None:
+    """A re-run replaces a row in place instead of reshuffling the list."""
+    rollup = [
+        {"name": "A", "workflowName": "W", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        {"name": "B", "workflowName": "W", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        {
+            "name": "A",
+            "workflowName": "W",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-07-28T21:00:00Z",
+        },
+    ]
+
+    assert [check["name"] for check in source._github_checks(rollup)] == ["A", "B"]
+
+
 def test_safe_error_redacts_credentials_and_exfiltration_urls() -> None:
     secret = "AKIAIOSFODNN7EXAMPLE"
     payload = "x" * 80
@@ -1176,6 +1420,74 @@ async def test_fetch_gitlab_degrades_to_unknown_when_reread_cannot_settle(monkey
     assert data["mergeable"] == "unknown"
     assert data["title"] == "Still checking"
     assert len(detail_reads) == 1 + source._MERGE_STATE_REREADS
+
+
+@pytest.mark.asyncio
+async def test_fetch_github_checks_collapses_superseded_runs(monkeypatch) -> None:
+    """The panel polls this endpoint while checks are pending and writes its
+    reply over the full payload's `checks`, so an uncollapsed reply would
+    resurrect the inflated counts and the superseded failure it just fixed."""
+
+    async def fake_run(*_argv: str, **_kwargs: int):
+        return {
+            "statusCheckRollup": [
+                {
+                    "name": "Review",
+                    "workflowName": "Review",
+                    "status": "COMPLETED",
+                    "conclusion": "CANCELLED",
+                    "startedAt": "2026-07-28T20:56:29Z",
+                },
+                {
+                    "name": "Review",
+                    "workflowName": "Review",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-07-28T20:58:05Z",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    checks = await source._fetch_github_checks(
+        source.parse_source_url("https://github.com/acme/repo/pull/12")
+    )
+
+    assert [check["bucket"] for check in checks] == ["passed"]
+
+
+@pytest.mark.asyncio
+async def test_github_check_status_collapses_superseded_runs(monkeypatch) -> None:
+    """The chip glyph reads the same latest-run-per-check collapse the panel
+    does, so a superseded CANCELLED row cannot leave the sidebar red."""
+
+    async def fake_run(*_argv: str, **_kwargs: int):
+        return {
+            "state": "OPEN",
+            "statusCheckRollup": [
+                {
+                    "name": "Review",
+                    "workflowName": "Review",
+                    "status": "COMPLETED",
+                    "conclusion": "CANCELLED",
+                    "startedAt": "2026-07-28T20:56:29Z",
+                },
+                {
+                    "name": "Review",
+                    "workflowName": "Review",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-07-28T20:58:05Z",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    status = await source._fetch_check_status("https://github.com/acme/repo/pull/12")
+
+    assert status == {"state": "open", "ci": "passed"}
 
 
 @pytest.mark.asyncio
