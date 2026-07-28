@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import model_registry
 from kiro_crew.agent import _prompt_path
+from kiro_crew.agent_discovery import agent_skill_globs
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.cron import get_local_tz
 from kiro_crew.hooks import (
@@ -1402,15 +1403,33 @@ class ContextBuilder:
             if memory_ctx:
                 parts.append(memory_ctx)
 
-        # Skills: kirocrew-only (custom agents load their own via kiro-cli).
-        # Pass the section budget so the loader injects a usage-ranked top-K of
-        # on-demand skills (plus always:true pinned) and leaves the tail to
-        # skill_search — keeping this block bounded instead of dumping every
+        # Skills. Three cases, in precedence order:
+        #
+        # 1. The agent template maps skills via ``skill://`` resources. On the
+        #    ACP/kiro backend kiro-cli loads those SKILL.md files ITSELF when
+        #    spawned with ``--agent`` (acp/client.py ``_spawn``), so injecting
+        #    them again here would duplicate every mapped skill's content —
+        #    exactly the reason the steering block below is CC-only. On the CC
+        #    backend (claude-agent-acp) nothing reads agent ``resources``, so
+        #    KiroCrew injects the mapped set itself, scoped by ``only=``.
+        # 2. No mapping + the kirocrew agent -> the whole catalog (unchanged).
+        # 3. No mapping + a custom agent -> nothing (unchanged; the agent is
+        #    expected to bring its own via kiro-cli).
+        #
+        # The section budget makes the loader inject a usage-ranked top-K of
+        # on-demand skills (plus always:true pinned) and leave the tail to
+        # skill_search, keeping the block bounded instead of dumping every
         # skill's summary. The slice below is a defensive backstop only.
-        if not is_custom:
+        skill_globs = agent_skill_globs(agent) if agent else []
+        # Mapped: CC only (kiro loads them natively). Unmapped: kirocrew only.
+        inject_skills = is_cc if skill_globs else not is_custom
+        if inject_skills:
             # ON: usage-ranked top-K bounded by the skills section cap.
             # OFF (budget=None): legacy full skills dump, unchanged behavior.
-            skills_ctx = self.skills.get_context(budget=caps.skills if lazy_skills else None)
+            skills_ctx = self.skills.get_context(
+                budget=caps.skills if lazy_skills else None,
+                only=skill_globs or None,
+            )
             if skills_ctx:
                 if lazy_skills and len(skills_ctx) > caps.skills:
                     skills_ctx = skills_ctx[:caps.skills] + "\n...[skills truncated]\n"

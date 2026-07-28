@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import logging
 import os
@@ -24,6 +25,27 @@ logger = logging.getLogger(__name__)
 
 SKILLS_DIR_NAME = "skills"
 _MIN_TRIGGER_OVERLAP = 0.7
+
+
+def _matches_any(path: str, globs: list[str]) -> bool:
+    """True if *path* matches any fnmatch glob in *globs*.
+
+    Used to narrow the injected skills block to an agent template's
+    ``skill://`` mapping. Both sides are compared as real filesystem paths
+    (the URIs are pre-expanded by ``agent_discovery.expand_skill_uri``), and a
+    symlinked skill dir is tried in resolved form too so a mapping written
+    against the link target still matches the catalog's listed path.
+    """
+    if not path:
+        return False
+    if any(fnmatch.fnmatch(path, g) for g in globs):
+        return True
+    try:
+        real = str(Path(path).resolve(strict=True))
+    except OSError:
+        return False
+    return real != path and any(fnmatch.fnmatch(real, g) for g in globs)
+
 
 # Lazy-load ranking (Mesh skill lazy-load): the session-start skills block only
 # affords a bounded slice of the context budget, so on-demand skills are ranked
@@ -876,7 +898,7 @@ class SkillsLoader:
             )
         return triggered
 
-    def get_context(self, budget: int | None = None) -> str:
+    def get_context(self, budget: int | None = None, only: list[str] | None = None) -> str:
         """Build skills context for prompt injection (lazy-loaded).
 
         Pinned skills (``always: true`` frontmatter) get full content, always —
@@ -892,12 +914,21 @@ class SkillsLoader:
         block — every on-demand skill summarized, unranked and untruncated,
         byte-for-byte the pre-lazy-load behavior. An integer ``budget`` (opt-in
         ON) switches to the bounded, usage-ranked top-K described above.
+
+        *only* restricts the block to skills whose ``SKILL.md`` path matches one
+        of the given fnmatch globs — the agent template's ``skill://`` mapping
+        (see ``agent_discovery.agent_skill_globs``). ``None`` (the default) means
+        no restriction. An *only* list that matches nothing yields ``""`` rather
+        than silently falling back to the full catalog: an agent mapped to a
+        skill that has since been deleted must not inherit every other skill.
         """
         all_skills = self.list_skills()
+        if only is not None:
+            all_skills = [s for s in all_skills if _matches_any(s.get("path", ""), only)]
         if not all_skills:
             return ""
         if budget is None:
-            return self._legacy_context(all_skills)
+            return self._legacy_context(all_skills, restricted=only is not None)
         # get_always_skills() returns the _iter() identifier — the same value
         # list_skills() exposes as "key" (the dir-relative path, e.g.
         # "team-capabilities/build-helper"), NOT the frontmatter "name". So the
@@ -972,15 +1003,23 @@ class SkillsLoader:
 
         return "[Skills:]\n" + "\n\n---\n\n".join(parts) + "\n[End of skills]\n\n"
 
-    def _legacy_context(self, all_skills: list[dict]) -> str:
+    def _legacy_context(self, all_skills: list[dict], restricted: bool = False) -> str:
         """Pre-lazy-load skills block (opt-in OFF, the default).
 
         Full content for pinned (``always: true``) skills + a one-line summary
         for EVERY on-demand skill, unranked and untruncated — byte-for-byte the
         behavior before the lazy-load feature, so leaving ``skills.lazy_load``
         off is a zero-impact upgrade.
+
+        *restricted* marks *all_skills* as already narrowed by an agent's
+        ``skill://`` mapping, so the always-loaded set is narrowed to match: a
+        pinned skill outside the mapping must NOT be force-injected, or the
+        mapping would not actually bound what the agent sees.
         """
         always = self.get_always_skills()
+        if restricted:
+            allowed = {s["key"] for s in all_skills} | {s["name"] for s in all_skills}
+            always = [a for a in always if a in allowed]
         parts: list[str] = []
         # Full content for always-loaded skills
         for name in always:

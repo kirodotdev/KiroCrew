@@ -53,7 +53,10 @@ class AgentInfo:
         return asdict(self)
 
 
-def _extract_skills(data: dict[str, Any]) -> list[str]:
+SKILL_URI_PREFIX = "skill://"
+
+
+def _builder_mcp_skills(data: dict[str, Any]) -> list[str]:
     """Extract skill names from builder-mcp args (--skill-name-filter)."""
     mcp = data.get("mcpServers") or {}
     if not isinstance(mcp, dict):
@@ -67,6 +70,125 @@ def _extract_skills(data: dict[str, Any]) -> list[str]:
         if arg == "--skill-name-filter" and i + 1 < len(args):
             skills.extend(s.strip() for s in args[i + 1].split(",") if s.strip())
     return skills
+
+
+def skill_resource_uris(data: dict[str, Any]) -> list[str]:
+    """Return the ``skill://`` entries of an agent spec's ``resources``, in order.
+
+    These are the kiro-cli-native mapping of skills to an agent: kiro-cli loads
+    every ``SKILL.md`` matched by these URIs when the agent is spawned with
+    ``--agent``. Non-``skill://`` resources (``file://`` steering globs and
+    friends) are user-owned and deliberately excluded.
+    """
+    resources = data.get("resources") or []
+    if not isinstance(resources, list):
+        return []
+    return [r for r in resources if isinstance(r, str) and r.startswith(SKILL_URI_PREFIX)]
+
+
+def _skills_from_resources(data: dict[str, Any]) -> list[str]:
+    """Derive display names for the skills an agent maps via ``skill://``.
+
+    Lexical only (no filesystem access) so :func:`list_agents` stays a
+    stat+parse operation: a skill directory is named by the path segment
+    directly above ``SKILL.md``, which is the skill's name in every supported
+    layout. A wildcard segment (``skill://~/.kiro/skills/*/SKILL.md`` — "every
+    skill in this root") has no single name, so the pattern is surfaced
+    verbatim rather than silently dropped.
+    """
+    names: list[str] = []
+    for uri in skill_resource_uris(data):
+        parts = [p for p in uri[len(SKILL_URI_PREFIX) :].split("/") if p]
+        if not parts:
+            continue
+        # Trailing SKILL.md (or any *.md) is the file, not the skill name.
+        if parts[-1].lower().endswith(".md"):
+            parts.pop()
+        if parts:
+            names.append(parts[-1])
+    return names
+
+
+def _extract_skills(data: dict[str, Any]) -> list[str]:
+    """All skills mapped to an agent, de-duplicated, order-preserving.
+
+    Two independent mapping mechanisms are unioned:
+
+    1. ``skill://`` entries in ``resources`` — the kiro-cli-native mapping
+       (what the dashboard's Agent Templates editor writes).
+    2. ``builder-mcp --skill-name-filter`` args — an edition-specific
+       convention that predates the ``resources`` support.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in (*_skills_from_resources(data), *_builder_mcp_skills(data)):
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def expand_skill_uri(uri: str, agent_path: Path) -> str | None:
+    """Expand a ``skill://`` resource URI into an fnmatch glob over real paths.
+
+    kiro-cli accepts ``skill://~/.kiro/skills/*/SKILL.md`` (global),
+    ``skill:///abs/path/SKILL.md`` (absolute), and
+    ``skill://.kiro/skills/*/SKILL.md`` (workspace-relative to the cwd at
+    session start). Workspace-relative URIs are resolved against the project
+    root inferred from *agent_path* — for the ``<project>/.kiro/agents/foo.json``
+    layout that is three levels up (``foo.json`` -> ``agents`` -> ``.kiro`` ->
+    ``<project>``), so appending the ``.kiro/``-prefixed glob yields
+    ``<project>/.kiro/...`` without doubling the ``.kiro`` segment. Best-effort:
+    the cwd kiro-cli actually uses may differ.
+
+    Returns ``None`` for anything that is not a ``skill://`` URI.
+    """
+    if not uri.startswith(SKILL_URI_PREFIX):
+        return None
+    raw = uri[len(SKILL_URI_PREFIX) :]
+    if raw.startswith("~/"):
+        return str(Path.home() / raw[2:])
+    if raw.startswith("/"):
+        return raw
+    return str(agent_path.parent.parent.parent / raw)
+
+
+def agent_skill_globs(agent: str, agents_dir: Path | None = None) -> list[str]:
+    """Return fnmatch globs for the skills mapped to *agent*, or ``[]``.
+
+    An empty list means "this agent has no explicit skill mapping" — callers
+    treat that as the legacy all-or-nothing default rather than as "no skills".
+    Best-effort and never raises: an unreadable, invalid, or sensitive-path
+    agent file yields ``[]``.
+    """
+    d = agents_dir or _KIRO_AGENTS_DIR
+    if not agent or not d.is_dir():
+        return []
+    try:
+        candidates = sorted(d.glob("*.json"))
+    except OSError:
+        return []
+    for f in candidates:
+        if f.name.startswith("._"):
+            continue
+        try:
+            real = f.resolve(strict=True)
+        except OSError:
+            continue
+        if is_sensitive_path(str(real)):
+            continue
+        try:
+            data = json.loads(real.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("name") != agent and f.stem != agent:
+            continue
+        globs = [g for uri in skill_resource_uris(data) if (g := expand_skill_uri(uri, f))]
+        return globs
+    return []
 
 
 def _dir_signature(d: Path) -> _ListAgentsSig:

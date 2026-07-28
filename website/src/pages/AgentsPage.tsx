@@ -9,6 +9,7 @@ import type { SubagentInfo } from '../types'
 import Clickable from '../components/Clickable'
 import { SourceBadge, StatCard, PageHeader, EmptyState, Btn, Input } from '../components/ui'
 import ModelDropdownList from '../components/ModelDropdownList'
+import AgentSkillsEditor from '../components/AgentSkillsEditor'
 import { LAYOUT } from '../components/layout'
 import InfoTip from '../components/InfoTip'
 import { useProvider } from '../providers'
@@ -58,6 +59,8 @@ interface AgentDetail extends Partial<InstalledAgent> {
   allowedTools?: string[]
   mcpServers?: Record<string, { args?: string[] }>
   toolsSettings?: { execute_bash?: { deniedCommands?: string[] } }
+  /** `skill://` resources the catalog editor cannot express (wildcards, foreign paths). */
+  unmanaged_skills?: string[]
 }
 
 function AgentMetadataEditor({ name }: { name: string }) {
@@ -228,7 +231,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     const key = a.package || a.name; (g[key] ||= []).push(a); return g
                   }, {})
                   const renderAgent = (a: typeof installed[0], showDelete?: boolean) => (
-                    <Clickable key={a.name} className={`flex items-center gap-2 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'list-selected bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:bg-bg-hover hover:border-border-strong'}`} onClick={async () => { try { const d = await api.agentDetail(a.name); setSelectedAgent(d) } catch { setSelectedAgent(a) } }}>
+                    <Clickable key={a.name} className={`flex items-center gap-2 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'list-selected bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:bg-bg-hover hover:border-border-strong'}`} onClick={async () => { try { const d = await api.agentDetail(a.name); setSelectedAgent(d) } catch { /* List rows carry display NAMES; the editor round-trips catalog KEYS, so drop them rather than offer unsavable chips. */ setSelectedAgent({ ...a, skills: undefined }) } }}>
                       <span
                         role="button"
                         tabIndex={0}
@@ -300,6 +303,37 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                   </div>
                   {selectedAgent.description && <div className="text-[13px] text-muted mb-3 leading-relaxed">{selectedAgent.description}</div>}
                   <AgentMetadataEditor name={selectedAgent.name} />
+                  {selectedAgent.skills === undefined ? (
+                    /* The agent-detail fetch failed, so the real mapping is
+                     * UNKNOWN. An empty-but-enabled editor here is destructive:
+                     * add/remove PATCH the complete desired key list and the
+                     * backend fully replaces the managed skill:// set, so one
+                     * "Add skill" click over unknown state would silently delete
+                     * every real mapping from the agent's spec on disk. Show why
+                     * it is unavailable instead of offering a write. */
+                    <div className="mb-3">
+                      <div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">Skills</div>
+                      <div className="text-[12px] text-warn">
+                        Could not load this agent&apos;s configuration — skills are hidden to avoid
+                        overwriting them. Reselect the agent to retry.
+                      </div>
+                    </div>
+                  ) : (
+                    <AgentSkillsEditor
+                      key={selectedAgent.name}
+                      agentName={selectedAgent.name}
+                      skills={selectedAgent.skills}
+                      unmanaged={selectedAgent.unmanaged_skills}
+                      onChange={(agentName, next) => {
+                        // Ignore a save that resolved after the selection moved on —
+                        // otherwise agent A's skills render under agent B and the
+                        // next edit writes them into B's spec.
+                        setSelectedAgent(prev =>
+                          prev && prev.name === agentName ? { ...prev, skills: next } : prev)
+                        refetchInstalled()
+                      }}
+                    />
+                  )}
                   {selectedAgent.prompt && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">System Prompt</div><pre className="text-[12px] text-text font-mono bg-bg-elevated rounded-md p-2.5 border border-border overflow-x-auto max-h-[160px] overflow-y-auto whitespace-pre-wrap leading-relaxed">{typeof selectedAgent.prompt === 'string' && selectedAgent.prompt.startsWith('file://') ? selectedAgent.prompt : (selectedAgent.prompt || '').slice(0, 2000)}</pre></div>}
                   {selectedAgent.tools && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">Tools</div><div className="flex flex-wrap gap-1.5">{(selectedAgent.tools as string[]).map((t: string) => <span key={t} className="px-2 py-1 rounded-full text-[12px] font-mono bg-bg-elevated border border-border text-text">{t}</span>)}</div></div>}
                   {selectedAgent.allowedTools && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">Auto-Approved</div><div className="flex flex-wrap gap-1.5">{(selectedAgent.allowedTools as string[]).map((t: string) => <span key={t} className="px-2 py-1 rounded-full text-[12px] font-mono bg-ok/10 border border-ok/30 text-ok">{t}</span>)}</div></div>}

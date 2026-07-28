@@ -61,6 +61,39 @@ The dashboard Agents page shows all installed agents with their source
 `~/.kiro/agents/` and it appears automatically; the page also provides
 edit/delete controls.
 
+## Mapping Skills to an Agent
+
+Each agent template can be given its own set of [skills](skills.md). Open
+**Agent Capabilities → Agent Templates**, select an agent, and use the **Skills**
+section to add or remove them. Every edit saves immediately.
+
+Under the hood a mapped skill is a `skill://` entry in the agent's `resources`,
+so kiro-cli loads it natively when the agent starts:
+
+```json
+{
+  "name": "code-reviewer",
+  "resources": [
+    "file://.kiro/steering/**/*.md",
+    "skill://~/.kiro/skills/prepare-pr/SKILL.md"
+  ]
+}
+```
+
+Resolution rules:
+
+| Agent | Mapping | Skills it sees |
+|-------|---------|----------------|
+| `kirocrew` | none | the whole catalog (default) |
+| `kirocrew` | mapped | only the mapped skills |
+| custom | none | none — the agent brings its own |
+| custom | mapped | only the mapped skills |
+
+`file://` resources (steering globs) are never touched by the editor, and
+hand-authored `skill://` entries the editor cannot express — wildcards like
+`skill://~/.kiro/skills/*/SKILL.md`, or paths outside the known skill roots —
+are listed read-only and preserved across edits.
+
 ## Agent Config Files
 
 | File | Purpose |

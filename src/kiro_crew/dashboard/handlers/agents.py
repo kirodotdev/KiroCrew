@@ -15,7 +15,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import agent_state, model_registry
-from kiro_crew.agent_discovery import list_agents
+from kiro_crew.agent_discovery import clear_list_agents_cache, list_agents
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
     KiroCrewConfig,
@@ -29,7 +29,13 @@ from kiro_crew.dashboard.chat_utils import (
     _history_key_for,
     is_deprecated_model,
 )
-from kiro_crew.dashboard.handlers._shared import _capability_manager
+from kiro_crew.dashboard.handlers._shared import (
+    MAX_AGENT_SKILLS,
+    _capability_manager,
+    agent_skill_keys,
+    agent_skill_views,
+    apply_skill_mapping,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor
@@ -692,7 +698,14 @@ async def api_agent_detail(request: web.Request) -> web.Response:
             patch_body = await request.json()
         except (json.JSONDecodeError, ValueError):
             return web.json_response({"error": "invalid JSON"}, status=400)
+        # Valid JSON is not necessarily an object. A top-level array makes
+        # ``"skills" in patch_body`` a LIST-membership test (true for
+        # ``["skills"]``), and the subscript that follows then raises TypeError
+        # -> HTTP 500. Reject the shape once, here, rather than per-field.
+        if not isinstance(patch_body, dict):
+            return web.json_response({"error": "body must be a JSON object"}, status=400)
 
+    state: DashboardState = request.app["state"]
     for f in KIRO_AGENTS_DIR.glob("*.json"):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
@@ -704,14 +717,60 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     ):
                         return web.json_response({"error": "cannot delete kirocrew"}, status=400)
                     f.unlink()
+                    clear_list_agents_cache()
                     agent_state.prune(data.get("name") or name)
-                    state: DashboardState = request.app["state"]
                     state.push_refresh("agents")
                     return web.json_response({"ok": True})
                 if request.method == "PATCH" and patch_body is not None:
+                    if "skills" in patch_body:
+                        raw_skills = patch_body["skills"]
+                        if not isinstance(raw_skills, list) or not all(
+                            isinstance(s, str) for s in raw_skills
+                        ):
+                            return web.json_response(
+                                {"error": "skills must be a list of strings"}, status=400
+                            )
+                        if len(raw_skills) > MAX_AGENT_SKILLS:
+                            return web.json_response(
+                                {"error": f"at most {MAX_AGENT_SKILLS} skills per agent"},
+                                status=400,
+                            )
+                    mapped: list[str] = []
+                    loop = asyncio.get_running_loop()
                     async with _get_config_lock():
+                        # Re-read under the lock: the copy above was read before
+                        # the lock and a concurrent PATCH may have superseded it.
                         data = json.loads(f.read_text(encoding="utf-8"))
                         agent_name = data.get("name") or name
+                        # Skills FIRST, before any state mutation. The mapping can
+                        # reject the request (unknown key -> 400) and the model
+                        # branch below writes the agent_state sidecar; doing model
+                        # first meant a rejected combined PATCH still froze the
+                        # model against future shipped-default bumps.
+                        #
+                        # Offloaded to the discovery pool: the mapping enumerates
+                        # the skill roots (see enumerate_skill_catalog), which on a
+                        # large or network-backed catalog is enough filesystem work
+                        # to stall the event loop — the same reason /api/skills and
+                        # /api/agents/installed run off the loop.
+                        if "skills" in patch_body:
+                            mapped, unknown = await loop.run_in_executor(
+                                discovery_executor(),
+                                apply_skill_mapping,
+                                data,
+                                f,
+                                state,
+                                list(patch_body["skills"]),
+                            )
+                            if unknown:
+                                return web.json_response(
+                                    {"error": "unknown skills", "skills": unknown[:20]},
+                                    status=400,
+                                )
+                        else:
+                            mapped = await loop.run_in_executor(
+                                discovery_executor(), agent_skill_keys, data, f, state
+                            )
                         if "model" in patch_body:
                             # Stored verbatim (canonical key); translated to a
                             # provider id at the config.loader factory boundary.
@@ -729,10 +788,24 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         data.pop("model_managed", None)
                         data.pop("cc_model", None)
                         f.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-                    state = request.app["state"]
+                    # The list_agents() cache keys on a (count, newest-mtime-ns)
+                    # signature; two writes inside the same mtime granularity
+                    # would otherwise serve a stale skill list.
+                    clear_list_agents_cache()
                     state.push_refresh("agents")
-                    return web.json_response({"ok": True, "model": data.get("model", "")})
-                return web.json_response(data)
+                    return web.json_response(
+                        {"ok": True, "model": data.get("model", ""), "skills": mapped}
+                    )
+                # ``skills`` / ``unmanaged_skills`` are computed, response-only
+                # views of ``resources`` — never written back into the spec
+                # (kiro-cli rejects unknown fields and drops the agent). One
+                # catalog walk for both, off the event loop (filesystem-heavy).
+                keys, unmanaged_uris = await asyncio.get_running_loop().run_in_executor(
+                    discovery_executor(), agent_skill_views, data, f, state
+                )
+                return web.json_response(
+                    {**data, "skills": keys, "unmanaged_skills": unmanaged_uris}
+                )
         except (json.JSONDecodeError, OSError):
             continue
     # "default" is the built-in agent with no config file

@@ -9,6 +9,11 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_discovery import (
+    SKILL_URI_PREFIX,
+    expand_skill_uri,
+    skill_resource_uris,
+)
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path
@@ -282,34 +287,16 @@ def _agent_dirs() -> list[Path]:
 
 
 def _expand_resource_uri(uri: str, agent_path: Path) -> str | None:
-    """Strip ``skill://`` prefix and resolve ``~`` and workspace-relative paths.
+    """Strip ``skill://`` and resolve ``~`` / workspace-relative paths.
 
-    kiro-cli accepts both ``skill://~/.kiro/skills/*/SKILL.md`` (global)
-    and ``skill://.kiro/skills/*/SKILL.md`` (workspace, relative to the
-    process cwd at session start).  We resolve workspace-relative globs
-    relative to the agent file's directory's ancestor chain — best-effort
-    since we don't know the exact cwd kiro-cli will use.
+    Thin alias for :func:`kiro_crew.agent_discovery.expand_skill_uri` — the
+    single implementation, shared with the session-context skill filter so the
+    dashboard's ``loaded_by_agents`` annotation and the runtime injection agree
+    on what a given URI matches.
 
     Returns a glob pattern usable with fnmatch, or None if not a skill URI.
     """
-    if not uri.startswith("skill://"):
-        return None
-    raw = uri[len("skill://") :]
-    if raw.startswith("~/"):
-        raw = str(Path.home() / raw[2:])
-    elif raw.startswith("/"):
-        pass  # absolute
-    else:
-        # Workspace-relative (e.g. ``.kiro/skills/*/SKILL.md``): resolve
-        # against the project root.  For the typical layout
-        # ``<project>/.kiro/agents/foo.json`` the project root is three
-        # levels up (foo.json → agents → .kiro → <project>); appending the
-        # ``.kiro/...``-prefixed glob then yields ``<project>/.kiro/...``.
-        # Going only two levels up would double the ``.kiro`` segment.
-        # Best-effort — the cwd kiro-cli uses at session start may differ.
-        candidate = agent_path.parent.parent.parent / raw
-        raw = str(candidate)
-    return raw
+    return expand_skill_uri(uri, agent_path)
 
 
 def _agent_loads_skill(agent_json: dict[str, Any], agent_path: Path, skill_md: Path) -> bool:
@@ -649,6 +636,316 @@ def _resolve_skill_root(name: str, state: DashboardState) -> Path | None:
     if is_sensitive_path(str(resolved)):
         return None
     return resolved
+
+
+# ── Agent-template skill mapping (skill:// resources <-> catalog keys) ──
+
+
+# Upper bound on how many skills one agent template may map. Each mapped skill
+# is a full SKILL.md that kiro-cli loads into the agent's context, so an
+# unbounded list is a context-exhaustion footgun, not a feature.
+MAX_AGENT_SKILLS = 100
+
+# fnmatch metacharacters. A URI containing any of these matches a SET of skills
+# ("every skill in this root"), which has no single catalog key — such entries
+# are surfaced read-only and preserved verbatim across edits.
+_GLOB_CHARS = ("*", "?", "[")
+
+
+def _skill_key_roots(state: DashboardState) -> list[tuple[str, Path]]:
+    """``(key_prefix, root)`` pairs for every location skills are keyed from.
+
+    Mirrors :func:`_resolve_skill_root`'s roots, in the same precedence order,
+    so an enumerated key names the same directory that function would resolve.
+    Roots that cannot exist in this deployment (no active project dir, no
+    edition roots) are omitted.
+    """
+    out: list[tuple[str, Path]] = [("kiro-user/", Path.home() / ".kiro" / "skills")]
+    proj = active_project_dir(state)
+    if proj is not None:
+        out.append(("kiro-workspace/", proj / ".kiro" / "skills"))
+    out.append(("", skills_dir()))
+    try:
+        # ``resolve()``, not just ``expanduser()``: a RELATIVE extra_paths entry
+        # would otherwise key the catalog by a relative root, and the persisted
+        # ``skill://`` URI would then resolve against whatever cwd the next
+        # kiro-cli session starts in — silently loading a different skill, or
+        # none. A skill root must be a stable absolute location.
+        out.extend(
+            ("", Path(p).expanduser().resolve())
+            for p in KiroCrewConfig.load().skills.extra_paths
+        )
+    except Exception:
+        logger.debug("failed to load extra skill paths from config", exc_info=True)
+    out.extend(("package/", r) for r in _edition_skill_roots())
+    return out
+
+
+# Skills may sit under category directories (``utils/tiny-url``). Bound the
+# enumeration walk so a deep or pathological tree cannot turn one PATCH into an
+# unbounded filesystem crawl. Three levels covers every layout in use.
+_SKILL_NEST_DEPTH = 3
+
+
+def _collect_skills_under(
+    directory: Path,
+    root: Path,
+    root_resolved: Path,
+    prefix: str,
+    out: dict[str, Path],
+    depth: int,
+) -> None:
+    """Add every ``<dir>/SKILL.md`` at or under *directory* to *out*.
+
+    Containment mirrors :func:`_resolve_skill_root`: a candidate's *parent* must
+    resolve at or under the trusted root, which permits the skill directory
+    itself to be a symlink (AIM ``--local`` installs symlink
+    ``~/.kiro/skills/<name>`` to elsewhere) while still rejecting a symlinked
+    *intermediate* directory that would let ``a/b`` escape the tree. Sensitive
+    paths are rejected before and after symlink resolution.
+    """
+    if depth <= 0:
+        return
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name.startswith(".") or not entry.is_dir():
+            continue
+        if is_sensitive_path(str(entry)):
+            continue
+        try:
+            parent_resolved = entry.parent.resolve(strict=True)
+        except OSError:
+            continue
+        if parent_resolved != root_resolved and root_resolved not in parent_resolved.parents:
+            continue
+        skill_md = entry / "SKILL.md"
+        if skill_md.is_file():
+            try:
+                target = skill_md.resolve(strict=True)
+            except OSError:
+                continue
+            if is_sensitive_path(str(target)):
+                continue
+            # First root wins, matching _skill_key_roots precedence.
+            out.setdefault(prefix + entry.relative_to(root).as_posix(), skill_md)
+        else:
+            _collect_skills_under(entry, root, root_resolved, prefix, out, depth - 1)
+
+
+def enumerate_skill_catalog(state: DashboardState) -> dict[str, Path]:
+    """Map every discoverable catalog key to its ``SKILL.md`` path.
+
+    Built by **enumerating** the skill roots, never by joining a caller-supplied
+    string onto one. That is the security property this function exists for: the
+    only paths the agent-template editor can ever hand to the filesystem or
+    write into an agent spec are paths this walk discovered, so a hostile or
+    traversing key (``../../.ssh``, an absolute path, a ``~`` prefix) can do
+    nothing but miss a dict lookup. Allowlist by enumeration rather than
+    validate-then-join — it also removes the tainted-path dataflow that
+    validate-then-join leaves for static analysis to flag.
+
+    It is additionally the single source of truth for BOTH directions of the
+    key <-> URI mapping, so they cannot disagree: a mapping written against a
+    symlinked skill directory inverts back to the same key it was written from.
+    """
+    catalog: dict[str, Path] = {}
+    for prefix, root in _skill_key_roots(state):
+        if is_sensitive_path(str(root)) or not root.is_dir():
+            continue
+        try:
+            root_resolved = root.resolve(strict=True)
+        except OSError:
+            continue
+        _collect_skills_under(root, root, root_resolved, prefix, catalog, _SKILL_NEST_DEPTH)
+    return catalog
+
+
+def _skill_uri_for_path(skill_md: Path) -> str:
+    """Render a discovered ``SKILL.md`` path as a ``skill://`` resource URI.
+
+    Paths under ``$HOME`` are emitted in ``~/`` form: kiro-cli expands it, and
+    it keeps the written agent spec portable across machines and home dirs.
+    """
+    try:
+        rel_home = skill_md.relative_to(Path.home())
+    except ValueError:
+        return f"{SKILL_URI_PREFIX}{skill_md.as_posix()}"
+    return f"{SKILL_URI_PREFIX}~/{rel_home.as_posix()}"
+
+
+def skill_key_for_uri(
+    uri: str,
+    agent_path: Path,
+    state: DashboardState,
+    catalog: dict[str, Path] | None = None,
+) -> str | None:
+    """Invert a ``skill://`` resource URI back to a catalog key, or ``None``.
+
+    ``None`` means "not editable through the catalog" — a wildcard pattern, or a
+    path that no enumerated skill accounts for (a hand-authored URI, or a skill
+    that has since been deleted). Callers preserve those verbatim instead of
+    rewriting or dropping them.
+
+    Pass *catalog* (from :func:`enumerate_skill_catalog`) to reuse one walk
+    across many URIs.
+    """
+    if any(c in uri for c in _GLOB_CHARS):
+        return None
+    expanded = expand_skill_uri(uri, agent_path)
+    if not expanded:
+        return None
+    entries = catalog if catalog is not None else enumerate_skill_catalog(state)
+    wanted = Path(expanded)
+    for key, path in entries.items():
+        if path == wanted:
+            return key
+    # Fall back to comparing resolved targets so a URI written against a
+    # symlinked skill directory (or against its target) still inverts.
+    try:
+        target = wanted.resolve(strict=True)
+    except OSError:
+        return None
+    for key, path in entries.items():
+        try:
+            if path.resolve(strict=True) == target:
+                return key
+        except OSError:
+            continue
+    return None
+
+
+def skill_uri_for_key(
+    key: str, state: DashboardState, catalog: dict[str, Path] | None = None
+) -> str | None:
+    """Resolve a catalog key to the ``skill://`` URI for its ``SKILL.md``.
+
+    A miss returns ``None`` — the key names no discoverable skill. Because the
+    lookup goes through :func:`enumerate_skill_catalog` rather than joining
+    *key* onto a root, an arbitrary caller-supplied key can never widen an
+    agent's resources beyond the enumerated skill trees.
+
+    Pass *catalog* to reuse one walk across many keys.
+    """
+    entries = catalog if catalog is not None else enumerate_skill_catalog(state)
+    skill_md = entries.get(key)
+    if skill_md is None:
+        return None
+    return _skill_uri_for_path(skill_md)
+
+
+def agent_skill_views(
+    data: dict[str, Any], agent_path: Path, state: DashboardState
+) -> tuple[list[str], list[str]]:
+    """``(catalog_keys, unmanaged_uris)`` for *data*, from ONE catalog walk.
+
+    The two views partition the agent's ``skill://`` resources: keys the editor
+    owns and can rewrite, and URIs it cannot express (wildcards, or paths no
+    enumerated skill accounts for) which are shown read-only and preserved on
+    every write. Both are order-preserving; keys are de-duplicated.
+
+    Filesystem-heavy (it enumerates the skill roots) — callers on the asyncio
+    event loop MUST run this off the loop.
+    """
+    catalog = enumerate_skill_catalog(state)
+    keys: list[str] = []
+    unmanaged: list[str] = []
+    seen: set[str] = set()
+    for uri in skill_resource_uris(data):
+        key = skill_key_for_uri(uri, agent_path, state, catalog)
+        if key is None:
+            unmanaged.append(uri)
+        elif key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return keys, unmanaged
+
+
+def agent_skill_keys(
+    data: dict[str, Any], agent_path: Path, state: DashboardState
+) -> list[str]:
+    """Catalog keys for the skills *data* maps, de-duplicated, order-preserving.
+
+    Only catalog-resolvable entries are returned — this is the set the Agent
+    Templates editor owns and can rewrite. Wildcard / hand-authored URIs are
+    excluded here and reported separately by :func:`agent_unmanaged_skill_uris`.
+    """
+    return agent_skill_views(data, agent_path, state)[0]
+
+
+def agent_unmanaged_skill_uris(
+    data: dict[str, Any], agent_path: Path, state: DashboardState
+) -> list[str]:
+    """``skill://`` URIs that the catalog editor cannot express, in order.
+
+    Wildcards, and paths no enumerated skill accounts for. Surfaced read-only in
+    the UI and preserved on every write so editing an agent through the dashboard
+    never silently drops a hand-authored mapping.
+    """
+    return agent_skill_views(data, agent_path, state)[1]
+
+
+def apply_skill_mapping(
+    data: dict[str, Any],
+    agent_path: Path,
+    state: DashboardState,
+    keys: list[str],
+) -> tuple[list[str], list[str]]:
+    """Rewrite *data*'s ``skill://`` resources to *keys*, in place.
+
+    Returns ``(applied_keys, unknown_keys)``. Nothing is written when
+    *unknown_keys* is non-empty — the caller rejects the whole request so a
+    typo'd key can never partially apply.
+
+    Invariants:
+
+    * Non-``skill://`` resources (``file://`` steering globs) keep their
+      original relative order and are never touched.
+    * Unmanaged ``skill://`` URIs (wildcards, hand-authored paths) are preserved.
+    * The managed set is fully replaced, so removing a key removes the mapping.
+    """
+    applied: list[str] = []
+    unknown: list[str] = []
+    uris: list[str] = []
+    seen: set[str] = set()
+    # One enumeration for the whole write: every key resolved and every existing
+    # URI inverted against the SAME snapshot, so a concurrent skill add/remove
+    # cannot make the two halves disagree mid-request.
+    catalog = enumerate_skill_catalog(state)
+    for key in keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        uri = skill_uri_for_key(key, state, catalog)
+        if uri is None:
+            unknown.append(key)
+            continue
+        applied.append(key)
+        uris.append(uri)
+    if unknown:
+        return applied, unknown
+
+    resources = data.get("resources") or []
+    if not isinstance(resources, list):
+        resources = []
+    kept = [
+        r
+        for r in resources
+        if not (isinstance(r, str) and r.startswith(SKILL_URI_PREFIX))
+        or skill_key_for_uri(r, agent_path, state, catalog) is None
+    ]
+    merged = kept + [u for u in uris if u not in kept]
+    if merged:
+        data["resources"] = merged
+    else:
+        # An empty list is meaningful to kiro-cli (it suppresses the shipped
+        # steering defaults that _refresh_dynamic_fields only re-seeds when the
+        # key is absent/empty), and an agent with nothing mapped should fall
+        # back to those defaults — so drop the key instead of writing [].
+        data.pop("resources", None)
+    return applied, unknown
 
 
 def list_skill_tree(skill_root: Path) -> list[dict[str, Any]]:
