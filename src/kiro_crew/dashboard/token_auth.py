@@ -363,6 +363,14 @@ _BYPASS_EXACT = {
     "/pcm-worklet.js",
     "/api/token/local",
     "/api/shutdown",
+    # `kirocrew logout` (CLI) authenticates with loopback + the local secret via
+    # an X-Local-Secret header, exactly like /api/token/local and /api/shutdown
+    # above — api_logout re-checks BOTH itself before revoking anything. It must
+    # bypass the cookie/token gate for the same reason they do: the CLI holds no
+    # dashboard token, and the middleware only honors X-Internal-Secret, so
+    # without this entry every `kirocrew logout` is denied 403 by the middleware
+    # before the handler (and its audit events) ever run.
+    "/api/logout",
     "/api/theme/boot",
     # Liveness/readiness probes (rec #6): orchestrators / load balancers carry
     # no auth cookie, so these must be reachable without a token. Each exposes

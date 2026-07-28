@@ -414,6 +414,41 @@ async def test_static_assets_bypass_auth(path: str) -> None:
     assert resp.status == 200
 
 
+# -- Property 8a: CLI endpoints that self-authenticate must bypass the gate --
+#
+# These three carry NO dashboard token: the `kirocrew` CLI authenticates to them
+# with loopback + the local secret in an X-Local-Secret header, and each handler
+# re-checks both itself. The middleware only honors X-Internal-Secret, so if one
+# of them is missing from _BYPASS_EXACT the middleware denies it 403 before the
+# handler ever runs — which is exactly how `kirocrew logout` broke.
+
+_CLI_LOCAL_SECRET_PATHS = ("/api/token/local", "/api/shutdown", "/api/logout")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", _CLI_LOCAL_SECRET_PATHS)
+async def test_cli_local_secret_endpoints_bypass_auth(path: str) -> None:
+    mw = token_auth_middleware()
+    # No token, no cookie — only the header the CLI actually sends.
+    req = _make_request(
+        path=path, method="POST", headers={"X-Local-Secret": "irrelevant-here"}
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200, (
+        f"{path} was denied by the auth middleware; the CLI sends no dashboard "
+        f"token, so the handler's own loopback + local-secret check never runs. "
+        f"Add {path!r} to _BYPASS_EXACT in token_auth.py."
+    )
+
+
+def test_cli_local_secret_endpoints_are_in_bypass_exact() -> None:
+    """The set membership itself, independent of middleware behaviour."""
+    import kiro_crew.dashboard.token_auth as ta
+
+    missing = [p for p in _CLI_LOCAL_SECRET_PATHS if p not in ta._BYPASS_EXACT]
+    assert not missing, f"CLI local-secret endpoints missing from _BYPASS_EXACT: {missing}"
+
+
 # -- Property 8b: /api/apps/* still requires auth (security boundary) --
 
 
@@ -1680,6 +1715,37 @@ async def test_api_logout_rejects_missing_secret() -> None:
         assert resp.status == 403
         data = await resp.json()
         assert data["error"] == "invalid secret"
+
+
+@pytest.mark.asyncio
+async def test_api_logout_success_revokes_sessions() -> None:
+    """POST /api/logout with loopback + the right secret actually revokes.
+
+    The reject paths above are covered; this locks in the success path, which is
+    what makes the /api/logout entry in _BYPASS_EXACT meaningful -- the endpoint
+    has to be reachable AND still do its job. revoke_all_sessions is patched so
+    the test never touches the real nonce store / persisted generation.
+    """
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard.handlers import api_logout
+
+    app = web.Application()
+    app["local_secret"] = "correct-secret"
+    app.router.add_post("/api/logout", api_logout)
+
+    with patch("kiro_crew.dashboard.token_auth.revoke_all_sessions") as mock_revoke:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/logout",
+                json={},
+                headers={"X-Local-Secret": "correct-secret"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["ok"] is True
+            mock_revoke.assert_called_once()
 
 
 @pytest.mark.asyncio
