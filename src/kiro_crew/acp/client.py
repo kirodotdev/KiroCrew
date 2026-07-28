@@ -103,6 +103,7 @@ from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
 from kiro_crew.sandbox import (
+    apply_windows_resource_ceiling,
     cgroup_scope_argv,
     scrub_agent_denied_env,
     session_host_preexec,
@@ -1793,6 +1794,14 @@ class AcpClient:
             preexec_fn=session_host_preexec(),
         )
         self._pid = self._process.pid
+        # Windows resource ceiling. cgroup_scope_argv above is a no-op on
+        # Windows (no systemd), so without this the agent + every MCP server it
+        # spawns would run with NO fork-bomb or memory-DoS ceiling. A Job object
+        # cannot be an argv prefix, so it is applied to the live pid here. Reads
+        # the same resource_limits config as the cgroup path; logs its own
+        # SECURITY warning and returns False on failure, never raising, so a
+        # missing ceiling cannot fail the spawn.
+        apply_windows_resource_ceiling(self._pid)
         self._start_time = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _get_start_time, self._pid
         )

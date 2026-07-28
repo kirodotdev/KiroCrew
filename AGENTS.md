@@ -499,6 +499,7 @@ the process on Windows** (it is not a liveness probe). Always go through the shi
 | File mode | `chmod_safe(path, mode)` / `fchmod_safe(fd, mode)` | `os.chmod` / `os.fchmod` (no `os.fchmod` on Windows) |
 | Owner-only secret (fail-loud) | `restrict_to_owner(path)` | `os.chmod(path, 0o600)` under `if IS_POSIX` (silent no-op on Windows) |
 | Process RSS / CPU | `proc_rss_bytes()` / `proc_cpu_seconds()` | `resource.getrusage` |
+| Fork-bomb / memory ceiling on a spawned tree | `apply_job_limits(pid, ...)` (via `sandbox.apply_windows_resource_ceiling`) | `cgroup_scope_argv` alone (no-op on Windows) |
 | FD soft limit | `raise_nofile_soft_limit(n)` | `resource.setrlimit` |
 | Port -> PID | `find_listening_pids(port)` / `listening_pid_tool_available()` | `lsof` directly |
 | strftime no-pad | `strftime(dt, "%-I")` | bare `dt.strftime("%-I")` (`ValueError` on Windows) |

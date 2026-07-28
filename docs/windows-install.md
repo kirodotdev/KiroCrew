@@ -96,6 +96,7 @@ that dir is appended to the MCP spawn `PATH` automatically
 | SSH tunnel (`kirocrew cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
 | MCP gateway (opt-in, OFF by default) | not yet — the AF_UNIX socket + `SO_PEERCRED` peer check are POSIX-only |
 | App backends / App Store install | not yet — app spawn needs the POSIX OS-level sandbox; stale-orphan reaping additionally needs `ps` and fails safe (orphans leak, nothing mis-killed) |
+| Fork-bomb / memory-DoS ceiling on the agent tree | works — a Job object (`ActiveProcessLimit` + `JobMemoryLimit`) stands in for the Linux cgroup scope, from the same `resource_limits` config. See [resource-protection.md](resource-protection.md) |
 
 The not-yet items are tracked as Windows feature-parity follow-ups.
 

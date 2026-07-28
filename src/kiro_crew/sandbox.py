@@ -2510,6 +2510,39 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     ]
 
 
+def apply_windows_resource_ceiling(pid: int) -> bool:
+    """Windows counterpart to :func:`cgroup_scope_argv`, applied AFTER spawn.
+
+    ``cgroup_scope_argv`` bounds an agent subprocess and all its descendants by
+    prepending ``systemd-run --user --scope`` with ``TasksMax`` / ``MemoryMax``.
+    That has no Windows equivalent expressible as an argv prefix, so on Windows
+    it returns argv unchanged and logs a one-time loud SECURITY warning — the
+    fork-bomb and memory-DoS ceilings were simply absent there.
+
+    A Job object is the native mechanism (limits cover every process in the job,
+    and descendants of a member join automatically), but it must be applied to a
+    live pid rather than baked into argv. Callers therefore invoke this right
+    after the spawn returns, in addition to the (no-op on Windows)
+    ``cgroup_scope_argv`` call they already make. Reads the SAME
+    ``resource_limits`` config as the cgroup path, so one setting governs both
+    platforms.
+
+    Returns ``True`` when a ceiling was installed; ``False`` on non-Windows
+    (nothing to do — the cgroup wrapper owns it) or on any failure, which
+    :func:`platform_compat.apply_job_limits` has already logged as a SECURITY
+    warning. Never raises: a missing ceiling must not fail the spawn, matching
+    how an unavailable cgroup scope is handled.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return False
+    max_procs, max_mem_mb, _cpu_weight, _max_cpu_percent = _cgroup_limits_from_config()
+    return platform_compat.apply_job_limits(
+        pid,
+        max_procs=max_procs,
+        max_memory_bytes=max_mem_mb * 1024 * 1024,
+    )
+
+
 # ``systemd-run --user`` finds the caller's session bus through these two
 # variables. They hold a socket path owned by the current user, not a
 # credential, and they are a dependency of the WRAPPER rather than of the

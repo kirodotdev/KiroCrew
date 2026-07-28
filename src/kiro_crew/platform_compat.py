@@ -2000,3 +2000,210 @@ def raise_nofile_soft_limit(target: int) -> None:
             resource.setrlimit(resource.RLIMIT_NOFILE, (min(target, hard), hard))
     except (ValueError, OSError, ImportError):
         logger.debug("Could not raise RLIMIT_NOFILE", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Windows Job objects — the cgroup-v2-scope analogue
+# ---------------------------------------------------------------------------
+# On Linux, ``sandbox.cgroup_scope_argv`` bounds an agent subprocess AND all its
+# descendants as one cgroup (``TasksMax`` = fork-bomb ceiling, ``MemoryMax`` =
+# RSS-balloon ceiling). That wrapper is a no-op on Windows and logs a one-time
+# loud SECURITY warning, so Windows had NO fork-bomb or memory ceiling at all.
+#
+# A Job object is the native equivalent: limits apply to every process in the
+# job, and descendants of a job member join the job automatically. Unlike the
+# cgroup path this canNOT be expressed as an argv prefix (there is no wrapper
+# binary to prepend), so it is applied to an already-spawned pid instead — see
+# the race note in :func:`apply_job_limits`.
+_JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
+_JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
+# NOTE: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000) is deliberately NOT set.
+# It would terminate the agent tree as soon as the last job handle closed,
+# which would change process LIFECYCLE (the gateway exiting would kill running
+# agents) rather than merely adding a resource ceiling. Omitting it also means
+# we do not have to keep the handle open: a job object stays alive while
+# processes are assigned to it, so the limits keep being enforced after we
+# close our handle. That makes this a fire-and-forget call with no handle
+# registry and no teardown semantics to get wrong.
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9  # JobObjectExtendedLimitInformation
+
+
+def _job_limit_structs():  # pragma: no cover - Windows-only ctypes plumbing
+    """Build the JOBOBJECT_EXTENDED_LIMIT_INFORMATION ctypes layout.
+
+    Declared inside a function (same pattern as :func:`proc_rss_bytes`) so the
+    ``wintypes`` access never runs at import time on POSIX.
+    """
+
+    class IO_COUNTERS(ctypes.Structure):  # noqa: N801 — Windows struct name
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):  # noqa: N801
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):  # noqa: N801
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    return JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+
+
+def apply_job_limits(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool:
+    """Bound *pid* and its descendants with a Windows Job object.
+
+    The Windows analogue of ``sandbox.cgroup_scope_argv``:
+
+    ==============================  ====================================
+    cgroup v2                       Job object
+    ==============================  ====================================
+    ``TasksMax`` (fork bomb)        ``ActiveProcessLimit``
+    ``MemoryMax`` (RSS balloon)     ``JobMemoryLimit``
+    ==============================  ====================================
+
+    Enforcement is by DENIAL, matching the cgroup tier's practical behavior:
+    once ``ActiveProcessLimit`` is reached the child's ``CreateProcess`` calls
+    fail, and an allocation past ``JobMemoryLimit`` fails, rather than the tree
+    being killed outright. Nothing about process lifetime changes (see the
+    ``KILL_ON_JOB_CLOSE`` note above).
+
+    Returns ``True`` when the limits were applied. Returns ``False`` — never
+    raises — on POSIX (where ``cgroup_scope_argv`` owns this), on a
+    non-positive limit, or on any Win32 failure; the caller treats that as "no
+    ceiling enforced" exactly as it already treats the cgroup probe failing.
+
+    Race (documented, deliberately accepted for now): descendants the child
+    spawns BEFORE the assignment lands are not in the job. Assignment happens
+    immediately after ``CreateProcess`` returns, and the real targets (kiro-cli
+    spawning MCP servers, an MCP server spawning helpers) take orders of
+    magnitude longer than that to fork, so the window is small but not zero.
+    Closing it fully needs a launcher that creates the job, assigns ITSELF,
+    then execs the target — the same shape as the Linux namespace launcher — so
+    that every descendant inherits membership from birth. That is the
+    follow-up; this already converts "no ceiling at all" into "ceiling on
+    everything but a sub-millisecond head start".
+    """
+    if IS_POSIX:
+        return False
+    if max_procs <= 0 or max_memory_bytes <= 0:
+        logger.debug(
+            "apply_job_limits: skipping non-positive limits (procs=%s, mem=%s)",
+            max_procs,
+            max_memory_bytes,
+        )
+        return False
+    job = None
+    proc_handle = None
+    kernel32 = None
+    try:
+        _PROCESS_SET_QUOTA = 0x0100  # noqa: N806 — Windows API constant
+        _PROCESS_TERMINATE = 0x0001  # noqa: N806 — required by AssignProcessToJobObject
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        # Anonymous job (NULL name): nothing else can open it by name.
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            logger.warning(
+                "SECURITY: CreateJobObject failed (err=%s); fork-bomb / memory-DoS "
+                "ceilings are NOT enforced for pid %d",
+                getattr(ctypes, "get_last_error", lambda: 0)(),
+                pid,
+            )
+            return False
+
+        ext_cls = _job_limit_structs()
+        info = ext_cls()
+        info.BasicLimitInformation.LimitFlags = (
+            _JOB_OBJECT_LIMIT_ACTIVE_PROCESS | _JOB_OBJECT_LIMIT_JOB_MEMORY
+        )
+        info.BasicLimitInformation.ActiveProcessLimit = max_procs
+        info.JobMemoryLimit = max_memory_bytes
+        if not kernel32.SetInformationJobObject(
+            job,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            logger.warning(
+                "SECURITY: SetInformationJobObject failed (err=%s); ceilings NOT "
+                "enforced for pid %d",
+                getattr(ctypes, "get_last_error", lambda: 0)(),
+                pid,
+            )
+            return False
+
+        proc_handle = kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
+        if not proc_handle:
+            logger.warning(
+                "SECURITY: OpenProcess(SET_QUOTA|TERMINATE) failed for pid %d (err=%s); "
+                "ceilings NOT enforced",
+                pid,
+                getattr(ctypes, "get_last_error", lambda: 0)(),
+            )
+            return False
+        if not kernel32.AssignProcessToJobObject(job, proc_handle):
+            logger.warning(
+                "SECURITY: AssignProcessToJobObject failed for pid %d (err=%s); "
+                "ceilings NOT enforced",
+                pid,
+                getattr(ctypes, "get_last_error", lambda: 0)(),
+            )
+            return False
+        logger.info(
+            "Job object ceilings applied to pid %d (max_procs=%d, max_mem=%dMB)",
+            pid,
+            max_procs,
+            max_memory_bytes // (1024 * 1024),
+        )
+        return True
+    except Exception:
+        logger.warning("apply_job_limits failed for pid %s", pid, exc_info=True)
+        return False
+    finally:
+        # Safe to close BOTH handles: without KILL_ON_JOB_CLOSE the job object
+        # outlives our handle for as long as processes remain assigned, so the
+        # limits stay in force. Leaking these would be a per-spawn handle leak
+        # in a long-lived gateway.
+        for handle in (proc_handle, job):
+            if handle and kernel32 is not None:
+                try:
+                    kernel32.CloseHandle(handle)
+                except Exception:
+                    logger.debug("CloseHandle failed", exc_info=True)
