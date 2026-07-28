@@ -6,8 +6,10 @@ an exit code that drives the poll loop. The aggregate ``PR Readiness`` status is
 authoritative when present; older PRs fall back to the full check rollup.
 Stdlib only; portable.
 
-Usage:  python3 pr_status.py [pr-number]
-        (no number -> auto-detect the PR for the current branch)
+Usage:  python3 pr_status.py [pr-number] [--readiness-context NAME]
+        (no number -> auto-detect the PR for the current branch;
+         --readiness-context / PREPARE_PR_READINESS_CONTEXT override the
+         aggregate status-context name, default "PR Readiness")
 
 Exit codes:
    0  CLEAN     - open, non-draft, MERGEABLE, no CHANGES_REQUESTED, and
@@ -19,6 +21,7 @@ Exit codes:
    2  ENV ERROR - gh missing or not authenticated, or PR not found
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -38,9 +41,43 @@ PASS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 # StatusContext (legacy commit statuses) use .state rather than .conclusion.
 CTX_PASS = {"SUCCESS"}
 CTX_RUNNING = {"PENDING", "EXPECTED"}
-READINESS_CONTEXT = "PR Readiness"
+DEFAULT_READINESS_CONTEXT = "PR Readiness"
 # Page cap so a pathological PR can't make us loop unbounded (100 * 50 = 5000).
 _MAX_THREAD_PAGES = 50
+
+
+def resolve_readiness_context(argv, environ):
+    """Resolve the aggregate-readiness status-context name.
+
+    Precedence: ``--readiness-context`` CLI flag > ``PREPARE_PR_READINESS_CONTEXT``
+    env var > the KiroCrew default. Lets a project profile name a non-default
+    aggregate status; when unset, behavior is identical to before (the default
+    context, with the full-rollup fallback when that context is absent).
+    """
+    for i, a in enumerate(argv):
+        if a == "--readiness-context" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--readiness-context="):
+            return a.split("=", 1)[1]
+    env = environ.get("PREPARE_PR_READINESS_CONTEXT")
+    return env if env else DEFAULT_READINESS_CONTEXT
+
+
+def positional_args(argv):
+    """Return argv with the ``--readiness-context`` flag (and value) removed."""
+    out = []
+    skip = False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a == "--readiness-context":
+            skip = True
+            continue
+        if a.startswith("--readiness-context="):
+            continue
+        out.append(a)
+    return out
 
 
 def run(args):
@@ -126,7 +163,9 @@ def main(argv):
         err("ERROR: gh not found or not authenticated. Run: gh auth login")
         return 2
 
-    pr = argv[1] if len(argv) > 1 else ""
+    readiness_context = resolve_readiness_context(argv, os.environ)
+    pos = positional_args(argv[1:])
+    pr = pos[0] if pos else ""
     if not pr:
         pr = run(["gh", "pr", "view", "--json", "number", "-q", ".number"])[1]
     if not pr:
@@ -174,7 +213,7 @@ def main(argv):
         # Only the legacy StatusContext we publish is authoritative. A CheckRun
         # can share the display name but is a different, independently writable
         # namespace and must remain part of the ordinary rollup.
-        if e.get("context") == READINESS_CONTEXT:
+        if e.get("context") == readiness_context:
             readiness_kind = kind
         shown = (e.get("status") or "-") + "/" + (e.get("conclusion") or e.get("state") or "-")
         print("  - {}: {}  [{}]".format(name, shown, kind))
@@ -201,7 +240,7 @@ def main(argv):
 
     reasons = []
     if readiness_kind == "fail":
-        reasons.append("PR Readiness reported action required")
+        reasons.append("{} reported action required".format(readiness_context))
     elif readiness_kind is None and n_fail > 0:
         reasons.append("{} check(s) failed".format(n_fail))
     if len(rollup) == 0:

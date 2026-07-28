@@ -326,11 +326,11 @@ class TestPreparePrPreSubmitReview:
         skill = _prepare_pr_skill()
         # Full-cycle loop: Sync (reconcile) -> Local review gate -> Push.
         sync = skill.index("Reconcile code and description.")
-        review = skill.index("Local review that MIRRORS the server reviewers")
+        review = skill.index("Local review — one subagent per profile reviewer")
         push = skill.index("Push only the reviewed commit.")
 
         assert sync < review < push
-        assert "two separate model-pinned `spawn_run` calls" in skill
+        assert "one model-pinned `spawn_run` call per entry" in skill
         assert "concurrently" in skill.lower() or "run at the same time" in skill.lower()
         assert "Charter is read-only" in skill
         # The two reviewers mirror their own (divergent) server contracts.
