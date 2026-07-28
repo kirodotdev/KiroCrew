@@ -588,6 +588,35 @@ skills/                  ← on-demand skill definitions (edit without rebuildin
 - Saved to `~/.kiro/crew/project_dir` during `kirocrew setup` so it works from any directory
 - Falls back to bundled copies in the Python package if project dir not found
 
+#### Skill Bundling: `builtin_skills/` vs. top-level `skills/` (MUST read before adding a skill)
+
+There are **two** places a skill can live, and they ship very differently:
+
+- **`src/kiro_crew/builtin_skills/`** — **bundled** into the Python package. On
+  gateway start, `_ensure_builtin_skills()` copies these into the user's
+  `~/.kiro/crew/skills/`, so **every** `pip` / DMG install receives them
+  automatically. This is the ONLY path that reaches end users.
+- **top-level `skills/`** — a **repo-checkout-only** convenience dir loaded via
+  `KIROCREW_PROJECT_DIR` when running from a source tree. It is **NOT** packaged,
+  so `pip`/DMG users never get these skills.
+
+**Rule — decide by whether the skill is load-bearing for a shipped feature:**
+
+- If a skill is **fundamentally required** for a feature to work as designed
+  (the feature, MCP tool, or docs reference it, or it breaks/degrades without the
+  skill), it **MUST** live under `src/kiro_crew/builtin_skills/` so it is bundled
+  and reaches all users. Do NOT ship a required skill only in top-level `skills/`
+  — that leaves installed users without it (this has bitten us: `prepare-pr`,
+  `artifacts`, and `widgets` were code-referenced but lived only in `skills/`, so
+  DMG users silently ran without them until they were promoted to
+  `builtin_skills/`).
+- Only use top-level `skills/` for **reference-only or optional/suggestion**
+  skills — nice-to-have knowledge that no shipped feature depends on.
+
+When in doubt (a feature or docs mention the skill by name), treat it as required
+and bundle it. Nested layout is preserved on copy (e.g.
+`builtin_skills/kirocrew-dev/prepare-pr/`).
+
 #### Skill Loading
 
 1. **Always-on skills**: skills with `always: true` in YAML frontmatter have full content injected into every new session context
