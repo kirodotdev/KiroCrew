@@ -29,7 +29,9 @@ import {
   ThumbsUp, ThumbsDown, Laugh, PartyPopper, Frown, Heart, Rocket, Eye,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import MarkdownRenderer from '../../../components/MarkdownRenderer'
+import RefMarkdown from './RefMarkdown'
+import { parseRepoRef } from '../lib/refLinks'
+import { CommentCardSkeleton, HeaderSkeleton, TimelineSkeleton } from './DetailSkeleton'
 import AiSummaryCard from './AiSummaryCard'
 import Clickable from '../../../components/Clickable'
 import LabelChip from './LabelChip'
@@ -293,7 +295,7 @@ function CommentCard({
       </div>
       <div className="px-3.5 py-3">
         {body?.trim()
-          ? <MarkdownRenderer content={body} />
+          ? <RefMarkdown content={body} />
           : <div className="text-[13px] text-muted italic">No description provided.</div>}
         {reactions && <ReactionStrip reactions={reactions} />}
       </div>
@@ -397,8 +399,15 @@ function refStateTint(state: string): string {
 
 /** The "Linked pull requests & issues" section: every OTHER issue/PR that
  * cross-references this one, pulled off the timeline into its own block so
- * related work is obvious at a glance. Each row opens the target on GitHub. */
+ * related work is obvious at a glance.
+ *
+ * A row into the ACTIVE repo opens in the in-app reference sheet, exactly like a
+ * reference clicked in the body (see RefLink). A cross-reference from a DIFFERENT
+ * repo — which the timeline does surface — keeps opening on GitHub, because the
+ * detail panes are bound to the active repo's labels, roster and permissions. */
 function RelatedLinks({ items }: { items: RelatedRef[] }) {
+  const { active, openRef } = useIssueRadar()
+  const { owner, repo } = active
   return (
     <section className="mb-6">
       <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-3 font-medium">
@@ -406,33 +415,47 @@ function RelatedLinks({ items }: { items: RelatedRef[] }) {
         <span className="text-muted normal-case tracking-normal opacity-70">· {items.length}</span>
       </div>
       <div className="flex flex-col gap-1.5">
-        {items.map((r) => (
-          <a
-            key={r.url}
-            href={r.url}
-            target="_blank"
-            rel="noreferrer"
-            title={`Open ${r.is_pr ? 'PR' : 'issue'} #${r.number} on GitHub`}
-            className="group flex items-start gap-2.5 rounded-lg border border-border bg-card px-3.5 py-2.5 no-underline hover:border-accent/50 transition-colors"
-          >
-            <span className={`mt-0.5 flex-shrink-0 ${refStateTint(r.state)}`}>
-              {r.is_pr ? <GitPullRequest size={15} /> : <CircleDot size={15} />}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[13px] text-text group-hover:text-accent leading-snug line-clamp-2 break-words">
-                {r.title || `${r.is_pr ? 'Pull request' : 'Issue'} #${r.number}`}
+        {items.map((r) => {
+          const kind = r.is_pr ? 'PR' : 'issue'
+          const target = parseRepoRef(r.url, owner, repo)
+          return (
+            <a
+              key={r.url}
+              href={r.url}
+              target="_blank"
+              rel="noreferrer"
+              title={target
+                ? `Open ${kind} #${r.number} here`
+                : `Open ${kind} #${r.number} on GitHub`}
+              onClick={target
+                ? (e) => {
+                  // Modified clicks stay the browser's: open-in-new-tab must work.
+                  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+                  e.preventDefault()
+                  openRef(target)
+                }
+                : undefined}
+              className="group flex items-start gap-2.5 rounded-lg border border-border bg-card px-3.5 py-2.5 no-underline hover:border-accent/50 transition-colors"
+            >
+              <span className={`mt-0.5 flex-shrink-0 ${refStateTint(r.state)}`}>
+                {r.is_pr ? <GitPullRequest size={15} /> : <CircleDot size={15} />}
               </span>
-              <span className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[11.5px] text-muted">
-                <span className="font-mono">{r.is_pr ? 'PR' : 'Issue'} #{r.number}</span>
-                {r.state && <span>· {r.state}</span>}
-                {r.actor && <span>· by {r.actor}</span>}
-                {r.created_at && (
-                  <span title={new Date(r.created_at).toLocaleString()}>· {relativeTimeOrDate(r.created_at)}</span>
-                )}
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] text-text group-hover:text-accent leading-snug line-clamp-2 break-words">
+                  {r.title || `${r.is_pr ? 'Pull request' : 'Issue'} #${r.number}`}
+                </span>
+                <span className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[11.5px] text-muted">
+                  <span className="font-mono">{r.is_pr ? 'PR' : 'Issue'} #{r.number}</span>
+                  {r.state && <span>· {r.state}</span>}
+                  {r.actor && <span>· by {r.actor}</span>}
+                  {r.created_at && (
+                    <span title={new Date(r.created_at).toLocaleString()}>· {relativeTimeOrDate(r.created_at)}</span>
+                  )}
+                </span>
               </span>
-            </span>
-          </a>
-        ))}
+            </a>
+          )
+        })}
       </div>
     </section>
   )
@@ -471,11 +494,14 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   useEffect(() => { setEditingLabels(false) }, [issue.number])
 
   // Copy-link affordance (the #number links out to GitHub; this copies the URL
-  // to the clipboard). Brief check-mark feedback, then reverts.
+  // to the clipboard). Brief check-mark feedback, then reverts. Reads the URL off
+  // the live detail when it has arrived: a pane opened from a cross-reference
+  // starts from a PLACEHOLDER row whose url is synthesized, and GitHub's own url
+  // is the one worth putting on the clipboard.
   const [copied, setCopied] = useState(false)
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(issue.url)
+      await navigator.clipboard.writeText(detail?.url ?? issue.url)
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch {
@@ -491,6 +517,11 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   const fetchedOnceRef = useRef(false)
   useEffect(() => { fetchedOnceRef.current = false }, [owner, repo, issue.number])
   const detailKey = ['issue-radar', 'issue', owner, repo, issue.number]
+  // The lifecycle the POLL rate is derived from: whatever the pane last read,
+  // falling back to the list row. A pane opened from a cross-reference starts
+  // from a placeholder row with no real state, and any list row can be minutes
+  // stale by the time it is opened.
+  const cachedState = queryClient.getQueryData<IssueDetailResponse>(detailKey)?.detail?.state
   const detailQuery = useQuery({
     queryKey: detailKey,
     queryFn: () => {
@@ -505,7 +536,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
     },
     // A CLOSED issue backs off by an order of magnitude: only late commentary can
     // still arrive, and each poll costs a fully-paginated timeline read.
-    refetchInterval: detailPollMs(issue.state !== 'closed'),
+    refetchInterval: detailPollMs((cachedState ?? issue.state) !== 'closed'),
   })
   const refreshDetail = () => { refreshRef.current = true; detailQuery.refetch() }
 
@@ -559,6 +590,19 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   const locked = detail?.locked ?? false
 
   const activityLoading = detailQuery.isLoading
+  // No row to paint from and no detail yet — i.e. opened from a cross-reference,
+  // where every field would otherwise render a fabricated value ("someone
+  // opened", "No description provided") for the length of one fetch. Show the
+  // SHAPE of the content instead. A pane opened from the list has its row and
+  // never takes this path.
+  const awaitingFirstPaint = !detail && !issue.title
+  // The close/reopen control acts on `state`, which falls back to 'open' when
+  // nothing authoritative has arrived. A pane opened from a cross-reference to a
+  // CLOSED issue would therefore offer "Close as completed" and let that write
+  // overwrite the issue's existing state_reason. Withhold the control until the
+  // state is known (from the detail, or from the reference summary that seeded the
+  // placeholder row).
+  const stateKnown = !!(detail?.state ?? issue.state)
   const activityError = !detailQuery.data ? (detailQuery.error as Error | null) : null
 
   // The original issue description is pinned to the top (below), so the timeline
@@ -639,6 +683,11 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
     },
   })
 
+  // The row handed to the child ACTIONS (investigate) — the live title/body when
+  // they have arrived. A pane opened from a cross-reference starts from a
+  // placeholder row, and the seed prompt names the issue it is about.
+  const actionIssue: Issue = { ...issue, title: detail?.title ?? issue.title, body }
+
   // Suggested labels not already on the issue (accepted ones drop out as the
   // detail cache updates). Kept to labels that still exist on the repo.
   const suggestions = asArray<SuggestedLabel>(aiQuery.data?.suggested_labels).filter((s) => !currentNames.includes(s.name))
@@ -649,8 +698,9 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
       <header className="px-6 pt-5 pb-4 border-b border-border">
         <div className="flex items-start gap-3">
           <div className="flex-1 min-w-0">
+            {awaitingFirstPaint ? <HeaderSkeleton /> : (<>
             <h1 className="text-[27px] font-bold leading-tight text-text-strong break-words">
-              {issue.title}
+              {detail?.title ?? issue.title}
             </h1>
             <div className="flex items-center gap-2 mt-3 flex-wrap text-[12.5px] text-muted">
               <StatePill state={state} reason={stateReason} />
@@ -668,7 +718,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                   {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
                 </button>
                 <a
-                  href={issue.url}
+                  href={detail?.url ?? issue.url}
                   target="_blank"
                   rel="noreferrer"
                   title="Open on GitHub"
@@ -684,10 +734,15 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               </span>
               {locked && <span className="inline-flex items-center gap-1 text-warn"><Lock size={12} /> locked</span>}
             </div>
+            </>)}
           </div>
           <div className="flex-shrink-0 flex items-center gap-1.5">
-            <InvestigateButton owner={owner} repo={repo} issue={issue} />
-            {canWrite && (
+            {/* Withheld until the pane has something real to describe: the seed
+                prompt names the issue by title, so firing it from a placeholder
+                row would persist a session titled "#0" with a malformed context
+                line. */}
+            {!awaitingFirstPaint && <InvestigateButton owner={owner} repo={repo} issue={actionIssue} />}
+            {canWrite && stateKnown && (
               <StateActions
                 state={state}
                 pending={stateMutation.isPending}
@@ -731,7 +786,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
 
             {/* Original description — pinned to the top, NOT on the timeline. */}
             <div className="mb-6">
-              <CommentCard
+              {awaitingFirstPaint ? <CommentCardSkeleton /> : <CommentCard
                 opening
                 author={author}
                 when={createdAt}
@@ -739,7 +794,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                 role={authorRole}
                 body={body}
                 reactions={reactions}
-              />
+              />}
             </div>
 
             {/* Linked PRs / issues — their own section, lifted off the rail. */}
@@ -769,9 +824,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               )
             })}
 
-            {activityLoading && (
-              <div className="py-2 text-[12px] text-muted">Loading activity…</div>
-            )}
+            {activityLoading && <TimelineSkeleton />}
             {activityError && (
               <div className="py-2 text-[12px] text-danger">Couldn't load activity: {activityError.message}</div>
             )}

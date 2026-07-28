@@ -21,6 +21,7 @@ import type {
 import {
   asArray, coerceDashboardTab, coerceSortKey, consumeAutoSelectFirstIssue, LIST_POLL_MS, loadUiState, saveUiState,
 } from './lib/format'
+import type { RepoRef } from './lib/refLinks'
 
 /** GitHub author_association values that mark a repo member (maintainer). Kept
  * in sync with the backend's ``_MEMBER_ASSOC_RANK`` and the detail badge's
@@ -157,6 +158,21 @@ export interface IssueRadarContextValue {
   sortedPulls: PullRequest[]
   activePull: PullRequest | null
 
+  // ── cross-reference sheet ──
+  /** The open stack of same-repo issue/PR references, innermost LAST. Empty when
+   * the sheet is closed. A ref opened from inside the sheet pushes onto it, so
+   * "back" walks the trail you followed. */
+  refStack: RepoRef[]
+  /** Open a same-repo issue/PR in the bottom sheet (or push it onto the stack
+   * when the sheet is already open). Re-opening the ref already on top is a
+   * no-op, so a double-click can't stack the same target twice. */
+  openRef: (ref: RepoRef) => void
+  /** Drop the innermost sheet entry — back to the one that referenced it, or
+   * closed when it was the only one. */
+  popRef: () => void
+  /** Close the sheet outright, discarding the whole stack. */
+  closeRefs: () => void
+
   // ── navigation ──
   mainView: MainView
   dashboardTab: DashboardTab
@@ -235,6 +251,25 @@ export function IssueRadarProvider({
   const [prStateFilter, setPrStateFilter] = useState<PrStateFilter>(restored.prStateFilter ?? 'open')
   const [prSortKey, setPrSortKey] = useState<PrSortKey>(restored.prSortKey ?? 'number')
   const [prSortDir, setPrSortDir] = useState<SortDir>(restored.prSortDir ?? 'desc')
+
+  // ── cross-reference sheet (transient, never persisted) ──
+  // Deliberately NOT part of the persisted UI state: the sheet is a reading
+  // detour, and restoring one on next visit would put the app behind a modal
+  // nobody asked for.
+  const [refStack, setRefStack] = useState<RepoRef[]>([])
+  const openRef = useCallback((ref: RepoRef) => {
+    setRefStack((prev) => {
+      const top = prev[prev.length - 1]
+      if (top && top.kind === ref.kind && top.number === ref.number) return prev
+      return [...prev, ref]
+    })
+  }, [])
+  const popRef = useCallback(() => setRefStack((prev) => prev.slice(0, -1)), [])
+  const closeRefs = useCallback(() => setRefStack([]), [])
+  // References are repo-scoped (a bare number means nothing across repos), so a
+  // repo switch discards the stack rather than showing the new repo's unrelated
+  // #42 — the same reason switchRepo resets selectedPull.
+  useEffect(() => { setRefStack([]) }, [owner, repo])
 
   // Follow-mode: switching main view auto-expands the matching accordion
   // section. A manual header click (setExpanded) overrides until the next
@@ -731,6 +766,7 @@ export function IssueRadarProvider({
     prSortKey, prSortDir, cyclePrSort,
     selectedPull, setSelectedPull,
     filteredPulls, sortedPulls, activePull,
+    refStack, openRef, popRef, closeRefs,
     mainView, dashboardTab, openDashboard, openIssues, openPulls, openSettings, settingsTarget,
     expanded, setExpanded,
   }

@@ -721,6 +721,51 @@ def get_issue_detail(owner: str, repo: str, number: int, *, timeout: float = GH_
         raise GhCliError(f"gh returned unexpected output for {owner}/{repo}#{int(number)}") from exc
 
 
+# One issue/PR reduced to what a REFERENCE preview needs: the identity, who
+# opened it, when, and its lifecycle. Deliberately excludes body/labels/timeline —
+# this backs a hover card and a kind lookup, so it must stay a single cheap call.
+# ``is_pr`` comes from the ``pull_request`` key the issues endpoint adds for a PR,
+# which is also the only way to tell an issue number from a PR number: GitHub's
+# ``/issues/{n}`` URL silently redirects to ``/pull/{n}``, so a plain "#123" (or an
+# ``/issues/123`` link) can be either.
+_REF_SUMMARY_JQ = (
+    "{number: .number, title: .title, state: .state, "
+    "state_reason: .state_reason, url: .html_url, author: (.user.login // null), "
+    "author_association: (.author_association // null), created_at: .created_at, "
+    "updated_at: .updated_at, closed_at: .closed_at, comments: .comments, "
+    "is_pr: (.pull_request != null), draft: (.draft // false), "
+    "merged_at: (.pull_request.merged_at // null), "
+    "labels: [.labels[] | {name: .name, color: .color}]}"
+)
+
+
+def get_ref_summary(owner: str, repo: str, number: int, *, timeout: float = GH_TIMEOUT_SEC) -> dict:
+    """Compact summary of one issue OR pull request via ``gh api
+    repos/{o}/{r}/issues/{n}`` (the issues endpoint answers for both).
+
+    Backs the reference hover card and the issue-vs-PR resolution for a bare
+    ``#123``. One request, no timeline, no diff — see ``_REF_SUMMARY_JQ``.
+    ``number`` is coerced to ``int`` before it reaches the argv, so it cannot
+    inject path segments.
+    """
+    argv = [
+        "gh", "api", f"repos/{owner}/{repo}/issues/{int(number)}",
+        "--jq", _REF_SUMMARY_JQ,
+    ]
+    proc = _gh_run(argv, timeout=timeout)
+
+    if proc.returncode != 0:
+        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        raise GhCliError(
+            f"could not read {owner}/{repo}#{int(number)} (exit {proc.returncode}): {tail}"
+        )
+
+    try:
+        return json.loads(proc.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise GhCliError(f"gh returned unexpected output for {owner}/{repo}#{int(number)}") from exc
+
+
 def _norm_reactions(r: dict | None) -> dict | None:
     """Normalize a GitHub reactions object; ``None`` when there are none (so the
     UI only renders a reactions strip when it carries signal)."""

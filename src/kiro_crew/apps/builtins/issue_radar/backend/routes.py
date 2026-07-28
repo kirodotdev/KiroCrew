@@ -101,6 +101,35 @@ def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:
     )
 
 
+# Upper bound on an issue/PR number this app will accept. GitHub numbers are
+# per-repo sequences in the thousands (the largest public repos are in the
+# hundreds of thousands), so this is generous by orders of magnitude. It exists
+# because an unbounded int reaches the FILESYSTEM: the per-item caches are named
+# ``issue-{n}.json`` / ``pull-{n}.json`` / ``ref-{n}.json``, and a several-hundred
+# digit number makes ``Path.is_file()`` raise ENAMETOOLONG — a 500 on input that
+# should simply be a 400.
+MAX_ITEM_NUMBER = 1_000_000_000
+
+
+def _parse_item_number(raw: str) -> tuple[int, web.Response | None]:
+    """Parse an issue/PR ``?number=`` into a bounded positive int.
+
+    Returns ``(number, None)`` on success, or ``(0, error_response)`` — so every
+    item route validates identically instead of each re-deriving the rules.
+    """
+    try:
+        number = int(raw)
+    except ValueError:
+        return 0, web.json_response({"error": "number must be an integer"}, status=400)
+    if number <= 0:
+        return 0, web.json_response({"error": "number must be a positive integer"}, status=400)
+    if number > MAX_ITEM_NUMBER:
+        return 0, web.json_response(
+            {"error": f"number must be at most {MAX_ITEM_NUMBER}"}, status=400
+        )
+    return number, None
+
+
 def _load_members(owner: str, repo: str) -> tuple[list[dict], str]:
     """Load the repo's member roster and its source.
 
@@ -620,12 +649,9 @@ async def _handle_issue_detail(request: web.Request) -> web.Response:
     if not owner or not repo or not number_raw:
         return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
 
-    try:
-        number = int(number_raw)
-    except ValueError:
-        return web.json_response({"error": "number must be an integer"}, status=400)
-    if number <= 0:
-        return web.json_response({"error": "number must be a positive integer"}, status=400)
+    number, number_error = _parse_item_number(number_raw)
+    if number_error is not None:
+        return number_error
 
     if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
         return web.json_response(
@@ -802,12 +828,9 @@ async def _handle_pull_detail(request: web.Request) -> web.Response:
     if not owner or not repo or not number_raw:
         return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
 
-    try:
-        number = int(number_raw)
-    except ValueError:
-        return web.json_response({"error": "number must be an integer"}, status=400)
-    if number <= 0:
-        return web.json_response({"error": "number must be a positive integer"}, status=400)
+    number, number_error = _parse_item_number(number_raw)
+    if number_error is not None:
+        return number_error
 
     if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
         return web.json_response(
@@ -866,6 +889,59 @@ async def _handle_pull_detail(request: web.Request) -> web.Response:
         # the whole list (the card's tally + dot come from exactly these rows).
         "checks_summary": checks_summary,
         "from_cache": False,
+    })
+
+
+async def _handle_ref_summary(request: web.Request) -> web.Response:
+    """GET /ref?owner=<o>&repo=<r>&number=<n>[&refresh=1] — compact summary of one
+    referenced issue OR pull request.
+
+    Backs the in-app cross-reference UI: the hover preview (number, title, author,
+    when, lifecycle) and the issue-vs-PR resolution a bare ``#123`` needs, since
+    GitHub's ``/issues/{n}`` silently redirects to ``/pull/{n}``. Deliberately
+    NOT ``/issue``: that route also pages the whole timeline, which is far too
+    expensive to pay on hover.
+
+    Cache-first with a short TTL (``store.REF_SUMMARY_CACHE_TTL_SEC``), so
+    freshness is the route's property. Same guards as every other read: the
+    number is parsed as an int before it reaches ``gh``, and access is gated on
+    the repo already being connected.
+    """
+    owner = (request.query.get("owner") or "").strip()
+    repo = (request.query.get("repo") or "").strip()
+    number_raw = (request.query.get("number") or "").strip()
+    if not owner or not repo or not number_raw:
+        return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
+
+    number, number_error = _parse_item_number(number_raw)
+    if number_error is not None:
+        return number_error
+
+    if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
+        return web.json_response(
+            {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
+        )
+
+    force_refresh = request.query.get("refresh") == "1"
+    cached = None if force_refresh else await asyncio.to_thread(
+        store.read_ref_summary_cache, owner, repo, number, None,
+        max_age_sec=store.REF_SUMMARY_CACHE_TTL_SEC,
+    )
+    if cached is not None:
+        return web.json_response({
+            "owner": owner, "repo": repo, "number": number,
+            "summary": cached, "from_cache": True,
+        })
+
+    try:
+        summary = await asyncio.to_thread(github_client.get_ref_summary, owner, repo, number)
+    except github_client.GhCliError as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+    await asyncio.to_thread(store.write_ref_summary_cache, owner, repo, number, summary)
+    return web.json_response({
+        "owner": owner, "repo": repo, "number": number,
+        "summary": summary, "from_cache": False,
     })
 
 
@@ -1081,12 +1157,9 @@ async def _handle_issue_ai(request: web.Request) -> web.Response:
     number_raw = (request.query.get("number") or "").strip()
     if not owner or not repo or not number_raw:
         return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
-    try:
-        number = int(number_raw)
-    except ValueError:
-        return web.json_response({"error": "number must be an integer"}, status=400)
-    if number <= 0:
-        return web.json_response({"error": "number must be a positive integer"}, status=400)
+    number, number_error = _parse_item_number(number_raw)
+    if number_error is not None:
+        return number_error
 
     if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
         return web.json_response(
@@ -1378,12 +1451,9 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
     number_raw = (request.query.get("number") or "").strip()
     if not owner or not repo or not number_raw:
         return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
-    try:
-        number = int(number_raw)
-    except ValueError:
-        return web.json_response({"error": "number must be an integer"}, status=400)
-    if number <= 0:
-        return web.json_response({"error": "number must be a positive integer"}, status=400)
+    number, number_error = _parse_item_number(number_raw)
+    if number_error is not None:
+        return number_error
 
     if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
         return web.json_response(
@@ -1732,12 +1802,9 @@ async def _handle_get_investigation(request: web.Request) -> web.Response:
     number_raw = (request.query.get("number") or "").strip()
     if not owner or not repo or not number_raw:
         return web.json_response({"error": "missing ?owner=, ?repo= and ?number="}, status=400)
-    try:
-        number = int(number_raw)
-    except ValueError:
-        return web.json_response({"error": "number must be an integer"}, status=400)
-    if number <= 0:
-        return web.json_response({"error": "number must be a positive integer"}, status=400)
+    number, number_error = _parse_item_number(number_raw)
+    if number_error is not None:
+        return number_error
 
     if not await asyncio.to_thread(store.is_repo_connected, owner, repo):
         return web.json_response(
@@ -2672,6 +2739,7 @@ def register_routes(app: web.Application) -> None:
     app.router.add_get("/api/apps/issue-radar/pulls", _require_enabled(_handle_pulls))
     app.router.add_get("/api/apps/issue-radar/pulls/search", _require_enabled(_handle_pulls_search))
     app.router.add_get("/api/apps/issue-radar/pull", _require_enabled(_handle_pull_detail))
+    app.router.add_get("/api/apps/issue-radar/ref", _require_enabled(_handle_ref_summary))
     app.router.add_get("/api/apps/issue-radar/labels", _require_enabled(_handle_labels))
     app.router.add_get("/api/apps/issue-radar/members", _require_enabled(_handle_members))
     app.router.add_get("/api/apps/issue-radar/repos", _require_enabled(_handle_repos))

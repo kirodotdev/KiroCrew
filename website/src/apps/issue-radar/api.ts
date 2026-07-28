@@ -271,6 +271,38 @@ export interface IssueDetailResponse {
   from_cache: boolean
 }
 
+/** The compact summary of one REFERENCED issue/PR (`GET /ref`). Backs the hover
+ * preview on a cross-reference and the issue-vs-PR resolution a bare `#123`
+ * needs — GitHub's `/issues/<n>` redirects to `/pull/<n>`, so the path alone
+ * cannot say which it is. Deliberately no body/timeline: it is paid on hover. */
+export interface RefSummary {
+  number: number
+  title: string
+  state: string
+  state_reason: string | null
+  url: string
+  author: string | null
+  author_association: string | null
+  created_at: string
+  updated_at: string
+  closed_at: string | null
+  comments: number
+  /** True when this number is a pull request rather than an issue. */
+  is_pr: boolean
+  draft: boolean
+  /** ISO timestamp when merged, else null — the merged-vs-closed split. */
+  merged_at: string | null
+  labels: Array<{ name: string; color: string }>
+}
+
+export interface RefSummaryResponse {
+  owner: string
+  repo: string
+  number: number
+  summary: RefSummary
+  from_cache: boolean
+}
+
 /** One AI-proposed label: an exact repo label name + a short justification. */
 export interface SuggestedLabel {
   name: string
@@ -679,6 +711,17 @@ export const issueRadarApi = {
     const q = new URLSearchParams({ owner, repo, number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
     const r = await fetch(`${API}/pull?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Compact summary of one referenced issue/PR — one cheap request, no
+   * timeline. Cache-first server-side with a short TTL; backs the reference
+   * hover card and the issue-vs-PR resolution for a bare `#123`. */
+  refSummary: async (owner: string, repo: string, number: number, opts?: { refresh?: boolean }): Promise<RefSummaryResponse> => {
+    const q = new URLSearchParams({ owner, repo, number: String(number) })
+    if (opts?.refresh) q.set('refresh', '1')
+    const r = await fetch(`${API}/ref?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },

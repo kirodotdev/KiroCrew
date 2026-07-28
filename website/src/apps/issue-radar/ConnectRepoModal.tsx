@@ -19,17 +19,13 @@
 // Motion is Framer Motion (not CSS keyframe animations) per the frontend rule:
 // only AnimatePresence can hold the dialog in the DOM long enough to play an
 // exit animation on unmount.
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { RefreshCw, X } from 'lucide-react'
 import ConnectPanel, { COLLAPSED_CARD, EXPANDED_CARD, useConnectFlow } from './ConnectPanel'
 import { useIssueRadar } from './context'
 import Clickable from '../../components/Clickable'
-
-/** Focusable descendants of the dialog, in DOM order, skipping disabled ones. */
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
-  'textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
 
 export default function ConnectRepoModal({
   onConnected,
@@ -69,9 +65,6 @@ export default function ConnectRepoModal({
   const count = flow.targets.length
 
   const dialogRef = useRef<HTMLDivElement>(null)
-  // Whatever had focus before the dialog opened, restored on close so keyboard
-  // users don't get dumped at the top of the document.
-  const restoreFocusRef = useRef<HTMLElement | null>(null)
 
   // Dismissal is BLOCKED while a connect is in flight: closing only unmounts
   // the UI, it does not cancel the sequential fetch loop, so repos would keep
@@ -82,49 +75,9 @@ export default function ConnectRepoModal({
     onClose()
   }, [flow.pending, onClose])
 
-  // Move focus into the dialog on open, restore it on close.
-  useEffect(() => {
-    restoreFocusRef.current = document.activeElement as HTMLElement | null
-    const first = dialogRef.current?.querySelector<HTMLElement>(FOCUSABLE)
-    ;(first ?? dialogRef.current)?.focus()
-    return () => restoreFocusRef.current?.focus?.()
-  }, [])
-
-  // Escape to dismiss, and Tab/Shift+Tab cycle WITHIN the dialog — an
-  // aria-modal dialog that lets focus wander behind the overlay would let
-  // keyboard users activate obscured workspace controls.
-  //
-  // CAPTURE phase: the dialog stops keydown propagation so the workspace's own
-  // shortcuts (j/k navigation, `/` to search) don't fire while the user types a
-  // repo URL. A bubble-phase window listener would therefore never see Escape
-  // or Tab from inside the dialog, breaking both dismissal and the focus trap.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        requestClose()
-        return
-      }
-      if (e.key !== 'Tab' || !dialogRef.current) return
-      const items = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE))
-        .filter((el) => el.offsetParent !== null)
-      if (!items.length) return
-      const firstEl = items[0]
-      const lastEl = items[items.length - 1]
-      const active = document.activeElement
-      if (!e.shiftKey && active === lastEl) {
-        e.preventDefault()
-        firstEl.focus()
-      } else if (e.shiftKey && (active === firstEl || active === dialogRef.current)) {
-        e.preventDefault()
-        lastEl.focus()
-      } else if (!dialogRef.current.contains(active)) {
-        e.preventDefault()
-        firstEl.focus()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [requestClose])
+  // Focus in/out, Escape dismissal, and the Tab focus trap — shared with the
+  // cross-reference sheet (see hooks/useDialogFocusTrap).
+  useDialogFocusTrap(dialogRef, requestClose)
 
   return (
     <AnimatePresence>

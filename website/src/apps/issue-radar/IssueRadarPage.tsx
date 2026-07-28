@@ -11,6 +11,7 @@ import { loadActiveRepo, markAutoSelectFirstIssue, patchUiState, saveActiveRepo 
 import type { ActiveRepo } from './lib/types'
 import { IssueRadarProvider } from './context'
 import Workspace from './Workspace'
+import RefSheet from './components/RefSheet'
 import WelcomeCarousel from './WelcomeCarousel'
 import ConnectRepoModal from './ConnectRepoModal'
 
@@ -90,6 +91,7 @@ export default function IssueRadarPage() {
     >
       <div className="relative h-full">
         <Workspace />
+        <RefSheet />
         {connectingNew && (
           <ConnectRepoModal onConnected={onConnected} onClose={() => setConnectingNew(false)} />
         )}

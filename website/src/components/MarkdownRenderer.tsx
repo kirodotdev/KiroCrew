@@ -53,6 +53,20 @@ const PATH_RE = /^~?(?:\.{0,2}\/)?[\w.@~\/ -]*\/[\w.@~: -]*[\w.]$/
 /** Context providing the viewed file's directory path for resolving bare relative image paths. */
 export const BasePathCtx = createContext<string | null>(null)
 
+/**
+ * Per-consumer override for rendered markdown LINKS.
+ *
+ * A provider returns its own element for the hrefs it wants to own, or null to
+ * fall through to the default anchor. Issue Radar uses it to render same-repo
+ * issue/PR references as in-app affordances (dashed accent underline + hover
+ * preview) without this module knowing anything about issues — and without any
+ * consumer having to post-process React-owned DOM.
+ *
+ * Only the anchor is delegated; the surrounding markdown pipeline is untouched.
+ */
+export type LinkOverride = (link: { href: string; children: React.ReactNode }) => React.ReactNode | null
+export const LinkOverrideCtx = createContext<LinkOverride | null>(null)
+
 function isDarkTheme(): boolean {
   return (document.documentElement.getAttribute('data-theme') || '').includes('dark')
 }
@@ -151,6 +165,31 @@ function slugify(children: React.ReactNode): string | undefined {
   return raw || undefined
 }
 
+/** Default markdown anchor, unless a `LinkOverrideCtx` provider claims the href.
+ *
+ * Extracted from the inline `MD_COMPONENTS.a` so it can read context (it is a
+ * component, so hooks are legal here). Only ALLOWED_PROTOCOLS links (editor
+ * schemes) keep in-place navigation; everything else opens in a new tab. */
+function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAnchorElement> & ExtraProps) {
+  const override = useContext(LinkOverrideCtx)
+  if (href && override) {
+    const claimed = override({ href, children })
+    if (claimed) return <>{claimed}</>
+  }
+  let ext = false
+  try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch { /* not a URL */ }
+  return (
+    <a
+      {...sp(node)}
+      href={href}
+      {...(ext ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
+      className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent"
+    >
+      {children}
+    </a>
+  )
+}
+
 const MD_COMPONENTS: Components = {
   code({ className, children, ...props }) {
     const match = /language-(\w+)/.exec(className || '')
@@ -172,7 +211,7 @@ const MD_COMPONENTS: Components = {
   table({ node, children }) { return <div className="overflow-x-auto my-3"><table {...sp(node)} className="w-full border-collapse text-sm">{children}</table></div> },
   th({ node, children }) { return <th {...sp(node)} className="text-left text-muted text-[13px] font-medium px-3 py-2 border-b border-border bg-bg-elevated">{children}</th> },
   td({ node, children }) { return <td {...sp(node)} className="px-3 py-2 border-b border-border text-sm">{children}</td> },
-  a({ node, href, children }) { let ext = false; try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch {} return <a {...sp(node)} href={href} {...(ext ? {} : { target: '_blank', rel: 'noopener noreferrer' })} className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent">{children}</a> },
+  a: MdAnchor,
   blockquote({ node, children }) { return <blockquote {...sp(node)} className="border-l-[3px] border-accent pl-3 my-2 text-muted italic">{children}</blockquote> },
   hr({ node }) { return <hr {...sp(node)} className="border-border my-4" /> },
   h1({ node, children }) { const id = slugify(children); return <h1 {...sp(node)} id={id} className="text-xl font-bold mt-4 mb-2 text-text-strong">{children}</h1> },

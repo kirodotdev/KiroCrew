@@ -684,6 +684,58 @@ def read_issue_detail_cache(owner: str, repo: str, number: int, root: Path | Non
     return {"detail": data.get("detail"), "timeline": data.get("timeline", [])}
 
 
+# ── reference summary cache (hover preview + issue-vs-PR resolution) ─────────
+#
+# One tiny file per referenced number (``ref-{n}.json``). Short TTL because this
+# backs a hover card: a stale state pill ("open" on a merged PR) is exactly the
+# kind of wrong that makes a preview worse than no preview, and the underlying
+# call is a single cheap request.
+REF_SUMMARY_CACHE_TTL_SEC = 300.0
+
+
+def ref_summary_cache_path(owner: str, repo: str, number: int, root: Path | None = None) -> Path:
+    return repo_data_dir(owner, repo, root) / f"ref-{int(number)}.json"
+
+
+def write_ref_summary_cache(
+    owner: str, repo: str, number: int, summary: dict, *, root: Path | None = None
+) -> None:
+    """Cache one reference summary."""
+    atomic_write(
+        ref_summary_cache_path(owner, repo, number, root),
+        json.dumps(
+            {"owner": owner, "repo": repo, "number": int(number), "summary": summary},
+            indent=2,
+        ),
+    )
+
+
+def read_ref_summary_cache(
+    owner: str, repo: str, number: int, root: Path | None = None,
+    *, max_age_sec: float | None = None,
+) -> dict | None:
+    """Return the cached summary dict, or None when absent or older than
+    ``max_age_sec`` (freshness is the cache's property, not the caller's — same
+    rule as ``read_pr_detail_cache``)."""
+    path = ref_summary_cache_path(owner, repo, number, root)
+    if not path.is_file():
+        return None
+    if max_age_sec is not None:
+        try:
+            if (time.time() - path.stat().st_mtime) > max_age_sec:
+                return None
+        except OSError:
+            return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    summary = data.get("summary")
+    return summary if isinstance(summary, dict) else None
+
+
 # ── AI triage cache (summary + suggested labels) ─────────────────────────────
 #
 # The AI summary + suggested-labels for one issue are computed by a single LLM

@@ -1,6 +1,6 @@
 # Issue Radar Module
 
-Last Updated: 2026-07-27
+Last Updated: 2026-07-28
 
 ## Overview
 
@@ -26,6 +26,7 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | POST | `/connect` | Connect a repo (validates URL, verifies `gh` access) |
 | GET | `/issues` | List open/closed issues (cached, paginated). `poll=1` takes the probe-gated path — see Client-Side List Polling |
 | GET | `/issue` | Full issue detail + timeline |
+| GET | `/ref` | Compact summary of one referenced issue/PR (hover preview + issue-vs-PR resolution). One `gh` call, no timeline, short-TTL cache |
 | GET | `/labels` | Repo label set |
 | GET | `/members` | Repo collaborators (authoritative API or fallback) |
 | GET | `/repos` | Connected repos list (with permission self-heal) |
@@ -214,6 +215,70 @@ flags — the base list stands down as soon as a person filter is *requested*, t
 search query only starts once `/me` resolves — `pullsLoading` covers the gap
 between them, or restoring a persisted person filter would render "no pull
 requests" until the login lands.
+
+## In-App Cross-References
+
+An issue/PR body or comment that links to ANOTHER issue or PR **in the connected
+repo currently open** does not leave the app: the click opens that target in a
+bottom sheet (`components/RefSheet.tsx`) over the workspace, rendering the same
+detail pane (`IssueDetail` / `PrDetail`) the right column uses. Everything else —
+the list, the filters, the selected item — is untouched.
+
+- **Matching** (`lib/refLinks.ts:parseRepoRef`) is deliberately narrow. Only an
+  absolute `http(s)` URL on `github.com` / `www.github.com` whose path is
+  `/<owner>/<repo>/(issues|pull|pulls)/<positive int>` and whose owner/repo match
+  the ACTIVE repo (case-insensitively) is claimed. Trailing segments (`/files`),
+  query strings and `#issuecomment-…` fragments are ignored — same target. Any
+  other link (a different repo, an Enterprise host, `/discussions/`, `/commit/`,
+  a relative href, a non-`http(s)` scheme) keeps its existing behaviour and opens
+  externally. A repo is identified by owner/repo only, so a same-path URL on an
+  Enterprise host is a DIFFERENT repo and is never claimed.
+- **Interception** happens at the ANCHOR, not on the DOM: `MarkdownRenderer`
+  exposes a `LinkOverrideCtx` seam (a predicate-style render override consulted by
+  its default anchor), and `components/RefMarkdown.tsx` provides one that returns
+  `components/RefLink.tsx` for claimed hrefs. The markdown pipeline is otherwise
+  untouched, nothing post-processes React-owned DOM, and links keep their
+  href/target — so a modified click (Cmd/Ctrl/Shift/Alt), a middle click (which
+  fires `auxclick`), and "copy link address" all still behave like GitHub links.
+  Keyboard activation works because it dispatches the same click.
+- **Shorthand.** `lib/refLinks.ts:linkifyIssueRefs` rewrites a bare `#123` into a
+  real markdown link before rendering (the raw markdown the API returns carries
+  only the literal text; GitHub's own web UI linkifies it at render time). Fenced
+  code, inline code, autolinks, raw HTML and existing markdown links are masked
+  out first. A shorthand is rejected when preceded by a word character, `/`
+  (a URL fragment or a cross-repo `owner/repo#5`), `&` (`&#123;`), `[`, `(` or `#`,
+  and when FOLLOWED by a word character (so `#1a2b3c` is not read as `#1`). An
+  all-digit run is taken as a reference — GitHub does the same, and six-figure
+  issue numbers are ordinary, so length cannot decide.
+- **Affordance + preview.** A claimed reference renders with a DASHED accent
+  underline (a solid one stays "ordinary external link"), and hovering or focusing
+  it opens a preview card — number, title, author, when, lifecycle — after a short
+  delay, fetched from `/ref` only on demand. The card is portalled to `<body>` with
+  fixed coordinates so no `overflow: hidden` ancestor clips it, flips above the
+  link near the viewport bottom, and is dismissed by scroll/resize (its position is
+  captured at open time).
+- **Kind resolution.** `#123` and `/issues/123` are both ambiguous, so the pane is
+  chosen by `/ref`'s `is_pr`, not by the link's shape. An explicit `/pull/` link
+  renders immediately; a failed lookup degrades to the issue pane rather than
+  blocking. The lookup shares its query key with the hover card, so opening a
+  reference you hovered costs nothing.
+- **Stack.** `refStack` in the context holds the open trail, innermost last. A
+  reference followed from inside the sheet pushes; Escape and the header's back
+  control pop; the backdrop and the close button discard the whole trail. It is
+  transient (never persisted) and is cleared on a repo switch, because a bare
+  number means nothing across repos.
+- **Presentation.** The sheet is bottom-ANCHORED with square bottom corners, so it
+  reads as growing out of the page rather than as a card sitting low. It takes
+  ~94%/93% of the app area (px-capped only on very large displays) — most of the
+  space, because a detail pane is a two-column layout with a 236px sidebar, but
+  never all of it: the workspace visible around the edges is what says "detour,
+  not navigation".
+- **Data path.** `GET /issue` and `GET /pull` already fetch any number on demand
+  for a connected repo; only the cheap `/ref` summary is new. When the target is in
+  the loaded list its row seeds the first paint (and the sheet offers "open in the
+  workspace", which promotes it to the main selection); otherwise a placeholder row
+  carries the number until the detail arrives. Both panes therefore read
+  `detail?.x ?? row.x` for the title, the GitHub URL and the poll lifecycle.
 
 ## Platform Requirements
 

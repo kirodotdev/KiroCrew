@@ -22,7 +22,8 @@ import {
   CheckCircle2, XCircle, Eye, GitBranch, ChevronDown, ChevronUp, Loader2, ShieldCheck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import MarkdownRenderer from '../../../components/MarkdownRenderer'
+import RefMarkdown from './RefMarkdown'
+import { CommentCardSkeleton, HeaderSkeleton, TimelineSkeleton } from './DetailSkeleton'
 import { safeHttpUrl } from '../../../lib/safeUrl'
 import LabelChip from './LabelChip'
 import MemberBadge from './MemberBadge'
@@ -132,7 +133,7 @@ function CollapsibleBody({ body }: { body: string }) {
         ref={innerRef}
         style={collapsed ? { maxHeight: COLLAPSED_BODY_PX, overflow: 'hidden' } : undefined}
       >
-        <MarkdownRenderer content={body} />
+        <RefMarkdown content={body} />
       </div>
       {collapsed && (
         <>
@@ -187,7 +188,7 @@ function CommentCard({
         {!text
           ? <div className="text-[13px] text-muted italic">No description provided.</div>
           : opening
-            ? <MarkdownRenderer content={text} />
+            ? <RefMarkdown content={text} />
             : <CollapsibleBody body={text} />}
       </div>
     </div>
@@ -472,7 +473,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
   const [copied, setCopied] = useState(false)
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(pull.url)
+      await navigator.clipboard.writeText(detail?.url ?? pull.url)
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch { /* clipboard unavailable */ }
@@ -611,6 +612,12 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
   const association = detail?.author_association ?? pull.author_association ?? null
 
   const activityLoading = detailQuery.isLoading
+  // No row to paint from and no detail yet — i.e. opened from a cross-reference.
+  // Every field would otherwise render a fabricated value ("someone opened",
+  // "ghost", "No description provided") for the length of one fetch, so show the
+  // SHAPE of the content instead. A pane opened from the list never takes this
+  // path: its row is the first paint.
+  const awaitingFirstPaint = !detail && !pull.title
   // Surfaced even when react-query still holds the PREVIOUS payload: after a
   // failed poll or refresh it keeps that data, so gating on `!data` would leave
   // stale timeline and check rows on screen with nothing saying they are stale.
@@ -632,12 +639,18 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
   // render every non-comment/comment event NEWEST-FIRST, latest node pulsing.
   const activityDesc = [...timeline].reverse()
 
+  // The row handed to the child ACTIONS (review) — the live title/body when they
+  // have arrived, for the same reason as IssueDetail's actionIssue: a pane opened
+  // from a cross-reference starts from a placeholder row.
+  const actionPull: PullRequest = { ...pull, title: detail?.title ?? pull.title, body }
+
   return (
     <article className="h-full flex flex-col">
       {/* ── Header (does not scroll) ── */}
       <header className="px-6 pt-5 pb-4 border-b border-border">
         <div className="flex items-start gap-3">
           <div className="flex-1 min-w-0">
+            {awaitingFirstPaint ? <HeaderSkeleton /> : (<>
             <h1 className="text-[27px] font-bold leading-tight text-text-strong break-words">
               {detail?.title ?? pull.title}
             </h1>
@@ -652,7 +665,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                 >
                   {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
                 </button>
-                <a href={pull.url} target="_blank" rel="noreferrer" title="Open on GitHub" className="font-mono text-muted hover:text-accent hover:underline">
+                <a href={detail?.url ?? pull.url} target="_blank" rel="noreferrer" title="Open on GitHub" className="font-mono text-muted hover:text-accent hover:underline">
                   #{pull.number}
                 </a>
               </span>
@@ -662,9 +675,12 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                 {createdAt ? <RelTime iso={createdAt} /> : ''}
               </span>
             </div>
+            </>)}
           </div>
           <div className="flex-shrink-0 flex items-center gap-1.5">
-            <ReviewButton owner={owner} repo={repo} pull={pull} />
+            {/* Same reason as IssueDetail's Investigate: the review seed prompt
+                names the PR by title. */}
+            {!awaitingFirstPaint && <ReviewButton owner={owner} repo={repo} pull={actionPull} />}
             <button
               onClick={refreshDetail}
               disabled={detailQuery.isFetching}
@@ -707,7 +723,9 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
 
             {/* Description — pinned to the top, NOT on the timeline. */}
             <div className="mb-6">
-              <CommentCard opening author={author} when={createdAt} body={body} role={authorRole} assoc={association} />
+              {awaitingFirstPaint
+                ? <CommentCardSkeleton />
+                : <CommentCard opening author={author} when={createdAt} body={body} role={authorRole} assoc={association} />}
             </div>
 
             {/* Activity timeline — newest first, latest node pulsing. */}
@@ -757,7 +775,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               )
             })}
 
-            {activityLoading && <div className="py-2 text-[12px] text-muted">Loading activity…</div>}
+            {activityLoading && <TimelineSkeleton />}
             {activityError && (
               <div className={`py-2 text-[12px] ${activityStale ? 'text-warn' : 'text-danger'}`}>
                 {activityStale
