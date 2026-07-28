@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock
 
@@ -10,6 +11,45 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.config.loader import KiroCrewConfig, SttConfig
+
+# Upper bound for _wait_for_operation. Generous because it only ever elapses on
+# a genuine regression (the audit never fires); the happy path returns as soon
+# as the handler's next step runs, so a large bound costs nothing in wall clock.
+_AUDIT_WAIT_TIMEOUT_SECS = 5.0
+
+
+async def _wait_for_operation(calls: list[dict], operation: str) -> None:
+    """Await *operation* appearing in *calls*, or fail with what did arrive.
+
+    The WS error-frame handshake does NOT order the client's assertion after the
+    server's audit. Every early-return path in ``api_ws_stt`` runs
+    ``send_json(error)`` -> ``ws.close()`` -> ``_emit_end_audit(...)``, so
+    ``receive_json()`` returns on the error frame while the handler still has two
+    steps to go. Exiting the ``TestClient`` context is not a barrier either: it
+    closes the client side and does not await the server handler's coroutine to
+    completion. Asserting on ``calls`` right after either point is therefore a
+    race that fails whenever the event loop happens not to resume the handler
+    first — reproduced at roughly 1-in-8 locally and seen intermittently on CI.
+
+    Polling the real condition removes the guesswork: it returns the instant the
+    audit lands and fails with a useful message if it never does.
+    """
+
+    async def _poll() -> None:
+        while operation not in [c["operation"] for c in calls]:
+            # sleep(0) yields to the loop so the pending handler continues; the
+            # loop is single-threaded, so a busy-wait without it would hang.
+            await asyncio.sleep(0)
+
+    # asyncio.wait_for, not asyncio.timeout: the latter is 3.11+ and this project
+    # supports 3.10 (CI runs a 3.10 shard).
+    try:
+        await asyncio.wait_for(_poll(), timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+    except asyncio.TimeoutError:
+        raise AssertionError(
+            f"{operation!r} audit never emitted within {_AUDIT_WAIT_TIMEOUT_SECS}s; "
+            f"got {[c['operation'] for c in calls]}"
+        ) from None
 
 
 def _make_app() -> web.Application:
@@ -225,6 +265,9 @@ class TestStreamLifecycle:
             ws = await client.ws_connect("/api/ws/stt")
             await ws.receive_json()
             await ws.close()
+        # Wait for the end audit instead of assuming the handler already ran:
+        # the error frame / client close is not a barrier for it.
+        await _wait_for_operation(calls, "stt_stream_end")
         ops = [c["operation"] for c in calls]
         assert "stt_stream_start" in ops and "stt_stream_end" in ops
         end = next(c for c in calls if c["operation"] == "stt_stream_end")
@@ -254,6 +297,9 @@ class TestStreamLifecycle:
             msg = await ws.receive_json()
             assert msg == {"type": "error", "message": "amazon-transcribe not installed"}
             await ws.close()
+        # Wait for the end audit instead of assuming the handler already ran:
+        # the error frame / client close is not a barrier for it.
+        await _wait_for_operation(calls, "stt_stream_end")
         ops = [c["operation"] for c in calls]
         assert "stt_stream_start" in ops and "stt_stream_end" in ops
         end = next(c for c in calls if c["operation"] == "stt_stream_end")
@@ -566,6 +612,9 @@ class TestDefensiveGuards:
             msg = await ws.receive_json()
             assert msg == {"type": "error", "message": "failed to create transcription client"}
             await ws.close()
+        # Wait for the end audit instead of assuming the handler already ran:
+        # the error frame / client close is not a barrier for it.
+        await _wait_for_operation(calls, "stt_stream_end")
         ops = [c["operation"] for c in calls]
         assert "stt_stream_start" in ops and "stt_stream_end" in ops, (
             f"both start and end audit events required; got {ops}"
@@ -603,8 +652,9 @@ class TestDefensiveGuards:
             msg = await ws.receive_json()
             assert msg == {"type": "error", "message": "audit subsystem unavailable"}
             await ws.close()
-        # Assertions on `calls` must run after the TestClient context exits so
-        # the server-side handler's `_emit_end_audit` has definitively run.
+        # Wait for the end audit instead of assuming the handler already ran:
+        # the error frame / client close is not a barrier for it.
+        await _wait_for_operation(calls, "stt_stream_end")
         ops = [c["operation"] for c in calls]
         assert "stt_stream_start" in ops and "stt_stream_end" in ops, (
             f"both start and end audit events required; got {ops}"
@@ -670,6 +720,9 @@ class TestDefensiveGuards:
             assert (await ws.receive_json()) == {"type": "ready"}
             await ws.send_str('{"type":"stop"}')
             await ws.close()
+        # Wait for the end audit instead of assuming the handler already ran:
+        # the error frame / client close is not a barrier for it.
+        await _wait_for_operation(calls, "stt_stream_end")
         ops = [c["operation"] for c in calls]
         assert "stt_stream_start" in ops and "stt_stream_end" in ops, (
             f"both start and end audit events required; got {ops}"

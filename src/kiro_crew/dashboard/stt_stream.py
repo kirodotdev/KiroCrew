@@ -71,6 +71,32 @@ def _emit_end_audit(caller: str, *, outcome: str) -> None:
         logger.exception("Failed to emit stt_stream_end SEL audit")
 
 
+async def _close_and_end_audit(ws: web.WebSocketResponse, caller: str, *, outcome: str) -> None:
+    """Emit ``stt_stream_end``, then close *ws*, on an early-return path.
+
+    Order matters, and it is audit-first on purpose.
+    ``WebSocketResponse.close()`` awaits the peer's close acknowledgement under
+    its own timeout (10s by default), so a client that has already gone away —
+    an abrupt disconnect, a closed tab, or a test client that read the error
+    frame and left — parks the handler inside ``close()``. With the audit after
+    the close, ``stt_stream_end`` is withheld for as long as that takes, leaving
+    a start with no end in the trail for up to the full timeout. Emitting first
+    makes the audit independent of the peer, which is the property the balanced
+    trail actually needs; the close still runs (and is still awaited) right
+    after, so nothing leaks.
+
+    ``_emit_end_audit`` never raises, so the close is always reached.
+    """
+
+    _emit_end_audit(caller, outcome=outcome)
+    try:
+        await ws.close()
+    except Exception:
+        # A broken transport must not turn an already-audited early return into
+        # a 500 — the balanced trail is the invariant, the close is best-effort.
+        logger.exception("Failed to close STT WebSocket on early return")
+
+
 def _emit_guard_audit(caller: str, *, outcome: str) -> None:
     """Log ``stt_stream_rejected`` defensively on guard-path rejections.
 
@@ -165,8 +191,7 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
                 await ws.send_json({"type": "error", "message": "audit subsystem unavailable"})
             except Exception:
                 pass
-            await ws.close()
-            _emit_end_audit(caller, outcome="error")
+            await _close_and_end_audit(ws, caller, outcome="error")
             return ws
 
         if TranscribeStreamingClient is None:
@@ -174,8 +199,7 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
             # import fell back to None so the gateway could boot; surface a
             # friendly error here and keep the audit trail balanced.
             await ws.send_json({"type": "error", "message": "amazon-transcribe not installed"})
-            await ws.close()
-            _emit_end_audit(caller, outcome="error")
+            await _close_and_end_audit(ws, caller, outcome="error")
             return ws
 
         try:
@@ -192,8 +216,7 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
             # unmatched stt_stream_start. Mirrors the start_stream path.
             logger.exception("Failed to create Transcribe client")
             await ws.send_json({"type": "error", "message": "failed to create transcription client"})
-            await ws.close()
-            _emit_end_audit(caller, outcome="error")
+            await _close_and_end_audit(ws, caller, outcome="error")
             return ws
 
         stream = None
@@ -213,8 +236,7 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
         except Exception:
             logger.exception("Failed to start Transcribe stream")
             await ws.send_json({"type": "error", "message": "failed to start transcription"})
-            await ws.close()
-            _emit_end_audit(caller, outcome="error")
+            await _close_and_end_audit(ws, caller, outcome="error")
             return ws
 
         # Enforce the bill-cap with a dedicated task, not an in-loop check.
@@ -313,17 +335,17 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
                     # expiry) so operators can see why transcription stopped instead of
                     # silently cancelling the task.
                     logger.exception("Transcribe handler task failed")
+            # Audit BEFORE the close, for the reason documented on
+            # _close_and_end_audit: ws.close() awaits the peer's close ack under
+            # its own timeout, so a client that already went away would otherwise
+            # hold stt_stream_end back for up to that long. The close is still
+            # awaited right after, and still tolerates a broken transport.
+            _emit_end_audit(caller, outcome="timeout" if timed_out else "ok")
             if not ws.closed:
-                # ws.close() can raise on a broken transport. If it did,
-                # the uncaught exception would skip _emit_end_audit below,
-                # leaving an unmatched stt_stream_start — exactly what the
-                # surrounding cleanup is designed to prevent. Matches the
-                # defensive pattern in _enforce_deadline.
                 try:
                     await ws.close()
                 except Exception:
-                    pass
-            _emit_end_audit(caller, outcome="timeout" if timed_out else "ok")
+                    logger.exception("Failed to close STT WebSocket during cleanup")
 
         return ws
     finally:

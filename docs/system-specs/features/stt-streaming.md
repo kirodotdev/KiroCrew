@@ -1,6 +1,8 @@
 # Streaming STT — Design Document
 
-Last Updated: 2026-04-18
+Last Updated: 2026-07-28 (SEL audit ordering: `stt_stream_end` is emitted
+BEFORE the WebSocket close on every exit path, so the balanced audit trail no
+longer depends on a well-behaved peer)
 
 ## Overview
 
@@ -74,6 +76,26 @@ absent in the browser.
   `onFinal(combined)`, stops mic tracks, closes `AudioContext`.
 - Component unmount: same cleanup; guarantees no leaked Transcribe
   session (billable).
+
+### SEL audit pairing — emit before closing
+
+Every accepted connection logs `stt_stream_start`, and **every** exit path must
+log a matching `stt_stream_end` (`error`, `timeout`, or `ok`) or the audit trail
+shows an unmatched start.
+
+`stt_stream_end` is emitted **before** `await ws.close()`, never after — on the
+four early-return paths (via `_close_and_end_audit`) and on the normal cleanup
+path. `WebSocketResponse.close()` awaits the *peer's* close acknowledgement under
+its own timeout (10s by default), so a client that has already gone away (abrupt
+disconnect, closed tab) parks the handler inside `close()`; with the audit after
+the close, the end event is withheld for up to that timeout. Emitting first makes
+the pairing independent of the peer. The close still runs and is still awaited
+immediately after, and still tolerates a broken transport (logged, not raised).
+
+Tests asserting on the audit pair must **wait** for the end event
+(`_wait_for_operation`): neither receiving the error frame nor exiting the
+`TestClient` context orders the assertion after the server handler's remaining
+steps, so asserting straight after either is a race.
 
 ## Frozen-prefix Behaviour
 
