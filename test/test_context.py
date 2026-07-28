@@ -89,6 +89,10 @@ class TestContextBuilder:
         # ...and the standalone-final-message rule (decision context must not
         # live only in a now-collapsed step)
         assert "collapses earlier steps" in ctx
+        # ...and the option-label voice rule. Labels are sent verbatim as the
+        # user's next message, so agent-voice labels ("I'll merge it") read
+        # backwards once clicked.
+        assert "in the USER's voice" in ctx
 
     def test_cc_provider_has_full_parity_with_kiro(self, tmp_path):
         """Full parity: anything injected for kiro ACP must also be injected for

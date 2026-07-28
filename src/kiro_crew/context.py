@@ -628,6 +628,13 @@ _CRITICAL_RULES = (
     "(links, CR/ticket IDs, status, a gloss on any unclear option label, and any "
     "clarifying questions) in the body BEFORE the [OPTIONS:] line -- the UI "
     "collapses earlier steps, so the final message is all that remains.\n"
+    "Write every option label in the USER's voice, not yours. Clicking a label "
+    "inserts it verbatim into the user's input box and sends it as their next "
+    "message to you, so each label must read as a short instruction or answer "
+    "FROM the user (\"Merge it now\", \"Show me the diff\", \"Skip the rebase\", "
+    "\"Yes, delete it\"). Never phrase a label in your own voice or as your own "
+    "next action (\"I'll merge it\", \"Let me show the diff\", \"I can rebase "
+    "first\"), and never phrase it as a question back to the user.\n"
     "[END CRITICAL RULES]\n\n"
 )
 
@@ -1814,7 +1821,9 @@ class ContextBuilder:
             parts.append(
                 "\n\n(If presenting choices, end with [OPTIONS: choice1 | choice2 | choice3] "
                 "as the very last line — exactly once, nothing after it. "
-                "Users can select multiple options before submitting.)"
+                "Users can select multiple options before submitting. Label each choice "
+                "in the user's voice as an instruction to you — \"Merge it now\", not "
+                "\"I'll merge it\".)"
             )
             # Dashboard-only, situational nudge for the suggest_followup tool.
             # Gated to dashboard sessions because the tool rejects Slack/cron/
