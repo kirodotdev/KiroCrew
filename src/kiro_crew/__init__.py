@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 
 class _LazyShutdownEvent:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kirocrew"
-version = "0.1.0"
+version = "0.1.2"
 description = "Personal AI agent that runs locally — chat via CLI, dashboard, Slack, or desktop app"
 readme = "README.md"
 # macOS (x86_64 + arm64) and Linux (x86_64 + aarch64), CPython 3.10-3.13.
