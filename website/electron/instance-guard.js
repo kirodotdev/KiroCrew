@@ -13,15 +13,18 @@
  * module covers that cross-app seam.
  *
  * Decision inputs: our own stamped version (identity family derives from it,
- * mirroring auto-update.js channelForVersion) and the running gateway's
- * /api/health payload ({ok, app, version}). Legacy gateways (health without
- * identity fields) and source-run dev gateways keep today's reuse behavior —
- * the guard only interposes when BOTH sides are positively identified and
- * their families differ.
+ * mirroring auto-update.js channelForVersion), the running gateway's
+ * /api/health payload ({ok, app, version}), and who LOCALLY owns the port's
+ * LISTEN socket. Legacy gateways (health without identity fields) and
+ * source-run dev gateways keep today's reuse behavior — the guard only
+ * interposes when BOTH sides are positively identified, their families differ,
+ * AND the port is held by a local KiroCrew process. That last input is what
+ * separates a local rival from a REMOTE gateway forwarded in over `ssh -L`,
+ * which the health payload alone cannot distinguish.
  *
  * Pure logic only — the Electron shell (main.js) owns the dialog, the
  * quit-by-name AppleScript (bundle id is shared, so targeting must be by
- * app NAME), and the port-free wait.
+ * app NAME), the port-owner probe, and the port-free wait.
  */
 
 const { channelForVersion } = require("./auto-update");
@@ -60,10 +63,16 @@ function identityFamily(version) {
  * @param {string} ownVersion  app.getVersion() of this shell
  * @param {{ok?:boolean, app?:string, version?:string}|null} remoteHealth
  *        parsed /api/health JSON, or null when unreachable/unparseable
+ * @param {object} [opts]
+ * @param {"kirocrew"|"foreign"|"none"|"unknown"} [opts.localOwner="unknown"]
+ *        who LOCALLY owns the port's LISTEN socket (classifyPortOwner in
+ *        gateway-stop.js). Defaults to "unknown" so a caller that forgets to
+ *        pass it fails SAFE (reuse) rather than inheriting the old
+ *        evict-on-payload-alone behavior.
  * @returns {{action:"reuse", reason:string} |
  *           {action:"takeover-prompt", otherFamily:"prod"|"nightly", otherVersion:string}}
  */
-function decideGatewayAction(ownVersion, remoteHealth) {
+function decideGatewayAction(ownVersion, remoteHealth, { localOwner = "unknown" } = {}) {
   const own = identityFamily(ownVersion);
   // A shell we can't classify never evicts anyone.
   if (own === null) return { action: "reuse", reason: "unclassified-shell" };
@@ -76,6 +85,20 @@ function decideGatewayAction(ownVersion, remoteHealth) {
   const remote = identityFamily(remoteHealth.version);
   if (remote === null || remote === own) {
     return { action: "reuse", reason: remote === own ? "same-family" : "dev-gateway" };
+  }
+  // Cross-family: the payload says "a rival KiroCrew owns the port". That is
+  // necessary but NOT sufficient to evict, because the payload is identical
+  // whether the responder is a local install or a REMOTE gateway forwarded
+  // here by `ssh -L <port>:localhost:<port>`. Only a positively identified
+  // local KiroCrew LISTEN owner authorises the eviction; a tunnel ("foreign",
+  // owner is `ssh`), an unseen socket ("none"), or a failed probe ("unknown")
+  // all reuse instead. Evicting a tunnel is doubly wrong: the AppleScript quit
+  // targets a local app that is not running, and killing the port would tear
+  // down the user's forward. This mirrors chooseRecoveryStrategy in
+  // gateway-recovery.js, which already refuses to kill a gateway we did not
+  // spawn — the boot path simply never got the same rule.
+  if (localOwner !== "kirocrew") {
+    return { action: "reuse", reason: `non-local-holder:${localOwner}` };
   }
   return { action: "takeover-prompt", otherFamily: remote, otherVersion: remoteHealth.version };
 }

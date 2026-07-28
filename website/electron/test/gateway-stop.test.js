@@ -5,7 +5,7 @@ const os = require("os");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
-const { postShutdown, stopGatewayGracefully, forceStopPort } = require("../gateway-stop");
+const { postShutdown, stopGatewayGracefully, forceStopPort, classifyPortOwner, KIROCREW_PROC_RE } = require("../gateway-stop");
 
 // Helper: temp KIROCREW_HOME containing a .local_secret file.
 function tmpHomeWithSecret(secret) {
@@ -217,4 +217,61 @@ test("forceStopPort: freed reflects real port state even after killing our targe
   assert.strictEqual(r.killed, 1);
   assert.deepStrictEqual(r.survivors, []); // OUR pid is gone
   assert.strictEqual(r.freed, false); // but the port is still held by 777
+});
+
+// ── classifyPortOwner ───────────────────────────────────────────────────────
+// Ground truth for "is the thing on our port local, or a tunnel?". Every
+// outcome except a positively identified local KiroCrew process must be
+// treated as "not ours" by callers.
+
+test("classifyPortOwner: local KiroCrew gateway is ours", async () => {
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [4242],
+    getCommand: async () => "python -m kiro_crew gateway --port 5476",
+  });
+  assert.strictEqual(owner, "kirocrew");
+});
+
+test("classifyPortOwner: an ssh -L forward is foreign, not ours", async () => {
+  // The exact shape of the reported bug: the tunnel's local socket belongs to
+  // ssh, while the gateway answering /api/health lives on another machine.
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909],
+    getCommand: async () => "ssh -NL 5476:localhost:5476 dev-dsk-example.amazon.com",
+  });
+  assert.strictEqual(owner, "foreign");
+});
+
+test("classifyPortOwner: no listener is 'none'", async () => {
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [],
+    getCommand: async () => "",
+  });
+  assert.strictEqual(owner, "none");
+});
+
+test("classifyPortOwner: an unrunnable probe is 'unknown', never 'none'", async () => {
+  // A swallowed ENOENT previously looked like "nothing is listening", which is
+  // the dangerous direction: it would authorise an eviction.
+  const enoent = Object.assign(new Error("spawn lsof ENOENT"), { code: "ENOENT" });
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => { throw enoent; },
+    getCommand: async () => "",
+  });
+  assert.strictEqual(owner, "unknown");
+});
+
+test("classifyPortOwner: ours wins when a mixed set holds the port", async () => {
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [909, 4242],
+    getCommand: async (pid) => (pid === 4242 ? "kirocrew gateway" : "ssh -NL 5476:localhost:5476 host"),
+  });
+  assert.strictEqual(owner, "kirocrew");
+});
+
+test("classifyPortOwner and forceStopPort share one KiroCrew matcher", async () => {
+  // Drift between the two would let one mis-target a stranger's process.
+  assert.ok(KIROCREW_PROC_RE.test("python -m kiro_crew gateway"));
+  assert.ok(KIROCREW_PROC_RE.test("/Applications/KiroCrew.app/.../kirocrew"));
+  assert.ok(!KIROCREW_PROC_RE.test("ssh -NL 5476:localhost:5476 host"));
 });

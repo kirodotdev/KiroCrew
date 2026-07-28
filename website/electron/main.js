@@ -46,7 +46,7 @@ const { findConfiguredDashboardPort } = require("./data-home");
 const { createTokenRetryHandler } = require("./token-retry");
 const { createDisplayMediaHandler } = require("./display-media");
 const { initAutoUpdate } = require("./auto-update");
-const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort } = require("./gateway-stop");
+const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort, classifyPortOwner } = require("./gateway-stop");
 const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("./gateway-wait");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { createLivenessMonitor } = require("./gateway-liveness");
@@ -257,13 +257,45 @@ function quitOtherApp(appName) {
   });
 }
 
+// Who locally owns :PORT's LISTEN socket? Thin wiring over classifyPortOwner
+// (gateway-stop.js) using the same lsof/ps helpers forceStopGatewayPort uses.
+// Function declarations are hoisted, so the helpers defined further down this
+// file are available here.
+//
+// Platforms without lsof//bin/ps (Windows) resolve to "unknown", which reuses.
+// That is the safe direction: reuse can never produce two gateways on one data
+// home, so the cross-app mutex still holds — only the eviction prompt is lost,
+// and eviction was already darwin-only (canTakeover below).
+function probeGatewayPortOwner(port) {
+  return classifyPortOwner(port, {
+    getListenPids: _lsofListenPids,
+    getCommand: _psCommand,
+    log: glog,
+  });
+}
+
 // Budget: the other app's graceful gateway stop runs up to 15s
 // (POST /api/shutdown -> SIGTERM -> SIGKILL) after the quit event lands,
 // so the wait must comfortably exceed it.
+//
+// "Free" means the LISTEN socket is gone, NOT merely that /api/status stopped
+// answering. Those differ in exactly the cases that matter: a gateway wedged in
+// an uninterruptible kernel wait still holds the port while failing probes, and
+// a dropped SSH forward stops answering while `ssh` keeps the socket. Either
+// way the old HTTP heuristic reported "released" and we respawned straight into
+// EADDRINUSE. forceStopPort already learned this lesson; this is the same check.
 async function waitForPortFree(maxWaitMs = 30000) {
   const start = Date.now();
   for (;;) {
-    try { await checkBackend(); } catch { return true; } // probe fails => port free
+    const owner = await probeGatewayPortOwner(PORT);
+    if (owner === "none") return true;
+    if (owner === "unknown") {
+      // We cannot see the listener at all (no lsof). Fall back to the historical
+      // HTTP heuristic rather than blocking the takeover forever — but say so,
+      // because this is the weaker signal.
+      glog(`port-free: listener probe unavailable on :${PORT} — falling back to an HTTP probe`);
+      try { await checkBackend(); } catch { return true; }
+    }
     if (Date.now() - start > maxWaitMs) return false;
     await new Promise((r) => setTimeout(r, 500));
   }
@@ -271,7 +303,15 @@ async function waitForPortFree(maxWaitMs = 30000) {
 
 async function resolveGatewayConflict() {
   const health = await fetchHealthInfo();
-  const decision = decideGatewayAction(app.getVersion(), health);
+  // A remote host configured for THIS port means the user deliberately pointed
+  // this app at a gateway on another machine, so the local holder is a tunnel
+  // by construction and there is nothing here to evict.
+  const remoteHost = getRemoteHostConfig(store, PORT)?.host || "";
+  if (remoteHost) {
+    glog(`:${PORT} is a configured remote host (${remoteHost}) — holder treated as non-local`);
+  }
+  const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT);
+  const decision = decideGatewayAction(app.getVersion(), health, { localOwner });
   if (decision.action === "reuse") {
     glog(`reusing existing gateway on :${PORT} (${decision.reason}) — bundled backend NOT spawned`);
     weSpawnedGateway = false; // reuse path — recovery must not kill/respawn a gateway we don't own

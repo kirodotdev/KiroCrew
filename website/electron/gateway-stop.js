@@ -14,6 +14,13 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
+// The single definition of "this LISTEN owner is one of ours". Shared by
+// forceStopPort (which may only ever SIGKILL our own processes) and
+// classifyPortOwner (which may only ever authorise an eviction of one).
+// Keep it in one place: a drift between the two would let one of them
+// mis-target a stranger's process.
+const KIROCREW_PROC_RE = /kiro_crew|kirocrew/i;
+
 /**
  * POST /api/shutdown with the local secret (mirrors the dashboard's
  * X-Local-Secret auth). Resolves true on HTTP 200, false on any failure
@@ -137,7 +144,7 @@ async function forceStopPort(
     getCommand,
     kill,
     sleep,
-    isKirocrew = /kiro_crew|kirocrew/i,
+    isKirocrew = KIROCREW_PROC_RE,
     verifyTimeoutMs = 4000,
     pollIntervalMs = 250,
     log = () => {},
@@ -203,4 +210,66 @@ async function forceStopPort(
   return { killed, freed, survivors, foreignHolder };
 }
 
-module.exports = { postShutdown, stopGatewayGracefully, forceStopPort };
+/**
+ * Classify who LOCALLY owns the LISTEN socket on `port`.
+ *
+ * This exists because an HTTP identity probe CANNOT distinguish a local rival
+ * gateway from a remote one reached through a port-forward: `ssh -L 5476:...`
+ * makes a gateway on another machine answer on `localhost:5476` with the same
+ * `/api/health` payload a local install would send. Deciding to evict on the
+ * payload alone therefore tears down the user's tunnel (and the AppleScript
+ * quit targets a local app that isn't even running). The listening socket's
+ * owner is the ground truth the payload lacks — on a tunnel it is `ssh`.
+ *
+ * Deliberately fail-safe: every outcome except a positively identified local
+ * KiroCrew process is a reason NOT to evict.
+ *   "kirocrew" — a local LISTEN owner matching KIROCREW_PROC_RE. Only this
+ *                value may authorise a takeover.
+ *   "foreign"  — a local LISTEN owner exists but is not ours (e.g. `ssh`).
+ *   "none"     — nothing is listening locally, yet something answered. A race,
+ *                or a socket we cannot see; treat as not ours.
+ *   "unknown"  — the probe itself could not run (no lsof / EACCES). Never
+ *                mistake "couldn't look" for "safe to kill".
+ *
+ * Side effects are injected so this is unit-testable without Electron or real
+ * OS processes (mirrors forceStopPort above).
+ *
+ * @param {number} port
+ * @param {object} deps
+ * @param {(port:number)=>Promise<number[]>} deps.getListenPids  lsof -t
+ * @param {(pid:number)=>Promise<string>}    deps.getCommand     ps -o command=
+ * @returns {Promise<"kirocrew"|"foreign"|"none"|"unknown">}
+ */
+async function classifyPortOwner(
+  port,
+  { getListenPids, getCommand, isKirocrew = KIROCREW_PROC_RE, log = () => {} }
+) {
+  let pids;
+  try {
+    pids = await getListenPids(port);
+  } catch (e) {
+    log(`port-owner: could not probe :${port} (${e && e.message}) — owner unknown, will not evict`);
+    return "unknown";
+  }
+  if (!pids.length) {
+    log(`port-owner: no local LISTEN owner on :${port}`);
+    return "none";
+  }
+  for (const pid of pids) {
+    const cmd = (await getCommand(pid)).trim();
+    if (isKirocrew.test(cmd)) {
+      log(`port-owner: :${port} held by local KiroCrew pid=${pid} (${cmd.slice(0, 80)})`);
+      return "kirocrew";
+    }
+    log(`port-owner: :${port} held by NON-KiroCrew pid=${pid} (${cmd.slice(0, 80)})`);
+  }
+  return "foreign";
+}
+
+module.exports = {
+  postShutdown,
+  stopGatewayGracefully,
+  forceStopPort,
+  classifyPortOwner,
+  KIROCREW_PROC_RE,
+};

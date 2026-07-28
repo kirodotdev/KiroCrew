@@ -28,15 +28,19 @@ test("same family reuses: nightly shell, nightly gateway (relaunch)", () => {
   assert.equal(d.action, "reuse");
 });
 
+// A local KiroCrew LISTEN owner is what makes an eviction legitimate. Passing
+// it explicitly in the cross-family cases keeps those tests about FAMILY logic.
+const LOCAL = { localOwner: "kirocrew" };
+
 test("cross family prompts: nightly shell over prod gateway", () => {
-  const d = decideGatewayAction("0.2.0-nightly.20260722120000", { ok: true, app: "kirocrew", version: "0.1.0" });
+  const d = decideGatewayAction("0.2.0-nightly.20260722120000", { ok: true, app: "kirocrew", version: "0.1.0" }, LOCAL);
   assert.equal(d.action, "takeover-prompt");
   assert.equal(d.otherFamily, "prod");
   assert.equal(d.otherVersion, "0.1.0");
 });
 
 test("cross family prompts: prod shell over nightly gateway", () => {
-  const d = decideGatewayAction("0.1.0", { ok: true, app: "kirocrew", version: "0.1.0-nightly.20260722120000" });
+  const d = decideGatewayAction("0.1.0", { ok: true, app: "kirocrew", version: "0.1.0-nightly.20260722120000" }, LOCAL);
   assert.equal(d.action, "takeover-prompt");
   assert.equal(d.otherFamily, "nightly");
 });
@@ -56,6 +60,55 @@ test("non-kirocrew responder on the port reuses (never evict a stranger)", () =>
 
 test("unclassifiable own version never evicts", () => {
   assert.equal(decideGatewayAction("", { ok: true, app: "kirocrew", version: "0.1.0" }).action, "reuse");
+});
+
+// ── Locality: a cross-family payload alone must never authorise an eviction ──
+// An `ssh -L 5476:localhost:5476 host` forward makes a REMOTE gateway answer
+// /api/health on localhost with a payload identical to a local install's. Every
+// case below is cross-family (the family logic says "evict") and must still
+// reuse, because the port is not held by a local KiroCrew process.
+const CROSS_FAMILY_HEALTH = { ok: true, app: "kirocrew", version: "0.1.0" };
+const NIGHTLY_SHELL = "0.2.0-nightly.20260722120000";
+
+test("tunnelled remote gateway is reused, never evicted (ssh owns the socket)", () => {
+  const d = decideGatewayAction(NIGHTLY_SHELL, CROSS_FAMILY_HEALTH, { localOwner: "foreign" });
+  assert.equal(d.action, "reuse");
+  assert.match(d.reason, /non-local-holder:foreign/);
+});
+
+test("no visible local listener is reused, never evicted", () => {
+  const d = decideGatewayAction(NIGHTLY_SHELL, CROSS_FAMILY_HEALTH, { localOwner: "none" });
+  assert.equal(d.action, "reuse");
+  assert.match(d.reason, /non-local-holder:none/);
+});
+
+test("a failed owner probe fails SAFE: unknown never evicts", () => {
+  // "couldn't look" must never be mistaken for "safe to kill".
+  const d = decideGatewayAction(NIGHTLY_SHELL, CROSS_FAMILY_HEALTH, { localOwner: "unknown" });
+  assert.equal(d.action, "reuse");
+  assert.match(d.reason, /non-local-holder:unknown/);
+});
+
+test("omitting the locality input defaults to no eviction", () => {
+  // A caller that forgets the third argument must not inherit the old
+  // evict-on-payload-alone behavior.
+  assert.equal(decideGatewayAction(NIGHTLY_SHELL, CROSS_FAMILY_HEALTH).action, "reuse");
+});
+
+test("a genuine local rival install still prompts (cross-app mutex preserved)", () => {
+  // Regression pin for the case the takeover was built for (#193): two installs
+  // on ONE machine sharing ~/.kiro/crew and :5476. The guard must keep working.
+  const d = decideGatewayAction(NIGHTLY_SHELL, CROSS_FAMILY_HEALTH, { localOwner: "kirocrew" });
+  assert.equal(d.action, "takeover-prompt");
+  assert.equal(d.otherFamily, "prod");
+});
+
+test("locality is checked only after family — same-family still short-circuits", () => {
+  // A same-family gateway reuses for the family reason regardless of owner, so
+  // the reason string stays useful for diagnosing reuse causes.
+  const d = decideGatewayAction("0.1.0", { ok: true, app: "kirocrew", version: "0.1.0-insider.3" }, { localOwner: "foreign" });
+  assert.equal(d.action, "reuse");
+  assert.equal(d.reason, "same-family");
 });
 
 test("FAMILY_META separates display names from quit-by-name targets", () => {
