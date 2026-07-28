@@ -109,8 +109,8 @@ describe('ChatSidebar Folder Grouping', () => {
     ]
     renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithSources} />)
 
-    const githubChip = (await screen.findByText('#113')).closest('span')
-    const gitlabChip = screen.getByText('!7').closest('span')
+    const githubChip = (await screen.findByText('#113')).closest('a')
+    const gitlabChip = screen.getByText('!7').closest('a')
     expect(githubChip?.querySelector('[data-provider-mark="github"]')).toBeInTheDocument()
     expect(gitlabChip?.querySelector('[data-provider-mark="gitlab"]')).toBeInTheDocument()
     expect(githubChip?.querySelector('[aria-label="Merged"]')).toHaveClass('text-aim')
@@ -129,8 +129,8 @@ describe('ChatSidebar Folder Grouping', () => {
     ]
     renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithSources} />)
 
-    const mergedChip = (await screen.findByText('#284')).closest('span')
-    const openChip = screen.getByText('#285').closest('span')
+    const mergedChip = (await screen.findByText('#284')).closest('a')
+    const openChip = screen.getByText('#285').closest('a')
     // Merged chip keeps the merge icon but drops the CI check — merged is terminal.
     expect(mergedChip?.querySelector('[aria-label="Merged"]')).toBeInTheDocument()
     expect(mergedChip?.querySelector('[aria-label="Checks passed"]')).not.toBeInTheDocument()

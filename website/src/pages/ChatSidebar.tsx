@@ -1970,7 +1970,22 @@ function ChatSidebar({
             {s.source_links && s.source_links.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-1">
                 {s.source_links.map(link => (
-                  <span key={link.url} className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60" title={link.url}>
+                  // The chip is a real link to the PR/MR. `link.url` is always
+                  // an `https://` URL on an allowlisted host (state.py scans for
+                  // the literal "https://" then validates via parse_source_url),
+                  // so no scheme sanitising is needed here.
+                  //
+                  // The row itself is a click-to-switch button AND a dnd-kit
+                  // draggable, so the anchor has to opt out of both: stop the
+                  // click from bubbling into the row's switchSlot handler, and
+                  // disable the anchor's own native HTML5 drag, which would
+                  // otherwise put the URL on the dataTransfer instead of the
+                  // slot key in the board/flat scopes that use native drag.
+                  <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
+                    draggable={false}
+                    onClick={e => e.stopPropagation()}
+                    className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
+                    title={`Open ${link.url}`}>
                     {link.provider === 'github' ? <GithubLogo size={10} className="shrink-0" /> : <GitlabLogo size={10} className="shrink-0" />}
                     {link.provider === 'github' ? `#${link.number}` : `!${link.number}`}
                     {link.state === 'merged' && (
@@ -1983,7 +1998,7 @@ function ChatSidebar({
                     {link.state !== 'merged' && link.ci === 'running' && <Loader2 className="lucide-inline shrink-0 animate-spin" aria-label="Checks running" />}
                     {link.state !== 'merged' && link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label="Checks passed" />}
                     {link.state !== 'merged' && link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label="Checks failed" />}
-                  </span>
+                  </a>
                 ))}
                 {typeof s.source_links_total === 'number' && s.source_links_total > s.source_links.length && (
                   <span className="inline-flex items-center px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60" title={`${s.source_links_total - s.source_links.length} more pull request${s.source_links_total - s.source_links.length === 1 ? '' : 's'} in this session`}>
