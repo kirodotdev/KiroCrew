@@ -656,24 +656,41 @@ function rehypeStreamingGlow(options?: { tailChars?: number }) {
 /** Split a text run into individual characters for per-char animation. */
 const REVEAL_CHAR_RE = /[\s\S]/g
 
+/** How many trailing characters of the streaming tail get wrapped in per-char
+ *  `.ft-word` fade spans. Only this growing EDGE animates; text that has
+ *  settled behind it is left as plain text nodes.
+ *
+ *  Why bounded (streaming-flash fix): react-markdown re-parses the whole tail
+ *  block every streamed frame. When a newly-revealed char COMPLETES a markdown
+ *  token (inline `code`, **bold**, a [link], …) the subtree restructures, so
+ *  React unmounts/remounts the `.ft-word` spans for text that was already on
+ *  screen — re-firing the mount `ft-fade` and making already-visible words
+ *  flash. Confirmed by src/test/streamingFlashRepro.test.tsx (append remounts
+ *  0 spans; a completing token remounts already-visible spans). Wrapping only
+ *  the trailing edge means settled text carries no animated span, so a re-parse
+ *  can no longer re-fade it — the flash is confined to (and masked by) the
+ *  actively-arriving edge. The budget is generous enough to cover the smooth
+ *  buffer's per-frame reveal wave so genuinely-new text still fades in fully. */
+const REVEAL_TAIL_CHARS = 240
+
 /**
- * Rehype plugin: wrap streaming text in `<span class="ft-word">` so each
- * character plays a one-shot CSS entrance (fade) as it is
- * revealed.
+ * Rehype plugin: wrap the streaming tail's TRAILING EDGE in `<span
+ * class="ft-word">` so each newly-revealed character plays a one-shot CSS
+ * entrance (fade). Only the last REVEAL_TAIL_CHARS characters (across the
+ * trailing text nodes, cut on a word boundary) are wrapped; text that has
+ * settled behind the edge stays as plain text nodes.
  *
- * Wraps EVERY eligible text node in the streaming tail block (headers, list
- * items, table cells, paragraphs, blockquotes, link/emphasis text) — not just
- * the trailing run — so all markdown text fades, not only plain prose. Text
- * inside `code`/`pre` (rendered by the code components) and `.streaming-glow`
- * is skipped. Atomic block components (fenced code, widgets, mermaid, diffs)
- * are separate non-text blocks and are not char-faded here.
+ * Text inside `code`/`pre` (rendered by the code components) and
+ * `.streaming-glow` is skipped. Atomic block components (fenced code, widgets,
+ * mermaid, diffs) are separate non-text blocks and are not char-faded here.
  *
- * Safe against react-markdown re-parsing every frame: React reconciles the
- * per-char spans by position, so already-streamed chars reuse their DOM nodes
- * (no re-animation) and only newly-arrived trailing chars mount and fade. The
- * MarkdownBlock memo skips re-render of unchanged blocks, so a completed block
- * never re-fades when content changes elsewhere. On stream end the plugin
- * drops out and the tail reverts to plain text (clean for selection/copy).
+ * Safe against react-markdown re-parsing every frame on TWO levels: (a) within
+ * the edge, React reconciles the per-char spans by position so append-only
+ * growth only mounts new trailing chars; (b) bounding to the edge means a
+ * markdown-token completion behind it restructures only PLAIN text nodes (no
+ * `.ft-word`), so the mount `ft-fade` cannot re-fire on already-visible text —
+ * the streaming-flash root cause. On stream end the plugin drops out and the
+ * tail reverts to plain text (clean for selection/copy).
  */
 function rehypeStreamingReveal() {
   return (tree: HastRoot) => {
@@ -698,20 +715,39 @@ function rehypeStreamingReveal() {
     }
     for (let i = 0; i < tree.children.length; i++) walk(tree.children[i], tree, i, false)
     if (candidates.length === 0) return
-    // Splice in reverse document order so that replacing one text node with N
-    // char spans doesn't invalidate the indices of earlier candidates that
-    // share the same parent (higher indices are spliced first).
-    for (let c = candidates.length - 1; c >= 0; c--) {
+    // Wrap only the trailing REVEAL_TAIL_CHARS characters, walking candidates
+    // from the last (deepest in document order) backward and spending a shared
+    // budget. Everything before the edge is left as-is (plain text) so a
+    // re-parse behind the edge cannot re-fade already-visible text.
+    let budget = REVEAL_TAIL_CHARS
+    for (let c = candidates.length - 1; c >= 0 && budget > 0; c--) {
       const { parent, index, value } = candidates[c]
-      const tokens = value.match(REVEAL_CHAR_RE)
+      // For the boundary node, keep the leading (settled) portion as a plain
+      // text node and only wrap its trailing chars. Cut BACKWARD to the prior
+      // space (wrap a whole word rather than split one) — this consumes >=
+      // budget, so the budget is spent here and does not leak onto earlier
+      // (settled) candidates, keeping settled tokens plain.
+      let cut = 0
+      if (value.length > budget) {
+        const start = value.length - budget
+        const sp = value.lastIndexOf(' ', start)
+        cut = sp >= 0 ? sp + 1 : start
+      }
+      budget -= (value.length - cut)
+      const head = value.slice(0, cut)
+      const tail = value.slice(cut)
+      const tokens = tail.match(REVEAL_CHAR_RE)
       if (!tokens || tokens.length === 0) continue
-      const spans: HastElement[] = tokens.map(tok => ({
+      const spans: Array<HastElement | HastText> = tokens.map(tok => ({
         type: 'element',
         tagName: 'span',
         properties: { className: ['ft-word'] },
         children: [{ type: 'text', value: tok }],
       }))
-      spliceChildren(parent, index, spans)
+      // Splice highest index first (candidates ascend in document order, so
+      // walking c downward gives descending indices within a shared parent),
+      // keeping earlier candidates' indices valid.
+      spliceChildren(parent, index, head ? [{ type: 'text', value: head } as HastText, ...spans] : spans)
     }
   }
 }

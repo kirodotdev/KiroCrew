@@ -1030,8 +1030,14 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    `.ft-anim-smooth` class (set on MarkdownRenderer's root) selects the
    entrance animation. Reverts to plain text when streaming ends. */
 @keyframes ft-fade{from{opacity:0}to{opacity:1}}
+/* Char reveal uses a SHORTER, SOFTER fade than the shared ft-fade block
+   entrance: streaming re-parse can briefly remount an edge char (a completing
+   markdown token), and a 0->1 / 0.6s pop makes that read as a flash. Fading
+   from 0.55 over 0.3s keeps new text legible on arrival while making any
+   residual edge re-fade a subtle blip rather than a full appear. */
+@keyframes ft-char-fade{from{opacity:.55}to{opacity:1}}
 .ft-word{white-space:pre-wrap}
-.ft-anim-smooth .ft-word{animation:ft-fade .6s ease-in-out both}
+.ft-anim-smooth .ft-word{animation:ft-char-fade .3s ease-out both}
 @media (prefers-reduced-motion:reduce){
   .ft-anim-smooth .ft-word{animation:none}
 }
