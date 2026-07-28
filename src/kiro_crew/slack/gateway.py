@@ -65,6 +65,7 @@ from kiro_crew.config.loader import (
     CRED_WEBEX_BOT_TOKEN,
     CRED_WECOM_BOT_ID,
     CRED_WECOM_SECRET,
+    CRED_WEIXIN_TOKEN,
     _session_work_dir,
     build_provider_factory,
     config_dir,
@@ -176,6 +177,7 @@ from kiro_crew.teams.gateway import maybe_start_teams
 from kiro_crew.telegram.gateway import maybe_start_telegram
 from kiro_crew.webex.gateway import maybe_start_webex
 from kiro_crew.wecom.gateway import maybe_start_wecom
+from kiro_crew.weixin.gateway import maybe_start_weixin
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -187,6 +189,7 @@ if TYPE_CHECKING:
     from kiro_crew.telegram.client import TelegramClient
     from kiro_crew.webex.client import WebexClient
     from kiro_crew.wecom.client import WeComClient
+    from kiro_crew.weixin.client import WeixinClient
 
 # Chunked wave-digest size: every multi-task wave delivers its completed
 # results to the parent in digest CHUNKS of this many members (queue-style —
@@ -776,6 +779,18 @@ class GatewayOrchestrator:
         self._telegram_allow_forum: bool = bool(cfg.telegram.allow_forum)
         self._telegram_allowed_forum_chat_ids: list[int] = list(cfg.telegram.allowed_forum_chat_ids)
         self._telegram_client: "TelegramClient | None" = None
+        # Weixin (iLink personal WeChat) — the WEIXIN_TOKEN credential (env/.env)
+        # overrides cfg.weixin.token. token + account_id come from the Settings
+        # QR flow; deny-by-default DM policy from the typed cfg.weixin dataclass.
+        self._weixin_token = creds.get(CRED_WEIXIN_TOKEN, "") or cfg.weixin.token
+        self._weixin_account_id: str = cfg.weixin.account_id
+        self._weixin_base_url: str = cfg.weixin.base_url
+        self._weixin_dm_policy: str = cfg.weixin.dm_policy
+        self._weixin_allowed_user_ids: list[str] = list(cfg.weixin.allowed_user_ids)
+        self._weixin_enabled = bool(
+            cfg.weixin.enabled and self._weixin_token and self._weixin_account_id
+        )
+        self._weixin_client: "WeixinClient | None" = None
         # Discord — the DISCORD_BOT_TOKEN credential (env/.env) overrides
         # cfg.discord.bot_token; all other settings come from the typed
         # cfg.discord dataclass (mirrors the Telegram block above).
@@ -4776,6 +4791,8 @@ class GatewayOrchestrator:
             cleanup_tasks.append(asyncio.wait_for(self._wecom_client.close(), timeout=2.0))
         if self._telegram_client:
             cleanup_tasks.append(asyncio.wait_for(self._telegram_client.close(), timeout=2.0))
+        if self._weixin_client:
+            cleanup_tasks.append(asyncio.wait_for(self._weixin_client.close(), timeout=2.0))
         if self._discord_client:
             cleanup_tasks.append(asyncio.wait_for(self._discord_client.close(), timeout=2.0))
         if self._webex_client:
@@ -5428,7 +5445,7 @@ class GatewayOrchestrator:
         # profile-file I/O), but ONLY for config-enabled transports — a disabled
         # transport never starts, so skip it to avoid a deny-SEL for a channel
         # that would no-op anyway. Members not evaluated stay not-permitted.
-        members = ("wecom", "telegram", "discord", "webex", "teams")
+        members = ("wecom", "telegram", "discord", "webex", "teams", "weixin")
         enabled = {m: bool(getattr(self, f"_{m}_enabled", False)) for m in members}
         loop = asyncio.get_running_loop()
         permitted = await loop.run_in_executor(
@@ -5452,6 +5469,10 @@ class GatewayOrchestrator:
         # Teams channel — guarded no-op unless enabled + App ID/password present.
         if permitted["teams"]:
             self._teams_client = await maybe_start_teams(self)
+        # WeChat (personal Weixin over iLink) channel — guarded no-op unless
+        # enabled + credentialed. Distinct member from "wecom" (enterprise).
+        if permitted["weixin"]:
+            self._weixin_client = await maybe_start_weixin(self)
 
 
 async def run_gateway(

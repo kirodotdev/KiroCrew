@@ -572,6 +572,7 @@ def _channel_members() -> tuple[str, ...]:
     from kiro_crew.telegram.transport import TelegramTransport
     from kiro_crew.webex.transport import WebexTransport
     from kiro_crew.wecom.transport import WeComTransport
+    from kiro_crew.weixin.transport import WeixinTransport
 
     return tuple(
         t.channel_type
@@ -582,6 +583,7 @@ def _channel_members() -> tuple[str, ...]:
             WebexTransport,
             WeComTransport,
             TeamsTransport,
+            WeixinTransport,
         )
     )
 

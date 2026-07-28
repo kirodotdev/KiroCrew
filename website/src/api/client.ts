@@ -214,6 +214,21 @@ export interface TeamsConfigData {
   allowed_emails: string[]
 }
 
+/** Weixin (iLink personal WeChat) config from GET /api/weixin/config.
+ *  There is no credential field: the bot credential is obtained through the QR
+ *  login flow and stored server-side, so the client only sees status. */
+export interface WeixinConfigData {
+  connected: boolean
+  connect_error: string
+  configured: boolean
+  read_only: boolean
+  credential_set: boolean
+  enabled: boolean
+  account_id: string
+  dm_policy: string
+  allowed_user_ids: string[]
+}
+
 /** Writable Teams config fields sent to PUT /api/teams/config. The secret
  *  (app_password) is write-only and stored in .env, never config.json. */
 export interface TeamsConfigSave {
@@ -223,6 +238,14 @@ export interface TeamsConfigSave {
   tenant_id: string
   enabled: boolean
   allowed_emails: string[]
+}
+
+/** Writable Weixin config fields sent to PUT /api/weixin/config. */
+export interface WeixinConfigSave {
+  enabled: boolean
+  dm_policy: string
+  allowed_user_ids: string[]
+  disconnect: boolean
 }
 
 /** A built-in denied-command rule as returned by GET /api/security/denied-commands. */
@@ -1493,6 +1516,12 @@ export const api = {
   getGovernanceChannels: () => get('/api/governance/channels').then(j) as Promise<Record<string, boolean | null>>,
   getTeamsConfig: () => get('/api/teams/config').then(j) as Promise<TeamsConfigData>,
   saveTeamsConfig: (body: Partial<TeamsConfigSave>) => put('/api/teams/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+  // Weixin (iLink personal WeChat) — QR login flow. The bot credential is
+  // written server-side; the client only ever sees connection status.
+  getWeixinConfig: () => get('/api/weixin/config').then(j) as Promise<WeixinConfigData>,
+  saveWeixinConfig: (body: Partial<WeixinConfigSave>) => put('/api/weixin/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean }>,
+  weixinQrStart: () => post('/api/channels/weixin/qr/start', {}).then(j) as Promise<{ session_id: string; qrcode_img_content: string; error?: string }>,
+  weixinQrStatus: (sessionId: string) => get(`/api/channels/weixin/qr/status?session_id=${encodeURIComponent(sessionId)}`).then(j) as Promise<{ status: string; connected?: boolean; account_id?: string; error?: string }>,
 
   // Auto-research
   researchValidate: (body: object) => post("/api/apps/auto-research/validate", body).then(j),

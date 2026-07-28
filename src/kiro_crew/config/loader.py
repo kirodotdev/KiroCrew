@@ -146,6 +146,7 @@ CRED_WEBEX_BOT_TOKEN = "WEBEX_BOT_TOKEN"
 CRED_MICROSOFT_APP_ID = "MICROSOFT_APP_ID"
 CRED_MICROSOFT_APP_PASSWORD = "MICROSOFT_APP_PASSWORD"
 CRED_MICROSOFT_APP_TENANT_ID = "MICROSOFT_APP_TENANT_ID"
+CRED_WEIXIN_TOKEN = "WEIXIN_TOKEN"  # iLink bot credential from the Settings QR flow
 _CREDENTIAL_KEYS = (
     CRED_SLACK_APP_TOKEN,
     CRED_SLACK_BOT_TOKEN,
@@ -158,6 +159,7 @@ _CREDENTIAL_KEYS = (
     CRED_MICROSOFT_APP_ID,
     CRED_MICROSOFT_APP_PASSWORD,
     CRED_MICROSOFT_APP_TENANT_ID,
+    CRED_WEIXIN_TOKEN,
 )
 
 DEFAULT_MODEL = "auto"
@@ -2655,6 +2657,27 @@ def _coerce_int_ids(raw: object) -> list[int]:
     return ids
 
 
+def _coerce_opaque_str_ids(raw: object) -> list[str]:
+    """Coerce a config value to a clean, deduped ``list[str]`` of OPAQUE IDs.
+
+    For channels whose user IDs are not numeric — WeChat/iLink uses forms like
+    ``wxid_abc123`` and ``<hex>@im.bot`` — so the digit-only filter in
+    :func:`_coerce_str_ids` would silently drop every entry. With a
+    deny-by-default ``dm_policy`` that would lock out every intended sender.
+
+    Still fails closed on shape: a non-list yields ``[]``, and blank entries are
+    dropped.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for u in raw:
+        s = str(u).strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
 def _coerce_str_ids(raw: object) -> list[str]:
     """Coerce a config value to a clean, deduped ``list[str]`` of digit IDs.
 
@@ -2804,6 +2827,88 @@ class TelegramConfig:
             "Numeric supergroup chat_ids permitted to run forum-topic sessions. "
             "Empty = deny all groups (fail closed).",
             tags=["telegram"],
+        ),
+    )
+
+
+@dataclass
+class WeixinConfig:
+    """Weixin (personal WeChat) channel via Tencent's iLink Bot API.
+
+    Distinct from :class:`WeComConfig` (enterprise WeCom over WebSocket). The
+    bot ``token`` + ``account_id`` are obtained through the Settings > Channels
+    QR-login flow; prefer the WEIXIN_TOKEN credential over storing the token
+    here.
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the Weixin (iLink personal WeChat) channel (long-polling). "
+            "Requires a bot token + account id from the Settings QR flow.",
+            tags=["weixin"],
+        ),
+    )
+    token: str = field(
+        default="",
+        metadata=_meta(
+            "Bot Token",
+            "iLink bot token (from QR login). Prefer the WEIXIN_TOKEN credential "
+            "(env/.env / cred store) over storing it here.",
+            tags=["weixin"],
+            sensitive=True,
+        ),
+    )
+    account_id: str = field(
+        default="",
+        metadata=_meta(
+            "Account ID",
+            "iLink bot account id captured during QR login.",
+            tags=["weixin"],
+        ),
+    )
+    base_url: str = field(
+        default="https://ilinkai.weixin.qq.com",
+        metadata=_meta(
+            "iLink Base URL",
+            "iLink API base URL (per-account, returned by QR login).",
+            tags=["weixin"],
+        ),
+    )
+    dm_policy: str = field(
+        default="allowlist",
+        metadata=_meta(
+            "DM Policy",
+            "Who may DM the bot: 'allowlist' (only allowed_user_ids, the default), "
+            "'open' (any sender), or 'disabled'. Defaults to allowlist with an empty "
+            "list, so a freshly connected bot authorizes NOBODY until you add an id.",
+            tags=["weixin"],
+        ),
+    )
+    allowed_user_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed User IDs",
+            "Weixin user ids permitted to DM the bot when dm_policy='allowlist'. "
+            "Empty = deny all (fail closed).",
+            tags=["weixin"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "Prompt the user to /compact or /new when context passes this percentage.",
+            tags=["weixin"],
+        ),
+    )
+    hard_threshold_pct: int = field(
+        default=95,
+        metadata=_meta(
+            "Hard Context Threshold %",
+            "Force a compaction when context passes this percentage.",
+            tags=["weixin"],
         ),
     )
 
@@ -3085,6 +3190,10 @@ class KiroCrewConfig:
         default_factory=TelegramConfig,
         metadata=_meta("Telegram", "Telegram Bot API integration settings.", tags=["telegram"]),
     )
+    weixin: WeixinConfig = field(
+        default_factory=WeixinConfig,
+        metadata=_meta("WeChat", "Weixin (iLink personal WeChat) integration settings.", tags=["weixin"]),
+    )
     discord: DiscordConfig = field(
         default_factory=DiscordConfig,
         metadata=_meta("Discord", "Discord bot integration settings.", tags=["discord"]),
@@ -3318,6 +3427,9 @@ class KiroCrewConfig:
         telegram_data = data.get("telegram", {})
         if not isinstance(telegram_data, dict):
             telegram_data = {}
+        weixin_data = data.get("weixin", {})
+        if not isinstance(weixin_data, dict):
+            weixin_data = {}
         discord_data = data.get("discord", {})
         if not isinstance(discord_data, dict):
             discord_data = {}
@@ -3624,6 +3736,20 @@ class KiroCrewConfig:
                 ),
                 allow_forum=bool(telegram_data.get("allow_forum", False)),
                 allowed_forum_chat_ids=_coerce_int_ids(telegram_data.get("allowed_forum_chat_ids")),
+            ),
+            weixin=WeixinConfig(
+                enabled=bool(weixin_data.get("enabled", False)),
+                token=str(weixin_data.get("token", "")),
+                account_id=str(weixin_data.get("account_id", "")),
+                base_url=str(weixin_data.get("base_url", "") or "https://ilinkai.weixin.qq.com"),
+                dm_policy=str(weixin_data.get("dm_policy", "allowlist") or "allowlist"),
+                allowed_user_ids=_coerce_opaque_str_ids(weixin_data.get("allowed_user_ids")),
+                soft_threshold_pct=max(
+                    1, min(100, _coerce_int(weixin_data.get("soft_threshold_pct"), 80))
+                ),
+                hard_threshold_pct=max(
+                    1, min(100, _coerce_int(weixin_data.get("hard_threshold_pct"), 95))
+                ),
             ),
             discord=DiscordConfig(
                 enabled=bool(discord_data.get("enabled", False)),

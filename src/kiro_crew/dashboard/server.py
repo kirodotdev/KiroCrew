@@ -124,6 +124,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     unregister_status_delta_sink,
 )
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+from kiro_crew.dashboard.handlers.weixin_qr import setup_weixin_routes
 from kiro_crew.dashboard.handlers.worktree import api_worktree_create
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
@@ -1971,6 +1972,7 @@ async def start_dashboard(
 
     # Knowledge Library
     setup_knowledge_routes(app)
+    setup_weixin_routes(app)
 
     # Start backends for enabled apps on the subprocess_executor bulkhead: the
     # startup stale-reap shells out to `ps` per orphan and may SIGTERM→sleep→

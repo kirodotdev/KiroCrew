@@ -3434,3 +3434,45 @@ class TestAgentDefaultsRoundTrip:
         round_tripped = _load_from_dict(cfg.to_dict())
         assert round_tripped.agent.model == "claude-sonnet-4.5"
         assert round_tripped.agent.reasoning_effort == "high"
+
+
+class TestWeixinConfig(unittest.TestCase):
+    """The WeChat allow-list must survive a config round trip.
+
+    WeChat/iLink user IDs are opaque (``wxid_*``, ``<hex>@im.bot``), not numeric.
+    A digit-only coercion silently emptied the list, and because dm_policy
+    defaults to deny-by-default that locked out every intended sender.
+    """
+
+    def test_opaque_allowed_user_ids_survive_the_round_trip(self):
+        cfg = _load_from_dict(
+            {
+                "weixin": {
+                    "enabled": True,
+                    "dm_policy": "allowlist",
+                    "allowed_user_ids": [
+                        "wxid_abc123",
+                        "a5ace6fd482e@im.bot",
+                        "12345",
+                    ],
+                }
+            }
+        )
+        self.assertEqual(
+            cfg.weixin.allowed_user_ids,
+            ["wxid_abc123", "a5ace6fd482e@im.bot", "12345"],
+        )
+
+    def test_allowed_user_ids_still_fail_closed_on_bad_shape(self):
+        cfg = _load_from_dict({"weixin": {"allowed_user_ids": "not-a-list"}})
+        self.assertEqual(cfg.weixin.allowed_user_ids, [])
+
+    def test_blank_and_duplicate_ids_are_dropped(self):
+        cfg = _load_from_dict(
+            {"weixin": {"allowed_user_ids": ["  wxid_a  ", "wxid_a", "", "   "]}}
+        )
+        self.assertEqual(cfg.weixin.allowed_user_ids, ["wxid_a"])
+
+    def test_dm_policy_defaults_to_deny_by_default(self):
+        cfg = _load_from_dict({"weixin": {"enabled": True}})
+        self.assertEqual(cfg.weixin.dm_policy, "allowlist")

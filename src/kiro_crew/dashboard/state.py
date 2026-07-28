@@ -1576,6 +1576,14 @@ class DashboardState:
         # freezes routes at startup); maybe_start_teams sets this to the built
         # client's on_activity once credentials are present. None => 503.
         self.teams_on_activity: Any = None
+        # True only while the Weixin (personal WeChat over iLink) channel's
+        # long-poll loop is running (set in maybe_start_weixin). Read by the
+        # WeChat settings status badge — a credential present at boot is NOT
+        # enough to report "connected".
+        self.weixin_connected: bool = False
+        # Short reason from the most recent Weixin start failure, empty when
+        # connected or never attempted. Read by the settings badge.
+        self.weixin_connect_error: str = ""
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated
