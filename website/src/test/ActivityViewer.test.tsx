@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer from '../store/chatSlice'
-import { openActivityToTab } from '../store/chatSlice'
+import { openActivityToTab, sseSubagentQueued } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -535,3 +535,41 @@ describe('ActivityViewer — Artifacts tab', () => {
   })
 })
 
+/**
+ * Queued-wave visibility. A spawn_run wave accepted but still behind the
+ * concurrency cap / stagger gate emits `subagent_queued` and NOTHING else — no
+ * per-agent entry exists yet. The panel used to render "No subagents running"
+ * for that entire window, which is flatly false and was the single most
+ * misleading state it had.
+ */
+describe('ActivityViewer — queued subagents', () => {
+  const SLOT = 'test-slot'
+  const baseProps = { subagents: {}, toolLog: [], open: true, onToggle: vi.fn(), slot: SLOT }
+
+  function queuedWrapper(queued: number) {
+    return function Wrapper({ children }: { children: React.ReactNode }) {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      const store = configureStore({
+        reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+      })
+      if (queued > 0) store.dispatch(sseSubagentQueued({ slot: SLOT, queued }))
+      return (
+        <Provider store={store}>
+          <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+        </Provider>
+      )
+    }
+  }
+
+  it('announces agents waiting to start instead of claiming none are running', () => {
+    render(<ActivityViewer {...baseProps} view="subagents" />, { wrapper: queuedWrapper(3) })
+    expect(screen.getByTestId('subagent-queued-banner').textContent).toContain('3 waiting to start')
+    expect(screen.queryByText('No subagents running')).not.toBeInTheDocument()
+  })
+
+  it('keeps the honest empty state when nothing is queued or running', () => {
+    render(<ActivityViewer {...baseProps} view="subagents" />, { wrapper: queuedWrapper(0) })
+    expect(screen.getByText('No subagents running')).toBeInTheDocument()
+    expect(screen.queryByTestId('subagent-queued-banner')).not.toBeInTheDocument()
+  })
+})

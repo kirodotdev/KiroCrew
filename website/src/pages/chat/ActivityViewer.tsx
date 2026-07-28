@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, ArrowLeft, Square, RotateCcw } from 'lucide-react'
+import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, ArrowLeft, Square, RotateCcw, Clock } from 'lucide-react'
 import { api } from '../../api/client'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import { fileReadUrl } from '../../utils/fileReadUrl'
@@ -683,6 +683,12 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     return Object.keys(subagents).sort((x, y) => rank(subagents[x]) - rank(subagents[y]))
   }, [subagents])
   const hasSubagents = ids.length > 0
+  // Agents accepted but not yet started — queued behind the concurrency cap /
+  // stagger gate, so they have no per-agent entry in `subagents` yet. Without
+  // this the panel renders "No subagents running" during the entire ramp of a
+  // freshly-accepted wave, which is flatly false and the single most confusing
+  // state this panel had.
+  const queuedCount = useAppSelector(s => s.chat.subagentQueued?.[slot] ?? 0)
   // Render cap: bounds DOM at 60-100 agents; exceptions are always within
   // the cap thanks to the ordering above.
   const [showAllSubagents, setShowAllSubagents] = useState(false)
@@ -840,6 +846,21 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           {visibleLog.filter(isSpawnApproval).map((entry, i) => (
             <ApprovalEntry key={`a${i}`} entry={entry} slot={slot} />
           ))}
+          {/* Accepted-but-not-started banner: the only signal for a wave still
+              behind the concurrency cap. Shown alongside started agents too,
+              since a staggered ramp has both at once. */}
+          {queuedCount > 0 && (
+            <div
+              className="mx-2 mb-2 flex items-center gap-1.5 text-[12px] text-muted rounded border border-dashed border-border px-2 py-1.5"
+              data-testid="subagent-queued-banner"
+              role="status"
+            >
+              <Clock size={12} className="shrink-0" aria-hidden />
+              <span>
+                {queuedCount} waiting to start — queued behind the concurrency limit
+              </span>
+            </div>
+          )}
           {hasSubagents ? (
             <>
               {visibleIds.map((id, i) => (
@@ -860,7 +881,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                 </button>
               )}
             </>
-          ) : visibleLog.filter(isSpawnApproval).length === 0 && (
+          ) : visibleLog.filter(isSpawnApproval).length === 0 && queuedCount === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-muted/30 gap-2">
               <span className="text-[24px]"><Bot className="lucide-inline" /></span>
               <span className="text-[13px]">No subagents running</span>

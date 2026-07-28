@@ -137,6 +137,7 @@ import type { ChatMessage } from '../types'
 
 import ToolCallLine from './chat/ToolCallLine'
 import WorkflowRunCard, { extractWorkflowRunId } from './chat/WorkflowRunCard'
+import SubagentRunCard, { extractSpawnRunLaunch } from './chat/SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './chat/WorkflowCompletionCard'
 import { renderMcpOAuthMessage } from './chat/McpOAuthBanner'
 import TurnBlock from './chat/TurnBlock'
@@ -3249,6 +3250,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       // (live status + open-panel affordance) instead of the generic tool pill.
       const wfRunId = extractWorkflowRunId(m)
       if (wfRunId) return <WorkflowRunCard key={key} runId={wfRunId} message={m} />
+      // Likewise a spawn_run launch: the transient chip above the composer
+      // drops when the wave ends and only covers the viewed slot, so without
+      // this the only record of a spawn is a pill folded into "Worked through
+      // N steps".
+      const spawnLaunch = extractSpawnRunLaunch(m)
+      if (spawnLaunch) return <SubagentRunCard key={key} launch={spawnLaunch} slot={activeSlot || ''} />
       // Animate tools in the trailing group (after last assistant/streaming text)
       const isInTrailingGroup = slotState === 'tool_running' && i > lastTextIdx
       return <ToolCallLine key={key} message={m} running={isInTrailingGroup} onFileOpen={handleFileOpen} />

@@ -1,4 +1,4 @@
-import { createSlice, createAsyncThunk, type PayloadAction } from '@reduxjs/toolkit'
+import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
 import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
@@ -791,6 +791,45 @@ export const selectSlotPendingSpawnApprovals = (state: RootState, slot: string |
 }
 
 /**
+ * Total sub-agents in flight across EVERY slot — started (running/tool/pending)
+ * plus accepted-but-queued. Drives the Sessions rail activity dot, which is the
+ * only cross-page signal that a background chat has agents working: the chip
+ * above the composer covers the viewed slot only, and the sidebar subtitle is
+ * invisible from any other page.
+ *
+ * Memoized (`createSelector`) because the surface registry invokes activity
+ * selectors on every dispatch.
+ */
+export const selectSubagentActivityCount = createSelector(
+  [
+    (state: RootState) => state.chat.activeSlot,
+    (state: RootState) => state.chat.subagents,
+    (state: RootState) => state.chat.slotActivity,
+    (state: RootState) => state.chat.subagentQueued,
+  ],
+  (activeSlot, activeSubs, slotActivity, queued) => {
+    const countActive = (m?: Record<string, SubagentActivity>) => {
+      if (!m) return 0
+      let n = 0
+      for (const a of Object.values(m)) {
+        if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') n++
+      }
+      return n
+    }
+    let total = activeSlot ? countActive(activeSubs) : 0
+    for (const [slot, act] of Object.entries(slotActivity ?? {})) {
+      // On switchSlot the active slot's map is aliased into both
+      // state.subagents and slotActivity[active].subagents (same reference),
+      // so this guard is what prevents double-counting it.
+      if (slot === activeSlot) continue
+      total += countActive(act.subagents)
+    }
+    for (const q of Object.values(queued ?? {})) total += q > 0 ? q : 0
+    return total
+  },
+)
+
+/**
  * Single source of truth for "is this slot's composer busy" — the signal that
  * queues the next message (busy affordance) and skips the optimistic user
  * bubble (the backend returns a "queued" message instead, so an optimistic
@@ -1062,6 +1101,10 @@ const chatSlice = createSlice({
     sseSubagentQueued(state, action: PayloadAction<{ slot: string; queued: number }>) {
       if (isUnsafeKey(action.payload.slot)) return
       const n = Math.max(0, Math.floor(Number(action.payload.queued) || 0))
+      // Tolerate a store built from partial preloaded state (test fixtures and
+      // any consumer that predates this key): indexing an absent map throws and
+      // would drop the queue update entirely.
+      state.subagentQueued ??= {}
       if (n === 0) delete state.subagentQueued[safeKey(action.payload.slot)]
       else state.subagentQueued[safeKey(action.payload.slot)] = n
     },

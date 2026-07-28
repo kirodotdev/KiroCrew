@@ -11,6 +11,7 @@ import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Settings, Clipb
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
 import { registerBuiltinSurface } from './registry'
+import { selectSubagentActivityCount } from '../store/chatSlice'
 import type { RootState } from '../store'
 
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
@@ -31,6 +32,12 @@ registerBuiltinSurface({
   // Slot-bearing: default chat slots have surface === '' (or no mode set).
   slotMode: '',
   badgeLabel: 'unread conversations',
+  // Cross-page "agents are working" dot. Kept OUT of the unread badge on
+  // purpose: sub-agents in flight are not unread conversations, and folding
+  // them into that count would corrupt both the number and the tab-title
+  // attention sum.
+  activitySelector: selectSubagentActivityCount,
+  activityLabel: 'subagents in flight',
 })
 
 registerBuiltinSurface({

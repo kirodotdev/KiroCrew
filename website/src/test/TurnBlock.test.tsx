@@ -162,3 +162,43 @@ describe('TurnBlock — renderable content stays visible in collapseAll mode', (
     expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
   })
 })
+
+/**
+ * A spawn_run launch renders as SubagentRunCard, so like a workflow_run launch
+ * it must bypass the collapsible tool group. Folding it in is what left a
+ * spawned wave with no record in scrollback beyond "Worked through N steps".
+ */
+describe('TurnBlock — spawn_run launch visibility', () => {
+  const SPAWN_OUTPUT = [
+    'Spawned 2 subagent(s). Results will arrive as completion events:',
+    '  1713e7d0 (kirocrew): read the specs',
+    '  5c15adde (kirocrew): read the code',
+  ].join('\n')
+
+  const spawnItem = (idx: number): TurnItem => ({
+    kind: 'single',
+    msg: { role: 'tool', content: '🔧 spawn_run', ts: `${idx}`, meta: { output: SPAWN_OUTPUT } },
+    idx,
+  })
+
+  it('is rendered inline, not folded into the collapsed tool group', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: fs_read', ts: '1' }, idx: 0 },
+      spawnItem(1),
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: fs_read', ts: '3' }, idx: 2 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Spawned 2 agents.', ts: '4' }, idx: 3 },
+    ]
+    render(
+      <TurnBlock
+        turn={makeTurn(items)}
+        renderItem={(it) => (
+          <div data-testid={it.kind === 'single' && it.msg.content === '🔧 spawn_run' ? 'item-spawn' : `item-${it.kind === 'single' ? it.msg.role : 'group'}`}>
+            {it.kind === 'single' ? it.msg.content : 'group'}
+          </div>
+        )}
+      />,
+    )
+    expect(screen.getByTestId('item-spawn')).toBeInTheDocument()
+  })
+
+})

@@ -22,6 +22,7 @@ import {
   filterSlotsBySurface,
   filterUnreadKeysBySurface,
   selectSurfaceBadgeCount,
+  selectSurfaceActivityCount,
   selectAllSurfacesAttention,
   _resetBuiltinsForTest,
 } from '../surfaces/registry'
@@ -378,6 +379,33 @@ describe('surfaces registry', () => {
       // In the real app only the chat surface exists, so no double-counting
       // occurs — this test registers both to verify the sum logic.
       expect(selectAllSurfacesAttention(state)).toBe(6)
+    })
+  })
+
+  describe('activity counts', () => {
+    it('resolves a surface-supplied activitySelector', () => {
+      registerBuiltinSurface({
+        navId: 'chat', route: '/chat', label: 'Sessions', icon: TEST_ICON, group: 'Main',
+        slotMode: '', activitySelector: () => 4, activityLabel: 'subagents in flight',
+      })
+      expect(selectSurfaceActivityCount('chat')(buildState([], []))).toBe(4)
+    })
+
+    it('is zero for a surface with no activitySelector', () => {
+      registerBuiltinSurface({ navId: 'a', route: '/a', label: 'A', icon: TEST_ICON, group: 'Main', slotMode: '' })
+      expect(selectSurfaceActivityCount('a')(buildState([], []))).toBe(0)
+    })
+
+    it('never leaks into the badge count or the tab-title attention sum', () => {
+      // Activity is a transient "in flight now" dot, NOT an unread count:
+      // folding it into either number would misreport unread conversations.
+      registerBuiltinSurface({
+        navId: 'chat', route: '/chat', label: 'Sessions', icon: TEST_ICON, group: 'Main',
+        slotMode: '', activitySelector: () => 7,
+      })
+      const state = buildState([slot('chat-1', '')], ['chat-1'])
+      expect(selectSurfaceBadgeCount('chat')(state)).toBe(1)
+      expect(selectAllSurfacesAttention(state)).toBe(1)
     })
   })
 })

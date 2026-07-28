@@ -7,7 +7,7 @@ import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeAppro
 // Side-effect: registers every built-in surface in the registry. MUST run
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
-import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectAllSurfacesAttention } from './surfaces/registry'
+import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention } from './surfaces/registry'
 import { createSlot, appendMessage, setSlotRunning, switchSlot } from './store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain } from './utils/navIntent'
@@ -25,7 +25,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, PanelLeftClose, Globe, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal } from 'lucide-react'
+import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, PanelLeftClose, Globe, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -259,6 +259,21 @@ function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed:
     : <span className="absolute right-2 top-1/2 -translate-y-1/2 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" aria-label={ariaLabel}>{count}</span>
 }
 
+/** Live-activity dot for a nav item — distinct from the unread BadgeIndicator:
+ *  a small pulsing accent ring rather than a count, so "3 unread" and "agents
+ *  working" never overwrite each other on the same row. Positioned left of the
+ *  badge when expanded, and offset from the collapsed dot. */
+function ActivityIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
+  if (count <= 0) return null
+  const ariaLabel = `${count} ${label}`
+  return collapsed
+    ? <span className="absolute bottom-1 right-1 w-2 h-2 bg-accent rounded-full animate-pulse z-10" role="status" aria-label={ariaLabel} />
+    : <span className="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] text-accent" role="status" aria-label={ariaLabel}>
+        <Bot size={11} className="animate-pulse" aria-hidden />
+        {count}
+      </span>
+}
+
 /**
  * Badge slot for a nav item. Resolves the count from the surface registry
  * (built-in surfaces) and falls back to the `mc:app:badge`-driven `appBadges`
@@ -281,8 +296,11 @@ function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: b
   const appName = navId.startsWith('app-') ? navId.slice(4) : navId
   const dynamicCount = surfaceHasBadgeSource ? 0 : (appBadges[appName] || 0)
   const builtinLabel = surface?.badgeLabel ?? 'updates'
+  const activityCount = useAppSelector(selectSurfaceActivityCount(navId))
+  const activityLabel = surface?.activityLabel ?? 'in flight'
   return (
     <>
+      <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} />
       <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} />
       <BadgeIndicator count={dynamicCount} collapsed={collapsed} label={builtinLabel} />
     </>

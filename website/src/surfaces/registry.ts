@@ -84,6 +84,20 @@ export interface Surface {
   /** Accessibility label for the badge ("X unread conversations"). */
   badgeLabel?: string
   /**
+   * Optional live-activity count, rendered as a small pulsing dot on the rail
+   * item rather than folded into the unread badge. Use for "something is
+   * happening on this surface right now" signals whose semantics differ from
+   * unread counts — e.g. subagents running in a background chat, which must be
+   * visible from any other page but is not an unread conversation.
+   *
+   * Same performance contract as `unreadSelector`: invoked on every dispatch,
+   * so memoize non-trivial derivations at the source slice with
+   * `createSelector`.
+   */
+  activitySelector?: (state: RootState) => number
+  /** Accessibility label for the activity dot ("X subagents running"). */
+  activityLabel?: string
+  /**
    * Mark a surface as registered for badge wiring only — its nav item is
    * rendered elsewhere (typically by `appNavItems` from `api.listApps()`).
    * `getBuiltinSurfaces()` excludes these so they don't show up twice in
@@ -219,6 +233,7 @@ export function filterUnreadKeysBySurface(
  * replacements (same navId, new entry object) are picked up.
  */
 const _badgeCountSelectorCache = new Map<string, (state: RootState) => number>()
+const _activityCountSelectorCache = new Map<string, (state: RootState) => number>()
 export function selectSurfaceBadgeCount(navId: string): (state: RootState) => number {
   let sel = _badgeCountSelectorCache.get(navId)
   if (!sel) {
@@ -230,6 +245,24 @@ export function selectSurfaceBadgeCount(navId: string): (state: RootState) => nu
       return 0
     }
     _badgeCountSelectorCache.set(navId, sel)
+  }
+  return sel
+}
+
+/**
+ * Live-activity count for a surface's rail item. Deliberately separate from
+ * `selectSurfaceBadgeCount`: activity is a transient "in flight now" signal
+ * rendered as a dot, and must not inflate the unread badge number (nor the
+ * browser-tab attention sum, which `selectAllSurfacesAttention` owns).
+ */
+export function selectSurfaceActivityCount(navId: string): (state: RootState) => number {
+  let sel = _activityCountSelectorCache.get(navId)
+  if (!sel) {
+    sel = (state: RootState): number => {
+      const surface = _builtins.find(s => s.navId === navId)
+      return surface?.activitySelector ? surface.activitySelector(state) : 0
+    }
+    _activityCountSelectorCache.set(navId, sel)
   }
   return sel
 }

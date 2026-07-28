@@ -4,6 +4,7 @@ import { ChevronRight } from 'lucide-react'
 import type { DisplayItem, TurnItem } from './types'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { isWorkflowRunTool } from './WorkflowRunCard'
+import { isSpawnRunTool } from './SubagentRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { OPTION_MARKER_RE } from '../../utils/optionsMarker'
 
@@ -12,12 +13,17 @@ import { OPTION_MARKER_RE } from '../../utils/optionsMarker'
 // group — treat it as a non-tool, always-visible item.
 const isWorkflowRunItem = (it: TurnItem) =>
   it.kind === 'single' && it.msg.role === 'tool' && isWorkflowRunTool(it.msg)
+// Same for a spawn_run launch (SubagentRunCard): folding it into "Worked
+// through N steps" is precisely what left a spawned wave with no visible
+// record in scrollback.
+const isSpawnRunItem = (it: TurnItem) =>
+  it.kind === 'single' && it.msg.role === 'tool' && isSpawnRunTool(it.msg)
 // A workflow completion event renders as its own compact card and must stay
 // visible even when a turn's reasoning is collapsed (collapseAll mode).
 const isWorkflowCompletionItem = (it: TurnItem) =>
   it.kind === 'single' && isWorkflowCompletionMessage(it.msg)
 const isTool = (it: TurnItem) =>
-  it.kind === 'single' && it.msg.role === 'tool' && !isWorkflowRunItem(it)
+  it.kind === 'single' && it.msg.role === 'tool' && !isWorkflowRunItem(it) && !isSpawnRunItem(it)
 const isHiddenTool = (it: TurnItem) => it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')
 const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 'assistant' || it.msg.role === 'streaming' || it.msg.role === 'file')
 /**
@@ -42,7 +48,7 @@ const isRenderable = (it: TurnItem) =>
 /** Either a renderable assistant message (widget/image) or a role that must
  *  surface inline (mcp_oauth, error), or a workflow_run launch card. All bypass
  *  the collapse pane. */
-const isVisibleInline = (it: TurnItem) => isRenderable(it) || isAlwaysVisible(it) || isWorkflowRunItem(it) || isWorkflowCompletionItem(it)
+const isVisibleInline = (it: TurnItem) => isRenderable(it) || isAlwaysVisible(it) || isWorkflowRunItem(it) || isSpawnRunItem(it) || isWorkflowCompletionItem(it)
 
 /** Strip OPTIONS/markdown formatting and return plain text content length */
 function substantiveLength(text: string): number {

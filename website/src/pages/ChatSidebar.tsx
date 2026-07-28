@@ -662,6 +662,11 @@ function ChatSidebar({
   const storeActiveSlot = useAppSelector(s => s.chat.activeSlot)
   const activeSlotSubagents = useAppSelector(s => s.chat.subagents)
   const slotActivity = useAppSelector(s => s.chat.slotActivity)
+  // Queued-but-not-started agents have no entry in the per-slot subagents map,
+  // so a slot whose whole wave is still behind the concurrency cap counted 0
+  // and showed no subtitle at all — the window in which a user is most likely
+  // to wonder whether their spawn did anything. Fold the queue depth in.
+  const subagentQueued = useAppSelector(s => s.chat.subagentQueued)
   const subagentCounts = useMemo(() => {
     const countActive = (m?: Record<string, SubagentActivity>) => {
       if (!m) return 0
@@ -682,8 +687,11 @@ function ChatSidebar({
       const n = countActive(act.subagents)
       if (n > 0) counts[slot] = n
     }
+    for (const [slot, q] of Object.entries(subagentQueued ?? {})) {
+      if (q > 0) counts[slot] = (counts[slot] || 0) + q
+    }
     return counts
-  }, [storeActiveSlot, activeSlotSubagents, slotActivity])
+  }, [storeActiveSlot, activeSlotSubagents, slotActivity, subagentQueued])
   // Live dynamic-workflow runs per slot, for the sidebar row's "workflow
   // running" subtitle. Mirrors WorkflowProgressBar's source of truth:
   // chatSlice.workflowRuns (populated by the globally-subscribed
@@ -1785,6 +1793,15 @@ function ChatSidebar({
     const isOut = poppedOut.has(s.key)
     const recent = recentRank.get(s.key)
     const subagentCount = subagentCounts[s.key] || 0
+    // Distinguish started from queued: "3 agents running" is wrong for a wave
+    // that is still entirely behind the concurrency cap.
+    const subagentQueuedCount = Math.min(subagentQueued?.[s.key] || 0, subagentCount)
+    const subagentStarted = subagentCount - subagentQueuedCount
+    const subagentLabel = subagentStarted === 0
+      ? `${subagentQueuedCount} agent${subagentQueuedCount === 1 ? '' : 's'} queued`
+      : subagentQueuedCount > 0
+        ? `${subagentStarted} running · ${subagentQueuedCount} queued`
+        : `${subagentStarted} agent${subagentStarted === 1 ? '' : 's'} running`
     const wfActive = workflowActive[s.key]
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
     const rowColor = ci != null ? paletteColors[ci] : null
@@ -1936,13 +1953,14 @@ function ChatSidebar({
                 <span className="truncate">{wfActive.label}</span>
               </div>
             ) : subagentCount > 0 ? (
-              // A spawned subagent is still running — surface it even if the
-              // parent turn has ended (s.running === false while it waits for
-              // completion events), so the sidebar shows live activity instead
-              // of a stale last message. Outranks the generic "Thinking…".
-              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1" title={`${subagentCount} subagent${subagentCount > 1 ? 's' : ''} running`}>
+              // A spawned subagent is still running (or queued behind the
+              // concurrency cap) — surface it even if the parent turn has ended
+              // (s.running === false while it waits for completion events), so
+              // the sidebar shows live activity instead of a stale last
+              // message. Outranks the generic "Thinking…".
+              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1" title={subagentLabel}>
                 <Bot size={11} className="shrink-0 animate-pulse" aria-hidden />
-                <span className="truncate">{subagentCount} agent{subagentCount > 1 ? 's' : ''} running</span>
+                <span className="truncate">{subagentLabel}</span>
               </div>
             ) : s.running ? (
               <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusDetail[s.key]?.text || 'Thinking…'}</div>

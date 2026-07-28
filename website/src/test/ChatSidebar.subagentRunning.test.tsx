@@ -155,3 +155,36 @@ describe('chat sidebar — "N agents running" subtitle', () => {
     expect(queryByText(/agents? running/)).toBeNull()
   })
 })
+
+/**
+ * Queued waves. An accepted-but-not-started wave has NO entry in the per-slot
+ * subagents map (subagent_spawn hasn't fired), so counting the map alone left
+ * the row silent — showing a stale last message — for the whole ramp.
+ */
+describe('chat sidebar — queued subagents', () => {
+  it('surfaces a wave that is entirely queued, and says queued (not running)', () => {
+    const slots = [{ key: 'k-q', title: 'q', running: false, messages: 2, last_message: 'stale last message' }]
+    const { getByText, queryByText } = renderSidebar(
+      slots,
+      { activeSlot: null, subagentQueued: { 'k-q': 3 } },
+    )
+    expect(getByText('3 agents queued')).toBeTruthy()
+    expect(queryByText('stale last message')).toBeNull()
+  })
+
+  it('splits the label when a staggered ramp has both started and queued agents', () => {
+    const slots = [{ key: 'k-mix', title: 'mix', running: false, messages: 2 }]
+    const { getByText } = renderSidebar(
+      slots,
+      { activeSlot: 'k-mix', subagents: { a: sa('running') }, subagentQueued: { 'k-mix': 2 } },
+      'k-mix',
+    )
+    expect(getByText('1 running · 2 queued')).toBeTruthy()
+  })
+
+  it('a zero queue depth changes nothing', () => {
+    const slots = [{ key: 'k-z', title: 'z', running: false, messages: 2, last_message: 'final answer' }]
+    const { getByText } = renderSidebar(slots, { activeSlot: null, subagentQueued: { 'k-z': 0 } })
+    expect(getByText('final answer')).toBeTruthy()
+  })
+})
