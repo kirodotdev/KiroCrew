@@ -131,7 +131,11 @@ from kiro_crew.mcp_gateway.rewriter import (
 from kiro_crew.memory import MemoryStore
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.platform import boot_platform
-from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.context import (
+    PlatformCompositionError,
+    current_context,
+    safe_context_call,
+)
 from kiro_crew.platform.governance_profiles import (
     HOST_SESSION_KEY,
     audit_governance_degraded,
@@ -443,8 +447,6 @@ def _is_heartbeat_safe_tool(event_title: str) -> bool:
     # deny-by-default boundary intact; the companion MUST pin "@server/Tool".
     if not qualified:
         return False
-    from kiro_crew.platform.context import current_context, safe_context_call
-
     empty: frozenset[str] = frozenset()
     extra: frozenset[str] = safe_context_call(
         lambda: current_context().slack_gate.heartbeat_safe_tools(),
@@ -1347,9 +1349,31 @@ class GatewayOrchestrator:
 
             # Deliver shim + one-time stale-MCP purge automatically — the
             # desktop app launches the gateway but never runs `kirocrew setup`.
-            from kiro_crew.agent import run_first_run_setup  # circular import
-
-            run_first_run_setup()
+            #
+            # Routed through the CPP seam (``AgentRuntime.run_first_run_setup``)
+            # rather than importing ``agent.run_first_run_setup`` directly, so
+            # first-run setup is genuinely extensible: an edition composes an
+            # adapter that adds its own one-time provisioning on top. The
+            # ``DefaultAgentRuntime`` delegates to exactly the same
+            # ``agent.run_first_run_setup()`` this line used to call, so the
+            # standalone build is behaviorally identical (asserted in
+            # test_cpp_wiring_standalone).
+            #
+            # ``safe_context_call`` keeps a transient adapter error from breaking
+            # startup (``fallback=None`` matches the seam's ``-> None`` contract),
+            # matching the pre-existing best-effort posture of this block.
+            # The fail-closed guarantee for a non-standalone host is already
+            # discharged EARLIER, by ``boot_platform`` in ``run_gateway``: it
+            # aborts before the orchestrator is built, so a companion that cannot
+            # compose never reaches this line. (Note the enclosing
+            # ``except Exception`` would itself absorb a PlatformCompositionError
+            # raised here — which is why boot, not this call site, is where that
+            # invariant is enforced.)
+            safe_context_call(
+                lambda: current_context().agent_runtime.run_first_run_setup(),
+                fallback=None,
+                log_message="agent_runtime.run_first_run_setup failed",
+            )
         except Exception:
             logger.warning("Agent config install failed", exc_info=True)
 

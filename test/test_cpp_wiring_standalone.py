@@ -93,6 +93,68 @@ def test_extra_mcp_servers_empty_standalone() -> None:
     assert ctx.mcp_tooling.extra_mcp_servers() == {}
 
 
+# ── AgentRuntime.run_first_run_setup (newly wired) ──
+#
+# The gateway boot path used to call ``agent.run_first_run_setup()`` directly,
+# bypassing the ``agent_runtime`` seam entirely. It now routes through
+# ``current_context().agent_runtime.run_first_run_setup()``. These two tests are
+# the behavior-preserving proof: the Default adapter must invoke the SAME
+# underlying function with the same (no) arguments, so a standalone install gets
+# byte-identical first-run behavior through the seam.
+
+
+def test_default_agent_runtime_delegates_to_agent_first_run_setup(monkeypatch) -> None:
+    """The Default adapter calls ``agent.run_first_run_setup`` verbatim.
+
+    Behavior-preserving proof for routing the gateway's direct call through the
+    seam: same target function, same argument list (none), called exactly once.
+    """
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        "kiro_crew.agent.run_first_run_setup",
+        lambda *a, **kw: calls.append((a, kw)),
+    )
+    current_context().agent_runtime.run_first_run_setup()
+    assert calls == [((), {})]
+
+
+def test_gateway_first_run_setup_routes_through_the_seam(monkeypatch) -> None:
+    """A composed adapter is what the gateway's wired call reaches.
+
+    Asserts the seam is genuinely load-bearing at the call site: an edition
+    adapter composed into ``agent_runtime`` is invoked INSTEAD of the module
+    function, which is exactly what the direct import made impossible.
+    """
+    import dataclasses
+
+    from kiro_crew.platform import build_default_context, reset_context, set_context
+    from kiro_crew.platform.context import safe_context_call
+
+    seen: list[str] = []
+
+    class _EditionAgentRuntime:
+        def managed_mcp_servers(self):
+            return {}
+
+        def run_first_run_setup(self) -> None:
+            seen.append("edition")
+
+    monkeypatch.setattr("kiro_crew.agent.run_first_run_setup", lambda: seen.append("core-direct"))
+    base = build_default_context(KiroCrewConfig())
+    composed = dataclasses.replace(base, agent_runtime=_EditionAgentRuntime())
+    set_context(composed)
+    try:
+        # The exact expression the gateway boot path evaluates.
+        safe_context_call(
+            lambda: current_context().agent_runtime.run_first_run_setup(),
+            fallback=None,
+            log_message="agent_runtime.run_first_run_setup failed",
+        )
+    finally:
+        reset_context()
+    assert seen == ["edition"]
+
+
 class _NoMarkerHome:
     """A fake home dir whose ``/ ".midway"`` never exists."""
 

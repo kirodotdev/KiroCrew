@@ -21,6 +21,8 @@ from kiro_crew.platform.context import (
     CONTRACT_VERSION,
     PROFILE_ENTERPRISE,
     PROFILE_STANDALONE,
+    RESERVED_METHODS,
+    RESERVED_SLOTS,
     PlatformCompositionError,
     PlatformContext,
     async_safe_context_call,
@@ -46,6 +48,9 @@ __all__ = [
     "PLUGIN_GROUP",
     "PlatformContext",
     "PlatformCompositionError",
+    # Declared-inert contract surface (see context.py)
+    "RESERVED_SLOTS",
+    "RESERVED_METHODS",
     "boot_platform",
     "bootstrap_context",
     "build_default_context",

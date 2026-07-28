@@ -65,18 +65,23 @@ class DefaultAgentRuntime:
     """Today's managed MCP servers + first-run setup."""
 
     def managed_mcp_servers(self) -> Dict[str, dict]:
+        # RESERVED (see context.RESERVED_METHODS['agent_runtime']): no core call
+        # site reads this — the agent config is built from the
+        # ``agent._MANAGED_MCP_SERVERS`` global directly.  Kept faithful to that
+        # global so the method is correct if it is ever wired; contribute extra
+        # servers through the WIRED ``McpToolingProvider.extra_mcp_servers()``.
         from kiro_crew import agent  # circular import: agent imports platform
 
         return dict(agent._MANAGED_MCP_SERVERS)
 
     def run_first_run_setup(self) -> None:
-        # Delegate to the real ``agent.run_first_run_setup`` so that IF this
-        # NOT-YET-WIRED seam is ever consumed, the standalone Default reproduces
-        # today's first-run wiring (PATH shim + one-time stale managed-MCP purge)
-        # rather than silently no-op'ing.  Today nothing reads this adapter — the
-        # live path calls ``agent.run_first_run_setup()`` directly from the
-        # gateway boot — so this is inert; the Amazon companion overrides it to
-        # add internal first-run setup on top.
+        # WIRED: ``slack/gateway.py`` gateway boot calls this through the seam.
+        # Delegating to the real ``agent.run_first_run_setup`` makes the routing
+        # behavior-preserving for the standalone edition — byte-for-byte the same
+        # first-run wiring (PATH shim + admission-policy seed + one-time stale
+        # managed-MCP purge) the gateway used to invoke directly.  A companion
+        # overrides this to add its own one-time provisioning on top (and should
+        # call the same underlying function, or super(), to keep the core steps).
         from kiro_crew import agent  # circular import: agent imports platform
 
         agent.run_first_run_setup()
@@ -167,10 +172,12 @@ class DefaultIdentityProvider:
         return await sso_status.get_sso_status_line(prefix)
 
     def whoami(self) -> Optional[str]:
+        # RESERVED (see context.RESERVED_METHODS['identity']): no core call site.
         # The public edition has no SSO principal beyond what kiro-cli reports.
         return None
 
     def issuer(self) -> Optional[str]:
+        # RESERVED (see context.RESERVED_METHODS['identity']): no core call site.
         return None
 
     def preflight_checks(self) -> List[Callable[[], None]]:
@@ -188,11 +195,11 @@ class DefaultIdentityProvider:
 class DefaultEmbeddingSource:
     """Bundled in-process model (vendored llama.cpp), unsigned local inference.
 
-    Since the in-process embeddings landed the core no longer routes embed
-    requests over HTTP, so ``endpoint_url``/``sign_request`` have no active
-    consumption site — the seam stays for contract stability (a companion can
-    still supply a remote/signed source and compose a custom
-    ``EmbeddingBackend`` via ``embeddings.register_embedding_backend``).
+    RESERVED slot (see ``context.RESERVED_SLOTS['embeddings']``): the core has no
+    HTTP embed path, so NO method here is consumed.  Kept faithful to today's
+    model id so the adapter is correct if the slot is ever wired; a companion
+    supplying a different runtime composes an ``EmbeddingBackend`` via
+    ``embeddings.register_embedding_backend`` instead.
     """
 
     def registry_model(self) -> str:
@@ -310,7 +317,13 @@ class DefaultAppsLoader:
 
 
 class DefaultPackageManager:
-    """Public brew/curl/pip install strategy (delegated to cli_doctor logic)."""
+    """Public brew/curl/pip install strategy (delegated to cli_doctor logic).
+
+    RESERVED slot (see ``context.RESERVED_SLOTS['package_manager']``): no core
+    call site routes installs through this seam — ``cli_doctor.py`` keeps its
+    inline per-tool logic.  Use ``CapabilityManager`` for registry-backed
+    installs of MCP servers / skills / agent packages.
+    """
 
     def install_plan(self, tool: str) -> List[str]:
         # The public edition has no managed installer; callers fall back to

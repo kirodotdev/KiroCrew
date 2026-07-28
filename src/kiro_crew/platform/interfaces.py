@@ -111,18 +111,36 @@ class PublishRegistry(Protocol):
 
 
 class AgentRuntime(Protocol):
-    """The agent runtime: managed MCP servers + first-run setup.
+    """The agent runtime: managed MCP servers + first-run setup."""
 
-    NOT YET WIRED: neither method is consumed by the core yet — managed servers
-    are assembled in ``agent.py`` and first-run setup is called directly via
-    ``agent.run_first_run_setup()``. The companion contributes internal MCP
-    servers through ``McpToolingProvider.extra_mcp_servers`` instead (which IS
-    wired). Staged for a later migration; overriding it has no effect yet.
-    """
+    def managed_mcp_servers(self) -> Dict[str, dict]:
+        """**RESERVED — not consumed by the core.** Overriding has NO effect.
 
-    def managed_mcp_servers(self) -> Dict[str, dict]: ...
+        The agent config is built from the ``agent._MANAGED_MCP_SERVERS`` module
+        global directly. Contribute extra servers through the WIRED
+        ``McpToolingProvider.extra_mcp_servers()``, which merges ADD-only into
+        the same map. Declared in ``context.RESERVED_METHODS`` and asserted by
+        ``test_platform_cpp_seam_coverage.py``, which fails if this gains a
+        caller without the reservation being removed.
+        """
+        ...
 
-    def run_first_run_setup(self) -> None: ...
+    def run_first_run_setup(self) -> None:
+        """One-time install-time provisioning, run once per gateway start.
+
+        WIRED: the gateway boot path (``slack/gateway.py``) calls this through
+        the seam instead of importing ``agent.run_first_run_setup`` directly, so
+        an edition can add its own one-time provisioning. The public Default
+        delegates to exactly that function (PATH shim + admission-policy seed +
+        one-time stale managed-MCP purge), so the standalone build is unchanged.
+
+        Best-effort by contract: the call site keeps a failure non-fatal to
+        gateway startup, so an implementation SHOULD swallow and log its own
+        errors rather than relying on the caller. An override SHOULD keep the
+        core steps (delegate to the same underlying function) — dropping them
+        would leave desktop installs without the PATH shim.
+        """
+        ...
 
 
 class AgentExecutableResolver(Protocol):
@@ -298,9 +316,28 @@ class IdentityProvider(Protocol):
 
     async def status_line(self, prefix: str = "*SSO:*") -> str: ...
 
-    def whoami(self) -> Optional[str]: ...
+    def whoami(self) -> Optional[str]:
+        """**RESERVED — not consumed by the core.** Overriding has NO effect.
 
-    def issuer(self) -> Optional[str]: ...
+        Nothing in the core displays the resolved principal or authorizes against
+        it. Return it inside the WIRED ``status()`` payload instead (the dashboard
+        renders that). Declared in ``context.RESERVED_METHODS`` and asserted by
+        ``test_platform_cpp_seam_coverage.py``.
+        """
+        ...
+
+    def issuer(self) -> Optional[str]:
+        """**RESERVED — not consumed by the core.** Overriding has NO effect.
+
+        Nothing in the core branches on or displays the identity issuer. Surface
+        it through the WIRED ``status()`` payload instead. Declared in
+        ``context.RESERVED_METHODS`` and asserted by
+        ``test_platform_cpp_seam_coverage.py``.
+
+        (Not to be confused with ``GovernanceCeiling.identity_issuer``, which is
+        parsed from the signed security policy and IS consumed.)
+        """
+        ...
 
     def preflight_checks(self) -> List[Callable[[], None]]:
         """Already-resolved pre-launch checks for ``gateway``/``token``.
@@ -319,14 +356,22 @@ class IdentityProvider(Protocol):
 
 
 class EmbeddingSource(Protocol):
-    """Where the embedding model comes from + request signing.
+    """**RESERVED extension point — not consumed by the core.**
 
-    Public default = the bundled in-process model (``qwen3-embedding:0.6b``
-    via vendored llama.cpp), no HTTP and no signing.  Since the in-process
-    runtime landed the core has no active HTTP embed path, so
-    ``endpoint_url``/``sign_request`` are a dormant seam — kept for contract
-    stability.  A companion supplying a different runtime should compose an
-    ``EmbeddingBackend`` via ``embeddings.register_embedding_backend``.
+    Composing an ``EmbeddingSource`` into ``PlatformContext.embeddings`` has NO
+    effect: since the in-process runtime landed (bundled ``qwen3-embedding:0.6b``
+    via vendored llama.cpp) the core has no HTTP embed path, so there is nothing
+    to source a model id, endpoint, or request signature from. All three methods
+    are inert.
+
+    **Swap runtimes through ``embeddings.register_embedding_backend()`` instead**
+    — that is the live seam (an ``EmbeddingBackend`` owns the whole embed call,
+    including any remote transport and signing it needs).
+
+    The slot is kept for contract stability and is declared in
+    ``context.RESERVED_SLOTS``: a non-default value logs a loud warning at boot,
+    and ``test_platform_cpp_seam_coverage.py`` fails if a consumption site is
+    added without the reservation being removed.
     """
 
     def registry_model(self) -> str: ...
@@ -623,14 +668,19 @@ class KnowledgeProvider(Protocol):
 
 
 class PackageManager(Protocol):
-    """Install strategy for external tools (ollama, etc.).
+    """**RESERVED extension point — not consumed by the core.**
 
-    Public default = brew/curl/pip fallbacks.  The companion uses the internal
-    toolbox / capability installer.
+    Composing a ``PackageManager`` into ``PlatformContext.package_manager`` has
+    NO effect: the external-tool install paths (ollama, ffmpeg, whisper) are
+    inline step-by-step brew/curl/pip logic in ``cli_doctor.py``, not a single
+    plan-resolution point this seam could own. Both methods are inert.
 
-    NOT YET WIRED: no core call site routes installs through this seam yet
-    (callers still use their inline brew/curl/pip logic). Staged for later;
-    overriding it has no effect yet.
+    For registry-backed installation of MCP servers / skills / agent packages,
+    use ``CapabilityManager`` — the live, operations-based seam.
+
+    Declared in ``context.RESERVED_SLOTS``: a non-default value logs a loud
+    warning at boot, and ``test_platform_cpp_seam_coverage.py`` fails if a
+    consumption site is added without the reservation being removed.
     """
 
     def install_plan(self, tool: str) -> List[str]: ...
@@ -891,15 +941,24 @@ class JailProvider(Protocol):
 
 
 class FeatureApp(Protocol):
-    """One bundled App-Kit app the active profile ships.
+    """**RESERVED item type — not consumed by the core.**
 
-    Public default set is empty (or the OSS builtins).  The companion bundles
-    internal feature apps (code reviewer, team manager, secretary, etc.).
+    Populating ``PlatformContext.feature_apps`` has NO effect: bundled apps are
+    discovered through ``AppsLoader.manifest_sources()`` / ``bundled_app_names()``
+    and registered by ``apps/manager.py``. Neither ``manifest_path`` nor
+    ``register`` is ever called; the tuple is a provenance record only.
 
-    NOT YET WIRED: the core does not yet read ``PlatformContext.feature_apps``;
-    edition apps are registered via ``AppsLoader.manifest_sources`` /
-    ``bundled_app_names`` instead. Staged for a later registration path;
-    populating it has no effect yet.
+    **Bundle apps through ``AppsLoader`` instead** — the live seam.
+
+    Unlike every other Protocol here this one ships NO ``Default*`` adapter, and
+    deliberately so: ``FeatureApp`` describes ONE app (an item), not a policy the
+    core asks a question of, so there is no behavior for a default to reproduce.
+    The default for the *slot* is the empty tuple ``()`` that
+    ``build_default_context`` already composes — a ``DefaultFeatureApp`` would
+    have to invent a fictional app to be instantiable, which is worse than
+    nothing. Declared in ``context.RESERVED_SLOTS``; a non-empty tuple logs a
+    loud warning at boot, and ``test_platform_cpp_seam_coverage.py`` fails if a
+    consumption site appears without the reservation being removed.
     """
 
     @property

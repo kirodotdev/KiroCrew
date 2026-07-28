@@ -64,6 +64,8 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
 # extension points — landed under this same v1, no bump.)
 CONTRACT_VERSION = 1
 
+_logger = logging.getLogger(__name__)
+
 # Valid profiles.  ``standalone`` is the public default; ``enterprise`` loads a
 # companion package that composes a non-default context (e.g. an SSO overlay).
 PROFILE_STANDALONE = "standalone"
@@ -79,6 +81,168 @@ class PlatformCompositionError(RuntimeError):
     """
 
 
+# ── Reserved (declared-inert) slots ──
+#
+# A field listed here is part of the published contract but has NO consumption
+# site in the core: overriding it changes NOTHING.  The declaration lives HERE,
+# next to the dataclass an implementor actually reads, because the previous
+# "NOT YET WIRED" notes were buried in ``interfaces.py``/``defaults.py``
+# docstrings — invisible from the composition root where an edition author
+# writes ``dataclasses.replace(ctx, package_manager=MyPackageManager())`` and
+# gets silence.
+#
+# Two enforcement arms keep this honest and rot-proof, both in
+# ``test_platform_cpp_seam_coverage.py``:
+#
+#   1. Every ``PlatformContext`` field must be EITHER consumed by non-platform
+#      core code OR listed here.  A new field with no consumption site fails the
+#      build instead of becoming the next dead seam.
+#   2. A field listed here must have NO non-platform consumption site.  So
+#      wiring a reserved slot fails the build until its entry is deliberately
+#      REMOVED from this map — the marker cannot silently outlive the inertness
+#      it documents.
+#
+# At runtime, ``PlatformContext.__post_init__`` logs one loud warning per
+# reserved slot that carries a non-default value (see ``_warn_reserved_slots``).
+# It WARNS rather than raises on purpose: an edition may legitimately compose an
+# adapter in anticipation of a slot being wired (its own composition root is
+# built in lockstep with the core), and refusing to compose would turn a
+# forward-looking, harmless override into a boot failure — a breaking change for
+# an out-of-tree companion that composes this seam today.  The warning is the
+# signal; the test suite is the gate.
+RESERVED_SLOTS: "dict[str, str]" = {
+    "embeddings": (
+        "no core call site: the public embedding runtime is the bundled "
+        "in-process llama.cpp model, so there is no HTTP embed path to source a "
+        "model/endpoint/signature from. Swap runtimes via "
+        "embeddings.register_embedding_backend() instead."
+    ),
+    "package_manager": (
+        "no core call site: install paths (ollama, ffmpeg, whisper) are inline "
+        "step-by-step brew/curl/pip logic in cli_doctor.py, not a single "
+        "plan-resolution point this seam could own."
+    ),
+    "feature_apps": (
+        "no core call site: bundled apps are discovered through "
+        "AppsLoader.manifest_sources()/bundled_app_names() and registered by "
+        "apps/manager.py. This slot is a provenance record only."
+    ),
+}
+
+# Reserved METHODS on an otherwise-live field.  Same contract as
+# ``RESERVED_SLOTS`` but one level finer: the field IS consumed, only these
+# methods are not.  Declared here (rather than only in an ``interfaces.py``
+# docstring) so the reserved surface of the contract is readable in ONE place,
+# and asserted by the same coverage test — which fails if a listed method gains
+# a non-platform caller, forcing the entry to be removed deliberately.
+RESERVED_METHODS: "dict[str, dict[str, str]]" = {
+    "agent_runtime": {
+        "managed_mcp_servers": (
+            "no core call site: the agent config is built from the "
+            "agent._MANAGED_MCP_SERVERS module global directly. Contribute extra "
+            "servers via McpToolingProvider.extra_mcp_servers(), which IS wired "
+            "and merges ADD-only into the same map. (The sibling "
+            "run_first_run_setup IS wired — see slack/gateway.py.)"
+        ),
+    },
+    "identity": {
+        "whoami": (
+            "no core call site: the resolved principal is not displayed or "
+            "authorized against anywhere in the core. IdentityProvider.status() "
+            "is the wired surface — return the principal in its payload."
+        ),
+        "issuer": (
+            "no core call site: nothing in the core branches on or displays the "
+            "identity issuer. Surface it through status() instead."
+        ),
+    },
+}
+
+
+def _reserved_slot_is_default(field_name: str, value: Any) -> bool:
+    """True when *value* is the stock ``Default*`` adapter for a reserved slot.
+
+    Compares by the adapter CLASS actually composed by
+    ``bootstrap.build_default_context``, resolved lazily from ``defaults`` so
+    this module stays import-light and cycle-free.  Class identity (not
+    ``isinstance``) is deliberate: a companion SUBCLASS of a ``Default*``
+    adapter is a real override — it can change behavior — so it must still warn.
+
+    Unknown/unresolvable adapters are treated as NON-default (warn), keeping the
+    signal loud rather than silently swallowing an override.
+    """
+    if field_name == "feature_apps":
+        # Not an adapter — the default is the empty tuple.
+        return value == ()
+    try:
+        # circular import: this module deliberately carries NO runtime
+        # ``kiro_crew`` import — every one above is inside ``TYPE_CHECKING`` —
+        # because it is the leaf the rest of the platform imports.  ``defaults``
+        # pulls in ``kiro_crew.security`` and ``sso_status``, which reach back
+        # into ``platform.context`` for ``current_context()`` (the documented
+        # ``sel.py`` deferred pattern), so importing it at module scope here
+        # would close that cycle at import time.
+        from kiro_crew.platform import defaults as _defaults
+    except Exception:  # pragma: no cover - defensive; defaults always importable
+        return False
+    default_cls = _RESERVED_DEFAULT_ADAPTERS.get(field_name)
+    if default_cls is None:
+        return False
+    return type(value) is getattr(_defaults, default_cls, None)
+
+
+# Reserved slot → the name of its stock ``Default*`` adapter class in
+# ``platform.defaults``.  Kept as NAMES (not imports) so ``context`` never
+# imports ``defaults`` at module load.  The coverage test asserts this map's
+# keys match ``RESERVED_SLOTS`` minus the non-adapter ``feature_apps`` slot, so
+# a new reserved slot cannot forget its default and silently warn on every boot.
+_RESERVED_DEFAULT_ADAPTERS: "dict[str, str]" = {
+    "embeddings": "DefaultEmbeddingSource",
+    "package_manager": "DefaultPackageManager",
+}
+
+# One warning per (slot, adapter type) per process.  ``dataclasses.replace`` may
+# rebuild the context several times during a composition root, and
+# ``current_context()``'s lazy default can run in short-lived subprocesses — a
+# per-construction warning would spam the log for one override.  Keyed by the
+# adapter type as well as the slot so a LATER, different override still reports.
+_RESERVED_WARNED: "set[Tuple[str, str]]" = set()
+
+
+def _warn_reserved_slots(ctx: "PlatformContext") -> None:
+    """Log one loud warning per reserved slot carrying a non-default adapter.
+
+    The runtime half of the reserved-slot contract: an edition that composes an
+    adapter into an inert slot gets a visible boot-time line naming the slot, the
+    adapter, why it is inert, and the wired alternative — instead of the silence
+    that made these seams look live.  Deduped per process (see
+    ``_RESERVED_WARNED``).
+
+    Never raises: this is diagnostics, and a composition-time crash here would
+    break the very boot path it is meant to annotate.  Called from
+    ``PlatformContext.__post_init__``, so it also covers the companion's
+    ``dataclasses.replace`` path.
+    """
+    try:
+        for field_name, reason in RESERVED_SLOTS.items():
+            value = getattr(ctx, field_name, None)
+            if _reserved_slot_is_default(field_name, value):
+                continue
+            key = (field_name, f"{type(value).__module__}.{type(value).__qualname__}")
+            if key in _RESERVED_WARNED:
+                continue
+            _RESERVED_WARNED.add(key)
+            _logger.warning(
+                "PlatformContext.%s is a RESERVED slot: %s composed a non-default "
+                "value into it, which the core NEVER reads, so it has NO effect. %s",
+                field_name,
+                key[1],
+                reason,
+            )
+    except Exception:  # pragma: no cover - diagnostics must never break boot
+        _logger.debug("reserved-slot warning pass failed", exc_info=True)
+
+
 @dataclass(frozen=True)
 class PlatformContext:
     """Immutable bundle of the chosen adapter for every extension point.
@@ -87,6 +251,15 @@ class PlatformContext:
     and never mutated.  The public edition composes a context whose every
     interface field is a ``Default*`` adapter; the Amazon companion replaces a
     subset via ``dataclasses.replace`` in its composition root.
+
+    **Reserved slots.**  Fields marked ``[RESERVED]`` below are published
+    contract but have NO consumption site in the core — overriding one changes
+    nothing.  ``RESERVED_SLOTS`` (above) carries the reason and the wired
+    alternative for each, ``RESERVED_METHODS`` does the same for individual
+    methods on otherwise-live fields, and composing a non-default value into a
+    reserved slot logs one loud warning at boot.  Both maps are asserted against
+    real consumption sites by ``test_platform_cpp_seam_coverage.py``, so a slot
+    cannot stay marked once it is wired (nor be added without a marker).
     """
 
     # ── carriers (not interfaces) ──
@@ -97,14 +270,17 @@ class PlatformContext:
     # ── boot-layer extension points ──
     providers: "ProviderRegistry"
     publish: "PublishRegistry"
+    # ``run_first_run_setup`` is wired (slack/gateway.py); ``managed_mcp_servers``
+    # is [RESERVED] — see RESERVED_METHODS.
     agent_runtime: "AgentRuntime"
     agent_executable: "AgentExecutableResolver"
     sandbox: "SandboxPolicy"
     credentials: "CredentialPolicy"
     security: "PolicyAuthority"
     slack_gate: "SlackEnterpriseGate"
+    # ``whoami``/``issuer`` are [RESERVED] — see RESERVED_METHODS.
     identity: "IdentityProvider"
-    embeddings: "EmbeddingSource"
+    embeddings: "EmbeddingSource"  # [RESERVED] — see RESERVED_SLOTS
     mcp_tooling: "McpToolingProvider"
     agent_catalog: "AgentCatalogProvider"
     prompt_sources: "PromptSourceProvider"
@@ -113,7 +289,7 @@ class PlatformContext:
     # ── install / structural extension points ──
     registry: "AppRegistryPolicy"
     apps_loader: "AppsLoader"
-    package_manager: "PackageManager"
+    package_manager: "PackageManager"  # [RESERVED] — see RESERVED_SLOTS
     knowledge: "KnowledgeProvider"
 
     # ── runtime-service / frontend extension points ──
@@ -123,7 +299,7 @@ class PlatformContext:
     jail: "JailProvider"
 
     # ── bundled feature apps ──
-    feature_apps: "Tuple[FeatureApp, ...]"
+    feature_apps: "Tuple[FeatureApp, ...]"  # [RESERVED] — see RESERVED_SLOTS
 
     # ── governance carrier (Level 1 enterprise security ceiling) ──
     # Frozen at boot from the trust-root policy path; ``None`` on a standalone
@@ -134,9 +310,19 @@ class PlatformContext:
     governance: "Optional[GovernanceCeiling]" = None
 
     def __post_init__(self) -> None:
-        """Enforce the ``CapabilityManager`` LIVENESS bound at composition time.
+        """Bind the ``CapabilityManager`` bound + warn on reserved-slot overrides.
 
-        Every ``CapabilityManager`` is wrapped ONCE here in
+        Two composition-time concerns, both of which must run on the single
+        constructor AND on the companion's ``dataclasses.replace`` path (which
+        re-invokes ``__init__``).
+
+        **Reserved-slot warning.** ``_warn_reserved_slots`` emits one loud
+        warning per :data:`RESERVED_SLOTS` field that carries a non-default
+        adapter, turning a silently-ignored override into a visible log line at
+        boot. It warns rather than raises — see the ``RESERVED_SLOTS`` comment
+        for why refusing to compose would be a breaking change.
+
+        **``CapabilityManager`` LIVENESS bound.** Every ``CapabilityManager`` is wrapped ONCE here in
         ``BoundedCapabilityManager`` so that EVERY reader of
         ``current_context().capability_manager`` — the dashboard handlers AND any
         future non-dashboard consumer that follows the documented CPP pattern of
@@ -159,6 +345,7 @@ class PlatformContext:
         object.__setattr__(
             self, "capability_manager", bind_capability_manager(self.capability_manager)
         )
+        _warn_reserved_slots(self)
 
     @property
     def is_enterprise(self) -> bool:
@@ -240,7 +427,6 @@ def reset_context() -> None:
 
 
 _T = TypeVar("_T")
-_logger = logging.getLogger(__name__)
 
 
 _UNSET: Any = object()

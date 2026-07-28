@@ -36,27 +36,27 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `cfg` | carrier (`KiroCrewConfig`) | loaded config | same |
 | `providers` | adapter | `DefaultProviderRegistry` (Kiro-CLI-ACP only) | re-registers a companion-registered backend |
 | `publish` | adapter | `DefaultPublishRegistry` (registers no provider → publish unavailable) | registers enterprise artifact/publish providers |
-| `agent_runtime` | adapter | `DefaultAgentRuntime` (`_MANAGED_MCP_SERVERS`) | internal servers + backend env |
+| `agent_runtime` | adapter | `DefaultAgentRuntime` (`run_first_run_setup` wired; `managed_mcp_servers` **RESERVED**) | extra one-time first-run provisioning |
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
 | `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed enterprise allowlist |
-| `identity` | adapter | `DefaultIdentityProvider` (`sso_status.py` stub) | enterprise SSO / directory |
-| `embeddings` | adapter | `DefaultEmbeddingSource` (dormant seam — the public runtime is the bundled in-process llama-cpp model via `embeddings.register_embedding_backend`; `endpoint_url`/`sign_request` kept for contract stability) | internal source + SigV4 |
+| `identity` | adapter | `DefaultIdentityProvider` (`sso_status.py` stub; `whoami`/`issuer` **RESERVED**) | enterprise SSO / directory |
+| `embeddings` | adapter | **RESERVED** — `DefaultEmbeddingSource`; the public runtime is the bundled in-process llama-cpp model, so no method is consumed (swap via `embeddings.register_embedding_backend`) | — (slot inert) |
 | `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (all methods empty) | enterprise MCP server + skills + provider MCP scopes |
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
 | `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
 | `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package/skill/MCP manager |
 | `registry` | adapter | `DefaultAppRegistryPolicy` (public-forge baseline) | internal git hosts |
 | `apps_loader` | adapter | `DefaultAppsLoader` (OSS builtins) | internal app sources (code-reviewer; team_manager/mimir follow-on) |
-| `package_manager` | adapter | `DefaultPackageManager` (brew/pip) | managed installer |
+| `package_manager` | adapter | **RESERVED** — `DefaultPackageManager`; installs are inline in `cli_doctor.py` (use `CapabilityManager`) | — (slot inert) |
 | `knowledge` | adapter | `DefaultKnowledgeProvider` (no extra connectors) | enterprise doc connector (`extra_connectors`) |
 | `tunnel` | adapter | `DefaultTunnelProvider` (no-op) | internal tunnel supervisor |
 | `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off) | RUM/Cognito config |
 | `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler) | secretary/taskkeeper routes + enterprise SSO PTY login |
 | `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
-| `feature_apps` | tuple | `()` | (provenance map only — not consumed; apps register via `apps_loader`) |
+| `feature_apps` | tuple | **RESERVED** — `()`; apps register via `apps_loader` (provenance record only) | — (slot inert) |
 
 > `registry` note — the public `DefaultAppRegistryPolicy` encodes the
 > public-forge baseline and ships no internal-host set. The enterprise companion
@@ -288,6 +288,16 @@ delegates to that same global. Wired sites:
 
 - `cli.py:main` / `slack/gateway.py:run_gateway` — `boot_platform(cfg)` once at
   startup (gateway raises fail-closed; cli is defensive — standalone never raises).
+- `slack/gateway.py` gateway boot — `AgentRuntime.run_first_run_setup()` through
+  `safe_context_call`. Previously this imported `agent.run_first_run_setup`
+  directly, bypassing the seam; routing it through the context makes first-run
+  provisioning genuinely extensible (an edition adds its own one-time steps).
+  The Default adapter delegates to that same function, so standalone behavior is
+  byte-identical — asserted in `test_cpp_wiring_standalone.py`
+  (`test_default_agent_runtime_delegates_to_agent_first_run_setup` +
+  `test_gateway_first_run_setup_routes_through_the_seam`). Best-effort: the
+  gateway's surrounding `except` keeps a failure non-fatal to startup, and
+  `PlatformCompositionError` still propagates fail-closed.
 - `sandbox.py` — `_build_launcher_script` / `_build_seatbelt_profile` source the
   sensitive-dir lists from `current_context().sandbox` (the `.aws`-exclusion at
   the cc branch is preserved). `namespace_argv` / `sandbox_exec_argv` resolve
@@ -370,9 +380,6 @@ delegates to that same global. Wired sites:
   `current_context().apps_loader` sources.
 - `apps/registry.py` / `apps/routes.py` — clone-sandbox-mode decision routes
   through `current_context().registry` (`_context_clone_sandbox_mode`).
-- `embeddings.py` — model/endpoint/sign_request source from
-  `current_context().embeddings` (explicit caller args win); BOTH the async
-  `EmbeddingClient` and the sync `make_sync_embed_fn` vector-memory path.
 - Telemetry `record_event` sites — `dashboard/server.py` records `gateway_start`
   at boot; `dashboard/chat_runner.py` and `slack/handler.py` record one
   `interaction` event per successful chat turn (immediately after the
@@ -777,12 +784,73 @@ new module/class names.
 
 ### Deferred / non-mapping sites
 
-- `cli_doctor.py` — `package_manager` is **not** wired: the ollama-install
-  diagnostic is inline step-by-step logic, not a single plan-resolution site
-  (TODO; Default `install_plan` returns `[]` = today's inline behavior).
 - `apps/routes.py` — `_fetch_git_blob`'s per-URL clone-sandbox-mode decision IS
   wired: it routes through `_context_clone_sandbox_mode` (same as the
   `apps/registry.py` clone sites), so a companion's extended trusted-host set
   applies to registry-blob fetches too. The other `wrap_argv` sites run local
   lifecycle scripts (no per-URL git host), so they have no clone decision to
   route.
+
+## Reserved (declared-inert) contract surface
+
+Some published extension points have **no consumption site** in the core:
+overriding them changes nothing. That is legitimate — the contract is kept stable
+pre-launch — but it MUST NOT be silent. An implementor reads `PlatformContext`,
+writes an adapter, `dataclasses.replace`s it in, and needs to find out
+immediately, not after a debugging session.
+
+Three arms make the inertness impossible to miss:
+
+1. **Declaration at the dataclass.** `context.RESERVED_SLOTS` (whole fields) and
+   `context.RESERVED_METHODS` (individual methods on otherwise-live fields) each
+   map a name → the reason it is inert **and the wired alternative**. Every
+   reserved field also carries a `[RESERVED]` marker comment on its declaration
+   in `PlatformContext`, so the fact is visible in the source an edition author
+   actually reads — not only in an `interfaces.py` docstring.
+2. **A loud runtime signal.** `PlatformContext.__post_init__` calls
+   `_warn_reserved_slots`, which logs ONE warning per reserved slot carrying a
+   non-default value, naming the offending adapter and the alternative. It
+   **warns rather than raises**: an edition may compose an adapter in
+   anticipation of a slot being wired, and refusing to compose would turn a
+   harmless forward-looking override into a boot failure (a breaking change for
+   an existing companion). Deduped per `(slot, adapter type)` per process, so a
+   composition root that rebuilds the context does not spam the log. Class
+   identity (not `isinstance`) decides "is default", so a companion **subclass**
+   of a `Default*` adapter still warns — it can change behavior.
+3. **An anti-rot gate.** `test/test_platform_cpp_seam_coverage.py` drives off
+   `dataclasses.fields(PlatformContext)` and discovers real consumption sites by
+   `ast` analysis of `src/kiro_crew` (excluding `platform/` itself and
+   `_vendor/`). It asserts, in both directions:
+   - every field is EITHER consumed by non-`platform` core code OR listed in
+     `RESERVED_SLOTS` — so a **new** field with no call site fails the build
+     instead of becoming the next dead seam;
+   - every `RESERVED_SLOTS`/`RESERVED_METHODS` entry has NO consumption site — so
+     **wiring** a reserved slot fails the build until its entry is deliberately
+     removed, and a marker can never go stale and mislead the next reader.
+
+   Two boot-protocol carriers (`contract_version`, `publish`) are consumed only
+   by `bootstrap.py` itself and are enumerated in the test's
+   `_BOOT_CONSUMED_IN_PLATFORM`; a companion test proves each is genuinely read
+   there, so the allowance cannot be used to park a dead field.
+
+Current reserved surface:
+
+| Slot / method | Why inert | Use instead |
+|---|---|---|
+| `embeddings` (whole slot) | the public embedding runtime is the bundled in-process llama.cpp model — there is no HTTP embed path to source a model/endpoint/signature from | `embeddings.register_embedding_backend()` |
+| `package_manager` (whole slot) | external-tool installs (ollama, ffmpeg, whisper) are inline step-by-step brew/curl/pip logic in `cli_doctor.py`, not a single plan-resolution point | `CapabilityManager` for registry-backed MCP/skill/agent installs |
+| `feature_apps` (whole slot) | bundled apps are discovered via `AppsLoader` and registered by `apps/manager.py`; the tuple is a provenance record only | `AppsLoader.manifest_sources()` / `bundled_app_names()` |
+| `AgentRuntime.managed_mcp_servers` | the agent config is built from the `agent._MANAGED_MCP_SERVERS` global directly | `McpToolingProvider.extra_mcp_servers()` (wired, ADD-only) |
+| `IdentityProvider.whoami` / `.issuer` | nothing in the core displays the principal or branches on the issuer | return them in the wired `status()` payload |
+
+`FeatureApp` is deliberately the ONE Protocol with no `Default*` adapter: it
+describes a single app (an item), not a policy the core queries, so there is no
+behavior for a default to reproduce — the default for the *slot* is the empty
+tuple `build_default_context` already composes. A `DefaultFeatureApp` would have
+to invent a fictional app to be instantiable.
+
+Removing a reserved slot outright would be a contract-narrowing change (an
+out-of-tree companion that composes it today would fail to compose), so the
+slots are kept and marked rather than deleted. None of this warrants a
+`CONTRACT_VERSION` bump: no field is added, removed, or renamed, and no
+interface semantics change — the version stays pinned at 1 pre-launch.
