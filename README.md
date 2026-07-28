@@ -69,6 +69,9 @@ feed, verifies the hash, installs) — it is the recommended path.
 For always-on servers (Slack/Discord bots, remote dashboards) the gateway
 ships as a multi-arch image on GHCR:
 
+The package is private for now. Authenticate to GHCR with an account that has
+package access before pulling; see **[docs/DOCKER.md](docs/DOCKER.md)**.
+
 ```bash
 docker run -d --name kirocrew \
   -p 127.0.0.1:5476:5476 \

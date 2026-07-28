@@ -48,6 +48,11 @@ on:
         required: false
         type: boolean
         default: true
+      require_public_access:
+        description: "Require an anonymous pull to succeed after publishing"
+        required: false
+        type: boolean
+        default: false
       wheel_artifact:
         description: "Name of the uploaded artifact containing the wheel"
         required: true
@@ -306,13 +311,14 @@ jobs:
           fi
           echo "::notice::Version tag already existed — channel alias NOT moved (re-runs must never roll a channel backward). If this re-run was repairing an interrupted first publish and the alias is stale, move it manually: docker buildx imagetools create -t ${IMAGE}:${CHANNEL} ${IMAGE}@${DIGEST}"
 
-      # The documented anonymous `docker run` only works if the GHCR package
-      # is PUBLIC — but GHCR creates a package PRIVATE on its first-ever
-      # push. Verify with an unauthenticated pull so a private package fails
-      # the lane loudly instead of shipping a broken README command.
+      # Public distribution is an explicit release-policy switch. GHCR
+      # creates packages private, which is the required posture for now.
+      # When public distribution is approved, callers flip
+      # require_public_access and this gate prevents a release from
+      # advertising an image that anonymous users cannot pull.
       # Canonical repo only: forks legitimately keep private packages.
       - name: Verify anonymous pull (package visibility)
-        if: github.repository_owner == 'kirodotdev'
+        if: github.repository_owner == 'kirodotdev' && inputs.require_public_access
         run: |
           set -euo pipefail
           IMAGE="${{ steps.image.outputs.name }}"
@@ -335,6 +341,11 @@ jobs:
             fi
             if [ "${{ steps.existing.outputs.exists }}" = "true" ]; then
               echo "- Note: version tag already existed (job re-run) — build skipped, provenance verified, channel alias NOT moved."
+            fi
+            if [ "${{ inputs.require_public_access }}" = "true" ]; then
+              echo "- Registry access: public (anonymous pull verified)"
+            else
+              echo "- Registry access: private (authenticate to GHCR before pulling)"
             fi
             echo "- Run: \`docker run -d -p 127.0.0.1:5476:5476 -v kirocrew-home:/home/kirocrew ${{ steps.image.outputs.name }}:${CHANNEL}\`"
           } >> "$GITHUB_STEP_SUMMARY"

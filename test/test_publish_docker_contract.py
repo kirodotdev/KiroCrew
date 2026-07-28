@@ -11,6 +11,8 @@ The lane's documented guarantees:
 * A VERSION tag, once published, is never rebuilt or repointed — and a
   transient registry failure must never be misread as "tag absent" (that
   would rebuild different bytes under a published version).
+* The package remains private unless callers explicitly opt into the
+  anonymous-pull release gate.
 * The lane needs no repository secrets beyond the implicit GITHUB_TOKEN —
   callers must not ``secrets: inherit`` into it.
 
@@ -180,6 +182,43 @@ def test_existing_tag_check_distinguishes_not_found_from_transport_failure() -> 
     assert "2>/dev/null" not in text, (
         "stderr carries the classification signal and must not be discarded"
     )
+
+
+def test_public_access_gate_is_opt_in_and_callers_keep_package_private() -> None:
+    """Anonymous pulls are a release-policy choice, not a publish invariant.
+
+    GHCR packages default to private and KiroCrew intentionally retains that
+    posture for now. Public distribution must be enabled explicitly in both
+    the reusable workflow contract and each canonical caller.
+    """
+    import yaml
+
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    inputs = workflow[True]["workflow_call"]["inputs"]
+    assert inputs["require_public_access"]["default"] is False
+
+    lines = _lines()
+    public_gate = _step_index(lines, "Verify anonymous pull")
+    gate_body = _step_body(lines, public_gate)
+    assert any(
+        "inputs.require_public_access" in line
+        for line in gate_body
+        if line.strip().startswith("if:")
+    ), "anonymous pull verification must run only when public access is required"
+
+    for caller in CALLERS:
+        doc = yaml.safe_load(caller.read_text(encoding="utf-8"))
+        docker_jobs = {
+            name: job
+            for name, job in doc["jobs"].items()
+            if "publish-docker.yml" in str(job.get("uses", ""))
+        }
+        assert docker_jobs, f"{caller.name}: publish-docker call site not found"
+        for name, job in docker_jobs.items():
+            assert job["with"]["require_public_access"] is False, (
+                f"{caller.name}: job {name!r} must keep GHCR private until "
+                "public distribution is explicitly approved"
+            )
 
 
 def test_callers_do_not_inherit_secrets_into_the_lane() -> None:

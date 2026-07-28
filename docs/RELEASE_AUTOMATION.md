@@ -86,6 +86,15 @@ insider/stable CLI channel publication is not yet wired (wheels ship as
 GitHub Release assets). The signing trust domain for the wheel
 (minisign/cosign detached signatures) remains an open item.
 
+**Docker channel (as built):** `publish-docker.yml` publishes the same wheel
+inside a multi-arch image to `ghcr.io/kirodotdev/kirocrew`, with immutable
+version tags, mutable channel aliases, and registry-pushed SLSA provenance.
+The GHCR package intentionally remains private for now. Both canonical callers
+set `require_public_access: false`; authorized consumers authenticate with a
+token carrying `read:packages`. Public distribution is a later release-policy
+change: setting `require_public_access: true` enables the logged-out pull gate
+that proves anonymous consumers can resolve the published image.
+
 ---
 
 ## Channels

@@ -6,6 +6,15 @@ runtime — as a headless container. It is the recommended way to run KiroCrew
 24/7 on a server or NAS; the strongest fit is the always-on channel bot that
 does not need a desktop session.
 
+The GHCR package is private for now. Authenticate once with a GitHub account
+that has package access and a token carrying `read:packages`:
+
+```
+echo "$GHCR_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+```
+
+Then start the gateway:
+
 ```
 docker run -d --name kirocrew \
   -p 127.0.0.1:5476:5476 \
