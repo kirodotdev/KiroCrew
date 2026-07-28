@@ -61,6 +61,15 @@ function trustedLoginUrl(value: string): string | null {
   }
 }
 
+// Gateway error strings arrive unpunctuated ("Token required"), and the gate
+// renders them as the first sentence of a paragraph — terminate them so the
+// next sentence does not read as one run-on line.
+export function asSentence(message: string): string {
+  const trimmed = message.trim()
+  if (!trimmed) return trimmed
+  return /[.!?:;…]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
 function FloatingGhost({
   className,
   delay,
@@ -335,7 +344,7 @@ function ReauthenticationBanner({
             <SendBtn type="button" disabled={busy} onClick={onInstall}>
               {busy
                 ? <Loader2 className="lucide-inline animate-spin" />
-                : <Package className="lucide-inline" />}
+                : <Package className="lucide-inline" />}{' '}
               Install Kiro CLI
             </SendBtn>
           )}
@@ -343,7 +352,7 @@ function ReauthenticationBanner({
             <SendBtn type="button" disabled={busy} onClick={onLogin}>
               {busy
                 ? <Loader2 className="lucide-inline animate-spin" />
-                : <LogIn className="lucide-inline" />}
+                : <LogIn className="lucide-inline" />}{' '}
               Sign in to Kiro
             </SendBtn>
           )}
@@ -437,11 +446,11 @@ function SetupStatusError({
           We could not check Kiro CLI.
         </h1>
         <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-          {message} Retry the gateway check before starting a session.
+          {asSentence(message)} Retry the gateway check before starting a session.
         </p>
         <div className="mt-6">
           <SendBtn type="button" disabled={retrying} onClick={onRetry}>
-            <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />{' '}
             Try again
           </SendBtn>
         </div>

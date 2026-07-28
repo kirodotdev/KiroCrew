@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { KiroPrerequisiteStatus } from '../api/client'
 import KiroPrerequisiteGate, {
+  asSentence,
   kiroPrerequisiteRefetchInterval,
 } from '../components/KiroPrerequisiteGate'
 import { useKiroSessionReady } from '../providers/KiroReadinessContext'
@@ -344,5 +345,37 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.getByText(/Probe failed/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled()
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('terminates an unpunctuated gateway error before the next sentence', async () => {
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(401, 'Token required'))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(
+      await screen.findByText('Token required. Retry the gateway check before starting a session.'),
+    ).toBeInTheDocument()
+  })
+
+  it('keeps a space between the retry icon and its label', async () => {
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(500, 'Probe failed'))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    const retry = await screen.findByRole('button', { name: 'Try again' })
+    expect(retry.textContent).toBe(' Try again')
+  })
+
+  it('punctuates only when the message needs it', () => {
+    expect(asSentence('Token required')).toBe('Token required.')
+    expect(asSentence('The gateway returned an unexpected error.'))
+      .toBe('The gateway returned an unexpected error.')
+    expect(asSentence('Is the gateway running?')).toBe('Is the gateway running?')
+    expect(asSentence('  Token required  ')).toBe('Token required.')
+    expect(asSentence('')).toBe('')
   })
 })
