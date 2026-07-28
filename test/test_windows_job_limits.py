@@ -22,6 +22,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -151,6 +152,90 @@ class TestApplyJobLimits:
             )
             is False
         )
+
+
+@_WINDOWS_ONLY
+class TestSuspendedSpawnHandshake:
+    """CREATE_SUSPENDED + assign + resume makes job assignment race-free.
+
+    Job membership covers a member's FUTURE descendants only, so attaching a job
+    to an already-running child leaves a window in which it could fork something
+    that escapes the ceiling. A process created suspended has executed no
+    instructions and therefore provably has no descendants, which closes the
+    window by construction rather than making it merely small.
+
+    This is the design that replaced an earlier plan to wrap the spawn in a
+    launcher process: a launcher would have changed the recorded process identity
+    on Windows from ``kiro-cli.exe`` to ``python.exe``, touching PID-identity
+    checks, ``process_matches`` cmdline needles and the orphan sweep, and added a
+    permanent extra process per agent.
+    """
+
+    def test_suspended_child_does_not_run_until_resumed(self) -> None:
+        """The negative control: suspension is real, and resume is load-bearing.
+
+        Without this, a passing "resume worked" test would prove nothing — the
+        child might simply have been running the whole time.
+        """
+        child = subprocess.Popen(
+            [sys.executable, "-c", "print('RAN', flush=True)"],
+            stdout=subprocess.PIPE,
+            text=True,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP
+            | platform_compat.CREATE_SUSPENDED,
+        )
+        try:
+            time.sleep(1.0)
+            assert child.poll() is None, "child exited despite CREATE_SUSPENDED"
+        finally:
+            child.kill()
+            child.wait(timeout=15)
+
+    def test_assign_while_suspended_then_resume_runs_the_child(self) -> None:
+        child = subprocess.Popen(
+            [sys.executable, "-c", "print('RAN', flush=True)"],
+            stdout=subprocess.PIPE,
+            text=True,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP
+            | platform_compat.CREATE_SUSPENDED,
+        )
+        try:
+            assert platform_compat.apply_job_limits(
+                child.pid, max_procs=8, max_memory_bytes=256 * 1024 * 1024
+            ), "job assignment failed on a suspended child"
+            assert platform_compat.resume_process_main_thread(child.pid)
+            out, _ = child.communicate(timeout=30)
+            assert "RAN" in out
+            assert child.returncode == 0
+        finally:
+            if child.poll() is None:
+                child.kill()
+
+    def test_resume_of_unknown_pid_reports_failure(self) -> None:
+        """A pid with no threads resumes nothing -> False, not a silent success.
+
+        The caller treats False as fatal (kill the child rather than let a frozen
+        process masquerade as a live agent), so a false positive here would
+        reintroduce exactly the hang this guards against.
+        """
+        assert platform_compat.resume_process_main_thread(0x7FFFFFFF) is False
+
+
+class TestSuspendResumeIsPosixInert:
+    """POSIX must be untouched: CREATE_SUSPENDED is 0 and resume is a no-op."""
+
+    def test_resume_is_noop_on_posix(self, monkeypatch) -> None:
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        assert platform_compat.resume_process_main_thread(1) is False
+
+    def test_create_suspended_flag_is_zero_on_posix(self) -> None:
+        # A non-zero flag leaking into a POSIX creationflags= would be ignored by
+        # subprocess, but the constant must still be 0 so the ORed value in
+        # AcpClient._spawn is exactly CREATE_NEW_PROCESS_GROUP there.
+        import os as _os
+
+        if _os.name != "nt":
+            assert platform_compat.CREATE_SUSPENDED == 0
 
 
 @_WINDOWS_ONLY

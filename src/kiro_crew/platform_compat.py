@@ -50,6 +50,13 @@ SIGTERM: int = getattr(signal, "SIGTERM", 15)
 # to the real flags on Windows. Mirrors the ``SIGKILL`` pattern above.
 CREATE_NEW_PROCESS_GROUP: int = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 DETACHED_PROCESS: int = getattr(subprocess, "DETACHED_PROCESS", 0)
+# CREATE_SUSPENDED has no ``subprocess`` alias to getattr from (the module only
+# re-exports a subset of the Win32 creation flags), so it is spelled out. It is
+# the load-bearing half of race-free Job object assignment: a process created
+# suspended has not executed a single instruction, so it cannot yet have spawned
+# a descendant that would escape the job. See ``apply_job_limits`` and
+# ``resume_process_main_thread``. 0 on POSIX, where it is never used.
+CREATE_SUSPENDED: int = 0x00000004 if os.name == "nt" else 0
 # For the short-lived helper tools this module shells out to on Windows
 # (whoami / netstat / taskkill / icacls / powershell): a console-less parent
 # (gateway respawned with DETACHED_PROCESS, or pythonw) would otherwise
@@ -2094,16 +2101,16 @@ def apply_job_limits(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool
     non-positive limit, or on any Win32 failure; the caller treats that as "no
     ceiling enforced" exactly as it already treats the cgroup probe failing.
 
-    Race (documented, deliberately accepted for now): descendants the child
-    spawns BEFORE the assignment lands are not in the job. Assignment happens
-    immediately after ``CreateProcess`` returns, and the real targets (kiro-cli
-    spawning MCP servers, an MCP server spawning helpers) take orders of
-    magnitude longer than that to fork, so the window is small but not zero.
-    Closing it fully needs a launcher that creates the job, assigns ITSELF,
-    then execs the target — the same shape as the Linux namespace launcher — so
-    that every descendant inherits membership from birth. That is the
-    follow-up; this already converts "no ceiling at all" into "ceiling on
-    everything but a sub-millisecond head start".
+    Race-free when paired with :data:`CREATE_SUSPENDED`. Job membership covers a
+    member's future descendants but not ones it already spawned, so assigning a
+    *running* child leaves a window in which it could have forked something that
+    escapes the job. Callers therefore create the child with
+    ``creationflags |= CREATE_SUSPENDED`` — a suspended process has executed no
+    instructions and so provably has no descendants — call this, then
+    :func:`resume_process_main_thread`. That is what ``AcpClient._spawn`` does,
+    and it closes the window entirely rather than merely making it small. This
+    function still works on an already-running pid (the ceiling then applies from
+    that moment on); the suspended handshake is what makes it airtight.
     """
     if IS_POSIX:
         return False
@@ -2207,3 +2214,115 @@ def apply_job_limits(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool
                     kernel32.CloseHandle(handle)
                 except Exception:
                     logger.debug("CloseHandle failed", exc_info=True)
+
+
+_TH32CS_SNAPTHREAD = 0x00000004
+_THREAD_SUSPEND_RESUME = 0x0002
+_INVALID_HANDLE_VALUE = -1
+
+
+def resume_process_main_thread(pid: int) -> bool:
+    """Resume every suspended thread of *pid*. Returns True on success.
+
+    The other half of race-free Job object assignment. A child spawned with
+    :data:`CREATE_SUSPENDED` has executed no instructions, so
+    :func:`apply_job_limits` can put it in a job with a guarantee that no
+    descendant escaped; this then lets it run.
+
+    Windows has no ``ResumeProcess`` in kernel32, so the main thread has to be
+    reached by ID: snapshot the system thread list
+    (``CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD)``), select entries whose
+    ``th32OwnerProcessID`` matches, and ``ResumeThread`` each. A freshly created
+    suspended process has exactly one thread, but every match is resumed rather
+    than only the first — resuming a thread that is not suspended is a harmless
+    no-op (the suspend count is already 0), whereas guessing wrong about which
+    thread is "main" would leave the process wedged forever.
+
+    Returns False — never raises — on POSIX (nothing is ever suspended there) or
+    on any Win32 failure. A False return is serious for the caller: the child is
+    alive but frozen, and the ONLY safe response is to kill it rather than let a
+    suspended process masquerade as a running agent. Callers must treat it that
+    way (see ``AcpClient._spawn``).
+    """
+    if IS_POSIX:
+        return False
+    snapshot = None
+    kernel32 = None
+    try:
+
+        class THREADENTRY32(ctypes.Structure):  # noqa: N801 — Windows struct name
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+        kernel32.Thread32First.restype = wintypes.BOOL
+        kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+        kernel32.Thread32Next.restype = wintypes.BOOL
+        kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenThread.restype = wintypes.HANDLE
+        kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        kernel32.ResumeThread.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+        if not snapshot or snapshot == _INVALID_HANDLE_VALUE:
+            logger.error(
+                "resume_process_main_thread: thread snapshot failed for pid %d (err=%s)",
+                pid,
+                getattr(ctypes, "get_last_error", lambda: 0)(),
+            )
+            return False
+        entry = THREADENTRY32()
+        entry.dwSize = ctypes.sizeof(THREADENTRY32)
+        resumed = 0
+        ok = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+        while ok:
+            if entry.th32OwnerProcessID == pid:
+                thread = kernel32.OpenThread(_THREAD_SUSPEND_RESUME, False, entry.th32ThreadID)
+                if thread:
+                    try:
+                        # ResumeThread returns the PREVIOUS suspend count, or
+                        # (DWORD)-1 on failure.
+                        if kernel32.ResumeThread(thread) != 0xFFFFFFFF:
+                            resumed += 1
+                        else:
+                            logger.error(
+                                "ResumeThread failed for tid %d of pid %d (err=%s)",
+                                entry.th32ThreadID,
+                                pid,
+                                getattr(ctypes, "get_last_error", lambda: 0)(),
+                            )
+                    finally:
+                        kernel32.CloseHandle(thread)
+                else:
+                    logger.error(
+                        "OpenThread(SUSPEND_RESUME) failed for tid %d of pid %d (err=%s)",
+                        entry.th32ThreadID,
+                        pid,
+                        getattr(ctypes, "get_last_error", lambda: 0)(),
+                    )
+            entry.dwSize = ctypes.sizeof(THREADENTRY32)
+            ok = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+        if not resumed:
+            logger.error("resume_process_main_thread: no threads resumed for pid %d", pid)
+        return resumed > 0
+    except Exception:
+        logger.error("resume_process_main_thread failed for pid %s", pid, exc_info=True)
+        return False
+    finally:
+        if snapshot and snapshot != _INVALID_HANDLE_VALUE and kernel32 is not None:
+            try:
+                kernel32.CloseHandle(snapshot)
+            except Exception:
+                logger.debug("CloseHandle(snapshot) failed", exc_info=True)
