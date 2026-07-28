@@ -2341,7 +2341,8 @@ class McpGatewayConfig:
         default="",
         metadata=_meta(
             "Overlay Dir",
-            "Directory of rewritten agent JSON, bind-mounted over ~/.kiro/agents per session. "
+            "Directory of rewritten agent JSON. Broker stubs from these specs are "
+            "injected into each kiro-cli session via ACP session/new. "
             "Empty -> $KIROCREW_HOME/mcp-gateway/agents.",
         ),
     )

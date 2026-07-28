@@ -2,8 +2,9 @@
 
 The rewriter reads ``~/.kiro/agents/*.json`` and writes modified copies into
 the overlay directory (``<config_dir>/mcp-gateway/agents/``). The host
-filesystem remains untouched — the sandbox layer bind-mounts the overlay
-over ``~/.kiro/agents/`` inside each kiro-cli session's mount namespace.
+filesystem remains untouched — the broker stubs in these specs are injected
+into each kiro-cli session over ACP ``session/new``, which outranks the
+same-named entry in the agent spec (see ``session_servers.py``).
 
 Servers in :data:`UNPOOLABLE_SERVERS` are left unwrapped because they bind
 to ``KIROCREW_SESSION_KEY`` and cannot be safely shared across sessions.

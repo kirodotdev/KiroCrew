@@ -52,6 +52,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     scrub_agent_denied_env,
@@ -411,9 +412,9 @@ class AcpRuntime:
             argv += ["--model", self._model]
 
         # OSS sandbox.wrap_argv supports (argv, mode, strip_python_env). The
-        # MCP-gateway overlay / gateway-socket options remain absent (inert) in
-        # kiro_crew's sandbox — the _mcp_gateway_* attrs are retained for
-        # constructor/caller compatibility but do nothing here. strip_python_env
+        # MCP-gateway overlay is NOT delivered through the sandbox: its broker
+        # stubs are injected at ACP session/new (see new_session), so pooling
+        # needs no bind-mount and works with sandbox mode "off". strip_python_env
         # IS applied to keep the host PYTHONPATH/PYTHONHOME out of kiro-cli's
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
         argv, self._sandbox_cleanup = wrap_argv(
@@ -949,6 +950,14 @@ class AcpRuntime:
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
 
+        # Inject the shared gateway's broker stubs unless the caller supplied an
+        # explicit list. A session-injected server outranks the same-named entry
+        # in the agent spec, so this is what actually pools the servers — no file
+        # is written anywhere. Empty when the gateway is disabled.
+        if mcp_servers is None:
+            mcp_servers = pooled_session_servers(
+                self._mcp_gateway_overlay, agent or self._agent
+            )
         params = build_session_new_params(
             cwd if cwd else self._work_dir,
             mcp_servers=mcp_servers,

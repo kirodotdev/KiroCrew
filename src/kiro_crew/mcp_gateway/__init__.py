@@ -8,8 +8,10 @@ sidecar subprocess. When enabled, it:
    ``~/.kiro/agents/`` files on disk.
 2. Spawns ``python -m kiro_crew.mcp_gateway.gatewayd`` at KiroCrew
    startup and supervises it.
-3. Cooperates with ``sandbox.py`` so sandboxed kiro-cli sessions see the
-   rewritten specs via a bind-mount while the host filesystem is unchanged.
+3. Injects the rewritten specs' broker stubs into each kiro-cli session
+   over ACP ``session/new``. A session-injected MCP server outranks the
+   same-named entry in the agent spec, so no file is delivered anywhere and
+   the user's ``~/.kiro/agents/`` is never read from or written to.
 
 Every component ships as Python under this package — no external
 binaries, no native extensions. See ``docs/system-specs/modules/acp-client.md``

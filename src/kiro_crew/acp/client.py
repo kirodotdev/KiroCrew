@@ -32,7 +32,7 @@ import time
 from collections import deque
 from contextlib import aclosing
 from pathlib import Path
-from typing import AsyncGenerator, AsyncIterator
+from typing import Any, AsyncGenerator, AsyncIterator
 
 from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp._dispatch import parse_usage_update
@@ -101,6 +101,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
+from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     scrub_agent_denied_env,
@@ -1284,9 +1285,10 @@ class AcpClient:
         self._audit_source = audit_source
         self._channel_id = channel_id
         self._extra_env = extra_env or {}
-        # MCP gateway overlay: when set, the sandbox bind-mounts it over
-        # ~/.kiro/agents so kiro-cli reads broker-wired MCP entries; the gateway
-        # socket is bind-mounted in so stubs can reach the broker. None = off.
+        # MCP gateway overlay: when set, the broker stubs in its rewritten specs
+        # are injected into this session at ACP session/new, where they outrank
+        # the same-named entries in the agent spec. Nothing is written to the
+        # user's project or to ~/.kiro/agents. None = pooling off.
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
         self._mcp_gateway_settings_mcp_json = (
             str(mcp_gateway_settings_mcp_json) if mcp_gateway_settings_mcp_json else None
@@ -1415,6 +1417,16 @@ class AcpClient:
     @property
     def _is_claude(self) -> bool:
         return self.backend == ACP_BACKEND_CLAUDE
+
+    def _pooled_mcp_servers(self) -> list[dict[str, Any]]:
+        """Broker-stub ``mcpServers`` entries for this session's ``session/new``.
+
+        A session-injected server outranks the same-named entry in the resolved
+        agent spec, so injecting the stubs here is what actually pools the
+        servers — nothing is written to the user's project or to
+        ``~/.kiro/agents/``. Empty when the shared gateway is disabled.
+        """
+        return pooled_session_servers(self._mcp_gateway_overlay, self._agent)
 
     def _claude_session_mcp_servers(self) -> list:
         """MCP server array passed to a claude ``session/new`` / ``session/load``.
@@ -2070,7 +2082,13 @@ class AcpClient:
             # Default hook returns [] (kiro-cli path unchanged); an internal
             # companion that drives the _is_claude seam overrides
             # _claude_session_mcp_servers() to populate the claude MCP array.
-            "mcpServers": self._claude_session_mcp_servers(),
+            # Pooled broker stubs are appended for kiro-cli: a session-injected
+            # server outranks the same-named entry in the agent spec, which is
+            # how pooling takes effect without writing a spec anywhere.
+            "mcpServers": [
+                *self._claude_session_mcp_servers(),
+                *self._pooled_mcp_servers(),
+            ],
         }
         if self._is_claude:
             new_params["_meta"] = {"claudeCode": {"options": {}}}
@@ -2178,8 +2196,12 @@ class AcpClient:
                         # backend must receive them here (it does not read
                         # kirocrew.mcp.json itself). Default [] leaves kiro-cli
                         # unchanged; a companion overrides the hook (see
-                        # session/new above).
-                        "mcpServers": self._claude_session_mcp_servers(),
+                        # session/new above). Pooled stubs are re-declared so a
+                        # resumed session keeps talking to the broker.
+                        "mcpServers": [
+                            *self._claude_session_mcp_servers(),
+                            *self._pooled_mcp_servers(),
+                        ],
                     }
                     if self._is_claude:
                         load_params["_meta"] = {"claudeCode": {"options": {}}}

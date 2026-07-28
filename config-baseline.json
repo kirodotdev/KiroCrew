@@ -1928,7 +1928,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Overlay Dir",
-      "help": "Directory of rewritten agent JSON, bind-mounted over ~/.kiro/agents per session. Empty -> $KIROCREW_HOME/mcp-gateway/agents.",
+      "help": "Directory of rewritten agent JSON. Broker stubs from these specs are injected into each kiro-cli session via ACP session/new. Empty -> $KIROCREW_HOME/mcp-gateway/agents.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -2928,6 +2928,173 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "weixin",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "WeChat",
+      "help": "Weixin (iLink personal WeChat) integration settings.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "token": "",
+        "account_id": "",
+        "base_url": "https://ilinkai.weixin.qq.com",
+        "dm_policy": "allowlist",
+        "allowed_user_ids": [],
+        "soft_threshold_pct": 80,
+        "hard_threshold_pct": 95
+      }
+    },
+    {
+      "path": "weixin.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Enabled",
+      "help": "Enable the Weixin (iLink personal WeChat) channel (long-polling). Requires a bot token + account id from the Settings QR flow.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "weixin.token",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Bot Token",
+      "help": "iLink bot token (from QR login). Prefer the WEIXIN_TOKEN credential (env/.env / cred store) over storing it here.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "weixin.account_id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Account ID",
+      "help": "iLink bot account id captured during QR login.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "weixin.base_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "iLink Base URL",
+      "help": "iLink API base URL (per-account, returned by QR login).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "https://ilinkai.weixin.qq.com"
+    },
+    {
+      "path": "weixin.dm_policy",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "DM Policy",
+      "help": "Who may DM the bot: 'allowlist' (only allowed_user_ids, the default), 'open' (any sender), or 'disabled'. Defaults to allowlist with an empty list, so a freshly connected bot authorizes NOBODY until you add an id.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "allowlist"
+    },
+    {
+      "path": "weixin.allowed_user_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Allowed User IDs",
+      "help": "Weixin user ids permitted to DM the bot when dm_policy='allowlist'. Empty = deny all (fail closed).",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "weixin.allowed_user_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "weixin.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "Prompt the user to /compact or /new when context passes this percentage.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
+      "path": "weixin.hard_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Hard Context Threshold %",
+      "help": "Force a compaction when context passes this percentage.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 95
     },
     {
       "path": "discord",
