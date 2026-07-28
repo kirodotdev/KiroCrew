@@ -2947,10 +2947,15 @@ def test_backfill_context_window_from_pct(monkeypatch):
     assert handle.last_prompt_stats.context_window_tokens == 200000
     assert handle.last_prompt_stats.context_used_tokens == 50000
 
-    # A prior real usage_update wins — backfill must not override it.
+    # A prior real usage_update wins — metadata must override neither the
+    # window NOR the token-derived pct (else the headline % desyncs from the
+    # "used / total" token text shown in the dashboard popover).
     handle2 = AcpSessionHandle("sA", q["sA"], rt)
     handle2._model = "some-model"
+    handle2.last_prompt_stats.context_pct = 40.8
+    handle2.last_prompt_stats.context_used_tokens = 408000
     handle2.last_prompt_stats.context_window_tokens = 999
+    handle2.last_prompt_stats.context_tokens_from_usage = True
     handle2._track_metadata(
         JsonRpcMessage.from_dict(
             {
@@ -2960,6 +2965,76 @@ def test_backfill_context_window_from_pct(monkeypatch):
         )
     )
     assert handle2.last_prompt_stats.context_window_tokens == 999
+    assert handle2.last_prompt_stats.context_pct == 40.8
+    assert handle2.last_prompt_stats.context_used_tokens == 408000
+
+
+def test_session_handle_usage_update_sets_flag_and_metadata_cannot_clobber():
+    """SessionHandle parity with AcpClient: a real usage_update through
+    _handle_update sets context_tokens_from_usage, and a later metadata
+    contextUsagePercentage must not clobber the token-derived pct (the
+    408K/1000K-vs-73% desync on the shared-runtime path)."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle._handle_update(
+        JsonRpcMessage.from_dict(
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "usage_update",
+                        "used": 408000,
+                        "size": 1000000,
+                    }
+                },
+            }
+        )
+    )
+    assert handle.last_prompt_stats.context_tokens_from_usage is True
+    assert handle.last_prompt_stats.context_pct == 40.8
+    assert handle.last_prompt_stats.context_used_tokens == 408000
+    assert handle.last_prompt_stats.context_window_tokens == 1000000
+
+    handle._track_metadata(
+        JsonRpcMessage.from_dict(
+            {
+                "method": "_kiro.dev/metadata",
+                "params": {"contextUsagePercentage": 73},
+            }
+        )
+    )
+    assert handle.last_prompt_stats.context_pct == 40.8  # NOT clobbered to 73
+    assert handle.last_prompt_stats.context_used_tokens == 408000
+
+
+def test_backfill_context_window_clamps_malformed_pct(monkeypatch):
+    """A degenerate metadata percentage (huge finite / inf / NaN) must not
+    overflow round() and abort the turn on the shared-runtime path; derived
+    used stays in [0, window]."""
+    import kiro_crew.acp.session_handle as sh
+
+    monkeypatch.setattr(sh.model_registry, "has_known_window", lambda mid: True)
+    monkeypatch.setattr(sh.model_registry, "model_window", lambda mid, **kw: 200000)
+    for bad in (1e308, float("inf"), float("nan")):
+        rt, _, _ = _make_runtime()
+        q = _register(rt, "sA")
+        handle = AcpSessionHandle("sA", q["sA"], rt)
+        handle._model = "some-model"
+        # Must not raise OverflowError/ValueError.
+        handle._track_metadata(
+            JsonRpcMessage.from_dict(
+                {
+                    "method": "_kiro.dev/metadata",
+                    "params": {"contextUsagePercentage": bad},
+                }
+            )
+        )
+        used = handle.last_prompt_stats.context_used_tokens
+        assert 0 <= used <= 200000
+        # context_pct is sanitized at the source, never left non-finite.
+        pct = handle.last_prompt_stats.context_pct
+        assert 0.0 <= pct <= 100.0
 
 
 def test_backfill_context_window_no_model_is_safe(monkeypatch):

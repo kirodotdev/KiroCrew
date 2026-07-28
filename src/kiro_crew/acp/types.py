@@ -335,6 +335,16 @@ class AcpPromptStats:
     # actually divided by, inflating the displayed "X / Y tokens". 0 = unknown.
     context_used_tokens: int = 0
     context_window_tokens: int = 0
+    # True once a real ``usage_update {used, size}`` has set the token counts
+    # above. When set, those counts (and the ``context_pct`` derived from them)
+    # are AUTHORITATIVE: kiro's separately-streamed ``_kiro.dev/metadata``
+    # ``contextUsagePercentage`` must NOT overwrite ``context_pct`` (it can
+    # disagree with used/size — measuring a different window — which would make
+    # the dashboard show a headline % inconsistent with the "used / total"
+    # token text). Also gates the pct-only ``_backfill_context_window`` so a
+    # registry-derived window never clobbers real served counts. Defaults False
+    # and re-inits per turn, carried across turns alongside the counts.
+    context_tokens_from_usage: bool = False
     # Per-turn billing credits summed from kiro's _kiro.dev/metadata
     # meteringUsage (unit="credit"). 0 for providers that bill in tokens.
     credits: float = 0.0

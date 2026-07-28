@@ -2971,10 +2971,12 @@ class AcpClient:
         prev_pct = self.last_prompt_stats.context_pct
         _prev_used = self.last_prompt_stats.context_used_tokens
         _prev_window = self.last_prompt_stats.context_window_tokens
+        _prev_from_usage = self.last_prompt_stats.context_tokens_from_usage
         self.last_prompt_stats = AcpPromptStats(
             context_pct=prev_pct,
             context_used_tokens=_prev_used,
             context_window_tokens=_prev_window,
+            context_tokens_from_usage=_prev_from_usage,
         )
 
         # aclosing(): _prompt_loop holds _turn_lock and releases it in its
@@ -3050,10 +3052,12 @@ class AcpClient:
         prev_pct = self.last_prompt_stats.context_pct
         _prev_used = self.last_prompt_stats.context_used_tokens
         _prev_window = self.last_prompt_stats.context_window_tokens
+        _prev_from_usage = self.last_prompt_stats.context_tokens_from_usage
         self.last_prompt_stats = AcpPromptStats(
             context_pct=prev_pct,
             context_used_tokens=_prev_used,
             context_window_tokens=_prev_window,
+            context_tokens_from_usage=_prev_from_usage,
         )
         self._tool_call_inputs.clear()
         self._tool_call_is_shell.clear()
@@ -3627,10 +3631,12 @@ class AcpClient:
         prev_pct = self.last_prompt_stats.context_pct
         _prev_used = self.last_prompt_stats.context_used_tokens
         _prev_window = self.last_prompt_stats.context_window_tokens
+        _prev_from_usage = self.last_prompt_stats.context_tokens_from_usage
         self.last_prompt_stats = AcpPromptStats(
             context_pct=prev_pct,
             context_used_tokens=_prev_used,
             context_window_tokens=_prev_window,
+            context_tokens_from_usage=_prev_from_usage,
         )
 
         async for action, msg in self._prompt_loop(req_id, timeout):
@@ -3761,6 +3767,9 @@ class AcpClient:
                 # served window (size) instead of re-deriving it from the model id.
                 self.last_prompt_stats.context_used_tokens = int(used)
                 self.last_prompt_stats.context_window_tokens = int(size)
+                # Mark the counts authoritative so a later metadata
+                # contextUsagePercentage cannot clobber this token-derived pct.
+                self.last_prompt_stats.context_tokens_from_usage = True
             else:
                 logger.debug("usage_update missing used/size: %s", update)
         elif kind == UPDATE_CONFIG_OPTION:
@@ -4454,8 +4463,8 @@ class AcpClient:
         guess. kiro's real ``usage_update.size`` always wins when present (this
         no-ops once it has set the window).
         """
-        if self.last_prompt_stats.context_window_tokens > 0:
-            return  # a real usage_update already set it
+        if self.last_prompt_stats.context_tokens_from_usage:
+            return  # a real usage_update already set authoritative counts
         model_id = self._resolved_model_id or self._model
         if not model_id or not model_registry.has_known_window(model_id):
             return
@@ -4463,14 +4472,29 @@ class AcpClient:
         if not win or win <= 0:
             return
         self.last_prompt_stats.context_window_tokens = win
-        self.last_prompt_stats.context_used_tokens = round(win * pct / 100.0)
+        # A malformed metadata percentage (NaN, ±inf, or a huge finite value
+        # like 1e308) would overflow ``round(win * pct / 100)`` and abort the
+        # turn. Sanitize to a sane [0, 100] before deriving used tokens (NaN
+        # -> 0); this also keeps used <= window.
+        safe_pct = 0.0 if pct != pct else min(max(pct, 0.0), 100.0)
+        self.last_prompt_stats.context_used_tokens = round(win * safe_pct / 100.0)
 
     def _track_metadata(self, msg: JsonRpcMessage) -> None:
         params = msg.params or {}
         pct = params.get("contextUsagePercentage")
-        if pct is not None:
+        # A real usage_update is authoritative for both the token counts AND the
+        # pct derived from them. kiro's metadata percentage can measure a
+        # different window, so applying it here would desync the headline % from
+        # the "used / total" token text (e.g. 73% shown next to 408K / 1000K).
+        if pct is not None and not self.last_prompt_stats.context_tokens_from_usage:
             try:
                 pct_f = float(pct)
+                # Sanitize a malformed metadata percentage (NaN/±inf/out-of-range,
+                # e.g. 1e308) at the source so context_pct is always a real
+                # [0, 100] value: keeps compaction comparisons sane and the
+                # diagnostic /api/sessions JSON standard (Infinity/NaN are not
+                # valid JSON). NaN is caught by its self-inequality.
+                pct_f = 0.0 if pct_f != pct_f else min(max(pct_f, 0.0), 100.0)
                 self.last_prompt_stats.context_pct = pct_f
                 self._backfill_context_window(pct_f)
             except (TypeError, ValueError):

@@ -381,6 +381,7 @@ class AcpSessionHandle:
             context_pct=self.last_prompt_stats.context_pct,
             context_used_tokens=self.last_prompt_stats.context_used_tokens,
             context_window_tokens=self.last_prompt_stats.context_window_tokens,
+            context_tokens_from_usage=self.last_prompt_stats.context_tokens_from_usage,
         )
 
         # send_request must be inside the turn-state guard: _turn_done was just
@@ -1326,9 +1327,18 @@ class AcpSessionHandle:
         """
         params = msg.params or {}
         pct, credits = parse_metadata(params)
-        if pct is not None:
+        # A real usage_update is authoritative for context_pct + token counts;
+        # kiro's metadata percentage can measure a different window, so applying
+        # it here would desync the headline % from the "used / total" token text.
+        if pct is not None and not self.last_prompt_stats.context_tokens_from_usage:
             try:
                 pct_f = float(pct)
+                # Sanitize a malformed metadata percentage (NaN/±inf/out-of-range,
+                # e.g. 1e308) at the source so context_pct is always a real
+                # [0, 100] value: keeps compaction comparisons sane and the
+                # diagnostic /api/sessions JSON standard (Infinity/NaN are not
+                # valid JSON). NaN is caught by its self-inequality.
+                pct_f = 0.0 if pct_f != pct_f else min(max(pct_f, 0.0), 100.0)
                 self.last_prompt_stats.context_pct = pct_f
                 self._backfill_context_window(pct_f)
             except (TypeError, ValueError):
@@ -1350,8 +1360,8 @@ class AcpSessionHandle:
         authoritative window drives the meter. kiro's real usage_update.size
         always wins when present.
         """
-        if self.last_prompt_stats.context_window_tokens > 0:
-            return  # a real usage_update already set it
+        if self.last_prompt_stats.context_tokens_from_usage:
+            return  # a real usage_update already set authoritative counts
         model_id = self._resolved_model_id or self._model
         if not model_id or not model_registry.has_known_window(model_id):
             return
@@ -1359,7 +1369,12 @@ class AcpSessionHandle:
         if not win or win <= 0:
             return
         self.last_prompt_stats.context_window_tokens = win
-        self.last_prompt_stats.context_used_tokens = round(win * pct / 100.0)
+        # A malformed metadata percentage (NaN, ±inf, or a huge finite value
+        # like 1e308) would overflow ``round(win * pct / 100)`` and abort the
+        # turn. Sanitize to a sane [0, 100] before deriving used tokens (NaN
+        # -> 0); this also keeps used <= window.
+        safe_pct = 0.0 if pct != pct else min(max(pct, 0.0), 100.0)
+        self.last_prompt_stats.context_used_tokens = round(win * safe_pct / 100.0)
 
     def _emit_tool_interrupted_sel(self, site: str) -> None:
         """Emit a SEL audit + WARNING when kiro-cli's security filter cancels tools.
@@ -1489,6 +1504,8 @@ class AcpSessionHandle:
                         self.last_prompt_stats.context_pct = round((used / size) * 100, 1)
                         self.last_prompt_stats.context_used_tokens = int(used)
                         self.last_prompt_stats.context_window_tokens = int(size)
+                        # Mark authoritative so metadata pct cannot clobber it.
+                        self.last_prompt_stats.context_tokens_from_usage = True
                 except (TypeError, ValueError, ZeroDivisionError):
                     pass
             return []

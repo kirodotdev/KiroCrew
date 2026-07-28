@@ -1471,6 +1471,30 @@ class TestAcpClientTrackMetadata:
         client._track_metadata(msg)
         assert client.last_prompt_stats.context_pct == 42.5
 
+    def test_backfill_clamps_malformed_pct(self, tmp_path, monkeypatch):
+        """A degenerate metadata percentage (huge finite / inf / NaN) must not
+        overflow round() and abort the turn; derived used stays in [0, window]."""
+        import kiro_crew.acp.client as c
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        monkeypatch.setattr(c.model_registry, "has_known_window", lambda mid: True)
+        monkeypatch.setattr(c.model_registry, "model_window", lambda mid, **kw: 200000)
+        for bad in (1e308, float("inf"), float("nan")):
+            client = AcpClient(work_dir=tmp_path)
+            client._model = "some-model"
+            # Must not raise OverflowError/ValueError.
+            client._track_metadata(
+                JsonRpcMessage(
+                    method="_kiro.dev/metadata",
+                    params={"contextUsagePercentage": bad},
+                )
+            )
+            used = client.last_prompt_stats.context_used_tokens
+            assert 0 <= used <= 200000
+            # context_pct is sanitized at the source, never left non-finite.
+            pct = client.last_prompt_stats.context_pct
+            assert 0.0 <= pct <= 100.0
+
 
 class TestAcpClientTrackUsageUpdate:
     """claude-agent-acp usage_update {used, size}: derives context_pct and
@@ -1491,6 +1515,49 @@ class TestAcpClientTrackUsageUpdate:
         assert stats.context_pct == 25.0  # 50000 / 200000 * 100
         assert stats.context_used_tokens == 50000
         assert stats.context_window_tokens == 200000
+        # A real usage_update marks the counts authoritative.
+        assert stats.context_tokens_from_usage is True
+
+    def test_metadata_pct_does_not_clobber_authoritative_tokens(self, tmp_path):
+        """Regression: a real usage_update (408K/1000K → 40.8%) followed by a
+        kiro metadata contextUsagePercentage=73 must NOT leave the headline pct
+        at 73 while the token text still reads 408K/1000K (the desync the user
+        saw in the context-window popover). usage_update wins for BOTH."""
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        client = AcpClient(work_dir=tmp_path)
+        client._track_usage_update(self._usage_msg(408_000, 1_000_000))
+        assert client.last_prompt_stats.context_pct == 40.8
+
+        client._track_metadata(
+            JsonRpcMessage(
+                method="_kiro.dev/metadata",
+                params={"contextUsagePercentage": 73},
+            )
+        )
+        stats = client.last_prompt_stats
+        assert stats.context_pct == 40.8  # NOT clobbered to 73
+        assert stats.context_used_tokens == 408_000
+        assert stats.context_window_tokens == 1_000_000
+
+    def test_metadata_credits_still_captured_when_tokens_authoritative(self, tmp_path):
+        """The pct guard must not drop kiro billing credits — those accumulate
+        regardless of whether token counts are authoritative."""
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        client = AcpClient(work_dir=tmp_path)
+        client._track_usage_update(self._usage_msg(408_000, 1_000_000))
+        client._track_metadata(
+            JsonRpcMessage(
+                method="_kiro.dev/metadata",
+                params={
+                    "contextUsagePercentage": 73,
+                    "meteringUsage": [{"unit": "credit", "value": 1.5}],
+                },
+            )
+        )
+        assert client.last_prompt_stats.credits == 1.5
+        assert client.last_prompt_stats.context_pct == 40.8
 
     def test_missing_fields_leave_tokens_zero(self, tmp_path):
         client = AcpClient(work_dir=tmp_path)
@@ -1547,6 +1614,7 @@ class TestAcpClientTrackUsageUpdate:
         prev_pct = client.last_prompt_stats.context_pct
         prev_used = client.last_prompt_stats.context_used_tokens
         prev_window = client.last_prompt_stats.context_window_tokens
+        prev_from_usage = client.last_prompt_stats.context_tokens_from_usage
         from kiro_crew.acp.types import AcpPromptStats
 
         # Mirror the reset sites (send_message_stream / _dispatch_events / etc.)
@@ -1554,10 +1622,14 @@ class TestAcpClientTrackUsageUpdate:
             context_pct=prev_pct,
             context_used_tokens=prev_used,
             context_window_tokens=prev_window,
+            context_tokens_from_usage=prev_from_usage,
         )
         assert client.last_prompt_stats.context_used_tokens == 88000
         assert client.last_prompt_stats.context_window_tokens == 200000
         assert client.last_prompt_stats.context_pct == 44.0
+        # The authoritative flag must survive the reset, else the next turn's
+        # early metadata pct could clobber the carried token-derived pct.
+        assert client.last_prompt_stats.context_tokens_from_usage is True
 
 
 class TestAcpClientNoProcess:
@@ -7365,11 +7437,18 @@ class TestTrackMetadataWindowResolution:
     def test_does_not_overwrite_window_already_set_by_usage_update(self):
         client = AcpClient()
         client._resolved_model_id = "claude-opus-4.5"  # would resolve to 200K
+        # Simulate a real usage_update having established authoritative counts
+        # (1M window, 300K used -> 30%). context_tokens_from_usage marks them
+        # authoritative — the shape a real usage_update leaves behind.
         client.last_prompt_stats.context_window_tokens = 1_000_000
         client.last_prompt_stats.context_used_tokens = 300_000
+        client.last_prompt_stats.context_pct = 30.0
+        client.last_prompt_stats.context_tokens_from_usage = True
         client._track_metadata(self._metadata_msg(50.0))
+        # Metadata must neither re-resolve the window (no backfill once
+        # authoritative) nor clobber the usage-derived pct to its own 50%.
         assert client.last_prompt_stats.context_window_tokens == 1_000_000
-        assert client.last_prompt_stats.context_pct == pytest.approx(50.0)
+        assert client.last_prompt_stats.context_pct == pytest.approx(30.0)
 
     def test_no_model_resolvable_leaves_window_zero(self):
         client = AcpClient()
