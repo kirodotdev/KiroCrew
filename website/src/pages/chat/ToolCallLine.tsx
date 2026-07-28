@@ -14,6 +14,20 @@ import { isSafePath } from '../../utils/safePath'
 import { fileReadUrl } from '../../utils/fileReadUrl'
 import McpAppFrame from '../../components/McpAppFrame'
 
+// Tool-call ids that have already played their one-shot `.ft-block-reveal`
+// entrance fade. A CSS animation re-fires on every DOM *mount*, and a pill
+// remounts in several normal situations that are NOT a genuine first
+// appearance — singles→turn promotion (ChatPage flushTurn), the flat→segmented
+// restructure at turn completion (TurnBlock), expand/collapse via
+// AnimatePresence, and virtualizer window recycling on scroll. Without this
+// guard every one of those remounts replays the fade, so all previously-shown
+// tool results visibly flash whenever a new tool runs / the turn advances.
+// Keyed by the stable tool_call_id and held at module scope so it outlives any
+// unmount, this lets a pill fade in exactly once — the first time it appears.
+// (Same philosophy as the `.ft-word` streaming reveal: already-revealed nodes
+// don't re-fire.)
+const revealedToolIds = new Set<string>()
+
 /** Inline tool call pill. Click toggles an expanded panel below the pill that
  *  shows purpose / input / output (the same details that previously lived in
  *  the Activity sidebar's deprecated "Tools" tab). */
@@ -268,8 +282,21 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     return registerToolPill(toolCallId, el)
   }, [hasPendingPerm, toolCallId])
 
+  // Play the `.ft-block-reveal` entrance fade only on a pill's genuine first
+  // appearance, never on a remount (turn promotion, flat→segmented restructure,
+  // expand/collapse, virtualizer recycling). `revealId` prefers the message's
+  // own tool_call_id (available immediately) and falls back to the resolved
+  // toolLog id. The decision is read once in a useState initializer (pure — no
+  // side effect in render, so it's StrictMode-safe) and the id is marked
+  // revealed in an effect after commit; a later remount finds it already in the
+  // set and renders without the animation class, so it appears instantly. An
+  // id-less historical pill (no stable identity) falls back to animating.
+  const revealId = toolCallId ?? effectiveId ?? null
+  const [animateEntrance] = useState(() => !revealId || !revealedToolIds.has(revealId))
+  useEffect(() => { if (revealId) revealedToolIds.add(revealId) }, [revealId])
+
   return (
-    <div ref={containerRef} className="ft-block-reveal">
+    <div ref={containerRef} className={animateEntrance ? 'ft-block-reveal' : undefined}>
       <div className="inline-flex items-start gap-1 group/toolpill">
       <button
         ref={pillButtonRef}
