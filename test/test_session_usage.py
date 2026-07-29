@@ -61,6 +61,45 @@ class TestParseUsage:
         raw = "Estimated Usage\nCredits used: 100\nCredits used: 99999\n"
         assert _parse_usage(raw)["credits_used"] == 100.0
 
+    def test_parses_bonus_credits_section(self):
+        # Bonus / welcome credits are a separate pool spent before the plan.
+        raw = (
+            "Estimated Usage | resets on 2026-08-01 | KIRO PRO\n"
+            " Credits (41.00 of 1000 covered in plan)\n"
+            " Bonus Credits:\n"
+            "   Welcome bonus: 386.34/500 (expires in 15 days)\n"
+        )
+        r = _parse_usage(raw)
+        assert r["credits_plan"] == 1000.0
+        assert r["bonus_label"] == "Welcome bonus"
+        assert r["bonus_used"] == 386.34
+        assert r["bonus_limit"] == 500.0
+        assert r["bonus_expires_label"] == "expires in 15 days"
+
+    def test_no_bonus_fields_without_section(self):
+        assert "bonus_limit" not in _parse_usage(SAMPLE_USAGE)
+
+
+class TestTransientFailureCache:
+    def test_preserves_last_good_as_stale(self):
+        orig = sessions_mod._usage_cache
+        try:
+            sessions_mod._usage_cache = {"credits_plan": 1000.0, "credits_used": 41.0}
+            sessions_mod._cache_transient_failure()
+            assert sessions_mod._usage_cache["credits_plan"] == 1000.0
+            assert sessions_mod._usage_cache["stale"] is True
+        finally:
+            sessions_mod._usage_cache = orig
+
+    def test_marks_unavailable_when_no_prior_value(self):
+        orig = sessions_mod._usage_cache
+        try:
+            sessions_mod._usage_cache = {}
+            sessions_mod._cache_transient_failure()
+            assert sessions_mod._usage_cache == {"available": False}
+        finally:
+            sessions_mod._usage_cache = orig
+
 
 class TestRedactStrings:
     def test_redacts_a_string_leaf(self):

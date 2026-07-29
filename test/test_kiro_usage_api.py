@@ -97,6 +97,26 @@ class TestMapResponse:
         assert api._map_response({"usageBreakdownList": []}) is None
         assert api._map_response({}) is None
 
+    def test_extracts_bonus_pool(self):
+        # A bonus/free-trial breakdown alongside CREDIT is surfaced separately.
+        data = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 41.0, "usageLimit": 1000.0},
+            {"resourceType": "FREE_TRIAL", "currentUsage": 386.34, "usageLimit": 500.0},
+        ]}
+        out = api._map_response(data)
+        assert out["credits_plan"] == 1000.0
+        assert out["bonus_used"] == 386.34
+        assert out["bonus_limit"] == 500.0
+        assert out["bonus_label"] == "Free Trial"
+
+    def test_ignores_non_bonus_secondary_breakdown(self):
+        # A TOKEN quota alongside CREDIT must NOT be mistaken for a bonus pool.
+        data = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 5, "usageLimit": 100},
+            {"resourceType": "TOKEN", "currentUsage": 7, "usageLimit": 50},
+        ]}
+        assert "bonus_limit" not in api._map_response(data)
+
     def test_none_when_response_not_dict(self):
         assert api._map_response([]) is None
         assert api._map_response(None) is None

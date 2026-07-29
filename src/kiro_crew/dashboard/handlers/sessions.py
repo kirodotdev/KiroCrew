@@ -150,6 +150,34 @@ def _parse_usage(raw: str) -> dict[str, object]:
                 rate = _safe_float(m.group(1))
                 if rate is not None:
                     result["overage_rate"] = rate
+
+    # Bonus / promotional credits are a separate pool kiro-cli lists in its own
+    # section after the plan, e.g.:
+    #     Bonus Credits:
+    #       Welcome bonus: 386.34/500 (expires in 15 days)
+    # This pool is drawn down BEFORE the plan, so while it lasts the plan meter
+    # barely moves — which looked like a frozen counter until we surfaced it.
+    # Capture the first bonus line (first-wins) so the dashboard can pool it into
+    # the header total and show it in the credits modal.
+    in_bonus = False
+    for line in usage_lines:
+        if "Bonus Credits" in line:
+            in_bonus = True
+            continue
+        if not in_bonus or "bonus_limit" in result:
+            continue
+        m = re.search(r"([A-Za-z][A-Za-z0-9 ]*?):\s*([\d.]+)\s*/\s*([\d.]+)", line)
+        if not m:
+            continue
+        used = _safe_float(m.group(2))
+        limit = _safe_float(m.group(3))
+        if used is not None and limit is not None and limit > 0:
+            result["bonus_label"] = m.group(1).strip()
+            result["bonus_used"] = used
+            result["bonus_limit"] = limit
+            exp = re.search(r"\(([^)]*expires[^)]*)\)", line, re.IGNORECASE)
+            if exp:
+                result["bonus_expires_label"] = exp.group(1).strip()
     return result
 
 
@@ -199,6 +227,27 @@ def _redact_strings(value: object) -> object:
     if isinstance(value, list):
         return [_redact_strings(v) for v in value]
     return value
+
+
+def _cache_transient_failure() -> None:
+    """Record a transient usage-fetch failure without blanking the pill.
+
+    A timeout, an unexpected error, or a single unparseable scrape is transient.
+    Overwriting a previously-good cache with ``{"available": False}`` on any of
+    these hid the credit pill entirely for up to a full refresh interval — the
+    "disappearing pill" bug. Instead, when we already hold a good value, keep it
+    and flag it ``stale`` (the dashboard can dim it); only fall back to
+    ``available: False`` when there is no prior value to show (e.g. a cold-start
+    failure), preserving the original hide-on-no-data behavior. The definitive
+    "kiro-cli absent" case still sets ``available: False`` directly at its call
+    site — that is not transient.
+    """
+    global _usage_cache, _usage_cache_ts
+    if _usage_cache.get("credits_plan") is not None:
+        _usage_cache = {**_usage_cache, "stale": True}
+    else:
+        _usage_cache = {"available": False}
+    _usage_cache_ts = time.time()
 
 
 async def _fetch_usage_bg() -> None:
@@ -273,19 +322,17 @@ async def _fetch_usage_bg() -> None:
                 parsed.get("credits_used", "?"),
             )
         else:
-            # No parseable credit plan (a Kiro build whose /usage output this
-            # parser doesn't recognize): hide the pill instead of spinning.
-            _usage_cache = {"available": False}
-            _usage_cache_ts = time.time()
+            # No parseable credit plan this cycle (unrecognized /usage output,
+            # or transient garbage). Keep the last good value (stale) rather than
+            # blanking the pill; only hide when we have nothing to show.
+            _cache_transient_failure()
     except asyncio.TimeoutError:
-        # Always advance the cache so the pill never spins forever on a hang.
+        # Transient hang — keep the last good value (stale) instead of blanking.
         logger.debug("Background usage fetch timed out")
-        _usage_cache = {"available": False}
-        _usage_cache_ts = time.time()
+        _cache_transient_failure()
     except Exception:
         logger.debug("Background usage fetch failed", exc_info=True)
-        _usage_cache = {"available": False}
-        _usage_cache_ts = time.time()
+        _cache_transient_failure()
     finally:
         # Always reap the subprocess on any exit path (timeout, error, or task
         # cancellation, which is a BaseException the excepts above don't catch)

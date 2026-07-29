@@ -556,6 +556,36 @@ def _map_response(data: dict) -> dict | None:
         except (ValueError, OSError, OverflowError, TypeError):
             pass
 
+    # Best-effort bonus / free-trial pool. GetUsageLimits can carry a second
+    # breakdown entry (a promotional / welcome or free-trial pool) that is spent
+    # BEFORE the plan; kiro-cli's text output shows the same thing as a "Bonus
+    # Credits" section. The exact resourceType label is not documented, so match
+    # conservatively on known bonus-like markers and never treat the primary
+    # CREDIT entry or an unrelated quota (e.g. TOKEN) as bonus. Emitted only when
+    # a finite used+limit pair exists, mirroring the text-scrape fields so the
+    # dashboard never branches on source.
+    _bonus_markers = ("FREE_TRIAL", "FREETRIAL", "TRIAL", "BONUS", "PROMO", "GIFT", "WELCOME")
+    for b in breakdowns:
+        if b is credit:
+            continue
+        rtype = str(b.get("resourceType") or "").upper()
+        if not any(mk in rtype for mk in _bonus_markers):
+            continue
+        b_used = _bounded(b.get("currentUsageWithPrecision"))
+        if b_used is None:
+            b_used = _bounded(b.get("currentUsage"))
+        b_limit = _bounded(b.get("usageLimitWithPrecision"))
+        if b_limit is None:
+            b_limit = _bounded(b.get("usageLimit"))
+        if b_used is None or b_limit is None or b_limit <= 0:
+            continue
+        result["bonus_used"] = b_used
+        result["bonus_limit"] = b_limit
+        label = b.get("title") or b.get("displayName") or rtype.replace("_", " ").title()
+        if isinstance(label, str) and label:
+            result["bonus_label"] = label[:100]
+        break
+
     return result
 
 

@@ -1177,7 +1177,18 @@ export default function App() {
         // payload never implies a maxed plan.
         const used = Number.isFinite(u.credits_used) ? Math.round(u.credits_used) : 0
         const overage = Number.isFinite(u.credits_overage) ? u.credits_overage : Math.max(0, used - limit)
-        return { used, limit, overage, resets: u.resets, plan: u.plan, costUsd: u.cost_usd, overageRate: u.overage_rate }
+        // Bonus / welcome-credit pool (spent before the plan). Present only when
+        // the backend surfaced it; when absent the pill/modal behave exactly as
+        // before (plan-only).
+        const bonus = (Number.isFinite(u.bonus_limit) && u.bonus_limit > 0)
+          ? {
+              used: Number.isFinite(u.bonus_used) ? Math.round(u.bonus_used) : 0,
+              limit: Math.round(u.bonus_limit),
+              label: (typeof u.bonus_label === 'string' && u.bonus_label) ? u.bonus_label : 'Bonus credits',
+              expiresLabel: typeof u.bonus_expires_label === 'string' ? u.bonus_expires_label : undefined,
+            }
+          : undefined
+        return { used, limit, overage, resets: u.resets, plan: u.plan, costUsd: u.cost_usd, overageRate: u.overage_rate, bonus, stale: u.stale === true }
       }
       // Non-Kiro provider (kiro-cli absent) -> hide. Empty cache (Kiro warming) -> spinner.
       if (u.available === false) return 'none' as const
@@ -1593,11 +1604,20 @@ export default function App() {
               if (!kiroUsage) {
                 segments.push(<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
               } else {
-                const pct = kiroUsage.limit > 0 ? (kiroUsage.used / kiroUsage.limit) * 100 : 0
-                const usedStr = kiroUsage.used >= 1000 ? `${(kiroUsage.used / 1000).toFixed(1)}K` : `${kiroUsage.used}`
-                const limitStr = kiroUsage.limit >= 1000 ? `${(kiroUsage.limit / 1000).toFixed(0)}K` : `${kiroUsage.limit}`
-                const title = `Kiro credits: ${kiroUsage.used.toLocaleString()} / ${kiroUsage.limit.toLocaleString()} (${pct.toFixed(0)}%) — click for details`
-                segments.push(<button key="usage" className={seg} onClick={() => setKiroUsageOpen(true)} title={title} aria-label={title}>
+                // Pool the plan and any bonus/welcome credits into one total so
+                // the pill reflects what the user is actually spending (bonus is
+                // drawn down first). fmtK renders 1000 -> "1K" and 1500 -> "1.5K"
+                // (the old toFixed(0) turned 1.5K into a misleading "2K").
+                const totalUsed = kiroUsage.used + (kiroUsage.bonus ? kiroUsage.bonus.used : 0)
+                const totalLimit = kiroUsage.limit + (kiroUsage.bonus ? kiroUsage.bonus.limit : 0)
+                const pct = totalLimit > 0 ? (totalUsed / totalLimit) * 100 : 0
+                const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K` : `${n}`
+                const usedStr = fmtK(totalUsed)
+                const limitStr = fmtK(totalLimit)
+                const title = kiroUsage.bonus
+                  ? `Kiro credits: ${totalUsed.toLocaleString()} / ${totalLimit.toLocaleString()} used — plan ${kiroUsage.used.toLocaleString()}/${kiroUsage.limit.toLocaleString()} + ${kiroUsage.bonus.label} ${kiroUsage.bonus.used.toLocaleString()}/${kiroUsage.bonus.limit.toLocaleString()} — click for details`
+                  : `Kiro credits: ${totalUsed.toLocaleString()} / ${totalLimit.toLocaleString()} (${pct.toFixed(0)}%) — click for details`
+                segments.push(<button key="usage" className={kiroUsage.stale ? `${seg} opacity-60` : seg} onClick={() => setKiroUsageOpen(true)} title={title} aria-label={title}>
                   <Coins size={12} /> {!isMobile && <span className="font-mono text-[11px]">{usedStr}<span className="text-muted">/{limitStr}</span></span>}
                 </button>)
               }
@@ -2089,7 +2109,12 @@ export default function App() {
           <span>{i18nT('app.checking_usage_running')} <code className="font-mono">{i18nT('app.kiro_cli_usage')}</code>…</span>
         </div>
       ) : (() => {
-        const pct = kiroUsage.limit > 0 ? (kiroUsage.used / kiroUsage.limit) * 100 : 0
+        const bonus = kiroUsage.bonus
+        const totalUsed = kiroUsage.used + (bonus ? bonus.used : 0)
+        const totalLimit = kiroUsage.limit + (bonus ? bonus.limit : 0)
+        const pct = totalLimit > 0 ? (totalUsed / totalLimit) * 100 : 0
+        const planPct = kiroUsage.limit > 0 ? (kiroUsage.used / kiroUsage.limit) * 100 : 0
+        const bonusPct = bonus && bonus.limit > 0 ? (bonus.used / bonus.limit) * 100 : 0
         const barColor = 'var(--accent)'
         const Row = ({ label, value }: { label: string; value: React.ReactNode }) => (
           <div className="flex justify-between items-baseline py-1.5 border-b" style={{ borderColor: 'var(--border)' }}>
@@ -2097,19 +2122,42 @@ export default function App() {
             <span className="text-[13px] font-medium text-text">{value}</span>
           </div>
         )
+        // One pool card (bonus or plan) with its own mini progress bar. Used
+        // only when a bonus pool exists, so the plan-only modal is unchanged.
+        const Pool = ({ name, used, limit, poolPct, color, meta }: { name: string; used: number; limit: number; poolPct: number; color: string; meta?: React.ReactNode }) => (
+          <div className="rounded-lg border p-2.5" style={{ borderColor: 'var(--border)' }}>
+            <div className="flex items-baseline gap-2">
+              <span className="flex items-center gap-1.5 text-[13px] font-medium text-text">
+                <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />{name}
+              </span>
+              <span className="ml-auto font-mono text-[12px] text-text">{used.toLocaleString()}<span className="text-muted">/{limit.toLocaleString()}</span></span>
+            </div>
+            <div className="w-full h-1.5 rounded-full overflow-hidden mt-2" style={{ background: 'var(--border)' }}>
+              <div className="h-full rounded-full" style={{ width: `${Math.min(poolPct, 100)}%`, background: color }} />
+            </div>
+            {meta && <div className="text-[11px] text-muted mt-1.5">{meta}</div>}
+          </div>
+        )
         return (
           <div className="flex flex-col gap-3">
             <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-text">{kiroUsage.used.toLocaleString()}</span>
-              <span className="text-sm text-muted">/ {kiroUsage.limit.toLocaleString()} {i18nT('app.credits')}</span>
+              <span className="text-2xl font-bold text-text">{totalUsed.toLocaleString()}</span>
+              <span className="text-sm text-muted">/ {totalLimit.toLocaleString()} {bonus ? i18nT('app.credits_total') : i18nT('app.credits')}</span>
               <span className="ml-auto text-[12px] font-medium px-2 py-0.5 rounded-md" style={{ background: barColor, color: '#fff' }}>{pct.toFixed(0)}%</span>
             </div>
             <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
               <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%`, background: barColor }} />
             </div>
+            {bonus && (
+              <div className="flex flex-col gap-2">
+                <div className="text-[11px] uppercase tracking-wide text-muted mt-1">{i18nT('app.breakdown')}</div>
+                <Pool name={bonus.label} used={bonus.used} limit={bonus.limit} poolPct={bonusPct} color="var(--warn)" meta={bonus.expiresLabel} />
+                <Pool name={kiroUsage.plan || i18nT('app.plan')} used={kiroUsage.used} limit={kiroUsage.limit} poolPct={planPct} color="var(--accent)" meta={kiroUsage.resets ? `${i18nT('app.resets')} ${kiroUsage.resets}` : undefined} />
+              </div>
+            )}
             <div className="mt-1">
-              {kiroUsage.plan && <Row label={i18nT('app.plan')} value={kiroUsage.plan} />}
-              {kiroUsage.resets && <Row label={i18nT('app.resets')} value={kiroUsage.resets} />}
+              {!bonus && kiroUsage.plan && <Row label={i18nT('app.plan')} value={kiroUsage.plan} />}
+              {!bonus && kiroUsage.resets && <Row label={i18nT('app.resets')} value={kiroUsage.resets} />}
               <Row label={i18nT('app.overage_used')} value={`${kiroUsage.overage.toLocaleString()} credits`} />
               {kiroUsage.overageRate && <Row label={i18nT('app.overage_rate')} value={`$${kiroUsage.overageRate} / credit`} />}
               {kiroUsage.costUsd != null && <Row label={i18nT('app.est_overage_cost')} value={`$${kiroUsage.costUsd.toFixed(2)} USD`} />}
