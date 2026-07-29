@@ -51,6 +51,66 @@ def _get_probe_timeout() -> int:
 # Probe results expire after 30 minutes → status becomes "outdated"
 _PROBE_TTL_SECS = 1800
 
+# An MCP command that does not resolve is a STABLE fact: it stays unresolved
+# until someone edits the config or installs the binary, yet the probe re-runs
+# on every discovery cycle and re-emits an identical warning each time. A config
+# carried between machines (a Linux dev box's servers opened on a Mac, say)
+# therefore prints the same handful of warnings forever, burying the transient
+# failures that actually deserve attention.
+#
+# Warn the FIRST time a given (server, command) fails to resolve and demote the
+# repeats to DEBUG. Deliberately scoped to unresolvable commands only —
+# timeouts and handshake errors stay at WARNING on every occurrence, because a
+# server that NEWLY starts timing out is news, whereas one whose binary is
+# absent is not.
+#
+# The ledger is self-healing, which is what keeps it both correct and bounded:
+# a key is dropped as soon as that command resolves (so a binary that is
+# installed and later disappears warns AGAIN rather than staying silent for the
+# life of the process), and `probe_all` prunes keys no longer present in the
+# config (so editing a command string does not retain the old one forever).
+_unresolvable_warned: set[tuple[str, str]] = set()
+
+
+def _warn_unresolvable_once(name: str, command: str) -> None:
+    """WARNING on first sight of an unresolvable command, DEBUG thereafter."""
+    key = (name, command)
+    if key in _unresolvable_warned:
+        logger.debug(
+            "MCP probe [%s]: command still not found: %s (already reported)", name, command
+        )
+        return
+    _unresolvable_warned.add(key)
+    logger.warning("MCP probe failed [%s]: command not found: %s", name, command)
+
+
+def _clear_unresolvable(name: str, command: str) -> None:
+    """Forget a command that now resolves, so a later outage is reported afresh."""
+    _unresolvable_warned.discard((name, command))
+
+
+def _prune_unresolvable(live: set[tuple[str, str]]) -> None:
+    """Drop ledger keys that the current config no longer names.
+
+    Without this, editing a server's command to another missing binary would
+    keep the superseded string forever, so the ledger would grow with config
+    churn instead of staying bounded by config size.
+    """
+    for stale in _unresolvable_warned - live:
+        _unresolvable_warned.discard(stale)
+
+
+def reset_unresolvable_warnings() -> None:
+    """Clear the whole warn-once ledger.
+
+    A test seam, and a manual escape hatch. Production does NOT rely on this:
+    routine recovery is handled by `_clear_unresolvable` (on a successful
+    probe) and `_prune_unresolvable` (on config churn), both of which run
+    automatically inside the probe path.
+    """
+    _unresolvable_warned.clear()
+
+
 # Well-known MCP config locations, tagged by scope.  Scope names match
 # the dashboard badges (kirocrew / kiroGlobal / ccGlobal) and are the
 # source of truth for the ``presence`` field on each server.
@@ -792,10 +852,17 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
         if not resolved:
             server.status = "error"
             server.error = f"command not found: {server.command}"
-            logger.warning(
-                "MCP probe failed [%s]: command not found: %s", server.name, server.command
-            )
+            _warn_unresolvable_once(server.name, server.command)
             return server
+
+        # The command resolved, so forget any prior "not found" report — keyed on
+        # resolvability, NOT on handshake health. Clearing this at the end of the
+        # success path instead would skip the four exits that resolve fine but
+        # fail later (no response, a JSON-RPC error reply, a timeout, any other
+        # exception), leaving a stale key that silences the WARNING if the binary
+        # is removed again. `command` is necessarily a str here, since
+        # `shutil.which` returned truthy for it.
+        _clear_unresolvable(server.name, server.command)
 
         # A hostile MCP-config entry names the binary spawned here, so route it
         # through the sandbox chokepoint: OS-level isolation plus a
@@ -925,7 +992,7 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
     except FileNotFoundError:
         server.status = "error"
         server.error = f"command not found: {server.command}"
-        logger.warning("MCP probe failed [%s]: command not found: %s", server.name, server.command)
+        _warn_unresolvable_once(server.name, server.command)
     except Exception as exc:
         server.status = "error"
         server.error = str(exc)[:200]
@@ -1008,6 +1075,18 @@ async def probe_all() -> list[McpServerInfo]:
     and a disabled server must never run until the user enables it.
     """
     servers = [s for s in list_servers() if not s.disabled]
+    # Keep the warn-once ledger bounded by the config rather than by config
+    # churn: a command edited to a different missing binary must not retain the
+    # superseded string. Runs before the early return so emptying the config
+    # (or disabling every server) also clears it.
+    #
+    # `command` is whatever the config JSON held (`spec.get("command", "")`,
+    # unvalidated), so a malformed entry can be a dict or list. Those are
+    # unhashable and would abort this whole pass — not just their own server —
+    # because this runs outside the per-server `gather`. Only string commands
+    # can be ledger keys anyway, so skip the rest and let each malformed server
+    # keep failing in isolation inside `probe_server`.
+    _prune_unresolvable({(s.name, s.command) for s in servers if isinstance(s.command, str)})
     if not servers:
         return []
     # Per-call semaphore: bounds the fan-out within this discovery pass while
