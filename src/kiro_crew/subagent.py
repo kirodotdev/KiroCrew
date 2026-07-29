@@ -3675,6 +3675,7 @@ class SubagentManager:
                     await asyncio.sleep(delay)
                     msg = _TRANSIENT_CONTINUE_MSG if _had_activity else full_message
 
+        _complete_event: LLMEvent | None = None
         async for event in _stream_with_transient_retry():
             # Refresh the activity clock for EVERY event kind (thinking chunks,
             # tool-call updates, etc.) before dispatch, so idle-stall detection
@@ -3868,6 +3869,7 @@ class SubagentManager:
                             "PostToolUse hook error in subagent", exc_info=True,
                         )
             elif event.kind == EVENT_COMPLETE:
+                _complete_event = event
                 break
 
         # Strip [OPTIONS: ...] tags and redact sensitive content
@@ -3897,8 +3899,52 @@ class SubagentManager:
             self._completion_keep_chars,
         )
         evict_completed_agents(self._agents)
+
+        # ── Per-turn usage row (issue #647): attribute subagent spend. ──
+        # Deliberately BEFORE `info.done`: the caller's cleanup (which awaits
+        # provider.shutdown() -> handle.destroy()) runs after this function
+        # returns, so an await placed after `done` sits inside the
+        # done-to-teardown window. Waiters that poll for `done` would then
+        # observe completion while this file write is still in flight — which
+        # widens that window on slow filesystems and lets teardown-observing
+        # callers race it. Writing first also means `done` never becomes
+        # visible with the usage row still missing.
+        try:
+            # circular import: reached while kiro_crew.slack.handler is still
+            # initialising (dashboard/handlers/files.py imports is_tracked_channel
+            # from it), so a module-scope import raises ImportError under the
+            # suite's import order.
+            from kiro_crew.dashboard.handlers.usage import (
+                persist_token_record_async,
+                read_context_tokens,
+                read_effective_agent,
+            )
+
+            _used, _window = read_context_tokens(client)
+            await persist_token_record_async(
+                session_key,
+                info.model or "",
+                _complete_event,
+                provider="claude_code" if is_cc else "acp",
+                surface="subagent",
+                # Explicit/inherited `agent` FIRST here — unlike every other
+                # surface. Under session sharing this subagent reuses the
+                # PARENT's runtime, so read_effective_agent() would report the
+                # parent's agent and misattribute a `spawn_run(agent="…")` turn.
+                # `agent` is already the resolved value (it inherits the parent
+                # session's agent when the spawn did not name one), and the
+                # helper stays as the fallback for when it is empty.
+                agent=agent or read_effective_agent(client) or "",
+                context_used=_used,
+                context_window=_window,
+                model_source=client,
+            )
+        except Exception:
+            logger.debug("usage row (subagent) persist failed", exc_info=True)
+
         info.done = True
         self._sessions.record_success(session_key)
+
         Stats().inc_subagent_completed()
         logger.info("Subagent %s completed", info.id)
 

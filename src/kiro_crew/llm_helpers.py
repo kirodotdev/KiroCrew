@@ -15,6 +15,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.client import AcpError
+from kiro_crew.acp.types import TurnUsage
 from kiro_crew.hooks import fire_tool_hooks, get_global_hook_store
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -297,6 +298,32 @@ async def run_bg_oneliner(
         return await _drive()
     finally:
         await session.destroy()
+
+
+def provider_last_turn_usage(provider: Any) -> TurnUsage:
+    """Best-effort read of the just-completed turn's billing usage.
+
+    ``stream_and_collect`` breaks on ``EVENT_COMPLETE`` and returns only text,
+    discarding the event's ``usage``. Background surfaces that dispatch through
+    it (cron, heartbeat, autonudge, workflow, task-runner self-review) therefore
+    have no event to hand :func:`persist_token_record_async`. This recovers the
+    turn's billing from the provider's ``last_prompt_stats`` — the same post-turn
+    read ``chat_runner`` performs — and wraps it in a ``TurnUsage`` so it can be
+    passed straight through as the ``event`` argument.
+
+    On the ACP backend the only non-zero per-turn billing signal is ``credits``;
+    the token fields stay 0, matching the real usage record. Providers that expose
+    no stats (non-ACP backends, test doubles) yield an empty ``TurnUsage``
+    (credits=0). Never raises.
+    """
+    try:
+        inner = getattr(provider, "_client", None) or getattr(provider, "_handle", None)
+        stats = getattr(inner, "last_prompt_stats", None) if inner is not None else None
+        if stats is not None:
+            return TurnUsage(credits=float(getattr(stats, "credits", 0.0) or 0.0))
+    except Exception:
+        logger.debug("provider_last_turn_usage read failed", exc_info=True)
+    return TurnUsage()
 
 
 async def stream_and_collect(

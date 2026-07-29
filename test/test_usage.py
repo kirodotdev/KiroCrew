@@ -7,6 +7,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +23,9 @@ from kiro_crew.dashboard.handlers.usage import (
     get_usage_cache,
     persist_token_record,
     persist_token_record_async,
+    read_context_tokens,
+    read_effective_agent,
+    read_effective_model,
 )
 
 # ── _parse_sessions ─────────────────────────────────────────────────────
@@ -806,3 +810,355 @@ class TestBuildTokenRecordCredits:
             "s", "m", event, "acp", datetime.now(timezone.utc)
         )
         assert rec["credits"] == 0.0
+
+
+# ── read_context_tokens / context-occupancy row fields (issue #647) ──────────
+
+
+class TestReadContextTokens:
+    """read_context_tokens() reads provider occupancy accessors defensively."""
+
+    def test_returns_real_values_from_provider(self):
+        from types import SimpleNamespace
+
+        # A fake provider exposing both public accessors (as AcpProvider /
+        # AcpSessionProvider do) returns their exact values.
+        provider = SimpleNamespace(
+            context_used_tokens=lambda: 12345,
+            context_window_tokens=lambda: 1_000_000,
+        )
+        assert read_context_tokens(provider) == (12345, 1_000_000)
+
+    def test_returns_zero_when_accessors_absent(self):
+        # A plain object with neither accessor — e.g. a non-ACP provider or a
+        # bare test double — records (0, 0) rather than raising.
+        assert read_context_tokens(object()) == (0, 0)
+
+    def test_returns_zero_when_accessor_raises(self):
+        class _Boom:
+            def context_used_tokens(self) -> int:
+                raise RuntimeError("boom")
+
+            def context_window_tokens(self) -> int:
+                return 1_000_000
+
+        assert read_context_tokens(_Boom()) == (0, 0)
+
+    def test_returns_zero_when_only_one_accessor_present(self):
+        from types import SimpleNamespace
+
+        # Both accessors are required; a partial provider still yields (0, 0).
+        partial = SimpleNamespace(context_used_tokens=lambda: 500)
+        assert read_context_tokens(partial) == (0, 0)
+
+
+class TestBuildTokenRecordContextFields:
+    """_build_token_record emits the additive surface/agent/context_* fields."""
+
+    @staticmethod
+    def _event():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            input_tokens=10,
+            output_tokens=5,
+            cache_creation_tokens=0,
+            cache_read_tokens=0,
+            cost_usd=0.0,
+            credits=0.0,
+            num_turns=1,
+            duration_ms=0,
+        )
+
+    def test_emits_new_keys(self):
+        rec = usage_mod._build_token_record(
+            "chat-1",
+            "claude-opus-4-8",
+            self._event(),
+            "acp",
+            datetime.now(timezone.utc),
+            surface="dashboard",
+            agent="kirocrew",
+            context_used=44_000,
+            context_window=1_000_000,
+        )
+        assert rec["surface"] == "dashboard"
+        assert rec["agent"] == "kirocrew"
+        assert rec["context_used"] == 44_000
+        assert rec["context_window"] == 1_000_000
+
+    def test_coerces_non_numeric_context_to_zero(self):
+        # Defensive int coercion keeps the record json.dumps-safe.
+        rec = usage_mod._build_token_record(
+            "s",
+            "m",
+            self._event(),
+            "acp",
+            datetime.now(timezone.utc),
+            context_used="not-a-number",
+            context_window=None,
+        )
+        assert rec["context_used"] == 0
+        assert rec["context_window"] == 0
+        json.dumps(rec)  # must not raise
+
+    def test_backcompat_defaults_when_no_kwargs(self):
+        # Called positionally with no new kwargs (mirrors every legacy caller):
+        # the original keys are unchanged and the new keys default to ""/0, so
+        # old readers and old shards stay valid.
+        rec = usage_mod._build_token_record(
+            "chat-1", "opus", self._event(), "acp", datetime.now(timezone.utc)
+        )
+        for key in (
+            "_type",
+            "ts",
+            "slot",
+            "provider",
+            "model",
+            "input",
+            "output",
+            "cache_create",
+            "cache_read",
+            "cost",
+            "credits",
+            "turns",
+            "duration_ms",
+        ):
+            assert key in rec
+        assert rec["input"] == 10
+        assert rec["provider"] == "acp"
+        # New fields present with defaults.
+        assert rec["surface"] == ""
+        assert rec["agent"] == ""
+        assert rec["context_used"] == 0
+        assert rec["context_window"] == 0
+
+    def test_persist_writes_new_fields_to_shard(self, tmp_path, monkeypatch):
+        # End-to-end: the keyword-only params flow through persist_token_record
+        # into the written JSONL row.
+        shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
+        persist_token_record(
+            "slot",
+            "opus",
+            self._event(),
+            provider="acp",
+            surface="dashboard",
+            agent="kirocrew",
+            context_used=44_000,
+            context_window=1_000_000,
+        )
+        today = datetime.now().astimezone().strftime("%Y-%m-%d")
+        record = json.loads((shard_dir / f"{today}.jsonl").read_text(encoding="utf-8").strip())
+        assert record["surface"] == "dashboard"
+        assert record["agent"] == "kirocrew"
+        assert record["context_used"] == 44_000
+        assert record["context_window"] == 1_000_000
+
+
+class _Inner:
+    def __init__(self, model):
+        self._model = model
+
+
+class TestReadEffectiveModel:
+    """read_effective_model: raw resolved model id, attribution only."""
+
+    def test_reads_via_public_client_chain(self):
+        src = type("P", (), {"client": _Inner("global.anthropic.claude-opus-4-8[1m]")})()
+        assert read_effective_model(src) == "global.anthropic.claude-opus-4-8[1m]"
+
+    def test_reads_via_private_client_chain(self):
+        src = type("P", (), {"_client": _Inner("claude-opus-4.8")})()
+        assert read_effective_model(src) == "claude-opus-4.8"
+
+    def test_reads_via_handle_chain(self):
+        src = type("P", (), {"_handle": _Inner("claude-haiku-4.5")})()
+        assert read_effective_model(src) == "claude-haiku-4.5"
+
+    def test_reads_direct_model_attr(self):
+        assert read_effective_model(_Inner("claude-sonnet-4.5")) == "claude-sonnet-4.5"
+
+    def test_skips_auto_sentinel(self):
+        # "auto" means "backend chooses" — not a model, so not attribution data.
+        assert read_effective_model(_Inner("auto")) == ""
+
+    def test_returns_empty_when_absent(self):
+        assert read_effective_model(object()) == ""
+
+    def test_returns_empty_when_accessor_raises(self):
+        class Boom:
+            @property
+            def _client(self):
+                raise RuntimeError("boom")
+
+        assert read_effective_model(Boom()) == ""
+
+    def test_prefers_first_populated_chain(self):
+        src = type("P", (), {"client": _Inner(""), "_client": _Inner("claude-opus-4.8")})()
+        assert read_effective_model(src) == "claude-opus-4.8"
+
+    def test_resolved_id_wins_over_model(self):
+        # Mirrors AcpClient's own precedence: `_resolved_model_id or _model`.
+        inner = _Inner("claude-opus-4.8")
+        inner._resolved_model_id = "global.anthropic.claude-opus-4-8[1m]"
+        src = type("P", (), {"_client": inner})()
+        assert read_effective_model(src) == "global.anthropic.claude-opus-4-8[1m]"
+
+    def test_default_model_turn_uses_resolved_id(self):
+        # The common case: the caller asked for the default, so `_model` is left
+        # at the "auto" sentinel while the backend's resolved id is the real one.
+        inner = _Inner("auto")
+        inner._resolved_model_id = "claude-opus-4.8"
+        src = type("P", (), {"_handle": inner})()
+        assert read_effective_model(src) == "claude-opus-4.8"
+
+    def test_falls_back_to_model_when_resolved_id_blank(self):
+        inner = _Inner("claude-haiku-4.5")
+        inner._resolved_model_id = ""
+        assert read_effective_model(inner) == "claude-haiku-4.5"
+
+    def test_walks_nested_handle_two_levels_down(self):
+        # The default Kiro turn shape: providers/acp.py assigns an
+        # AcpSessionProvider to _client, which holds the handle on _handle, so
+        # the resolved id sits at provider.client._handle.
+        handle = _Inner("auto")
+        handle._resolved_model_id = "claude-opus-4.8"
+        mid = type("SessionProvider", (), {"_handle": handle})()
+        outer = type("P", (), {"client": mid, "_client": mid})()
+        assert read_effective_model(outer) == "claude-opus-4.8"
+
+    def test_resolved_id_deep_beats_model_shallow(self):
+        # A resolved id anywhere outranks a plain _model anywhere: _model may
+        # still hold a pre-resolution request.
+        handle = _Inner("")
+        handle._resolved_model_id = "global.anthropic.claude-opus-4-8[1m]"
+        outer = type("P", (), {"_model": "claude-opus-4.8", "_handle": handle})()
+        assert read_effective_model(outer) == "global.anthropic.claude-opus-4-8[1m]"
+
+    def test_self_referential_chain_terminates(self):
+        node = type("Loop", (), {})()
+        node._client = node
+        node._model = "claude-opus-4.8"
+        assert read_effective_model(node) == "claude-opus-4.8"
+
+
+class TestReadEffectiveAgent:
+    """The resolved agent, not the slot alias."""
+
+    def test_reads_resolved_agent_off_client(self):
+        inner = type("C", (), {"_agent": "kirocrew"})()
+        assert read_effective_agent(inner) == "kirocrew"
+
+    def test_walks_nested_handle(self):
+        handle = type("H", (), {"_agent": "kirocrew-lite"})()
+        mid = type("SessionProvider", (), {"_handle": handle})()
+        outer = type("P", (), {"client": mid})()
+        assert read_effective_agent(outer) == "kirocrew-lite"
+
+    def test_blank_when_absent(self):
+        assert read_effective_agent(object()) == ""
+
+    def test_never_raises_on_exploding_attribute(self):
+        class Boom:
+            @property
+            def _agent(self):
+                raise RuntimeError("nope")
+
+        assert read_effective_agent(Boom()) == ""
+
+    def test_reads_agent_off_the_runtime(self):
+        # The session-provider shape: the agent is held only by the spawned CLI
+        # runtime (runtime.py:273), reached via provider -> _handle -> _runtime.
+        runtime = type("Runtime", (), {"_agent": "kirocrew"})()
+        handle = type("Handle", (), {"_runtime": runtime})()
+        provider = type("SessionProvider", (), {"_handle": handle})()
+        assert read_effective_agent(provider) == "kirocrew"
+
+    def test_session_model_outranks_runtime_model(self):
+        # _runtime is walked last so its process-level --model argument cannot
+        # outrank the session handle's own model.
+        runtime = type("Runtime", (), {"_model": "claude-haiku-4.5"})()
+        handle = type("Handle", (), {"_model": "claude-opus-4.8", "_runtime": runtime})()
+        provider = type("SessionProvider", (), {"_handle": handle})()
+        assert read_effective_model(provider) == "claude-opus-4.8"
+
+
+class TestModelSourceFallback:
+    """model_source fills `model` only when the caller resolved none."""
+
+    @staticmethod
+    def _event():
+        # Not a real TurnUsage, so _build_token_record reads credits off the
+        # event itself — enough to exercise the model fallback.
+        return SimpleNamespace(credits=1.0)
+
+    def _row(self, shard_dir):
+        today = datetime.now().astimezone().strftime("%Y-%m-%d")
+        return json.loads((shard_dir / f"{today}.jsonl").read_text(encoding="utf-8").strip())
+
+    def test_fallback_fills_empty_model(self, tmp_path, monkeypatch):
+        shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
+        persist_token_record(
+            "slot",
+            "",
+            self._event(),
+            provider="acp",
+            surface="webhook",
+            model_source=_Inner("claude-opus-4.8"),
+        )
+        assert self._row(shard_dir)["model"] == "claude-opus-4.8"
+
+    def test_explicit_model_wins(self, tmp_path, monkeypatch):
+        shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
+        persist_token_record(
+            "slot",
+            "claude-haiku-4.5",
+            self._event(),
+            provider="acp",
+            surface="cron",
+            model_source=_Inner("claude-opus-4.8"),
+        )
+        assert self._row(shard_dir)["model"] == "claude-haiku-4.5"
+
+    def test_no_source_leaves_model_empty(self, tmp_path, monkeypatch):
+        shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
+        persist_token_record("slot", "", self._event(), provider="acp", surface="webhook")
+        assert self._row(shard_dir)["model"] == ""
+
+    def test_unusable_source_leaves_model_empty(self, tmp_path, monkeypatch):
+        # A test double with no model attr must not break the write.
+        shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
+        persist_token_record(
+            "slot", "", self._event(), provider="acp", surface="webhook", model_source=object()
+        )
+        assert self._row(shard_dir)["model"] == ""
+
+    def test_auto_sentinel_is_treated_as_unresolved(self, tmp_path, monkeypatch):
+        # agent.model defaults to "auto" and the task runner forwards it verbatim.
+        # "auto" is not a model, so the provider's resolved id must win.
+        shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
+        persist_token_record(
+            "slot",
+            "auto",
+            self._event(),
+            provider="acp",
+            surface="task_runner",
+            model_source=_Inner("claude-opus-4.8"),
+        )
+        assert self._row(shard_dir)["model"] == "claude-opus-4.8"
+
+    def test_auto_without_resolvable_source_records_blank(self, tmp_path, monkeypatch):
+        # Matches test_late_backfill_skips_auto_sentinel's contract: the record
+        # stays blank until a real model is known -- never the sentinel itself.
+        shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
+        persist_token_record(
+            "slot", "auto", self._event(), provider="acp", surface="task_runner"
+        )
+        assert self._row(shard_dir)["model"] == ""
+
+    def test_auto_is_case_and_space_insensitive(self, tmp_path, monkeypatch):
+        shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
+        persist_token_record(
+            "slot", "  AUTO ", self._event(), provider="acp", surface="cron"
+        )
+        assert self._row(shard_dir)["model"] == ""

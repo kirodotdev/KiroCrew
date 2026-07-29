@@ -1862,3 +1862,96 @@ class TestCompletionKeepLoader:
 
         for v in ("head", "tail", "both"):
             assert _validated_completion_keep(v) == v
+
+
+class TestSubagentUsageRow:
+    """Issue #647: a completed subagent turn appends one usage row tagged
+    surface='subagent', carrying the resolved agent and context occupancy."""
+
+    @pytest.mark.asyncio
+    async def test_subagent_turn_persists_usage_row_with_surface(self) -> None:
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent import SubagentInfo
+
+        async def _complete_stream(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
+            yield AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=0.5))
+
+        sessions = _mock_sessions()
+        provider = AsyncMock()
+        provider.context_usage_pct = lambda: 12.0
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _complete_stream())
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder_auto_spawn(),
+        )
+        info = SubagentInfo(
+            id="usage01",
+            task="do the thing",
+            agent="researcher",
+            parent_session_key="slack:C123:T456",
+        )
+
+        persist = AsyncMock()
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch(
+            "kiro_crew.dashboard.handlers.usage.persist_token_record_async", persist
+        ), patch(
+            "kiro_crew.dashboard.handlers.usage.read_context_tokens",
+            MagicMock(return_value=(999, 200000)),
+            create=True,
+        ):
+            await manager._run_inner(info, "subagent:usage01")
+
+        persist.assert_awaited_once()
+        kwargs = persist.await_args.kwargs
+        assert kwargs["surface"] == "subagent"
+        assert kwargs["agent"] == "researcher"
+        assert kwargs["context_used"] == 999
+        assert kwargs["context_window"] == 200000
+
+    @pytest.mark.asyncio
+    async def test_shared_runtime_agent_does_not_override_spawn_agent(self) -> None:
+        """Session sharing reuses the PARENT's runtime, so the runtime's agent
+        must not overwrite the agent this spawn actually asked for."""
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent import SubagentInfo
+
+        async def _complete_stream(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
+            yield AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=0.5))
+
+        sessions = _mock_sessions()
+        provider = AsyncMock()
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _complete_stream())
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder_auto_spawn(),
+        )
+        info = SubagentInfo(
+            id="usage02",
+            task="do the thing",
+            agent="researcher",
+            parent_session_key="slack:C123:T456",
+        )
+
+        persist = AsyncMock()
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch(
+            "kiro_crew.dashboard.handlers.usage.persist_token_record_async", persist
+        ), patch(
+            "kiro_crew.dashboard.handlers.usage.read_context_tokens",
+            MagicMock(return_value=(1, 2)),
+            create=True,
+        ), patch(
+            # The shared parent runtime reports the parent's agent.
+            "kiro_crew.dashboard.handlers.usage.read_effective_agent",
+            MagicMock(return_value="kirocrew"),
+            create=True,
+        ):
+            await manager._run_inner(info, "subagent:usage02")
+
+        persist.assert_awaited_once()
+        assert persist.await_args.kwargs["agent"] == "researcher"

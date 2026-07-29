@@ -75,7 +75,11 @@ from kiro_crew.dashboard.handlers import (
     _get_skills,
     _list_aim_prompts,
 )
-from kiro_crew.dashboard.handlers.usage import persist_token_record_async
+from kiro_crew.dashboard.handlers.usage import (
+    persist_token_record_async,
+    read_context_tokens,
+    read_effective_agent,
+)
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
@@ -4128,8 +4132,23 @@ async def _run_chat(
                         if _canonical:
                             slot.model = _canonical
                             _record_model = _canonical
+                    # Read context-window occupancy off the same `client`
+                    # used above (mirrors _context_usage_payload's accessor
+                    # pattern); read_context_tokens never raises.
+                    _ctx_used, _ctx_window = read_context_tokens(client)
                     await persist_token_record_async(
-                        slot.key, _record_model, event, provider=_provider_name
+                        slot.key,
+                        _record_model,
+                        event,
+                        provider=_provider_name,
+                        surface="dashboard",
+                        # Resolved agent, not the slot alias: resolve_agent_bindings
+                        # maps e.g. "default" to "kirocrew" before dispatch, so the
+                        # alias would credit an agent that never ran.
+                        agent=read_effective_agent(client) or slot.agent or "",
+                        context_used=_ctx_used,
+                        context_window=_ctx_window,
+                        model_source=client,
                     )
                 # ── Turn-completion histogram (OTel M2) ──
                 # kirocrew.turn.duration → turn latency p50/p90 + fault rate.

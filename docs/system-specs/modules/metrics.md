@@ -1,6 +1,6 @@
 # Metrics Telemetry Module
 
-Last Updated: 2026-07-24 (explicit retention opt-in, installable OTLP extra, WebSocket/SSE lifetime exclusion)
+Last Updated: 2026-07-28 (per-turn token usage row store + context-occupancy fields, issue #647)
 
 ## Overview
 
@@ -189,6 +189,57 @@ user-configurable `telemetry.local_dir` and each shard pass `validate_file_path`
 (sensitive-path check) before any read. Cross-process: metrics are emitted by
 the ACP/gateway processes, so reading the durable shards is the only correct
 path (an in-memory reservoir in the dashboard process would never see them).
+
+## Per-turn token usage row store
+
+Separate from the OTEL histogram sink above (`~/.kirocrew/metrics/`, DELTA
+histograms for trends/alerting), the gateway also keeps a **per-turn row store**
+for cost and context analytics: one JSON object per model-spending turn appended
+to `<data home>/usage/tokens/YYYY-MM-DD.jsonl` (shards partitioned by the user's
+local date). It is always on (not gated by `telemetry.enabled`) and never
+egresses the host. Written by `dashboard/handlers/usage.py::persist_token_record`
+(sync) / `persist_token_record_async` (the chat hot path — builds the record
+on-loop, offloads the append via `asyncio.to_thread`); both are best-effort
+(exceptions swallowed, no fsync). Aggregated for the dashboard by
+`_parse_token_history` (30-day window, shard-fingerprint + 120s-TTL cache).
+
+Each row (`_build_token_record`) carries:
+
+| field | type | meaning |
+|-------|------|---------|
+| `_type` | str | always `"tokens"` (record discriminator) |
+| `ts` | str | ISO-8601 local timestamp of the turn |
+| `slot` | str | chat slot / session key |
+| `provider` | str | LLM backend (`acp` / `claude_code` / `bedrock` / …), `""` if unknown |
+| `model` | str | model id for the turn |
+| `input` / `output` | int | prompt / completion tokens (structurally `0` on the ACP backend — kiro-cli bills credits only) |
+| `cache_create` / `cache_read` | int | cache-write / cache-read tokens |
+| `cost` | float | provider-reported USD cost (`0.0` on ACP) |
+| `credits` | float | kiro-cli per-turn credit spend (float-coerced) |
+| `turns` | int | provider `num_turns` |
+| `duration_ms` | int | provider-reported turn duration (`0` on ACP) |
+| `surface` | str | **(#647)** dispatch origin — `dashboard`, `cron`, `subagent`, `monitor`, `heartbeat`, `webhook`, `task_runner`, `workflow`; `""` if unset |
+| `agent` | str | **(#647)** agent id resolved for the turn; `""` if unset |
+| `context_used` | int | **(#647)** context-window tokens occupied after the turn (int-coerced) |
+| `context_window` | int | **(#647)** served context-window size in tokens (int-coerced) |
+
+The last four fields are **additive** — every field defaults (`""` / `0`) so
+existing callers stay valid and pre-#647 shards (which lack the keys) remain
+parseable; readers must tolerate their absence. `context_used` / `context_window`
+are read from the provider at the persist call site via
+`usage.read_context_tokens(source)`, which calls the provider's public
+`context_used_tokens()` / `context_window_tokens()` accessors
+(`providers/base.py`, implemented for ACP in `providers/acp.py` +
+`acp/session_provider.py`) behind `getattr` guards and returns `(0, 0)` on any
+missing accessor or exception — so non-ACP providers and test doubles record
+zeros and the analytics helper never breaks the turn it measures. `surface`
+lets background turn-dispatch surfaces (cron/subagent/monitor/heartbeat/webhook/
+task_runner/workflow) attribute their spend; zero-token surfaces (cron
+`script=`/`command=` modes, heartbeat maintenance ticks) never call a model and
+must not write a row.
+
+Tests: `test/test_usage.py` (`TestReadContextTokens`,
+`TestBuildTokenRecordContextFields`, `TestPersistTokenRecord*`).
 
 ## Circular-import rule
 

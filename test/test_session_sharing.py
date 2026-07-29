@@ -43,6 +43,28 @@ async def _wait_until_done(info, *, timeout: float = 5.0) -> None:
         await asyncio.sleep(0.01)
 
 
+async def _wait_until_awaited(mock_attr, label: str, *, timeout: float = 5.0) -> None:
+    """Wait for an async mock to have been awaited, deterministically.
+
+    Companion to :func:`_wait_until_done`, for assertions about TEARDOWN rather
+    than completion. ``info.done`` flips inside ``_run_inner``, but the
+    shared-session teardown that reaches ``handle.destroy()`` runs strictly
+    afterwards — the ``asyncio.wait_for`` future in ``_run`` has to resolve, then
+    its cleanup awaits ``provider.shutdown()``. So ``_wait_until_done``
+    returning does NOT imply teardown has happened, and asserting on it
+    immediately races the completion task in exactly the way the fixed sleep did
+    before #574 — that fix made the ``info.done`` half deterministic and left
+    this half racing. Polling the await against a deadline closes it: it returns
+    as soon as teardown lands, and still fails if teardown never happens.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while not mock_attr.await_count:
+        if loop.time() >= deadline:
+            raise AssertionError(f"{label} was not awaited within {timeout}s")
+        await asyncio.sleep(0.01)
+
+
 def _mock_sessions(*, sharing_eligible: bool = True) -> MagicMock:
     """Create a mock SessionManager with session-sharing support."""
     sessions = MagicMock()
@@ -276,10 +298,12 @@ class TestSessionSharingSpawn:
         sessions.reset.assert_not_awaited()
         # release should NOT have been called
         sessions.release.assert_not_called()
-        # The handle's destroy should have been called via shutdown()
+        # The handle's destroy should have been called via shutdown().
+        # Teardown runs AFTER info.done, so wait for it rather than assuming the
+        # completion task already got there (see _wait_until_awaited).
         runtime = await sessions.get_subagent_runtime("dashboard:slot1")
         handle = await runtime.create_session()
-        handle.destroy.assert_awaited()
+        await _wait_until_awaited(handle.destroy, "handle.destroy")
 
     @pytest.mark.asyncio
     async def test_legacy_path_when_sharing_off(self):

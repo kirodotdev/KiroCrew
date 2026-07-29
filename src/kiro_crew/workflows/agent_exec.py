@@ -31,7 +31,7 @@ import itertools
 import logging
 from typing import Any, Callable, Optional
 
-from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
+from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -82,6 +82,33 @@ def build_agent_fn(
                 approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
                 max_turns=_MAX_TURNS_PER_STEP,
             )
+            # ── Per-turn usage row (issue #647): attribute workflow spend. ──
+            try:
+                # circular import: reached while kiro_crew.slack.handler is still
+                # initialising (dashboard/handlers/files.py imports is_tracked_channel
+                # from it), so a module-scope import raises ImportError under the
+                # suite's import order.
+                from kiro_crew.dashboard.handlers.usage import (
+                    persist_token_record_async,
+                    read_context_tokens,
+                    read_effective_agent,
+                )
+
+                _used, _window = read_context_tokens(provider)
+                await persist_token_record_async(
+                    key,
+                    opts.get("model") or default_model or "",
+                    provider_last_turn_usage(provider),
+                    provider="acp",
+                    surface="workflow",
+                    agent=(read_effective_agent(provider)
+                           or opts.get("agent") or default_agent or ""),
+                    context_used=_used,
+                    context_window=_window,
+                    model_source=provider,
+                )
+            except Exception:
+                logger.debug("usage row (workflow) persist failed", exc_info=True)
             # Issue #2: Apply output redaction to prevent credential leakage
             # in workflow results stored in history or injected into parent chat.
             text, _ = redact_credentials(text)

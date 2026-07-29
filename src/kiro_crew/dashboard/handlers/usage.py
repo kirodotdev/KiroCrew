@@ -86,10 +86,167 @@ def _shards_in_window(days: int) -> list[Path]:
     return paths
 
 
+def read_context_tokens(source: object) -> tuple[int, int]:
+    """Return ``(context_used, context_window)`` from a provider/client.
+
+    Reads the provider's public ``context_used_tokens()`` /
+    ``context_window_tokens()`` accessors (declared on ``providers/base.py`` and
+    implemented for ACP in ``providers/acp.py`` and ``acp/session_provider.py``).
+    Guarded with ``getattr`` so non-ACP providers and test doubles that lack the
+    accessors — or an accessor that raises — yield ``(0, 0)`` rather than
+    propagating. Never raises: this is best-effort analytics on the turn hot
+    path, and a measurement helper must never break the turn it measures.
+    """
+    try:
+        used_fn = getattr(source, "context_used_tokens", None)
+        window_fn = getattr(source, "context_window_tokens", None)
+        if not callable(used_fn) or not callable(window_fn):
+            return (0, 0)
+        return (int(used_fn()), int(window_fn()))
+    except Exception:
+        return (0, 0)
+
+
+def _wrapper_chain(source: object) -> list[object]:
+    """Collect *source* and the provider/client/handle wrappers nested under it.
+
+    ``providers/acp.py`` keeps its inner object on ``_client`` (also exposed as
+    ``client``), ``acp/session_provider.py`` keeps the session handle on
+    ``_handle``, and both the handle and the provider keep the spawned CLI
+    runtime on ``_runtime`` (``session_handle.py:215``, ``session_provider.py:61``)
+    — and these nest, because ``providers/acp.py:610`` assigns an
+    ``AcpSessionProvider`` to ``_client`` (the ``-> AcpClient`` annotation there
+    carries a ``type: ignore``). A default Kiro turn therefore hides its resolved
+    state two levels down, at ``provider.client._handle``, so probing a fixed
+    depth misses it. Breadth-first with a node cap and an identity-based visited
+    set, so a wrapper that points back at itself terminates.
+
+    ``_runtime`` is traversed **last** deliberately. It is the only holder of
+    ``_agent`` for the session-provider shape (``runtime.py:273``), but it also
+    carries the process-level ``--model`` argument (``runtime.py:280``); visiting
+    it after ``_handle`` keeps session-level model state ahead of process-level
+    state when :func:`read_effective_model` falls through to ``_model``.
+    """
+    chain: list[object] = []
+    pending: list[object] = [source]
+    while pending and len(chain) < 8:
+        node = pending.pop(0)
+        if node is None or any(seen is node for seen in chain):
+            continue
+        chain.append(node)
+        for holder in ("client", "_client", "_handle", "_runtime"):
+            inner = getattr(node, holder, None)
+            if inner is not None and not isinstance(inner, (str, bytes, int)):
+                pending.append(inner)
+    return chain
+
+
+def read_effective_agent(source: object) -> str:
+    """Return the agent id that actually served the turn, or ``""``.
+
+    The slot's ``agent`` is an alias that ``resolve_agent_bindings()`` maps to a
+    concrete kiro agent before dispatch (``chat_runner.py:2392`` resolves it and
+    :2408 passes the result into ``get_or_create``), so a slot set to ``default``
+    can be served by ``kirocrew``. Recording the alias would attribute the turn
+    to an agent that never ran. ``AcpClient`` stores what it was constructed with
+    on ``_agent`` (``acp/client.py:1270``), which is that resolved value — the
+    same "what actually ran" precedence used for the model. Never raises.
+    """
+    try:
+        for node in _wrapper_chain(source):
+            candidate = getattr(node, "_agent", "")
+            if isinstance(candidate, str) and candidate:
+                return candidate
+    except Exception:
+        pass
+    return ""
+
+
+def read_effective_model(source: object) -> str:
+    """Return the model id the provider actually resolved for the turn, or ``""``.
+
+    Attribution only — deliberately NOT the same as
+    ``chat_runner._backfill_canonical_model``. That helper canonicalizes and
+    DROPS Bedrock profile-form ids for non-``claude_code`` providers, because its
+    result is written back into ``slot.model`` and a profile id there pins the
+    slot to one profile+region across resumes. Nothing here is written back, so
+    the raw resolved id is what we want: for cost attribution, the profile that
+    actually served the turn is strictly more informative than the alias the
+    caller asked for.
+
+    Walks the wrapper chain via :func:`_wrapper_chain` rather than a fixed depth,
+    because a default Kiro turn hides the resolved id two levels down.
+
+    Two passes over the collected chain, because a resolved id **anywhere** beats
+    a plain ``_model`` anywhere: ``_resolved_model_id`` is the id the backend
+    actually settled on (the same precedence ``AcpClient`` uses internally,
+    ``self._resolved_model_id or self._model``), while ``_model`` may still hold
+    the ``"auto"`` sentinel or a pre-resolution request. Skips ``"auto"``. Never
+    raises.
+    """
+    try:
+        chain = _wrapper_chain(source)
+        for attr in ("_resolved_model_id", "_model"):
+            for node in chain:
+                candidate = getattr(node, attr, "")
+                if isinstance(candidate, str) and candidate and candidate != "auto":
+                    return candidate
+    except Exception:
+        pass
+    return ""
+
+
+def _resolve_model(model: str, model_source: object) -> str:
+    """Resolve the model to record, treating the ``"auto"`` sentinel as unresolved.
+
+    ``"auto"`` is not a model — it means "let the backend choose" — so recording
+    it would put a non-model value in the attribution dimension. Several
+    surfaces pass it verbatim (``agent.model`` defaults to ``"auto"``, and the
+    task runner forwards that value), so gating only on an empty string lets it
+    through. When the caller's value is unresolved we take the provider's
+    resolved id; if that is unavailable the field stays blank, which is what
+    ``test_late_backfill_skips_auto_sentinel`` requires ("the record stays blank
+    until a real model is known").
+    """
+    if (model or "").strip().lower() not in ("", "auto"):
+        return model
+    if model_source is None:
+        return "" if (model or "").strip().lower() == "auto" else model
+    return read_effective_model(model_source)
+
+
+def _coerce_int(value: Any) -> int:
+    """Coerce ``value`` to ``int``, defaulting to 0 for non-numeric input.
+
+    Keeps the emitted record JSON-serializable even if a caller passes a
+    non-numeric context value.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _build_token_record(
-    slot_key: str, model: str, event: object, provider: str, now: datetime
+    slot_key: str,
+    model: str,
+    event: object,
+    provider: str,
+    now: datetime,
+    *,
+    surface: str = "",
+    agent: str = "",
+    context_used: int = 0,
+    context_window: int = 0,
 ) -> dict[str, Any]:
-    """Build the JSONL token-usage record dict (no I/O)."""
+    """Build the JSONL token-usage record dict (no I/O).
+
+    ``surface`` tags the dispatch origin (``dashboard``, ``cron``, ``subagent``,
+    …) and ``agent`` the agent id resolved for the turn. ``context_used`` /
+    ``context_window`` record context-window occupancy (read from the provider
+    via :func:`read_context_tokens` at the call site). All four are additive and
+    default to empty/0, so pre-existing shards and existing callers stay valid.
+    """
     # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
     # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
     # credits is float-coerced so a non-numeric value can't break JSON serialization.
@@ -113,6 +270,13 @@ def _build_token_record(
         "credits": credits,
         "turns": getattr(u, "num_turns", 0),
         "duration_ms": getattr(u, "duration_ms", 0),
+        # Additive per-turn fields (issue #647): context occupancy + dispatch
+        # origin. Old shards lack these keys; readers must tolerate their
+        # absence. context_* are int-coerced so a bad value can't break json.dumps.
+        "surface": surface or "",
+        "agent": agent or "",
+        "context_used": _coerce_int(context_used),
+        "context_window": _coerce_int(context_window),
     }
 
 
@@ -127,25 +291,67 @@ def _write_token_record(record: dict[str, Any], now: datetime) -> None:
         f.write(json.dumps(record) + "\n")
 
 
-def persist_token_record(slot_key: str, model: str, event: object, provider: str = "") -> None:
+def persist_token_record(
+    slot_key: str,
+    model: str,
+    event: object,
+    provider: str = "",
+    *,
+    surface: str = "",
+    agent: str = "",
+    context_used: int = 0,
+    context_window: int = 0,
+    model_source: object = None,
+) -> None:
     """Append a token usage record to today's shard under
     ``<data home>/usage/tokens/YYYY-MM-DD.jsonl`` (synchronous).
 
     The ``provider`` field tags the source LLM backend (acp,
     claude_code, bedrock) so the dashboard chart can filter by provider.
+    ``surface`` / ``agent`` tag the dispatch origin and resolved agent, and
+    ``context_used`` / ``context_window`` record context-window occupancy — all
+    additive and defaulted so existing callers stay valid.
+
+    ``model_source`` is a provider/client used ONLY to fill ``model`` when the
+    caller could not resolve one (several dispatch surfaces never pick a model
+    explicitly and would otherwise record an empty string, losing the
+    per-model attribution dimension). An explicit ``model`` always wins.
 
     On the async chat hot path, prefer ``persist_token_record_async`` which
     offloads the blocking write off the event loop.
     """
     try:
+        model = _resolve_model(model, model_source)
         now = datetime.now().astimezone()
-        _write_token_record(_build_token_record(slot_key, model, event, provider, now), now)
+        _write_token_record(
+            _build_token_record(
+                slot_key,
+                model,
+                event,
+                provider,
+                now,
+                surface=surface,
+                agent=agent,
+                context_used=context_used,
+                context_window=context_window,
+            ),
+            now,
+        )
     except Exception:
         logger.debug("Failed to persist token record for slot %s", slot_key, exc_info=True)
 
 
 async def persist_token_record_async(
-    slot_key: str, model: str, event: object, provider: str = ""
+    slot_key: str,
+    model: str,
+    event: object,
+    provider: str = "",
+    *,
+    surface: str = "",
+    agent: str = "",
+    context_used: int = 0,
+    context_window: int = 0,
+    model_source: object = None,
 ) -> None:
     """Async variant: builds the record on-loop, offloads the file write.
 
@@ -153,10 +359,23 @@ async def persist_token_record_async(
     the aiohttp event loop — the synchronous open/append previously blocked all
     co-resident coroutines for the IO window. These are best-effort analytics
     (no fsync, exceptions swallowed), so off-loop write loses no durability.
+    See :func:`persist_token_record` for the ``surface`` / ``agent`` /
+    ``context_used`` / ``context_window`` / ``model_source`` fields.
     """
     try:
+        model = _resolve_model(model, model_source)
         now = datetime.now().astimezone()
-        record = _build_token_record(slot_key, model, event, provider, now)
+        record = _build_token_record(
+            slot_key,
+            model,
+            event,
+            provider,
+            now,
+            surface=surface,
+            agent=agent,
+            context_used=context_used,
+            context_window=context_window,
+        )
         await asyncio.to_thread(_write_token_record, record, now)
     except Exception:
         logger.debug("Failed to persist token record for slot %s", slot_key, exc_info=True)

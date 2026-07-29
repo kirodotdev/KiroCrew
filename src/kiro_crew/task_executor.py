@@ -17,12 +17,13 @@ from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, fire_tool_hooks, get_global_hook_store
-from kiro_crew.llm_helpers import stream_and_collect_json
+from kiro_crew.llm_helpers import provider_last_turn_usage, stream_and_collect_json
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
+    LLMEvent,
 )
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
@@ -340,6 +341,7 @@ async def execute_task(
 
             result_text = ""
             _chunk_count = 0
+            _complete_event: LLMEvent | None = None
             async for event in client.stream(full_prompt):
                 if event.kind == EVENT_TEXT_CHUNK:
                     result_text += event.text
@@ -512,12 +514,45 @@ async def execute_task(
                         agent_role=(agent or "kirocrew"),
                     )
                 elif event.kind == EVENT_COMPLETE:
+                    _complete_event = event
                     break
 
             final_result = result_prefix + result_text
             task.result = redact_credentials(redact_exfiltration_urls(final_result)[0])[0]
             sessions.record_success(session_key)
             sessions.check_context_usage(session_key, client)
+
+            # ── Per-turn usage row (issue #647): attribute task-runner spend. ──
+            try:
+                # circular import: reached while kiro_crew.slack.handler is still
+                # initialising (dashboard/handlers/files.py imports is_tracked_channel
+                # from it), so a module-scope import raises ImportError under the
+                # suite's import order.
+                from kiro_crew.dashboard.handlers.usage import (
+                    persist_token_record_async,
+                    read_context_tokens,
+                    read_effective_agent,
+                )
+
+                _usage_cfg = KiroCrewConfig.load()
+                _used, _window = read_context_tokens(client)
+                await persist_token_record_async(
+                    session_key,
+                    # Blank, not the global config model: open_task_session may
+                    # have resolved a custom agent's own model, and an explicit
+                    # value here would outrank model_source and record the
+                    # global default instead of what actually ran.
+                    "",
+                    _complete_event,
+                    provider=_usage_cfg.agent.provider,
+                    surface="task_runner",
+                    agent=read_effective_agent(client) or agent or "",
+                    context_used=_used,
+                    context_window=_window,
+                    model_source=client,
+                )
+            except Exception:
+                logger.debug("usage row (task_runner) persist failed", exc_info=True)
 
         except AcpProcessDied:
             recoveries += 1
@@ -820,6 +855,36 @@ async def self_review(
             cwd=str(run.work_dir) if run.work_dir else None,
         )
         result = await stream_and_collect_json(client, prompt)
+
+        # ── Per-turn usage row (issue #647): self-review is a separate model turn. ──
+        try:
+            # circular import: reached while kiro_crew.slack.handler is still
+            # initialising (dashboard/handlers/files.py imports is_tracked_channel
+            # from it), so a module-scope import raises ImportError under the
+            # suite's import order.
+            from kiro_crew.dashboard.handlers.usage import (
+                persist_token_record_async,
+                read_context_tokens,
+                read_effective_agent,
+            )
+
+            _rv_cfg = KiroCrewConfig.load()
+            _used, _window = read_context_tokens(client)
+            await persist_token_record_async(
+                review_key,
+                # Blank — see the task site above; model_source reports what ran.
+                "",
+                provider_last_turn_usage(client),
+                provider=_rv_cfg.agent.provider,
+                surface="task_runner",
+                agent=read_effective_agent(client) or agent or "",
+                context_used=_used,
+                context_window=_window,
+                model_source=client,
+            )
+        except Exception:
+            logger.debug("usage row (self_review) persist failed", exc_info=True)
+
         if result and not result.get("ok", True):
             issue = result.get("issue", "Review found issues")
             task.error = f"Self-review: {issue}"

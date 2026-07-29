@@ -590,3 +590,113 @@ class TestExecutePreservesCallbackStatus:
         await svc._execute(job)  # second run clean → must reset to ok, not stay error
         assert job.last_status == "ok"
         assert job.last_error is None
+
+
+class TestCronUsageRow:
+    """Issue #647: every model-spending cron turn appends exactly one usage row
+    tagged surface='cron'; the zero-token script/command modes append none."""
+
+    @pytest.mark.asyncio
+    async def test_llm_cron_persists_usage_row_with_surface(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="claude-opus-4-8")
+
+        persist = AsyncMock()
+        # Patch gateway's own bindings: the imports are at module scope there,
+        # so patching the source module would not be seen by the call site.
+        with patch(
+            "kiro_crew.slack.gateway.persist_token_record_async", persist
+        ), patch(
+            "kiro_crew.slack.gateway.read_context_tokens",
+            MagicMock(return_value=(1234, 200000)),
+            create=True,
+        ):
+            await _run_llm_callback(gw, job)
+
+        persist.assert_awaited_once()
+        kwargs = persist.await_args.kwargs
+        assert kwargs["surface"] == "cron"
+        assert kwargs["provider"] == "acp"
+        assert kwargs["context_used"] == 1234
+        assert kwargs["context_window"] == 200000
+
+    @pytest.mark.asyncio
+    async def test_cron_row_records_resolved_agent_not_requested(self):
+        """The agent that served the turn wins over the configured alias."""
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="claude-opus-4-8")
+
+        persist = AsyncMock()
+        with patch(
+            "kiro_crew.slack.gateway.persist_token_record_async", persist
+        ), patch(
+            "kiro_crew.slack.gateway.read_context_tokens",
+            MagicMock(return_value=(10, 100)),
+            create=True,
+        ), patch(
+            "kiro_crew.slack.gateway.read_effective_agent",
+            MagicMock(return_value="kirocrew"),
+            create=True,
+        ):
+            await _run_llm_callback(gw, job)
+
+        persist.assert_awaited_once()
+        assert persist.await_args.kwargs["agent"] == "kirocrew"
+
+    @pytest.mark.asyncio
+    async def test_downgraded_cron_does_not_record_rejected_model(self):
+        """A model that was refused never ran, so it must not be attributed."""
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="claude-nonexistent-9")
+        provider_mock = MagicMock()
+
+        call_count = [0]
+
+        async def _side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("model 'claude-nonexistent-9' not found")
+            return (provider_mock, True, False)
+
+        persist = AsyncMock()
+        with patch(
+            "kiro_crew.slack.gateway.persist_token_record_async", persist
+        ), patch(
+            "kiro_crew.slack.gateway.read_context_tokens",
+            MagicMock(return_value=(10, 100)),
+            create=True,
+        ):
+            await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+
+        persist.assert_awaited_once()
+        # Positional arg 1 is the model; blank defers to model_source, which
+        # reports the model that actually served the turn.
+        assert persist.await_args.args[1] == ""
+
+    @pytest.mark.asyncio
+    async def test_script_cron_writes_no_usage_row(self):
+        gw = _make_gw()
+        job = _make_script_job()
+
+        persist = AsyncMock()
+        with patch(
+            "kiro_crew.slack.gateway.persist_token_record_async", persist
+        ):
+            await _run_script_callback(gw, job, {"status": "ok"})
+
+        persist.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_command_cron_writes_no_usage_row(self):
+        gw = _make_gw()
+        job = _make_command_job()
+
+        persist = AsyncMock()
+        with patch(
+            "kiro_crew.slack.gateway.persist_token_record_async", persist
+        ):
+            await _run_command_callback(
+                gw, job, {"status": "ok", "output": "hello\n", "exit_code": 0}
+            )
+
+        persist.assert_not_awaited()

@@ -81,6 +81,11 @@ from kiro_crew.dashboard.cron_inject import inject_cron_result_to_dashboard
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
 from kiro_crew.dashboard.handlers.messaging import _rehydrate_slot_from_history
+from kiro_crew.dashboard.handlers.usage import (
+    persist_token_record_async,
+    read_context_tokens,
+    read_effective_agent,
+)
 from kiro_crew.dashboard.origin import (
     build_dashboard_url,
     format_dashboard_urls,
@@ -117,6 +122,7 @@ from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
+    provider_last_turn_usage,
     save_conversation_turn,
     stream_and_collect,
 )
@@ -2006,6 +2012,31 @@ class GatewayOrchestrator:
                         if not result_text:
                             result_text = "_No response._"
                         logger.info("Cron '%s': agent '%s' completed", job.name, agent)
+
+                        # ── Per-turn usage row (issue #647): background spend. ──
+                        try:
+
+                            _used, _window = read_context_tokens(client)
+                            await persist_token_record_async(
+                                agent_session_key,
+                                # Blank on a downgrade: the configured model was
+                                # unavailable and the default ran instead, so the
+                                # requested id would attribute spend to a model
+                                # that never executed. Blank defers to
+                                # model_source, which reports what actually ran.
+                                "" if _seq_downgraded else (job.model or ""),
+                                provider_last_turn_usage(client),
+                                provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                                surface="cron",
+                                agent=read_effective_agent(client) or agent or "",
+                                context_used=_used,
+                                context_window=_window,
+                                model_source=client,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "usage row (cron seq) persist failed", exc_info=True
+                            )
                     finally:
                         if _acq:
                             self.sessions.release(agent_session_key)
@@ -2070,6 +2101,26 @@ class GatewayOrchestrator:
                     result_text = _annotate_model_downgrade(result_text)
 
                 job.last_result = result_text
+
+                # ── Per-turn usage row (issue #647): attribute background spend. ──
+                # Best-effort; must never fail the cron turn.
+                try:
+
+                    _used, _window = read_context_tokens(client)
+                    await persist_token_record_async(
+                        session_key,
+                        # Blank on a downgrade — see the sequential site above.
+                        "" if _model_downgraded else (job.model or ""),
+                        provider_last_turn_usage(client),
+                        provider=_provider,
+                        surface="cron",
+                        agent=read_effective_agent(client) or job.agent_id or "",
+                        context_used=_used,
+                        context_window=_window,
+                        model_source=client,
+                    )
+                except Exception:
+                    logger.debug("usage row (cron) persist failed", exc_info=True)
 
                 # ── Error deduplication ──
                 # Suppress Slack for repeated identical results to avoid spam.
@@ -2526,6 +2577,24 @@ class GatewayOrchestrator:
 
                 if not result_text:
                     result_text = "_No response._"
+
+                # ── Per-turn usage row (issue #647): attribute heartbeat spend. ──
+                try:
+
+                    _used, _window = read_context_tokens(client)
+                    await persist_token_record_async(
+                        session_key,
+                        "",
+                        provider_last_turn_usage(client),
+                        provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                        surface="heartbeat",
+                        agent=read_effective_agent(client) or "kirocrew-heartbeat",
+                        context_used=_used,
+                        context_window=_window,
+                        model_source=client,
+                    )
+                except Exception:
+                    logger.debug("usage row (heartbeat) persist failed", exc_info=True)
             except asyncio.TimeoutError:
                 # Tear down the in-flight turn so the underlying claude-agent-acp
                 # process/turn doesn't linger holding the heartbeat session.
@@ -2667,6 +2736,24 @@ class GatewayOrchestrator:
                 ),
                 timeout=_NUDGE_TURN_TIMEOUT,
             )
+
+            # ── Per-turn usage row (issue #647): attribute monitor spend. ──
+            try:
+
+                _used, _window = read_context_tokens(client)
+                await persist_token_record_async(
+                    key,
+                    "",
+                    provider_last_turn_usage(client),
+                    provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                    surface="monitor",
+                    agent=read_effective_agent(client) or _get_agent_for_session(key),
+                    context_used=_used,
+                    context_window=_window,
+                    model_source=client,
+                )
+            except Exception:
+                logger.debug("usage row (monitor) persist failed", exc_info=True)
         except Exception:
             logger.exception("AutoNudge: slack nudge turn failed for %s (loop %s)", key, loop.id)
             return False

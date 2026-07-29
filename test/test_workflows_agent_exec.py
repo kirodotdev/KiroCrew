@@ -14,6 +14,8 @@ See GATES (M6) and docs/system-specs/modules/workflows.md.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 import kiro_crew.workflows.agent_exec as agent_exec
@@ -130,3 +132,29 @@ async def test_end_to_end_through_runner() -> None:
     assert res.ok, res.error
     assert "origin of pizza" in str(res.result)
     assert sessions.created  # the model was actually engaged
+
+
+async def test_agent_step_persists_usage_row_with_surface() -> None:
+    """Issue #647: each workflow agent step appends one usage row tagged
+    surface='workflow', carrying the step's agent/model and context occupancy."""
+    sessions = FakeSessions()
+    fn = build_agent_fn(
+        sessions, run_id="wf_u", default_agent="researcher", default_model="m1"
+    )
+
+    persist = AsyncMock()
+    with patch(
+        "kiro_crew.dashboard.handlers.usage.persist_token_record_async", persist
+    ), patch(
+        "kiro_crew.dashboard.handlers.usage.read_context_tokens",
+        MagicMock(return_value=(42, 200000)),
+        create=True,
+    ):
+        await fn("do work", {})
+
+    persist.assert_awaited_once()
+    kwargs = persist.await_args.kwargs
+    assert kwargs["surface"] == "workflow"
+    assert kwargs["agent"] == "researcher"
+    assert kwargs["context_used"] == 42
+    assert kwargs["context_window"] == 200000

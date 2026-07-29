@@ -409,12 +409,42 @@ async def _run_hook_inner(
             provider_type=KiroCrewConfig.load().agent.provider,
         )
     result_text = ""
+    _complete_event: object | None = None
     async for event in client.stream(full_message):
         if event.kind == EVENT_TEXT_CHUNK:
             result_text += event.text
         elif event.kind == EVENT_COMPLETE:
+            _complete_event = event
             break
     state.sessions.record_success(session_key)  # sync; record_failure is async
+
+    # ── Per-turn usage row (issue #647): attribute webhook spend. ──
+    try:
+        # circular import: reached while kiro_crew.slack.handler is still
+        # initialising (dashboard/handlers/files.py imports is_tracked_channel
+        # from it), so a module-scope import raises ImportError under the
+        # suite's import order.
+        from kiro_crew.dashboard.handlers.usage import (
+            persist_token_record_async,
+            read_context_tokens,
+            read_effective_agent,
+        )
+
+        _used, _window = read_context_tokens(client)
+        await persist_token_record_async(
+            session_key,
+            "",
+            _complete_event,
+            provider=KiroCrewConfig.load().agent.provider,
+            surface="webhook",
+            agent=read_effective_agent(client) or agent or "",
+            context_used=_used,
+            context_window=_window,
+            model_source=client,
+        )
+    except Exception:
+        logger.debug("usage row (webhook) persist failed", exc_info=True)
+
     return result_text
 
 
