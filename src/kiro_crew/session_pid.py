@@ -48,12 +48,28 @@ def _pid_age_seconds(pid: int, proc_root: str = "/proc") -> float | None:
     boot). The comm field (field 2) can contain spaces and parentheses — split
     on the substring AFTER the LAST ')' in the line.
 
-    On non-Linux (no /proc): returns None (macOS has separate reaping paths).
+    On macOS (and other POSIX without /proc): derived from
+    ``platform_compat.get_process_start_id``, whose darwin value is the process
+    start time in epoch ``seconds.microseconds`` — so this needs no
+    ``subprocess`` and is safe on the event loop. Empirically required: the
+    startup sweep SIGKILL'd a live kiro-cli off a stale dead-gateway entry on
+    macOS (2026-07-29 repro) because the grace window silently did not apply
+    there.
+
+    On Windows: returns None (no grace — sweep behavior unchanged there).
 
     The *proc_root* parameter allows injection of a fake /proc tree for testing.
     """
-    if sys.platform != "linux":
+    if platform_compat.IS_WINDOWS:
         return None
+    if sys.platform != "linux":
+        start_id = platform_compat.get_process_start_id(pid)
+        if start_id is None:
+            return None
+        try:
+            return max(0.0, time.time() - float(start_id))
+        except ValueError:
+            return None
     try:
         stat_data = Path(f"{proc_root}/{pid}/stat").read_text()
         # Field 22 is starttime. Fields before it: pid (1), comm (2, in parens,
@@ -80,18 +96,39 @@ def _pid_age_seconds(pid: int, proc_root: str = "/proc") -> float | None:
 def _pid_in_spawn_grace(pid: int) -> bool:
     """Return True if the PID is within the spawn grace period and should be skipped.
 
-    - Non-Linux: returns False (grace not applicable — fall through to existing
-      kill behavior so the sweep remains functional on macOS/Windows).
-    - Linux + successful age read: True if age < SWEEP_SPAWN_GRACE_SECONDS.
-    - Linux + parse/read failure (age is None): True (treat as young — safe
+    - Windows: returns False (no age source — fall through to existing kill
+      behavior so the sweep remains functional there).
+    - POSIX (Linux via /proc, macOS via ``ps -o etime=``) + successful age
+      read: True if age < SWEEP_SPAWN_GRACE_SECONDS.
+    - POSIX + read failure (age is None): True (treat as young — safe
       direction; dead processes are already pruned by the earlier liveness check).
     """
-    if sys.platform != "linux":
+    if platform_compat.IS_WINDOWS:
         return False
     age = _pid_age_seconds(pid)
     if age is None:
         return True  # cannot determine age → treat as young (safe direction)
     return age < SWEEP_SPAWN_GRACE_SECONDS
+
+
+def _pid_start_token(pid: int) -> str | None:
+    """Stable, persistable identity token for a live PID (PID-recycle guard).
+
+    Thin delegate to ``platform_compat.get_process_start_id``, which is
+    in-process on every platform (``/proc`` read on Linux, ``libproc`` ctypes on
+    macOS) — deliberately NOT ``ps``, so this is safe to call from the asyncio
+    event loop via ``_track_session_pid`` at spawn time
+    (``AUTOSDE: no-blocking-call-on-event-loop``).
+
+    Returns ``None`` when identity cannot be determined (Windows, or a process
+    we may not introspect). Callers MUST treat ``None`` as "unknown", never as a
+    mismatch — see the sweep call sites.
+
+    Note this cannot reuse ``acp.client._get_start_time``: that hashes with
+    builtin ``hash()``, which is PYTHONHASHSEED-randomized per interpreter and
+    therefore meaningless once written to disk and compared by a later gateway.
+    """
+    return platform_compat.get_process_start_id(pid)
 
 
 def _pid_file_path() -> Path:
@@ -115,17 +152,25 @@ def _session_pid_file_lock():  # type: ignore[no-untyped-def]
 def _track_session_pid(pid: int) -> None:
     """Append a kiro-cli PID to the session tracking file (dedup).
 
-    Entries are written as ``<gateway_pid>:<child_pid>`` so each gateway
-    instance can identify and sweep only its own children.
+    Entries are written as ``<gateway_pid>:<child_pid>:<start_token>`` so each
+    gateway instance can identify and sweep only its own children, and so the
+    sweep can verify the PID still names the SAME process before killing
+    (PID-recycle guard — see ``_pid_start_token``). When no token is available
+    (Windows, ``ps`` failure) the legacy ``<gateway_pid>:<child_pid>`` form is
+    written and the sweep falls back to cmdline + spawn-grace checks only.
     """
-    entry = f"{os.getpid()}:{pid}"
+    token = _pid_start_token(pid)
+    prefix = f"{os.getpid()}:{pid}"
+    entry = f"{prefix}:{token}" if token else prefix
     with _session_pid_file_lock():
         path = _session_pid_file_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            existing = set(path.read_text(encoding="utf-8").split())
-            if entry in existing:
-                return
+            # Dedup on the gw:pid prefix (not the full entry) so a re-track
+            # never duplicates a legacy 2-field line with a 3-field one.
+            for line in path.read_text(encoding="utf-8").split():
+                if line == prefix or line.startswith(prefix + ":"):
+                    return
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"{entry}\n")
 
@@ -296,8 +341,15 @@ def _sweep_pid_entries(
         if not stripped:
             continue
         try:
+            recorded_token: str | None = None
             if ":" in stripped:
-                parts = stripped.split(":", 1)
+                # ``gw:pid`` (legacy) or ``gw:pid:start_token`` (recycle guard).
+                parts = stripped.split(":")
+                if len(parts) == 3:
+                    recorded_token = parts[2] or None
+                elif len(parts) != 2:
+                    killed_or_dead.add(stripped)
+                    continue
                 try:
                     gw_pid = int(parts[0])
                     pid = int(parts[1])
@@ -338,10 +390,33 @@ def _sweep_pid_entries(
             if not _is_managed_agent_process(pid):
                 killed_or_dead.add(stripped)
                 continue
+            # ── PID-recycle identity check ──────────────────────────
+            # The strongest guard: the entry recorded the child's start token
+            # at spawn. If the live process's token DIFFERS, this PID has been
+            # RECYCLED onto a different (agent) process — e.g. a fresh
+            # gateway's own just-spawned backend landing on a stale dead-
+            # gateway entry's PID (empirically reproduced on macOS
+            # 2026-07-29: sweep SIGKILL'd a live kiro-cli, surfacing as
+            # 'process exited (rc=None)'). Prune the stale entry, never kill.
+            #
+            # An UNREADABLE live token (None) is "identity unknown", NOT a
+            # mismatch: pruning there would untrack a live genuine orphan and
+            # leak it forever, since every sweep keys off this file (same
+            # fail-safe as _pid_gone_or_unmanaged — "any inconclusive result
+            # retains"). Keep the entry and fall through to the grace check;
+            # the next sweep retries.
+            if recorded_token is not None:
+                live_token = _pid_start_token(pid)
+                if live_token is not None and live_token != recorded_token:
+                    killed_or_dead.add(stripped)
+                    continue
+                if live_token is None:
+                    continue  # identity unknown — retain entry, retry next sweep
             # ── Spawn grace period (Fix A) ──────────────────────────
             # Skip live PIDs younger than SWEEP_SPAWN_GRACE_SECONDS.
-            # Non-Linux: grace not applicable (falls through to kill).
-            # Linux + parse failure: treat as young (safe direction).
+            # POSIX-wide (Linux /proc, macOS ps -o etime=); Windows: no age
+            # source, falls through to kill (behavior unchanged there).
+            # POSIX read failure: treat as young (safe direction).
             # A missed kill self-heals next cycle.
             if _pid_in_spawn_grace(pid):
                 continue
@@ -686,7 +761,17 @@ def cleanup_orphaned_session_roots() -> int:
         if not stripped or ":" not in stripped:
             continue
 
-        parts = stripped.split(":", 1)
+        # ``gw:pid`` (legacy) or ``gw:pid:start_token`` (recycle guard) — see
+        # _track_session_pid. A bare split(":", 1) would leave "pid:token" in
+        # parts[1] and int() it into a prune, silently discarding every
+        # token-bearing entry instead of sweeping it.
+        parts = stripped.split(":")
+        recorded_token: str | None = None
+        if len(parts) == 3:
+            recorded_token = parts[2] or None
+        elif len(parts) != 2:
+            entries_to_remove.add(stripped)
+            continue
         try:
             gw_pid = int(parts[0])
             child_pid = int(parts[1])
@@ -744,6 +829,20 @@ def cleanup_orphaned_session_roots() -> int:
             # PPid is something else entirely — PID was reused, prune
             entries_to_remove.add(stripped)
             continue
+
+        # Strongest PID-reuse guard: the entry recorded the child's start
+        # token at spawn (see _pid_start_token). A MISMATCH means this PID now
+        # names a DIFFERENT process — prune, never kill. An unreadable live
+        # token is "identity unknown", not a mismatch: retain the entry so a
+        # live genuine orphan is not untracked (and thus leaked forever) on one
+        # transient probe failure; the next sweep retries.
+        if recorded_token is not None:
+            live_token = _pid_start_token(child_pid)
+            if live_token is not None and live_token != recorded_token:
+                entries_to_remove.add(stripped)
+                continue
+            if live_token is None:
+                continue  # identity unknown — retain entry, retry next sweep
 
         # Confirmed orphan: kill the process tree
         total_killed, root_killed = _kill_pid_tree(child_pid)
@@ -826,13 +925,17 @@ def _untrack_session_pid(pid: int) -> None:
     orphan sweep doesn't race against legitimate still-running kiro-cli
     processes whose in-memory session entry has transiently gone away
     (e.g. during compaction/reset/replace)."""
-    entry = f"{os.getpid()}:{pid}"
+    prefix = f"{os.getpid()}:{pid}"
     with _session_pid_file_lock():
         path = _session_pid_file_path()
         if not path.exists():
             return
         lines = path.read_text(encoding="utf-8").splitlines()
-        lines = [ln for ln in lines if ln.strip() != entry]
+        # Match both the legacy ``gw:pid`` form and the token-bearing
+        # ``gw:pid:token`` form (see _track_session_pid).
+        lines = [
+            ln for ln in lines if ln.strip() != prefix and not ln.strip().startswith(prefix + ":")
+        ]
         path.write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")
 
 

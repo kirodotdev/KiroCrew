@@ -683,11 +683,25 @@ class TestPidAgeSeconds:
 class TestPidInSpawnGrace:
     """Tests for _pid_in_spawn_grace helper."""
 
-    def test_non_linux_returns_false(self) -> None:
-        """Non-Linux: grace not applicable, returns False (sweep proceeds)."""
+    def test_macos_young_pid_returns_true(self) -> None:
+        """macOS: grace DOES apply (regression — it was silently Linux-only).
+
+        The startup sweep SIGKILLed a live kiro-cli on macOS because this
+        returned False unconditionally off-Linux (2026-07-29 repro).
+        """
         from kiro_crew.session_pid import _pid_in_spawn_grace
 
-        with patch("kiro_crew.session_pid.sys.platform", "darwin"):
+        with (
+            patch("kiro_crew.session_pid.sys.platform", "darwin"),
+            patch("kiro_crew.session_pid._pid_age_seconds", return_value=30.0),
+        ):
+            assert _pid_in_spawn_grace(12345) is True
+
+    def test_windows_returns_false(self) -> None:
+        """Windows: no age source — grace not applicable, sweep proceeds."""
+        from kiro_crew.session_pid import _pid_in_spawn_grace
+
+        with patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True):
             assert _pid_in_spawn_grace(12345) is False
 
     @_linux_only
@@ -768,14 +782,20 @@ class TestSweepGraceIntegration:
         assert 99999 not in candidates
 
     def test_non_linux_old_orphan_still_killed(self, session_pid_file: Path) -> None:
-        """On non-Linux, grace is not applied — old orphans are still killed."""
+        """On macOS, an orphan OLDER than the grace window is still killed.
+
+        Grace now applies cross-platform, so the age must be stubbed old —
+        previously non-Linux skipped grace entirely, which is the defect that
+        let the sweep kill freshly-spawned backends.
+        """
         from kiro_crew.session_pid import _sweep_pid_entries
 
         with (
             patch("os.kill"),  # alive
             patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
-            # _pid_in_spawn_grace returns False on non-linux
             patch("kiro_crew.session_pid.sys.platform", "darwin"),
+            # Older than SWEEP_SPAWN_GRACE_SECONDS → grace does not protect it.
+            patch("kiro_crew.session_pid._pid_age_seconds", return_value=9999.0),
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
         ):
             killed, dead, _ = _sweep_pid_entries(
@@ -786,3 +806,23 @@ class TestSweepGraceIntegration:
 
         assert killed == 1
         assert "1:99999" in dead
+
+    def test_non_linux_young_orphan_spared(self, session_pid_file: Path) -> None:
+        """Regression: on macOS a YOUNG live agent PID must NOT be killed."""
+        from kiro_crew.session_pid import _sweep_pid_entries
+
+        with (
+            patch("os.kill"),  # alive
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch("kiro_crew.session_pid.sys.platform", "darwin"),
+            patch("kiro_crew.session_pid._pid_age_seconds", return_value=5.0),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+        ):
+            killed, dead, _ = _sweep_pid_entries(
+                ["1:99999"],
+                should_skip_tagged=lambda gw, p: False,
+                should_skip_bare=lambda p: False,
+            )
+
+        assert killed == 0
+        assert "1:99999" not in dead

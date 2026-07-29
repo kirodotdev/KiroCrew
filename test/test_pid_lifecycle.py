@@ -1283,3 +1283,369 @@ class TestSpawnedMarkerInjection:
                 f"{rel} no longer injects the KIROCREW_SPAWNED marker — "
                 "escaped MCP trees from this site become unsweepable"
             )
+
+
+# ── PID-recycle identity guard + cross-platform spawn grace ───────────
+# Regression cover for the quit->reopen race reproduced on macOS 2026-07-29:
+# a stale ``<dead_gw>:<pid>`` entry whose PID had been recycled onto a LIVE
+# kiro-cli was SIGKILL'd by the startup sweep (surfacing to the user as
+# "process exited (rc=None)"), because the file sweep verified only the
+# cmdline and the spawn-grace window was silently Linux-only.
+
+
+class TestPidStartTokenIdentityGuard:
+    def test_track_session_pid_records_start_token(
+        self, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Entries carry ``gw:pid:token`` so the sweep can verify identity."""
+        from kiro_crew.session_pid import _track_session_pid
+
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: "tok123")
+        _track_session_pid(4242)
+        assert session_pid_file.read_text(encoding="utf-8").strip() == f"{os.getpid()}:4242:tok123"
+
+    def test_track_session_pid_falls_back_when_token_unavailable(
+        self, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No token (Windows / ps failure) → legacy 2-field entry."""
+        from kiro_crew.session_pid import _track_session_pid
+
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: None)
+        _track_session_pid(4242)
+        assert session_pid_file.read_text(encoding="utf-8").strip() == f"{os.getpid()}:4242"
+
+    def test_track_session_pid_dedups_across_formats(
+        self, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A legacy entry must not be duplicated by a token-bearing re-track."""
+        from kiro_crew.session_pid import _track_session_pid
+
+        session_pid_file.write_text(f"{os.getpid()}:4242\n")
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: "tok123")
+        _track_session_pid(4242)
+        lines = session_pid_file.read_text(encoding="utf-8").strip().splitlines()
+        assert lines == [f"{os.getpid()}:4242"]
+
+    def test_untrack_session_pid_removes_token_entry(
+        self, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Untrack matches the token-bearing form, not just the legacy one."""
+        from kiro_crew.session_pid import _track_session_pid, _untrack_session_pid
+
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: "tok123")
+        _track_session_pid(4242)
+        _untrack_session_pid(4242)
+        assert session_pid_file.read_text(encoding="utf-8").strip() == ""
+
+    def test_recycled_pid_is_pruned_not_killed(self, session_pid_file: Path) -> None:
+        """THE regression: token mismatch → prune the stale entry, never kill.
+
+        The PID is live and its cmdline matches an agent, so every pre-existing
+        guard passes; only the start-token comparison catches the recycle.
+        """
+        from kiro_crew.session_pid import cleanup_orphaned_sessions
+
+        # Dead gateway (999999) : live child PID, recorded with an OLD token.
+        session_pid_file.write_text("999999:99998:oldtoken\n")
+        kills: list[tuple[int, int]] = []
+
+        with (
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            # Live process now reports a DIFFERENT token → PID was recycled.
+            patch("kiro_crew.session_pid._pid_start_token", return_value="newtoken"),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_liveness",
+                return_value=platform_compat.PID_ALIVE,
+            ),
+            # The owning gateway (999999) must read as DEAD or _skip_tagged
+            # skips the entry and the test passes vacuously; the child is alive.
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_exists",
+                side_effect=lambda p: p != 999999,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append((p, s)),
+            ),
+            # Grace disabled so the ONLY thing that can save the process is the
+            # identity check under test.
+            patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
+            patch("kiro_crew.session_pid._cleanup_orphaned_mcp_servers", return_value=0),
+        ):
+            cleanup_orphaned_sessions()
+
+        assert kills == [], f"recycled PID was killed: {kills}"
+
+    def test_unreadable_token_retains_entry(self, session_pid_file: Path) -> None:
+        """Unknown identity must NOT prune: pruning would leak a live orphan.
+
+        Every sweep keys off this file, so untracking a live process on one
+        transient probe failure orphans it permanently (the fail-safe stated in
+        _pid_gone_or_unmanaged: "any inconclusive result retains").
+        """
+        from kiro_crew.session_pid import cleanup_orphaned_sessions
+
+        entry = "999999:99998:recorded-token"
+        session_pid_file.write_text(entry + "\n")
+        kills: list[tuple[int, int]] = []
+
+        with (
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            # Identity unreadable (probe failure) — neither match nor mismatch.
+            patch("kiro_crew.session_pid._pid_start_token", return_value=None),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_liveness",
+                return_value=platform_compat.PID_ALIVE,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_exists",
+                side_effect=lambda p: p != 999999,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append((p, s)),
+            ),
+            patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
+            patch("kiro_crew.session_pid._cleanup_orphaned_mcp_servers", return_value=0),
+        ):
+            cleanup_orphaned_sessions()
+
+        assert kills == [], "killed a process whose identity could not be verified"
+
+    def test_session_roots_unreadable_token_retains_entry(self, session_pid_file: Path) -> None:
+        """Same fail-safe in the periodic root sweep: retain, don't kill or drop."""
+        from kiro_crew.session_pid import cleanup_orphaned_session_roots
+
+        entry = "999999:99998:recorded-token"
+        session_pid_file.write_text(entry + "\n")
+        kills: list[tuple[int, int]] = []
+
+        def fake_liveness(pid: int) -> str:
+            return platform_compat.PID_DEAD if pid == 999999 else platform_compat.PID_ALIVE
+
+        with (
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch("kiro_crew.session_pid._pid_start_token", return_value=None),
+            patch("kiro_crew.session_pid.platform_compat.pid_liveness", side_effect=fake_liveness),
+            patch("kiro_crew.session_pid.platform_compat.get_ppid", return_value=1),
+            patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append((p, s)),
+            ),
+        ):
+            cleanup_orphaned_session_roots()
+
+        assert kills == [], "killed a process whose identity could not be verified"
+        # Entry retained so the next sweep can retry.
+        assert entry in session_pid_file.read_text(encoding="utf-8")
+
+    def test_matching_token_still_killed(self, session_pid_file: Path) -> None:
+        """A genuine orphan (token matches) is still reaped — no regression."""
+        from kiro_crew.session_pid import cleanup_orphaned_sessions
+
+        session_pid_file.write_text("999999:99998:sametoken\n")
+        kills: list[tuple[int, int]] = []
+
+        with (
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch("kiro_crew.session_pid._pid_start_token", return_value="sametoken"),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_liveness",
+                return_value=platform_compat.PID_ALIVE,
+            ),
+            # The owning gateway (999999) must read as DEAD or _skip_tagged
+            # skips the entry and the test passes vacuously; the child is alive.
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_exists",
+                side_effect=lambda p: p != 999999,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append((p, s)),
+            ),
+            patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
+            patch("kiro_crew.session_pid._cleanup_orphaned_mcp_servers", return_value=0),
+        ):
+            cleanup_orphaned_sessions()
+
+        assert (99998, platform_compat.SIGKILL) in kills
+
+    def test_legacy_entry_without_token_still_swept(self, session_pid_file: Path) -> None:
+        """Back-compat: a 2-field entry keeps its old cmdline+grace behavior."""
+        from kiro_crew.session_pid import cleanup_orphaned_sessions
+
+        session_pid_file.write_text("999999:99998\n")
+        kills: list[tuple[int, int]] = []
+
+        with (
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_liveness",
+                return_value=platform_compat.PID_ALIVE,
+            ),
+            # The owning gateway (999999) must read as DEAD or _skip_tagged
+            # skips the entry and the test passes vacuously; the child is alive.
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_exists",
+                side_effect=lambda p: p != 999999,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append((p, s)),
+            ),
+            patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
+            patch("kiro_crew.session_pid._cleanup_orphaned_mcp_servers", return_value=0),
+        ):
+            cleanup_orphaned_sessions()
+
+        assert (99998, platform_compat.SIGKILL) in kills
+
+    def test_session_roots_sweep_parses_token_entry(self, session_pid_file: Path) -> None:
+        """cleanup_orphaned_session_roots must not mis-prune 3-field entries.
+
+        A ``split(":", 1)`` parse would int("99998:tok") -> ValueError and prune
+        the entry, silently dropping every token-bearing line from the sweep.
+        """
+        from kiro_crew.session_pid import cleanup_orphaned_session_roots
+
+        session_pid_file.write_text("999999:99998:sametoken\n")
+        kills: list[tuple[int, int]] = []
+
+        def fake_liveness(pid: int) -> str:
+            # Owning gateway dead; child alive.
+            return platform_compat.PID_DEAD if pid == 999999 else platform_compat.PID_ALIVE
+
+        with (
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch("kiro_crew.session_pid._pid_start_token", return_value="sametoken"),
+            patch("kiro_crew.session_pid.platform_compat.pid_liveness", side_effect=fake_liveness),
+            patch("kiro_crew.session_pid.platform_compat.get_ppid", return_value=1),
+            patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append((p, s)),
+            ),
+        ):
+            cleanup_orphaned_session_roots()
+
+        assert (99998, platform_compat.SIGKILL) in kills
+
+    def test_session_roots_sweep_spares_recycled_pid(self, session_pid_file: Path) -> None:
+        """Token mismatch in the periodic root sweep → prune, never kill."""
+        from kiro_crew.session_pid import cleanup_orphaned_session_roots
+
+        session_pid_file.write_text("999999:99998:oldtoken\n")
+        kills: list[tuple[int, int]] = []
+
+        def fake_liveness(pid: int) -> str:
+            return platform_compat.PID_DEAD if pid == 999999 else platform_compat.PID_ALIVE
+
+        with (
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch("kiro_crew.session_pid._pid_start_token", return_value="newtoken"),
+            patch("kiro_crew.session_pid.platform_compat.pid_liveness", side_effect=fake_liveness),
+            patch("kiro_crew.session_pid.platform_compat.get_ppid", return_value=1),
+            patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append((p, s)),
+            ),
+        ):
+            cleanup_orphaned_session_roots()
+
+        assert kills == [], f"recycled PID was killed: {kills}"
+
+
+class TestSpawnGraceCrossPlatform:
+    def test_grace_applies_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Regression: the grace window was Linux-only, so macOS never got it."""
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(sp.sys, "platform", "darwin")
+        monkeypatch.setattr(sp, "_pid_age_seconds", lambda p: 5.0)
+        assert sp._pid_in_spawn_grace(4242) is True
+
+    def test_old_process_not_in_grace_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(sp.sys, "platform", "darwin")
+        monkeypatch.setattr(sp, "_pid_age_seconds", lambda p: sp.SWEEP_SPAWN_GRACE_SECONDS + 1)
+        assert sp._pid_in_spawn_grace(4242) is False
+
+    def test_unknown_age_treated_as_young(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Unreadable age → safe direction (skip the kill)."""
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(sp.sys, "platform", "darwin")
+        monkeypatch.setattr(sp, "_pid_age_seconds", lambda p: None)
+        assert sp._pid_in_spawn_grace(4242) is True
+
+    def test_macos_age_derived_from_start_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """macOS age comes from the in-process start id — no subprocess/ps."""
+        import time as _time
+
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(sp.sys, "platform", "darwin")
+        monkeypatch.setattr(sp.platform_compat, "IS_WINDOWS", False)
+        start = _time.time() - 90.0
+        monkeypatch.setattr(sp.platform_compat, "get_process_start_id", lambda p: f"{start:.6f}")
+        age = sp._pid_age_seconds(4242)
+        assert age is not None and 85.0 <= age <= 95.0
+
+    def test_macos_age_none_when_identity_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(sp.sys, "platform", "darwin")
+        monkeypatch.setattr(sp.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(sp.platform_compat, "get_process_start_id", lambda p: None)
+        assert sp._pid_age_seconds(4242) is None
+
+    def test_windows_has_no_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Windows keeps prior behavior (no age source, sweep stays functional)."""
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(sp.platform_compat, "IS_WINDOWS", True)
+        assert sp._pid_in_spawn_grace(4242) is False
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: relies on fork/exec + ps for identity"
+)
+class TestSweepSparesLiveProcess:
+    """End-to-end repro of the 2026-07-29 macOS incident with a REAL process.
+
+    The mock-based tests above pin the decision logic; this one proves the
+    whole sweep leaves an actually-running process alive. The victim is a
+    short-lived ``sleep`` renamed via ``_is_managed_agent_process`` patching,
+    so no kiro-cli is required and nothing user-owned is at risk.
+    """
+
+    def test_live_process_with_recycled_entry_survives(
+        self, session_pid_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.session_pid import cleanup_orphaned_sessions
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            # Stale entry from a DEAD gateway naming the live PID, with a token
+            # that cannot match the live process (the recycle signature).
+            session_pid_file.write_text(f"999999:{victim.pid}:stale-token-does-not-match\n")
+
+            with (
+                # Cmdline check passes (as it did in the real incident).
+                patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+                # Grace disabled: isolate the identity check as the sole guard.
+                patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
+                patch("kiro_crew.session_pid._cleanup_orphaned_mcp_servers", return_value=0),
+            ):
+                cleanup_orphaned_sessions()
+
+            assert victim.poll() is None, "sweep SIGKILLed a live process (the bug)"
+            # And the stale entry is pruned so it can't re-trigger next boot.
+            assert str(victim.pid) not in session_pid_file.read_text(encoding="utf-8")
+        finally:
+            victim.kill()
+            victim.wait()

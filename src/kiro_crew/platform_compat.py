@@ -90,9 +90,16 @@ _SUBPROCESS_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 #
 # Names only (no leading path): matched against a single path component so the
 # same set works for both os.walk dirname pruning and scandir entry filtering.
-TCC_PROTECTED_HOME_DIRS: frozenset[str] = frozenset({
-    "Downloads", "Documents", "Desktop", "Pictures", "Movies", "Music",
-})
+TCC_PROTECTED_HOME_DIRS: frozenset[str] = frozenset(
+    {
+        "Downloads",
+        "Documents",
+        "Desktop",
+        "Pictures",
+        "Movies",
+        "Music",
+    }
+)
 # Deliberately NOT included: ``Library``. It is not TCC-gated, so pruning it
 # removes zero prompts — while ``~/Library/CloudStorage/<Provider>/`` (modern
 # OneDrive / Google Drive / Dropbox mounts) and ``~/Library/Mobile Documents/``
@@ -391,6 +398,74 @@ def get_ppid(pid: int) -> int:
         except Exception:
             return -1
     return -1
+
+
+# macOS ``struct proc_bsdinfo`` (PROC_PIDTBSDINFO, 136 bytes) field offsets used
+# below. Verified empirically against ``ps -o lstart=`` on darwin: ``pbi_ppid``
+# at 16 (see get_ppid), ``pbi_start_tvsec`` at 120, ``pbi_start_tvusec`` at 128.
+_DARWIN_BSDINFO_SIZE = 136
+_DARWIN_OFF_START_TVSEC = 120
+_DARWIN_OFF_START_TVUSEC = 128
+
+
+def get_process_start_id(pid: int) -> str | None:
+    """Return a stable per-process start-time identity string, or ``None``.
+
+    Two processes that reuse the same PID at different times get DIFFERENT
+    values, so callers can tell "still the process I spawned" from "this PID was
+    recycled". The value is stable for the whole lifetime of a process and is
+    safe to persist and compare from a *different* process (unlike a builtin
+    ``hash()``, which is PYTHONHASHSEED-randomized per interpreter).
+
+    Never contains ``:``, so callers may embed it in colon-delimited records.
+
+    Implementation is deliberately **in-process and non-blocking** on every
+    platform — no ``subprocess``/fork — so it is safe to call directly from the
+    asyncio event loop (``AUTOSDE: no-blocking-call-on-event-loop``):
+
+    - Linux: ``/proc/<pid>/stat`` field 22 (starttime in clock ticks since boot).
+    - macOS: ``libproc.proc_pidinfo`` ``pbi_start_tvsec``/``pbi_start_tvusec``
+      (microsecond resolution, so processes spawned in the same second do not
+      alias — unlike ``ps -o lstart=``, which is 1-second granularity).
+    - Windows / any failure (including a process we may not introspect): ``None``,
+      meaning "identity unknown" — callers must not treat that as a mismatch.
+    """
+    if sys.platform == "linux":
+        try:
+            stat_data = Path(f"/proc/{pid}/stat").read_text()
+            # comm (field 2) may contain spaces/parens — parse after the LAST ')'
+            close_paren = stat_data.rfind(")")
+            if close_paren < 0:
+                return None
+            return stat_data[close_paren + 2 :].split()[19]
+        except Exception:
+            return None
+    if sys.platform == "darwin":
+        try:
+            path = ctypes.util.find_library("proc")
+            if path is None:
+                return None
+            lib = ctypes.CDLL(path)
+            lib.proc_pidinfo.argtypes = [
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint64,
+                ctypes.c_void_p,
+                ctypes.c_int,
+            ]
+            lib.proc_pidinfo.restype = ctypes.c_int
+            buf = ctypes.create_string_buffer(_DARWIN_BSDINFO_SIZE)
+            ret = lib.proc_pidinfo(pid, 3, 0, buf, _DARWIN_BSDINFO_SIZE)  # PROC_PIDTBSDINFO=3
+            if ret <= 0:
+                return None
+            sec = struct.unpack_from("<Q", buf.raw, _DARWIN_OFF_START_TVSEC)[0]
+            usec = struct.unpack_from("<Q", buf.raw, _DARWIN_OFF_START_TVUSEC)[0]
+            if sec == 0:
+                return None  # implausible — treat as unknown rather than a value
+            return f"{sec}.{usec:06d}"
+        except Exception:
+            return None
+    return None
 
 
 def _descendants_from_parent_map(root_pid: int, parent_map: dict[int, int]) -> list[int]:
@@ -1052,7 +1127,9 @@ def process_owner_uid(pid: int) -> int | None:
         if sys.platform == "darwin":
             out = subprocess.check_output(
                 ["ps", "-o", "uid=", "-p", str(int(pid))],
-                text=True, stderr=subprocess.DEVNULL, timeout=2,
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
             )
             raw = out.strip()
             return int(raw) if raw.isdigit() else None
