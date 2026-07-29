@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
 import tempfile
 import unittest.mock
@@ -237,9 +238,12 @@ class TestMalformedConfigValuesNeverCrashLoad:
         assert _load_from_dict({"agent": {"log_level": "debug"}}).agent.log_level == "DEBUG"
 
     def test_non_list_subagent_cwd_allowed_roots_falls_back(self):
-        # The parse-time fallback preserves prior absent-key behavior: the
-        # historical `list(get(default=[4 roots]))` yielded these 4 roots.
+        # This fallback is the value REAL configs get: from_dict always passes an
+        # explicit value, so an absent key lands here too. It must stay at the
+        # historical four roots, and the field default now reads the same
+        # constant instead of stating a narrower two-root list of its own.
         fallback = ["~/workspace", "~/workspaces", "~/workplace", "~/workplaces"]
+        assert loader_module.DEFAULT_CWD_ALLOWED_ROOTS == fallback
         # int would crash list(); a string would char-split silently.
         assert (
             _load_from_dict(
@@ -3526,3 +3530,118 @@ class TestWeixinConfig(unittest.TestCase):
     def test_dm_policy_defaults_to_deny_by_default(self):
         cfg = _load_from_dict({"weixin": {"enabled": True}})
         self.assertEqual(cfg.weixin.dm_policy, "allowlist")
+
+
+class TestUnsatisfiableSubagentCwdRoots(unittest.TestCase):
+    """``subagent_cwd_allowed_roots`` is never widened, and never probed on load.
+
+    A config persisted when the shipped default was narrower keeps that list
+    through every upgrade, so a host with no ``~/workspace`` rejects every
+    ``spawn_run`` cwd. Tempting as it is to repair that, these roots are a
+    least-privilege allowlist: an operator who allowlisted a single directory
+    sitting on an unmounted automount looks exactly like a stale default, so
+    auto-repairing the second case would grant access the first withheld. The
+    operator edits the config; nothing here rewrites it for them.
+    """
+
+    def _agents(self) -> dict:
+        """A config stanza that triggers no write-back migration."""
+        return {
+            "agents": {
+                "default": {
+                    "kiro_agent": "kirocrew",
+                    "workspace": "default",
+                    "memory_store": "default",
+                }
+            },
+            "default_agent": "default",
+        }
+
+    def _load(self, data: dict) -> tuple[KiroCrewConfig, dict, bool]:
+        """Load *data* from a temp file; return (cfg, on-disk json, migrated)."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            tmp = Path(f.name)
+        bak = tmp.with_suffix(".json.bak")
+        try:
+            with unittest.mock.patch(
+                "kiro_crew.config.loader.config_path",
+                return_value=tmp,
+            ):
+                cfg = KiroCrewConfig.load()
+            return (cfg, json.loads(tmp.read_text(encoding="utf-8")), bak.exists())
+        finally:
+            tmp.unlink(missing_ok=True)
+            bak.unlink(missing_ok=True)
+
+    def test_unsatisfiable_list_is_never_widened(self):
+        """No configured root exists → the list is left exactly as configured.
+
+        Widening here would admit a cwd the operator deliberately excluded.
+        """
+        ghost = str(Path(tempfile.gettempdir()) / "kc-no-such-root-9f3a")
+        data = self._agents() | {"agent": {"subagent_cwd_allowed_roots": [ghost]}}
+        cfg, on_disk, migrated = self._load(data)
+
+        self.assertEqual(cfg.agent.subagent_cwd_allowed_roots, [ghost])
+        self.assertEqual(on_disk["agent"]["subagent_cwd_allowed_roots"], [ghost])
+        self.assertFalse(migrated, "an unsatisfiable list must not rewrite the config")
+
+    def test_load_does_not_stat_the_roots(self):
+        """load() runs per spawn — it must not touch the filesystem for roots.
+
+        A configured root on a stalled network mount would otherwise block the
+        caller, and load() is reached from the async spawn path. Nothing stats
+        the configured roots today; this guards against reintroducing it.
+        """
+        ghost = str(Path(tempfile.gettempdir()) / "kc-no-such-root-9f3a")
+        data = self._agents() | {"agent": {"subagent_cwd_allowed_roots": [ghost]}}
+        real_isdir = os.path.isdir
+
+        with unittest.mock.patch("os.path.isdir", side_effect=real_isdir) as isdir:
+            self._load(data)
+
+        # Compare the call ARGUMENT, not str(call): a repr'd Windows path has
+        # its backslashes escaped, so substring matching would find nothing
+        # and pass vacuously on the one OS most likely to differ.
+        probed = [
+            c
+            for c in isdir.call_args_list
+            if c.args and os.path.normcase(str(c.args[0])) == os.path.normcase(ghost)
+        ]
+        self.assertEqual(probed, [], f"load() stat'd an allowed root: {probed}")
+
+    def test_deliberately_narrow_list_survives(self):
+        """One existing root is enough — a narrow allowlist is honored as written."""
+        real = tempfile.gettempdir()
+        data = self._agents() | {"agent": {"subagent_cwd_allowed_roots": [real]}}
+        cfg, _, migrated = self._load(data)
+
+        self.assertEqual(cfg.agent.subagent_cwd_allowed_roots, [real])
+        self.assertFalse(migrated)
+
+    def test_empty_list_stays_empty(self):
+        """An empty list disables cwd overrides on purpose — not a broken config."""
+        data = self._agents() | {"agent": {"subagent_cwd_allowed_roots": []}}
+        cfg, _, migrated = self._load(data)
+
+        self.assertEqual(cfg.agent.subagent_cwd_allowed_roots, [])
+        self.assertFalse(migrated)
+
+    def test_absent_key_keeps_the_historical_four_roots(self):
+        """An absent key reaches the same fallback as a malformed one.
+
+        Narrowing that fallback would revoke ~/workspaces and ~/workplaces from
+        every config that simply omits the field.
+        """
+        cfg, _, _ = self._load(self._agents() | {"agent": {"log_level": "WARNING"}})
+
+        self.assertEqual(
+            cfg.agent.subagent_cwd_allowed_roots,
+            ["~/workspace", "~/workspaces", "~/workplace", "~/workplaces"],
+        )
+        self.assertEqual(
+            loader_module.DEFAULT_CWD_ALLOWED_ROOTS,
+            cfg.agent.subagent_cwd_allowed_roots,
+            "field default and fallback must not drift apart again",
+        )

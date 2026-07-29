@@ -269,7 +269,8 @@ def _list_tools() -> list[dict[str, Any]]:
                             "instead of the default sandbox. Enables cwd-relative resource globs "
                             "(.kiro/steering, AGENTS.md, CLAUDE.md) to resolve against this directory. "
                             "Must be under a configured subagent_cwd_allowed_roots entry "
-                            "(default: [~/workspace, ~/workplace]). Applies to all tasks in a batch spawn."
+                            "(default: [~/workspace, ~/workspaces, ~/workplace, "
+                            "~/workplaces]). Applies to all tasks in a batch spawn."
                         ),
                     },
                     "model": {

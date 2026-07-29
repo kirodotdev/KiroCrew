@@ -513,6 +513,21 @@ JAIL_MODE_ON = "on"
 JAIL_MODE_OFF = "off"
 _VALID_JAIL_MODES = (JAIL_MODE_AUTO, JAIL_MODE_ON, JAIL_MODE_OFF)
 
+# Standard work-tree roots for ``agent.subagent_cwd_allowed_roots``.  Single
+# source of truth shared by the field default and the fallback in ``from_dict``.
+# The two had drifted — the field default listed two roots, the fallback four —
+# and the FALLBACK was the value real configs got, because ``from_dict`` always
+# passes an explicit value and an absent key reaches the same branch as a
+# malformed one.  Four is therefore what the product actually shipped, so the
+# field default moves to match it.  Narrowing to two instead would revoke
+# ~/workspaces and ~/workplaces from every config that omits the field.
+DEFAULT_CWD_ALLOWED_ROOTS = [
+    "~/workspace",
+    "~/workspaces",
+    "~/workplace",
+    "~/workplaces",
+]
+
 
 @dataclass
 class AgentConfig:
@@ -764,7 +779,7 @@ class AgentConfig:
         ),
     )
     subagent_cwd_allowed_roots: list[str] = field(
-        default_factory=lambda: ["~/workspace", "~/workplace"],
+        default_factory=lambda: list(DEFAULT_CWD_ALLOWED_ROOTS),
         metadata=_meta(
             "SubAgent CWD Allowed Roots",
             "Directory roots under which spawn_run's cwd parameter is permitted. "
@@ -3706,7 +3721,7 @@ class KiroCrewConfig:
                 subagent_cwd_allowed_roots=(
                     [r for r in _roots if isinstance(r, str)]
                     if isinstance(_roots := agent_data.get("subagent_cwd_allowed_roots"), list)
-                    else ["~/workspace", "~/workspaces", "~/workplace", "~/workplaces"]
+                    else list(DEFAULT_CWD_ALLOWED_ROOTS)
                 ),
                 log_level=(
                     lvl.upper()

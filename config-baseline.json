@@ -46,7 +46,9 @@
         "subagent_result_ttl_secs": 3600,
         "subagent_cwd_allowed_roots": [
           "~/workspace",
-          "~/workplace"
+          "~/workspaces",
+          "~/workplace",
+          "~/workplaces"
         ],
         "max_channels": 1,
         "max_channel_agents": 3,
@@ -511,7 +513,9 @@
       "enumValues": null,
       "defaultValue": [
         "~/workspace",
-        "~/workplace"
+        "~/workspaces",
+        "~/workplace",
+        "~/workplaces"
       ]
     },
     {
