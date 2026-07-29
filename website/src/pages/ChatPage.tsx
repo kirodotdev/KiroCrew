@@ -21,6 +21,7 @@ import {
   toggleActivity, openActivityPanel, openActivityToTab,
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem,
+  mcpAppKey,
 } from '../store/chatSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
@@ -524,6 +525,10 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
   return <>{body}{cards}</>
 }
 
+/** Stable empty set so the mcpApps-derived selector returns a referentially
+ *  equal value when the slot has no app renders (avoids useless re-renders). */
+const EMPTY_APP_ID_SET: ReadonlySet<string> = new Set()
+
 export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean } = {}) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
@@ -557,6 +562,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const connected = useConnected()
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  // tool_call_ids in THIS slot that have a live MCP App render payload. Passed
+  // to TurnBlock so app-bearing rows (which mount an interactive iframe) never
+  // fold into a collapsible pane — collapsing hides the app, and re-expanding
+  // remounts the iframe and loses in-canvas state. Kept here rather than inside
+  // TurnBlock because that component is also rendered by app-sdk/ChatEmbed with
+  // no Redux Provider mounted. The custom equality fn keeps the derived Set
+  // referentially stable across unrelated chat-state updates.
+  const appToolCallIds = useAppSelector(s => {
+    const apps = s.chat.mcpApps
+    if (!activeSlot || !apps) return EMPTY_APP_ID_SET
+    const prefix = mcpAppKey(activeSlot, '')
+    const ids = Object.keys(apps).filter(k => k.startsWith(prefix)).map(k => k.slice(prefix.length))
+    return ids.length ? new Set(ids) : EMPTY_APP_ID_SET
+  }, (a, b) => a.size === b.size && [...a].every(id => b.has(id)))
   const messages = useAppSelector(s => s.chat.messages)
   const messagesRef = useRef(messages)
   messagesRef.current = messages
@@ -4003,7 +4022,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                       })() : renderMessage(it.idx, it.msg)}
                     </div>
                   }
-                  return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx}><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} /></div>
+                  return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx}><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} /></div>
                 }
                 return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-5 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>{item.kind === 'group' ? (() => {
                 const unresolvedGroupPerms = item.msgs.filter(m => m.role === 'permission' && !m.meta?.resolved)

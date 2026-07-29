@@ -202,3 +202,51 @@ describe('TurnBlock — spawn_run launch visibility', () => {
   })
 
 })
+
+/**
+ * An MCP App (SEP-1865) render mounts an interactive iframe anchored to its
+ * tool-call row. Folding that row into a collapsible pane hides the app, and
+ * re-expanding REMOUNTS the iframe — reloading it and losing in-canvas state.
+ * So an app-bearing row must bypass the collapse in both modes. The set is a
+ * prop (not Redux) because TurnBlock also renders under app-sdk/ChatEmbed,
+ * which mounts no Provider.
+ */
+describe('TurnBlock — MCP App-bearing tool calls stay visible', () => {
+  const items: TurnItem[] = [
+    { kind: 'single', msg: { role: 'tool', content: '🔧 Running: read_me', ts: '1', meta: { tool_call_id: 'tc-plain' } }, idx: 0 },
+    { kind: 'single', msg: { role: 'tool', content: '🔧 Running: create_view', ts: '2', meta: { tool_call_id: 'tc-app-1' } }, idx: 1 },
+    { kind: 'single', msg: { role: 'assistant', content: 'Rendered a diagram with plenty of descriptive text to be substantive.', ts: '3' }, idx: 2 },
+  ]
+
+  const renderApp = (collapseAll: boolean, appIds: ReadonlySet<string>) =>
+    render(
+      <TurnBlock
+        turn={makeTurn(items)}
+        collapseAll={collapseAll}
+        appToolCallIds={appIds}
+        renderItem={(it) => (
+          <div data-testid={`item-${it.kind === 'single' ? `${it.msg.role}-${(it.msg.meta?.tool_call_id as string) ?? 'x'}` : 'group'}`} />
+        )}
+      />,
+    )
+
+  it('default mode: app-bearing row renders outside the collapsed tool group', () => {
+    renderApp(false, new Set(['tc-app-1']))
+    // The app-bearing row is visible without expanding anything…
+    expect(screen.getByTestId('item-tool-tc-app-1')).toBeInTheDocument()
+    // …while the plain tool call stays behind the collapse (unmounted).
+    expect(screen.queryByTestId('item-tool-tc-plain')).not.toBeInTheDocument()
+  })
+
+  it('collapseAll mode: app-bearing row renders outside the reasoning pane', () => {
+    renderApp(true, new Set(['tc-app-1']))
+    expect(screen.getByTestId('item-tool-tc-app-1')).toBeInTheDocument()
+    expect(screen.getByTestId('item-assistant-x')).toBeInTheDocument()
+  })
+
+  it('without the prop, tool rows collapse exactly as before (embed/no-store path)', () => {
+    renderApp(false, new Set())
+    expect(screen.queryByTestId('item-tool-tc-app-1')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('item-tool-tc-plain')).not.toBeInTheDocument()
+  })
+})

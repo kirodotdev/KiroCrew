@@ -331,11 +331,20 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
 # instances-mode ``frame-src`` extension.
 _BASE_CSP = (
     "default-src 'self'; "
+    # https://esm.sh: MCP App (SEP-1865) srcdoc iframes INHERIT this header
+    # CSP (a srcdoc document has no HTTP response of its own), and the real
+    # excalidraw/pdf MCP apps load their ESM runtime (React, @excalidraw/…)
+    # from esm.sh via importmap. Without these allowances the app's module
+    # imports are blocked no matter what the per-app srcdoc <meta> CSP says
+    # (when two policies apply, the most restrictive wins per directive).
+    # Same pattern as the widget CDN allowances (tailwind/jsdelivr/cdnjs).
     "script-src 'self' 'unsafe-inline' "
-    "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
-    "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
+    "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
+    "https://esm.sh; "
+    "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net "
+    "https://esm.sh; "
     "img-src 'self' data: blob: https:; "
-    "font-src 'self' data:; "
+    "font-src 'self' data: https://esm.sh; "
     # Loopback http(s) origins ({connect_src_extra}) mirror the frame-src note
     # below: WebPreviewPanel does not merely FRAME the local dev server, it also
     # polls it with a no-cors `fetch` liveness probe (a cross-origin iframe
@@ -344,7 +353,8 @@ _BASE_CSP = (
     # preview to "server stopped responding" and unmounted the iframe. The
     # probe is no-cors, so no response data is ever readable — this admits the
     # reachability check only, and to the same origins frame-src already allows.
-    "connect-src 'self' ws://localhost:* ws://127.0.0.1:*{connect_src_extra}; "
+    "connect-src 'self' ws://localhost:* ws://127.0.0.1:* "
+    "https://esm.sh{connect_src_extra}; "
     "media-src 'self' blob:; "
     "worker-src 'self' blob:; "
     # https://*.cloudfront.net: live preview iframes for deployed webapp
