@@ -365,34 +365,158 @@ function stateWithPendingSpawn(count = 1): Partial<RootState> {
   }
 }
 
-describe('ChatInput sub-agent spawn-approval reminder', () => {
-  it('surfaces a top-level reminder when a sub-agent awaits approval', () => {
+describe('ChatInput sub-agent spawn-approval banner', () => {
+  it('surfaces a top-level banner with inline Approve/Reject when a sub-agent awaits approval', () => {
     const store = createTestStore(stateWithPendingSpawn(1))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     expect(screen.getByText(/1 sub-agent is awaiting your approval to run/)).toBeInTheDocument()
     expect(screen.getByText('Review in panel')).toBeInTheDocument()
-    // Reminder-only: no inline Approve/Reject (would duplicate the side panel's controls)
-    expect(screen.queryByText('Approve')).not.toBeInTheDocument()
-    expect(screen.queryByText('Approve all')).not.toBeInTheDocument()
-    expect(screen.queryByText('Reject')).not.toBeInTheDocument()
+    // Inline controls let the user resolve without opening the side panel.
+    expect(screen.getByRole('button', { name: /^Approve$/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Reject$/ })).toBeInTheDocument()
+    // A single pending spawn stays a compact one-liner — no per-agent rows.
+    expect(screen.queryByRole('button', { name: /^Approve sub-agent:/ })).not.toBeInTheDocument()
   })
 
-  it('pluralizes for multiple pending spawns', () => {
+  it('pluralizes the count and uses Approve all / Reject all for multiple pending spawns', () => {
     const store = createTestStore(stateWithPendingSpawn(3))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     expect(screen.getByText(/3 sub-agents are awaiting your approval to run/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Approve all/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Reject all/ })).toBeInTheDocument()
   })
 
-  it('clicking the reminder opens the Subagents panel and resolves nothing', () => {
+  it('renders a per-agent Approve/Reject row for each pending spawn when multiple', () => {
+    const store = createTestStore(stateWithPendingSpawn(3))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.getAllByRole('button', { name: /^Approve sub-agent:/ })).toHaveLength(3)
+    expect(screen.getAllByRole('button', { name: /^Reject sub-agent:/ })).toHaveLength(3)
+    // Each row is labelled with its own task.
+    expect(screen.getByRole('button', { name: 'Approve sub-agent: task 2' })).toBeInTheDocument()
+  })
+
+  it('clicking a per-agent Approve resolves only that sub-agent', () => {
+    const store = createTestStore(stateWithPendingSpawn(3))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: 'Approve sub-agent: task 2' }))
+    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a2', 'approve')
+    expect(api.resolveApproval).toHaveBeenCalledTimes(1)
+    expect(store.getState().chat.subagents.a2.approving).toBe(true)
+    expect(store.getState().chat.subagents.a1.approving).toBeFalsy()
+  })
+
+  it('clicking a per-agent Reject rejects only that sub-agent', () => {
+    const store = createTestStore(stateWithPendingSpawn(3))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: 'Reject sub-agent: task 3' }))
+    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a3', 'reject')
+    expect(api.resolveApproval).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * A rejected spawn never runs, so it emits no further spawn/chunk/done
+   * stream, and the backend's `approval_resolved` frame carries no slot — so
+   * the WS handler that would terminate the card never fires. Without an
+   * explicit terminal dispatch the card stays pending+approving and the banner
+   * sticks on "Resolving…" forever.
+   */
+  it('terminates the card after a successful rejection so the banner clears', async () => {
     const store = createTestStore(stateWithPendingSpawn(1))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByRole('button', { name: /awaiting your approval to run/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }))
+    await waitFor(() => {
+      expect(store.getState().chat.subagents.a1.status).toBe('error')
+    })
+    expect(store.getState().chat.subagents.a1.error).toBe('rejected')
+    // No longer pending -> the banner unmounts.
+    await waitFor(() => {
+      expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
+    })
+  })
+
+  it('leaves an approved spawn pending for its own spawn/done stream to resolve', async () => {
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    await waitFor(() => {
+      expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a1', 'approve')
+    })
+    // Approval must NOT synthesize a terminal state — the real run reports it.
+    expect(store.getState().chat.subagents.a1.status).toBe('pending')
+  })
+
+  it('per-agent rejection terminates only the rejected sub-agent', async () => {
+    const store = createTestStore(stateWithPendingSpawn(3))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: 'Reject sub-agent: task 2' }))
+    await waitFor(() => {
+      expect(store.getState().chat.subagents.a2.status).toBe('error')
+    })
+    expect(store.getState().chat.subagents.a1.status).toBe('pending')
+    expect(store.getState().chat.subagents.a3.status).toBe('pending')
+    // Banner stays up for the two still-pending spawns.
+    expect(screen.getByText(/2 sub-agents are awaiting your approval to run/)).toBeInTheDocument()
+  })
+
+  it('a per-agent row shows Resolving and hides its buttons while that sub-agent is approving', () => {
+    const base = stateWithPendingSpawn(3) as { chat: { subagents: Record<string, { approving?: boolean }> } }
+    base.chat.subagents.a2.approving = true
+    const store = createTestStore(base as Partial<RootState>)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    // a2's row is resolving; its per-agent buttons are gone, the others remain.
+    expect(screen.queryByRole('button', { name: 'Approve sub-agent: task 2' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve sub-agent: task 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve sub-agent: task 3' })).toBeInTheDocument()
+    expect(screen.getByText(/Resolving/)).toBeInTheDocument()
+    // Header bulk controls stay available (not every spawn is resolving).
+    expect(screen.getByRole('button', { name: /Approve all/ })).toBeInTheDocument()
+  })
+
+  it('clicking Approve resolves the pending spawn via the approvals API', () => {
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a1', 'approve')
+    // Card is marked resolving so the buttons can't be double-submitted.
+    expect(store.getState().chat.subagents.a1.approving).toBe(true)
+  })
+
+  it('clicking Reject rejects the pending spawn via the approvals API', () => {
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }))
+    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a1', 'reject')
+  })
+
+  it('Approve all resolves every pending spawn', () => {
+    const store = createTestStore(stateWithPendingSpawn(3))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /Approve all/ }))
+    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a1', 'approve')
+    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a2', 'approve')
+    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a3', 'approve')
+    expect(api.resolveApproval).toHaveBeenCalledTimes(3)
+  })
+
+  it('clicking Review in panel opens the Subagents panel and resolves nothing', () => {
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /Review in panel/ }))
     expect(store.getState().chat.activityTab).toBe('subagents')
     expect(store.getState().chat.activityOpen).toBe(true)
     expect(api.resolveApproval).not.toHaveBeenCalled()
   })
 
-  it('does not render the reminder when there are no pending spawns', () => {
+  it('shows a Resolving state instead of buttons once all pending spawns are approving', () => {
+    const base = stateWithPendingSpawn(1) as { chat: { subagents: Record<string, { approving?: boolean }> } }
+    base.chat.subagents.a1.approving = true
+    const store = createTestStore(base as Partial<RootState>)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.getByText(/Resolving/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Approve$/ })).not.toBeInTheDocument()
+  })
+
+  it('does not render the banner when there are no pending spawns', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()

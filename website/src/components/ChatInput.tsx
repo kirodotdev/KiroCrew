@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
 import { useAppSelector, useAppDispatch } from '../store'
-import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals } from '../store/chatSlice'
+import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone } from '../store/chatSlice'
 import { useSlotId } from '../providers/SlotContext'
 import { useKiroSessionReady } from '../providers/KiroReadinessContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
@@ -32,6 +32,7 @@ import FollowUpBar from './FollowUpBar'
 import { dispatchLightbox } from './MarkdownRenderer'
 import { IMG_EXT } from '../utils/fileTokens'
 import type { ResizeInfo } from '../utils/resizeImage'
+import type { SubagentActivity } from '../types'
 import { platformShortcut } from '../utils/platform'
 import {
   type PasteBlock,
@@ -578,13 +579,40 @@ function ChatInput({
   }, [approvalId, activeSlot, approvalIsUnattended, approvalSource, dispatch])
 
   // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
-  // Surfaced as a top-level REMINDER only — the banner does not resolve
-  // approvals itself. Doing so would duplicate the side panel's per-sub-agent
-  // Approve/Reject and let the user submit conflicting decisions through two
-  // controls for the same id. Clicking the banner opens the Subagents panel
-  // where each sub-agent is approved individually.
+  // Surfaced as a top-level banner with inline Approve/Reject so the user can
+  // resolve pending spawns without leaving the composer. A single pending spawn
+  // gets a compact one-line row; with several, the header carries Approve all /
+  // Reject all and each sub-agent gets its own row with per-agent Approve/Reject
+  // (so one can be run and another rejected). "Review in panel" opens the
+  // Subagents tab for the fuller per-agent view (task + streaming output).
+  // Resolution goes through the same api.resolveApproval + markSubagentApproving
+  // path the panel uses, so the two surfaces stay consistent for a given id.
   const pendingSpawnApprovals = useAppSelector(s => selectSlotPendingSpawnApprovals(s, slotId), shallowEqual)
   const reviewSpawnApprovals = useCallback(() => { dispatch(openActivityToTab('subagents')) }, [dispatch])
+  // True once every pending spawn is mid-resolution — swaps the header buttons
+  // for a "Resolving…" note. Cards stay in the pending list (status is still
+  // 'pending') until the backend confirms, so the banner remains mounted.
+  const spawnApprovalsResolving = pendingSpawnApprovals.length > 0 && pendingSpawnApprovals.every(a => a.approving)
+  const resolveOneSpawn = useCallback((a: SubagentActivity, action: 'approve' | 'reject') => {
+    if (!a.approval_id || a.approving) return
+    dispatch(markSubagentApproving({ id: a.id, approving: true }))
+    api.resolveApproval(a.approval_id, action).then(() => {
+      // Terminate a rejected card here, because nothing else will. The backend's
+      // `approval_resolved` frame carries only {id, approved} — no slot — so the
+      // useWebSocket handler that would dispatch sseSubagentDone is skipped
+      // (it requires data.slot to avoid misattributing cards across sessions).
+      // An APPROVED spawn still converges: it runs and emits its own
+      // spawn/chunk/done stream, each frame carrying a slot. A REJECTED spawn
+      // never runs and emits nothing further, so without this the card stays
+      // pending+approving and the banner sticks on "Resolving…" indefinitely.
+      if (action === 'reject' && slotId) {
+        dispatch(sseSubagentDone({ slot: slotId, id: a.id, elapsed: 0, error: 'rejected' }))
+      }
+    }).catch(() => dispatch(markSubagentApproving({ id: a.id, approving: false })))
+  }, [dispatch, slotId])
+  const resolveSpawnApprovals = useCallback((action: 'approve' | 'reject') => {
+    for (const a of pendingSpawnApprovals) resolveOneSpawn(a, action)
+  }, [pendingSpawnApprovals, resolveOneSpawn])
 
   const approvalBtnClass = 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border text-text text-[12px] cursor-pointer font-body hover:bg-[color-mix(in_srgb,var(--warn)_25%,transparent)] hover:text-text hover:border-border-strong transition-colors disabled:opacity-50'
 
@@ -1743,11 +1771,14 @@ function ChatInput({
         <div className="w-12 h-[3px] rounded-full bg-border group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-all duration-200 opacity-0 group-hover/drag:opacity-100" />
       </div>}
 
-      {/* Sub-agent spawn-approval reminder — a top-level signal that one or more
-       *  sub-agents are queued awaiting the user's approval to run. Reminder-only:
-       *  the whole banner is a button that opens the Subagents panel, where each
-       *  sub-agent is approved individually. We deliberately do NOT render
-       *  Approve/Reject here to avoid duplicating the panel's controls. */}
+      {/* Sub-agent spawn-approval banner — a top-level signal that one or more
+       *  sub-agents are queued awaiting the user's approval to run, with inline
+       *  Approve/Reject so the decision can be made without leaving the
+       *  composer. Single pending → a compact one-line row. Multiple → header
+       *  Approve all / Reject all plus a per-agent row (task + Approve/Reject)
+       *  so one can run while another is rejected. "Review in panel" opens the
+       *  Subagents tab. Not a single <button> wrapper — every control is its
+       *  own button. */}
       <AnimatePresence>
         {pendingSpawnApprovals.length > 0 && (
           <motion.div
@@ -1756,23 +1787,85 @@ function ChatInput({
             exit={{ opacity: 0, y: 8 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300, mass: 0.8 }}
           >
-            <button
-              type="button"
-              onClick={reviewSpawnApprovals}
-              className="w-full text-left bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border rounded-2xl mb-2 approval-glow cursor-pointer hover:border-border-strong transition-colors"
-            >
-              <div className="flex items-center gap-1.5 px-3.5 py-2.5 select-none">
+            <div className="w-full bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border rounded-2xl mb-2 approval-glow">
+              <div className="flex items-center gap-1.5 px-3.5 py-2.5 select-none flex-wrap">
                 <Bot size={13} className="text-warn shrink-0" />
                 <span className="text-[13px] font-body text-muted flex-1 min-w-0">
                   {pendingSpawnApprovals.length === 1
                     ? '1 sub-agent is awaiting your approval to run'
                     : `${pendingSpawnApprovals.length} sub-agents are awaiting your approval to run`}
                 </span>
-                <span className="inline-flex items-center gap-1 text-[11px] text-muted shrink-0">
-                  <Target size={11} className="shrink-0" />{i18nT('components.chatInput.review_in_panel')}
-                </span>
+                {spawnApprovalsResolving ? (
+                  <span className="inline-flex items-center gap-1 text-[12px] text-muted/60 shrink-0">
+                    <Loader2 size={12} className="animate-spin shrink-0" />Resolving…
+                  </span>
+                ) : (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => resolveSpawnApprovals('approve')}
+                      className={approvalBtnClass}
+                    >
+                      <CheckCircle size={12} className="shrink-0" />
+                      {pendingSpawnApprovals.length === 1 ? 'Approve' : 'Approve all'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => resolveSpawnApprovals('reject')}
+                      className={`${approvalBtnClass} hover:!text-danger hover:!border-danger`}
+                    >
+                      <Ban size={12} className="shrink-0" />
+                      {pendingSpawnApprovals.length === 1 ? 'Reject' : 'Reject all'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={reviewSpawnApprovals}
+                      className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-text shrink-0 cursor-pointer bg-transparent border-none px-1"
+                    >
+                      <Target size={11} className="shrink-0" />{i18nT('components.chatInput.review_in_panel')}
+                    </button>
+                  </div>
+                )}
               </div>
-            </button>
+              {/* Per-agent rows — only when more than one is pending, so a single
+               *  spawn stays a compact one-liner. Each row resolves just its own
+               *  sub-agent via resolveOneSpawn. */}
+              {pendingSpawnApprovals.length > 1 && (
+                <div className="px-3.5 pb-2.5 flex flex-col gap-1.5">
+                  {pendingSpawnApprovals.map(a => (
+                    <div key={a.id} className="flex items-center gap-2 rounded-lg border border-border/60 bg-bg/40 px-2.5 py-1.5">
+                      <code className="text-[11px] font-mono text-muted/80 flex-1 min-w-0 truncate" title={a.task || a.agent || a.id}>
+                        {a.task || a.agent || a.id}
+                      </code>
+                      {a.approving ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-muted/60 shrink-0">
+                          <Loader2 size={11} className="animate-spin shrink-0" />Resolving…
+                        </span>
+                      ) : (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            aria-label={`Approve sub-agent: ${a.task || a.agent || a.id}`}
+                            onClick={() => resolveOneSpawn(a, 'approve')}
+                            className={approvalBtnClass}
+                          >
+                            <CheckCircle size={12} className="shrink-0" />Approve
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Reject sub-agent: ${a.task || a.agent || a.id}`}
+                            onClick={() => resolveOneSpawn(a, 'reject')}
+                            className={`${approvalBtnClass} hover:!text-danger hover:!border-danger`}
+                          >
+                            <Ban size={12} className="shrink-0" />Reject
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

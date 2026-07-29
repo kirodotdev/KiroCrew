@@ -16,7 +16,7 @@ import { dedupResourceLinks, resourceKey } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import PullRequestPanel from '../../components/PullRequestPanel'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents } from '../../store/chatSlice'
+import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
 import { colorForExt, fileIcon } from '../../utils/fileIcons'
 import SideChat from './SideChat'
@@ -82,7 +82,7 @@ function DiskLoader({ id, autoLoad }: { id: string; autoLoad?: boolean }) {
   return <button className="text-accent/70 hover:text-accent text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>{i18nT('pages.chat.activityViewer.load_output_from_disk')}</button>
 }
 
-function SubagentPane({ a, onClick, selected }: { a: SubagentActivity; onClick: () => void; selected?: boolean }) {
+function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean }) {
   const bodyRef = useRef<HTMLPreElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const autoScroll = useRef(true)
@@ -115,8 +115,17 @@ function SubagentPane({ a, onClick, selected }: { a: SubagentActivity; onClick: 
     e.stopPropagation()
     if (!a.approval_id) return
     dispatch(markSubagentApproving({ id: a.id, approving: true }))
-    api.resolveApproval(a.approval_id, action).catch(() => dispatch(markSubagentApproving({ id: a.id, approving: false })))
-  }, [a.approval_id, a.id, dispatch])
+    api.resolveApproval(a.approval_id, action).then(() => {
+      // See the matching note in ChatInput's resolveOneSpawn: the backend's
+      // `approval_resolved` frame carries no slot, so the WS handler that would
+      // terminate the card is skipped. An approved spawn converges on its own
+      // spawn/chunk/done stream; a rejected one never runs and emits nothing
+      // further, leaving the card stuck on "Resolving…" without this dispatch.
+      if (action === 'reject' && slot) {
+        dispatch(sseSubagentDone({ slot, id: a.id, elapsed: 0, error: 'rejected' }))
+      }
+    }).catch(() => dispatch(markSubagentApproving({ id: a.id, approving: false })))
+  }, [a.approval_id, a.id, slot, dispatch])
 
   // Live elapsed timer for running subagents
   const [elapsed, setElapsed] = useState(0)
@@ -879,6 +888,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                 <SubagentPane
                   key={id}
                   a={subagents[id]}
+                  slot={slot}
                   onClick={() => setSelected(i)}
                   selected={id === selectedSubagentId}
                 />
