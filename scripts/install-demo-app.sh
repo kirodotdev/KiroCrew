@@ -1,11 +1,11 @@
 #!/bin/bash
-# Install the demo app to ~/.kirocrew/apps/ so the full pipeline can be tested.
+# Install the demo app to the data home's apps/ dir so the full pipeline can be tested.
 # Run this once, then navigate to /apps/demo-app in the KiroCrew dashboard.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_SOURCE="$SCRIPT_DIR/../frontend/public/apps/demo-app"
-APP_DEST="$HOME/.kirocrew/apps/demo-app"
+APP_DEST="${KIROCREW_HOME:-$HOME/.kiro/crew}/apps/demo-app"
 
 if [ -d "$APP_DEST" ]; then
     echo "Demo app already installed at $APP_DEST"

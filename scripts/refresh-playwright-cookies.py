@@ -9,8 +9,10 @@ import os
 import sys
 import time
 
-COOKIE_JAR_PATH = os.path.expanduser("~/.kirocrew/browser-cookies.txt")
-STORAGE_STATE_PATH = os.path.expanduser("~/.kirocrew/playwright-storage-state.json")
+
+_DATA_HOME = os.environ.get("KIROCREW_HOME", os.path.expanduser("~/.kiro/crew"))
+COOKIE_JAR_PATH = os.path.join(_DATA_HOME, "browser-cookies.txt")
+STORAGE_STATE_PATH = os.path.join(_DATA_HOME, "playwright-storage-state.json")
 
 
 def parse_netscape_cookies(cookie_file_path):

@@ -48,7 +48,7 @@ def _compute_backoff(attempt: int, base_delay: float) -> float:
 
 def _read_app_secret(app_name: str) -> str:
     """Read the per-app secret from disk. Returns empty string if unavailable."""
-    home = os.environ.get("KIROCREW_HOME", str(Path.home() / ".kirocrew"))
+    home = os.environ.get("KIROCREW_HOME", str(Path.home() / ".kiro" / "crew"))
     secret_path = Path(home) / "apps" / app_name / ".app_secret"
     try:
         return secret_path.read_text(encoding="utf-8").strip()
@@ -408,7 +408,7 @@ class KiroCrewClient:
     # ── App Storage ──
 
     def get_app_data_dir(self) -> Path:
-        home = os.environ.get("KIROCREW_HOME", str(Path.home() / ".kirocrew"))
+        home = os.environ.get("KIROCREW_HOME", str(Path.home() / ".kiro" / "crew"))
         return Path(home) / "apps" / (self.app_name or "unknown") / "data"
 
     async def get_app_config(self) -> dict[str, Any]:

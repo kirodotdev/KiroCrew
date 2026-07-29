@@ -66,7 +66,12 @@ channel_id=$(_walk_env KIROCREW_CHANNEL_ID)
 # Single-line JSON to $KIROCREW_HOME/logs/stub_wrapper.jsonl capturing the
 # PPID, the server name from argv, and the channel_id we recovered. Best-
 # effort; failures to log are silently swallowed so MCP traffic stays up.
-_LOG_DIR="${KIROCREW_HOME:-$HOME/.kirocrew}/logs"
+#
+# The fallback is the CURRENT data home. It used to be the pre-move
+# ~/.kirocrew, and since kiro-cli strips env when spawning MCP subprocesses the
+# fallback is the branch that actually runs -- so this line was the writer that
+# re-created the abandoned home on every launch.
+_LOG_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}/logs"
 _LOG_FILE="$_LOG_DIR/stub_wrapper.jsonl"
 _server=""
 for ((i=1; i<=$#; i++)); do

@@ -1,6 +1,8 @@
 """Tests for kirocrew_client — mirrors TS @kirocrew/client test coverage."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from kirocrew_client import KiroCrewClient, KiroCrewError
@@ -116,9 +118,14 @@ class TestContextBuffer:
 
 
 class TestAppDataDir:
-    def test_contains_app_name(self):
+    def test_contains_app_name(self, monkeypatch):
+        # The default path is what this asserts, so a developer running with
+        # KIROCREW_HOME set (e.g. an isolated pod home) must not shadow it.
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         mc = KiroCrewClient(app_name="my-tool")
         d = mc.get_app_data_dir()
         assert "my-tool" in str(d)
-        assert ".kirocrew" in str(d)
+        # The current data home, not the pre-move ~/.kirocrew. Compared as a
+        # Path so the assertion holds on Windows separators too.
+        assert str(Path.home() / ".kiro" / "crew") in str(d)
         assert "apps" in str(d)
