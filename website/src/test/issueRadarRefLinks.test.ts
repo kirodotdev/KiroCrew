@@ -191,6 +191,23 @@ describe('linkifyIssueRefs', () => {
     expect(linkifyIssueRefs(src, gh(O, R))).toBe(src)
   })
 
+  it('rewrites a reference wrapped in parentheses', () => {
+    // The overwhelmingly common shape in a real body — `the Windows lane (#421)
+    // uses Squirrel` — and GitHub linkifies it, so an opening paren must not
+    // suppress the rewrite.
+    expect(linkifyIssueRefs('the Windows lane (#421) uses Squirrel', gh(O, R)))
+      .toBe(`the Windows lane (${link(421)}) uses Squirrel`)
+    expect(linkifyIssueRefs('(#5)', gh(O, R))).toBe(`(${link(5)})`)
+    expect(linkifyIssueRefs('see (#5, #6)', gh(O, R))).toBe(`see (${link(5)}, ${link(6)})`)
+  })
+
+  it('still leaves an UNBALANCED link target alone', () => {
+    // A well-formed `[a](#5)` is masked, so only a leftover `](#5)` reaches the
+    // scan — rewriting it would nest a link inside a link.
+    expect(linkifyIssueRefs('a](#5)', gh(O, R))).toBe('a](#5)')
+    expect(linkifyIssueRefs('[a](#5)', gh(O, R))).toBe('[a](#5)')
+  })
+
   it('does not touch an autolink or a URL fragment', () => {
     const src = `<https://github.com/${O}/${R}/issues/12#issuecomment-9>`
     expect(linkifyIssueRefs(src, gh(O, R))).toBe(src)

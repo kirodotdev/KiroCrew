@@ -200,14 +200,20 @@ function maskMarkdown(source: string): string {
  *
  * Rejected when PRECEDED by a character that makes it something else — a word
  * character or `/` (a URL fragment such as `…/issues/12#issuecomment-9`, or a
- * cross-repo `owner/repo#5`), `&` (`&#123;`, an HTML entity), `[` or `(`
- * (markdown link syntax the mask may not have caught), or another `#`.
+ * cross-repo `owner/repo#5`), `&` (`&#123;`, an HTML entity), `[` (markdown link
+ * syntax the mask may not have caught), or another `#`.
+ *
+ * An opening `(` is ALLOWED: `the Windows lane (#421) uses …` is ordinary prose
+ * and by far the more common shape, and GitHub linkifies it. The one `(` that is
+ * markdown — a link TARGET, `](#421)` — is rejected separately in the scan loop
+ * by looking at the character before the paren, because a well-formed link is
+ * already masked and only an unbalanced leftover can reach here.
  *
  * Rejected when FOLLOWED by a word character, so a hex colour (`#1a2b3c`) is not
  * read as `#1`. An all-digit run IS taken as a reference — GitHub does the same,
  * and a repo with six-figure issue numbers is ordinary, so length cannot decide.
  */
-const SHORTHAND_RE = /(^|[^\w/&[(#])#(\d{1,7})(?!\w)/g
+const SHORTHAND_RE = /(^|[^\w/&[#])#(\d{1,7})(?!\w)/g
 
 /**
  * Rewrite bare `#123` references into real markdown links to this repo, so they
@@ -239,6 +245,11 @@ export function linkifyIssueRefs(source: string, repo: RepoIdentity | null | und
     const lead = m[1] ?? ''
     const start = m.index + lead.length
     const end = m.index + m[0].length
+    // `](#421)` is a link TARGET, not a reference. A well-formed link is masked
+    // already, so this only catches an unbalanced leftover — but rewriting one
+    // would nest a link inside a link. The check reads the MASKED copy so a `]`
+    // that belongs to some other masked construct does not count.
+    if (lead === '(' && masked[m.index - 1] === ']') continue
     const number = Number(m[2])
     if (!Number.isSafeInteger(number) || number <= 0) continue
     edits.push({ start, end, text: `[#${number}](${refUrl(repo, { kind: 'issue', number })})` })
