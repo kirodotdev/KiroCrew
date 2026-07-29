@@ -134,6 +134,20 @@ describe('SubagentProgressBar — queued / waiting count', () => {
   })
 })
 
+describe('SubagentProgressBar — overlay stacking', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  // Theme-experience overlays are clamped to OVERLAY_Z_MAX=45 (ThemeExperienceLayer).
+  // The chip wrapper must sit strictly above that band so no theme can paint over
+  // an active wave; z-[46] is the minimal clearance (below mute z=50 / consent z=120).
+  it('elevates the wave chip above the theme-overlay ceiling (relative + z-[46])', () => {
+    const { container } = renderBar(makeStore(['a1']))
+    const wrapper = container.firstChild as HTMLElement
+    expect(wrapper).toHaveClass('relative')
+    expect(wrapper).toHaveClass('z-[46]')
+  })
+})
+
 describe('sseSubagentQueued reducer', () => {
   function freshStore() {
     const store = configureStore({

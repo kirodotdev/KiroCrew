@@ -109,7 +109,14 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   }, [hasActive, slot, dispatch])
   if (!hasActive) return null
   return (
-    <div className="px-5 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+    // `relative z-[46]` lifts the wave chip above every theme-experience
+    // overlay: those are clamped to OVERLAY_Z_MAX=45 in ThemeExperienceLayer,
+    // so 46 is the minimal value that no theme (built-in or custom, present or
+    // future) can paint over — while staying below the mute button (z=50) and
+    // consent modal (z=120), and under modal backdrops (z-[46], later in DOM).
+    // Without this the chip sits at auto z-index and a fullscreen overlay (e.g.
+    // an activate-time transition wipe) covers it for the overlay's lifetime.
+    <div className="px-5 mx-auto w-full relative z-[46]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       <div className="mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up overflow-hidden">
         <div className="flex items-center gap-2 px-3 py-1.5 text-[13px] font-mono">
           <Bot size={14} className="text-accent shrink-0" />
