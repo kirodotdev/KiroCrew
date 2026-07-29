@@ -250,3 +250,79 @@ describe('TurnBlock — MCP App-bearing tool calls stay visible', () => {
     expect(screen.queryByTestId('item-tool-tc-plain')).not.toBeInTheDocument()
   })
 })
+
+/**
+ * A turn can hand back to the user and then RESUME in the same turn — after a
+ * denied tool call, an auto-nudge / monitor cycle, a queued message, or an
+ * injected subagent / workflow completion. The [OPTIONS:] follow-up marker is
+ * the agent's own signal that it believed it was ending the turn, so an earlier
+ * hand-back carrying it must stay visible rather than collapse behind "Worked
+ * through N steps" (findConclusionIdx keeps only the LAST conclusion).
+ */
+describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
+  it('a mid-turn hand-back carrying [OPTIONS:] stays visible in collapseAll mode', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Here is the full setup runbook you asked for, with every step spelled out.\n\n[OPTIONS: Run it now | Show me the diff]', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '3' }, idx: 2 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Resumed after the hand-back and finished wiring everything up and verifying it.', ts: '4' }, idx: 3 },
+    ]
+    const { container } = render(
+      <TurnBlock
+        turn={makeTurn(items)}
+        renderItem={(it, i) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>}
+        collapseAll={true}
+      />
+    )
+    // The earlier hand-back at idx 1 must render OUTSIDE the collapsed
+    // (overflow:hidden) reasoning section — it is a real deliverable.
+    const handBack = container.querySelector('[data-testid="item-1"]')
+    expect(handBack).not.toBeNull()
+    expect(handBack?.closest('[style*="overflow"]')).toBeNull()
+    // The final conclusion is still visible too.
+    expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
+  })
+
+  it('a mid-turn assistant message WITHOUT an options marker still collapses (predicate is not over-broad)', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: read', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Reading the config file before I patch it, to be sure of its shape.', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: write', ts: '3' }, idx: 2 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Patched the config and confirmed the build still passes cleanly.', ts: '4' }, idx: 3 },
+    ]
+    const { container } = render(
+      <TurnBlock
+        turn={makeTurn(items)}
+        renderItem={(it, i) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>}
+        collapseAll={true}
+      />
+    )
+    // Plain reasoning at idx 1 (no [OPTIONS:] marker) must stay INSIDE the
+    // collapsed section — surfacing it would defeat "hide intermediate reasoning".
+    const prose = container.querySelector('[data-testid="item-1"]')
+    expect(prose).not.toBeNull()
+    expect(prose?.closest('[style*="overflow"]')).not.toBeNull()
+    // Conclusion still visible.
+    expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
+  })
+
+  it('the "Worked through N steps" count excludes the now-visible hand-back', () => {
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'First deliverable — the runbook is ready for your review below.\n\n[OPTIONS: Run it now | Wait]', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '3' }, idx: 2 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Resumed and completed the remaining work, everything verified and green.', ts: '4' }, idx: 3 },
+    ]
+    render(
+      <TurnBlock
+        turn={makeTurn(items)}
+        renderItem={(it, i) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>}
+        collapseAll={true}
+      />
+    )
+    // Two tool calls collapse (2 steps); the hand-back at idx 1 is surfaced
+    // inline and must NOT inflate the count to 3.
+    expect(screen.getByRole('button', { name: /Worked through 2 steps/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Worked through 3 steps/ })).not.toBeInTheDocument()
+  })
+})

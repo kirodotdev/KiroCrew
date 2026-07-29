@@ -57,14 +57,40 @@ const HAS_RENDERABLE_RE = /<mcwidget(?:\s|>)|!\[[^\]]*\]\([^)]+\)/
 const isRenderable = (it: TurnItem) =>
   it.kind === 'single' && isConclusion(it) && (it.msg.role === 'file' || HAS_RENDERABLE_RE.test(it.msg.content))
 
-/** Either a renderable assistant message (widget/image) or a role that must
- *  surface inline (mcp_oauth, error), a workflow_run / spawn_run launch card, or
- *  an MCP App-bearing tool call (interactive iframe anchored to the row). All
- *  bypass the collapse pane. */
+/**
+ * A mid-turn hand-back: an assistant message carrying an [OPTIONS:] follow-up
+ * marker. The agent emits that marker ONLY when it believes it is ending the
+ * turn, so a message bearing it is by construction a user-facing hand-back — a
+ * direct signal of *intent*, not a proxy for importance. (A length / size
+ * heuristic was considered and rejected: the collapse setting is literally
+ * "hide intermediate reasoning", so gating on size would override a preference
+ * the user set on purpose; gating on [OPTIONS:] instead corrects a
+ * misclassification.) A single turn can contain SEVERAL hand-backs when the
+ * agent resumes in the same turn — after a denied tool call, an auto-nudge /
+ * monitor cycle, a queued message, or an injected subagent / workflow
+ * completion — but findConclusionIdx keeps only the LAST one, so every earlier
+ * hand-back would otherwise be buried in the collapse pane. Surfacing each one
+ * inline fixes that.
+ *
+ * OPTION_MARKER_RE is g-flagged and optionsMarker.ts forbids .test()/.exec() on
+ * it (the lastIndex hazard); probe it via .replace(), exactly like
+ * substantiveLength() below.
+ */
+function hasOptionsMarker(text: string): boolean {
+  return text.replace(OPTION_MARKER_RE, '') !== text
+}
+const isHandBack = (it: TurnItem) =>
+  it.kind === 'single' && isConclusion(it) && hasOptionsMarker(it.msg.content)
+
+/** A renderable assistant message (widget/image), a mid-turn hand-back
+ *  ([OPTIONS:] marker), a role that must surface inline (mcp_oauth, error), a
+ *  workflow_run / spawn_run / workflow-completion card, or an MCP App-bearing
+ *  tool call (interactive iframe anchored to the row). All bypass the collapse
+ *  pane. */
 const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
-  isRenderable(it) || isAlwaysVisible(it) || isWorkflowRunItem(it) ||
-  isSpawnRunItem(it) || isWorkflowCompletionItem(it) ||
-  isMcpAppItem(it, appToolCallIds)
+  isRenderable(it) || isHandBack(it) || isAlwaysVisible(it) ||
+  isWorkflowRunItem(it) || isSpawnRunItem(it) ||
+  isWorkflowCompletionItem(it) || isMcpAppItem(it, appToolCallIds)
 
 /** Stable empty set so the mcpApps selector returns a referentially-equal
  *  value when the slot has no app renders (avoids useless re-renders). */
