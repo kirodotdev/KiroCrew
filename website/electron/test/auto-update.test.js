@@ -58,7 +58,7 @@ test("buildFeedUrl url-encodes the channel segment", () => {
 // ---------------------------------------------------------------------------
 
 function makeDeps({ appVersion, feed, fetchErr }) {
-  const calls = { checkForUpdates: 0, setFeedURL: [], states: [] };
+  const calls = { checkForUpdates: 0, setFeedURL: [], setFeedHeaders: [], states: [], payloads: [] };
   const handlers = {};
   const deps = {
     app: {
@@ -68,7 +68,7 @@ function makeDeps({ appVersion, feed, fetchErr }) {
       removeListener: () => {},
     },
     autoUpdater: {
-      setFeedURL: (o) => calls.setFeedURL.push(o.url),
+      setFeedURL: (o) => { calls.setFeedURL.push(o.url); calls.setFeedHeaders.push(o.headers); },
       checkForUpdates: () => { calls.checkForUpdates += 1; },
       on: (ev, fn) => { handlers[ev] = fn; },
       quitAndInstall: () => {},
@@ -82,10 +82,20 @@ function makeDeps({ appVersion, feed, fetchErr }) {
       if (fetchErr) throw fetchErr;
       return feed;
     },
-    onUpdateState: (s) => calls.states.push(s.state),
+    onUpdateState: (s) => { calls.states.push(s.state); calls.payloads.push(s); },
     log: { info: () => {}, warn: () => {}, error: () => {} },
   };
   return { deps, calls, handlers };
+}
+
+// Feed URLs carry a per-check cache-bust query param, so compare on the path.
+function feedUrlSeen(calls, expected) {
+  return calls.setFeedURL.some((u) => u.split("?")[0] === expected);
+}
+
+// Last emitted payload for a given state (states repeat across a check).
+function lastPayload(calls, state) {
+  return calls.payloads.filter((p) => p.state === state).pop();
 }
 
 // Force darwin so initAutoUpdate does not bail on non-mac test runners.
@@ -125,7 +135,7 @@ test("newer feed version surfaces 'found' and does NOT download until consent", 
     assert.ok(calls.states.includes("found"));
     // Bare-semver running version resolves to the STABLE channel -- the
     // version-derived channel wins over the fixture's "beta" flavor.
-    assert.ok(calls.setFeedURL.includes("https://cdn.example.dev/feed/stable/latest-mac.json"));
+    assert.ok(feedUrlSeen(calls, "https://cdn.example.dev/feed/stable/latest-mac.json"));
     // Explicit consent engages Squirrel.
     await u.download();
     await new Promise((r) => setImmediate(r));
@@ -168,7 +178,7 @@ test("stamped nightly build tracks the NIGHTLY feed, not stable (no channel migr
     const u = initAutoUpdate(deps);
     await u.check();
     await new Promise((r) => setImmediate(r));
-    assert.ok(calls.setFeedURL.includes("https://cdn.example.dev/feed/nightly/latest-mac.json"));
+    assert.ok(feedUrlSeen(calls, "https://cdn.example.dev/feed/nightly/latest-mac.json"));
     // Discovery never downloads (consent gate).
     assert.strictEqual(calls.checkForUpdates, 0);
     assert.ok(calls.states.includes("found"));
@@ -442,4 +452,96 @@ test("a throwing nudge callback does not break the check (found still emitted)",
     await u.check();
     await new Promise((r) => setImmediate(r));
     assert.ok(calls.states.includes("found"), `states: ${calls.states}`);
+  }));
+
+// ---------------------------------------------------------------------------
+// Stale-feed defenses (2026-07-28 field bug). The feed object was published
+// without Cache-Control, so Squirrel's NSURLCache-backed fetch kept resolving
+// a ~22h-old entry naming the version already installed, while this module's
+// cacheless fetch saw the new one. Three independent guards are pinned here:
+// a per-check cache-bust on the URL Squirrel fetches, an explicit target
+// version on every "downloading" event, and a refusal to arm an install whose
+// version equals the running build.
+// ---------------------------------------------------------------------------
+
+test("buildFeedUrl appends a cache-bust param only when asked", () => {
+  assert.strictEqual(
+    buildFeedUrl({ base: "https://cdn.example.dev/feed", channel: "stable", cacheBust: "1234-7" }),
+    "https://cdn.example.dev/feed/stable/latest-mac.json?_=1234-7",
+  );
+  assert.strictEqual(
+    buildFeedUrl({ base: "https://cdn.example.dev/feed", channel: "stable" }),
+    "https://cdn.example.dev/feed/stable/latest-mac.json",
+  );
+});
+
+test("every configured feed URL is unique and requests no-cache (NSURLCache defeat)", () =>
+  withDarwin(async () => {
+    const { deps, calls } = makeDeps({
+      appVersion: "1.0.0",
+      feed: { version: "1.0.1", url: "https://cdn.example.dev/desktop/stable/1.0.1/KiroCrew.zip" },
+    });
+    const u = initAutoUpdate(deps);
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    await u.download();
+    await new Promise((r) => setImmediate(r));
+    assert.ok(calls.setFeedURL.length >= 2, `expected >=2 configureFeed calls, got ${calls.setFeedURL.length}`);
+    for (const url of calls.setFeedURL) {
+      assert.match(url, /\?_=\d+-\d+$/, `feed URL missing cache-bust: ${url}`);
+    }
+    assert.strictEqual(new Set(calls.setFeedURL).size, calls.setFeedURL.length,
+      `feed URLs repeated across checks: ${calls.setFeedURL}`);
+    for (const headers of calls.setFeedHeaders) {
+      assert.strictEqual(headers && headers["Cache-Control"], "no-cache");
+    }
+  }));
+
+test("downloading reports the version being FETCHED, not the running build", () =>
+  withDarwin(async () => {
+    const { deps, calls, handlers } = makeDeps({
+      appVersion: "0.1.0-nightly.20260728t065139",
+      feed: { version: "0.1.2-nightly.20260728t221922", url: "https://cdn.example.dev/desktop/nightly/x/KiroCrew.zip" },
+    });
+    const u = initAutoUpdate(deps);
+    await u.check();
+    await new Promise((r) => setImmediate(r));
+    await u.download();
+    await new Promise((r) => setImmediate(r));
+    handlers["update-available"](); // Squirrel confirms it started fetching
+    const downloading = lastPayload(calls, "downloading");
+    assert.strictEqual(downloading.version, "0.1.2-nightly.20260728t221922");
+    assert.notStrictEqual(downloading.version, "0.1.0-nightly.20260728t065139");
+  }));
+
+test("a resolved update equal to the running version is refused, not installed", () =>
+  withDarwin(async () => {
+    const { deps, calls, handlers } = makeDeps({
+      appVersion: "0.1.0-nightly.20260728t065139",
+      feed: { version: "0.1.2-nightly.20260728t221922", url: "https://cdn.example.dev/desktop/nightly/x/KiroCrew.zip" },
+    });
+    const u = initAutoUpdate(deps);
+    calls.states.length = 0;
+    // Squirrel resolved a stale feed entry: the bundle it staged IS the
+    // running version. Installing it would restart into the same build and
+    // re-offer forever.
+    handlers["update-downloaded"]({}, "notes", "0.1.0-nightly.20260728t065139");
+    assert.ok(!calls.states.includes("downloaded"), "must not offer to install the running version");
+    assert.ok(calls.states.includes("not-available"));
+    assert.strictEqual(u.isReady(), false, "install must not be armed");
+  }));
+
+test("a resolved update newer than the running version still arms normally", () =>
+  withDarwin(async () => {
+    const { deps, calls, handlers } = makeDeps({
+      appVersion: "0.1.0-nightly.20260728t065139",
+      feed: { version: "0.1.2-nightly.20260728t221922", url: "https://cdn.example.dev/desktop/nightly/x/KiroCrew.zip" },
+    });
+    const u = initAutoUpdate(deps);
+    calls.states.length = 0;
+    handlers["update-downloaded"]({}, "Release notes", "0.1.2-nightly.20260728t221922");
+    const downloaded = lastPayload(calls, "downloaded");
+    assert.strictEqual(downloaded.version, "0.1.2-nightly.20260728t221922");
+    assert.strictEqual(downloaded.notes, "Release notes");
+    assert.strictEqual(u.isReady(), true);
   }));

@@ -54,6 +54,34 @@ delta. Schema:
 `url` is the Squirrel auto-update payload (zip, mandatory). `dmg` is the
 first-install disk image for humans/website links; Squirrel ignores it.
 
+**The feed object MUST carry `Cache-Control: public, max-age=300`** (asserted
+fail-closed right after the write by `curl -I` through the public CDN — not
+`s3api head-object`, since the publish role is Put-only on `feed/*`; same
+convention as `publish-linux.yml`'s byte compare). The `feed/*`
+CloudFront behavior is `CACHING_DISABLED` (KiroCrewPublishCDK,
+`lib/distribution-stack.ts`), so the **edge** never caches a feed — but a
+cache policy governs CloudFront's own storage and does **not** add a
+`Cache-Control` response header, and nothing else in the distribution injects
+one. A feed written without it therefore reaches clients with no freshness
+metadata at all, and CFNetwork applies *heuristic* caching (roughly 10% of
+the object's age, so a day-old feed earns itself hours of "fresh").
+Squirrel.Mac fetches the feed through `NSURLCache`, so a header-less feed let
+the desktop app resolve a ~22h-old entry and offer to "update" to the version
+already installed, while the app's own cacheless fetch saw the new one — a
+purely client-side staleness bug, with the edge always going to origin.
+
+`max-age=300` is the release-feed norm (Signal Desktop's `latest-mac.yml`, on
+the same S3+CloudFront shape, uses exactly this) and bounds client-side
+staleness on a mutable pointer at 5 minutes. The CLI feed
+(`latest-cli.json`) uses `no-cache` instead — it is polled far less often, so
+revalidating every time costs nothing there.
+
+`auto-update.js` additionally appends a unique `?_=<stamp>-<n>` cache-bust
+per check, which defeats `NSURLCache`. That is not for the 5-minute window;
+it exists because Squirrel offers no way to set a cache policy on its
+request, so an already-shipped build with a poisoned cache entry has no
+other escape.
+
 **macOS artifact flow (as built), all channels via `sign-and-notarize.yml`** (which folds the CDSigner sign job and the notarize job into one reusable workflow shared by `nightly.yml` and `release.yml`; the trigger files carry only version derivation and `uses:` calls)**:**
 
 1. CDSigner signs the .app (dynamic manifest covering every nested Mach-O)

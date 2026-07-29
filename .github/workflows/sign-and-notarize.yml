@@ -567,8 +567,27 @@ jobs:
       # after the spctl gate passed (this job's sole input is the gated
       # artifact) and only after the artifact is publicly downloadable
       # (feed-before-artifact would hand clients a 403/404). The feed key is
-      # mutable and served no-cache by the feed/* CloudFront behavior, so
-      # overwriting is safe. Out-of-order overwrites (older run finishing
+      # mutable, so overwriting is safe -- but ONLY because the object itself
+      # carries an explicit Cache-Control (set below). The feed/* CloudFront
+      # behavior is CACHING_DISABLED (see KiroCrewPublishCDK
+      # distribution-stack.ts), so the EDGE never caches the feed -- but a
+      # cache policy governs CloudFront's own storage, it does NOT add a
+      # Cache-Control response header, and nothing else in the distribution
+      # injects one either. A feed written without it therefore reaches
+      # clients with no freshness metadata at all, and CFNetwork applies
+      # HEURISTIC caching (~10% of the object's age, so a day-old feed earns
+      # itself hours of "fresh"). Squirrel.Mac's feed request goes through
+      # NSURLCache, so a header-less feed made the desktop app re-resolve a
+      # stale entry for hours -- offering to "update" to the version already
+      # installed while the app's own (cacheless) fetch saw the new one.
+      # max-age=300 is the release-feed norm (Signal Desktop's latest-mac.yml
+      # on the same S3+CloudFront shape uses exactly this); it bounds
+      # client-side staleness at 5 minutes instead of leaving it to a
+      # heuristic. Deliberately NOT `no-cache` like
+      # feed/<channel>/latest-cli.json: the desktop feed is hit by every
+      # running app on a 4h poll, and 5 minutes of staleness on a pointer is
+      # harmless -- the client compares versions itself.
+      # Out-of-order overwrites (older run finishing
       # last -> channel rollback) are prevented by the CALLER workflows'
       # concurrency groups, which serialize runs per channel -- not by
       # version comparison here, which would itself be a read-then-write
@@ -588,8 +607,28 @@ jobs:
           EOF
           aws s3 cp /tmp/latest-mac.json \
             "s3://${{ vars.CLI_DIST_BUCKET }}/feed/${CHANNEL}/latest-mac.json" \
-            --content-type application/json
+            --content-type application/json \
+            --cache-control "public, max-age=300"
           echo "Feed written: feed/${CHANNEL}/latest-mac.json -> ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
+          # Verify the header CLIENTS actually receive, through the public CDN.
+          # NOT `s3api head-object`: the publish role is Put-only on feed/*
+          # (KiroCrewPublishCDK distribution-stack.ts grants s3:GetObject on
+          # cli/* alone), so a read-back would AccessDenied and abort this step
+          # under `set -euo pipefail` AFTER the feed was already published --
+          # a guard that fails on permissions instead of on the condition it
+          # guards. Same convention as publish-linux.yml's byte compare, which
+          # goes through the CDN for exactly this reason. CLI_CDN_BASE and
+          # updates.crew.kiro.dev are alternate domains of the SAME
+          # distribution, and feed/* is CACHING_DISABLED, so this response
+          # comes from origin and reflects the object just written.
+          FEED_CC=$(curl -fsS --retry 3 --retry-delay 2 \
+            -I "${{ vars.CLI_CDN_BASE }}/feed/${CHANNEL}/latest-mac.json" \
+            | tr -d '\r' | sed -n 's/^[Cc]ache-[Cc]ontrol: //p' | head -1)
+          if [ "${FEED_CC}" != "public, max-age=300" ]; then
+            echo "::error::feed Cache-Control is '${FEED_CC}', expected 'public, max-age=300' -- a feed served without explicit freshness lets clients heuristically cache a stale pointer"
+            exit 1
+          fi
+          echo "Feed Cache-Control verified via CDN: ${FEED_CC}"
 
       # Human-clickable permalink to the current DMG:
       #   <CDN>/desktop/<channel>/latest/KiroCrew.dmg

@@ -89,12 +89,28 @@ function resolveChannel(stamped, preference) {
 
 /**
  * Build the static feed URL for a channel. Pure + testable.
- * @param {{base:string, channel:string}} o
+ *
+ * `cacheBust` appends a unique query param. Squirrel.Mac fetches the feed
+ * through an NSMutableURLRequest with the default UseProtocolCachePolicy, so
+ * it reads NSURLCache -- and a feed object served without Cache-Control gets
+ * heuristically cached, making Squirrel resolve a stale entry (the version
+ * already installed) while this module's own cacheless fetch sees the new
+ * one. A per-check unique URL is not in any HTTP cache's key, so it defeats
+ * NSURLCache regardless of the response headers. The origin-side fix is the
+ * feed's `Cache-Control: public, max-age=300`; this is the client-side belt,
+ * and it is not redundant -- a build already in the field cannot be given the
+ * header fix retroactively, so the bust is what lets a poisoned client
+ * recover. (The CDN edge is not involved either way: the feed/* behavior is
+ * CACHING_DISABLED, so CloudFront always goes to origin.)
+ *
+ * @param {{base:string, channel:string, cacheBust?:string|number}} o
  * @returns {string}
  */
-function buildFeedUrl({ base, channel }) {
+function buildFeedUrl({ base, channel, cacheBust }) {
   const b = (base || DEFAULT_FEED_BASE).replace(/\/+$/, "");
-  return `${b}/${encodeURIComponent(channel)}/latest-mac.json`;
+  const url = `${b}/${encodeURIComponent(channel)}/latest-mac.json`;
+  if (cacheBust === undefined || cacheBust === null || cacheBust === "") return url;
+  return `${url}?_=${encodeURIComponent(String(cacheBust))}`;
 }
 
 /**
@@ -233,17 +249,35 @@ function initAutoUpdate(deps) {
   let stagedNotes = "";
   let installing = false;
   let quitHandled = false;
+  let feedNonce = 0; // monotonic, so two feed URLs are never byte-identical
 
   function configureFeed() {
     const channel = currentChannel();
-    const url = buildFeedUrl({ base: feedBase, channel });
-    autoUpdater.setFeedURL({ url });
+    // Unique per call so neither NSURLCache (Squirrel's fetch) nor this
+    // module's fetch can be served a previously-cached feed body. The
+    // monotonic counter is NOT redundant with the timestamp: check() ->
+    // download() (the consent flow) issues two configureFeed calls that can
+    // land in the same millisecond, and a repeated URL is a cache HIT.
+    feedNonce += 1;
+    const url = buildFeedUrl({ base: feedBase, channel, cacheBust: `${Date.now()}-${feedNonce}` });
+    autoUpdater.setFeedURL({ url, headers: { "Cache-Control": "no-cache" } });
     log.info(`[update] feed: ${url}`);
     return url;
   }
 
   let checking = false;
   let foundFeed = null; // last feed entry surfaced to the user, awaiting consent
+  /**
+   * Version of the update currently being fetched/held -- NOT the running
+   * app's version. Every state the UI renders a version for must pass this
+   * explicitly: emit() defaults `version` to app.getVersion() so the
+   * check/not-available/error states report the running build, and a
+   * "downloading" event that omitted it made the update card claim the app
+   * was downloading the version already installed.
+   */
+  function pendingVersion() {
+    return (foundFeed && foundFeed.version) || stagedVersion || app.getVersion();
+  }
   async function safeCheck() {
     // NOTE: no updateReady short-circuit here. A check ALWAYS consults the
     // feed and reports state (macOS Software Update semantics) — the silent
@@ -258,7 +292,7 @@ function initAutoUpdate(deps) {
       // directory"). Report progress instead; update-downloaded/error will
       // clear the flag and the next check proceeds normally.
       log.info("[update] check requested while download in flight — reporting progress");
-      emit("downloading");
+      emit("downloading", { version: pendingVersion() });
       return;
     }
     checking = true;
@@ -311,7 +345,7 @@ function initAutoUpdate(deps) {
    * version last surfaced by safeCheck. Never called automatically.
    */
   async function startDownload() {
-    if (downloading) { emit("downloading"); return; }
+    if (downloading) { emit("downloading", { version: pendingVersion() }); return; }
     if (updateReady && foundFeed && stagedVersion === foundFeed.version) {
       emit("downloaded", { version: stagedVersion, notes: stagedNotes });
       return;
@@ -328,7 +362,7 @@ function initAutoUpdate(deps) {
     configureFeed();
     log.info("[update] user consented — engaging Squirrel download");
     downloading = true;
-    emit("downloading");
+    emit("downloading", { version: pendingVersion() });
     autoUpdater.checkForUpdates();
   }
 
@@ -404,10 +438,27 @@ function initAutoUpdate(deps) {
   autoUpdater.on("error", (err) => { downloading = false; log.error("[update] error", err); emit("error", { message: String(err && err.message || err) }); });
   autoUpdater.on("checking-for-update", () => { log.info("[update] checking…"); emit("checking"); });
   autoUpdater.on("update-not-available", () => { downloading = false; log.info("[update] up to date"); emit("not-available"); });
-  autoUpdater.on("update-available", () => { downloading = true; log.info("[update] downloading…"); emit("downloading"); });
+  autoUpdater.on("update-available", () => { downloading = true; log.info("[update] downloading…"); emit("downloading", { version: pendingVersion() }); });
   autoUpdater.on("update-downloaded", (_e, notes, name) => {
-    updateReady = true;
     downloading = false;
+    // LAST LINE OF DEFENSE against a stale feed resolution. If Squirrel
+    // resolved the version this app is already running, installing it is a
+    // no-op that costs a full restart -- and because the running version
+    // never changes, the next check re-offers it forever (observed as an
+    // endless reinstall loop). Refuse the staged bundle instead of arming
+    // the install, and report "up to date", which is what the user's
+    // machine actually is. Never sets updateReady, so before-quit cannot
+    // install it either.
+    if (name && name === app.getVersion()) {
+      log.error(`[update] feed resolved ${name}, already installed — refusing self-reinstall`);
+      updateReady = false;
+      stagedVersion = null;
+      stagedNotes = "";
+      foundFeed = null;
+      emit("not-available");
+      return;
+    }
+    updateReady = true;
     stagedVersion = name || null;
     stagedNotes = notes || "";
     log.info(`[update] downloaded ${name} — ${uiDriven ? "notifying UI" : "prompting"}`);
