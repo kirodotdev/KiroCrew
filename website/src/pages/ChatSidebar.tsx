@@ -390,17 +390,19 @@ function isSingleEmoji(s: string): boolean {
 }
 
 
-/** A folder's icon: a Lucide folder glyph as a uniform base. When collapsed
- *  (resting) it shows the closed Folder glyph with the folder's custom emoji
- *  (if any) overlaid on its flat face. When expanded it swaps to FolderOpen and
- *  drops the emoji — the open shape plus the rotated chevron carry the state,
- *  and FolderOpen's angled flap has no flat face for the emoji to sit on cleanly.
+/** A folder's icon AND its collapse affordance: a Lucide folder glyph that is
+ *  the sole open/closed state carrier (the separate chevron was retired — the
+ *  open-vs-closed shape now stands alone). When collapsed (resting) it shows the
+ *  closed Folder glyph with the folder's custom emoji (if any) overlaid on its
+ *  flat face. When expanded it swaps to FolderOpen and drops the emoji, since
+ *  FolderOpen's angled flap has no flat face for the emoji to sit on cleanly.
  *  Every folder keeps the same fixed footprint so the sidebar stays aligned, and
- *  the board view shows the emoji too (it previously rendered only the bare glyph). */
-function FolderGlyph({ icon, size = 14, open = false, className = 'text-muted shrink-0' }: { icon?: string; size?: number; open?: boolean; className?: string }) {
+ *  the board view shows the emoji too (it previously rendered only the bare glyph).
+ *  `testId` lets a caller tag the glyph as the folder-collapse target for tests. */
+function FolderGlyph({ icon, size = 14, open = false, className = 'text-muted shrink-0', testId }: { icon?: string; size?: number; open?: boolean; className?: string; testId?: string }) {
   const Glyph = open ? FolderOpen : Folder
   return (
-    <span className="relative inline-flex shrink-0 items-center justify-center" style={{ width: size, height: size }}>
+    <span data-testid={testId} className="relative inline-flex shrink-0 items-center justify-center" style={{ width: size, height: size }}>
       <Glyph size={size} className={className} />
       {icon && !open && (
         <span
@@ -1713,9 +1715,6 @@ function ChatSidebar({
           onClick={() => toggleCollapse(folder.id)}
           onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapse(folder.id) } }}
         >
-          <span className="shrink-0 text-muted transition-transform duration-150" style={{ transform: folder.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }}>
-            <ChevronRight size={12} />
-          </span>
           <FolderGlyph icon={folder.icon} size={11} open={!folder.collapsed} className="shrink-0 text-muted" />
           {editingId === folder.id && editScope === columnId ? (
             /* Inline rename input — board-view parity with renderFolderHeader.
@@ -2144,10 +2143,13 @@ function ChatSidebar({
         // and action buttons clickable; drag is off while renaming.
         {...(draggable ? dragHandleProps : {})}
         className={`group relative flex items-center gap-2 pr-2 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
-        style={{ paddingLeft: '8px' }}>
+        // 13px left pad lands the folder NAME text on the same x as the nested
+        // session rows' text (glyph sits in the gutter to the left), giving a
+        // clean vertical guide down the tree. Measured: name / session both at
+        // the wrapper's text edge.
+        style={{ paddingLeft: '13px' }}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
-            <span className="shrink-0 text-muted" style={{ transform: folder.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }}><ChevronRight size={14} /></span>
             <FolderGlyph icon={folder.icon} size={14} open={!folder.collapsed} />
             <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
@@ -2156,16 +2158,13 @@ function ChatSidebar({
           <>
             {/* The collapse toggle is the real interactive control — a native
              *  <button> (keyboard-operable for free), filling the row so clicking
-             *  the chevron/icon/name still toggles.  Double-click the name renames. */}
+             *  the folder glyph/name still toggles.  Double-click the name renames. */}
             <button type="button"
               className="flex items-center gap-2 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
               aria-expanded={!folder.collapsed}
               aria-label={`${folder.collapsed ? 'Expand' : 'Collapse'} folder ${folder.name}`}
               onClick={() => toggleCollapse(folder.id)}>
-              <span data-testid={`folder-collapse-${folder.id}`} className="shrink-0 text-muted transition-transform duration-150" style={{ transform: folder.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }}>
-                <ChevronRight size={14} />
-              </span>
-              <FolderGlyph icon={folder.icon} size={14} open={!folder.collapsed} />
+              <FolderGlyph icon={folder.icon} size={14} open={!folder.collapsed} testId={`folder-collapse-${folder.id}`} />
               {/* Double-click rename is a mouse-only power shortcut; the accessible
                *  path is the ⋯-menu Rename item, so scope-disable the interaction rule. */}
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
