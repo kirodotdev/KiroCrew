@@ -33,7 +33,13 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // Aggregate "waiting to start" count for this slot — agents accepted but
   // queued behind the concurrency cap / stagger gate (no individual card yet).
   const queued = useAppSelector(s => s.chat.subagentQueued?.[slot ?? ''] ?? 0)
-  const all = useMemo(() => Object.values(subagents), [subagents])
+  // Only top-level (managed) subagents belong in the chip — its count must
+  // match the "spawned N" prose. Native kiro-cli sub-agents (native:* ids,
+  // surfaced from _kiro.dev/subagent/list_update) are nested UNDER a managed
+  // agent, not launched by this session's spawn_run, so counting them inflated
+  // the histogram past what was actually spawned (e.g. 4 spawned → 9 tracked).
+  // They remain fully visible in the Subagents activity sidebar.
+  const all = useMemo(() => Object.values(subagents).filter(a => !a.id.startsWith('native:')), [subagents])
   // Exception-first ordering: retrying/stalled agents need eyes; the healthy
   // majority collapses behind the summary row at scale.
   const activeList = useMemo(() => {
@@ -51,7 +57,8 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     stopped: all.filter(a => a.status === 'stopped').length,
     stalled: activeList.filter(a => a.stalled).length,
   }), [all, activeList])
-  const failedIds = useMemo(() => all.filter(a => a.status === 'error' && !a.id.startsWith('native:')).map(a => a.id), [all])
+  // `all` already excludes native:* ids, so error entries here are managed.
+  const failedIds = useMemo(() => all.filter(a => a.status === 'error').map(a => a.id), [all])
   const activeListRef = useRef(activeList)
   activeListRef.current = activeList
   // Mount when anything is in flight — running OR queued. Including queued is

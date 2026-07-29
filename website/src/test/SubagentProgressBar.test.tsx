@@ -67,6 +67,23 @@ describe('SubagentProgressBar — in-chat stop controls', () => {
     expect(screen.queryByLabelText('Stop all running subagents')).not.toBeInTheDocument()
   })
 
+  it('excludes native (nested) kiro-cli subagents from the count and rows so it matches "spawned N"', () => {
+    // 2 top-level managed agents + 2 native:* nested agents surfaced from the
+    // kiro-cli list_update. The chip must show only the 2 managed ones.
+    renderBar(makeStore(['a1', 'a2', 'native:sess-x', 'native:sess-y']))
+    // Running histogram counts managed only.
+    expect(screen.getByTestId('subagent-running-count')).toHaveTextContent('2')
+    // Exactly two rows, both managed; no native task rows.
+    const rows = screen.getAllByTestId('subagent-row')
+    expect(rows).toHaveLength(2)
+    // "Stop all" acts on the 2 managed agents, never the native ones.
+    fireEvent.click(screen.getByLabelText('Stop all running subagents'))
+    expect(api.spawnDelete).toHaveBeenCalledTimes(2)
+    expect(api.spawnDelete).toHaveBeenCalledWith('a1')
+    expect(api.spawnDelete).toHaveBeenCalledWith('a2')
+    expect(api.spawnDelete).not.toHaveBeenCalledWith('native:sess-x')
+  })
+
   it('renders no stop controls when every active agent is pending (stoppableCount === 0)', () => {
     renderBar(makeStore([], 'p1'))
     // The pending agent still shows in the header, but offers no stop affordance.
