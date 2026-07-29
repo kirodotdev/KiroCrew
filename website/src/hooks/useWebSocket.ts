@@ -421,6 +421,15 @@ export function useWebSocket() {
             }
             break
           }
+          case 'skills.pending_changed': {
+            // A skill candidate (new or an update proposal) was just staged for
+            // review. Refresh the pending queue so an already-open Skills tab
+            // shows it without a reload; ['skills'] is invalidated too because
+            // the panel's visibility depends on the pending count.
+            queryClient.invalidateQueries({ queryKey: ['skills-pending'] })
+            queryClient.invalidateQueries({ queryKey: ['skills'] })
+            break
+          }
           case 'todo_update': {
             const d = data as unknown as { slot?: string; todo?: TodoList | null }
             if (d.slot) dispatch(sseTodoUpdate({ slot: d.slot, todo: d.todo ?? null }))

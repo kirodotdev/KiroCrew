@@ -8,6 +8,7 @@ import Modal from '../../components/Modal'
 import SkillForm, { assembleSkillContent, parseSkillContent, type SkillFormData } from '../../components/SkillForm'
 import SkillDirectoryBrowser from '../../components/SkillDirectoryBrowser'
 import SkillBrowserModal from '../../components/SkillBrowserModal'
+import DiffBlock from '../../components/DiffBlock'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 
@@ -277,11 +278,24 @@ interface PendingSkill {
   name: string
   description: string
   has_scripts: boolean
+  /** 'new' (default) or 'update' — an update proposal against a live skill. */
+  kind?: string
+  /** For updates: the live skill this proposes to change (e.g. 'auto/deploy'). */
+  target?: string | null
+  base_version?: number | null
 }
 interface PendingDetail {
   name: string
   content: string
   scripts: { filename: string; content: string }[]
+  /** Update-only approval preview (server-computed; null if target is gone). */
+  diff?: string | null
+  live_body?: string | null
+  proposed_body?: string | null
+  from_version?: number | null
+  to_version?: number | null
+  /** True when the live skill advanced past the version this was merged from. */
+  stale_base?: boolean
 }
 
 function PendingCandidateRow({ p, onApprove, onDismiss }: {
@@ -290,6 +304,7 @@ function PendingCandidateRow({ p, onApprove, onDismiss }: {
   onDismiss: (slug: string) => void
 }) {
   const [open, setOpen] = useState(false)
+  const isUpdate = p.kind === 'update'
   const { data: detail } = useQuery<PendingDetail>({
     queryKey: ['skills-pending-detail', p.slug],
     queryFn: () => api.skillPendingDetail(p.slug),
@@ -301,20 +316,57 @@ function PendingCandidateRow({ p, onApprove, onDismiss }: {
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-strong truncate">
             {p.name}
+            {isUpdate && (
+              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-accent-subtle text-accent font-bold">Update</span>
+            )}
             {p.has_scripts && (
               <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn font-bold">{i18nT('pages.overview.skillsTab.script')}</span>
             )}
           </div>
-          <div className="text-[12px] text-muted truncate">{p.description}</div>
+          <div className="text-[12px] text-muted truncate">
+            {isUpdate && p.target
+              ? `Adds new requirements to ${p.target} — ${p.description}`
+              : p.description}
+          </div>
         </div>
         <Btn onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'Review'}</Btn>
-        <Btn primary disabled={!open || !detail} onClick={() => onApprove(p.slug)}>{i18nT('pages.overview.skillsTab.approve')}</Btn>
+        {/* An update whose target was archived/removed after staging has nothing
+            to apply, and a stale update (live moved on since the merge) would
+            replace the newer approved content — the backend refuses both, so keep
+            the button disabled and let the expanded panel explain. */}
+        <Btn primary disabled={!open || !detail || (isUpdate && (!detail.diff || !!detail.stale_base))} onClick={() => onApprove(p.slug)}>{i18nT('pages.overview.skillsTab.approve')}</Btn>
         <Btn danger onClick={() => { if (confirm(`Dismiss "${p.name}"?`)) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
       </div>
       {open && detail && (
         <div className="mt-2 space-y-2">
-          <div className="text-[11px] font-semibold text-muted">{i18nT('pages.overview.skillsTab.skill_md')}</div>
-          <pre className="text-[11px] whitespace-pre-wrap max-h-64 overflow-auto p-2 rounded bg-bg-elevated border border-border">{detail.content}</pre>
+          {isUpdate && detail.stale_base && (
+            <div className="text-[11px] p-2 rounded bg-warn-subtle text-warn border border-border">
+              This skill changed after this update was written, so applying it now
+              would undo those newer changes. Approving is blocked — dismiss this
+              candidate and a fresh update will be proposed against the current
+              version.
+            </div>
+          )}
+          {isUpdate && detail.diff ? (
+            <>
+              <div className="text-[11px] font-semibold text-muted">
+                Proposed change{detail.from_version != null && detail.to_version != null
+                  ? ` (v${detail.from_version} → v${detail.to_version})`
+                  : ''}
+              </div>
+              <DiffBlock code={detail.diff} complete />
+            </>
+          ) : isUpdate ? (
+            <div className="text-[11px] p-2 rounded bg-bg-elevated border border-border text-muted">
+              The skill this update targets no longer exists, so there is nothing
+              to update. Dismiss this candidate.
+            </div>
+          ) : (
+            <>
+              <div className="text-[11px] font-semibold text-muted">{i18nT('pages.overview.skillsTab.skill_md')}</div>
+              <pre className="text-[11px] whitespace-pre-wrap max-h-64 overflow-auto p-2 rounded bg-bg-elevated border border-border">{detail.content}</pre>
+            </>
+          )}
           {(detail.scripts ?? []).map(s => (
             <div key={s.filename}>
               <div className="text-[11px] font-semibold text-warn">{i18nT('pages.overview.skillsTab.scripts')}{s.filename}</div>
@@ -347,6 +399,10 @@ function PendingSkillsPanel() {
       // Evict the per-slug detail cache so a slug re-staged after this one went
       // live can't surface the promoted candidate's stale detail.
       qc.removeQueries({ queryKey: ['skills-pending-detail', slug] })
+      // Approving changes the live skill, which invalidates the diff/version of
+      // every OTHER open update candidate targeting it. Without this, a sibling
+      // row keeps rendering its pre-approval diff from cache.
+      qc.invalidateQueries({ queryKey: ['skills-pending-detail'] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
       qc.invalidateQueries({ queryKey: ['skills'] })
     },

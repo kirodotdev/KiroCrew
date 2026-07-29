@@ -171,7 +171,7 @@ from kiro_crew.platform import (
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
-from kiro_crew.skills import SkillsLoader
+from kiro_crew.skills import SkillsLoader, set_pending_staged_hook
 from kiro_crew.suggestions import api_suggestions
 from kiro_crew.tips import api_tips_feedback, api_tips_next, api_tips_status
 from kiro_crew.tunnel.setup import setup_tunnel
@@ -1303,6 +1303,77 @@ async def start_dashboard(
         slack_client=slack_client,
         owner_id=owner_id,
     )
+
+    # --- Pending-skill approval notifications ---
+    # A staged candidate (new OR update) stays invisible until a human approves
+    # it, so raise a bell-feed notification with a deep link to the review queue
+    # and broadcast ``skills.pending_changed`` so an open Skills tab refreshes
+    # live. The hook is registered at MODULE level in ``skills`` because
+    # candidates are staged by whichever loader instance the producer holds
+    # (consolidation uses the ContextBuilder's; dashboard requests build their
+    # own), so a per-instance callback would miss the consolidation path.
+    try:
+        # Capture the gateway loop: the hook fires from whatever thread staged
+        # the candidate, and consolidation stages from a worker thread
+        # (``asyncio.to_thread``). Both notify() and broadcast_ws() ultimately
+        # call ``asyncio.ensure_future``, which RAISES off-loop — and
+        # ``_send_ws_all`` treats that raise as a dead socket and EVICTS every
+        # connected client. Marshal the emit back onto the loop instead.
+        try:
+            _gw_loop: "asyncio.AbstractEventLoop | None" = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - sync/embedded launch
+            _gw_loop = None
+
+        def _on_pending_skill_staged(info: dict) -> None:
+            try:
+                name = str(info.get("name") or info.get("slug") or "skill")
+                is_update = info.get("kind") == "update"
+                target = str(info.get("target") or "")
+                if is_update:
+                    title = "Skill update awaiting review"
+                    body = (
+                        f"An update to {target or name} was generated and needs "
+                        "your approval before it takes effect."
+                    )
+                else:
+                    title = "New skill awaiting review"
+                    body = (
+                        f"{name} was generated from a session and needs your "
+                        "approval before it can be used."
+                    )
+                payload = {
+                    "slug": str(info.get("slug") or ""),
+                    "kind": "update" if is_update else "new",
+                    "target": target,
+                }
+
+                def _emit() -> None:
+                    try:
+                        state.notify(
+                            "skills",
+                            title,
+                            body,
+                            meta={"url": "/capabilities?tab=skills", **payload},
+                        )
+                        state.broadcast_ws("skills.pending_changed", payload)
+                    except Exception:
+                        logger.debug("pending-skill notification failed", exc_info=True)
+
+                if _gw_loop is not None and not _gw_loop.is_closed():
+                    # Safe from the loop thread too — call_soon_threadsafe just
+                    # schedules. RuntimeError means the loop is shutting down.
+                    try:
+                        _gw_loop.call_soon_threadsafe(_emit)
+                    except RuntimeError:  # pragma: no cover - loop closing
+                        pass
+                else:
+                    _emit()
+            except Exception:
+                logger.debug("pending-skill notification failed", exc_info=True)
+
+        set_pending_staged_hook(_on_pending_skill_staged)
+    except Exception:
+        logger.debug("Could not register pending-skill staged hook", exc_info=True)
 
     # --- Dynamic Workflows (M6) ---
     try:

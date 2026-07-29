@@ -33,8 +33,13 @@ from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import BACKGROUND_KEY
-from kiro_crew.skills import AutoSkillProvenance
-from kiro_crew.skills_dedupe import metadata_dedupe
+from kiro_crew.skills import AUTO_SKILL_MAX_PROCEDURE_CHARS, AutoSkillProvenance
+from kiro_crew.skills_dedupe import (
+    VERDICT_DUP,
+    VERDICT_NEW,
+    VERDICT_UPDATE,
+    metadata_dedupe_verdict,
+)
 from kiro_crew.skills_script_validator import validate_skill_script
 from kiro_crew.vector_memory_constants import (
     _MAX_EPISODIC_PER_CONSOLIDATION,
@@ -2378,6 +2383,73 @@ _SENSITIVE_TOOL_PATTERNS: tuple[str, ...] = (
 _TOOL_ROLES: frozenset[str] = frozenset({"tool", "tool_call", "tool_result"})
 
 
+def _frontmatter_value(text: str | None, key: str) -> str:
+    """Return a single-line frontmatter value from a SKILL.md body, or ""."""
+    if not text:
+        return ""
+    m = re.match(r"^\s*---\n(.*?)\n---", text, re.DOTALL)
+    if not m:
+        return ""
+    for ln in m.group(1).split("\n"):
+        if ":" in ln and ln.split(":", 1)[0].strip() == key:
+            return ln.split(":", 1)[1].strip()
+    return ""
+
+
+def _merge_trigger_lists(live: str, candidate: str, *, cap: int = 12) -> str:
+    """Union two comma-separated trigger lists, live first, case-insensitively
+    deduped and capped.
+
+    Triggers are the skill's ACTIVATION surface. An update proposes triggers for
+    the new requirement only, so replacing the live list would stop the skill
+    firing on every phrasing it already answered — a silent regression the diff
+    shows but nobody reads as a behavior change. Union instead, and cap so
+    repeated updates cannot grow the list without bound.
+    """
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw in (live or "").split(",") + (candidate or "").split(","):
+        t = re.sub(r"\s+", " ", raw).strip()
+        if not t:
+            continue
+        k = t.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        merged.append(t)
+        if len(merged) >= cap:
+            break
+    return ", ".join(merged)
+
+
+def _strip_skill_frontmatter(text: str | None) -> str:
+    """Return *text* with a leading ``---`` frontmatter block removed.
+
+    A skill body read off disk carries its frontmatter header; only the prose
+    below it may be fed to (or accepted from) the update-merge turn, because
+    ``stage_skill_candidate`` re-emits frontmatter of its own. Text without a
+    leading block is returned unchanged (stripped).
+    """
+    if not text:
+        return ""
+    m = re.match(r"^\s*---\n.*?\n---\n?(.*)$", text, re.DOTALL)
+    return (m.group(1) if m else text).strip()
+
+
+def _strip_code_fence(text: str) -> str:
+    """Unwrap a single outer ```/```markdown fence, if the model emitted one."""
+    s = (text or "").strip()
+    if not s.startswith("```"):
+        return s
+    lines = s.split("\n")
+    if len(lines) < 2:
+        return s
+    body = lines[1:]
+    if body and body[-1].strip().startswith("```"):
+        body = body[:-1]
+    return "\n".join(body).strip()
+
+
 def _count_tool_call_messages(messages: list[dict]) -> int:
     """Count messages that represent tool invocations under either schema.
 
@@ -2983,20 +3055,25 @@ class HistoryConsolidator:
 
     def _dedupe_candidate(
         self, slug: str, description: str, triggers: str
-    ) -> "str | None":
-        """Return the key of an existing auto-skill this candidate duplicates.
+    ) -> "tuple[str, str | None]":
+        """Classify a candidate against existing auto-skills.
 
-        Primary: a single metadata-judge call (``skills.judge_model``) comparing
-        the candidate against ALL existing auto-skills at once (bounded set, no
-        embeddings). Lexical ``find_similar`` runs as a fallback when the judge
-        is unavailable (no ``judge_model`` configured, no captured event loop, or
-        no existing skills) AND as a safety net when the judge returns no match —
-        so a judge *failure* (which fails open to "no duplicate") can't silently
-        skip dedup and let a near-identical skill through.
+        Returns ``(verdict, key)`` where ``verdict`` is one of ``VERDICT_NEW``
+        (stage as a new candidate), ``VERDICT_DUP`` (drop — pure re-detection),
+        or ``VERDICT_UPDATE`` (stage a pending update to ``key``). ``key`` is the
+        matched/target existing-skill key for DUP/UPDATE, else ``None``.
+
+        Primary: a single tri-state metadata-judge call comparing the candidate
+        against ALL existing auto-skills at once (bounded set, no embeddings).
+        Lexical ``find_similar`` runs as a fallback when the judge is unavailable
+        (no ``judge_model``, no captured event loop, or no existing skills) AND
+        as a safety net when the judge returns ``VERDICT_NEW`` — so a judge
+        *failure* (which fails open to "new") can't silently skip dedup and let
+        a near-identical skill through. A lexical hit is treated as a DUP.
         """
         loader = self._skills_loader
         if loader is None:
-            return None
+            return (VERDICT_NEW, None)
         existing = list(loader.list_auto_skills())
         # Include already-staged (pending) candidates so repeated sessions don't
         # queue a duplicate of something still awaiting review (list_auto_skills
@@ -3012,10 +3089,11 @@ class HistoryConsolidator:
             pass
         loop = self._event_loop
 
-        def _lexical() -> "str | None":
-            return loader.find_similar(
+        def _lexical() -> "tuple[str, str | None]":
+            hit = loader.find_similar(
                 description, threshold=self._auto_similarity_threshold
             )
+            return (VERDICT_DUP, hit) if hit else (VERDICT_NEW, None)
 
         if self._judge_model and existing and loop is not None:
             def _judge_fn(prompt: str) -> str:
@@ -3032,11 +3110,13 @@ class HistoryConsolidator:
                 "description": description,
                 "triggers": triggers,
             }
-            match = metadata_dedupe(candidate, existing, _judge_fn)
-            # None means "new" OR a judge error (metadata_dedupe fails open to
-            # None). Either way, confirm with the cheap lexical check before
+            verdict, key = metadata_dedupe_verdict(candidate, existing, _judge_fn)
+            # VERDICT_NEW means "new" OR a judge error (the verdict API fails open
+            # to new). Either way, confirm with the cheap lexical check before
             # concluding the candidate is unique.
-            return match if match is not None else _lexical()
+            if verdict == VERDICT_NEW:
+                return _lexical()
+            return (verdict, key)
         return _lexical()
 
     async def _dedupe_judge(self, prompt: str) -> str:
@@ -3067,6 +3147,210 @@ class HistoryConsolidator:
                 await self._sessions.recycle_background()
             except Exception:
                 logger.debug("Skill dedupe judge session release failed", exc_info=True)
+
+    async def _merge_skill_update(
+        self, live_body: str, description: str, triggers: str, procedure_md: str
+    ) -> "str | None":
+        """Merge an existing live skill body with a new candidate into ONE
+        updated markdown body — a single text turn on the shared background
+        session. Mirrors ``_dedupe_judge`` exactly (get_or_create / REJECT_ALL /
+        finally-release + recycle). Fail-open (returns ``None`` on any error) so
+        the caller can fall back to a plain replacement proposal."""
+        if not self._sessions:
+            return None
+        prompt = (
+            "You are updating an existing auto-generated agent skill with a newly "
+            "learned requirement. Merge the EXISTING skill body and the NEW "
+            "requirement into ONE updated markdown skill body — fold the new "
+            "requirement in, do NOT blindly replace the existing content. Keep "
+            "the '## When to use', '## Steps', and '## Gotchas' sections. Keep "
+            "the result under 8000 characters. Output ONLY the updated markdown "
+            "body — no preamble, no explanation, no code fences.\n\n"
+            f"EXISTING skill body:\n{live_body}\n\n"
+            f"NEW requirement — description: {description}\n"
+            f"NEW requirement — triggers: {triggers}\n"
+            f"NEW requirement — procedure:\n{procedure_md}\n"
+        )
+        try:
+            client, _new, _resumed = await self._sessions.get_or_create(
+                BACKGROUND_KEY, agent="kirocrew-lite"
+            )
+            text = await stream_and_collect(
+                client, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
+            )
+            return text or None
+        except Exception:
+            logger.debug("Skill update merge failed", exc_info=True)
+            return None
+        finally:
+            # get_or_create ACQUIRES the per-session semaphore — the caller MUST
+            # release it (mirror _dedupe_judge), else the shared _bg session is
+            # held forever and the next consolidation turn deadlocks.
+            try:
+                self._sessions.release(BACKGROUND_KEY)
+                await self._sessions.recycle_background()
+            except Exception:
+                logger.debug("Skill update merge session release failed", exc_info=True)
+
+    def _stage_skill_update(
+        self,
+        *,
+        key: str,
+        target_key: str,
+        description: str,
+        triggers: str,
+        procedure_md: str,
+        scripts: "list[dict] | None" = None,
+    ) -> None:
+        """Stage a pending UPDATE candidate for an existing auto-skill.
+
+        (a) read the target's current live body; (b) LLM-merge it with the new
+        requirement (bridged from this worker thread onto the captured loop,
+        90s, fail-open); (c) use the redacted merge as the proposed body, else
+        fall back to the candidate's own procedure (also on oversize); (d) stage
+        under ``<target-slug>-update`` with ``kind='update'`` metadata; (e) SEL
+        audit with outcome ``staged_update``."""
+        loader = self._skills_loader
+        if loader is None:
+            return
+
+        def _redact(text: object) -> str:
+            if not isinstance(text, str):
+                return ""
+            safe, _ = redact_exfiltration_urls(text)
+            safe, _ = redact_credentials(safe)
+            return safe
+
+        target_slug = target_key.split("/", 1)[-1]
+        # Capture the base version BEFORE reading the body it describes. The merge
+        # turn below can take up to 90s, and an approval landing in that window
+        # advances live — sampling the version afterwards would record the NEW
+        # version against a body merged from the OLD one, and
+        # ``approve_pending_update``'s staleness guard would then see base ==
+        # current and let the stale body overwrite the intervening update. Reading
+        # it first fails safe in the other direction: if live advances after this
+        # point the recorded base is behind, the guard fires, and the candidate is
+        # refused rather than silently applied.
+        try:
+            base_version = loader.get_auto_skill_version(target_key)
+        except Exception:
+            base_version = 1
+        try:
+            live_body = loader.read_auto_skill_body(target_key)
+        except Exception:
+            live_body = None
+        if not live_body:
+            # ``_dedupe_candidate`` deliberately includes already-PENDING
+            # candidates in the judge's ``existing`` set (so repeated sessions
+            # don't queue duplicates), which means the judge can answer
+            # ``UPDATE auto/<pending-slug>`` — a target that is not live.
+            # ``approve_pending_update`` requires a live target, so staging that
+            # would queue a candidate the user can never approve. Drop it
+            # instead, audited so the loss is visible.
+            logger.info(
+                "Skill update skipped: target '%s' is not a live auto skill", target_key
+            )
+            sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="rejected",
+                metadata={"target": target_key, "reason": "target_not_live"},
+            )
+            return
+        # ``read_auto_skill_body`` returns the FULL SKILL.md (frontmatter
+        # included). Only the prose body may be merged: ``stage_skill_candidate``
+        # re-wraps the result in its own frontmatter, so feeding the header in
+        # invites the merge to echo it back and nest a second ``---`` block
+        # inside the procedure.
+        # Redact before the merge prompt. The read path already refuses symlinks
+        # into credential storage, but a credential can also be typed straight
+        # INTO a skill body via the dashboard editor — that file legitimately
+        # lives in the skills tree, so no path guard catches it. The candidate's
+        # own description/triggers/procedure are redacted upstream; this was the
+        # one input reaching the model raw. (Redaction also runs on the merge
+        # OUTPUT, which is too late to protect the prompt.)
+        live_prose = _redact(_strip_skill_frontmatter(live_body))
+
+        merged: "str | None" = None
+        if live_prose and self._event_loop is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._merge_skill_update(
+                        live_prose, description, triggers, procedure_md
+                    ),
+                    self._event_loop,
+                )
+                merged = fut.result(timeout=90)
+            except Exception:
+                merged = None
+
+        used_merge = False
+        body = procedure_md
+        if merged:
+            # Defensive sanitize: the prompt forbids fences/frontmatter, but a
+            # model may still emit them — strip both so the staged candidate's
+            # procedure is pure markdown prose.
+            red = _redact(_strip_skill_frontmatter(_strip_code_fence(merged)))
+            if red and len(red) <= AUTO_SKILL_MAX_PROCEDURE_CHARS:
+                body = red
+                used_merge = True
+
+        provenance = AutoSkillProvenance(
+            session_key=key, created_at=AutoSkillProvenance.now_iso()
+        )
+        # The slug pattern caps at 64 chars, and our own generation prompt permits
+        # up to 60, so `<target>-update` can overflow and be REJECTED by staging —
+        # silently dropping the learning, because consolidation advances its
+        # message offset regardless of candidate outcome. Reserve room for
+        # "-update" (7) plus the "-2".."-50" collision suffix (3).
+        _update_slug = f"{target_slug[:54].rstrip('-')}-update"
+        # Approval writes the candidate's frontmatter over the live skill, so the
+        # candidate must carry the MERGED metadata, not just its own. The body is
+        # merged by the LLM turn above; description/triggers were not, and the
+        # candidate only proposes triggers for the NEW requirement — replacing the
+        # live list would stop the skill activating on everything it already
+        # answered. Union the triggers and keep the live description when the
+        # candidate did not supply one.
+        _live_triggers = _frontmatter_value(live_body, "triggers")
+        _live_description = _frontmatter_value(live_body, "description")
+        _staged_triggers = _merge_trigger_lists(_live_triggers, triggers)
+        _staged_description = description or _live_description
+        name = loader.stage_skill_candidate(
+            _update_slug,
+            description=_staged_description,
+            triggers=_staged_triggers,
+            procedure_md=body,
+            provenance=provenance,
+            scripts=scripts or None,
+            kind="update",
+            target=target_key,
+            base_version=base_version,
+        )
+        if name:
+            logger.info("Staged skill update %s (target %s) from session %s",
+                        name, target_key, key)
+            sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="staged_update",
+                metadata={
+                    "name": name,
+                    "target": target_key,
+                    "base_version": base_version,
+                    "merged": used_merge,
+                },
+            )
+        else:
+            logger.info("Skill update staging rejected for target '%s'", target_key)
+            sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="rejected",
+                metadata={"slug": _update_slug, "reason": "creation_failed"},
+            )
 
     def _process_auto_skills(self, result: dict, key: str) -> None:
         """Extract + write auto-generated skills from the consolidation result.
@@ -3139,12 +3423,33 @@ class HistoryConsolidator:
                     },
                 )
             else:
-                similar = self._dedupe_candidate(slug, description, triggers)
-                if similar:
+                verdict, target = self._dedupe_candidate(slug, description, triggers)
+                # ``_dedupe_candidate`` deliberately shows the judge already-PENDING
+                # candidates too (so repeat sessions don't queue duplicates), which
+                # means an UPDATE verdict can name a target that is not LIVE. Such a
+                # target cannot be updated — but the requirement is genuinely new
+                # relative to the live skill set, and consolidation advances its
+                # message offset regardless, so dropping it would lose the learning
+                # for good. Downgrade to a NEW candidate instead: it only overlaps
+                # another *proposal*, which the human reviews side by side anyway.
+                if verdict == VERDICT_UPDATE and target:
+                    try:
+                        _target_is_live = self._skills_loader.read_auto_skill_body(target) is not None
+                    except Exception:
+                        _target_is_live = False
+                    if not _target_is_live:
+                        logger.info(
+                            "Auto-skill UPDATE target '%s' is not live (pending candidate); "
+                            "staging '%s' as a new candidate instead of dropping it",
+                            target,
+                            slug,
+                        )
+                        verdict = VERDICT_NEW
+                if verdict == VERDICT_DUP:
                     logger.info(
                         "Auto-skill synthesis skipped: '%s' overlaps existing skill '%s'",
                         slug,
-                        similar,
+                        target,
                     )
                     sel().log_tool_invocation(
                         session_key=key,
@@ -3154,8 +3459,19 @@ class HistoryConsolidator:
                         metadata={
                             "slug": slug,
                             "reason": "similar_exists",
-                            "existing": similar,
+                            "existing": target,
                         },
+                    )
+                elif verdict == VERDICT_UPDATE and target:
+                    # Same skill, new requirements worth folding in — stage a
+                    # pending UPDATE candidate rather than dropping the learning.
+                    self._stage_skill_update(
+                        key=key,
+                        target_key=target,
+                        description=description,
+                        triggers=triggers,
+                        procedure_md=procedure_md,
+                        scripts=valid_scripts or None,
                     )
                 else:
                     provenance = AutoSkillProvenance(

@@ -3261,8 +3261,12 @@ async def test_dedupe_candidate_falls_back_to_lexical_without_judge_model(tmp_pa
     c = HistoryConsolidator(
         log=MagicMock(), memory=MagicMock(), skills_loader=skills, judge_model=""
     )
-    # Near-identical description → lexical find_similar matches.
-    assert c._dedupe_candidate("deploy-thing-2", "deploy the service to prod", "deploy")
+    # Near-identical description → lexical find_similar matches. Assert the full
+    # tuple: a bare truthiness check would pass vacuously (any tuple is truthy).
+    assert c._dedupe_candidate("deploy-thing-2", "deploy the service to prod", "deploy") == (
+        "dup",
+        "auto/deploy-thing",
+    )
 
 
 @pytest.mark.asyncio
@@ -3295,7 +3299,8 @@ async def test_dedupe_candidate_uses_judge_when_configured(tmp_path):
     res = await asyncio.to_thread(
         c._dedupe_candidate, "brand-new", "totally different wording", "z"
     )
-    assert res == "auto/existing-one"
+    # Bare-key judge reply maps to a DUP verdict (backward compat).
+    assert res == ("dup", "auto/existing-one")
 
 
 @pytest.mark.asyncio

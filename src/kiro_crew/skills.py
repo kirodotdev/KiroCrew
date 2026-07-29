@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import hashlib
 import json
@@ -13,11 +14,12 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names
-from kiro_crew.hooks import validate_file_path
+from kiro_crew.hooks import safe_read_file, validate_file_path
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.security import (
     is_sensitive_path,
@@ -104,6 +106,52 @@ AUTO_ARCHIVE_DIRNAME = ".archive"
 # from discovery — pending candidates never trigger. Layout:
 # ``auto/.pending/<slug>/{SKILL.md, scripts/, .meta.json}``.
 AUTO_PENDING_DIRNAME = ".pending"
+
+# Per-skill version history. A dot-prefixed dir *inside* a live auto-skill
+# (``auto/<slug>/.versions/v<N>-SKILL.md``) so it is pruned from skill discovery
+# (``_iter_skill_files`` skips dot-dirs) — historical snapshots never trigger and
+# never surface in list_skills / list_auto_skills. Written by
+# ``approve_pending_update`` before each live overwrite.
+VERSIONS_DIRNAME = ".versions"
+
+# Cap on retained per-skill version snapshots; oldest are pruned past this.
+MAX_SKILL_VERSIONS = 20
+
+# ── Pending-staged observer hook ──────────────────────────────────────────────
+# A candidate can be staged by ANY ``SkillsLoader`` instance (consolidation uses
+# the ContextBuilder's loader; dashboard requests build their own), so the
+# observer is registered at MODULE level rather than per instance — otherwise a
+# gateway-wired instance callback would silently miss the consolidation path that
+# produces most candidates. The gateway registers a hook that raises a bell-feed
+# notification + broadcasts ``skills.pending_changed``; CLI processes register
+# nothing and simply stage silently.
+_PENDING_STAGED_HOOK: "Callable[[dict], None] | None" = None
+
+
+def set_pending_staged_hook(fn: "Callable[[dict], None] | None") -> None:
+    """Register (or clear, with ``None``) the pending-candidate observer.
+
+    Called once at gateway boot. Idempotent — a later call replaces the hook, so
+    a re-created dashboard state does not stack duplicate notifications.
+    """
+    global _PENDING_STAGED_HOOK
+    _PENDING_STAGED_HOOK = fn
+
+
+def _emit_pending_staged(payload: dict) -> None:
+    """Invoke the pending-staged hook, swallowing every failure.
+
+    Staging has already succeeded on disk by the time this runs; a broken or
+    slow observer must never turn a successful stage into a failure.
+    """
+    fn = _PENDING_STAGED_HOOK
+    if fn is None:
+        return
+    try:
+        fn(payload)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("pending-staged hook failed", exc_info=True)
+
 
 # Derived lifecycle states for auto-skills (not persisted — computed from
 # usage recency at lifecycle-run time).
@@ -778,6 +826,22 @@ class SkillsLoader:
             procedure_md=procedure_md,
             provenance=provenance,
         )
+        # Re-emit the lifecycle lines ``_build_auto_skill_content`` does not know
+        # about. Dropping ``version`` would make the next update-approval read the
+        # skill as v1 and overwrite an existing ``.versions/v1-SKILL.md`` snapshot;
+        # dropping ``pinned`` would silently remove the skill's archival exemption.
+        _carry: list[str] = []
+        _ver = existing_meta.get("version", "")
+        try:
+            _vn = int(_ver)
+        except (TypeError, ValueError):
+            _vn = 0
+        if _vn > 1:
+            _carry.append(f"version: {_vn}")
+        if str(existing_meta.get("pinned", "")).strip().lower() in ("true", "1", "yes"):
+            _carry.append("pinned: true")
+        if _carry:
+            content = content.replace("\n---\n", "\n" + "\n".join(_carry) + "\n---\n", 1)
         skill_file.write_text(content, encoding="utf-8")
         self._invalidate_iter_cache()  # so the refined triggers/description apply now
         logger.info("Refined auto skill: %s", name)
@@ -1066,6 +1130,9 @@ class SkillsLoader:
         provenance: AutoSkillProvenance,
         scripts: list[dict] | None = None,
         source: str = "consolidation",
+        kind: str = "new",
+        target: str | None = None,
+        base_version: int | None = None,
     ) -> str | None:
         """Write a skill candidate to the pending queue (not live).
 
@@ -1073,6 +1140,15 @@ class SkillsLoader:
         Scripts are written **non-executable** — the executable bit is only set
         on approval. Returns ``auto/<slug>`` on success, else ``None`` (invalid
         slug, oversized procedure). Caller passes already-redacted content.
+
+        ``kind`` distinguishes a brand-new candidate (``"new"``, the default,
+        approved via ``approve_pending_skill``) from an UPDATE proposal against
+        an existing live auto-skill (``"update"``, approved via
+        ``approve_pending_update``). For an update, ``target`` names the live
+        auto-skill (``auto/<slug>``) and ``base_version`` records the live
+        version the merge was based on. These are written into ``.meta.json``
+        (``kind`` always; ``target`` / ``base_version`` only when provided) so
+        existing new-candidate callers are unaffected.
         """
         if not _AUTO_NAME_PATTERN.match(slug):
             logger.warning("Rejected pending skill: slug %r failed validation", slug)
@@ -1145,7 +1221,12 @@ class SkillsLoader:
                 "triggers": triggers,
                 "has_scripts": bool(script_names),
                 "scripts": script_names,
+                "kind": kind or "new",
             }
+            if target is not None:
+                meta["target"] = target
+            if base_version is not None:
+                meta["base_version"] = base_version
             (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         except Exception:
             # A partial write (e.g. disk full) must not leave a CLAIMED but empty
@@ -1156,6 +1237,22 @@ class SkillsLoader:
             raise
         logger.info(
             "Staged pending skill candidate: %s (scripts=%d)", name, len(script_names)
+        )
+        # Notify any registered observer (the gateway wires a bell-feed
+        # notification + a ``skills.pending_changed`` WS event) so a candidate
+        # awaiting review surfaces instead of sitting unseen in the queue. Fired
+        # for BOTH new and update candidates, from every producer that stages
+        # through this choke point. Best-effort: an observer failure must never
+        # fail the staging that already succeeded on disk.
+        _emit_pending_staged(
+            {
+                "name": name,
+                "slug": slug,
+                "kind": kind or "new",
+                "target": target,
+                "source": source,
+                "has_scripts": bool(script_names),
+            }
         )
         return name
 
@@ -1204,6 +1301,9 @@ class SkillsLoader:
                     "has_scripts": bool(meta.get("has_scripts")),
                     "created_at": meta.get("created_at", ""),
                     "source": meta.get("source", ""),
+                    "kind": meta.get("kind", "new"),
+                    "target": meta.get("target"),
+                    "base_version": meta.get("base_version"),
                     # NB: no on-disk ``path`` — this dict is API-facing (feeds
                     # /api/skills/-/pending) and must not leak the server's home
                     # / directory layout to dashboard clients.
@@ -1316,58 +1416,56 @@ class SkillsLoader:
             "slug": slug,
             "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{slug}"),
             "meta": meta,
+            "kind": meta.get("kind", "new"),
+            "target": meta.get("target"),
+            "base_version": meta.get("base_version"),
             "content": self._redact_text(skill_file.read_text(encoding="utf-8")),
             "scripts": scripts,
         }
 
-    def approve_pending_skill(self, slug: str) -> str | None:
-        """Promote a pending candidate to a live auto-skill.
+    def _candidate_layout_ok(self, src: Path, name: str) -> bool:
+        """Shared candidate-layout guard for BOTH approve paths.
 
-        Re-validates + redacts the candidate, then moves ``auto/.pending/<slug>``
-        → ``auto/<slug>`` and marks any bundled scripts executable. Returns the
-        live name, or ``None`` if the candidate is missing, a live skill of that
-        name already exists, it contains a symlink, script validation fails, or
-        redaction fails. Every check runs BEFORE the move, so a rejected
-        candidate is left untouched in the pending queue.
+        Rejects (a) any symlink anywhere in the candidate (defense-in-depth on
+        top of the mandatory human review — promotion + chmod must only touch
+        real files), and (b) any unexpected top-level entry: only ``SKILL.md``,
+        ``.meta.json`` and a ``scripts`` DIRECTORY are allowed. An injected
+        auxiliary file (dropped outside the validated set) would ride live
+        WITHOUT validation or redaction; a regular file named ``scripts`` would
+        skip the directory-only script validation + redaction walk. Returns True
+        only when the layout is safe to promote.
         """
-        if not self._is_pending_slug_safe(slug):
-            return None
-        src = self._pending_root() / slug
-        if not (src / "SKILL.md").exists():
-            return None
-        name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
-        dest = self._dir / name
-        if dest.exists():
-            logger.warning("Cannot approve %s: a live skill already exists", name)
-            return None
-        # Reject any symlink in the candidate (defense-in-depth on top of the
-        # mandatory human review); promotion + chmod must only touch real files.
         if self._candidate_has_symlink(src):
-            logger.warning("Refusing to approve %s: candidate contains a symlink", slug)
-            return None
-        # Only promote known candidate entries. An injected auxiliary file (one a
-        # producer dropped in the candidate dir outside SKILL.md/.meta.json and
-        # the validated scripts/ tree) would be moved live WITHOUT validation or
-        # redaction and surface unredacted in the skill browser — refuse the
-        # whole candidate rather than promote unreviewed content.
+            logger.warning("Refusing to approve %s: candidate contains a symlink", name)
+            return False
         _allowed_top = {"SKILL.md", ".meta.json", "scripts"}
         for entry in src.iterdir():
             if entry.name not in _allowed_top:
                 logger.warning(
                     "Refusing to approve %s: unexpected candidate entry %r", name, entry.name
                 )
-                return None
-            # ``scripts`` is only valid as a DIRECTORY. A regular file named
-            # ``scripts`` would skip the directory-only script validation AND the
-            # redaction walk (which only recurses scripts/ as a dir), so an
-            # unredacted/unvalidated file could ride live — reject it.
+                return False
             if entry.name == "scripts" and not entry.is_dir():
                 logger.warning(
                     "Refusing to approve %s: 'scripts' must be a directory, not a file", name
                 )
-                return None
-        # Re-validate every script (covers crystallize direct-writes).
+                return False
+        return True
+
+    def _validate_and_redact_candidate(self, src: Path, name: str) -> dict[Path, bytes] | None:
+        """Re-validate + redact a candidate's SKILL.md and scripts IN PLACE.
+
+        Shared by ``approve_pending_skill`` and ``approve_pending_update`` so
+        both enforce the identical discipline: validate every script (covers
+        crystallize direct-writes), snapshot each target's ORIGINAL bytes, redact
+        in place, then re-validate scripts (redacting a credential-shaped token
+        can break syntax). On ANY failure the originals are restored and ``None``
+        is returned so a rejected candidate is never left corrupted. On success
+        returns the ``{path: original_bytes}`` snapshot so the caller can restore
+        on a LATER failure (e.g. a failed move / snapshot).
+        """
         sdir_src = src / "scripts"
+        # Pre-redaction script validation.
         if sdir_src.is_dir():
             ok, report = validate_scripts(self._collect_scripts(sdir_src))
             if not ok:
@@ -1375,12 +1473,8 @@ class SkillsLoader:
                     "Refusing to approve %s: script validation failed: %s", name, report
                 )
                 return None
-        # Redact the body + scripts before going live; abort if any file can't
-        # be read+rewritten so no unredacted bytes reach the live path. Snapshot
-        # each target FIRST so an abort after partial in-place redaction (a redact
-        # failure, or the post-redaction re-validation below) restores the
-        # candidate's ORIGINAL bytes — a failed approval must never leave a
-        # corrupted (partially-redacted / syntactically-broken) pending draft.
+        # Snapshot each target FIRST so an abort after partial in-place redaction
+        # restores the candidate's ORIGINAL bytes.
         redact_targets = [src / "SKILL.md"]
         if sdir_src.is_dir():
             for root, _dirs, files in os.walk(sdir_src):
@@ -1409,11 +1503,8 @@ class SkillsLoader:
                     "Refusing to approve %s: could not redact %s before promotion", name, fp.name
                 )
                 return None
-        # Re-validate scripts AFTER redaction: the earlier validation ran on the
-        # pre-redaction content, and redacting a credential-shaped token can
-        # alter script bytes (e.g. break syntax). Abort (restoring originals) if
-        # redaction left any script invalid so a broken/altered helper never goes
-        # live and the pending draft is not corrupted.
+        # Re-validate scripts AFTER redaction so a broken/altered helper never
+        # goes live and the pending draft is not corrupted.
         if sdir_src.is_dir():
             ok, report = validate_scripts(self._collect_scripts(sdir_src))
             if not ok:
@@ -1422,6 +1513,548 @@ class SkillsLoader:
                     "Refusing to approve %s: scripts invalid after redaction: %s", name, report
                 )
                 return None
+        return redact_backup
+
+    @staticmethod
+    def _auto_slug_from_name(name: str) -> str:
+        """Return the bare slug for an auto-skill *name*, accepting either
+        ``auto/<slug>`` or a bare ``<slug>``. Non-auto namespaces (any name with
+        a slash after stripping the ``auto/`` prefix) fall through and are caught
+        by the ``_is_pending_slug_safe`` guard at the call sites."""
+        if name.startswith(f"{AUTO_SKILL_NAMESPACE}/"):
+            return name.split("/", 1)[1]
+        return name
+
+    def get_auto_skill_version(self, name: str) -> int:
+        """Return the ``version`` frontmatter of a live auto-skill (default 1).
+
+        Accepts ``auto/<slug>`` or a bare ``<slug>``. Returns 1 when the skill
+        is missing, has no ``version`` line, or the value is unparseable — so a
+        pre-versioning skill reads as version 1.
+        """
+        slug = self._auto_slug_from_name(name)
+        if not self._is_pending_slug_safe(slug):
+            return 1
+        skill_file = self._dir / AUTO_SKILL_NAMESPACE / slug / "SKILL.md"
+        if not skill_file.exists():
+            return 1
+        raw = self._cached_frontmatter(skill_file).get("version", "")
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            return 1
+        return v if v >= 1 else 1
+
+    def read_auto_skill_body(self, name: str) -> str | None:
+        """Return the full live ``SKILL.md`` text for an auto-skill, or ``None``.
+
+        Accepts ``auto/<slug>`` or a bare ``<slug>``; refuses any non-auto
+        namespace (a multi-segment name). Returns ``None`` when the skill is
+        missing or unreadable. Used by the API to render an old-vs-new diff for
+        update candidates.
+
+        Refuses to follow a symlink anywhere on the path. This body is fed to the
+        update-merge turn UNREDACTED (redaction runs on the merge OUTPUT), so a
+        swapped ``SKILL.md`` symlink pointing at credential storage would put
+        those bytes into an LLM prompt. Resolve, then verify the real path is
+        still inside the skills tree and is not a sensitive location.
+        """
+        slug = self._auto_slug_from_name(name)
+        if not self._is_pending_slug_safe(slug):
+            return None
+        base = self._dir / AUTO_SKILL_NAMESPACE / slug
+        skill_file = base / "SKILL.md"
+        if not skill_file.exists():
+            return None
+        # No symlink on the skill dir or the file itself.
+        if os.path.islink(str(base)) or os.path.islink(str(skill_file)):
+            logger.warning("Refusing to read %s: symlink on the live skill path", name)
+            return None
+        real = os.path.realpath(str(skill_file))
+        # The resolved path must still live under the skills root, and must never
+        # be a credential/sensitive location.
+        try:
+            Path(real).relative_to(os.path.realpath(str(self._dir)))
+        except ValueError:
+            logger.warning("Refusing to read %s: resolves outside the skills tree", name)
+            return None
+        if is_sensitive_path(real):
+            logger.warning("Refusing to read %s: resolves to a sensitive path", name)
+            return None
+        try:
+            # Read the RESOLVED path through the hardened primitive, not the
+            # original one: the checks above vet ``real``, so reading
+            # ``skill_file`` again would validate one path and read another.
+            # safe_read_file re-checks is_sensitive_path and opens with
+            # O_NOFOLLOW, closing a swap of the final component after our check.
+            return safe_read_file(real)
+        except (OSError, PermissionError):
+            return None
+
+    @staticmethod
+    def _rewrite_update_frontmatter(
+        candidate_content: str,
+        *,
+        target_name: str,
+        created_at: str,
+        version: int,
+        pinned: bool = False,
+    ) -> str:
+        """Rebuild an update candidate's body as the new live SKILL.md.
+
+        Keeps the candidate's description/triggers/source/body (the merged new
+        content) but forces ``name`` to the live target, preserves the live
+        ``created_at``, and stamps ``version``. Any ``name`` / ``created_at`` /
+        ``version`` / ``pinned`` lines from the candidate are dropped and
+        re-emitted so the live skill's identity + history are authoritative, not
+        the candidate's. ``pinned`` is carried from the LIVE skill: a candidate
+        never sets it, and losing it would drop the target's lifecycle exemption
+        and expose a user-pinned skill to archival.
+        """
+        m = re.match(r"^---\n(.*?)\n---\n?(.*)$", candidate_content, re.DOTALL)
+        if m:
+            fm_lines = m.group(1).split("\n")
+            body = m.group(2)
+        else:
+            fm_lines = []
+            body = candidate_content
+        kept: list[str] = []
+        for ln in fm_lines:
+            if not ln.strip():
+                continue
+            key = ln.split(":", 1)[0].strip() if ":" in ln else ""
+            if key in ("name", "created_at", "version", "pinned"):
+                continue
+            kept.append(ln)
+        new_fm = [f"name: {target_name}"]
+        new_fm.extend(kept)
+        if created_at:
+            new_fm.append(f"created_at: {created_at}")
+        new_fm.append(f"version: {version}")
+        if pinned:
+            new_fm.append("pinned: true")
+        return "---\n" + "\n".join(new_fm) + "\n---\n\n" + body.strip() + "\n"
+
+    def _versions_root(self, target_slug: str) -> Path:
+        return self._dir / AUTO_SKILL_NAMESPACE / target_slug / VERSIONS_DIRNAME
+
+    def _prune_versions(self, versions_dir: Path) -> None:
+        """Keep only the newest ``MAX_SKILL_VERSIONS`` ``v<N>-SKILL.md``
+        snapshots in *versions_dir*, deleting the lowest-numbered excess."""
+        if not versions_dir.is_dir():
+            return
+        snaps: list[tuple[int, Path]] = []
+        for p in versions_dir.iterdir():
+            mm = re.match(r"^v(\d+)-SKILL\.md$", p.name)
+            if p.is_file() and mm:
+                snaps.append((int(mm.group(1)), p))
+        snaps.sort(key=lambda t: t[0])
+        excess = len(snaps) - MAX_SKILL_VERSIONS
+        for _n, p in snaps[:excess] if excess > 0 else []:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+    def preview_pending_update(self, slug: str) -> dict | None:
+        """Return an approval preview for a pending UPDATE candidate.
+
+        Produces ``{live_body, proposed_body, diff, from_version, to_version,
+        base_version, stale_base}`` where ``proposed_body`` is the EXACT content
+        ``approve_pending_update`` would write (same frontmatter rewrite), so the
+        reviewer's diff is what approval actually does — not raw candidate text
+        whose ``name`` / ``created_at`` / ``version`` lines are rewritten anyway.
+
+        Returns ``None`` when the slug is unsafe, the candidate is missing or is
+        not an update, or its target is no longer a live auto-skill. Read-only:
+        never mutates the candidate or the live skill.
+        """
+        if not self._is_pending_slug_safe(slug):
+            return None
+        src = self._pending_root() / slug
+        cand_file = src / "SKILL.md"
+        if not cand_file.exists() or cand_file.is_symlink():
+            return None
+        meta = self._read_pending_meta(slug)
+        if meta.get("kind") != "update":
+            return None
+        target = meta.get("target")
+        if not isinstance(target, str) or not target:
+            return None
+        target_slug = self._auto_slug_from_name(target)
+        if not self._is_pending_slug_safe(target_slug):
+            return None
+        live_file = self._dir / AUTO_SKILL_NAMESPACE / target_slug / "SKILL.md"
+        if not live_file.exists():
+            return None
+        target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
+        # Read the live body through the guarded reader (symlink + sensitive-path
+        # + inside-tree checks) rather than touching the file directly — this
+        # feeds the dashboard API.
+        live_body = self.read_auto_skill_body(target_name)
+        if live_body is None:
+            return None
+        try:
+            cand_body = cand_file.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        current_version = self.get_auto_skill_version(target_name)
+        _live_fm = self._cached_frontmatter(live_file)
+        proposed_body = self._rewrite_update_frontmatter(
+            cand_body,
+            target_name=target_name,
+            created_at=_live_fm.get("created_at", ""),
+            version=current_version + 1,
+            pinned=str(_live_fm.get("pinned", "")).strip().lower()
+            in ("true", "1", "yes"),
+        )
+        # Redact both sides: this feeds the dashboard API, and the candidate is
+        # only redacted in place at approve time (so an un-approved draft may
+        # still hold a credential-shaped token).
+        live_safe = self._redact_text(live_body)
+        proposed_safe = self._redact_text(proposed_body)
+        diff = "".join(
+            difflib.unified_diff(
+                live_safe.splitlines(keepends=True),
+                proposed_safe.splitlines(keepends=True),
+                fromfile=f"{target_name} (v{current_version}, live)",
+                tofile=f"{target_name} (v{current_version + 1}, proposed)",
+                n=3,
+            )
+        )
+        raw_base = meta.get("base_version")
+        return {
+            "live_body": live_safe,
+            "proposed_body": proposed_safe,
+            "diff": diff,
+            "from_version": current_version,
+            "to_version": current_version + 1,
+            "base_version": raw_base,
+            "stale_base": isinstance(raw_base, int) and raw_base != current_version,
+        }
+
+    def _resolve_snapshot_version(self, versions_dir: Path, fm_version: int) -> int:
+        """Return the version number to snapshot the CURRENT live body under.
+
+        Normally the live frontmatter's ``version`` is authoritative. But if a
+        snapshot already exists at that number the numbering has drifted (e.g. an
+        older refine stripped the ``version`` line, so the live skill reads as v1
+        again) — writing there would DESTROY the earlier snapshot. In that case
+        continue above the highest snapshot on disk instead, so history is only
+        ever appended to.
+        """
+        if not (versions_dir / f"v{fm_version}-SKILL.md").exists():
+            return fm_version
+        highest = fm_version
+        for p in versions_dir.iterdir():
+            mm = re.match(r"^v(\d+)-SKILL\.md$", p.name)
+            if p.is_file() and mm:
+                highest = max(highest, int(mm.group(1)))
+        logger.warning(
+            "Version numbering drifted for %s: snapshot v%d exists; continuing at v%d",
+            versions_dir.parent.name,
+            fm_version,
+            highest + 1,
+        )
+        return highest + 1
+
+    def approve_pending_update(self, slug: str) -> str | None:
+        """Promote a pending UPDATE candidate over its live target auto-skill.
+
+        Preconditions (all checked BEFORE any live mutation; a failure here
+        leaves BOTH the live skill and the candidate untouched, returns None):
+        the slug is safe, the candidate has a ``SKILL.md``, its ``.meta.json``
+        has ``kind == "update"``, and ``target`` names an EXISTING live auto
+        skill. Then: the shared symlink/unexpected-entry guard runs, scripts are
+        re-validated, and SKILL.md + scripts are redacted in place (originals
+        restored on failure).
+
+        Promotion: snapshot the current live ``SKILL.md`` to
+        ``auto/<target>/.versions/v<N>-SKILL.md`` (N = current live version),
+        write the candidate over live with frontmatter rewritten (preserve live
+        ``created_at``, ``name`` = ``auto/<target>``, ``version`` = N+1), move the
+        candidate scripts into the live ``scripts/`` (exec bit set on POSIX),
+        prune ``.versions`` to the newest ``MAX_SKILL_VERSIONS``, delete the
+        pending dir, and SEL-audit. Returns ``auto/<target>`` on success.
+        """
+        if not self._is_pending_slug_safe(slug):
+            return None
+        src = self._pending_root() / slug
+        if not (src / "SKILL.md").exists():
+            return None
+        meta = self._read_pending_meta(slug)
+        if meta.get("kind") != "update":
+            return None
+        target = meta.get("target")
+        if not isinstance(target, str) or not target:
+            return None
+        target_slug = self._auto_slug_from_name(target)
+        if not self._is_pending_slug_safe(target_slug):
+            return None
+        live_dir = self._dir / AUTO_SKILL_NAMESPACE / target_slug
+        live_skill = live_dir / "SKILL.md"
+        if not live_skill.exists():
+            logger.warning(
+                "Refusing to approve update %s: target %r is not a live auto skill", slug, target
+            )
+            return None
+        target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
+        # The LIVE side is a write target here (unlike approve_pending_skill, which
+        # moves into a fresh dest), so it needs its own symlink guard: a symlinked
+        # ``scripts/`` (or any symlinked entry) would let ``mkdir``/``copy2`` follow
+        # the link and write candidate content OUTSIDE the skill directory.
+        if self._candidate_has_symlink(live_dir):
+            logger.warning(
+                "Refusing to approve update %s: live skill directory contains a symlink",
+                target_name,
+            )
+            return None
+        # Shared symlink + unexpected-entry rejection.
+        if not self._candidate_layout_ok(src, target_name):
+            return None
+        # Re-validate + redact the candidate in place (restores originals on fail).
+        redact_backup = self._validate_and_redact_candidate(src, target_name)
+        if redact_backup is None:
+            return None
+
+        def _restore_redacted() -> None:
+            for _fp, _b in redact_backup.items():
+                try:
+                    _fp.write_bytes(_b)
+                except OSError:
+                    pass
+
+        # Compute the new live content from the redacted candidate BEFORE any
+        # live mutation — a read failure aborts with live + candidate intact.
+        try:
+            candidate_body = (src / "SKILL.md").read_text(encoding="utf-8")
+        except OSError:
+            _restore_redacted()
+            return None
+        current_version = self.get_auto_skill_version(target_name)
+        # Snapshot under a number that is guaranteed free, so an earlier snapshot
+        # can never be destroyed by drifted numbering.
+        versions_dir = self._versions_root(target_slug)
+        snapshot_version = (
+            self._resolve_snapshot_version(versions_dir, current_version)
+            if versions_dir.is_dir()
+            else current_version
+        )
+        new_version = snapshot_version + 1
+        # ``base_version`` records the live version the merge was computed
+        # against. If the live skill advanced since staging, this candidate's body
+        # was merged from an OLDER base, so writing it would replace whatever the
+        # intervening approval added. REFUSE rather than warn: the reviewer cannot
+        # be relied on to notice, because an already-open sibling candidate's diff
+        # is served from the frontend query cache and may still be the v1-based
+        # one. The candidate stays pending so it can be dismissed (a fresh
+        # proposal will be merged against the new base).
+        raw_base = meta.get("base_version")
+        if isinstance(raw_base, int) and raw_base != current_version:
+            # The candidate stays pending so the reviewer can dismiss it, which
+            # means it stays VISIBLE — so it must also stay byte-identical to what
+            # was staged. Redaction already ran in place above; undo it, or the
+            # rejected draft is left permanently altered and the diff the reviewer
+            # re-opens is not the one they staged.
+            _restore_redacted()
+            logger.warning(
+                "Refusing to approve stale update for %s: candidate based on v%s, live is v%d",
+                target_name,
+                raw_base,
+                current_version,
+            )
+            sel().log_tool_invocation(
+                session_key="skills",
+                tool_name="auto_skill_update_approve",
+                tool_kind="permission",
+                outcome="rejected",
+                metadata={
+                    "target": target_name,
+                    "base_version": raw_base,
+                    "live_version": current_version,
+                    "reason": "stale_base",
+                },
+            )
+            return None
+        live_created_at = self._cached_frontmatter(live_skill).get("created_at", "")
+        # Carry the live skill's pin forward: a pinned skill is exempt from the
+        # lifecycle's inactivity / max-N archival, and silently dropping the flag
+        # here would expose a user-pinned skill to being archived.
+        live_pinned = str(
+            self._cached_frontmatter(live_skill).get("pinned", "")
+        ).strip().lower() in ("true", "1", "yes")
+        new_live_content = self._rewrite_update_frontmatter(
+            candidate_body,
+            target_name=target_name,
+            created_at=live_created_at,
+            version=new_version,
+            pinned=live_pinned,
+        )
+        # Snapshot the current live SKILL.md into .versions/ (point-of-no-return
+        # is the live overwrite below; if the snapshot fails, live is untouched).
+        versions_dir = self._versions_root(target_slug)
+        snapshot = versions_dir / f"v{snapshot_version}-SKILL.md"
+        try:
+            versions_dir.mkdir(parents=True, exist_ok=True)
+            live_prev = live_skill.read_text(encoding="utf-8")
+            atomic_write(snapshot, live_prev)
+        except OSError:
+            _restore_redacted()
+            logger.warning(
+                "Refusing to approve update %s: could not snapshot live version", target_name
+            )
+            return None
+        # (f) Write candidate over live.
+        try:
+            atomic_write(live_skill, new_live_content)
+        except OSError:
+            # atomic_write renames into place, so a failure leaves the live
+            # SKILL.md untouched; drop the snapshot we just wrote and restore.
+            try:
+                snapshot.unlink()
+            except OSError:
+                pass
+            _restore_redacted()
+            logger.warning("Refusing to approve update %s: could not write live SKILL.md", target_name)
+            return None
+        # (g) Promote candidate scripts into the live scripts/ dir (exec bit on
+        # POSIX). COPY rather than move: the pending dir is deleted in (i), so a
+        # move that fails partway would leave the approved script in neither
+        # place. Copying keeps the candidate intact as the rollback source, and
+        # any failure aborts the whole approval — restoring the live SKILL.md
+        # from the snapshot we just wrote and leaving the candidate reviewable.
+        src_scripts = src / "scripts"
+        copied: list[Path] = []
+        # Pre-existing destinations we OVERWRITE: keep their original bytes+mode so
+        # a rollback restores them. Without this, replacing an existing live script
+        # and then failing on a later file would roll SKILL.md back while leaving
+        # the replacement script live — an internally inconsistent skill.
+        overwritten: dict[Path, tuple[bytes, int]] = {}
+        if src_scripts.is_dir():
+            live_scripts = live_dir / "scripts"
+            try:
+                live_scripts.mkdir(parents=True, exist_ok=True)
+                for root, _dirs, files in os.walk(src_scripts):
+                    rel_root = Path(root).relative_to(src_scripts)
+                    for nm in files:
+                        sfp = Path(root) / nm
+                        if not sfp.is_file() or sfp.is_symlink():
+                            continue
+                        dest_dir = live_scripts / rel_root
+                        dest_dir.mkdir(parents=True, exist_ok=True)
+                        dfp = dest_dir / nm
+                        if dfp.exists():
+                            # Snapshot BEFORE the overwrite; a read failure here
+                            # aborts rather than clobbering un-restorable content.
+                            _st = dfp.stat()
+                            overwritten[dfp] = (dfp.read_bytes(), _st.st_mode)
+                        else:
+                            # Only track files WE created, so a rollback never
+                            # deletes a script the live skill already shipped.
+                            copied.append(dfp)
+                        shutil.copy2(str(sfp), str(dfp))
+                        dfp.chmod(dfp.stat().st_mode | 0o111)
+            except OSError:
+                for _p in copied:
+                    try:
+                        _p.unlink()
+                    except OSError:
+                        pass
+                for _p, (_b, _mode) in overwritten.items():
+                    try:
+                        _p.write_bytes(_b)
+                        _p.chmod(_mode)
+                    except OSError:
+                        logger.error(
+                            "Update %s rollback could not restore live script %s",
+                            target_name,
+                            _p.name,
+                        )
+                try:
+                    atomic_write(live_skill, live_prev)
+                except OSError:
+                    logger.error(
+                        "Update %s failed mid-promotion AND the live SKILL.md could "
+                        "not be restored; the snapshot remains at %s",
+                        target_name,
+                        snapshot,
+                    )
+                else:
+                    try:
+                        snapshot.unlink()
+                    except OSError:
+                        pass
+                _restore_redacted()
+                logger.warning(
+                    "Refusing to approve update %s: could not promote candidate scripts",
+                    target_name,
+                )
+                return None
+        # (h) Prune version history to the cap.
+        self._prune_versions(versions_dir)
+        # (i) Remove the pending candidate.
+        shutil.rmtree(src, ignore_errors=True)
+        # (j) Audit the approved update.
+        sel().log_tool_invocation(
+            session_key="skills",
+            tool_name="auto_skill_update_approve",
+            tool_kind="permission",
+            outcome="invoked",
+            metadata={
+                "target": target_name,
+                "from_version": current_version,
+                "to_version": new_version,
+                "base_version": raw_base,
+                "stale_base": False,
+            },
+        )
+        # (8) Make the updated live skill visible to trigger matching now.
+        self._invalidate_iter_cache()
+        logger.info(
+            "Approved pending update: %s (v%d -> v%d)", target_name, current_version, new_version
+        )
+        return target_name
+
+    def approve_pending_skill(self, slug: str) -> str | None:
+        """Promote a pending candidate to a live auto-skill.
+
+        Re-validates + redacts the candidate, then moves ``auto/.pending/<slug>``
+        → ``auto/<slug>`` and marks any bundled scripts executable. Returns the
+        live name, or ``None`` if the candidate is missing, a live skill of that
+        name already exists, it contains a symlink, script validation fails, or
+        redaction fails. Every check runs BEFORE the move, so a rejected
+        candidate is left untouched in the pending queue.
+        """
+        if not self._is_pending_slug_safe(slug):
+            return None
+        src = self._pending_root() / slug
+        if not (src / "SKILL.md").exists():
+            return None
+        name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+        dest = self._dir / name
+        if dest.exists():
+            logger.warning("Cannot approve %s: a live skill already exists", name)
+            return None
+        # Reject any symlink in the candidate + any unexpected top-level entry
+        # (defense-in-depth on top of the mandatory human review); promotion +
+        # chmod must only touch known, real files. Factored into a shared helper
+        # so the update-approve path enforces the identical layout guard.
+        if not self._candidate_layout_ok(src, name):
+            return None
+        # Re-validate every script + redact the body + scripts before going live;
+        # snapshots each file first so a failure restores the ORIGINAL bytes and
+        # never leaves a corrupted pending draft. Shared with the update path.
+        redact_backup = self._validate_and_redact_candidate(src, name)
+        if redact_backup is None:
+            return None
+
+        def _restore_redacted() -> None:
+            for _fp, _b in redact_backup.items():
+                try:
+                    _fp.write_bytes(_b)
+                except OSError:
+                    pass
+
         # Drop pending-only bookkeeping ONLY after every check + redaction has
         # passed and immediately before the move, so a failed approval leaves the
         # candidate — including its .meta.json (description/triggers) — intact in
