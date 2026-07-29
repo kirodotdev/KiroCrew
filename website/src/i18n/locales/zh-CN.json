@@ -540,18 +540,19 @@
       "connectPanel": {
         "check_again": "重新检查",
         "cli": "CLI",
-        "connect_a_provider_nothing_runs_without_your_say": "连接一个提供方。未经你同意不会执行任何操作。",
+        "connect_a_repo_nothing_runs_without_your_say": "连接一个仓库。未经你同意不会执行任何操作。",
         "connected": "已连接",
         "details": "详情",
-        "https_github_com_owner_repo_or_https_gitlab_com": "https://github.com/<owner>/<repo> 或 https://gitlab.com/<group>/<project>",
+        "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
+        "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar 通过你自己的",
-        "let_s_connect_a_provider": "先连接一个提供方",
+        "let_s_connect_a_repo": "先连接一个仓库",
         "loading_your_repos": "正在加载你的仓库…",
-        "or_paste_a_url": "或粘贴一个 URL",
+        "or": "或",
+        "paste_a_url": "粘贴一个 URL",
         "please_set_up_the": "请先设置",
         "repository_url": "仓库 URL",
         "session_install_and_sign_in_to": "会话。请安装并登录",
-        "soon": "即将推出",
         "then": "，然后",
         "through_your_own": "读取",
         "you_contributed_to": "你参与贡献过"
@@ -559,7 +560,7 @@
       "connectRepoModal": {
         "close": "关闭",
         "close_connect_dialog": "关闭连接对话框",
-        "connect_a_provider": "连接提供方"
+        "connect_a_repo": "连接一个仓库"
       },
       "issueRadarPage": {
         "loading": "加载中…"

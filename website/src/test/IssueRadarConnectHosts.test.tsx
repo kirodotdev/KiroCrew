@@ -338,6 +338,51 @@ describe('WelcomeCarousel Back during a connect', () => {
   })
 })
 
+describe('host card growth', () => {
+  // The card's size classes are the ONLY thing that gives the panel room for its
+  // two-column body. The hosts used to gate the growth on `provider === 'github'`
+  // while the panel switched to two columns for GitLab as well, so picking
+  // GitLab put a two-column layout inside a 480px card — which re-stacked, and
+  // the repo picker appeared BELOW the provider list with the body scrolling.
+  // Both hosts now share `expandsCard`, and both are pinned here because the two
+  // copies are exactly what drifted.
+  const EXPANDED_W = 'w-[860px]'
+
+  it('ConnectRepoModal grows for GitLab, not only GitHub', async () => {
+    const user = userEvent.setup()
+    mockApi.issues.mockResolvedValue({ issues: [] })
+    wrap(
+      <IssueRadarProvider
+        repos={[{ owner: 'o', repo: 'existing' }] as never}
+        active={{ owner: 'o', repo: 'existing' }}
+        onSwitch={vi.fn()}
+        onAddRepo={vi.fn()}
+      >
+        <ConnectRepoModal onConnected={vi.fn()} onClose={vi.fn()} />
+      </IssueRadarProvider>,
+    )
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.className).not.toContain(EXPANDED_W)
+
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await waitFor(() => expect(dialog.className).toContain(EXPANDED_W))
+  })
+
+  it('WelcomeCarousel grows for GitLab, not only GitHub', async () => {
+    const user = userEvent.setup()
+    const { container } = wrap(<WelcomeCarousel onConnected={vi.fn()} />)
+    while (screen.queryByRole('button', { name: /Next/ })) {
+      await user.click(screen.getByRole('button', { name: /Next/ }))
+    }
+    // The card is the only element carrying the collapsed/expanded size classes.
+    const card = container.querySelector('.w-\\[480px\\]')
+    expect(card).not.toBeNull()
+
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await waitFor(() => expect((card as HTMLElement).className).toContain(EXPANDED_W))
+  })
+})
+
 describe('modal live state reset', () => {
   it('clears issue AND pr selection/filters in the mounted provider', async () => {
     // A leftover `selectedPull` is the sharp edge: it's a NUMBER, so #42 from

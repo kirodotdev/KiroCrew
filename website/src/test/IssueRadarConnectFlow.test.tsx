@@ -77,15 +77,19 @@ beforeEach(() => {
 })
 
 describe('ConnectPanel provider rows', () => {
-  it('GitHub and GitLab are selectable; the unwired ones are marked Soon', async () => {
+  it('lists exactly the sources that can be connected', async () => {
     const user = userEvent.setup()
     renderHost()
-    // Jira and Linear are still placeholders, so they must stay unselectable —
-    // an enabled row for an unwired provider would offer a connect that fails.
+    // Every listed row must lead somewhere: an unwired source used to render as
+    // a disabled row with a "Soon" badge, which occupied a full row of the card
+    // while offering the user nothing. Those rows are gone, so their absence is
+    // pinned here — re-adding one would need a decision, not a silent revert.
     for (const name of ['Jira', 'Linear']) {
-      expect(screen.getByRole('button', { name: new RegExp(name) })).toBeDisabled()
+      expect(screen.queryByRole('button', { name: new RegExp(name) })).toBeNull()
     }
-    expect(screen.getByRole('button', { name: /GitLab/ })).toBeEnabled()
+    for (const name of ['GitHub', 'GitLab']) {
+      expect(screen.getByRole('button', { name: new RegExp(name) })).toBeEnabled()
+    }
     // Nothing is fetched until a provider is actually opened.
     expect(mockRecentRepos).not.toHaveBeenCalled()
     await openGithub(user)
@@ -102,6 +106,22 @@ describe('ConnectPanel provider rows', () => {
       expect.any(Number),
       expect.objectContaining({ provider: 'gitlab' }),
     )
+  })
+
+  it('shows only the selected provider’s URL example', async () => {
+    // A single combined "github… or gitlab…" placeholder is wider than the
+    // input, so it clipped mid-URL and the second provider's form was never
+    // legible. Whichever provider is open must see its own complete example and
+    // not the other one's.
+    const user = userEvent.setup()
+    renderHost()
+
+    await openGithub(user)
+    const url = () => screen.getByLabelText('Repository URL') as HTMLInputElement
+    expect(url().placeholder).toBe('https://github.com/<owner>/<repo>')
+
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await waitFor(() => expect(url().placeholder).toBe('https://gitlab.com/<group>/<project>'))
   })
 })
 

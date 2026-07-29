@@ -23,7 +23,7 @@ import type { ActiveRepo } from './lib/types'
 import { useCallback, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { RefreshCw, X } from 'lucide-react'
-import ConnectPanel, { COLLAPSED_CARD, EXPANDED_CARD, useConnectFlow } from './ConnectPanel'
+import ConnectPanel, { COLLAPSED_CARD, EXPANDED_CARD, expandsCard, useConnectFlow } from './ConnectPanel'
 import { useIssueRadar } from './context'
 import Clickable from '../../components/Clickable'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
@@ -63,7 +63,7 @@ export default function ConnectRepoModal({
     openIssues()
     onConnected(repo)
   })
-  const expanded = flow.provider === 'github'
+  const expanded = expandsCard(flow.provider)
   const count = flow.targets.length
 
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -98,7 +98,7 @@ export default function ConnectRepoModal({
           ref={dialogRef}
           role="dialog"
           aria-modal="true"
-          aria-label={i18nT('apps.issueRadar.connectRepoModal.connect_a_provider')}
+          aria-label={i18nT('apps.issueRadar.connectRepoModal.connect_a_repo')}
           tabIndex={-1}
           initial={{ opacity: 0, y: 8, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -123,9 +123,16 @@ export default function ConnectRepoModal({
            * a card capped by max-h on a short viewport — would push
            * Back/Connect past the card's height and out of reach. It scrolls
            * rather than clips so capped content stays reachable.
-           * Top-anchored for the same reason as the carousel's connect slide —
-           * centring left a lopsided gap above the title. */}
-          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-start gap-3.5 w-full">
+           * Top-anchored only once EXPANDED, for the same reason as the
+           * carousel's connect slide — centring the two-column form left a
+           * lopsided gap above the title, while the collapsed source list is
+           * short enough that anchoring it to the top just strands it above a
+           * large empty area. */}
+          <div
+            className={`flex-1 min-h-0 overflow-y-auto flex flex-col items-center gap-3.5 w-full ${
+              expanded ? 'justify-start' : 'justify-center'
+            }`}
+          >
             <ConnectPanel flow={flow} />
           </div>
 

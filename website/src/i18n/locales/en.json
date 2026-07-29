@@ -540,18 +540,19 @@
       "connectPanel": {
         "check_again": "check again",
         "cli": "CLI",
-        "connect_a_provider_nothing_runs_without_your_say": "Connect a provider. Nothing runs without your say.",
+        "connect_a_repo_nothing_runs_without_your_say": "Connect a repo. Nothing runs without your say.",
         "connected": "Connected",
         "details": "Details",
-        "https_github_com_owner_repo_or_https_gitlab_com": "https://github.com/<owner>/<repo> or https://gitlab.com/<group>/<project>",
+        "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
+        "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar reads",
-        "let_s_connect_a_provider": "Let's Connect a Provider",
+        "let_s_connect_a_repo": "Let's Connect a Repo",
         "loading_your_repos": "Loading your repos…",
-        "or_paste_a_url": "Or paste a URL",
+        "or": "Or",
+        "paste_a_url": "Paste a URL",
         "please_set_up_the": "Please set up the",
         "repository_url": "Repository URL",
         "session_install_and_sign_in_to": "session.\n        Install and sign in to",
-        "soon": "Soon",
         "then": ", then",
         "through_your_own": "through your own",
         "you_contributed_to": "You contributed to"
@@ -559,7 +560,7 @@
       "connectRepoModal": {
         "close": "Close",
         "close_connect_dialog": "Close connect dialog",
-        "connect_a_provider": "Connect a provider"
+        "connect_a_repo": "Connect a repo"
       },
       "issueRadarPage": {
         "loading": "Loading…"

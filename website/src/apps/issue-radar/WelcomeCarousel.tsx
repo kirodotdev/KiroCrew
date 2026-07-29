@@ -24,7 +24,7 @@ import type { ActiveRepo } from './lib/types'
 // a single step back.
 import { useState } from 'react'
 import { Radar, Search, GitPullRequest, BookOpen, RefreshCw, ArrowLeft, ArrowRight } from 'lucide-react'
-import ConnectPanel, { COLLAPSED_CARD, EXPANDED_CARD, useConnectFlow } from './ConnectPanel'
+import ConnectPanel, { COLLAPSED_CARD, EXPANDED_CARD, expandsCard, useConnectFlow } from './ConnectPanel'
 
 import { i18nT } from '../../i18n/t'
 interface Slide {
@@ -84,7 +84,7 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: A
 
   const isContentSlide = page < SLIDES.length
   const isConnectSlide = page === CONNECT_PAGE
-  const expanded = isConnectSlide && flow.provider === 'github'
+  const expanded = isConnectSlide && expandsCard(flow.provider)
   const targetCount = flow.targets.length
 
   const handleBack = () => {
@@ -113,13 +113,14 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: A
         {/* min-h-0 + overflow-hidden: the nav row below is a sibling, so
          * without clipping here a taller-than-expected slide would push
          * Back/Next past the card's fixed height and out of the window.
-         * The connect slide is TOP-anchored (justify-start) — centring a
-         * two-column form in a 540px card left a large, lopsided gap above the
-         * title. The five content slides stay centred, which suits their
-         * single icon + headline. */}
+         * Only the EXPANDED connect slide is top-anchored (justify-start):
+         * centring a two-column form in a 540px card left a large, lopsided gap
+         * above the title. Its collapsed state is a short heading plus two rows,
+         * which centres like the five content slides do — top-anchored it sat
+         * high with ~140px of dead space between the rows and the nav row. */}
         <div
           className={`flex-1 min-h-0 overflow-y-auto flex flex-col items-center gap-3.5 w-full ${
-            isConnectSlide ? 'justify-start' : 'justify-center'
+            isConnectSlide && expanded ? 'justify-start' : 'justify-center'
           }`}
         >
           {isContentSlide && (

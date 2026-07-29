@@ -8,23 +8,25 @@
 //      source. Replaced the single large GitHub square: a row list scales to N
 //      providers, a square does not.
 //
-//   2. Expanded (after picking GitHub) — the host card GROWS (see
+//   2. Expanded (after picking a source) — the host card GROWS (see
 //      `EXPANDED_CARD` / how ConnectRepoModal and WelcomeCarousel apply it) and
 //      the body becomes two columns: the provider rows stay on the LEFT, and
-//      the RIGHT column holds everything GitHub-specific — the user's
-//      recently-pushed repos as a MULTI-select, plus the manual URL entry
+//      the RIGHT column holds everything scoped to the picked source — the
+//      user's recently-pushed repos as a MULTI-select, plus the manual URL entry
 //      beneath them. The URL field sits on the right (not under the provider
-//      rows) because pasting a repo link is part of the GitHub flow, not a
+//      rows) because pasting a repo link is part of that source's flow, not a
 //      footer of the provider list. Pasting a URL and ticking repos are
 //      additive — the Connect action submits every selected target, so a user
 //      can add a repo that isn't in the recent list without losing their ticks.
 //
-// Only GitHub is wired to a backend today (Issue Radar reads issues through the
-// user's own `gh` CLI). GitLab/Jira/Linear render as rows with a "Soon" badge
-// and are non-selectable — visible roadmap, not a dead end that 404s.
+// Both listed sources are wired to a backend (Issue Radar reads each one through
+// the user's own `gh` / `glab` CLI). Unwired sources are NOT listed: a row that
+// only carries a "Soon" badge costs the same vertical space as a usable one and
+// gives the user nothing to do, so Jira/Linear were dropped from the list rather
+// than rendered disabled.
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Check, Orbit, RefreshCw, SquareKanban } from 'lucide-react'
+import { AlertCircle, Check, RefreshCw } from 'lucide-react'
 import {
   issueRadarApi, type GhSetupReason, type RecentRepo, type RepoRef, type SourceProvider,
 } from './api'
@@ -35,7 +37,7 @@ import GithubLogo from '../../components/icons/GithubLogo'
 import GitlabLogo from '../../components/icons/GitlabLogo'
 
 import { i18nT } from '../../i18n/t'
-export type ProviderId = 'github' | 'gitlab' | 'jira' | 'linear'
+export type ProviderId = 'github' | 'gitlab'
 
 /** Tailwind classes for the host card in each state — exported so the carousel
  * and the modal stay dimensionally identical without duplicating the numbers.
@@ -53,23 +55,43 @@ export type ProviderId = 'github' | 'gitlab' | 'jira' | 'linear'
 export const COLLAPSED_CARD = 'w-[480px] h-[420px] max-w-full max-h-full'
 export const EXPANDED_CARD = 'w-[860px] h-[540px] max-w-full max-h-full'
 
-/** Width of the provider list. Full-card-width rows read as oversized banners
- * (a 480px-wide row for the word "GitHub"), so the column is capped and
- * centred when collapsed.
+/** Width of the source list. Full-card-width rows read as oversized banners (a
+ * 480px-wide row for the word "GitHub"), so the column is capped and centred
+ * when collapsed. 200px fits the widest label plus its mark and tick with room
+ * to spare, and leaves the expanded card's remaining width to the repo picker —
+ * the column that actually holds content.
  *
- * `w-full max-w-[300px]`, not a fixed `w-[300px]`: once the card is capped by
- * `max-w-full` on a narrow viewport, a rigid 300px column plus a gap consumed
- * the whole row and left the repo picker and URL field at zero width — i.e.
- * unusable. Capped instead, the two columns share what's actually available. */
-const PROVIDER_COL = 'w-full max-w-[300px]'
+ * `w-full max-w-[200px]`, not a fixed `w-[200px]`: once the card is capped by
+ * `max-w-full` on a narrow viewport, a rigid column plus a gap consumed the whole
+ * row and left the repo picker and URL field at zero width — i.e. unusable.
+ * Capped instead, the two columns share what's actually available. */
+const PROVIDER_COL = 'w-full max-w-[200px]'
 
-/** Below this card width the two-column expanded layout stops working — a
- * 132px provider column plus a gap leaves the picker ~64px wide, i.e. unusable
+/** Below this card width the two-column expanded layout stops working — the
+ * source column plus a gap leaves the picker too narrow to read a repo name in
  * — so the columns STACK and the body scrolls instead. A container query on the
  * card is not available here (the breakpoint must react to the card, not the
  * window, since the modal is scoped to the app area), so the panel measures its
  * own width. */
 const STACK_BELOW_PX = 640
+
+/** How long the panel waits for the card's width to STOP CHANGING before it
+ * re-decides the stacked/side-by-side layout.
+ *
+ * Both hosts grow the card with a CSS width transition (`duration-200`), so for
+ * ~200ms after a provider is picked the measured width is the COLLAPSED one —
+ * far below STACK_BELOW_PX even on a wide window. Committing those intermediate
+ * measurements laid the repo picker out UNDER the provider list (and, since the
+ * stacked body scrolls, mid-animation the card showed a scrolled column list),
+ * then snapped it to the right the moment the animation finished. The user reads
+ * that as the panel opening downwards and jumping sideways.
+ *
+ * Waiting past the transition means the layout is decided from the card's REAL
+ * width once, and the previous (settled) answer stays on screen meanwhile — for
+ * an expand from collapsed that is the side-by-side layout, which is also where
+ * the animation lands, so nothing reflows. Kept slightly above the 200ms
+ * transition so a frame of jitter at the end cannot beat the timer. */
+const CARD_RESIZE_SETTLE_MS = 260
 
 /** Only repos pushed to within this trailing window appear in the picker. The
  * server applies the cutoff (GitHub's user/repos can sort but not filter by
@@ -148,24 +170,31 @@ export function parseRepoRef(
     : { owner: parts[0], repo: parts[1] }
 }
 
+/** Whether picking `provider` puts the panel into its two-column body — and so
+ * whether the host must grow its card to `EXPANDED_CARD`.
+ *
+ * Exported and shared because the panel and BOTH hosts each need the answer, and
+ * when they held their own copies they drifted: the hosts still asked
+ * `provider === 'github'` after GitLab was wired up, so selecting GitLab
+ * switched the panel to two columns inside a card that stayed at its collapsed
+ * 480px. The columns then measured under STACK_BELOW_PX and re-stacked, i.e. the
+ * repo picker appeared BELOW the provider list and the body scrolled. One
+ * predicate makes that particular drift impossible. */
+export function expandsCard(provider: ProviderId | null): boolean {
+  return provider === 'github' || provider === 'gitlab'
+}
+
 interface Provider {
   id: ProviderId
   label: string
   icon: React.ReactNode
-  /** false → rendered with a "Soon" badge and not selectable. */
-  available: boolean
 }
 
-// GitHub and GitLab reuse the repo's existing brand-mark components. Jira and
-// Linear use lucide glyphs instead: the `use-lucide-icons` rule forbids adding
-// hand-rolled SVG paths, and no brand marks for them exist in the repo yet.
-// They are placeholders next to a "Soon" badge, so a representative glyph
-// (board / orbit) reads acceptably until either provider is actually wired up.
+// Both sources reuse the repo's existing brand-mark components. The list holds
+// only sources that actually connect — see the note at the top of the file.
 const PROVIDERS: Provider[] = [
-  { id: 'github', label: 'GitHub', icon: <GithubLogo size={18} />, available: true },
-  { id: 'gitlab', label: 'GitLab', icon: <GitlabLogo size={18} />, available: true },
-  { id: 'jira', label: 'Jira', icon: <SquareKanban size={18} />, available: false },
-  { id: 'linear', label: 'Linear', icon: <Orbit size={18} />, available: false },
+  { id: 'github', label: 'GitHub', icon: <GithubLogo size={18} /> },
+  { id: 'gitlab', label: 'GitLab', icon: <GitlabLogo size={18} /> },
 ]
 
 /** One connect target: either a ticked recent repo or the manually typed URL. */
@@ -374,8 +403,20 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
 export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
   // Both wired providers expand into the two-column body. Jira/Linear stay
   // collapsed because they are still placeholders.
-  const expanded = flow.provider === 'github' || flow.provider === 'gitlab'
+  const expanded = expandsCard(flow.provider)
   const scopeProvider = flow.provider === 'gitlab' ? ('gitlab' as const) : ('github' as const)
+
+  // One example for the SELECTED provider, never both in one string. The
+  // combined "https://github.com/<owner>/<repo> or https://gitlab.com/…"
+  // placeholder was ~70 characters in a ~330px monospace input, so it clipped
+  // mid-URL ("…or https://gitl"): the GitHub half read as the only accepted
+  // form, and the GitLab half — the part a GitLab user needs — was never
+  // legible. Each provider also has its own path shape (GitHub is
+  // `owner/repo`; a GitLab project lives under a possibly nested group), so a
+  // shared example is wrong for one of them however it is worded.
+  const urlPlaceholder = scopeProvider === 'gitlab'
+    ? i18nT('apps.issueRadar.connectPanel.https_gitlab_com_group_project')
+    : i18nT('apps.issueRadar.connectPanel.https_github_com_owner_repo')
 
   const query = useQuery({
     // Keyed by provider: the two lists come from different accounts on different
@@ -405,39 +446,56 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
   useEffect(() => {
     const el = bodyRef.current
     if (!el || !expanded) return
+    let settle: number | undefined
     const measure = () => setStacked(el.clientWidth > 0 && el.clientWidth < STACK_BELOW_PX)
-    measure()
+    // The decision is DEFERRED until the width holds still — see
+    // CARD_RESIZE_SETTLE_MS. Committing the first measurement instead read the
+    // card mid-grow and stacked the columns for the length of the animation.
+    const schedule = () => {
+      if (settle !== undefined) clearTimeout(settle)
+      settle = window.setTimeout(measure, CARD_RESIZE_SETTLE_MS)
+    }
+    schedule()
     // ResizeObserver, not a window listener: the card itself resizes when the
     // provider expands, with no window event to hook.
-    if (typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
+    ro?.observe(el)
+    return () => {
+      ro?.disconnect()
+      if (settle !== undefined) clearTimeout(settle)
+    }
   }, [expanded])
 
   return (
-    <div className="flex flex-col gap-4 w-full flex-1 min-h-0 text-left">
+    // Collapsed, the panel is sized by its CONTENT (no `flex-1`) so the host can
+    // centre it in the card: with `flex-1` it always claimed the full card
+    // height, which pinned the heading to the top and left the two source rows
+    // floating above ~140px of dead space with the nav row stranded below them.
+    // Expanded it must still absorb the height, because the repo list flexes
+    // inside it and the URL row underneath has to stay inside the card.
+    <div className={`flex flex-col w-full text-left ${expanded ? 'gap-4 flex-1 min-h-0' : 'gap-6'}`}>
       <div className="text-center flex-shrink-0">
-        <div className="text-[20px] font-bold text-text tracking-[-0.2px]">{i18nT('apps.issueRadar.connectPanel.let_s_connect_a_provider')}</div>
+        <div className="text-[20px] font-bold text-text tracking-[-0.2px]">{i18nT('apps.issueRadar.connectPanel.let_s_connect_a_repo')}</div>
         <div className="text-[13.5px] text-muted leading-[1.7] mt-1.5">
-          {i18nT('apps.issueRadar.connectPanel.connect_a_provider_nothing_runs_without_your_say')}
+          {i18nT('apps.issueRadar.connectPanel.connect_a_repo_nothing_runs_without_your_say')}
         </div>
       </div>
 
-      {/* The columns row absorbs the card's remaining height (flex-1 min-h-0)
-       * and the repo list inside it flexes, so the URL row below can never be
-       * pushed out of the card — earlier this was a fixed 240px list plus a
-       * fixed URL block, whose combined height overran the card by a few px
-       * and got clipped. */}
+      {/* Expanded, the columns row absorbs the card's remaining height (flex-1
+       * min-h-0) and the repo list inside it flexes, so the URL row below can
+       * never be pushed out of the card — earlier this was a fixed 240px list
+       * plus a fixed URL block, whose combined height overran the card by a few
+       * px and got clipped. Collapsed there is nothing to absorb: the row list
+       * is the last thing in the card, so it takes its natural height. */}
       <div
         ref={bodyRef}
-        className={`flex-1 min-h-0 flex ${
+        className={`flex ${
           expanded
-            ? stacked ? 'flex-col gap-4 overflow-y-auto' : 'gap-5'
+            ? stacked ? 'flex-1 min-h-0 flex-col gap-4 overflow-y-auto' : 'flex-1 min-h-0 gap-5'
             : 'justify-center'
         }`}
       >
-        <div className={`${PROVIDER_COL} ${expanded && !stacked ? 'min-w-[180px]' : 'flex-shrink-0'} self-start flex flex-col gap-1.5`}>
+        <div className={`${PROVIDER_COL} ${expanded && !stacked ? 'min-w-[180px] self-start' : 'flex-shrink-0'} flex flex-col gap-1.5`}>
           {PROVIDERS.map((p) => (
             <ProviderRow
               key={p.id}
@@ -478,9 +536,22 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
             />
 
             {!setupRequired && (
-              <div className="flex flex-col gap-2 border-t border-border pt-3 flex-shrink-0">
+              <div className="flex flex-col gap-2 pt-3 flex-shrink-0">
+                {/* "OR" sits ON the rule, not under it: as a plain label above
+                  * the input it read as a third heading stacked under the
+                  * picker's own, while the rule it was separating the two
+                  * sections with ran edge to edge just above it. Split rule with
+                  * the word inline is the conventional "either/or" divider and
+                  * costs one row instead of two. */}
+                <div className="flex items-center gap-2">
+                  <span className="h-px flex-1 bg-border" />
+                  <span className="text-[11px] font-semibold text-muted uppercase tracking-[.08em] opacity-70">
+                    {i18nT('apps.issueRadar.connectPanel.or')}
+                  </span>
+                  <span className="h-px flex-1 bg-border" />
+                </div>
                 <span className="text-[11px] font-semibold text-muted uppercase tracking-[.08em] opacity-70">
-                  {i18nT('apps.issueRadar.connectPanel.or_paste_a_url')}
+                  {i18nT('apps.issueRadar.connectPanel.paste_a_url')}
                 </span>
                 <input
                   id="ir-repo-url"
@@ -489,7 +560,7 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
                   onChange={(e) => flow.setUrl(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') flow.submit() }}
                   disabled={flow.pending}
-                  placeholder={i18nT('apps.issueRadar.connectPanel.https_github_com_owner_repo_or_https_gitlab_com')}
+                  placeholder={urlPlaceholder}
                   className="w-full box-border text-[12.5px] px-3 py-2 rounded-md bg-bg text-text border border-border font-mono disabled:opacity-50"
                 />
               </div>
@@ -511,29 +582,31 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
 function ProviderRow({ provider, selected, onSelect }: {
   provider: Provider; selected: boolean; onSelect: () => void
 }) {
-  const disabled = !provider.available
   return (
     <button
-      onClick={disabled ? undefined : onSelect}
-      disabled={disabled}
+      onClick={onSelect}
       aria-pressed={selected}
-      className={`w-full flex items-center gap-3 px-3 h-10 flex-shrink-0 rounded-md border text-left transition-colors ${
-        disabled
-          ? 'border-border bg-transparent opacity-45 cursor-default'
-          : selected
-            ? 'border-accent bg-accent-subtle cursor-pointer'
-            : 'border-border bg-transparent hover:bg-bg-hover cursor-pointer'
+      className={`w-full flex items-center gap-3 px-3 h-10 flex-shrink-0 rounded-md border text-left cursor-pointer transition-colors ${
+        selected
+          ? 'border-accent bg-accent-subtle'
+          : 'border-border bg-transparent hover:bg-bg-hover'
       }`}
     >
-      <span className={`flex-shrink-0 ${selected ? 'text-accent' : 'text-text'}`}>{provider.icon}</span>
-      <span className="flex-1 min-w-0 text-[13px] font-semibold text-text truncate">
+      {/* The mark and the tick sit in EQUAL-width slots, and the tick's slot is
+        * rendered whether or not the row is selected. Both are what make the
+        * centred label actually centred on the row and hold still: with the
+        * label as the only flex child, its centre was offset by the difference
+        * between the two side slots, and selecting a row added the tick and
+        * shifted the text left. */}
+      <span className={`flex-shrink-0 w-[18px] flex justify-center ${selected ? 'text-accent' : 'text-text'}`}>
+        {provider.icon}
+      </span>
+      <span className="flex-1 min-w-0 text-center text-[13px] font-semibold text-text truncate">
         {provider.label}
       </span>
-      {disabled
-        ? <span className="flex-shrink-0 text-[10px] font-semibold text-muted uppercase tracking-[.08em] px-1.5 py-0.5 rounded border border-border">{i18nT('apps.issueRadar.connectPanel.soon')}</span>
-        : selected
-          ? <Check size={14} className="flex-shrink-0 text-accent" />
-          : null}
+      <span className="flex-shrink-0 w-[18px] flex justify-center">
+        {selected && <Check size={14} className="text-accent" />}
+      </span>
     </button>
   )
 }
