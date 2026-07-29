@@ -82,7 +82,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, footer, heade
                 </div>
               )}
               <button
-                className={`flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[13px] font-medium cursor-pointer border-none transition-all ${
+                className={`flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[13px] text-left font-medium cursor-pointer border-none transition-all ${
                   tab === t.key
                     ? 'bg-accent-subtle text-accent'
                     : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'

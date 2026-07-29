@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 /**
  * /capabilities — Agent Capabilities page.
- * SidePanelLayout with 6 tabs: Agents, Agent Templates, Integrations (MCP),
+ * SidePanelLayout with 6 tabs: Agents, Agent Templates, Integrations(MCP),
  * Skills, Hooks, Prompts. Default tab is "agents" (KiroCrewAgentsPage).
  *
  * Covers: page load + heading, tab navigation with content change assertion,
@@ -26,7 +26,7 @@ test.describe('Capabilities Page — /capabilities', () => {
   test('shows all 6 tab buttons in the side nav', async ({ page }) => {
     // Tab buttons inside the nav panel — look inside #main-content nav
     const nav = page.locator('#main-content nav')
-    const tabs = ['Agents', 'Agent Templates', 'Integrations (MCP)', 'Skills', 'Hooks', 'Prompts']
+    const tabs = ['Agents', 'Agent Templates', 'Integrations(MCP)', 'Skills', 'Hooks', 'Prompts']
     for (const label of tabs) {
       await expect(nav.getByRole('button', { name: label, exact: true })).toBeVisible({ timeout: 5000 })
     }
