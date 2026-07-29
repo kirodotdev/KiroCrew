@@ -154,12 +154,16 @@ export function StatCard({ label, value, accent, colorClass, delay, onClick, act
       // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
       tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } } : undefined}
+      // Placed before {...rest} so a consumer can override it with a more
+      // specific id (e.g. data-testid="stat-card-unread") when one card among
+      // several needs to be addressed directly.
+      data-testid="stat-card"
       {...rest}
     >
-      <div className="text-muted text-[13px] font-medium uppercase tracking-[.04em] flex items-center gap-1">{label}{title && <InfoTip text={title} />}</div>
+      <div className="text-muted text-[13px] font-medium uppercase tracking-[.04em] flex items-center gap-1" data-testid="stat-card-label">{label}{title && <InfoTip text={title} />}</div>
       {loading
-        ? <div className="skeleton h-7 w-16 mt-1.5 rounded" />
-        : <div className={`text-2xl font-bold mt-1.5 tracking-tight leading-none ${accent ? 'text-accent' : colorClass || ''}`}>{value ?? '—'}</div>
+        ? <div className="skeleton h-7 w-16 mt-1.5 rounded" data-testid="stat-card-skeleton" />
+        : <div className={`text-2xl font-bold mt-1.5 tracking-tight leading-none ${accent ? 'text-accent' : colorClass || ''}`} data-testid="stat-card-value">{value ?? '—'}</div>
       }
     </div>
   )
@@ -240,22 +244,29 @@ export function FormSkeleton({ rows }: { rows: SkeletonRowKind[] }) {
   )
 }
 
-export function EmptyState({ icon, title, subtitle }: { icon: React.ReactNode; title: string; subtitle?: string }) {
+/**
+ * @param testId Base `data-testid` for this instance. Several EmptyStates can be
+ *   mounted on one page (AppsPage renders 3; /notifications renders the page's own
+ *   plus NotificationFeed's), so a single shared id makes a Playwright lookup
+ *   ambiguous. Consumers on such pages pass a specific base; the title and
+ *   subtitle derive `<base>-title` / `<base>-subtitle` from it.
+ */
+export function EmptyState({ icon, title, subtitle, testId = 'empty-state' }: { icon: React.ReactNode; title: string; subtitle?: string; testId?: string }) {
   return (
-    <div className="flex flex-col items-center justify-center py-12 gap-2 animate-rise">
+    <div className="flex flex-col items-center justify-center py-12 gap-2 animate-rise" data-testid={testId}>
       <div className="text-[40px] opacity-[.12] select-none">{icon}</div>
-      <div className="text-muted text-sm font-medium">{title}</div>
-      {subtitle && <div className="text-muted/60 text-[13px]">{subtitle}</div>}
+      <div className="text-muted text-sm font-medium" data-testid={`${testId}-title`}>{title}</div>
+      {subtitle && <div className="text-muted/60 text-[13px]" data-testid={`${testId}-subtitle`}>{subtitle}</div>}
     </div>
   )
 }
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: React.ReactNode }) {
   return (
-    <div className="flex items-end justify-between gap-4 px-6 pt-2 pb-3">
+    <div className="flex items-end justify-between gap-4 px-6 pt-2 pb-3" data-testid="page-header">
       <div>
-        <div className="text-2xl font-bold tracking-tight text-text-strong">{title}</div>
-        {subtitle && <div className="text-muted text-sm mt-1">{subtitle}</div>}
+        <div className="text-2xl font-bold tracking-tight text-text-strong" data-testid="page-title">{title}</div>
+        {subtitle && <div className="text-muted text-sm mt-1" data-testid="page-subtitle">{subtitle}</div>}
       </div>
       {actions && <div className="flex items-center gap-2.5 flex-wrap justify-end">{actions}</div>}
     </div>

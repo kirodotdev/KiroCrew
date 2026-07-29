@@ -133,7 +133,7 @@ export function LogViewer({ compact }: { compact?: boolean }) {
           atTopStateChange={setAtTop}
           style={{ flex: 1, minHeight: 0 }}
           itemContent={(_i, l) => (
-            <div className={`font-mono ${sz.row} ${wrapLines ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} px-2.5 py-0.5 leading-[1.7] ${l.match ? 'border-l-2 border-accent bg-accent/10' : ''} ${levelColor(l.level)}`}>
+            <div data-testid="log-line" className={`font-mono ${sz.row} ${wrapLines ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} px-2.5 py-0.5 leading-[1.7] ${l.match ? 'border-l-2 border-accent bg-accent/10' : ''} ${levelColor(l.level)}`}>
               {l.match ? highlight(l.msg) : l.msg}
             </div>
           )}

@@ -5,32 +5,33 @@ const HARNESS_GATEWAY = !!process.env.KIROCREW_E2E_EPHEMERAL
 test.describe('Notifications Page', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/notifications', { waitUntil: 'domcontentloaded' })
-    // Wait for the page subtitle to render -- unique to this page
-    await expect(page.getByText('All agent activity, cron results, webhooks, and approvals')).toBeVisible({ timeout: 10000 })
+    // Structural mount gate, no copy pinned.
+    await expect(page.getByTestId('page-header')).toBeVisible({ timeout: 10000 })
   })
 
   test('renders page header and subtitle', async ({ page }) => {
-    // The page header title -- use the subtitle as the unique anchor since
-    // "Notifications" also appears in the topbar bell button text
-    // PageHeader (ui.tsx:257) renders its title as a plain <div>, not a heading, and
-    // "Notifications" also appears in the topbar bell button -- so the subtitle is the
-    // only unique, non-class-coupled anchor for "the header rendered".
-    await expect(page.getByText('All agent activity, cron results, webhooks, and approvals')).toBeVisible()
+    // data-testid="page-title" disambiguates the header from the topbar bell button,
+    // which also renders the word "Notifications".
+    await expect(page.getByTestId('page-title')).toHaveText('Notifications')
+    await expect(page.getByTestId('page-subtitle')).toBeVisible()
   })
 
   test('displays stat cards with zero counts on empty fixture', async ({ page }) => {
     // The stat cards show Total, Unread, Cron, Hooks, Heartbeat -- all 0 on minimal fixture
-    const totalCard = page.locator('.stat-accent').filter({ hasText: 'Total' })
-    await expect(totalCard.locator('.text-2xl')).toContainText('0')
-    const unreadCard = page.locator('.stat-accent').filter({ hasText: 'Unread' })
-    await expect(unreadCard.locator('.text-2xl')).toContainText('0')
-    const cronCard = page.locator('.stat-accent').filter({ hasText: 'Cron' })
-    await expect(cronCard.locator('.text-2xl')).toContainText('0')
+    const totalCard = page.getByTestId('stat-card').filter({ hasText: 'Total' })
+    await expect(totalCard.getByTestId('stat-card-value')).toContainText('0')
+    const unreadCard = page.getByTestId('stat-card').filter({ hasText: 'Unread' })
+    await expect(unreadCard.getByTestId('stat-card-value')).toContainText('0')
+    const cronCard = page.getByTestId('stat-card').filter({ hasText: 'Cron' })
+    await expect(cronCard.getByTestId('stat-card-value')).toContainText('0')
   })
 
   test('shows empty state message when no notifications', async ({ page }) => {
-    await expect(page.getByText('No notifications')).toBeVisible()
-    await expect(page.getByText('Activity will appear here')).toBeVisible()
+    await expect(page.getByTestId('notification-feed-empty-title')).toHaveText('No notifications')
+    // The subtitle distinguishes WHICH empty state rendered (no categories vs search
+    // miss vs genuinely empty), so the text is load-bearing -- but matched loosely and
+    // scoped to the element rather than searched for across the page.
+    await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveText(/activity will appear here/i)
   })
 
   test('renders category filter chips with correct labels', async ({ page }) => {
@@ -67,7 +68,7 @@ test.describe('Notifications Page', () => {
     await allChip.click()
 
     // Now the empty state should mention categories
-    await expect(page.getByText('No categories selected')).toBeVisible()
+    await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveText(/no categories selected/i)
   })
 
   test('GET /api/notifications returns correct structure for empty state', async ({ request }) => {
@@ -86,11 +87,11 @@ test.describe('Notifications Page', () => {
 
     // Type a search term -- with no notifications, the empty state text changes
     await searchInput.fill('nonexistent')
-    await expect(page.getByText('Try a different search')).toBeVisible()
+    await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveText(/try a different search/i)
 
     // Clear the search -- empty state should revert
     await searchInput.fill('')
-    await expect(page.getByText('Activity will appear here')).toBeVisible()
+    await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveText(/activity will appear here/i)
   })
 
   // /api/notifications/clear is global: it deletes EVERY notification, not just

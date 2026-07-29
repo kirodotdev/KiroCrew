@@ -372,6 +372,13 @@ export function useWebSocket() {
       dispatch(clearSubagentsForSnapshot())
       ws.send(JSON.stringify({ type: 'subscribe_subagents' }))
       subagentSubRef.current = true
+      // Flush a log subscription that was requested before the socket opened.
+      // subscribeLogs() stores the callback but returns early when readyState
+      // is not OPEN, so a page mounting during the handshake (a cold load of
+      // /logs) would otherwise never send subscribe_logs and would show no
+      // lines at all until an unrelated reconnect. The reconnect branch above
+      // already does this; the two paths must stay symmetric.
+      if (logCbRef.current) ws.send(JSON.stringify({ type: 'subscribe_logs' }))
     }
 
     ws.onmessage = (e) => {

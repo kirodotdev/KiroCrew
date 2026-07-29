@@ -35,7 +35,7 @@ test.describe('Projects (Task Runner) Page', () => {
   test('renders page header with title and subtitle', async ({ page }) => {
     await page.goto('/projects', { waitUntil: 'domcontentloaded' })
     await expect(page.getByText('Task Runner')).toBeVisible({ timeout: 10000 })
-    await expect(page.getByText('Autonomous multi-step task execution')).toBeVisible()
+    await expect(page.getByTestId('page-subtitle')).toBeVisible()
   })
 
   test('compose panel shows three mode tabs', async ({ page }) => {

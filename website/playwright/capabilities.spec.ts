@@ -20,6 +20,10 @@ test.describe('Capabilities Page — /capabilities', () => {
     // SidePanelLayout nav title "Agent Capabilities" — scoped inside main-content
     await expect(page.locator('#main-content .text-lg.font-bold').first()).toHaveText('Agent Capabilities')
     // Default tab description from the content area header
+    // Prose deliberately: on /capabilities this string is a TAB DESCRIPTION
+    // (CapabilitiesPage.tsx:16), not a PageHeader subtitle, so there is no
+    // page-subtitle testid on this route. KiroCrewAgentsPage renders the same
+    // string as a real PageHeader subtitle, hence the #main-content scope.
     await expect(page.locator('#main-content').getByText('Manage agent → workspace → memory store bindings')).toBeVisible({ timeout: 5000 })
   })
 

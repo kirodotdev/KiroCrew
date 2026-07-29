@@ -1,6 +1,23 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 
 const HARNESS_GATEWAY = !!process.env.KIROCREW_E2E_EPHEMERAL
+
+/**
+ * Wait for at least one rendered log line.
+ *
+ * The gateway replays its log ring buffer when the client sends subscribe_logs
+ * (ws.py:256), so lines appear without needing to generate fresh traffic.
+ *
+ * The previous form of this wait, `page.locator('.font-mono').first()`, matched
+ * the "Filter logs" input (LogsPage.tsx:114 also carries font-mono and precedes
+ * the Virtuoso rows), so it resolved instantly against an always-visible element
+ * and asserted nothing. That masked a real bug: useWebSocket only flushed a
+ * pending log subscription on RECONNECT, never on first connect, so a cold load
+ * of /logs rendered no lines at all.
+ */
+async function waitForLogLines(page: Page) {
+  await expect(page.getByTestId('log-line').first()).toBeVisible({ timeout: 20000 })
+}
 
 // Every test here needs DEBUG so the stream actually emits lines, and
 // POST /api/logs/level PERSISTS: api_log_level writes cfg.agent.log_level and
@@ -19,13 +36,17 @@ test.describe('Logs Page', () => {
     // The minimal fixture defaults to WARNING which may show zero lines.
     await request.post('/api/logs/level', { data: { level: 'DEBUG' } })
     await page.goto('/logs', { waitUntil: 'domcontentloaded' })
-    // Wait for the page header to render, proving the route mounted
-    await expect(page.getByText('Live Logs')).toBeVisible({ timeout: 10000 })
+    // Structural mount gate: the header renders on every page, so this proves the
+    // route mounted without pinning any copy.
+    await expect(page.getByTestId('page-header')).toBeVisible({ timeout: 10000 })
   })
 
   test('renders page header and subtitle', async ({ page }) => {
-    await expect(page.getByText('Live Logs')).toBeVisible()
-    await expect(page.getByText('Real-time application output')).toBeVisible()
+    // This test's job IS to pin the page identity, so the title text is asserted
+    // deliberately. The subtitle is only checked for presence: it is a tagline a
+    // designer can reword without changing behaviour.
+    await expect(page.getByTestId('page-title')).toHaveText('Live Logs')
+    await expect(page.getByTestId('page-subtitle')).toBeVisible()
   })
 
   test('displays log level buttons with current level highlighted', async ({ page }) => {
@@ -46,16 +67,11 @@ test.describe('Logs Page', () => {
   })
 
   test('receives live log lines from the gateway', async ({ page }) => {
-    // The gateway emits log lines. At DEBUG level, there will be many.
-    // Log lines are rendered as font-mono divs inside the Virtuoso container.
-    const logLine = page.locator('.font-mono').first()
-    await expect(logLine).toBeVisible({ timeout: 15000 })
+    await waitForLogLines(page)
   })
 
   test('changing log level via UI narrows displayed lines', async ({ page, request }) => {
-    // Confirm we have log lines visible at DEBUG level
-    const logLine = page.locator('.font-mono').first()
-    await expect(logLine).toBeVisible({ timeout: 15000 })
+    await waitForLogLines(page)
 
     // Switch to ERROR level via the UI button -- this should filter display
     await page.getByRole('button', { name: 'Error' }).click()
@@ -68,9 +84,7 @@ test.describe('Logs Page', () => {
   })
 
   test('search filter shows match count when term matches log lines', async ({ page }) => {
-    // Wait for log lines to appear at DEBUG level
-    const logLine = page.locator('.font-mono').first()
-    await expect(logLine).toBeVisible({ timeout: 15000 })
+    await waitForLogLines(page)
 
     // Every log line contains "kiro_crew" in the logger name field.
     // Type the search term
@@ -82,9 +96,7 @@ test.describe('Logs Page', () => {
   })
 
   test('Matches only button activates and deactivates correctly', async ({ page }) => {
-    // Wait for log lines to appear
-    const logLine = page.locator('.font-mono').first()
-    await expect(logLine).toBeVisible({ timeout: 15000 })
+    await waitForLogLines(page)
 
     // Search for a term that matches SOME lines (the logger name appears in all lines)
     const filterInput = page.getByLabel('Filter logs')
@@ -102,7 +114,7 @@ test.describe('Logs Page', () => {
     await matchesOnlyBtn.click()
 
     // Verify lines are still shown (the search matched lines)
-    await expect(page.locator('.font-mono').first()).toBeVisible()
+    await expect(page.getByTestId('log-line').first()).toBeVisible()
 
     // Clear the search -- "Matches only" button should disappear
     await filterInput.fill('')

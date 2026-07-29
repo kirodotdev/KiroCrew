@@ -133,7 +133,7 @@ test.describe('Apps Page — /apps', () => {
     // A non-empty query also clears the editorial layer (showEditorial requires
     // !query.trim(), AppsPage.tsx:207), so every card unmounts -- not just the
     // AppListRows.
-    await expect(page.getByText('No matching apps')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('empty-state-title')).toHaveText('No matching apps', { timeout: 5000 })
     await expect(browseCards(page)).toHaveCount(0)
   })
 
@@ -152,7 +152,7 @@ test.describe('Apps Page — /apps', () => {
     // aria-label stays "Search apps".
     const search = page.getByRole('textbox', { name: 'Search apps' })
     await search.fill('zzz_no_match_xyz')
-    await expect(page.getByText('No matching apps')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('empty-state-title')).toHaveText('No matching apps', { timeout: 5000 })
 
     await search.clear()
     await expect(libraryCard(page, 'Task Runner')).toBeVisible({ timeout: 5000 })
