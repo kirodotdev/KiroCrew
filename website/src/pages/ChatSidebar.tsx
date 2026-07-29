@@ -693,6 +693,34 @@ function ChatSidebar({
     }
     return counts
   }, [storeActiveSlot, activeSlotSubagents, slotActivity, subagentQueued])
+  // Sub-agents blocked on a SPAWN approval, per slot. Mirrors
+  // selectSlotPendingSpawnApprovals (status 'pending' + an approval_id), but
+  // across every slot rather than the viewed one: a spawn approval raised by a
+  // background chat has no inline prompt and no notification, so without this
+  // the sidebar was the only place it could have surfaced and it showed
+  // "N agents running" instead — an owed decision rendered as work in
+  // progress. Counted separately from `subagentCounts` so the running subtitle
+  // can subtract them (an agent waiting on approval is not running).
+  const subagentApprovalCounts = useMemo(() => {
+    const countPending = (m?: Record<string, SubagentActivity>) => {
+      if (!m) return 0
+      let n = 0
+      for (const a of Object.values(m)) {
+        if (a.status === 'pending' && a.approval_id) n++
+      }
+      return n
+    }
+    const counts: Record<string, number> = {}
+    if (storeActiveSlot) { const n = countPending(activeSlotSubagents); if (n > 0) counts[storeActiveSlot] = n }
+    for (const [slot, act] of Object.entries(slotActivity ?? {})) {
+      // Same aliasing guard as countActive above: the active slot's map is the
+      // same object in both places, so skipping it here avoids double-counting.
+      if (slot === storeActiveSlot) continue
+      const n = countPending(act.subagents)
+      if (n > 0) counts[slot] = n
+    }
+    return counts
+  }, [storeActiveSlot, activeSlotSubagents, slotActivity])
   // Live dynamic-workflow runs per slot, for the sidebar row's "workflow
   // running" subtitle. Mirrors WorkflowProgressBar's source of truth:
   // chatSlice.workflowRuns (populated by the globally-subscribed
@@ -1794,15 +1822,26 @@ function ChatSidebar({
     const isOut = poppedOut.has(s.key)
     const recent = recentRank.get(s.key)
     const subagentCount = subagentCounts[s.key] || 0
+    // Sub-agents held at the spawn gate. Excluded from the running/queued
+    // arithmetic below: "4 agents running" while 2 of them are blocked on your
+    // click is both wrong and the reason the owed approval went unnoticed.
+    const subagentAwaiting = Math.min(subagentApprovalCounts[s.key] || 0, subagentCount)
+    const subagentActive = subagentCount - subagentAwaiting
     // Distinguish started from queued: "3 agents running" is wrong for a wave
     // that is still entirely behind the concurrency cap.
-    const subagentQueuedCount = Math.min(subagentQueued?.[s.key] || 0, subagentCount)
-    const subagentStarted = subagentCount - subagentQueuedCount
+    const subagentQueuedCount = Math.min(subagentQueued?.[s.key] || 0, subagentActive)
+    const subagentStarted = subagentActive - subagentQueuedCount
     const subagentLabel = subagentStarted === 0
       ? `${subagentQueuedCount} agent${subagentQueuedCount === 1 ? '' : 's'} queued`
       : subagentQueuedCount > 0
         ? `${subagentStarted} running · ${subagentQueuedCount} queued`
         : `${subagentStarted} agent${subagentStarted === 1 ? '' : 's'} running`
+    // Plain literal, like the running/queued label above it: `en.json` is
+    // codemod-generated and carries no interpolated values, so a counted
+    // string belongs in code until both sibling labels are localized together.
+    const subagentApprovalLabel = subagentAwaiting === 1
+      ? '1 sub-agent needs approval'
+      : `${subagentAwaiting} sub-agents need approval`
     const wfActive = workflowActive[s.key]
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
     const rowColor = ci != null ? paletteColors[ci] : null
@@ -1882,12 +1921,14 @@ function ChatSidebar({
             dispatch(switchSlot(s.key))
             onSelectSlot?.(s.key)
           }}>
-          {s.unread && !s.running && !s.pending_approval && (
+          {s.unread && !s.running && !s.pending_approval && !subagentAwaiting && (
             // Blue dot = "your turn": the agent finished its turn (not running)
             // and you haven't opened the session since (unread). Redefined from
             // the old "any unseen output" trigger so it no longer lights
             // mid-stream; a pending approval gets its own yellow subtitle
-            // treatment instead.
+            // treatment instead (including a sub-agent's spawn approval, which
+            // leaves the parent turn idle and would otherwise read as a plain
+            // unread reply).
             <span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none" style={{ background: 'var(--accent)' }} title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
           )}
           <div className="flex-1 min-w-0 overflow-hidden">
@@ -1940,6 +1981,16 @@ function ChatSidebar({
               <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0">
                 <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--warn)' }} title={i18nT('pages.chatSidebar.needs_approval')} />
                 <span className="truncate"><span className="font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.needs_approval')}</span>{s.last_message ? <span className="text-muted"> · {s.last_message}</span> : null}</span>
+              </div>
+            ) : subagentAwaiting > 0 ? (
+              // Sub-agents blocked on a spawn approval. Ranked directly below
+              // the slot's own pending approval and above every "working"
+              // signal for the same reason: an owed decision must not read as
+              // work in progress. The bot glyph is static, not pulsing —
+              // nothing is running — and warn-coloured to match the row above.
+              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={subagentApprovalLabel}>
+                <Bot size={11} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
+                <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
               </div>
             ) : wfActive ? (
               // A dynamic-workflow run launched from this session is still
