@@ -37,7 +37,7 @@ export default function OverlayDrawer({ open, width, dragging, morph, className,
                 ? { width: { duration: 0.32, ease: EASE }, opacity: { duration: 0.12, ease: EASE } }
                 : settle
           }
-          className={`shrink-0 py-2 overflow-hidden ${className || ''}`}
+          className={`shrink-0 pb-2 overflow-hidden ${className || ''}`}
         >
           {children}
         </motion.div>

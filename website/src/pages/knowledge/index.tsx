@@ -406,7 +406,7 @@ export default function KnowledgePage() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-start sm:items-end justify-between gap-3 sm:gap-4 px-4 sm:px-6 pt-4 pb-3">
+      <div className="flex items-start sm:items-end justify-between gap-3 sm:gap-4 px-4 sm:px-6 pt-2 pb-3">
         <div className="min-w-0">
           <div className="text-xl sm:text-2xl font-bold tracking-tight text-text-strong flex items-center gap-2">
             <BookOpen size={22} className="shrink-0" /> {i18nT('pages.knowledge.index.knowledge_library')}

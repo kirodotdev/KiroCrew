@@ -71,7 +71,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, footer, heade
           {footer && <div className="pt-2 pb-2">{footer}</div>}
         </div>
       ) : (
-        <nav className="w-[200px] shrink-0 border-r border-border bg-bg overflow-y-auto py-3 px-3 flex flex-col gap-0.5">
+        <nav className="w-[200px] shrink-0 border-r border-border bg-bg overflow-y-auto pt-1 pb-3 px-3 flex flex-col gap-0.5">
           <div className="text-lg font-bold text-text-strong px-2.5 py-2 mb-1">{title}</div>
           {tabs.map((t, i) => (
             <React.Fragment key={t.key}>
@@ -103,7 +103,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, footer, heade
 
       <div className={`flex-1 min-w-0 min-h-0 flex flex-col ${fixedContent ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {!isMobile && (
-        <div className="flex items-end justify-between gap-4 px-6 pt-4 pb-3 shrink-0">
+        <div className="flex items-end justify-between gap-4 px-6 pt-2 pb-3 shrink-0">
           <div>
             <div className="text-2xl font-bold tracking-tight text-text-strong">{meta?.label || ''}</div>
             {meta?.description && <div className="text-muted text-sm mt-1">{meta.description}</div>}

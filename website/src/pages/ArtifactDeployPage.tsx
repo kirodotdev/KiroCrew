@@ -213,7 +213,7 @@ export default function ArtifactDeployPage() {
     <>
       {/* Deploy is a sub-surface of Artifacts (Joe R1): always give the way
           back to the gallery so the console never feels like a dead end. */}
-      <div className="px-6 pt-4">
+      <div className="px-6 pt-2">
         <button
           type="button"
           onClick={() => navigate('/artifacts')}

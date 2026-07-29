@@ -3722,8 +3722,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
           Desktop, non-embed, with sessions only. */}
       {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && (() => {
         const RADIUS = 12 // same as the panel's rounded-xl — constant through the morph
-        const PANEL = { top: 8, left: 0, width: sidebarWidth, height: Math.max(0, containerH - 16), borderRadius: RADIUS, opacity: 1 }
-        const BTN = { top: 20, left: 8, width: 34, height: 34, borderRadius: RADIUS, opacity: 1 }
+        const PANEL = { top: 0, left: 0, width: sidebarWidth, height: Math.max(0, containerH - 8), borderRadius: RADIUS, opacity: 1 }
+        const BTN = { top: 12, left: 8, width: 34, height: 34, borderRadius: RADIUS, opacity: 1 }
         const MORPH = { duration: 0.32, ease: [0.32, 0.72, 0, 1] as const }
         return (
           <>
@@ -3743,7 +3743,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             <button
               type="button"
               onClick={() => window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))}
-              className="absolute top-[20px] left-2 z-[61] w-[34px] h-[34px] rounded-xl flex items-center justify-center cursor-pointer text-muted hover:text-text transition-colors bg-transparent border-none"
+              className="absolute top-[12px] left-2 z-[61] w-[34px] h-[34px] rounded-xl flex items-center justify-center cursor-pointer text-muted hover:text-text transition-colors bg-transparent border-none"
               title={sidebarOpen ? 'Hide sessions' : 'Show sessions'}
               aria-label={sidebarOpen ? 'Hide sessions sidebar' : 'Show sessions sidebar'}
             >
@@ -3843,7 +3843,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 in index.css) so the overlay never paints over the scroller's scrollbar
                 track — otherwise the thumb is hidden/un-grabbable when scrolled to top. */}
             <div className="absolute top-0 left-0 right-1.5 z-10 pointer-events-none" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-              <div className={`pr-5 pt-3 pb-2 flex items-center gap-2 bg-bg pointer-events-none ${!sidebarOpen && !isMobile ? 'pl-14' : 'pl-5'}`}>
+              <div className={`pr-5 pt-1 pb-2 flex items-center gap-2 bg-bg pointer-events-none ${!sidebarOpen && !isMobile ? 'pl-14' : 'pl-5'}`}>
                 {embedMode !== 'chat' && isMobile && (
                   <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto" onClick={() => setMobileSessions(p => !p)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
                     {effectiveMode === 'orchestrator' ? <MessageSquareDot size={16} /> : <MessageSquare size={16} />}

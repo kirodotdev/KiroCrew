@@ -41,7 +41,7 @@ export default function WorldsPage() {
         {...(collapsed ? { inert: '' } : {})}
       >
         <div style={{ overflow: 'hidden' }}>
-        <div className="px-5 pt-4 pb-2">
+        <div className="px-5 pt-2 pb-2">
           <div className="text-lg font-semibold text-text-strong"><Sparkles className="lucide-inline" /> {i18nT('pages.worldsPage.agent_worlds')}</div>
           <div className="text-sm text-muted">
             {agents.length} {i18nT('pages.worldsPage.agent')}{agents.length !== 1 ? 's' : ''} {i18nT('pages.worldsPage.present')}{' '}

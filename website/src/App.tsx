@@ -1815,7 +1815,7 @@ export default function App() {
         animate={isMobile ? { width: 220, x: 0 } : { x: 0 }}
         exit={{ x: -240 }}
         transition={isMobile ? { duration: 0.25, ease: [0.32, 0.72, 0, 1] } : undefined}
-        className={`bg-bg-elevated border border-border rounded-xl flex flex-col m-2 shadow-sm z-50 overflow-hidden ${isMobile ? 'fixed top-0 left-0 bottom-0' : ''}`}
+        className={`bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-0 mb-2 shadow-sm z-50 overflow-hidden ${isMobile ? 'fixed top-0 left-0 bottom-0' : ''}`}
         style={isMobile ? undefined : { gridArea: 'nav', width: 'auto' }}
         role="navigation"
         aria-label={i18nT('app.main_navigation')}

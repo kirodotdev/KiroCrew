@@ -252,7 +252,7 @@ export function EmptyState({ icon, title, subtitle }: { icon: React.ReactNode; t
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: React.ReactNode }) {
   return (
-    <div className="flex items-end justify-between gap-4 px-6 pt-4 pb-3">
+    <div className="flex items-end justify-between gap-4 px-6 pt-2 pb-3">
       <div>
         <div className="text-2xl font-bold tracking-tight text-text-strong">{title}</div>
         {subtitle && <div className="text-muted text-sm mt-1">{subtitle}</div>}
