@@ -4822,9 +4822,33 @@ class GatewayOrchestrator:
     async def _check_for_updates(self) -> None:
         """Blocking update check — auto-applies if enabled, otherwise notifies."""
         try:
+            from kiro_crew import __version__ as _running_version
             from kiro_crew.dashboard.handlers import _do_update_check, _update_info
 
             await _do_update_check()
+            from kiro_crew.platform.update_governance import min_version, update_required
+
+            # A policy-pinned minimum version makes the update MANDATORY: it
+            # overrides the user's auto_update=False, because user config sits
+            # under the enterprise ceiling and an operator opting out must not
+            # hold a fleet on a build the policy forbids.
+            #
+            # Checked BEFORE the `available` branch: that flag comes from
+            # `_do_update_check`'s `_version_tuple`, which returns (0,) for any
+            # pre-release — so a `1.4.0-nightly.<stamp>` remote reads as "nothing
+            # available" and a 1.3.0 host would never satisfy a 1.4.0 floor.
+            # `_auto_apply_update` still applies the source pin and its own
+            # no-new-commits early return, so this cannot bypass the ceiling or loop.
+            if update_required(_running_version):
+                logger.warning(
+                    "Version compliance: running %s is below the policy minimum %s — "
+                    "applying a mandatory update (overrides auto_update)",
+                    _running_version,
+                    min_version(),
+                )
+                await self._auto_apply_update()
+                return
+
             if _update_info.get("available"):
                 logger.info("Updates available from remote")
                 from kiro_crew.config import KiroCrewConfig
@@ -4877,6 +4901,23 @@ class GatewayOrchestrator:
             # Only auto-update on mainline — beta/feature branches need manual update
             if branch != "mainline":
                 logger.debug("Auto-update: skipping — on branch %s, not mainline", branch)
+                return
+
+            # Source pin, checked before the fetch. This is the most privileged
+            # update path in the product — no auth, no click, `git reset --hard`
+            # + pip + execv on boot — so a blocked host must not touch its tree.
+            from kiro_crew.platform.update_governance import (
+                resolve_remote_url,
+                update_blocked_reason,
+            )
+
+            blocked = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: update_blocked_reason(resolve_remote_url(proj, remote="origin"))
+            )
+            if blocked:
+                logger.warning("Auto-update refused: %s", blocked)
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
                 return
 
             if self.dashboard_state:

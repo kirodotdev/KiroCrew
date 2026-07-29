@@ -19,6 +19,12 @@ from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.config.loader import KiroCrewConfig, config_path
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.platform.update_governance import (
+    min_version,
+    resolve_remote_url,
+    update_blocked_reason,
+    update_required,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -42,7 +48,16 @@ async def api_update_check(request: web.Request) -> web.Response:
     """GET /api/update/check — check if git remote has new commits."""
     await _do_update_check()
     cfg = KiroCrewConfig.load()
-    return web.json_response({**_update_info, "auto_update": cfg.auto_update})
+    return web.json_response(
+        {
+            **_update_info,
+            "auto_update": cfg.auto_update,
+            # Surface the pin so the dashboard can say WHY an update is mandatory
+            # rather than showing a bare button.
+            "min_version": min_version(),
+            "update_required": update_required(_local_version),
+        }
+    )
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
@@ -375,6 +390,17 @@ async def api_update_apply(request: web.Request) -> web.Response:
             {"error": "Not a git checkout — update by redeploying (e.g. `kirocrew cloud launch`)"},
             status=409,
         )
+
+    # Source pin, checked before any state is pushed so a blocked update leaves
+    # no "updating" spinner behind. A dashboard token proves the caller is the
+    # operator, not that the fleet permits this host to pull from this remote.
+    # Offloaded: the seam shells out to git.
+    blocked = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: update_blocked_reason(resolve_remote_url(proj))
+    )
+    if blocked:
+        logger.warning("Update refused: %s", blocked)
+        return web.json_response({"error": blocked, "governance": True}, status=403)
 
     # Signal updating state via SSE
     state.push_refresh("updating")

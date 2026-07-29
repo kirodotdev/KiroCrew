@@ -913,6 +913,16 @@ def _update() -> None:
     if branch == "HEAD":
         branch = "mainline"
 
+    # Source pin, checked before the fetch so a blocked update never touches the
+    # tree. A human at a terminal is not the authorization: the fleet decides
+    # which remote this host may take code from.
+    from kiro_crew.platform.update_governance import resolve_remote_url, update_blocked_reason
+
+    _blocked = update_blocked_reason(resolve_remote_url(proj, remote="origin"))
+    if _blocked:
+        print(f"  🛡️  Update blocked by security policy: {_blocked}")
+        sys.exit(1)
+
     # Fetch + reset --hard: no merge conflicts, untracked files preserved
     print("  ⬇️  git fetch…")
     result = subprocess.run(

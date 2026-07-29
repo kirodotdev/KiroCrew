@@ -840,6 +840,32 @@ class TestCheckForUpdates:
         ds.push_refresh.assert_called_with("update_available")
 
     @pytest.mark.asyncio
+    async def test_min_version_mandate_fires_even_when_not_available(self):
+        """The mandate is about THIS host, not the availability heuristic.
+
+        `_do_update_check`'s `_version_tuple` returns (0,) for any pre-release, so
+        a `1.4.0-nightly.<stamp>` remote reads as `available=False`. Nested inside
+        that branch, a host below a pinned 1.4.0 floor would never update.
+        """
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch._auto_apply_update = AsyncMock()
+        import kiro_crew.dashboard.handlers as _h
+
+        orig = _h._update_info.copy()
+        try:
+            _h._update_info.update({"available": False})
+            with patch.object(_h, "_do_update_check", new_callable=AsyncMock):
+                with patch(
+                    "kiro_crew.platform.update_governance.update_required", return_value=True
+                ):
+                    await orch._check_for_updates()
+        finally:
+            _h._update_info.clear()
+            _h._update_info.update(orig)
+        orch._auto_apply_update.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_update_check_exception_handled(self):
         orch = _make_orchestrator()
         with patch(

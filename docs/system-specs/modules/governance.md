@@ -111,6 +111,59 @@ is **pure-Python and structural** (it does not depend on `jsonschema`, which is
 an optional, possibly-absent dependency) so a malformed policy never silently
 degrades to ungoverned.
 
+## Update pins (`updates`) — policy-only
+
+Replacing the running code is the widest privileged action the host performs: a
+self-update rewrites every other ceiling in this document, because the deny
+catalog, the sensitive-path list and the evaluator are *code*. Two enterprise
+pins ride in the policy file for it:
+
+```json
+"updates": {
+  "source": "https://git.corp.example/platform/*",
+  "min_version": "1.4.0"
+}
+```
+
+- **`source`** — an fnmatch glob over the git remote URL new code may come from
+  (a glob so one pin covers a mirror set, and so non-URL remote shapes —
+  SCP-style, local path — are pinnable). Empty = unpinned. A checkout whose
+  remote cannot be resolved is **denied when a pin exists**: an admin's pin must
+  not be satisfied by "we could not tell".
+- **`min_version`** — the minimum version the fleet may run. A host below it
+  takes a **mandatory** update, overriding the user's `auto_update=false`
+  (user config sits under the enterprise ceiling). It never refuses to *boot*:
+  bricking a fleet on a policy typo would remove the surface an admin needs to
+  fix it. An unparseable floor imposes none, for the same reason.
+
+**Not an archetype, by design.** Every archetype answers "is X permitted?"; a
+remote URL and a version number are *values the core consumes*. So they ride
+outside `controls` — no `SCOPE_CATALOG` row, no matcher, no evaluator change.
+What makes them enterprise-*pinnable* is the file they live in: the trust-root
+`security_policy.json` is on the `security._SENSITIVE_HOME_DIRS` keystone, so the
+agent can neither read nor write its own ceiling. A `config.json` field or an env
+var would only be a suggestion.
+
+**Policy-only — rejected in a Level-2 profile** (`parse_profile` raises). A
+profile is narrow-only and there is no narrower version of *pointing somewhere
+else*; a per-app profile that could redirect the update source would be
+privilege escalation.
+
+`platform/update_governance.py` is the one seam the three update paths share
+(`POST /api/update`, `kirocrew update`, the gateway-boot auto-apply) so they
+cannot drift. It resolves the remote git would *actually* fetch from — reading
+`branch.<name>.remote` rather than assuming `origin`, via `ls-remote --get-url`
+so `url.<base>.insteadOf` rewriting is applied — and returns a blocking reason or
+`""`. **A pin blocks; an unresolvable pin does not:** if governance cannot be read
+at all the update proceeds, because refusing one would strand a host on a build
+that may need a patch. These are a routing constraint for a managed fleet, not a
+boundary against a local operator who could edit the checkout directly.
+
+**Roll the build before the pin.** The parser fails closed on an unknown key, so a
+build predating `updates` refuses to boot on a pinned policy — which inverts the
+`min_version` case, since the stale hosts a floor targets are exactly the ones
+that would stop booting. Recovery is a manual `kirocrew update`.
+
 ## Policy authenticity (`identity.signature`)
 
 Without a signature check, a policy's integrity rests entirely on **filesystem
@@ -992,6 +1045,9 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 - `platform/admission.py` — `canonical_signing_bytes` / `hmac_signature` (shared
   by both trust roots), `require_policy_signature` / `trust_keys`, and
   `read_policy_trust_root` (the side-effect-free trust-root reader).
+- `platform/update_governance.py` — the shared update seam (`resolve_remote_url`,
+  `update_blocked_reason`, `update_required`, `min_version`) called by
+  `dashboard/handlers/updates.py`, `cli_server.py` and `slack/gateway.py`.
 - `platform/governance_profiles.py` — `ProfileStore` (hot-reload),
   `resolve_active_scope`, `governance_permits`, `governance_floor_ordinal`,
   `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on),
@@ -1023,4 +1079,6 @@ the `policy show` provenance reporting), `test_platform_admission.py`
 the per-transport inbound gates), `test_governance_channels_endpoint.py`
 (`/api/governance/channels`, incl. the eval-error→`null` distinction),
 `test_governance_policy_viewer.py` (`/api/governance/policy` posture-only, incl.
-`test_detail_never_leaks_rule_contents`).
+`test_detail_never_leaks_rule_contents`), `test_governance_updates.py` (the
+`updates` pins, the shared seam's fail-open-on-error disposition, and the
+tracked-remote resolution).

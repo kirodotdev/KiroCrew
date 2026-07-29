@@ -215,6 +215,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
         "mcp_playwright_proxy.py::run_proxy",
+        # Read-only `git config` / `git ls-remote --get-url` resolving which
+        # remote the update would fetch from, for the `updates.source` pin. Fixed
+        # list-argv (no shell=True), no agent input: the branch lands mid-key
+        # (`branch.<x>.remote`) so it cannot lead with a dash, and the remote
+        # name — which is read out of git config and COULD — is passed after
+        # `--`. Must NOT be sandboxed: it reads the real checkout's git metadata.
+        "platform/update_governance.py::_git",
         "mcp_shared.py::_get_ppid",
         "platform_compat.py::_current_user_sid",
         "platform_compat.py::find_listening_pids",

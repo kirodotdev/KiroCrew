@@ -908,6 +908,116 @@ class BootControls:
     fail_closed: bool = True
 
 
+def _version_tuple(value: str) -> Tuple[int, ...]:
+    """Parse a version's numeric core into a comparable tuple.
+
+    The pre-release/build suffix is split off the WHOLE string before splitting
+    on dots, because this project's CI stamps a dot INSIDE the pre-release
+    (``0.2.0-nightly.20260728t184500``, ``0.3.0-insider.2``) — splitting
+    per-component would leave ``nightly.20260728t184500`` as its own component
+    and read every nightly as version ``0``.
+    """
+    core = re.split(r"[-+]", str(value).strip(), maxsplit=1)[0]
+    try:
+        return tuple(int(chunk) for chunk in core.split("."))
+    except ValueError:
+        return ()
+
+
+@dataclass(frozen=True)
+class UpdatePins:
+    """Policy-only update pins: WHERE new code comes from, and the MINIMUM version.
+
+    **Not a governed scope, deliberately.** Every archetype answers "is X
+    permitted?"; a remote URL and a version number are *values the core
+    consumes*, not permission decisions. So they ride outside ``controls`` — no
+    ``SCOPE_CATALOG`` row, no matcher, no evaluator change, no new archetype.
+
+    Read from the trust-root ``security_policy.json``, which sits in
+    ``security._SENSITIVE_HOME_DIRS`` — that keystone (the agent can neither read
+    nor write its own ceiling) is what makes these enterprise-*pinnable* where a
+    ``config.json`` field or an env var would only be a suggestion.
+
+    **Policy-only: rejected in a Level-2 profile** (see :func:`parse_profile`).
+    Profiles are narrow-only, and there is no "narrower" version of pointing
+    somewhere else — a per-app profile that could redirect the update source
+    would be privilege escalation.
+    """
+
+    # The git remote new code may come from, as an fnmatch glob so one pin can
+    # cover a mirror set. Empty = unpinned (the standalone default: any remote).
+    source: str = ""
+    # The minimum version this fleet may run. Empty = no floor.
+    min_version: str = ""
+
+    def permits_source(self, url: str) -> bool:
+        """Does *url* satisfy the source pin? An empty pin permits anything.
+
+        An empty *url* (the checkout has no resolvable remote) DENIES when a pin
+        exists: an admin's pin must not be satisfied by "we could not tell". So
+        does a ``.``/``..`` component — ``*`` spans separators, so
+        ``/srv/approved/../evil.git`` would otherwise match ``/srv/approved/*``.
+
+        ``fnmatchcase``, not ``fnmatch``: the latter normcases via
+        ``os.path.normcase``, a no-op on POSIX but lowercasing on Windows — the
+        same pin must not be case-sensitive on one OS and not the other.
+        """
+        if not self.source:
+            return True
+        candidate = url.strip()
+        if not candidate or any(
+            part in (".", "..") for part in candidate.replace("\\", "/").split("/")
+        ):
+            return False
+        return fnmatch.fnmatchcase(candidate, self.source.strip())
+
+    def meets_min_version(self, version: str) -> bool:
+        """Is *version* at or above the floor? An empty floor is always met.
+
+        An unparseable floor imposes none (a typo must not brick a fleet); an
+        unparseable *version* is treated as below the floor, which makes the host
+        take the update rather than sit on a build it cannot identify.
+        """
+        floor = _version_tuple(self.min_version) if self.min_version else ()
+        if not floor:
+            return True
+        current = _version_tuple(version)
+        if not current:
+            return False
+        width = max(len(current), len(floor))
+        return current + (0,) * (width - len(current)) >= floor + (0,) * (width - len(floor))
+
+    @staticmethod
+    def from_dict(d: Mapping[str, object]) -> "UpdatePins":
+        _reject_unknown_keys(d, {"source", "min_version"}, "updates")
+        for key in ("source", "min_version"):
+            # `str(raw or "")` would coerce `"source": false` to "" — silently
+            # UNPINNING a policy that plainly meant to pin. Fail closed instead.
+            if d.get(key) is not None and not isinstance(d[key], str):
+                raise PlatformCompositionError(f"updates.{key} must be a string")
+        return UpdatePins(
+            source=str(d.get("source") or "").strip(),
+            min_version=str(d.get("min_version") or "").strip(),
+        )
+
+
+def active_update_pins() -> UpdatePins:
+    """The boot-frozen ceiling's update pins — empty (unpinned) when ungoverned.
+
+    The single read point for the three update call sites, so they cannot drift.
+    Returns unpinned on any error: a governance glitch must not block an update,
+    because refusing one strands a host on a build that may need a patch.
+    """
+    try:
+        from kiro_crew.platform.context import current_context
+
+        pins = getattr(current_context().governance, "updates", None)
+    except Exception:
+        logger.debug("update pins unavailable; treating as unpinned", exc_info=True)
+        return UpdatePins()
+    return pins if isinstance(pins, UpdatePins) else UpdatePins()
+
+
 @dataclass(frozen=True)
 class GovernanceCeiling:
     """Level 1 — the enterprise security ceiling, frozen at boot.
@@ -928,6 +1038,8 @@ class GovernanceCeiling:
     # trust root — so a directly-parsed ceiling carries the honest
     # ``SIGNATURE_UNCHECKED``, never a flattering default.
     signature_state: str = "unchecked"
+    # Policy-only update pins (outside ``controls`` — see UpdatePins).
+    updates: UpdatePins = field(default_factory=UpdatePins)
 
     def get(self, scope: str) -> Optional[object]:
         return self.controls.get(scope)
@@ -1069,7 +1181,7 @@ def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool)
 # Structural (non-governed) keys consumed by parse_policy/parse_profile, not as
 # governed scopes.
 _STRUCTURAL_KEYS = frozenset(
-    {"version", "boot", "identity", "name", "bind", "extends", "description"}
+    {"version", "boot", "identity", "name", "bind", "extends", "description", "updates"}
 )
 
 
@@ -1198,6 +1310,9 @@ def parse_policy(
     identity = data.get("identity") or {}
     issuer = str(identity.get("issuer", "")) if isinstance(identity, dict) else ""
     signature = str(identity.get("signature", "")) if isinstance(identity, dict) else ""
+    raw_updates = data.get("updates")
+    if raw_updates is not None and not isinstance(raw_updates, dict):
+        raise PlatformCompositionError("security policy 'updates' must be an object")
     return GovernanceCeiling(
         version=POLICY_VERSION,
         boot=boot,
@@ -1205,6 +1320,7 @@ def parse_policy(
         identity_issuer=issuer,
         identity_signature=signature,
         signature_state=signature_state,
+        updates=UpdatePins.from_dict(raw_updates or {}),
     )
 
 
@@ -1223,6 +1339,16 @@ def parse_profile(data: Mapping[str, object]) -> Profile:
     # most-restrictive deny-all built-in (Validation rule 5), never the ceiling.
     if not _PROFILE_NAME_RE.match(name):
         raise PlatformCompositionError(f"profile name {name!r} must match ^[a-z0-9][a-z0-9-]*$")
+    # ``updates`` is POLICY-ONLY. It is in _STRUCTURAL_KEYS (so _parse_controls
+    # skips it rather than failing as an unknown scope), which would make a
+    # profile's copy silently inert — so reject it loudly here instead. A profile
+    # is narrow-only and there is no narrower version of pointing somewhere else:
+    # a per-app profile redirecting the update source would be escalation.
+    if "updates" in data:
+        raise PlatformCompositionError(
+            "profiles may not set 'updates' — update pins are policy-only "
+            "(a profile redirecting the update source would be privilege escalation)"
+        )
     bind: Optional[Bind] = None
     raw_bind = data.get("bind")
     if isinstance(raw_bind, dict):
@@ -1881,6 +2007,8 @@ __all__ = [
     "SCOPE_CATALOG",
     "GovernanceCeiling",
     "BootControls",
+    "UpdatePins",
+    "active_update_pins",
     "Profile",
     "Bind",
     "POLICY_VERSION",
