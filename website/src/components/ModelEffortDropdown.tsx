@@ -22,6 +22,9 @@ interface Props {
   hasEffort: boolean
   slot: string | null
   currentEffort: string
+  /** Configured default effort for new sessions. Shown in the footer when the
+   *  slot carries no override, so the row reflects what a turn would run at. */
+  defaultEffort?: string
   onListKeyDown: (e: React.KeyboardEvent) => void
   /** Deep-link to the Settings row that sets the default model for NEW sessions.
    *  Optional so call sites that have no router (or don't want the link) are
@@ -39,6 +42,7 @@ const SPRING = { type: 'spring' as const, stiffness: 420, damping: 38 }
 export default function ModelEffortDropdown({
   anchorRect, dropdownRef, inputRef, models, activeModel, onSelectModel,
   filter, setFilter, onClose, hasEffort, slot, currentEffort, onListKeyDown, onSetDefault,
+  defaultEffort = '',
 }: Props) {
   const [showEffort, setShowEffort] = useState(false)
   const modelPage = useRef<HTMLDivElement>(null)
@@ -88,7 +92,7 @@ export default function ModelEffortDropdown({
               >
                 <span className="text-muted">{i18nT('components.modelEffortDropdown.reasoning')}</span>
                 <span className="flex items-center gap-1 text-text font-medium">
-                  {effortLabel(currentEffort)}
+                  {effortLabel(currentEffort || defaultEffort)}
                   <ChevronRight size={14} className="text-muted" />
                 </span>
               </button>
@@ -116,7 +120,7 @@ export default function ModelEffortDropdown({
               {i18nT('components.modelEffortDropdown.models')}
             </button>
             {slot && (
-              <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} onClose={onClose} embedded />
+              <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} onClose={onClose} embedded />
             )}
           </div>
         </motion.div>

@@ -125,6 +125,12 @@ export interface ProviderAdapter {
 
   resolveAgentTemplate(agent: AgentBinding): string
   resolveModel(templateName: string): Promise<string>
+  /** The provider-level default model for NEW sessions ('' when none is set).
+   *  Distinct from resolveModel, which resolves a specific agent template. */
+  resolveDefaultModel(): Promise<string>
+  /** The provider-level default reasoning effort for NEW sessions ('' = none,
+   *  i.e. let the model choose). A per-session override always outranks it. */
+  resolveDefaultEffort(): Promise<string>
 
   fetchUsage(): Promise<NormalizedUsage>
 

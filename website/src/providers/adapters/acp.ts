@@ -18,6 +18,12 @@ const MODEL_TOKENS: Record<string, number> = Object.fromEntries(
 )
 const DEFAULT_CONTEXT = 200_000
 
+/** Narrow view of GET /api/config/kirocrew — only the fields the composer needs
+ *  to resolve what a new session will actually run on. */
+interface KirocrewAgentConfig {
+  agent?: { model?: string; reasoning_effort?: string }
+}
+
 // Persist the last SUCCESSFUL live /api/models list so a transient backend
 // failure (a creds/token hiccup, or a cold `--list-models` spawn exceeding the
 // gateway's timeout → 503) degrades to the real, last-known-good list instead
@@ -143,9 +149,47 @@ export class AcpAdapter implements ProviderAdapter {
   }
 
   async resolveModel(templateName: string): Promise<string> {
+    // Mirror ConfigLoader._acp()'s precedence so the composer shows the model a
+    // turn would ACTUALLY run on, before a session exists to report one.
+    //
+    //   builtin agent (no template, or the "kirocrew" one) → agent.model, and
+    //     only when that is unset/"auto" does the kiro agent file's own model
+    //     apply (the backend's _resolve_agent_model fallback).
+    //   named custom agent → its own pinned model (the global default ranks
+    //     BELOW a per-agent pin, per _resolve_named_agent_model).
+    //
+    // Without the config read, a fresh slot displayed the kiro agent file's
+    // model (e.g. claude-opus-4.8) while the turn ran on the configured default
+    // (claude-opus-5) — the mismatch only self-corrected once the first turn
+    // backfilled slot.model from the live session.
+    const isBuiltin = !templateName || templateName === 'kirocrew'
+    const [tmpl, cfgModel] = await Promise.all([
+      api.agentDetail(templateName).then(d => d?.model || '').catch(() => ''),
+      isBuiltin ? this.resolveDefaultModel() : Promise.resolve(''),
+    ])
+    return isBuiltin ? (cfgModel || tmpl) : tmpl
+  }
+
+  /** KiroCrew's configured default model (Settings → Chat → Default Model).
+   *  '' when unset or "auto" — both mean "no explicit default", so callers fall
+   *  through to the agent-file model exactly as the backend does. */
+  async resolveDefaultModel(): Promise<string> {
     try {
-      const d = await api.agentDetail(templateName)
-      return d?.model || ''
+      const c = (await api.kirocrewConfig()) as KirocrewAgentConfig
+      const m = c?.agent?.model || ''
+      return m === 'auto' ? '' : m
+    } catch {
+      return ''
+    }
+  }
+
+  /** KiroCrew's configured default reasoning effort (Settings → Chat). '' means
+   *  no default, i.e. the model picks its own. A per-slot override outranks it,
+   *  matching ConfigLoader._acp()'s `reasoning_effort_override or default`. */
+  async resolveDefaultEffort(): Promise<string> {
+    try {
+      const c = (await api.kirocrewConfig()) as KirocrewAgentConfig
+      return c?.agent?.reasoning_effort || ''
     } catch {
       return ''
     }

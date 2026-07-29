@@ -2810,6 +2810,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     enabled: !!_slotTemplateName,
   })
   useEffect(() => { setResolvedModel(_slotResolvedModel || '') }, [_slotResolvedModel])
+  // The configured default effort for new sessions. A slot that has never
+  // touched the effort control carries '' (no override) but still RUNS at this
+  // default — the backend applies `slot.reasoning_effort or agent.reasoning_effort`
+  // — so the composer must show the inherited value rather than a bare
+  // "Default", which read as "the model decides" and hid the real setting.
+  const { data: _defaultEffort } = useQuery({
+    queryKey: ['default-effort', provider.id],
+    queryFn: () => provider.resolveDefaultEffort(),
+    enabled: provider.capabilities.reasoningEffort,
+  })
+  const defaultEffort = _defaultEffort || ''
+  // Effort actually in force for the active slot: per-slot override, else the
+  // configured default. Display only — the slot's raw value still drives the
+  // picker so "no override" stays distinguishable from an explicit pick.
+  const effectiveEffort = currentSlot?.reasoning_effort || defaultEffort
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
   const isMobile = useIsMobile()
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -4219,7 +4234,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               stopState={currentSlot?.stop_state}
               approvalMode={displayMode}
               providerId={provider.id}
-              reasoningEffort={currentSlot?.reasoning_effort || ''}
+              reasoningEffort={effectiveEffort}
               onReasoningEffortClick={provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel) ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
               onAutoNudgeClick={setAutoNudgeOpen}
               autoNudgeLoop={autoNudgeLoop}
@@ -4314,6 +4329,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel))}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || ''}
+                defaultEffort={defaultEffort}
                 onSetDefault={() => {
                   setModelDropdown(false)
                   navigate(`/settings?tab=chat&highlight=${SETTINGS_DEFAULT_MODEL_ID}`)
@@ -4331,7 +4347,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
             {/* Reasoning effort dropdown portal */}
             {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel) && createPortal(
               <div ref={reasoningEffortDropdownRef} className="fixed z-[9999] animate-slide-up" style={(() => { const left = Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - 220)); return { bottom: window.innerHeight - reasoningEffortBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>
-                <ReasoningEffortDropdown slot={activeSlot} currentEffort={currentSlot?.reasoning_effort || ''} onClose={() => setReasoningEffortDropdown(false)} />
+                <ReasoningEffortDropdown slot={activeSlot} currentEffort={currentSlot?.reasoning_effort || ''} defaultEffort={defaultEffort} onClose={() => setReasoningEffortDropdown(false)} />
               </div>,
               document.body
             )}

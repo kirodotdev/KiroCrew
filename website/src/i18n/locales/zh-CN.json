@@ -1586,6 +1586,7 @@
       "faster": "更快",
       "reasoning_effort": "推理投入度",
       "smarter": "更聪明",
+      "use_configured_default": "使用已配置的默认值",
       "use_model_default": "使用模型默认值"
     },
     "registryManager": {

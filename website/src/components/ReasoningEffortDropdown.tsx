@@ -11,7 +11,8 @@ import { i18nT } from '../i18n/t'
 const EFFORT_HELP =
   'Reasoning effort sets how long the model thinks before answering. Higher means ' +
   'more time reasoning through hard problems (slower, better answers); lower is faster. ' +
-  '"Model default" applies no override — the model picks its own effort (Fable/Opus/Sonnet only).'
+  'Turning off the per-session override falls back to the default in Settings → Chat, ' +
+  'or to the model\'s own choice when no default is set (Fable/Opus/Sonnet only).'
 
 // Cold-start fallback before /api/effort-levels resolves (or on fetch failure).
 // Concrete levels only — "default" is a separate toggle, not a slider notch.
@@ -24,6 +25,10 @@ function normalizeLevels(data: string[]): string[] {
 interface Props {
   slot: string
   currentEffort: string
+  /** Configured default effort for new sessions ('' = none). The slot's own
+   *  value stays the source of truth for the toggle — this only labels what the
+   *  no-override state actually inherits. */
+  defaultEffort?: string
   /** Kept for call-site compatibility; the slider stays open while adjusting
    *  and the popover dismisses on outside-click, so this is no longer invoked. */
   onClose: () => void
@@ -35,7 +40,7 @@ interface Props {
  *  the value snaps to the grid and persists to the slot. Reads the slot's
  *  live levels from /api/effort-levels (keyed by slot so a model switch is
  *  reflected on remount). */
-export default function ReasoningEffortDropdown({ slot, currentEffort, embedded }: Props) {
+export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEffort = '', embedded }: Props) {
   const { data: levels = FALLBACK_LEVELS } = useQuery({
     queryKey: ['effort-levels', slot],
     queryFn: () => api.effortLevels(slot).then(data =>
@@ -94,8 +99,19 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, embedded 
   const handleSlide = (next: number) => { setIsDefault(false); setIdx(next); commit(concrete[next] ?? '') }
   const handleToggleDefault = (useDefault: boolean) => { setIsDefault(useDefault); commit(useDefault ? '' : (concrete[idx] ?? '')) }
 
-  const currentLabel = isDefault ? 'Default' : effortLabel(concrete[idx] ?? '')
+  // In the no-override state, name what is actually inherited. A bare "Default"
+  // implied the model picks its own effort, which is false once a default is
+  // configured in Settings → Chat.
+  const currentLabel = isDefault
+    ? (defaultEffort ? `Default · ${effortLabel(defaultEffort)}` : 'Default')
+    : effortLabel(concrete[idx] ?? '')
   const atMax = !isDefault && idx >= maxIdx
+  // Turning the toggle on clears the per-slot override — which yields the
+  // Settings default when one is configured, and only the model's own choice
+  // when it is not. Label each case for what it actually does.
+  const defaultToggleLabel = defaultEffort
+    ? i18nT('components.reasoningEffortDropdown.use_configured_default')
+    : i18nT('components.reasoningEffortDropdown.use_model_default')
 
   return (
     <div className={embedded ? 'px-3 py-2.5' : 'rounded-lg bg-bg-elevated border border-border px-4 py-3.5 w-[240px]'}>
@@ -133,8 +149,8 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, embedded 
         <span className="absolute right-0">{i18nT('components.reasoningEffortDropdown.smarter')}</span>
       </div>
       <div className="flex items-center justify-between gap-2 mt-3.5">
-        <span className="text-[12px] text-text">{i18nT('components.reasoningEffortDropdown.use_model_default')}</span>
-        <Toggle checked={isDefault} onChange={handleToggleDefault} label={i18nT('components.reasoningEffortDropdown.use_model_default')} />
+        <span className="text-[12px] text-text">{defaultToggleLabel}</span>
+        <Toggle checked={isDefault} onChange={handleToggleDefault} label={defaultToggleLabel} />
       </div>
     </div>
   )

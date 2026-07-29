@@ -56,6 +56,31 @@ describe('ModelEffortDropdown — default-model link', () => {
   })
 })
 
+describe('ModelEffortDropdown — effort footer value', () => {
+  // The footer summarises what a turn WILL run at: a slot with no override
+  // inherits the configured default, so showing a bare "Default" there hid the
+  // real level (the reported symptom on a freshly created session). Scoped to
+  // the footer row — the drill-in effort page is always mounted (off-screen)
+  // and renders its own copy of the label.
+  const footer = () => screen.getByRole('button', { name: /^Reasoning/ })
+
+  it('shows the configured default when the slot carries no override', () => {
+    wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="" defaultEffort="high" />)
+    expect(footer()).toHaveTextContent('High')
+  })
+
+  it('shows the per-slot override when one is set', () => {
+    wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="low" defaultEffort="high" />)
+    expect(footer()).toHaveTextContent('Low')
+    expect(footer()).not.toHaveTextContent('High')
+  })
+
+  it('falls back to "Default" when neither is set', () => {
+    wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="" defaultEffort="" />)
+    expect(footer()).toHaveTextContent('Default')
+  })
+})
+
 describe('SETTINGS_DEFAULT_MODEL_ID', () => {
   it('resolves to a real entry in the generated settings registry', () => {
     // Registry ids derive from the setting's LABEL. If the "Default Model" row

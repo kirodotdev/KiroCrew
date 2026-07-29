@@ -190,4 +190,34 @@ describe('ReasoningEffortDropdown', () => {
     // default idx for an unset slot is 'high' (index 2 of low..max).
     await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'high'))
   })
+
+  // Regression: with a Settings default configured, the no-override state was
+  // labelled a bare "Default", which read as "the model decides" and hid the
+  // configured value the turn would actually run at.
+  it('names the inherited value when the slot has no override', async () => {
+    renderDropdown({ currentEffort: '', defaultEffort: 'high' })
+    await screen.findByRole('slider', { name: 'Reasoning effort' })
+    expect(screen.getByText('Default · High')).toBeInTheDocument()
+  })
+
+  it('labels the toggle for the configured default, not the model default', async () => {
+    renderDropdown({ currentEffort: '', defaultEffort: 'high' })
+    const toggle = await screen.findByRole('switch', { name: 'Use configured default' })
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    expect(screen.queryByRole('switch', { name: 'Use model default' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the bare "Default" wording when no default is configured', async () => {
+    renderDropdown({ currentEffort: '', defaultEffort: '' })
+    await screen.findByRole('slider', { name: 'Reasoning effort' })
+    expect(screen.getByText('Default')).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Use model default' })).toBeInTheDocument()
+  })
+
+  it('an explicit per-slot override still outranks the configured default', async () => {
+    renderDropdown({ currentEffort: 'low', defaultEffort: 'max' })
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    await vi.waitFor(() => expect(slider.getAttribute('aria-valuetext')).toBe('Low'))
+    expect(screen.queryByText(/Default/)).not.toBeInTheDocument()
+  })
 })
