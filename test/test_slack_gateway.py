@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.autonudge import NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.slack.gateway import (
     _CRON_MSG_LIMIT,
@@ -1460,6 +1462,77 @@ class TestNotifMeta:
 
     def test_hook_key_returns_none(self):
         assert GatewayOrchestrator._notif_meta("hook:h1") is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tests: _notify_nudge_expired
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestNotifyNudgeExpired:
+    """A monitoring loop that stops at its cycle cap must tell the user.
+
+    Reaching ``max_cycles`` is a runaway backstop, not a finish line — the loop
+    stopped with its goal possibly unmet. Previously the only trace was a log
+    line plus an ``active=False`` state change indistinguishable from a manual
+    Stop, so a capped-out loop looked the same as the agent stopping itself.
+    """
+
+    @staticmethod
+    def _orch(state):
+        """A minimal stand-in — the method only needs dashboard_state."""
+        orch = SimpleNamespace(
+            dashboard_state=state,
+            _notif_meta=GatewayOrchestrator._notif_meta,
+        )
+        return orch
+
+    def _loop(self, slot_key="chat-7-1700000000"):
+        return NudgeLoop(
+            id="loop-x",
+            slot_key=slot_key,
+            message="babysit the PR",
+            idle_secs=300,
+            max_cycles=24,
+            cycle_count=24,
+        )
+
+    def test_notifies_with_cycle_counts_and_slot_link(self):
+        state = MagicMock()
+        GatewayOrchestrator._notify_nudge_expired(self._orch(state), self._loop())
+        state.notify.assert_called_once()
+        args, kwargs = state.notify.call_args
+        # Body names the real numbers so the user can judge whether to resume.
+        assert "24 of 24" in args[2]
+        # Dashboard loops bind on the BARE slot key; the notification must
+        # still deep-link, which requires re-qualifying it for _notif_meta.
+        assert kwargs["meta"] == {"slot": "chat-7-1700000000"}
+
+    def test_channel_loop_gets_no_synthesized_meta(self):
+        """A channel key must not be fed to _notif_meta at all.
+
+        Its generic ``chan:ts`` split would read the NAMESPACE as the channel
+        id — ``slack:1700000000.123456`` became a link to an "archives/slack"
+        channel, and a Discord loop got a Slack URL. Asserting only "not a
+        slot" passed on exactly that bogus link, so assert the value exactly.
+        """
+        for key in ("slack:1700000000.123456", "discord:kirocrew:direct:42"):
+            state = MagicMock()
+            loop = self._loop(slot_key=key)
+            GatewayOrchestrator._notify_nudge_expired(self._orch(state), loop)
+            state.notify.assert_called_once()
+            assert state.notify.call_args.kwargs["meta"] is None, key
+
+    def test_no_dashboard_state_is_a_noop(self):
+        # Must not raise when the dashboard isn't wired up (Slack-only host).
+        GatewayOrchestrator._notify_nudge_expired(self._orch(None), self._loop())
+
+    def test_notify_failure_never_propagates(self):
+        """Runs inside the observer loop — an exception here would also skip
+        the WS broadcast that follows it, so it must be swallowed."""
+        state = MagicMock()
+        state.notify.side_effect = RuntimeError("bus down")
+        GatewayOrchestrator._notify_nudge_expired(self._orch(state), self._loop())
 
 
 # ═══════════════════════════════════════════════════════════════════════════

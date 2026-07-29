@@ -117,6 +117,82 @@ async def test_max_cycles_deactivates(svc, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_max_cycles_emits_expired_event(svc, monkeypatch):
+    """Hitting the cap must emit a distinct signal, not stop silently.
+
+    Reaching ``max_cycles`` is a runaway backstop, not a finish: the loop
+    stopped with its goal possibly unmet. Before this, the only trace was a log
+    line plus an ``updated`` event indistinguishable from the user pressing
+    Stop, so a capped-out loop looked the same as the agent stopping itself.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def _nosleep(_secs):
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    events: list[tuple[str, str]] = []
+    svc.subscribe(lambda ev, lp: events.append((ev, lp.id if lp else "")))
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15, max_cycles=2)
+    loop.cycle_count = 2  # simulate cap reached
+    svc._save()
+    svc._cancel_timer(loop.id)
+    await svc._timer(loop)
+    assert ("expired", loop.id) in events, f"no expired event emitted; got {events}"
+    # The loop is observed in its FINAL state: expired fires after the
+    # deactivating update, so a subscriber never sees a still-active loop.
+    assert not svc._loops[loop.id].active
+
+
+@pytest.mark.asyncio
+async def test_no_expired_event_on_manual_deactivate(svc, monkeypatch):
+    """A user-initiated stop must NOT masquerade as cap exhaustion.
+
+    ``expired`` drives a user-visible notification, so overloading it onto
+    every deactivation would notify the user about their own Stop click.
+    """
+    import kiro_crew.autonudge as _an
+
+    async def _nosleep(_secs):
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    events: list[str] = []
+    svc.subscribe(lambda ev, lp: events.append(ev))
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15, max_cycles=5)
+    await svc.update(loop.id, active=False)  # manual pause, cap not reached
+    assert "expired" not in events
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_unlimited_loop_never_expires(svc, monkeypatch):
+    """max_cycles=0 means unlimited — the cap branch must not fire at all."""
+    import kiro_crew.autonudge as _an
+
+    async def _nosleep(_secs):
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    events: list[str] = []
+
+    async def on_fire(_loop):
+        return True
+
+    svc._on_fire = on_fire
+    svc.subscribe(lambda ev, lp: events.append(ev))
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15, max_cycles=0)
+    loop.cycle_count = 9999  # would trip any finite cap
+    svc._cancel_timer(loop.id)
+    await svc._timer(loop)
+    assert "expired" not in events
+    assert svc._loops[loop.id].active is True
+
+
+@pytest.mark.asyncio
 async def test_stop_sentinel_removes_loop(svc, tmp_path, monkeypatch):
     import kiro_crew.autonudge as _an
 

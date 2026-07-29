@@ -245,8 +245,11 @@ class TestSetProjectTool:
         with patch.object(mcp_core, "_post") as mock_post, \
              patch.object(mcp_core, "_resolve_session_key_strict", return_value=""):
             result = mcp_core._call_tool_inner("set_project", {"path": "/tmp"})
-        assert "Error: set_project only works in dashboard sessions" in result
+        # Load-bearing: no slot was mutated.
         mock_post.assert_not_called()
+        # An unresolved identity reports the host gap, not the session type.
+        assert result.startswith("Error:")
+        assert "could not resolve a verified session identity" in result.lower()
 
     def test_slack_session_is_rejected(self):
         with patch.object(mcp_core, "_post") as mock_post, patch.object(

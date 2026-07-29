@@ -2891,6 +2891,8 @@ class GatewayOrchestrator:
             return True
 
         def _observer(event: str, loop: NudgeLoop | None) -> None:
+            if event == "expired" and loop is not None:
+                self._notify_nudge_expired(loop)
             if self.dashboard_state and loop is not None:
                 self.dashboard_state.broadcast_ws(
                     "autonudge_state",
@@ -2913,6 +2915,46 @@ class GatewayOrchestrator:
         self.autonudge_svc = AutoNudgeService(base_dir=config_dir(), on_fire=_fire)
         self.autonudge_svc.subscribe(_observer)
         await self.autonudge_svc.start()
+
+    def _notify_nudge_expired(self, loop: NudgeLoop) -> None:
+        """Notify the user that a monitoring loop stopped at its cycle cap.
+
+        Reaching ``max_cycles`` is a runaway backstop, not a finish line: the
+        loop stopped with its goal possibly unmet. Without this the only
+        signals were a log line and an ``active=False`` state change that looks
+        identical to a manual Stop, so a loop that ran out of cycles was
+        indistinguishable from the agent stopping on its own — the most
+        confusing failure mode of the babysit feature.
+
+        Best-effort by construction: ``notify()`` never raises (it swallows
+        validation errors and logs), and the whole call is wrapped anyway
+        because this runs inside ``_emit``'s observer loop, where an exception
+        would be caught and logged but would also skip the WS broadcast that
+        follows it.
+        """
+        if not self.dashboard_state:
+            return
+        try:
+            key = loop.slot_key
+            # Channel-bound loops get NO synthesized meta: _notif_meta's generic
+            # ``chan:ts`` split would read the NAMESPACE as the channel id,
+            # producing a dead link (and a Slack URL for a Discord loop).
+            # Dashboard loops bind on the BARE slot key, so re-qualify those to
+            # get a working jump-to-source slot link.
+            meta = None if is_channel_key(key) else self._notif_meta(f"dashboard:{key}")
+            self.dashboard_state.notify(
+                "agent",
+                "Monitoring loop hit its cycle cap",
+                (
+                    f"The loop stopped after {loop.cycle_count} of "
+                    f"{loop.max_cycles} cycles without reporting done, so its "
+                    "goal may still be unmet. Reopen the goal popover to raise "
+                    "the cap or restart it."
+                ),
+                meta=meta,
+            )
+        except Exception:
+            logger.debug("AutoNudge expiry notification failed", exc_info=True)
 
     @staticmethod
     def _notif_meta(parent_key: str | None) -> dict[str, str] | None:

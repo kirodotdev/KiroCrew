@@ -149,8 +149,11 @@ def test_subagent_without_session_key_is_refused(mock_dashboard, monkeypatch):
     monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
     monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
     result = _call_tool_inner("ask_question", {"questions": QUESTIONS})
-    assert "only works from a dashboard chat session" in result
+    # Load-bearing: no card was posted into anyone's chat.
     assert _MockAskHandler.received == []
+    # An UNRESOLVED identity now reports the host configuration gap rather than
+    # blaming the session type — the caller often IS a dashboard session.
+    assert "could not resolve a verified session identity" in result.lower()
 
 
 def test_socket_timeout_exceeds_server_window(mock_dashboard, monkeypatch):

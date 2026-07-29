@@ -277,8 +277,13 @@ def test_monitor_start_refuses_pid_walked_identity(mock_dashboard, monkeypatch):
     )
     _MockAutonudgeHandler.created_bodies = []
     result = _call_tool_inner("monitor_start", {"message": "watch"})
-    assert "only works" in result.lower()
+    # The load-bearing assertion: NO loop was armed on the walked identity.
     assert not _MockAutonudgeHandler.created_bodies
+    # The refusal diagnoses itself as an identity failure instead of implying
+    # the caller used an unsupported session type, and must never echo the
+    # walked key back (that would confirm the parent identity to a subagent).
+    assert "could not resolve a verified session identity" in result.lower()
+    assert "chat-3-1700000000" not in result
 
 
 def test_autonudge_stop_refuses_pid_walked_identity(mock_dashboard, monkeypatch):
@@ -293,8 +298,10 @@ def test_autonudge_stop_refuses_pid_walked_identity(mock_dashboard, monkeypatch)
         "slot_key": "chat-3-1700000000",
     }
     result = _call_tool_inner("autonudge_stop", {})
-    assert "only works" in result.lower()
+    # Load-bearing: the PID-walked parent loop was NOT revealed or stopped.
     assert "loop-9" not in result
+    # An unresolved identity reports the host gap, not the session type.
+    assert "could not resolve a verified session identity" in result.lower()
 
 
 def test_autonudge_stop_slack_session(mock_dashboard, monkeypatch):
@@ -477,8 +484,11 @@ def test_monitor_update_refuses_pid_walked_identity(mock_dashboard, monkeypatch)
     _MockAutonudgeHandler.loop_for_slot = {"id": "loop-7", "slot_key": "chat-3-1700000000"}
     _MockAutonudgeHandler.patched = []
     result = _call_tool_inner("monitor_update", {"message": "x"})
-    assert "only works" in result.lower()
+    # Load-bearing: the parent's loop was NOT patched.
     assert not _MockAutonudgeHandler.patched
+    # Diagnoses the identity failure, and never echoes the parent's loop id.
+    assert "could not resolve a verified session identity" in result.lower()
+    assert "loop-7" not in result
 
 
 def test_monitor_update_slack_session(mock_dashboard, monkeypatch):
@@ -867,3 +877,78 @@ def test_lost_patch_response_requires_the_same_loop_identity(mock_dashboard, mon
     result = _call_tool_inner("monitor_update", {"message": "revised"})
     assert "NO confirmed answer" in result
     assert "Verified applied" not in result
+
+
+class TestStrictIdentityDiagnosis:
+    """An unresolvable strict identity must diagnose itself, not misdirect.
+
+    ``_resolve_session_key_strict`` returning "" used to surface as "only works
+    from within a dashboard, Slack, or Discord session (current
+    session_key='')" — which sent readers hunting for a wrong session type when
+    the caller WAS a dashboard session and the resolver simply had no accepted
+    source. On a default install (``mcp_gateway.enabled`` false, unsandboxed,
+    kiro-cli backend) all three sources are absent, so this is a total outage
+    of monitor_start/monitor_update, not a niche context restriction.
+    """
+
+    def test_names_the_absent_sources_and_the_remedy(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
+        msg = mcp_core._strict_identity_diagnosis("monitor_start")
+        # Names the tool and refuses to be mistaken for a flaky reconnect.
+        assert "monitor_start" in msg
+        assert "retrying will not help" in msg.lower()
+        # Points at the actual remedy rather than the session type.
+        assert "mcp_gateway.enabled" in msg
+        # Does NOT repeat the misleading "wrong session type" framing.
+        assert "only works from within" not in msg
+
+    def test_reports_a_host_pid_whose_sidecar_did_not_verify(self, monkeypatch):
+        """A set-but-rejected HOST_PID must be reported, not called absent.
+
+        This is the one "present but unusable" state production can actually
+        reach: the strict resolver returns KIROCREW_SESSION_KEY verbatim when it
+        is non-empty, so an empty resolution already implies that var is unset —
+        but a host pid can be present and still refused by sidecar verification,
+        which is a different remedy.
+        """
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "1234")
+        msg = mcp_core._strict_identity_diagnosis("monitor_update")
+        assert "KIROCREW_HOST_PID" in msg
+        assert "sidecar" in msg
+        assert "None of the accepted identity sources" not in msg
+
+    def test_non_numeric_host_pid_counts_as_absent(self, monkeypatch):
+        """Only a usable (digit) host pid counts — the resolver requires it."""
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "not-a-pid")
+        msg = mcp_core._strict_identity_diagnosis("monitor_start")
+        assert "None of the accepted identity sources" in msg
+
+    def test_every_strict_identity_tool_reports_the_same_cause(self, monkeypatch):
+        """All six strict-identity tools must diagnose one host gap identically.
+
+        Before this, monitor_start/monitor_update explained the gap while
+        autonudge_stop, ask_question, set_project and suggest_followup still
+        blamed the session type — so the SAME root cause reported two different
+        stories depending on which tool the agent happened to call.
+        """
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "")
+        for tool, args in (
+            ("monitor_start", {"message": "watch"}),
+            ("monitor_update", {"message": "watch"}),
+            ("autonudge_stop", {}),
+            ("ask_question", {"questions": [{"question": "q?", "options": ["a", "b"]}]}),
+            ("set_project", {"path": "/tmp"}),
+            (
+                "suggest_followup",
+                {"items": [{"title": "t", "description": "d", "prompt": "p"}]},
+            ),
+        ):
+            result = _call_tool_inner(tool, args)
+            assert "could not resolve a verified session identity" in result.lower(), tool
+            assert "mcp_gateway.enabled" in result, tool
+            assert "only works from within" not in result, tool

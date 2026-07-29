@@ -718,6 +718,20 @@ class AutoNudgeService:
         if loop.max_cycles and loop.cycle_count >= loop.max_cycles:
             logger.info("AutoNudge: loop %s reached max_cycles — deactivating", loop.id)
             await self.update(loop.id, active=False)
+            # Signal the cap. Reaching max_cycles is NOT a successful finish —
+            # the loop ran out of cycles with its goal possibly unmet — yet the
+            # only trace used to be this log line plus an ``updated`` event
+            # indistinguishable from a user pressing Stop. A capped-out babysit
+            # was therefore impossible to tell apart from the agent stopping on
+            # its own. ``expired`` is emitted so an observer can raise a
+            # notification the user actually sees.
+            #
+            # Emitted AFTER update() (which already persisted active=False and
+            # emitted ``updated``), so a subscriber handling ``expired`` always
+            # observes the loop in its final deactivated state. Deliberately a
+            # NEW event kind rather than overloading ``updated``: the many
+            # benign updates (message edits, manual pause) must not notify.
+            self._emit("expired", loop)
             return
         # Fire. Update state only if the callback reports actual delivery —
         # otherwise skipped nudges (e.g. slot mid-turn) inflate cycle_count and

@@ -2752,6 +2752,70 @@ def _write_user(path: str, body: dict, *, method: str, timeout: int = 10) -> dic
         return out
 
 
+def _strict_identity_diagnosis(tool: str) -> str:
+    """Explain WHY strict session identity could not be resolved, and the remedy.
+
+    ``_resolve_session_key_strict`` returning ``""`` used to surface as
+    "<tool> only works from within a dashboard, Slack, or Discord session
+    (current session_key='')" — actively misleading when the caller IS a
+    dashboard session and the resolver simply had no accepted source. That
+    message sent every reader looking for a wrong session type instead of the
+    real cause, and made a total, every-session outage look like a niche
+    context restriction.
+
+    The three accepted sources and why each can be legitimately absent:
+
+    1. **Per-call caller context** — injected only by the pooled MCP gateway
+       (``gatewayd``). Absent whenever ``mcp_gateway.enabled`` is false, which
+       is the DEFAULT (pooling is opt-in).
+    2. **``KIROCREW_SESSION_KEY``** — never set on the kiro-cli backend: MCP
+       servers are loaded from ``--agent`` (``acp/runtime.py`` passes
+       ``mcpServers: []``), so one MCP process serves the whole runtime and
+       cannot carry a single session's key in its env.
+    3. **``KIROCREW_HOST_PID``** + signed sidecar — exported only by the
+       sandbox launcher, so absent on unsandboxed hosts.
+
+    With all three absent the only remaining signal is the ``/proc`` ancestor
+    walk, which strict mode refuses on purpose: a session-sharing subagent runs
+    on the parent's runtime and through the SAME MCP process, so a walked
+    identity cannot distinguish subagent from parent and would let a subagent
+    mint an unattended loop in its parent's session.
+
+    Returns a diagnosis naming the absent sources so the reader can act rather
+    than retry a call that will never succeed.
+
+    Only ``KIROCREW_HOST_PID`` is reported as "present but unusable": the strict
+    resolver returns ``KIROCREW_SESSION_KEY`` verbatim whenever it is non-empty,
+    so an empty resolution already implies that variable is unset. A host pid,
+    by contrast, can be present and still rejected (missing or invalid HMAC
+    sidecar), which is a genuinely different remedy.
+    """
+    host_pid_present = os.environ.get("KIROCREW_HOST_PID", "").isdigit()
+    detail = (
+        f"{tool} could not resolve a verified session identity, so it refused "
+        "to act rather than guess which session to bind. This is a host "
+        "configuration gap, NOT a transient MCP disconnect — retrying will not "
+        "help."
+    )
+    if host_pid_present:
+        detail += (
+            " KIROCREW_HOST_PID is set but its signed session_pid sidecar did "
+            "not verify, so the identity it names was refused."
+        )
+    else:
+        detail += (
+            " None of the accepted identity sources is available in this "
+            "process: no gateway-injected caller context (the pooled MCP "
+            "gateway is off — `mcp_gateway.enabled` is opt-in and defaults to "
+            "false), no KIROCREW_SESSION_KEY (the kiro-cli backend loads MCP "
+            "servers via --agent, so one MCP process serves the whole runtime), "
+            "and no KIROCREW_HOST_PID (exported only when sandboxed). Enabling "
+            "the MCP gateway (Settings → MCP, or `mcp_gateway.enabled: true`) "
+            "restores per-call caller identity and with it this tool."
+        )
+    return detail
+
+
 # Default cycle cap for monitor_start when the caller omits max_cycles. An
 # unbounded loop only ever stops when the model volunteers autonudge_stop, and
 # real loop stores show that is unreliable — observed babysit loops ran to 24/24
@@ -4842,6 +4906,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             sel().log_tool_invocation(
                 session_key=sk, source="mcp", tool_name="autonudge_stop", outcome="noop"
             )
+            if not sk:
+                return _strict_identity_diagnosis("autonudge_stop")
             return (
                 "No auto-nudge loop to stop: this tool only works from within "
                 "a dashboard, Slack, or Discord session "
@@ -4894,6 +4960,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             sel().log_tool_invocation(
                 session_key=sk, source="mcp", tool_name="ask_question", outcome="noop"
             )
+            if not sk:
+                return _strict_identity_diagnosis("ask_question")
             return (
                 "ask_question only works from a dashboard chat session "
                 f"(current session_key={sk!r}). From other surfaces, end your "
@@ -4955,6 +5023,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             sel().log_tool_invocation(
                 session_key=sk, source="mcp", tool_name="monitor_start", outcome="noop"
             )
+            if not sk:
+                return _strict_identity_diagnosis("monitor_start")
             return (
                 "monitor_start only works from within a dashboard, Slack, or "
                 f"Discord session (current session_key={sk!r}). For other "
@@ -5026,6 +5096,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             sel().log_tool_invocation(
                 session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
             )
+            if not sk:
+                return _strict_identity_diagnosis("monitor_update")
             return (
                 "monitor_update only works from within a dashboard, Slack, or "
                 f"Discord session (current session_key={sk!r})."
@@ -5655,6 +5727,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 outcome="rejected",
                 error="non-dashboard or unresolved session",
             )
+            if not sk:
+                return "Error: " + _strict_identity_diagnosis("set_project")
             return (
                 "Error: set_project only works in dashboard sessions with explicit "
                 "identity. Slack, cron, and subagent contexts are rejected to avoid "
@@ -5698,6 +5772,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 outcome="rejected",
                 error="non-dashboard or unresolved session",
             )
+            if not sk:
+                return "Error: " + _strict_identity_diagnosis("suggest_followup")
             return (
                 "Error: suggest_followup only works in dashboard sessions with explicit "
                 "identity. Slack, cron, and subagent contexts have no follow-up card "

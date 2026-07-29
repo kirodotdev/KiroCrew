@@ -65,9 +65,16 @@ class TestSuggestFollowupDispatch:
         """Slack/cron/subagent contexts have no card surface, and an unresolved
         identity must not be allowed to guess a slot."""
         result = self._invoke({"items": [_item()]}, session_key=session_key)
-        assert result.startswith("Error:")
-        assert "dashboard sessions" in result
+        # Load-bearing for every case: no card was posted.
         assert self._captured["calls"] == []
+        assert result.startswith("Error:")
+        if session_key:
+            # A resolved but unsupported surface: the session type IS the cause.
+            assert "dashboard sessions" in result
+        else:
+            # An UNRESOLVED identity is a host configuration gap, not a wrong
+            # session type, and must say so.
+            assert "could not resolve a verified session identity" in result.lower()
 
     def test_schema_violation_is_refused_at_the_dispatch_layer(self):
         """The tool re-validates before posting — the endpoint is not the only gate.
