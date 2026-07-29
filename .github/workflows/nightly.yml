@@ -15,9 +15,9 @@ permissions:
   contents: read
 
 # Single-flight nightly runs. cancel-in-progress also protects the channel
-# feed (feed/nightly/latest-mac.json, last-writer-wins): an overlapping
-# older run is cancelled rather than finishing last and rolling the feed
-# back to an older build for every client.
+# feeds (feed/nightly/latest-mac.yml + latest-linux.yml, last-writer-wins):
+# an overlapping older run is cancelled rather than finishing last and
+# rolling a feed back to an older build for every client.
 concurrency:
   group: nightly-build
   cancel-in-progress: true

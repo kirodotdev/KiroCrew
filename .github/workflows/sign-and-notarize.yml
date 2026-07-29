@@ -70,7 +70,7 @@ on:
         required: true
         type: string
       write_feed:
-        description: "Publish to the distribution bucket and write feed/<channel>/latest-mac.json"
+        description: "Publish to the distribution bucket and write feed/<channel>/latest-mac.yml"
         required: false
         type: boolean
         default: true
@@ -563,9 +563,9 @@ jobs:
           echo "DMG_KEY=${DMG_KEY}" >> "$GITHUB_ENV"
           echo "Public DMG: ${{ vars.CLI_CDN_BASE }}/${DMG_KEY}"
 
-      # Feed points at the NOTARIZED artifact on the CDN -- written only
+      # Feed points at the NOTARIZED artifacts on the CDN -- written only
       # after the spctl gate passed (this job's sole input is the gated
-      # artifact) and only after the artifact is publicly downloadable
+      # artifact) and only after the artifacts are publicly downloadable
       # (feed-before-artifact would hand clients a 403/404). The feed key is
       # mutable, so overwriting is safe -- but ONLY because the object itself
       # carries an explicit Cache-Control (set below). The feed/* CloudFront
@@ -576,23 +576,152 @@ jobs:
       # injects one either. A feed written without it therefore reaches
       # clients with no freshness metadata at all, and CFNetwork applies
       # HEURISTIC caching (~10% of the object's age, so a day-old feed earns
-      # itself hours of "fresh"). Squirrel.Mac's feed request goes through
-      # NSURLCache, so a header-less feed made the desktop app re-resolve a
-      # stale entry for hours -- offering to "update" to the version already
-      # installed while the app's own (cacheless) fetch saw the new one.
+      # itself hours of "fresh"). That is the #709 incident: a header-less
+      # feed made the desktop app re-resolve a stale entry for hours,
+      # offering to "update" to the version already installed.
+      #
+      # NOTE ON WHAT CHANGED: that incident was specifically Squirrel.Mac's
+      # OWN feed request, which went through NSURLCache. Since the
+      # electron-updater migration, Squirrel.Mac never fetches this feed --
+      # MacUpdater downloads the artifact itself and serves it to Squirrel
+      # from a loopback proxy (127.0.0.1). So the NSURLCache hazard now
+      # applies to the LEGACY bridge below, whose readers are exactly the
+      # pre-migration clients that still fetch through it. The header stays
+      # mandatory on BOTH: electron-updater's own fetch goes through
+      # Chromium's cache (it also appends its own noCache query), and a build
+      # already in the field cannot be given a header fix retroactively.
+      #
       # max-age=300 is the release-feed norm (Signal Desktop's latest-mac.yml
       # on the same S3+CloudFront shape uses exactly this); it bounds
       # client-side staleness at 5 minutes instead of leaving it to a
       # heuristic. Deliberately NOT `no-cache` like
       # feed/<channel>/latest-cli.json: the desktop feed is hit by every
       # running app on a 4h poll, and 5 minutes of staleness on a pointer is
-      # harmless -- the client compares versions itself.
-      # Out-of-order overwrites (older run finishing
-      # last -> channel rollback) are prevented by the CALLER workflows'
-      # concurrency groups, which serialize runs per channel -- not by
-      # version comparison here, which would itself be a read-then-write
-      # race.
+      # harmless -- the client compares versions itself. Out-of-order
+      # overwrites (older run finishing last -> channel rollback) are
+      # prevented by the CALLER workflows' concurrency groups, which
+      # serialize runs per channel -- not by version comparison here, which
+      # would itself be a read-then-write race.
+      #
+      # Format: electron-updater channel metadata (latest-mac.yml), the
+      # exact shape electron-builder generates -- version, files[] with
+      # url + sha512 + size, legacy top-level path/sha512, releaseDate.
+      # website/electron/auto-update.js reads the per-channel feed
+      # DIRECTORY (updates.crew.kiro.dev/feed/<channel>/) and the library
+      # appends the platform filename.
+      #
+      # Two properties are load-bearing (see test_publish_feed_contract.py):
+      #   - sha512 is BASE64 of the raw digest (openssl -binary | base64),
+      #     never hex: electron-updater string-compares base64; a hex value
+      #     makes every download fail checksum verification.
+      #   - files[].url are ABSOLUTE byte-host urls (CLI_CDN_BASE =
+      #     download.crew.kiro.dev). The yml itself lives on the POINTER
+      #     host (updates.crew.kiro.dev/feed/...); electron-updater's
+      #     newUrlFromBase does `new URL(fileUrl, base)`, which ignores the
+      #     base for absolute urls -- that is what preserves the
+      #     pointer/bytes host split. A bare filename here would resolve
+      #     against feed/<channel>/ and 404.
+      # The ZIP is the update artifact (Squirrel.Mac consumes it; the
+      # updater's findFile explicitly skips dmg/pkg); the DMG entry is
+      # listed for tooling parity with electron-builder output and stays
+      # the human first-install download.
       - name: Write update feed
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          set -euo pipefail
+          ZIP_SHA512=$(openssl dgst -sha512 -binary work/notarized.zip | base64 -w 0)
+          ZIP_SIZE=$(stat -c%s work/notarized.zip)
+          DMG_SHA512=$(openssl dgst -sha512 -binary "work/${ARTIFACT_BASENAME}.dmg" | base64 -w 0)
+          DMG_SIZE=$(stat -c%s "work/${ARTIFACT_BASENAME}.dmg")
+
+          # FAIL CLOSED if the feed would describe bytes other than the ones
+          # actually being served. The versioned keys are written with
+          # `--if-none-match '*'` and a PreconditionFailed is deliberately
+          # tolerated ("key already published -- keeping existing bytes"), so a
+          # same-version RE-RUN whose artifact differs byte-for-byte leaves the
+          # OLD object in place while these digests describe the NEW local
+          # build. electron-updater verifies sha512 fail-closed, so the result
+          # is that every macOS client refuses to install -- and the legacy
+          # bridge, which carries no checksum, would happily install the old
+          # one. That split is worse than a failed publish, so abort instead.
+          # (This also catches CloudFront edge divergence on a republished
+          # immutable key -- the #62 hazard.)
+          verify_published() {  # $1=url  $2=expected base64 sha512  $3=label
+            local got
+            got=$(curl -fsS --retry 3 --retry-delay 2 "$1" | openssl dgst -sha512 -binary | base64 -w 0)
+            if [ "$got" != "$2" ]; then
+              echo "::error::$3 served by the CDN does not match the artifact this feed would advertise."
+              echo "::error::  expected sha512 (local build): $2"
+              echo "::error::  served   sha512 (published):   $got"
+              echo "::error::A versioned key was already published with different bytes. Do NOT republish it (edge divergence, #62) -- cut a new version instead."
+              exit 1
+            fi
+            echo "Verified published $3 matches the feed digest."
+          }
+          verify_published "${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}" "$ZIP_SHA512" "ZIP"
+          verify_published "${{ vars.CLI_CDN_BASE }}/${DMG_KEY}" "$DMG_SHA512" "DMG"
+          cat > /tmp/latest-mac.yml <<EOF
+          version: ${VERSION}
+          files:
+            - url: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}
+              sha512: '${ZIP_SHA512}'
+              size: ${ZIP_SIZE}
+            - url: ${{ vars.CLI_CDN_BASE }}/${DMG_KEY}
+              sha512: '${DMG_SHA512}'
+              size: ${DMG_SIZE}
+          path: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}
+          sha512: '${ZIP_SHA512}'
+          releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+          EOF
+          aws s3 cp /tmp/latest-mac.yml \
+            "s3://${{ vars.CLI_DIST_BUCKET }}/feed/${CHANNEL}/latest-mac.yml" \
+            --content-type text/yaml \
+            --cache-control "public, max-age=300"
+          echo "Feed written: feed/${CHANNEL}/latest-mac.yml -> ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
+          # Verify the header CLIENTS actually receive, through the public CDN.
+          # Carried over from #709, which fixed a real incident: a feed served
+          # WITHOUT Cache-Control got heuristically cached and the updater
+          # resolved an already-installed version. electron-updater also appends
+          # its own noCache query (isAddNoCacheQuery), but that is the client
+          # belt -- this is the origin-side braces, and a build already in the
+          # field cannot be given a header fix retroactively.
+          #
+          # NOT `s3api head-object`: the publish role is Put-only on feed/*
+          # (KiroCrewPublishCDK distribution-stack.ts grants s3:GetObject on
+          # cli/* alone), so a read-back would AccessDenied and abort this step
+          # under `set -euo pipefail` AFTER the feed was already published --
+          # a guard that fails on permissions instead of on the condition it
+          # guards.
+          FEED_CC=$(curl -fsS --retry 3 --retry-delay 2 \
+            -I "${{ vars.CLI_CDN_BASE }}/feed/${CHANNEL}/latest-mac.yml" \
+            | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')
+          echo "Feed Cache-Control as served: ${FEED_CC:-<none>}"
+          case "$FEED_CC" in
+            *max-age=*) : ;;
+            *) echo "::error::feed served without a max-age Cache-Control (#709 regression)"; exit 1 ;;
+          esac
+
+      # TRANSITION BRIDGE -- do NOT delete without reading this.
+      #
+      # Builds fielded BEFORE the electron-updater migration poll the old
+      # hand-rolled feed at feed/<channel>/latest-mac.json and know nothing
+      # about latest-mac.yml. If we only wrote the yml, that JSON would go
+      # permanently stale and every one of those installs would be stranded:
+      # unable to discover ANY future version, forever, with a manual DMG
+      # re-download as the only escape. Shipped client code cannot be
+      # recalled, so the server has to keep speaking the old dialect until
+      # the old clients are gone.
+      #
+      # The legacy shape is what the pre-migration client + Squirrel.Mac
+      # consume: a flat JSON with the zip in `url`. It advertises the SAME
+      # version and the SAME bytes as the yml, so an old install updates once
+      # to an electron-updater build and never reads this file again.
+      #
+      # REMOVAL CONDITION: safe to delete once telemetry (or a deliberate
+      # decision to abandon stragglers) shows no installs older than the
+      # first electron-updater release remain. Pinned by
+      # test/test_publish_feed_contract.py so it cannot be dropped silently.
+      - name: Write legacy update feed (pre-electron-updater clients)
         if: env.HAS_SIGNING_SECRETS
         run: |
           set -euo pipefail
@@ -609,7 +738,7 @@ jobs:
             "s3://${{ vars.CLI_DIST_BUCKET }}/feed/${CHANNEL}/latest-mac.json" \
             --content-type application/json \
             --cache-control "public, max-age=300"
-          echo "Feed written: feed/${CHANNEL}/latest-mac.json -> ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
+          echo "Legacy feed written: feed/${CHANNEL}/latest-mac.json (transition bridge)"
           # Verify the header CLIENTS actually receive, through the public CDN.
           # NOT `s3api head-object`: the publish role is Put-only on feed/*
           # (KiroCrewPublishCDK distribution-stack.ts grants s3:GetObject on
@@ -669,5 +798,5 @@ jobs:
             echo "- Public zip: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
             echo "- Public DMG: ${{ vars.CLI_CDN_BASE }}/${DMG_KEY}"
             echo "- Latest DMG alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_DMG_KEY}"
-            echo "- Feed: \`feed/${CHANNEL}/latest-mac.json\`"
+            echo "- Feed: \`feed/${CHANNEL}/latest-mac.yml\`"
           } >> "$GITHUB_STEP_SUMMARY"

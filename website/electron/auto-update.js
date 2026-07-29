@@ -1,35 +1,45 @@
 /**
- * Desktop auto-update via Electron's native autoUpdater (Squirrel.Mac).
+ * Desktop auto-update via electron-updater (macOS + Linux).
  *
- * Squirrel.framework + ShipIt are already in the signed app bundle, so this
- * only wires the updater to a feed and drives the install. The ONE
- * KiroCrew-specific concern vs. a plain Electron app: the bundled Python
- * gateway is a long-running child process, so it MUST be stopped gracefully
- * BEFORE Squirrel swaps the .app bundle — otherwise ShipIt can race the swap
- * and leave a half-replaced app. The graceful stopper is injected from main.js
- * (it calls POST /api/shutdown to flush state, then SIGTERM/SIGKILL).
+ * WHY electron-updater instead of Electron's built-in autoUpdater: the built-in
+ * updater covers only macOS (Squirrel.Mac) and Windows (Squirrel.Windows), and
+ * requires us to hand-build the feed, the version compare and the publish
+ * metadata. electron-updater generates that metadata at build time
+ * (latest-mac.yml / latest-linux.yml), verifies sha512 fail-closed, adds Linux
+ * support, and — on macOS — still drives Squirrel.Mac underneath, so the proven
+ * atomic bundle swap is unchanged. See docs/windows-install.md and issue #598.
  *
- * Pure helpers (channelForFlavor, buildFeedUrl) are dependency-free and tested
- * directly. initAutoUpdate takes electron modules + callbacks injected so it
- * stays testable without an Electron runtime.
+ * The ONE KiroCrew-specific concern vs. a plain Electron app is unchanged: the
+ * bundled Python gateway is a long-running child process, so it MUST be stopped
+ * gracefully BEFORE the app bundle is swapped — otherwise the swap races a live
+ * child and can leave a half-replaced app. That is why autoInstallOnAppQuit is
+ * forced OFF (see configureUpdater) and every install path goes through
+ * stopGateway() first.
+ *
+ * Pure helpers (channelForFlavor, channelForVersion, resolveChannel,
+ * buildFeedBase) are dependency-free and tested directly. initAutoUpdate takes
+ * the electron + electron-updater surfaces injected so it stays testable
+ * without an Electron runtime.
  */
 
-// Default update feed host: updates.crew.kiro.dev, the pointer hostname of
-// the public distribution CDN (CloudFront + OAC over the kirocrew-updates
-// bucket). The feed is a STATIC JSON file at <base>/<channel>/latest-mac.json
-// written by CI after notarization; the artifact URLs inside it point at the
-// byte hostname (download.crew.kiro.dev, CI's CLI_CDN_BASE). There is no
-// 200/204 server endpoint: safeCheck() fetches the feed itself and compares
-// versions CLIENT-SIDE, engaging Squirrel.Mac only when the feed version
-// differs from the running app. (Squirrel treats any 200 feed response as
-// "update available", so gating on the client compare is what prevents a
-// re-download loop against a static file.)
+// Default update feed host: updates.crew.kiro.dev, the pointer hostname of the
+// public distribution CDN (CloudFront + OAC over the kirocrew-updates bucket).
+//
+// electron-updater's generic provider treats the configured URL as a DIRECTORY
+// and resolves <base>/latest-mac.yml (macOS) or <base>/latest-linux.yml (Linux)
+// from it. The artifact URLs inside those files are ABSOLUTE and point at the
+// byte hostname (download.crew.kiro.dev), which is what preserves our
+// pointer/bytes host split: `new URL(fileUrl, base)` ignores the base when
+// fileUrl is absolute. That behaviour is structural but undocumented, so
+// test/auto-update.test.js pins it against the real installed library — a
+// version bump that changes it must fail CI, not strand installs in the field.
 const DEFAULT_FEED_BASE = "https://updates.crew.kiro.dev/feed";
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h while running
 const LAUNCH_CHECK_DELAY_MS = 30 * 1000; // let startup settle first
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
-const FEED_TIMEOUT_MS = 15 * 1000;
-const FEED_MAX_BYTES = 64 * 1024;
+
+/** Platforms with a working publish lane + updater. win32 lands with NSIS (#598). */
+const SUPPORTED_PLATFORMS = new Set(["darwin", "linux"]);
 
 /**
  * Map the build flavor ("beta" | "stable") to an update channel. Retained
@@ -73,8 +83,8 @@ function channelForVersion(version) {
  *   preference cannot conjure one.
  * - production stamps (insider/stable) follow the preference when set,
  *   else their own stamp. Switching BACK can be a downgrade mid-cycle
- *   (insider 0.2.0-insider.1 -> stable 0.1.0); safeCheck's compare gate
- *   deliberately engages on any version DIFFERENCE, so that works.
+ *   (insider 0.2.0-insider.1 -> stable 0.1.0), which is why allowDowngrade
+ *   is enabled in configureUpdater.
  *
  * @param {"nightly"|"insider"|"stable"|null} stamped - channelForVersion(version)
  * @param {"insider"|"stable"|""|null|undefined} preference - user opt-in, falsy = follow stamp
@@ -88,99 +98,83 @@ function resolveChannel(stamped, preference) {
 }
 
 /**
- * Build the static feed URL for a channel. Pure + testable.
+ * Build the per-channel feed DIRECTORY url for the generic provider. Pure +
+ * testable.
  *
- * `cacheBust` appends a unique query param. Squirrel.Mac fetches the feed
- * through an NSMutableURLRequest with the default UseProtocolCachePolicy, so
- * it reads NSURLCache -- and a feed object served without Cache-Control gets
- * heuristically cached, making Squirrel resolve a stale entry (the version
- * already installed) while this module's own cacheless fetch sees the new
- * one. A per-check unique URL is not in any HTTP cache's key, so it defeats
- * NSURLCache regardless of the response headers. The origin-side fix is the
- * feed's `Cache-Control: public, max-age=300`; this is the client-side belt,
- * and it is not redundant -- a build already in the field cannot be given the
- * header fix retroactively, so the bust is what lets a poisoned client
- * recover. (The CDN edge is not involved either way: the feed/* behavior is
- * CACHING_DISABLED, so CloudFront always goes to origin.)
+ * The trailing slash is load-bearing: the provider resolves the channel file
+ * with `new URL("latest-mac.yml", base)`, and without a trailing slash the
+ * last path segment is replaced rather than appended (".../feed/nightly" would
+ * resolve to ".../feed/latest-mac.yml" — the wrong channel, or a 404).
+ * electron-updater's newBaseUrl() also normalises this, but emitting it here
+ * keeps the contract explicit and independent of that internal.
  *
- * @param {{base:string, channel:string, cacheBust?:string|number}} o
- * @returns {string}
- */
-function buildFeedUrl({ base, channel, cacheBust }) {
-  const b = (base || DEFAULT_FEED_BASE).replace(/\/+$/, "");
-  const url = `${b}/${encodeURIComponent(channel)}/latest-mac.json`;
-  if (cacheBust === undefined || cacheBust === null || cacheBust === "") return url;
-  return `${url}?_=${encodeURIComponent(String(cacheBust))}`;
-}
-
-/**
- * Default feed fetcher: GET the static feed JSON. Injectable via
- * deps.fetchFeed for tests. Bounded body size + timeout; rejects on any
- * non-200 so callers surface a single error path. HTTPS everywhere;
- * plain HTTP is permitted ONLY for loopback hosts so the local update
- * harness (KIROCREW_UPDATE_FEED=http://127.0.0.1:PORT/...) works --
+ * Enforces HTTPS, with plain HTTP allowed ONLY for loopback so the local
+ * update harness (KIROCREW_UPDATE_FEED=http://127.0.0.1:PORT/feed) works;
  * cleartext update metadata over a real network stays rejected.
- * @param {string} url
- * @returns {Promise<{version:string, url:string}>}
+ *
+ * @param {{base:string, channel:string}} o
+ * @returns {string}
+ * @throws {Error} on a non-HTTPS, non-loopback base
  */
-function fetchFeedHttps(url) {
-  return new Promise((resolve, reject) => {
-    let parsed;
-    try {
-      parsed = new URL(url);
-    } catch (err) {
-      reject(err);
-      return;
-    }
-    const isLoopback = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname);
-    let mod;
-    if (parsed.protocol === "https:") {
-      mod = require("https");
-    } else if (parsed.protocol === "http:" && isLoopback) {
-      mod = require("http");
-    } else {
-      reject(new Error(`feed URL must be https (or http on loopback): ${parsed.protocol}//${parsed.hostname}`));
-      return;
-    }
-    const req = mod.get(url, { headers: { "cache-control": "no-cache" } }, (res) => {
-      if (res.statusCode !== 200) {
-        res.resume();
-        reject(new Error(`feed HTTP ${res.statusCode}`));
-        return;
-      }
-      let body = "";
-      res.setEncoding("utf8");
-      res.on("data", (chunk) => {
-        body += chunk;
-        if (body.length > FEED_MAX_BYTES) req.destroy(new Error("feed response too large"));
-      });
-      res.on("end", () => {
-        try { resolve(JSON.parse(body)); } catch (err) { reject(err); }
-      });
-    });
-    req.on("error", reject);
-    req.setTimeout(FEED_TIMEOUT_MS, () => req.destroy(new Error("feed request timed out")));
-  });
+function buildFeedBase({ base, channel }) {
+  const b = (base || DEFAULT_FEED_BASE).replace(/\/+$/, "");
+  const url = `${b}/${encodeURIComponent(channel)}/`;
+  const parsed = new URL(url);
+  const isLoopback = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname);
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopback)) {
+    throw new Error(`feed base must be https (or http on loopback): ${parsed.protocol}//${parsed.hostname}`);
+  }
+  return url;
 }
 
 /**
- * Wire Electron's autoUpdater. All Electron surfaces injected for testability.
+ * Apply the update-policy flags this app REQUIRES. Every one of these differs
+ * from the electron-updater default, and each maps to a decision we already
+ * made deliberately — so they are set in one audited place rather than
+ * scattered:
+ *
+ * - autoDownload=false        consent-first UX: discovery must never download.
+ *                             The default (true) would download megabytes on a
+ *                             background check with no user action.
+ * - autoInstallOnAppQuit=false the default would swap the bundle on quit
+ *                             WITHOUT stopping the Python gateway — exactly the
+ *                             half-replaced-app race this module prevents.
+ *                             deferredInstallOnQuit() does it in the right order.
+ * - allowDowngrade=true       our update gate is DIFFERENCE-based, not
+ *                             greater-than: a feed repointed to an older
+ *                             version must be offered. This is what makes
+ *                             channel switch-back and version RETRACTION work.
+ * - allowPrerelease=true      every nightly (-nightly.<stamp>) and insider
+ *                             (-insider.N) stamp is a semver prerelease and
+ *                             would otherwise be invisible to its own channel.
+ *
+ * @param {object} autoUpdater electron-updater AppUpdater
+ */
+function configureUpdater(autoUpdater) {
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.allowDowngrade = true;
+  autoUpdater.allowPrerelease = true;
+}
+
+/**
+ * Wire electron-updater. All Electron surfaces injected for testability.
  *
  * @param {object} deps
  * @param {import("electron").App} deps.app
- * @param {import("electron").AutoUpdater} deps.autoUpdater
+ * @param {object} deps.autoUpdater            - electron-updater AppUpdater
  * @param {typeof import("electron").dialog} deps.dialog
  * @param {typeof import("electron").Notification} deps.Notification
- * @param {() => string} deps.getFlavor      - returns "beta" | "stable"
+ * @param {() => string} deps.getFlavor        - returns "beta" | "stable"
  * @param {() => Promise<void>} deps.stopGateway - graceful, awaitable gateway stop
- * @param {string} [deps.platform]           - e.g. "darwin-arm64"
- * @param {string} [deps.feedBase]           - override feed host
+ * @param {string} [deps.platform]             - display arch, e.g. "darwin-arm64"
+ * @param {string} [deps.osPlatform]           - process.platform override (tests)
+ * @param {string} [deps.feedBase]             - override feed host
  * @param {(state:object) => void} [deps.onUpdateState] - if provided, the
  *   in-app UI drives the install prompt: state transitions are pushed here
  *   ({state, version, notes, channel}) and the native dialog is suppressed.
- *   Without it, the native dialog is the fallback prompt.
  * @param {{info:Function,warn:Function,error:Function}} [deps.log]
- * @returns {{check:Function, install:Function, getInfo:Function}} renderer-callable triggers
+ * @returns {{check:Function, download:Function, install:Function, getInfo:Function}}
  */
 function initAutoUpdate(deps) {
   const {
@@ -193,8 +187,8 @@ function initAutoUpdate(deps) {
     notifyUpdateFound = null,
     stopGateway,
     platform = "darwin-arm64",
+    osPlatform = process.platform,
     feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
-    fetchFeed = fetchFeedHttps,
     onUpdateState = null,
     log = console,
   } = deps;
@@ -233,154 +227,151 @@ function initAutoUpdate(deps) {
     };
   }
 
-  // Squirrel is unavailable for unsigned / not-installed dev builds.
+  // Updating requires an installed, signed bundle (macOS code signature
+  // validation is mandatory for Squirrel.Mac; Linux AppImage needs the
+  // AppImage runtime), so dev builds have no update lane.
   if (!app.isPackaged) {
     log.info("[update] dev build — auto-update disabled");
-    return { check: () => {}, install: async () => {}, getInfo, disabled: "dev" };
+    return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "dev" };
   }
-  if (process.platform !== "darwin") {
-    log.info("[update] non-darwin — auto-update disabled (Squirrel.Mac only)");
-    return { check: () => {}, install: async () => {}, getInfo, disabled: "platform" };
+  if (!SUPPORTED_PLATFORMS.has(osPlatform)) {
+    log.info(`[update] ${osPlatform} — auto-update disabled (no publish lane yet)`);
+    return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "platform" };
   }
+
+  configureUpdater(autoUpdater);
+  autoUpdater.logger = log;
 
   let updateReady = false;
-  let downloading = false; // Squirrel download/extract in flight
-  let stagedVersion = null; // version name Squirrel has downloaded + staged
+  let downloading = false;
+  let stagedVersion = null; // version electron-updater has downloaded + staged
   let stagedNotes = "";
+  let foundVersion = null; // last version surfaced to the user, awaiting consent
   let installing = false;
   let quitHandled = false;
-  let feedNonce = 0; // monotonic, so two feed URLs are never byte-identical
-
-  function configureFeed() {
-    const channel = currentChannel();
-    // Unique per call so neither NSURLCache (Squirrel's fetch) nor this
-    // module's fetch can be served a previously-cached feed body. The
-    // monotonic counter is NOT redundant with the timestamp: check() ->
-    // download() (the consent flow) issues two configureFeed calls that can
-    // land in the same millisecond, and a repeated URL is a cache HIT.
-    feedNonce += 1;
-    const url = buildFeedUrl({ base: feedBase, channel, cacheBust: `${Date.now()}-${feedNonce}` });
-    autoUpdater.setFeedURL({ url, headers: { "Cache-Control": "no-cache" } });
-    log.info(`[update] feed: ${url}`);
-    return url;
-  }
-
   let checking = false;
-  let foundFeed = null; // last feed entry surfaced to the user, awaiting consent
+
   /**
    * Version of the update currently being fetched/held -- NOT the running
    * app's version. Every state the UI renders a version for must pass this
    * explicitly: emit() defaults `version` to app.getVersion() so the
    * check/not-available/error states report the running build, and a
    * "downloading" event that omitted it made the update card claim the app
-   * was downloading the version already installed.
+   * was downloading the version already installed (fixed in #709; preserved
+   * here through the electron-updater migration).
    */
   function pendingVersion() {
-    return (foundFeed && foundFeed.version) || stagedVersion || app.getVersion();
+    return foundVersion || stagedVersion || app.getVersion();
   }
+
+  function configureFeed() {
+    const channel = currentChannel();
+    const url = buildFeedBase({ base: feedBase, channel });
+    autoUpdater.setFeedURL({ provider: "generic", url });
+    log.info(`[update] feed: ${url}`);
+    return url;
+  }
+
+  /**
+   * DISCOVERY ONLY. With autoDownload=false, checkForUpdates() fetches the
+   * channel file, compares versions (difference-based via allowDowngrade) and
+   * emits update-available / update-not-available WITHOUT downloading. The
+   * download requires the explicit download() consent call below.
+   */
   async function safeCheck() {
-    // NOTE: no updateReady short-circuit here. A check ALWAYS consults the
-    // feed and reports state (macOS Software Update semantics) — the silent
-    // `return` this replaces made the Check-for-updates button a dead no-op
-    // once a download had been staged.
     if (checking) return;
     if (downloading) {
-      // Squirrel is mid-download/extract. Re-engaging checkForUpdates() now
-      // restarts its update flow and tears down the temp staging dir under
-      // the in-flight extraction (observed in the field as
-      // "ditto: Could not lstat .../update.XXXX/...: No such file or
-      // directory"). Report progress instead; update-downloaded/error will
-      // clear the flag and the next check proceeds normally.
+      // A download is in flight. Re-entering the check would restart the
+      // updater's flow underneath the running download; report progress
+      // instead. update-downloaded/error clears the flag.
       log.info("[update] check requested while download in flight — reporting progress");
       emit("downloading", { version: pendingVersion() });
       return;
     }
+    if (updateReady && stagedVersion) {
+      // NOTE: deliberately NOT a short-circuit. A check must ALWAYS consult
+      // the feed, even with a version already staged, because a NEWER version
+      // can ship mid-session — returning early here would pin the user to the
+      // stale stage until they installed or restarted. The update-available
+      // handler distinguishes "the staged one is still latest" (re-surface the
+      // install prompt) from "the stage is superseded" (drop it and re-find).
+      log.info(`[update] ${stagedVersion} staged — checking whether it is still latest`);
+    }
     checking = true;
     try {
-      const url = configureFeed(); // re-read flavor/channel each check
+      configureFeed(); // re-read flavor/channel each check
       emit("checking");
-      const feed = await fetchFeed(url);
-      if (!feed || typeof feed.version !== "string" || typeof feed.url !== "string") {
-        throw new Error("feed missing version/url");
-      }
-      if (feed.version === app.getVersion()) {
-        log.info(`[update] up to date (${feed.version})`);
-        foundFeed = null;
-        emit("not-available");
-        return;
-      }
-      if (updateReady && stagedVersion === feed.version) {
-        // Latest is already downloaded + staged: re-surface the install
-        // prompt instead of doing nothing (and instead of re-downloading).
-        log.info(`[update] ${stagedVersion} already downloaded — awaiting install`);
-        emit("downloaded", { version: stagedVersion, notes: stagedNotes });
-        return;
-      }
-      // CONSENT GATE (macOS Software Update semantics): discovery never
-      // downloads. Surface what was found — version, notes, publish date —
-      // and wait for an explicit download() before engaging Squirrel.
-      foundFeed = feed;
-      log.info(`[update] found ${feed.version} (running ${app.getVersion()}) — awaiting user consent`);
-      // Nudge hook: main.js shows a native notification pointing at
-      // Settings > About (deduped there, once per version). Discovery-only —
-      // download/install still require the explicit consent actions.
-      if (typeof notifyUpdateFound === "function") {
-        try { notifyUpdateFound(feed.version); } catch (err) { log.error("[update] notifyUpdateFound threw", err); }
-      }
-      emit("found", {
-        version: feed.version,
-        notes: typeof feed.notes === "string" ? feed.notes : "",
-        pubDate: typeof feed.pub_date === "string" ? feed.pub_date : "",
-      });
+      await autoUpdater.checkForUpdates();
     } catch (err) {
       log.error("[update] check failed", err);
-      emit("error", { message: String(err && err.message || err) });
+      emit("error", { message: String((err && err.message) || err) });
     } finally {
       checking = false;
     }
   }
 
   /**
-   * Explicit user consent: engage Squirrel to download (and stage) the
-   * version last surfaced by safeCheck. Never called automatically.
+   * Explicit user consent: download the version last surfaced by safeCheck.
+   * Never called automatically — this is the whole point of autoDownload=false.
    */
   async function startDownload() {
     if (downloading) { emit("downloading", { version: pendingVersion() }); return; }
-    if (updateReady && foundFeed && stagedVersion === foundFeed.version) {
+    if (updateReady && stagedVersion) {
       emit("downloaded", { version: stagedVersion, notes: stagedNotes });
       return;
     }
-    if (updateReady) {
-      // A previously staged bundle was superseded by a newer find: drop the
-      // stale stage so Squirrel re-downloads the newest instead of installing
-      // an already-old build.
-      log.info(`[update] staged ${stagedVersion} superseded — re-downloading`);
-      updateReady = false;
-      stagedVersion = null;
-      stagedNotes = "";
+    if (!foundVersion) {
+      // Nothing discovered yet (e.g. UI raced the first check). Discover
+      // first; the user can consent once "found" is surfaced.
+      log.info("[update] download requested with nothing found — checking first");
+      await safeCheck();
+      return;
     }
-    configureFeed();
-    log.info("[update] user consented — engaging Squirrel download");
+    log.info(`[update] user consented — downloading ${foundVersion}`);
     downloading = true;
     emit("downloading", { version: pendingVersion() });
-    autoUpdater.checkForUpdates();
+    try {
+      await autoUpdater.downloadUpdate();
+    } catch (err) {
+      downloading = false;
+      log.error("[update] download failed", err);
+      emit("error", { message: String((err && err.message) || err) });
+    }
   }
 
-  // ShipIt aborts the bundle swap with "App Still Running Error" (Code=-9)
-  // if ANY instance of the app is alive during its ~25s install window — and
-  // the user silently relaunches into the OLD version. If anything blocks the
-  // Electron quit (a renderer beforeunload, a lingering child holding the
-  // process open), force-exit so this instance is guaranteed gone.
+  // The bundle swap aborts if ANY instance of the app is alive during its
+  // install window — and the user silently relaunches into the OLD version. If
+  // anything blocks the Electron quit (a renderer beforeunload, a lingering
+  // child holding the process open), force-exit so the swap can proceed.
   function forceExitFailsafe(reason) {
     const t = setTimeout(() => {
-      log.error(`[update] process still alive ${FORCE_EXIT_AFTER_MS}ms after quitAndInstall (${reason}) — forcing exit so ShipIt can swap`);
+      log.error(`[update] process still alive ${FORCE_EXIT_AFTER_MS}ms after quitAndInstall (${reason}) — forcing exit so the install can swap the app`);
       try { app.exit(0); } catch { process.exit(0); }
     }, FORCE_EXIT_AFTER_MS);
     if (typeof t.unref === "function") t.unref();
   }
 
+  // isSilent=false (no installer UI to suppress on these platforms),
+  // isForceRunAfter=true so the user lands back in the app after the swap.
+  function quitAndInstall() {
+    autoUpdater.quitAndInstall(false, true);
+  }
+
   async function applyUpdateAndRestart() {
     if (installing) return;
+    // REQUIRE a staged update. Without this guard an install() dispatched
+    // before the download finished reaches MacUpdater.quitAndInstall()'s
+    // squirrelDownloadedUpdate === false branch, which does NOT install --
+    // it registers a listener and waits for Squirrel to fetch the update from
+    // the loopback proxy. forceExitFailsafe would then kill the process 5s
+    // later, mid-fetch, and the app dies without swapping or relaunching.
+    // Once a stage exists, Squirrel has already consumed the zip and
+    // quitAndInstall proceeds immediately, so the failsafe is safe to arm.
+    if (!updateReady) {
+      log.info("[update] install requested with nothing staged — ignoring");
+      emit(foundVersion ? "found" : "not-available", foundVersion ? { version: foundVersion } : {});
+      return;
+    }
     installing = true;
     // STRICT ORDER: stop the gateway and await its exit, THEN quitAndInstall.
     // A live gateway child during the bundle swap can leave a half-replaced app.
@@ -392,12 +383,14 @@ function initAutoUpdate(deps) {
     }
     app.removeListener("before-quit", deferredInstallOnQuit);
     log.info("[update] gateway down — quitAndInstall");
-    autoUpdater.quitAndInstall();
+    quitAndInstall();
     forceExitFailsafe("manual install");
   }
 
-  // If the user chose "Later", install on the natural quit. before-quit can't
-  // await async work, so preventDefault, stop the gateway, then quitAndInstall.
+  // If the user chose "Later", install on the natural quit. This is OUR
+  // implementation rather than autoInstallOnAppQuit=true precisely because the
+  // gateway must be stopped first; before-quit can't await async work, so
+  // preventDefault, stop the gateway, then quitAndInstall.
   function deferredInstallOnQuit(event) {
     if (quitHandled || !updateReady) return;
     quitHandled = true;
@@ -405,7 +398,7 @@ function initAutoUpdate(deps) {
     (async () => {
       log.info("[update] deferred install on quit");
       try { await stopGateway(); } catch (err) { log.error("[update] stop on quit errored", err); }
-      autoUpdater.quitAndInstall();
+      quitAndInstall();
       forceExitFailsafe("deferred install on quit");
     })();
   }
@@ -435,40 +428,98 @@ function initAutoUpdate(deps) {
     }
   }
 
-  autoUpdater.on("error", (err) => { downloading = false; log.error("[update] error", err); emit("error", { message: String(err && err.message || err) }); });
-  autoUpdater.on("checking-for-update", () => { log.info("[update] checking…"); emit("checking"); });
-  autoUpdater.on("update-not-available", () => { downloading = false; log.info("[update] up to date"); emit("not-available"); });
-  autoUpdater.on("update-available", () => { downloading = true; log.info("[update] downloading…"); emit("downloading", { version: pendingVersion() }); });
-  autoUpdater.on("update-downloaded", (_e, notes, name) => {
+  /** releaseNotes is string | {version,note}[] | null depending on the feed. */
+  function notesFrom(info) {
+    const n = info && info.releaseNotes;
+    if (typeof n === "string") return n;
+    if (Array.isArray(n)) return n.map((e) => (e && e.note) || "").filter(Boolean).join("\n\n");
+    return "";
+  }
+
+  autoUpdater.on("error", (err) => {
     downloading = false;
-    // LAST LINE OF DEFENSE against a stale feed resolution. If Squirrel
-    // resolved the version this app is already running, installing it is a
-    // no-op that costs a full restart -- and because the running version
-    // never changes, the next check re-offers it forever (observed as an
-    // endless reinstall loop). Refuse the staged bundle instead of arming
-    // the install, and report "up to date", which is what the user's
-    // machine actually is. Never sets updateReady, so before-quit cannot
-    // install it either.
-    if (name && name === app.getVersion()) {
-      log.error(`[update] feed resolved ${name}, already installed — refusing self-reinstall`);
+    log.error("[update] error", err);
+    emit("error", { message: String((err && err.message) || err) });
+  });
+  autoUpdater.on("checking-for-update", () => { log.info("[update] checking…"); emit("checking"); });
+  autoUpdater.on("update-not-available", () => {
+    downloading = false;
+    foundVersion = null;
+    // Clear the STAGED state too, not just the found state. The feed reporting
+    // "no update" while something is staged is exactly the retraction path
+    // (a feed repointed to the running version) and the channel-switch-back
+    // path -- and a stage left armed here would still install the withdrawn or
+    // wrong-channel build on the next quit, because deferredInstallOnQuit only
+    // checks updateReady. Disarm the quit hook as well or the listener
+    // survives to fire against a stage we just invalidated.
+    if (updateReady) {
+      log.info(`[update] feed reports up to date -- discarding staged ${stagedVersion}`);
+    }
+    updateReady = false;
+    stagedVersion = null;
+    stagedNotes = "";
+    quitHandled = false;
+    app.removeListener("before-quit", deferredInstallOnQuit);
+    log.info("[update] up to date");
+    emit("not-available");
+  });
+  // CONSENT GATE: with autoDownload=false this fires on DISCOVERY, before any
+  // bytes move. Surface what was found and wait for an explicit download().
+  autoUpdater.on("update-available", (info) => {
+    foundVersion = (info && info.version) || null;
+    // A stage is only useful if it is still the latest thing on the feed.
+    // Because the RUNNING version never changes mid-session, the updater
+    // reports "available" for the staged version too — so the comparison
+    // below is what separates the two cases.
+    if (updateReady && stagedVersion) {
+      if (foundVersion === stagedVersion) {
+        log.info(`[update] ${stagedVersion} already downloaded — awaiting install`);
+        emit("downloaded", { version: stagedVersion, notes: stagedNotes });
+        return;
+      }
+      // Superseded: drop the stale stage so consent re-downloads the NEWEST
+      // build rather than installing an already-old one.
+      log.info(`[update] staged ${stagedVersion} superseded by ${foundVersion} — discarding stage`);
       updateReady = false;
       stagedVersion = null;
       stagedNotes = "";
-      foundFeed = null;
-      emit("not-available");
-      return;
+      app.removeListener("before-quit", deferredInstallOnQuit);
     }
+    log.info(`[update] found ${foundVersion} (running ${app.getVersion()}) — awaiting user consent`);
+    // Nudge hook: main.js shows a native notification pointing at
+    // Settings > About (deduped there, once per version). Discovery-only —
+    // download/install still require the explicit consent actions.
+    if (typeof notifyUpdateFound === "function") {
+      try { notifyUpdateFound(foundVersion); } catch (err) { log.error("[update] notifyUpdateFound threw", err); }
+    }
+    emit("found", {
+      version: foundVersion,
+      notes: notesFrom(info),
+      pubDate: (info && info.releaseDate) || "",
+    });
+  });
+  autoUpdater.on("download-progress", (p) => {
+    // New capability vs. the hand-rolled updater: real progress, so the card
+    // can show a percentage instead of an indeterminate "downloading".
+    emit("downloading", {
+      version: pendingVersion(),
+      percent: p && typeof p.percent === "number" ? p.percent : undefined,
+      bytesPerSecond: p && p.bytesPerSecond,
+    });
+  });
+  autoUpdater.on("update-downloaded", (info) => {
     updateReady = true;
-    stagedVersion = name || null;
-    stagedNotes = notes || "";
-    log.info(`[update] downloaded ${name} — ${uiDriven ? "notifying UI" : "prompting"}`);
-    emit("downloaded", { version: name || app.getVersion(), notes: notes || "" });
+    downloading = false;
+    stagedVersion = (info && info.version) || null;
+    stagedNotes = notesFrom(info);
+    log.info(`[update] downloaded ${stagedVersion} — ${uiDriven ? "notifying UI" : "prompting"}`);
+    emit("downloaded", { version: stagedVersion || app.getVersion(), notes: stagedNotes });
     if (uiDriven) {
       // In-app UI owns the prompt. Still install on a natural quit if the user
       // dismisses the modal with "Later" (mirrors the native dialog's deferral).
       app.once("before-quit", deferredInstallOnQuit);
     } else {
-      promptInstall(name, notes);
+      promptInstall(stagedVersion, stagedNotes);
     }
   });
 
@@ -491,4 +542,13 @@ function initAutoUpdate(deps) {
   };
 }
 
-module.exports = { initAutoUpdate, channelForFlavor, channelForVersion, resolveChannel, buildFeedUrl, fetchFeedHttps };
+module.exports = {
+  initAutoUpdate,
+  channelForFlavor,
+  channelForVersion,
+  resolveChannel,
+  buildFeedBase,
+  configureUpdater,
+  DEFAULT_FEED_BASE,
+  SUPPORTED_PLATFORMS,
+};

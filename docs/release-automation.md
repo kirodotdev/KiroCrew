@@ -2,7 +2,7 @@
 
 Design for the three-channel release pipeline: Nightly → Beta → Stable.
 
-## As built (authoritative, 2026-07-21)
+## As built (authoritative, 2026-07-28)
 
 The sections below this one are the original design; the implementation
 deliberately diverged in several places. Where they disagree, THIS section
@@ -28,31 +28,42 @@ overwritten.
   `pre-signed/` → `signed/` (CDSigner output) → `notarized/` (archive)
 - `kirocrew-updates-…` (private + CloudFront OAC, public trust domain):
   `cli/{channel}/{version}/`, `desktop/{channel}/{version}/`,
-  `feed/{channel}/latest-mac.json`, served at
+  `feed/{channel}/latest-mac.yml` (+ `latest-linux.yml`), served at
   `https://updates.crew.kiro.dev` (pointers: feeds, pip index) and
   `https://download.crew.kiro.dev` (artifact bytes) -- aliases of the
   same distribution; the auto-assigned
   `https://d28nxu9if70cmc.cloudfront.net` keeps working
 
-**Feed (as built) — static file, no Lambda:** `sign-and-notarize.yml` writes
-`feed/{channel}/latest-mac.json` directly after the spctl gate. There is no
+**Feed (as built) — static electron-updater channel files, no Lambda:**
+`sign-and-notarize.yml` writes `feed/{channel}/latest-mac.yml` directly
+after the spctl gate, and the Linux lane writes
+`feed/{channel}/latest-linux.yml` for the AppImage. There is still no
 Feed Lambda, no S3-event trigger, no 200/204 endpoint, and no CloudFront
-Function query routing: the client (`auto-update.js`) fetches the static
-JSON and compares versions CLIENT-SIDE, engaging Squirrel only on a version
-delta. Schema:
+Function query routing: the client (`auto-update.js`, electron-updater)
+fetches the static YAML and compares versions CLIENT-SIDE
+(difference-based, so a feed repointed at an older version is offered),
+engaging the platform installer (Squirrel.Mac on macOS, AppImage
+replacement on Linux) only on a version delta. Schema (electron-updater
+metadata):
 
-```json
-{
-  "version": "0.1.0-nightly.20260721061155",
-  "url": "https://download.crew.kiro.dev/desktop/nightly/0.1.0-nightly.20260721061155/KiroCrew.zip",
-  "dmg": "https://download.crew.kiro.dev/desktop/nightly/0.1.0-nightly.20260721061155/KiroCrew.dmg",
-  "name": "0.1.0-nightly.20260721061155",
-  "pub_date": "2026-07-21T06:22:13Z"
-}
+```yaml
+version: 0.1.0-nightly.20260721061155
+files:
+  - url: https://download.crew.kiro.dev/desktop/nightly/0.1.0-nightly.20260721061155/KiroCrew.zip
+    sha512: <base64>
+path: https://download.crew.kiro.dev/desktop/nightly/0.1.0-nightly.20260721061155/KiroCrew.zip
+sha512: <base64>
+releaseDate: '2026-07-21T06:22:13Z'
 ```
 
-`url` is the Squirrel auto-update payload (zip, mandatory). `dmg` is the
-first-install disk image for humans/website links; Squirrel ignores it.
+The yml is served from the pointer host (`updates.crew.kiro.dev`) while
+`files[].url` points absolutely at the byte host
+(`download.crew.kiro.dev`), preserving the pointer/bytes split. The file
+URL is the update payload (zip on macOS, AppImage on Linux);
+electron-updater verifies its base64 `sha512` fail-closed before
+install. The first-install DMG for humans/website links is not part of
+the feed — it has its own `desktop/{channel}/latest/KiroCrew.dmg`
+permalink.
 
 **The feed object MUST carry `Cache-Control: public, max-age=300`** (asserted
 fail-closed right after the write by `curl -I` through the public CDN — not

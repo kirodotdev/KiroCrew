@@ -8,7 +8,7 @@
 | Scope | Channel model, versioning, CI builds, distribution infrastructure, client auto-update, platform-lane contract |
 | Out of scope | Signing/notarization operations (separate doc, TBD); bootstrap installers; app-store app updates |
 
-> Statuses in this doc are as of 2026-07-23, cross-checked against the
+> Statuses in this doc are as of 2026-07-28, cross-checked against the
 > merged PR record of this repo. `docs/release-automation.md` is the
 > operational companion (workflow details, feed structure, CLI/EC2
 > distribution); this doc records the design and its rationale.
@@ -17,13 +17,15 @@
 
 KiroCrew ships through a channel-based release pipeline that only ever
 publishes signed builds. GitHub Actions builds every artifact (a Python
-wheel plus desktop apps for macOS arm64 and Linux x64) and uploads them to
-a private S3 staging area using short-lived OIDC credentials. macOS bundles
-go to CDSigner for Developer ID signing and Apple notarization, and CI
-publishes the update-feed pointer only after signing succeeds. A private S3
-bucket behind CloudFront (Origin Access Control) serves artifacts and feeds
-to the public. The Electron client updates itself through Squirrel.Mac
-against that feed, and it stops its embedded Python gateway before the
+wheel plus desktop apps for macOS (universal) and Linux x64) and uploads
+them to a private S3 staging area using short-lived OIDC credentials.
+macOS bundles go to CDSigner for Developer ID signing and Apple
+notarization, and CI publishes the update-feed pointer only after signing
+succeeds. A private S3 bucket behind CloudFront (Origin Access Control)
+serves artifacts and feeds to the public. The Electron client updates
+itself through electron-updater against that feed (on macOS still
+installing through Squirrel.Mac underneath; on Linux replacing the
+AppImage in place), and it stops its embedded Python gateway before the
 bundle swap so an update can never corrupt a running install. Every trust
 boundary fails closed: without a verified signature there is no feed entry,
 CI holds no static cloud credentials, and pull requests cannot assume the
@@ -44,7 +46,7 @@ the strongest quotes are cited so the provenance is checkable.
 |---|---|---|---|
 | P1 | The user gets an easy-to-install, packaged, signed and notarized native application, for macOS and Linux and in the future Windows, without needing a terminal or a Python setup | macOS: done, all Macs (Developer-ID-signed universal DMG, "ready for distribution" per `syspolicy_check`). Linux: packaged (AppImage) with signed SLSA provenance; not code-signed by design, since Linux has no Gatekeeper equivalent. Windows: source install only | #108 ("DMG for the first install, zip feed for every update after"), #137/#139/#144 (the DMG must survive Gatekeeper on a real user machine), #152 ("Every Intel-Mac user is locked out", which led to the universal app), #162 ("a link a human can click or paste into docs"), #63 (install must fail closed or auto-provision, never produce a broken install) |
 | P2 | Multiple release channels, so contributors get the latest build while normal users get a stable, tested build | Done: nightly, insider, and stable all live (insider 2026-07-22 18:47 UTC, stable v0.1.0 2026-07-22 19:36 UTC, each with 7 verified public surfaces). Nightly ships as a separate side-by-side app; insider/stable are two update lanes of one app | #132 ("pip/cli.sh users could never track insider or stable"), #176 (tag releases must be able to publish), #193 ("a nightly and the production app can be installed together"), #224 (in-place channel opt-in, "the Slack-beta model") |
-| P3 | Users self-update directly from the app, without ever touching the CLI or terminal, and nothing downloads or installs without explicit consent | macOS: done, macOS Software Update semantics (a check only discovers; update card with explicit Download & Install; nudge is inform-only). Linux: CLI lane self-updates (channel-sticky, sha256-verified via `latest-cli.json`); the desktop AppImage feed (`latest-linux.json`) is the remaining gap | #98 (close the gaps so auto-update "actually delivers bytes publicly"), #125 ("explicit user consent… Nothing downloads automatically"), #241 ("inform only — download and install stay in Settings > About"), #224 ("Switching never downloads or installs by itself") |
+| P3 | Users self-update directly from the app, without ever touching the CLI or terminal, and nothing downloads or installs without explicit consent | macOS: done, macOS Software Update semantics (a check only discovers; update card with explicit Download & Install; nudge is inform-only). Linux: done — the desktop AppImage self-updates through the electron-updater feed (`latest-linux.yml`), and the CLI lane self-updates (channel-sticky, sha256-verified via `latest-cli.json`) | #98 (close the gaps so auto-update "actually delivers bytes publicly"), #125 ("explicit user consent… Nothing downloads automatically"), #241 ("inform only — download and install stay in Settings > About"), #224 ("Switching never downloads or installs by itself") |
 | P4 | A bad release can be pulled back quickly, so users are not stranded on a broken build | Partial: pullback exercised once for real (#137 withdrew the Gatekeeper-broken DMG from every public surface); the pointer mechanics exist (mutable latest aliases + immutable versioned keys), but rollback automation and force-update (`blocked-versions`) remain unbuilt | #137 (the one live pullback event), #162/#132/#133 (mutable-pointer + never-republish discipline a rollback would flip) |
 | P5 | Users behind a minimum required version can be forced to update: a critical security patch must have a guaranteed propagation path | Designed, not built: pairs with P4's rollback design (the feed serves a minimum-version floor; clients below it force-trigger the update flow) | Design articulated alongside rollback and the update nudge; no dedicated PR yet |
 
@@ -142,11 +144,12 @@ CLI/EC2 distribution design, while this section covers the design shape.)
 | `pages.yml` | push to `main` (`site/**`) | landing site | GitHub Pages; the build job runs unprivileged by design because npm lifecycle scripts run untrusted code |
 | review workflows | PR | nothing | LLM review gates (Claude via a Bedrock role, Codex via an isolated Bedrock role), Semgrep, dependency audit; all fail closed |
 
-The platform matrix today: `macos-14` builds `darwin-arm64` (DMG + zip),
-and `ubuntu-22.04` builds `linux-x64` (AppImage). The wheel is
+The platform matrix today: `macos-14` builds the universal macOS app
+(DMG + zip), and `ubuntu-22.04` builds `linux-x64` (AppImage). The wheel is
 `py3-none-any`; KiroCrew is pure Python, so the same wheel serves every OS.
-Linux arm64 and Windows x64 are declared TODO in the matrix header
-(`nightly.yml:8-13`), and Windows is currently a source install only
+Windows x64 builds a Squirrel.Windows `Setup.exe` as a CI artifact
+(installer-only; not yet published to the CDN), Linux arm64 remains TODO,
+and the supported Windows install path is still source
 (`docs/windows-install.md`).
 
 Desktop packaging runs through `make desktop`, which calls
@@ -154,8 +157,10 @@ Desktop packaging runs through `make desktop`, which calls
 interpreter and a uv-built venv into the Electron app, then electron-builder
 produces the installers. This replaced PyInstaller (PR #11) so the app
 ships a real, ABI-consistent CPython and the gateway runs unmodified.
-Builds are host-arch only. We deliberately skip `universal2` because not
-all native dependencies publish universal2 wheels.
+The macOS app is universal via a fat Electron shell plus two single-arch
+backend trees selected at launch (#152); a true lipo-merged `universal2`
+backend stays off the table because not all native dependencies publish
+universal2 wheels (details in `docs/desktop-app.md`).
 
 ## 5. Distribution infrastructure
 
@@ -173,7 +178,7 @@ flowchart LR
         DIST["desktop/*&nbsp;&nbsp;cli/*&nbsp;&nbsp;feed/*"]
     end
     DIST --> CF["CloudFront CDN"]
-    CF --> UPD["Desktop updater (Squirrel)"]
+    CF --> UPD["Desktop updater (electron-updater)"]
     CF --> PIP["pip / cli.sh installs (PEP 503)"]
     CF --> HUM["Human downloads (latest DMG permalink)"]
 ```
@@ -204,7 +209,7 @@ Every public URL is one of exactly two classes:
 |---|---|---|
 | Human download permalink | `/desktop/{channel}/latest/KiroCrew.dmg` | Pointer (max-age=300) |
 | Versioned desktop artifacts | `/desktop/{channel}/{version}/…` (zip + DMG) | Immutable |
-| Desktop update feed | `/feed/{channel}/latest-mac.json` | Pointer (uncached) |
+| Desktop update feed | `/feed/{channel}/latest-mac.yml`, `/feed/{channel}/latest-linux.yml` | Pointer (uncached) |
 | CLI update feed | `/feed/{channel}/latest-cli.json` (version + sha256) | Pointer (uncached) |
 | pip index (PEP 503) | `/feed/{channel}/simple/` | Pointer |
 | GitHub Releases | `github.com/kirodotdev/KiroCrew/releases/tag/v…` | Immutable |
@@ -219,9 +224,13 @@ Rules that make the scheme work:
    page link to them, so app-name changes must never leak into URLs.
 3. Feed writes happen strictly after the artifacts they point to are
    publicly downloadable (feed-before-artifact would hand clients a 403).
-4. Desktop feed contract: 200 + Squirrel JSON when an update exists, 204
-   when current. CLI feed carries the wheel version and sha256 so the
-   installer verifies fail-closed before installing.
+4. Desktop feed contract: electron-updater channel files
+   (`latest-mac.yml` / `latest-linux.yml`) carrying `version`,
+   `files[].url` + base64 `sha512`, `path`, `sha512`, and `releaseDate`.
+   The client fetches the static file and compares versions client-side;
+   the yml sits on the pointer host while `files[].url` points
+   absolutely at the byte host. CLI feed carries the wheel version and
+   sha256 so the installer verifies fail-closed before installing.
 5. pip installs use `--extra-index-url` against the channel's simple
    index, keeping PyPI available for dependency resolution.
 
@@ -297,9 +306,10 @@ CDK but never created by it; a human injects the value once.
    `spctl`, then notarizes and staples into `notarized/*`. Signing
    mechanics are detailed in the separate signing doc.
 4. Only after a verified signed artifact exists does CI write
-   `feed/nightly/latest-mac.json` (Squirrel JSON: `version`, `url`, `name`,
-   `pub_date`). If CDSigner is not configured, the workflow deliberately
-   stops after step 2 and leaves the feed untouched.
+   `feed/nightly/latest-mac.yml` (electron-updater metadata: `version`,
+   `files[].url` + base64 `sha512`, `path`, `sha512`, `releaseDate`). If
+   CDSigner is not configured, the workflow deliberately stops after
+   step 2 and leaves the feed untouched.
 
 The original design had a Feed Lambda writing `latest-*.json` on S3 PUT
 events. It was superseded one day after the nightly pipeline landed
@@ -312,44 +322,78 @@ Lambda exists in the deployed CDK.
 
 ## 6. Client auto-update
 
-The updater is Electron's native `autoUpdater` (Squirrel.Mac). It runs only
-in packaged macOS builds and is disabled in dev builds and on other
-platforms.
+The updater is `electron-updater` (`website/electron/auto-update.js`). It
+runs in packaged macOS and Linux builds and is disabled in dev builds. On
+macOS, electron-updater still drives Squirrel.Mac underneath, so the
+proven atomic bundle swap is unchanged; what the migration from
+Electron's built-in `autoUpdater` replaced is the hand-rolled wrapper
+around it (feed fetching, version compare, and publish-metadata authoring
+are now the library's). On Linux it replaces the AppImage in place, a new
+capability — the AppImage previously had no desktop update path. Windows
+is not migrated: its packaging is still Squirrel.Windows, which
+electron-updater's NSIS-based win32 path cannot drive, so win32 is
+excluded from the client's supported platforms until the NSIS migration
+lands (#598).
 
-The feed contract: the client sends
-`GET {feedBase}?platform={p}&channel={c}&version={v}` and gets either a
-`200` with Squirrel JSON when an update exists or a `204` when it is
-current. The feed base is overridable through the `KIROCREW_UPDATE_FEED`
-environment variable, and a local feed server
-(`scripts/local-feed-server.js`) implements the same contract for
-development. The first check runs 30 seconds after launch, then every 4
-hours.
+The feed contract: the client resolves `{feedBase}/{channel}/` as a
+directory and fetches the static electron-updater channel file from it —
+`latest-mac.yml` on macOS, `latest-linux.yml` on Linux — carrying
+`version`, `files[].url` + base64 `sha512`, `path`, `sha512`, and
+`releaseDate`. The yml sits on the pointer host
+(`updates.crew.kiro.dev`); the `files[].url` entries are absolute and
+point at the byte host (`download.crew.kiro.dev`), which is what
+preserves the pointer/bytes host split (the provider ignores the feed
+base when a file URL is absolute). Version compare is client-side and
+difference-based, not greater-than. The feed base is overridable through
+the `KIROCREW_UPDATE_FEED` environment variable (HTTPS-enforced; plain
+HTTP is allowed only on loopback, for local update-harness testing
+against `website/electron/scripts/local-feed-server.js`). The first check
+runs 30 seconds after launch, then every 4 hours.
+
+Four policy flags are set deliberately, each differing from the
+electron-updater default:
+
+- `autoDownload=false` — consent-first: discovery must never download;
+  the default would pull megabytes on a background check with no user
+  action (P3).
+- `autoInstallOnAppQuit=false` — the default would swap the bundle on
+  quit without stopping the Python gateway, exactly the
+  half-replaced-app race T5 exists to prevent; the deferred-install path
+  stops the gateway first.
+- `allowDowngrade=true` — the update gate is difference-based: a feed
+  repointed at an older version must be offered, which is what makes
+  version retraction (P4) and the channel switch-back (#224) work.
+- `allowPrerelease=true` — every nightly (`-nightly.<stamp>`) and
+  insider (`-insider.N`) version is a semver prerelease and would
+  otherwise be invisible to its own channel.
 
 Install ordering is the KiroCrew-specific part. The app supervises a
 bundled Python gateway child, so before `quitAndInstall` the client stops
 the gateway gracefully (`POST /api/shutdown`, then SIGTERM/SIGKILL). That
-way Squirrel's ShipIt never swaps the bundle under a live child process.
-Choosing "Later" defers installation to natural quit via a `before-quit`
-hook.
+way the bundle swap (Squirrel's ShipIt on macOS, the AppImage replacement
+on Linux) never races a live child process. Choosing "Later" defers
+installation to natural quit via a `before-quit` hook, in the same
+stop-gateway-first order.
 
-There is no custom signature verification in app code. Integrity relies on
-Squirrel.Mac's code-signature validation of the downloaded bundle, which is
-why the feed may only ever point at signed artifacts (T1).
+Downloaded updates are verified fail-closed by electron-updater against
+the feed's `sha512` before install, and on macOS Squirrel.Mac
+additionally validates the code signature of the swapped bundle — which
+is why the feed may only ever point at signed artifacts (T1).
 
-The renderer surface is three IPC calls (`update:check`, `update:install`,
-`update:get-info`) feeding an in-app update modal and the About panel.
+The renderer surface is four IPC calls (`update:check`,
+`update:download`, `update:install`, `update:get-info`) feeding an
+in-app update modal and the About panel.
 
 Source installs (non-packaged) update via git instead
 (`handlers/updates.py`): fetch and compare, `git pull`, frontend rebuild,
 `pip install -e .`, then an in-place `execv` restart.
 
-Known client gaps (section 8): dynamic platform detection needs verifying
-before a second desktop platform lands, and there is no blocked-version
-handling. The consent contract (PR #125): a check only discovers an
-update and surfaces a card in Settings > About (version, notes, date);
-nothing downloads without an explicit Download & Install, background
-polls included. The channel switcher (#224) and the inform-only nudge
-(#241) build on that same contract.
+Known client gaps (section 8): there is no blocked-version handling. The
+consent contract (PR #125): a check only discovers an update and
+surfaces a card in Settings > About (version, notes, date); nothing
+downloads without an explicit Download & Install, background polls
+included. The channel switcher (#224) and the inform-only nudge (#241)
+build on that same contract.
 
 ## 7. Adding a platform lane
 
@@ -359,19 +403,21 @@ A "platform lane" is the end-to-end path for one OS/arch: a CI matrix entry
 builds installers, the artifacts flow through staging, signing, and the
 feed, and a platform updater consumes that feed.
 
-macOS arm64 is the complete lane. The `macos-14` matrix entry builds a DMG
-(for first install) and a zip (the update archive), which flow through
+macOS is the complete lane. The `macos-14` matrix entry builds a universal
+DMG (for first install) and a zip (the update archive), which flow through
 `pre-signed/`, CDSigner signing plus notarization, `signed/` and
-`notarized/`, and finally `feed/{channel}/latest-mac.json`, which the
-Squirrel.Mac client consumes.
+`notarized/`, and finally `feed/{channel}/latest-mac.yml`, which the
+electron-updater client consumes (installing through Squirrel.Mac
+underneath).
 
-Linux x64 is a partial desktop lane. The `ubuntu-22.04` matrix entry
-builds an AppImage that ships with signed SLSA provenance but no code
-signature (deliberate, since Linux has no Gatekeeper equivalent), and
-there is no desktop feed entry (`latest-linux.json`) yet, so AppImage
-users reinstall manually. Linux is fully served by the CLI lane in the
-meantime: `latest-cli.json` plus the PEP 503 index give sha256-verified,
-channel-sticky install and self-update.
+Linux x64 is a desktop lane without code signing. The `ubuntu-22.04`
+matrix entry builds an AppImage that ships with signed SLSA provenance
+but no code signature (deliberate, since Linux has no Gatekeeper
+equivalent), and `feed/{channel}/latest-linux.yml` gives the AppImage the
+same electron-updater self-update path as macOS, with the feed's `sha512`
+as the fail-closed integrity gate on the download. The CLI lane also
+serves Linux: `latest-cli.json` plus the PEP 503 index give
+sha256-verified, channel-sticky install and self-update.
 
 The wheel is the pip lane. KiroCrew is pure Python, so one `py3-none-any`
 wheel serves every OS; it is published under `cli/*` on the CDN and through
@@ -399,18 +445,20 @@ hold. These are the invariants; the per-OS mechanics are free.
    the signing doc) MUST complete and verify before the lane's artifacts
    become client-visible. A lane with no signing integration ships no feed
    entry; Linux today is the worked example.
-6. Feed entry: `feed/{channel}/latest-{platform}.json` in the
-   Squirrel-compatible shape (`version`, `url`, `name`, `pub_date`), where
-   `url` points at the signed artifact behind the CDN. Feed pointers live
+6. Feed entry: `feed/{channel}/latest-{platform}.yml` in the
+   electron-updater shape (`version`, `files[].url` + base64 `sha512`,
+   `path`, `sha512`, `releaseDate`), where the file URLs point absolutely
+   at the signed artifact behind the CDN byte host. Feed pointers live
    under the uncached `feed/*` behavior; artifacts live under immutable
    versioned paths.
-7. Client updater: implements the feed contract (200/204 on
-   `platform`/`channel`/`version`) and honors the gateway-graceful-stop
-   before install, the "Later" deferral to app quit, and platform-native
-   signature validation of downloaded updates.
-8. Dynamic platform detection: the client must report the new platform id.
-   Removing the current `darwin-arm64` hardcode is a prerequisite of the
-   first new lane.
+7. Client updater: consumes the lane's electron-updater channel file
+   (difference-based compare, sha512-verified download) and honors the
+   gateway-graceful-stop before install, the "Later" deferral to app
+   quit, and platform-native signature validation of downloaded updates.
+8. Client platform gate: electron-updater resolves the per-OS channel
+   file itself, but the client enables updates only for platforms with a
+   working publish lane (`SUPPORTED_PLATFORMS` in `auto-update.js`);
+   adding the lane means adding the platform there.
 9. Rollback: repointing the lane's feed at an older signed version MUST be
    sufficient to move clients back. If the platform updater refuses
    downgrades, the lane must document its own rollback mechanism.
@@ -420,16 +468,14 @@ hold. These are the invariants; the per-OS mechanics are free.
 
 ## 8. Known gaps and roadmap
 
-Open as of 2026-07-23:
+Open as of 2026-07-28:
 
 | Item | Type | Notes |
 |---|---|---|
-| Rollback automation + forced minimum version (P5) | roadmap | Pullback was exercised manually once; a `rollback.yml` + minimum-version design exists but is unbuilt. Retention window doubles as the rollback window |
+| Rollback automation + forced minimum version (P5) | roadmap | Pullback was exercised manually once; a `rollback.yml` + minimum-version design exists but is unbuilt. Retention window doubles as the rollback window. The client side is ready: `allowDowngrade=true` means repointing a feed at an older version is offered as an update |
 | S3 lifecycle rules | roadmap | Designed (intermediates 7d, nightly 30d, insider 180d, stable forever); unmanaged growth is ~1 TB/year |
-| Linux desktop update feed | roadmap | `latest-linux.json` (per-arch AppImage, never per-distro) is the open gap; the Linux CLI lane already self-updates |
-| Windows lane | roadmap | Source install only; must satisfy the contract in 7.2 |
+| Windows lane | roadmap | CI builds a Squirrel.Windows `Setup.exe` (installer-only, unpublished); win32 auto-update stays disabled in the client until the NSIS migration (#598); the supported install path is still source |
 | Update-consent nudge polish, custom icon setting | roadmap | Nudge dots shipped; Settings card for custom icons deliberately deferred |
-| Client platform detection | verify | The universal app changed the artifact story; confirm the feed `platform` parameter is derived dynamically before adding a second desktop platform (7.2 item 8) |
 
 ## 9. Design history and authorship
 

@@ -16,9 +16,12 @@ the backend bundled (no separate Python install needed). Current status:
   the upcoming `publish-windows.yml` lane).
 - **Unsigned** — SmartScreen shows an "unrecognized app" interstitial
   (More info > Run anyway). Authenticode signing is a tracked follow-up.
-- **No auto-update yet** — the app does not consume the Squirrel feed on
-  win32 until the publish + updater lane lands; installs update by running a
-  newer Setup.exe.
+- **No auto-update yet** — the macOS/Linux client moved to
+  electron-updater (`latest-mac.yml` / `latest-linux.yml` feeds), but its
+  win32 path drives NSIS installers, not Squirrel.Windows, so win32 stays
+  excluded from the updater (`SUPPORTED_PLATFORMS` in `auto-update.js`)
+  until the NSIS migration lands (issue #598); installs update by running
+  a newer Setup.exe.
 
 The source install below remains the fully supported path.
 

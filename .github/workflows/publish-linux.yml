@@ -28,10 +28,12 @@ name: Publish Linux Desktop (reusable)
 #   - Arch-qualified filename: Linux has no universal binary, so per-arch
 #     filenames are the contract (per-arch, never per-distro). A future
 #     arm64 lane publishes KiroCrew-aarch64.AppImage beside this one.
-#   - Deliberately no feed/<channel>/latest-linux.json yet: the AppImage
-#     has no auto-updater consuming a feed, so the only pointer a human or
-#     a download button needs is the latest alias. The feed lands together
-#     with the Linux updater work.
+#   - Writes feed/<channel>/latest-linux.yml (electron-updater channel
+#     metadata) AFTER the versioned AppImage is live and BEFORE the latest
+#     alias, mirroring the mac lane's go-live order: a feed must never
+#     advertise bytes that are not downloadable yet, and the convenience
+#     alias must never point ahead of the go-live switch. This is what
+#     gives the Linux desktop an auto-updater for the first time.
 
 on:
   workflow_call:
@@ -177,11 +179,77 @@ jobs:
           echo "APPIMAGE_KEY=${APPIMAGE_KEY}" >> "$GITHUB_ENV"
           echo "Public artifact: ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}"
 
+      # electron-updater channel metadata (latest-linux.yml) -- the feed
+      # website/electron/auto-update.js reads on Linux. Written only after
+      # the versioned AppImage above is publicly downloadable (and after
+      # the 412 path verified identical bytes on a re-run), and BEFORE the
+      # latest alias, mirroring the mac lane's go-live order: the feed is
+      # the updater's go-live switch, the alias is a convenience that must
+      # never point ahead of it. Mutable key, served no-cache by the
+      # feed/* CloudFront behavior (the explicit header keeps downstream
+      # caches honest). Out-of-order overwrites are prevented by the
+      # caller workflows' per-channel concurrency groups.
+      #
+      # Two properties are load-bearing (see test_publish_feed_contract.py):
+      #   - sha512 is BASE64 of the raw digest (openssl -binary | base64),
+      #     never hex: electron-updater string-compares base64; a hex value
+      #     makes every download fail checksum verification.
+      #   - files[].url is an ABSOLUTE byte-host url (CLI_CDN_BASE =
+      #     download.crew.kiro.dev). The yml itself lives on the POINTER
+      #     host (updates.crew.kiro.dev/feed/...); electron-updater's
+      #     newUrlFromBase does `new URL(fileUrl, base)`, which ignores the
+      #     base for absolute urls -- that is what preserves the
+      #     pointer/bytes host split. A bare filename here would resolve
+      #     against feed/<channel>/ and 404.
+      # Filename is arch-coupled on Linux: electron-updater resolves
+      # latest-linux.yml for x64 and latest-linux-<arch>.yml otherwise, so
+      # a future arm64 lane writes latest-linux-arm64.yml beside this one.
+      - name: Write update feed
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          set -euo pipefail
+          APPIMAGE_SHA512=$(openssl dgst -sha512 -binary "${APPIMAGE_PATH}" | base64 -w 0)
+          APPIMAGE_SIZE=$(stat -c%s "${APPIMAGE_PATH}")
+
+          # FAIL CLOSED if the feed would describe bytes other than the ones
+          # served. The versioned AppImage key is conditionally written and a
+          # PreconditionFailed is tolerated on re-run, so a same-version rebuild
+          # with different bytes would leave the OLD object published while this
+          # digest describes the NEW local build. electron-updater verifies
+          # sha512 fail-closed, so every Linux client would refuse to install.
+          # Aborting is correct: republishing an immutable key causes edge
+          # divergence (#62) -- cut a new version instead.
+          SERVED_SHA512=$(curl -fsS --retry 3 --retry-delay 2 \
+            "${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}" | openssl dgst -sha512 -binary | base64 -w 0)
+          if [ "$SERVED_SHA512" != "$APPIMAGE_SHA512" ]; then
+            echo "::error::published AppImage does not match the artifact this feed would advertise."
+            echo "::error::  expected sha512 (local build): $APPIMAGE_SHA512"
+            echo "::error::  served   sha512 (published):   $SERVED_SHA512"
+            exit 1
+          fi
+          echo "Verified published AppImage matches the feed digest."
+          cat > /tmp/latest-linux.yml <<EOF
+          version: ${VERSION}
+          files:
+            - url: ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}
+              sha512: '${APPIMAGE_SHA512}'
+              size: ${APPIMAGE_SIZE}
+          path: ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}
+          sha512: '${APPIMAGE_SHA512}'
+          releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+          EOF
+          aws s3 cp /tmp/latest-linux.yml \
+            "s3://${{ vars.CLI_DIST_BUCKET }}/feed/${CHANNEL}/latest-linux.yml" \
+            --content-type text/yaml \
+            --cache-control "public, max-age=300"
+          echo "Feed written: feed/${CHANNEL}/latest-linux.yml -> ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}"
+
       # Human-clickable permalink to the current AppImage:
       #   <CDN>/desktop/<channel>/latest/KiroCrew-x86_64.AppImage
       # Same mutable-alias semantics as the latest-DMG alias: plain
-      # overwrite, max-age=300, written AFTER the versioned key so it never
-      # points at bytes that are not yet live.
+      # overwrite, max-age=300, written AFTER the versioned key and the
+      # feed so it never points at bytes that are not yet live nor ahead
+      # of the go-live switch.
       - name: Update latest AppImage alias
         if: env.HAS_SIGNING_SECRETS
         run: |
@@ -203,5 +271,6 @@ jobs:
             echo "## Publish Linux (${CHANNEL})"
             echo "- Version: ${VERSION}"
             echo "- Public AppImage: ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}"
+            echo "- Feed: \`feed/${CHANNEL}/latest-linux.yml\`"
             echo "- Latest AppImage alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_APPIMAGE_KEY}"
           } >> "$GITHUB_STEP_SUMMARY"

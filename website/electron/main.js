@@ -1,4 +1,4 @@
-const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Menu, nativeImage, nativeTheme, autoUpdater, Notification, ipcMain, webContents, session, desktopCapturer, systemPreferences, screen } = require("electron");
+const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Menu, nativeImage, nativeTheme, Notification, ipcMain, webContents, session, desktopCapturer, systemPreferences, screen } = require("electron");
 const Store = require("electron-store");
 const fs = require("fs");
 const os = require("os");
@@ -1834,11 +1834,12 @@ app.whenReady().then(async () => {
   await startGateway();
   await showLoadingThenConnect(win);
 
-  // Desktop auto-update (Squirrel.Mac). No-op in dev / non-darwin. KiroCrew
-  // ships a single "stable" channel. The gateway is stopped gracefully before
-  // any bundle swap. Update state is mirrored to the renderer so the in-app
-  // UpdateModal + Settings > About can drive the prompt; the native dialog
-  // stays as the fallback only when no UI is wired.
+  // Desktop auto-update (electron-updater; Squirrel.Mac underneath on macOS,
+  // AppImage on Linux). No-op in dev / on platforms without a publish lane.
+  // The gateway is stopped gracefully before any bundle swap. Update state is
+  // mirrored to the renderer so the in-app UpdateModal + Settings > About can
+  // drive the prompt; the native dialog stays as the fallback only when no UI
+  // is wired.
   function broadcastUpdateState(payload) {
     try {
       for (const wc of webContents.getAllWebContents()) {
@@ -1850,7 +1851,10 @@ app.whenReady().then(async () => {
   }
   const updater = initAutoUpdate({
     app,
-    autoUpdater,
+    // electron-updater's AppUpdater, NOT electron's built-in autoUpdater: it
+    // generates/validates the feed metadata, verifies sha512 fail-closed, and
+    // covers Linux. On macOS it still drives Squirrel.Mac underneath.
+    autoUpdater: require("electron-updater").autoUpdater,
     dialog,
     Notification,
     getFlavor: () => "stable",

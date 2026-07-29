@@ -131,7 +131,7 @@ the arch-suffixed launcher.)
 include Rosetta 2)
 and uploads a single `unsigned-build-darwin-universal` artifact. Everything
 downstream (codesigning both slices, notarization, stapling, the update
-feed) is arch-indifferent: the feed schema is unchanged, `latest-mac.json`
+feed) is arch-indifferent: the feed schema is unchanged, `latest-mac.yml`
 points at the one universal zip, and installed arm64 apps auto-update onto
 it seamlessly. No Intel runner and no per-arch feed split are needed.
 
