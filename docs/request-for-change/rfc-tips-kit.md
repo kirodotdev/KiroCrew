@@ -9,13 +9,16 @@
 
 KiroCrew already ships a **feature-tips engine** (`tips.py`): every 6 hours it reads the user's context and recent memory, generates memory-personalized tips from a docs catalog, and surfaces them one at a time in the chat view with a glow/snooze/dismiss cadence. Tips today carry at most a `{kind: 'route'}` one-click action that navigates to a Settings tab or page.
 
-This RFC promotes that engine from **feature discovery** to a **recommendation system** — the "Tips Kit". It adds a background **analyzer** that reads what the user actually does day to day (the daily memory history), and three new **executable** recommendation kinds delivered through the existing tip card:
+This RFC promotes that engine from **feature discovery** to a **recommendation system** — the "Tips Kit". It adds a background **analyzer** that reads what the user actually does day to day (the daily memory history), and four recommendation kinds delivered through the existing tip card — three **executable** and one **educational**:
 
 1. **App** — "you keep doing X by hand; install *Y* from the App Store" → one-click install.
 2. **Setting** — "enabling *Z* fits how you work" → one-click toggle.
 3. **Cron** — "you run this every morning; schedule it" → one-click cron creation.
+4. **Feature tip** — "you've been doing X manually across turns; you can use `/goal`" → navigate/learn-more (the informational kind — capability discovery, no side effect).
 
-Every recommendation is grounded in an observed activity pattern, requires explicit user consent before its side effect runs, and feeds a **learning loop**: accept raises a recommendation family's weight and can persist a preference; dismiss suppresses it. The system gets more accurate the longer it runs, without any data leaving the machine.
+The first three *do* something; the fourth *tells* the user about a built-in capability that fits what they are doing. Crucially, the fourth kind is not a static-catalog tip retrofitted — it is **activity-grounded** the same way the executable kinds are: the analyzer detects a manual workflow that a built-in feature (`/goal`, `/compact`, spawning sub-agents, `monitor`, watch-style crons…) would streamline, and surfaces *that* feature at the moment it is relevant, rather than a generic "did you know" from the docs pool. The three executable kinds are illustrative, not exhaustive — the kind set is designed to grow.
+
+Every recommendation is grounded in an observed activity pattern; the three executable kinds require explicit user consent before their side effect runs (the feature tip has none), and all feed a **learning loop**: accept raises a recommendation family's weight and can persist a preference; dismiss suppresses it. The system gets more accurate the longer it runs, without any data leaving the machine.
 
 ## Motivation
 
@@ -32,7 +35,7 @@ Every recommendation is grounded in an observed activity pattern, requires expli
 So the engine already has: activity-adjacent personalization, a consent-respecting cadence, a one-click action seam, doc-stable suppression, and a memory-privacy posture. What it does **not** have:
 
 1. **Real activity grounding.** Generation reads `ContextBuilder` (preferences, projects, a memory slice) but never analyzes the *daily history* (`memory/history/*.md`) to detect behavioral patterns — "this user files a ticket every standup", "this user manually greps logs daily". Tips are about features that exist, not about what the user repeatedly does.
-2. **Only one action kind.** `route` navigates. It cannot install an app, flip a setting, or create a cron — the three things a recommendation most naturally resolves to.
+2. **A single, catalog-bound action.** `route` navigates, and the informational tips it carries are drawn from the static docs catalog, not from what the user is doing. There is no executable kind (install an app, flip a setting, create a cron — the three things a recommendation most naturally resolves to), and even the educational tips are generic rather than surfaced *because* the user is doing something a feature would streamline.
 3. **No learning from outcomes.** `ack`/`dismiss` drive suppression, but there is no weighting: dismissing "cron" tips five times does not down-rank the whole cron *family*, and accepting an app recommendation does not teach the system the user welcomes app suggestions.
 
 ### Problems
@@ -44,7 +47,7 @@ So the engine already has: activity-adjacent personalization, a consent-respecti
 ## Goals
 
 - A background **analyzer** derives candidate recommendations from **observed daily activity** (local `memory/history/*.md`), not just from the feature catalog.
-- Three new tip action kinds — `app_install`, `setting_toggle`, `cron_create` — each executed through the existing tip card, each **consent-gated** (the action never runs on generation, only on an explicit user click that then confirms).
+- Three new **executable** tip action kinds — `app_install`, `setting_toggle`, `cron_create` — each executed through the existing tip card, each **consent-gated** (the action never runs on generation, only on an explicit user click that then confirms) — plus an **activity-grounded educational kind**, `feature_tip` (the existing `route`/informational tip, now surfaced *because* the analyzer saw a manual workflow a built-in feature would streamline). The kind set is open — designed so a new kind is a new detector + a new card renderer, not a new engine.
 - A **learning loop**: per-recommendation-family weights adjust on `ack`/`dismiss`; a strong accept may persist a durable preference (via the lessons store) so the recommendation becomes a standing behavior instead of a repeated suggestion.
 - **Zero egress.** Analysis runs entirely on-device against already-redacted daily summaries; no new data source leaves the machine (consistent with KiroCrew's local-first posture).
 - **Reuse, don't fork.** The cadence model, `TipsState` suppression, the card surface, and the feedback endpoint are extended, not duplicated.
@@ -94,7 +97,7 @@ flowchart TB
     card -->|ack / dismiss| state
 ```
 
-The analyzer is a new deterministic stage that produces *candidate recommendations*; the existing engine ranks/phrases them alongside catalog tips and serves them through the unchanged cadence gate; the card gains three executable action kinds; outcomes feed weights back into `TipsState`.
+The analyzer is a new deterministic stage that produces *candidate recommendations*; the existing engine ranks/phrases them alongside catalog tips and serves them through the unchanged cadence gate; the card gains three executable action kinds plus an activity-grounded educational kind; outcomes feed weights back into `TipsState`.
 
 ### The analyzer (new: `tips_analyzer.py`)
 
@@ -103,7 +106,7 @@ A deterministic pass — **no LLM, no tokens** — run at the head of the existi
 ```python
 @dataclass
 class CandidateRec:
-    kind: str            # "app_install" | "setting_toggle" | "cron_create" | "route"
+    kind: str            # "app_install" | "setting_toggle" | "cron_create" | "feature_tip"
     family: str          # stable weighting key, e.g. "cron:standup-briefing"
     evidence: str        # the observed pattern, in plain words (goes into `why`)
     target: dict         # kind-specific payload (see Execution seams)
@@ -115,6 +118,7 @@ Detectors are small and explainable, e.g.:
 - **Repetition → cron**: the same intent recurs at a similar time across ≥3 days ("summarize #eng", "check my tickets") and no cron already covers it → `cron_create` candidate.
 - **Manual toil → app**: activity matches an installed-registry app's capability the user has *not* installed → `app_install` candidate (registry only; never invents an app).
 - **Config gap → setting**: an observed friction maps to a known toggle the user has left at default (e.g. heavy parallel work + `session.pool_size` at 1) → `setting_toggle` candidate.
+- **Manual workflow → built-in feature**: an activity shape maps to a KiroCrew capability the user isn't using → `feature_tip` candidate. Examples: a long multi-step task driven turn-by-turn across a session → `/goal`; a session grown large/slow → `/compact`; repeated independent parallel work done serially → spawning sub-agents; "keep checking X until Y" phrasing → `monitor`/watch cron. This is the educational kind — its `target` is a route or a `cta_prompt`, never a side effect. It differs from a static-catalog tip in that the *feature* is chosen from the observed workflow, not picked round-robin from the docs pool.
 
 Candidates whose `family` is dismissed or whose `target` already exists (app installed, cron present, setting already non-default) are dropped before ranking. This is the same "already-have" suppression the app detector needs and the cron detector needs, centralized once.
 
@@ -133,21 +137,23 @@ The candidate list is passed into the existing generation prompt as an additiona
 }
 ```
 
-### Execution seams (three new action kinds)
+### Execution seams (the action kinds)
 
-All three are **prepare-then-confirm**: the card click opens a confirmation (prefilled from `target`); only on confirm does the backend call the seam. No side effect is ever taken at generation time.
+The three executable kinds are **prepare-then-confirm**: the card click opens a confirmation (prefilled from `target`); only on confirm does the backend call the seam. No side effect is ever taken at generation time. The educational `feature_tip` kind takes no side effect at all — it navigates or drops a ready-to-send prompt, exactly like today's `route` tip.
 
-| Kind | Confirm UI | Backend seam |
-|------|-----------|--------------|
-| `app_install` | App detail / install sheet, prefilled with the registry entry | `apps/manager.py::install_app(source)` |
-| `setting_toggle` | Settings row focused + the proposed value shown as a diff | existing authenticated config PUT (allowlist-validated) |
-| `cron_create` | Cron composer prefilled with name/schedule/message | `cron.py::CronService.create(...)` |
+| Kind | Side effect? | Confirm UI | Backend seam |
+|------|--------------|-----------|--------------|
+| `app_install` | yes | App detail / install sheet, prefilled with the registry entry | `apps/manager.py::install_app(source)` |
+| `setting_toggle` | yes | Settings row focused + the proposed value shown as a diff | existing authenticated config PUT (allowlist-validated) |
+| `cron_create` | yes | Cron composer prefilled with name/schedule/message | `cron.py::CronService.create(...)` |
+| `feature_tip` | no | none — navigates (`route`) or pre-fills a `cta_prompt` | none (today's `tipActionRoute` path) |
 
-The card's action validation (`tipActionRoute` today) generalizes to a discriminated union; each new kind validates its `target` shape defensively the same way `route` is constrained to internal paths, because tips can be LLM-authored:
+The card's action validation (`tipActionRoute` today) generalizes to a discriminated union; each kind validates its `target` shape defensively the same way `route` is constrained to internal paths, because tips can be LLM-authored:
 
 - `app_install.target` must name an app **present in the registry** (reject otherwise).
 - `setting_toggle.target` must name a key **in the config allowlist** with a value passing that key's validator.
 - `cron_create.target` is passed to the cron composer as a *draft* — it is never registered directly from the tip; the user reviews the schedule and message and presses create.
+- `feature_tip.target` is an internal route (validated exactly as `route` is today) and/or a `cta_prompt` string; it can reach nothing off-origin and takes no action on its own.
 
 ### The learning loop
 
@@ -162,24 +168,24 @@ Weights multiply detector `strength` at ranking time, so the pool self-tunes to 
 ### Cadence, surface, privacy
 
 - **Cadence**: unchanged. Same 6h backend refresh, same 20-min client floor, same per-turn/suppression/temporary-session gating in `useTipTrigger`. Recommendations flow through the identical serve path — they are just higher-signal tips.
-- **Surface**: the same single tip card. The three new action kinds render as the same accent action button that `route` uses today, with kind-appropriate labels/icons.
+- **Surface**: the same single tip card. The three executable kinds render as the same accent action button that `route` uses today, with kind-appropriate labels/icons; the `feature_tip` kind renders exactly like today's informational tip (navigate / Learn more).
 - **Privacy**: the analyzer reads only `memory/history/*.md` (owner-only, already-redacted daily summaries) and local state (installed apps, crons, config). No transcripts, no egress. Temporary sessions remain fully blocked (existing `blocked` path), since recommendations are memory-derived.
 
 ## Migration plan
 
 ```mermaid
 flowchart LR
-    t1[Phase T1<br/>Analyzer + cron kind] --> t2[Phase T2<br/>app_install + setting_toggle]
+    t1[Phase T1<br/>Analyzer + feature_tip + cron] --> t2[Phase T2<br/>app_install + setting_toggle]
     t2 --> t3[Phase T3<br/>Learning weights + preference promotion]
     t3 --> t4[Phase T4 - future<br/>Dedicated recommendations surface]
 ```
 
-### Phase T1: analyzer + `cron_create` (highest-value, lowest-risk kind)
+### Phase T1: analyzer + `feature_tip` + `cron_create` (highest-value, lowest-risk kinds)
 
-- `tips_analyzer.py`: history reader + repetition detector + "already-have cron" suppression, emitting `CandidateRec`.
+- `tips_analyzer.py`: history reader + the repetition detector (→ cron) and the manual-workflow detector (→ feature tip) + "already-have" suppression, emitting `CandidateRec`.
 - Wire candidates into the generation prompt as a prioritized input.
-- Card: generalize `action` to the discriminated union; implement `cron_create` (prefill the cron composer draft, create via `CronService.create` only on user confirm).
-- Exit criteria: a recurring daily intent surfaces as a cron recommendation grounded in real history; clicking it opens a prefilled cron draft; nothing is scheduled without confirm; dismissing it suppresses the family; analyzer runs zero-token.
+- Card: generalize `action` to the discriminated union; ship `feature_tip` first (no side effect — it is today's `route` path, now activity-grounded), then `cron_create` (prefill the cron composer draft, create via `CronService.create` only on user confirm).
+- Exit criteria: a manual workflow surfaces the matching built-in feature (`/goal`, `/compact`, spawn, monitor) grounded in real history; a recurring daily intent surfaces as a cron recommendation; clicking the cron opens a prefilled draft and nothing is scheduled without confirm; dismissing either suppresses the family; analyzer runs zero-token.
 
 ### Phase T2: `app_install` + `setting_toggle`
 
@@ -202,7 +208,7 @@ A recommendations inbox/panel (review multiple at once, history of accepted/dism
 | Surface | Guarantee |
 |---------|-----------|
 | `tips_state.json` | New `weights` field optional; absent = 1.0 everywhere, i.e. today's ranking |
-| Tip schema | `kind`/typed `action` additive; a tip with no `action` or `kind:'route'` behaves exactly as today |
+| Tip schema | `kind`/typed `action` additive; a tip with no `action`, or `kind:'route'`/`feature_tip`, behaves exactly as today |
 | Cadence / `useTipTrigger` | Unchanged gate, floor, suppression, temporary-session block |
 | Feedback endpoint | `shown`/`ack`/`dismiss`/`optout` unchanged; weights piggyback on existing `ack`/`dismiss` |
 | Opt-out | Global tips off switch disables the whole Kit, unchanged |
