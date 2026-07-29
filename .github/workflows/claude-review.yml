@@ -10,6 +10,15 @@ name: Opus 5 Review
 #
 # Verdict model is BINARY: a finding either meets the bar or is not reported.
 # There is no MEDIUM/LOW tier to sink uncertain observations into.
+#
+# Verdict capture is PLAIN TEXT + SHA-scoped markers parsed from the action's
+# execution_file transcript — deliberately NOT --json-schema structured output.
+# claude-code's internal StructuredOutput tool is unreliable when other tools
+# are enabled (anthropics/claude-code#37904): reviews completed with result
+# subtype "success" yet returned NO structured_output, failing this gate closed
+# on healthy reviews. design-review.yml proved the plain-text + parsed-header
+# pattern; this mirrors it, with the same SHA-scoped marker contract as
+# codex-review.yml ([OPUS-REVIEWED] / [BLOCK-MERGE]).
 
 on:
   pull_request:
@@ -128,20 +137,26 @@ jobs:
           # triggering event without waiting for a `@claude` trigger phrase.
           #
           # `gh pr comment` is deliberately NOT allowed anymore. The gate and the
-          # posted summary both read the action's structured output, and
-          # model-posted inline comments bypassed the kill-filter that governs
-          # the summary — they were the main channel for the low-value chatter
-          # this review is meant to stop. The model now has exactly two powers:
-          # read the repo, and return a verdict.
+          # posted summary both read the review text this workflow captures from
+          # the run transcript, and model-posted inline comments bypassed the
+          # kill-filter that governs the summary — they were the main channel for
+          # the low-value chatter this review is meant to stop. The model now has
+          # exactly two powers: read the repo, and return a verdict.
           # `gh pr view` and `gh api` remain disallowed: they would pull the PR
           # title/description and attacker-controllable comments into an
           # agentic reviewer's context. This reviewer is CODE-ONLY.
+          #
+          # NO --json-schema: claude-code's StructuredOutput tool refuses to fire
+          # when other tools are enabled (anthropics/claude-code#37904), which
+          # made completed reviews fail the gate with "success but no
+          # structured_output". The verdict is captured from the model's final
+          # message via the SHA-scoped markers required by FINAL OUTPUT below —
+          # the same robust pattern design-review.yml and codex-review.yml use.
           claude_args: |
             --model us.anthropic.claude-opus-5
             --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 120
             --allowedTools "Read,Grep,Glob,Bash(gh pr diff:*)"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["reviewed","block_merge","summary"],"properties":{"reviewed":{"type":"boolean","description":"true once you have completed the review of this commit"},"block_merge":{"type":"boolean","description":"true IFF at least one finding meets WHAT BLOCKS (a blocking:true AUTOSDE rule violation, or a reachable residual-class defect)"},"summary":{"type":"string","description":"markdown review summary CI will post to the PR"}}}'
           prompt: |
             You are reviewing pull request #${{ github.event.pull_request.number }}
             of ${{ github.repository }} (HEAD ${{ github.event.pull_request.head.sha }}).
@@ -223,11 +238,29 @@ jobs:
             repository code.
 
             COVERAGE: inspect EXHAUSTIVELY, report SELECTIVELY. Enumerate every
-            changed file and read each one. Completeness applies to what you
-            READ, never to how much you EMIT. Do not narrate what you inspected.
+            changed file and judge every hunk. The DIFF ITSELF is your primary
+            reading; open a full file (Read/Grep) only where judging a hunk
+            genuinely requires the surrounding context — a guard upstream, a
+            caller, the other side of a contract. Do NOT re-read whole files the
+            diff already shows you; your turn budget is fixed and every
+            unnecessary file read is a turn not spent on analysis. Completeness
+            applies to what you JUDGE, never to how much you EMIT. Do not
+            narrate what you inspected.
 
-            EFFORT: ONE careful pass. Make a second pass ONLY if the diff touches
-            a security- or data-integrity-sensitive path (credential/token
+            EFFORT: ONE pass over the diff, but that pass has TWO distinct
+            internal phases — run both, in order:
+              PHASE A (DISCOVER, generous recall): while reading the hunks,
+              collect EVERY candidate that might violate an AUTOSDE rule or fall
+              in a residual defect class. Do not self-censor here; a candidate
+              costs nothing yet.
+              PHASE B (FALSIFY, strict precision): for each candidate, actively
+              try to KILL it — find the guard upstream, the caller that cannot
+              reach it, the type that makes the case impossible. A candidate
+              survives ONLY if you re-derived (a) concrete input, (b) call path,
+              (c) observable outcome from code you actually opened. Drop
+              everything else silently.
+            Spend extra falsification effort ONLY where the diff touches a
+            security- or data-integrity-sensitive path (credential/token
             handling, auth, security.py, hooks.py sensitive-path controls,
             path/command/SQL construction, or a `blocking: true` AUTOSDE rule).
             Do not spend turns to fill the budget on a small, low-risk diff.
@@ -286,30 +319,33 @@ jobs:
 
             CALIBRATION: most PRs in this repo are correct. "No findings." is the
             EXPECTED output for a typical PR, not a failure of the review. You
-            are not scored on how much you find.
+            are not scored on how much you find — but the bar cuts BOTH ways: a
+            finding that SURVIVED Phase B falsification MUST be reported, as a
+            BLOCKING or an advisory FINDING per WHAT BLOCKS. Never suppress a
+            verified finding to keep the review clean; "No findings." earns its
+            place only when Phase A genuinely produced no survivors.
 
             SELF-CRITIQUE (run BEFORE you emit): merge findings that share one
             root cause into one. Then, for each surviving finding, re-ask (a),
-            (b), (c) — drop any that no longer answers all three cleanly.
+            (b), (c) — drop any that no longer answers all three cleanly. This
+            is a dedupe-and-recheck of Phase B survivors, not a third
+            opportunity to argue verified findings away.
 
             ══════════════════════════════════════════════════════════════════
             FINAL OUTPUT (authoritative for the gate)
             ══════════════════════════════════════════════════════════════════
-            Return the structured result required by the --json-schema:
-            - reviewed: true — you completed the review of this commit.
-            - block_merge: true IF AND ONLY IF at least one finding is on the
-              WHAT BLOCKS above. Otherwise false.
-            - summary: the human-facing review CI posts. PRESENTATION ONLY —
-              your internal analysis stays exhaustive; the summary is the
-              distilled result, not a transcript.
+            Your LAST message is the review — the workflow captures it verbatim
+            from the run transcript. Do NOT call any tool to post it, and write
+            NOTHING after the marker line(s). PRESENTATION ONLY — your internal
+            analysis stays exhaustive; this output is the distilled result, not
+            a transcript.
 
-            SUMMARY FORMAT:
+            OUTPUT FORMAT:
             - NO preamble, NO restating the diff, NO methodology narration
               ("I inspected…", "re-scanned…", which rules matched), NO praise,
               NO recap of what the change does.
             - LINE 1 is ONE bold punchline: either "No findings." or the single
-              reason it blocks. If any finding is BLOCKING, line 1 MUST contain
-              the literal marker [BLOCK-MERGE].
+              reason it blocks.
             - Then findings only, BLOCKING first:
                 • BLOCKING — bold `BLOCKING — file:line`, then on their own lines
                   the quoted offending line(s), a one-line consequence chain
@@ -319,11 +355,49 @@ jobs:
                   <consequence in one clause, quoting the offending token> →
                   Fix: <minimal change>`.
             - Never emit an empty or "None" group. Never pad. A clean review is
-              JUST the line "No findings." and nothing else.
+              the punchline "No findings." plus the marker line(s) and nothing
+              else.
+
+            OUTPUT MARKERS (how CI gates the merge — emit verbatim, each on its
+            own line, with the SHA exactly as written):
+            - ALWAYS end your review with this line (proof the review ran for
+              this commit; CI fails closed without it):
+                [OPUS-REVIEWED] ${{ github.event.pull_request.head.sha }}
+            - ADDITIONALLY, if and ONLY if at least one finding meets WHAT
+              BLOCKS, include this second line directly above it:
+                [BLOCK-MERGE] ${{ github.event.pull_request.head.sha }}
+              Do NOT emit BLOCK-MERGE for advisory FINDINGs.
+
+      # Capture the model's final review text from the run transcript
+      # (execution_file). No --json-schema, so we parse plain text — robust
+      # against claude-code's flaky StructuredOutput path (same capture as
+      # design-review.yml). The transcript may be a single result object, JSONL,
+      # or an array of stream events; the slurp+flatten fallback extracts the
+      # last non-null `.result` for all three. Then scrub credential shapes and
+      # AWS account ids / ARNs before anything reads the file — the reviewer
+      # runs agentically with AWS creds in its environment (mirrors the
+      # redaction steps in codex-review.yml and design-review.yml).
+      - name: Capture and redact review output
+        if: always()
+        env:
+          EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+        run: |
+          : > claude-review-output.md
+          if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+            summary="$(jq -r '.result // ""' "$EXEC_FILE" 2>/dev/null || true)"
+            if [ -z "$summary" ]; then
+              summary="$(jq -rs '[ .[] | (if type=="array" then .[] else . end) | select(.result != null) ] | (last.result // "")' "$EXEC_FILE" 2>/dev/null || true)"
+            fi
+            printf '%s\n' "$summary" > claude-review-output.md
+          fi
+          perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' claude-review-output.md
 
       # Post the review summary for humans (best-effort, NON-gating). Reads the
-      # summary from the action's structured output. UPSERTs a single
-      # marker-keyed comment per PR so re-scans update in place.
+      # captured review text. UPSERTs a single marker-keyed comment per PR so
+      # re-scans update in place. The model text is posted ONLY when the
+      # [OPUS-REVIEWED] marker parsed for THIS head — an errored or partial
+      # transcript posts NOTHING (see the incomplete early-out below), so the
+      # Arbiter's SHA-grep keeps waiting and no raw model/error text can leak.
       - name: Post Opus 5 review summary
         if: always()
         env:
@@ -331,21 +405,41 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-          SO: ${{ steps.review.outputs.structured_output }}
           HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
           OVERRIDE_SOURCE: ${{ steps.human_override.outputs.source }}
+          ACTOR: ${{ github.actor }}
         run: |
+          if [ "$ACTOR" = "dependabot[bot]" ] && [ "$HUMAN_OVERRIDE" != "true" ]; then
+            echo "Dependabot PR: no review ran; nothing to post."
+            exit 0
+          fi
+          kind="incomplete"
+          verdict="⚠️ review incomplete"
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
+            kind="override"
             verdict="✅ human override accepted"
             source_url="https://github.com/$REPO/pull/$PR#issuecomment-$OVERRIDE_SOURCE"
-            summary="Human judgment by @$OVERRIDE_ACTOR overrides the Opus 5 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
-          else
-            [ -z "$SO" ] && { echo "no structured output to post"; exit 0; }
-            summary=$(printf '%s' "$SO" | jq -r '.summary // ""')
-            verdict=$(printf '%s' "$SO" | jq -r 'if .block_merge then "🔴 changes requested (blocking)" else "✅ no blocking findings" end')
+          elif [ -s claude-review-output.md ] \
+            && grep -Fq "[OPUS-REVIEWED] $HEAD" claude-review-output.md; then
+            if grep -Fq "[BLOCK-MERGE] $HEAD" claude-review-output.md; then
+              kind="blocked"
+              verdict="🔴 changes requested (blocking)"
+            else
+              kind="clear"
+              verdict="✅ no blocking findings"
+            fi
           fi
-          [ -z "$summary" ] && exit 0
+          # Incomplete review: post NOTHING (mirrors the old empty-structured-
+          # output early-out). Posting a $HEAD-bearing placeholder here would
+          # satisfy longterm-arbiter.yml's present() SHA-grep and flip the
+          # Arbiter from its fail-closed "waiting" state into arbitrating on a
+          # placeholder instead of Opus's real findings. The gate step below
+          # still fails closed for this commit; humans read the job logs.
+          if [ "$kind" = "incomplete" ]; then
+            echo "no completed Opus verdict for $HEAD; nothing to post (gate fails closed)"
+            exit 0
+          fi
           MARKER="<!-- claude-ai-review -->"
           {
             echo "$MARKER"
@@ -353,12 +447,27 @@ jobs:
             echo
             echo "_Reviewed \`$HEAD\` — this comment is updated in place on each push._"
             echo
-            printf '%s\n' "$summary"
+            case "$kind" in
+              override)
+                echo "Human judgment by @$OVERRIDE_ACTOR overrides the Opus 5 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
+                ;;
+              blocked)
+                cat claude-review-output.md
+                ;;
+              clear)
+                echo "<details>"
+                echo "<summary>Review details</summary>"
+                echo
+                cat claude-review-output.md
+                echo
+                echo "</details>"
+                ;;
+            esac
             echo
-            if [ "$HUMAN_OVERRIDE" = "true" ]; then
+            if [ "$kind" = "override" ]; then
               echo "_Verdict recorded from an authorized human decision for commit \`$HEAD\`._"
             else
-              echo "_Verdict recorded via the action's structured output for commit \`$HEAD\`._"
+              echo "_Verdict parsed from the review's SHA-scoped output markers for commit \`$HEAD\`._"
             fi
             echo
             echo "False positive or not applicable? A repository writer can comment:"
@@ -380,15 +489,19 @@ jobs:
             echo "Created new Opus 5 summary comment"
           fi
 
-      # Fail-CLOSED gate on the action's OWN structured output. block_merge is
-      # the ONLY thing that blocks — there is deliberately no text-scanning
-      # backstop, so a label the model chooses can never override the contract.
+      # Fail-CLOSED gate on two SHA-scoped markers parsed from the captured
+      # review text (same contract as codex-review.yml):
+      #   - [OPUS-REVIEWED] <sha> — the review ran and produced a verdict for
+      #     THIS commit. Absent => fail rather than silently pass.
+      #   - [BLOCK-MERGE] <sha>   — it additionally found a WHAT-BLOCKS issue.
+      #     This is the ONLY thing that blocks the merge. There is deliberately
+      #     no label-scanning backstop, so a label the model chooses can never
+      #     override the contract.
       - name: Gate on Opus 5 review
         if: always()
         env:
           HEAD: ${{ github.event.pull_request.head.sha }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
-          SO: ${{ steps.review.outputs.structured_output }}
           ACTOR: ${{ github.actor }}
           HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
@@ -405,24 +518,26 @@ jobs:
             echo "::error::Opus 5 review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
             exit 1
           fi
-          if [ -z "$SO" ]; then
-            echo "::error::Opus 5 review produced no structured output for $HEAD (review did not complete / ran out of turns). Failing closed — re-run or inspect the Opus 5 review step logs."
+          if [ ! -s claude-review-output.md ]; then
+            echo "::error::Opus 5 review produced no output for $HEAD (empty transcript capture). Failing closed — re-run or inspect the Opus 5 review step logs."
             exit 1
           fi
-          reviewed=$(printf '%s' "$SO" | jq -r '.reviewed // false')
-          block=$(printf '%s' "$SO" | jq -r 'if has("block_merge") then (.block_merge|tostring) else "MISSING" end')
-          if [ "$reviewed" != "true" ]; then
-            echo "::error::Opus 5 review did not confirm completion (reviewed != true) for $HEAD. Failing closed."
-            printf 'structured_output: %s\n' "$SO"
+          # Positive proof the review ran for THIS commit (fail closed).
+          if ! grep -Fq "[OPUS-REVIEWED] $HEAD" claude-review-output.md; then
+            echo "::error::Opus 5 review did not complete for $HEAD (no [OPUS-REVIEWED] marker). Failing closed — re-run the workflow or inspect the Opus 5 review step logs."
+            echo "--- review output ---"
+            cat claude-review-output.md
             exit 1
           fi
-          if [ "$block" = "MISSING" ]; then
-            echo "::error::Opus 5 structured output is missing block_merge for $HEAD. Failing closed."
-            printf 'structured_output: %s\n' "$SO"
-            exit 1
-          fi
-          if [ "$block" = "true" ]; then
+          # Block ONLY on the contract-gated marker.
+          if grep -Fq "[BLOCK-MERGE] $HEAD" claude-review-output.md; then
             echo "::error::Opus 5 review flagged a blocking issue on $HEAD — see the posted review summary."
             exit 1
+          fi
+          # Advisory coherence signal (never fails the build): a BLOCKING-labelled
+          # finding without the marker means the model's label and its verdict
+          # disagree. Worth tuning the prompt over; not worth blocking a merge.
+          if grep -qE '^[[:space:]]*[-*]?[[:space:]]*(\*\*)?BLOCKING\b' claude-review-output.md; then
+            echo "::warning::Opus 5 emitted a BLOCKING-labelled finding for $HEAD without the [BLOCK-MERGE] marker. Gate passes on the marker; review the prompt if this recurs."
           fi
           echo "Opus 5 review completed for $HEAD with no blocking findings."
