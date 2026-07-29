@@ -454,7 +454,7 @@ def test_governance_deny_drops_the_message_before_any_turn(tmp_path, monkeypatch
     The startup gate only blocks CONNECTING, so without this per-message recheck
     an inbound DM would drive an unauthorized turn until the gateway restarted.
     """
-    import kiro_crew.weixin.transport_dispatch as mod
+    import kiro_crew.messaging.dispatch as mod
 
     provider = FakeProvider()
     d, client, sessions = _make(tmp_path, provider=provider)
@@ -471,7 +471,7 @@ def test_governance_deny_drops_the_message_before_any_turn(tmp_path, monkeypatch
 
 
 def test_governance_permit_allows_the_turn(tmp_path, monkeypatch):
-    import kiro_crew.weixin.transport_dispatch as mod
+    import kiro_crew.messaging.dispatch as mod
 
     provider = FakeProvider("allowed")
     d, client, _ = _make(tmp_path, provider=provider)
@@ -482,6 +482,57 @@ def test_governance_permit_allows_the_turn(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "channel_inbound_permitted", permit)
     asyncio.run(d.handle_message(_msg("go")))
     assert [s["text"] for s in client.sent] == ["allowed"]
+
+
+def test_pipeline_enforces_the_gate_even_if_a_channel_forgets(tmp_path, monkeypatch):
+    """drive_turn itself denies — an adopter cannot bypass governance.
+
+    The channel-side check is a fail-fast (it must run before command acks and
+    generation bumps, which are side effects a denied sender must not cause).
+    This pins the pipeline's own backstop: calling drive_turn directly with a
+    denied channel_type must not start the renderer or acquire a session, so a
+    future channel that forgets its early check still cannot run a turn.
+    """
+    import kiro_crew.messaging.dispatch as mod
+
+    provider = FakeProvider()
+    d, client, sessions = _make(tmp_path, provider=provider)
+
+    async def deny(_channel_type):
+        return False
+
+    monkeypatch.setattr(mod, "channel_inbound_permitted", deny)
+
+    started: list[str] = []
+
+    class SpyRenderer:
+        capabilities = WEIXIN_CAPABILITIES
+
+        async def on_turn_start(self):
+            started.append("start")
+
+        async def close(self):
+            started.append("close")
+
+    asyncio.run(
+        mod.drive_turn(
+            mod.ChannelTurn(
+                channel_type="weixin",
+                session_key="weixin:kirocrew:direct:u1",
+                conversation_id="weixin:u1",
+                agent="kirocrew",
+                user_text="should never run",
+                renderer=SpyRenderer(),
+                approval_mode=APPROVAL_AUTO,
+            ),
+            sessions=sessions,
+            ctx_builder=d.ctx_builder,
+        )
+    )
+
+    assert started == []  # no typing indicator, no close -> returned before try
+    assert provider.prompts == []  # no turn ran
+    assert sessions.successes == 0
 
 
 def test_soft_threshold_notice_fires_once(tmp_path):
@@ -520,7 +571,7 @@ def test_tool_gate_denies_when_hooks_deny(tmp_path):
     # assert the closure maps the hook result onto the driver's contract.
     captured: dict[str, Any] = {}
 
-    import kiro_crew.weixin.transport_dispatch as mod
+    import kiro_crew.messaging.dispatch as mod
 
     real_driver = mod.TurnDriver
 

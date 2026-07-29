@@ -544,15 +544,29 @@ def test_every_channel_transport_dispatch_publishes_identity() -> None:
         "no */transport_dispatch.py surfaces discovered — the channel dispatch "
         "layout changed; update this guard so it keeps covering every surface."
     )
-    missing = [
-        str(p.relative_to(src))
-        for p in dispatchers
-        if "publish_turn_identity" not in p.read_text(encoding="utf-8")
-    ]
+    # A surface satisfies the contract either by calling the shared publisher
+    # directly, or by delegating its turn to the shared pipeline
+    # (messaging.dispatch.drive_turn), which publishes on the channel's behalf.
+    # The delegation branch is only sound while the pipeline itself publishes,
+    # so that is asserted first — otherwise "calls drive_turn" would become a
+    # loophole that silently reintroduces the #232 gap for every adopter at once.
+    pipeline = src / "messaging" / "dispatch.py"
+    assert "publish_turn_identity" in pipeline.read_text(encoding="utf-8"), (
+        "messaging/dispatch.py no longer publishes per-turn session identity. "
+        "Every channel delegating to drive_turn depends on it, so removing the "
+        "call reintroduces the #232 'missing X-Session-Key' gap for ALL of them."
+    )
+    missing = []
+    for p in dispatchers:
+        text = p.read_text(encoding="utf-8")
+        if "publish_turn_identity" in text or "drive_turn" in text:
+            continue
+        missing.append(str(p.relative_to(src)))
     assert not missing, (
         "channel transport-dispatch surface(s) run a turn without publishing "
         f"per-turn session identity: {missing}. Every channel turn must call "
-        "messaging.identity.publish_turn_identity so managed MCP tools resolve "
+        "messaging.identity.publish_turn_identity — directly, or by delegating "
+        "to messaging.dispatch.drive_turn — so managed MCP tools resolve "
         "X-Session-Key; otherwise they fail with HTTP 400 'missing "
         "X-Session-Key' from that channel (#232)."
     )
