@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useContext, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -6,7 +6,7 @@ import { ArrowRight, Check, Monitor, Sun, Moon } from 'lucide-react'
 import { useTheme, type ModePreference, type ColorTheme } from '../hooks/useTheme'
 import { GhostVar2 } from '../assets/onboarding/GhostIcons'
 import { Btn, SendBtn } from './ui'
-import OnboardingChapterShell from './OnboardingChapterShell'
+import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
@@ -112,7 +112,11 @@ export default function OnboardingFlow({
   const [open, setOpen] = useState(initialOpen)
   const [step, setStep] = useState(1)
   const [coords, setCoords] = useState<{ left: number; top: number } | null>(null)
-  const dialogRef = useRef<HTMLDivElement>(null)
+  // The focus trap queries the dialog element. Inside a persistent shell host
+  // the dialog is host-owned, so use its ref; standalone we own it locally.
+  const shellHost = useContext(OnboardingShellContext)
+  const localDialogRef = useRef<HTMLDivElement>(null)
+  const dialogRef = shellHost?.dialogRef ?? localDialogRef
 
   // ── Step-2 profile state ──────────────────────────────────────────────────
   const [role, setRole] = useState('')
@@ -330,7 +334,9 @@ export default function OnboardingFlow({
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [open, step, finish, savingProfile])
+    // shellHost?.sectionSlot: in host mode the dialog mounts a pass after the
+    // flow opens, so re-run once it exists to install the trap + initial focus.
+  }, [open, step, finish, savingProfile, dialogRef, shellHost?.sectionSlot])
 
   if (!open) return null
 
@@ -357,15 +363,21 @@ export default function OnboardingFlow({
   if (step === 1) {
     return (
       <OnboardingChapterShell
-        chapterLabel="Customize"
-        stepIndex={1}
-        stepCount={2}
+        eyebrow={`Customize · 1 ${i18nT('components.onboardingChapterShell.of')} 2`}
         ariaLabel={i18nT('components.onboardingFlow.customize_kirocrew')}
         panelHeadline="Make it yours."
         panelBody="Set your look and tell Kiro about you so responses fit the way you work."
         panelFootnote="Change anything later in Settings."
-        title={i18nT('components.onboardingFlow.pick_your_look')}
-        description={i18nT('components.onboardingFlow.choose_a_color_theme_and_mode_you_can_change_it')}
+        header={
+          <div className="mt-6">
+            <h1 tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
+              {i18nT('components.onboardingFlow.pick_your_look')}
+            </h1>
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              {i18nT('components.onboardingFlow.choose_a_color_theme_and_mode_you_can_change_it')}
+            </p>
+          </div>
+        }
         onSkipAll={finish}
         dialogRef={dialogRef}
         footer={<SendBtn type="button" onClick={next}>{i18nT('components.onboardingFlow.continue')}</SendBtn>}
@@ -427,15 +439,21 @@ export default function OnboardingFlow({
     }
     return (
       <OnboardingChapterShell
-        chapterLabel="Customize"
-        stepIndex={2}
-        stepCount={2}
+        eyebrow={`Customize · 2 ${i18nT('components.onboardingChapterShell.of')} 2`}
         ariaLabel={i18nT('components.onboardingFlow.customize_kirocrew')}
         panelHeadline="Make it yours."
         panelBody="Set your look and tell Kiro about you so responses fit the way you work."
         panelFootnote="Change anything later in Settings."
-        title={i18nT('components.onboardingFlow.tell_kiro_about_you')}
-        description={i18nT('components.onboardingFlow.answers_set_how_kiro_explains_things_plain_langu')}
+        header={
+          <div className="mt-6">
+            <h1 tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
+              {i18nT('components.onboardingFlow.tell_kiro_about_you')}
+            </h1>
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              {i18nT('components.onboardingFlow.answers_set_how_kiro_explains_things_plain_langu')}
+            </p>
+          </div>
+        }
         onSkipAll={finish}
         skipDisabled={savingProfile}
         dialogRef={dialogRef}

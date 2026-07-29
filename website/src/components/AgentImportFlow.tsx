@@ -1,10 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { motion, useReducedMotion } from 'framer-motion'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
-  ArrowRight,
   BookOpen,
   Brain,
   CalendarClock,
@@ -24,8 +21,8 @@ import {
   type AgentImportConflictStrategy,
   type AgentImportSource,
 } from '../api/client'
-import { KiroGhost } from './KiroGhost'
 import { Btn, SendBtn } from './ui'
+import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
 
 import { i18nT } from '../i18n/t'
 type Stage = 1 | 2 | 3 | 4
@@ -76,42 +73,6 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
-// Floating decorative mascot — an exact copy of the Kiro CLI setup gate's
-// FloatingGhost (components/KiroPrerequisiteGate.tsx): same KiroGhost art,
-// staggered fade + spring scale entrance, and an infinite easeInOut bob.
-// Honors the OS reduce-motion setting.
-function FloatingGhost({
-  className,
-  delay,
-  rotate = 0,
-}: {
-  className: string
-  delay: number
-  rotate?: number
-}) {
-  const reduceMotion = useReducedMotion()
-  return (
-    <motion.div
-      aria-hidden="true"
-      className={`pointer-events-none absolute z-0 text-white drop-shadow-[0_12px_20px_rgba(24,20,38,0.26)] ${className}`}
-      initial={reduceMotion ? false : { opacity: 0, scale: 0.72 }}
-      animate={{
-        opacity: 1,
-        scale: 1,
-        y: reduceMotion ? 0 : [-5, 5, -5],
-        rotate,
-      }}
-      transition={{
-        opacity: { delay, duration: 0.35 },
-        scale: { delay, duration: 0.45, type: 'spring', bounce: 0.45 },
-        y: { delay, duration: 3.8, ease: 'easeInOut', repeat: Infinity },
-      }}
-    >
-      <KiroGhost size={160} className="h-full w-full" />
-    </motion.div>
-  )
-}
-
 // Animated "Importing…" label — cycles the trailing dots between ".", ".." and
 // "..." while an import is in flight. The dots span reserves width so the
 // button doesn't jitter as they grow.
@@ -146,7 +107,11 @@ export default function AgentImportFlow({
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set())
   const [strategy, setStrategy] = useState<AgentImportConflictStrategy>('skip')
   const [selectedCategories, setSelectedCategories] = useState<Record<string, Set<string>>>({})
-  const dialogRef = useRef<HTMLDivElement>(null)
+  // The focus trap queries the dialog element. Inside a persistent shell host
+  // the dialog is host-owned, so use its ref; standalone we own it locally.
+  const shellHost = useContext(OnboardingShellContext)
+  const localDialogRef = useRef<HTMLDivElement>(null)
+  const dialogRef = shellHost?.dialogRef ?? localDialogRef
   const headingRef = useRef<HTMLHeadingElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const previousInitialOpenRef = useRef(initialOpen)
@@ -274,7 +239,9 @@ export default function AgentImportFlow({
 
   useEffect(() => {
     if (open) headingRef.current?.focus()
-  }, [open, stage, scanQuery.isPending, scanQuery.isError, applyMutation.status])
+    // shellHost?.sectionSlot: in host mode the heading is portaled a pass after
+    // open, so re-run once the section slot exists to move initial focus to it.
+  }, [open, stage, scanQuery.isPending, scanQuery.isError, applyMutation.status, shellHost?.sectionSlot])
 
   const skip = () => {
     if (!completionMutation.isPending && !applyMutation.isPending && !skipAllMutation.isPending) {
@@ -720,69 +687,25 @@ export default function AgentImportFlow({
     )
   })()
 
-  return createPortal(
-    <div
-      ref={dialogRef}
-      role="dialog"
-      aria-modal="true"
-      aria-label={i18nT('components.agentImportFlow.import_agent_setup')}
-      className="fixed inset-0 z-[140] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-sm p-0 text-text sm:items-center sm:justify-center sm:p-6"
+  return (
+    <OnboardingChapterShell
+      dialogRef={dialogRef}
+      ariaLabel={i18nT('components.agentImportFlow.import_agent_setup')}
+      panelHeadline={i18nT('components.agentImportFlow.bring_your_crew_with_you')}
+      panelBody={i18nT('components.agentImportFlow.bring_your_supported_setup_sessions_memories_wor')}
+      panelFootnote={i18nT('components.agentImportFlow.merge_only_setup_credentials_stay_where_they_are')}
+      eyebrow={
+        <>
+          {i18nT('components.agentImportFlow.import_setup')}
+          {showStepFooter && ` · ${stage} of ${STAGE_LABELS.length}`}
+        </>
+      }
+      onSkipAll={skipAll}
+      skipDisabled={isBusy}
+      header={stageHeader}
+      footer={showStepFooter ? stepFooterNav : undefined}
     >
-      <div className="relative flex min-h-screen w-full flex-col overflow-hidden bg-card shadow-xl sm:h-[min(760px,calc(100vh-48px))] sm:min-h-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border">
-        <aside className="relative flex min-h-[248px] w-full shrink-0 overflow-hidden bg-accent text-accent-fg sm:min-h-0 sm:w-[36%]">
-          <FloatingGhost className="-left-8 top-[24%] h-24 w-20 rotate-90 lg:h-28 lg:w-24" delay={0.15} rotate={90} />
-          <FloatingGhost className="-right-5 top-5 h-28 w-20 -rotate-12 lg:h-36 lg:w-28" delay={0.35} rotate={-12} />
-          <FloatingGhost className="bottom-[-5.5rem] right-[-12%] hidden h-64 w-48 lg:block" delay={0.55} />
-          <FloatingGhost className="-top-20 left-[40%] hidden h-48 w-36 rotate-180 lg:block" delay={0.75} rotate={180} />
-          <div className="relative z-10 flex w-full flex-col p-7 sm:p-10">
-            <div className="flex items-center gap-3">
-              <KiroGhost size={28} className="h-8 w-7" />
-              <span className="text-[15px] font-semibold tracking-wide">{i18nT('components.agentImportFlow.kiro_crew')}</span>
-            </div>
-            <div className="mt-auto max-w-[290px]">
-              <h1 className="text-4xl font-semibold leading-[1.05] tracking-[-0.02em] sm:text-[clamp(2.2rem,4vw,3.5rem)]">
-                {i18nT('components.agentImportFlow.bring_your_crew_with_you')}
-              </h1>
-              <p className="mt-5 max-w-[270px] text-sm leading-relaxed text-accent-fg/80">
-                {i18nT('components.agentImportFlow.bring_your_supported_setup_sessions_memories_wor')}
-              </p>
-            </div>
-            <p className="mt-8 text-[12px] font-medium text-accent-fg/75">
-              {i18nT('components.agentImportFlow.merge_only_setup_credentials_stay_where_they_are')}
-            </p>
-          </div>
-        </aside>
-        <section className="flex min-h-[calc(100vh-248px)] min-w-0 flex-1 flex-col bg-card sm:min-h-0">
-          <header className="shrink-0 px-6 pt-7 sm:px-10 sm:pt-10">
-            <div className="flex items-center justify-between gap-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
-                {i18nT('components.agentImportFlow.import_setup')}{showStepFooter && ` · ${stage} of ${STAGE_LABELS.length}`}
-              </p>
-              <button
-                type="button"
-                aria-label={i18nT('components.agentImportFlow.skip_all_setup_and_onboarding')}
-                disabled={isBusy}
-                onClick={skipAll}
-                className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted transition-colors hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {i18nT('components.agentImportFlow.skip_all')} <ArrowRight className="lucide-inline" />
-              </button>
-            </div>
-            {stageHeader}
-          </header>
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <main className="w-full px-6 pb-8 pt-6 sm:px-10 sm:pb-10 sm:pt-6">
-              <div className="mx-auto max-w-2xl">{stageContent}</div>
-            </main>
-          </div>
-          {showStepFooter && (
-            <footer className="flex shrink-0 flex-wrap items-center justify-end gap-3 px-6 pt-4 pb-6 sm:px-10 sm:pb-10">
-              {stepFooterNav}
-            </footer>
-          )}
-        </section>
-      </div>
-    </div>,
-    document.body,
+      {stageContent}
+    </OnboardingChapterShell>
   )
 }

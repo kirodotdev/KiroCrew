@@ -31,6 +31,7 @@ import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
 import AgentImportFlow from './components/AgentImportFlow'
+import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_FOCUS_EVENT } from './components/WebPreviewPanel'
 import { motion, AnimatePresence } from 'framer-motion'
 import { usePersistedBool } from './hooks/usePersistedBool'
@@ -1733,36 +1734,43 @@ export default function App() {
       {(updating || showUpdateModal) && <UpdateOverlay onCancel={() => { setUpdating(false); setShowUpdateModal(false) }} />}
       <UpdateModal />
 
-      {/* First-run import gate. Existing users inherit the old onboarding
-          marker, while new users reach the feature tour only after this flow. */}
-      <AgentImportFlow
-        initialOpen={showAgentImport}
-        onComplete={() => {
-          markImportOnboarded()
-          setShowAgentImport(false)
-          if (!onboarded || continueTourAfterImport.current) {
-            setShowOnboarding(true)
-          }
-          continueTourAfterImport.current = false
-        }}
-        onSkipAll={() => {
-          // Skip the entire first-run flow: mark both import + onboarding tour
-          // done and close both so the user lands in the product (new chat).
-          markImportOnboarded()
-          markOnboarded()
-          setShowAgentImport(false)
-          setShowOnboarding(false)
-          continueTourAfterImport.current = false
-        }}
-      />
+      {/* First-run modal chrome mounted ONCE (scrim + accent panel + floating
+          mascots) so the import→customize hand-off swaps only the right-column
+          content — the mascots never remount/replay, killing the transition
+          glitch. Both flows portal their content into this single shell; each
+          still renders standalone (its own chrome) when used outside a host. */}
+      <OnboardingShellHost>
+        {/* First-run import gate. Existing users inherit the old onboarding
+            marker, while new users reach the feature tour only after this flow. */}
+        <AgentImportFlow
+          initialOpen={showAgentImport}
+          onComplete={() => {
+            markImportOnboarded()
+            setShowAgentImport(false)
+            if (!onboarded || continueTourAfterImport.current) {
+              setShowOnboarding(true)
+            }
+            continueTourAfterImport.current = false
+          }}
+          onSkipAll={() => {
+            // Skip the entire first-run flow: mark both import + onboarding tour
+            // done and close both so the user lands in the product (new chat).
+            markImportOnboarded()
+            markOnboarded()
+            setShowAgentImport(false)
+            setShowOnboarding(false)
+            continueTourAfterImport.current = false
+          }}
+        />
 
-      {/* First-run onboarding: 4-step flow (theme → Schedule → Apps → Sessions).
-          Rendered unconditionally so the `/onboarding` slash command can reopen
-          it anytime; internal visibility is seeded by `initialOpen`. */}
-      <OnboardingFlow
-        initialOpen={showOnboarding}
-        onComplete={() => { markOnboarded(); setShowOnboarding(false) }}
-      />
+        {/* First-run onboarding: 4-step flow (theme → Schedule → Apps → Sessions).
+            Rendered unconditionally so the `/onboarding` slash command can reopen
+            it anytime; internal visibility is seeded by `initialOpen`. */}
+        <OnboardingFlow
+          initialOpen={showOnboarding}
+          onComplete={() => { markOnboarded(); setShowOnboarding(false) }}
+        />
+      </OnboardingShellHost>
 
       {/* Mobile backdrop */}
       <AnimatePresence>
