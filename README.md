@@ -115,7 +115,7 @@ Credentials: `~/.kirocrew/.env` — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROC
 |---------|-----|
 | `AcpTimeoutError` | Confirm `kiro-cli` is on PATH and logged in; `kirocrew setup --agent-only --clean` to reset MCP config |
 | Memory search not working | Install Ollama + `ollama pull qwen3-embedding:0.6b`; run `kirocrew doctor` |
-| Slack not connecting | Slack is optional — dashboard works without it. See [SLACK_SETUP.md](SLACK_SETUP.md) |
+| Slack not connecting | Slack is optional — dashboard works without it. See [docs/slack-setup.md](docs/slack-setup.md) |
 | MCP server broken | `kirocrew setup --agent-only --clean` rebuilds from scratch |
 
 ## Documentation
@@ -130,7 +130,7 @@ Credentials: `~/.kirocrew/.env` — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROC
 | [docs/memory-architecture.md](docs/memory-architecture.md) | Memory system design |
 | [docs/mcp-architecture.md](docs/mcp-architecture.md) | MCP server management |
 | [docs/app-kit/getting-started.md](docs/app-kit/getting-started.md) | App Kit developer guide |
-| [SLACK_SETUP.md](SLACK_SETUP.md) | Slack app creation and setup |
+| [docs/slack-setup.md](docs/slack-setup.md) | Slack app creation and setup |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow and PR guidelines |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 

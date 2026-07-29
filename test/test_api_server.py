@@ -690,7 +690,7 @@ class TestSlackProfileMissingScope:
             assert resp.status == 403
             data = await resp.json()
             assert "users:read" in data["error"]
-            assert "SLACK_SETUP.md" in data["error"]
+            assert "slack-setup.md" in data["error"]
 
     @pytest.mark.asyncio
     async def test_missing_scope_generic_when_needed_absent(self, tmp_path, monkeypatch):
@@ -710,7 +710,7 @@ class TestSlackProfileMissingScope:
             data = await resp.json()
             assert "OAuth scope" in data["error"]
             assert "users:read" not in data["error"]
-            assert "SLACK_SETUP.md" in data["error"]
+            assert "slack-setup.md" in data["error"]
 
     @pytest.mark.asyncio
     async def test_other_slack_error_still_returns_502(self, tmp_path, monkeypatch):

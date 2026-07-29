@@ -8,7 +8,7 @@ import { Input, Btn } from '../../components/ui'
 import { api, type SlackConfigData, type SlackConfigSave } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
-const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/SLACK_SETUP.md'
+const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/slack-setup.md'
 
 type Draft = {
   owner_id: string

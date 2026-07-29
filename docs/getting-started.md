@@ -201,7 +201,7 @@ Dashboard port is set via `KIROCREW_PORT` (default `5476`) or
 `kirocrew gateway --port <n>`.
 
 Slack credentials: `~/.kirocrew/.env` — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`,
-`KIROCREW_OWNER_ID`. See [../SLACK_SETUP.md](../SLACK_SETUP.md) for the full
+`KIROCREW_OWNER_ID`. See [../docs/slack-setup.md](slack-setup.md) for the full
 Slack app creation guide.
 
 ## Running as a Service
