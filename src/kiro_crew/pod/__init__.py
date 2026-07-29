@@ -5,7 +5,7 @@ A *pod* is an ephemeral KiroCrew gateway booted from one feature worktree's own
 sessions / memory), no Slack tunnel, ``--no-crons``, resource-capped, and
 ``rm -rf``'d on stop. It lets you test a worktree's full stack (backend ``/api/*``
 + the SPA bundle the gateway serves on the same port) **without touching the live
-gateway or the shared ``~/.kirocrew`` data**. Think ``kubectl`` for local worktree
+gateway or the shared ``~/.kiro/crew`` data**. Think ``kubectl`` for local worktree
 test rigs.
 
 This is the *test line* (multi-active, burn-on-evict). It is orthogonal to the

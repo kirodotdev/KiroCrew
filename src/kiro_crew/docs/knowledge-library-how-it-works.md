@@ -174,7 +174,7 @@ Without embeddings, searching "how do we handle authentication" only finds chunk
 
 ### Configuration
 
-Embeddings share the vector-memory setting in `~/.kirocrew/config.json` —
+Embeddings share the vector-memory setting in `~/.kiro/crew/config.json` —
 knowledge and memory use one embedding setup (and one loaded model):
 
 ```json

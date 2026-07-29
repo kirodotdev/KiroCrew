@@ -90,7 +90,7 @@ Before submitting to the registry:
 ### What gets copied at install time
 
 When KiroCrew installs or updates your app, it copies the source tree into
-`~/.kirocrew/apps/{name}/` with two safeguards:
+`~/.kiro/crew/apps/{name}/` with two safeguards:
 
 - **Symlinks are never followed.** A symlink whose target resolves inside
   your app source tree is preserved as a symlink; a symlink resolving
@@ -205,7 +205,7 @@ curl -X POST http://localhost:5476/api/apps/registry/install \
 
 1. KiroCrew clones your repo (shallow clone, specific branch)
 2. Runs `setup.onInstall` script if defined (e.g. `cd ui && npm install && npm run build`)
-3. Copies app to `~/.kirocrew/apps/my-app/`
+3. Copies app to `~/.kiro/crew/apps/my-app/`
 4. Registers agents, skills, crons via symlinks
 5. App appears in dashboard
 

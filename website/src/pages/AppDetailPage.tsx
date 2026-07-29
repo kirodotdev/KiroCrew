@@ -587,7 +587,7 @@ export default function AppDetailPage() {
               <div className="flex items-center gap-2">
                 {installDone && error && (
                   <Btn onClick={() => {
-                    const appSourcePath = `~/.kirocrew/app-sources/.workspaces/${app?.name || name}/src/${name}/`
+                    const appSourcePath = `~/.kiro/crew/app-sources/${app?.name || name}/`
                     const msg = [
                       `App "${app?.displayName || name}" installation failed. Error log:`,
                       '',

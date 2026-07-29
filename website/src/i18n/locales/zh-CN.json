@@ -3370,7 +3370,7 @@
         "add_custom": "添加自定义",
         "add_server": "添加服务器",
         "apply": "应用",
-        "apply_commits_to_kirocrew_mcp_json_provider_glob": "— 应用会按已选内容写入 ~/.kirocrew/mcp.json 和提供方全局配置。",
+        "apply_commits_to_kirocrew_mcp_json_provider_glob": "— 应用会按已选内容写入 ~/.kiro/crew/mcp.json 和提供方全局配置。",
         "applying": "应用中…",
         "clear_search": "清除搜索",
         "discard": "放弃",

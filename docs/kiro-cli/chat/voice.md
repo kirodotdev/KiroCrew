@@ -145,7 +145,7 @@ File format depends on the provider (MP3 for Polly, WAV for Piper).
 ### Configuration
 
 Settings are in **Settings → Chat → Voice (TTS)**, or directly in
-`~/.kirocrew/config.json`. The `voice_reply` section is a loose dictionary
+`~/.kiro/crew/config.json`. The `voice_reply` section is a loose dictionary
 (not part of the typed config schema), so you edit it by hand:
 
 ```json
@@ -264,7 +264,7 @@ you can't or don't want to use AWS Polly.
    curl -fsSL "$BASE/en_US-lessac-medium.onnx.json" -o ~/piper/en_US-lessac-medium.onnx.json
    ```
 
-3. **Set the config** in `~/.kirocrew/config.json`:
+3. **Set the config** in `~/.kiro/crew/config.json`:
    ```json
    "voice_reply": {
      "enabled": true,

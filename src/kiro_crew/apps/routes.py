@@ -1409,7 +1409,7 @@ _CONTENT_TYPES = {
 async def handle_app_config(request: web.Request) -> web.Response:
     """GET/PUT /api/apps/{name}/config — read or write app config.json.
 
-    Reads/writes ``~/.kirocrew/apps/{name}/data/config.json``.
+    Reads/writes ``~/.kiro/crew/apps/{name}/data/config.json``.
     GET returns the current config (empty ``{}`` if none exists).
     PUT replaces the config with the request body.
     """
@@ -1786,7 +1786,7 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
       ref   — git ref, defaults to "main"
 
     SECURITY: Only serves repos listed in the registry JSON (prevents SSRF).
-    Caches fetched blobs to ~/.kirocrew/cache/blobs/{repo}/{ref}/{path}.
+    Caches fetched blobs to ~/.kiro/crew/cache/blobs/{repo}/{ref}/{path}.
     Only serves image file types.
     """
     repo = request.query.get("repo", "")

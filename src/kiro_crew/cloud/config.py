@@ -1,7 +1,7 @@
 """Persisted cloud-launcher config — **profile name only, never credentials**.
 
 Stores the AWS *profile name*, region, and the most-recent instance tag under
-``~/.kirocrew/cloud.json``. AWS credentials are never written here — they are
+``~/.kiro/crew/cloud.json``. AWS credentials are never written here — they are
 resolved by the ``aws`` CLI's own provider chain from the profile.
 """
 

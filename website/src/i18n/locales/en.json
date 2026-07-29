@@ -3359,7 +3359,7 @@
         "add_custom": "Add Custom",
         "add_server": "Add Server",
         "apply": "Apply",
-        "apply_commits_to_kirocrew_mcp_json_provider_glob": "— Apply commits to ~/.kirocrew/mcp.json + provider globals as opted-in.",
+        "apply_commits_to_kirocrew_mcp_json_provider_glob": "— Apply commits to ~/.kiro/crew/mcp.json + provider globals as opted-in.",
         "applying": "Applying…",
         "clear_search": "Clear search",
         "discard": "Discard",

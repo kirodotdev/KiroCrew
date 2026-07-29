@@ -5,7 +5,7 @@
 #
 # Usage: ./dev-backend.sh
 #   - Runs on port 6777 (dev port, separate from production on 5476)
-#   - Uses .kirocrew-dev/ as data directory (isolated from ~/.kirocrew/)
+#   - Uses .kirocrew-dev/ as data directory (isolated from ~/.kiro/crew/)
 #   - Ctrl+C to stop, re-run to pick up changes
 set -e
 

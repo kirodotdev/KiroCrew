@@ -57,13 +57,13 @@ https://api.slack.com/apps?new_app=1&manifest_yaml=...
 If the URL doesn't work, generate the raw YAML instead:
 
 ```bash
-kirocrew manifest -o ~/.kirocrew/slack-manifest.yaml
+kirocrew manifest -o ~/.kiro/crew/slack-manifest.yaml
 ```
 
 Then:
 1. Go to <https://api.slack.com/apps> → **Create New App** → **From a manifest**
 2. Select your workspace
-3. Paste the contents of `~/.kirocrew/slack-manifest.yaml`
+3. Paste the contents of `~/.kiro/crew/slack-manifest.yaml`
 4. Click **Create**
 
 </details>
@@ -172,7 +172,7 @@ Go to **Features → OAuth & Permissions → Bot Token Scopes** and add:
 | Short Description | Dashboard access, allowlist, and channel tracking |
 | Usage Hint | dashboard or @user or #channel |
 
-The command name you choose here must match the `slack.command` value in `~/.kirocrew/config.json` (default: `kirocrew`):
+The command name you choose here must match the `slack.command` value in `~/.kiro/crew/config.json` (default: `kirocrew`):
 
 ```json
 {
@@ -222,13 +222,13 @@ Same as [Path A, Step 6](#step-6-verify--run).
 If you prefer to configure tokens manually instead of using `kirocrew setup`:
 
 ```bash
-mkdir -p ~/.kirocrew
-cat > ~/.kirocrew/.env << 'EOF'
+mkdir -p ~/.kiro/crew
+cat > ~/.kiro/crew/.env << 'EOF'
 SLACK_APP_TOKEN=xapp-your-app-token-here
 SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 KIROCREW_OWNER_ID=your-slack-member-id
 EOF
-chmod 600 ~/.kirocrew/.env
+chmod 600 ~/.kiro/crew/.env
 ```
 
 ### Owner-Only Access
@@ -306,7 +306,7 @@ Maximum session duration is 6 hours.
 
 ### Dashboard URL Configuration
 
-Set `dashboard.url` in `~/.kirocrew/config.json` to your host's DNS name:
+Set `dashboard.url` in `~/.kiro/crew/config.json` to your host's DNS name:
 
 ```json
 {

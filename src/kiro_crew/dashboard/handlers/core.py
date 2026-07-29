@@ -1390,7 +1390,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 async def api_token_local(request: web.Request) -> web.Response:
     """GET /api/token/local — issue a token for local apps.
 
-    Requires a per-session secret written to ~/.kirocrew/.local_secret at
+    Requires a per-session secret written to ~/.kiro/crew/.local_secret at
     gateway startup. Only processes on the same machine can read the file.
     Secret passed via ``X-Local-Secret`` header (not query string, to avoid
     leaking in logs).

@@ -71,7 +71,7 @@ You need three values from your Slack app:
 > ⚠️ **Use the user ID from the workspace where the bot is installed.** Your
 > user ID is different in each Slack workspace.
 
-These are stored in `~/.kirocrew/.env`.
+These are stored in `~/.kiro/crew/.env`.
 
 ## Starting KiroCrew
 
@@ -139,16 +139,16 @@ Create `~/Library/LaunchAgents/com.kirocrew.gateway.plist`:
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
     <key>StandardOutPath</key>
-    <string>$HOME/.kirocrew/logs/gateway.stdout.log</string>
+    <string>$HOME/.kiro/crew/logs/gateway.stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>$HOME/.kirocrew/logs/gateway.stderr.log</string>
+    <string>$HOME/.kiro/crew/logs/gateway.stderr.log</string>
 </dict>
 </plist>
 ```
 
 Then load it:
 ```bash
-mkdir -p ~/.kirocrew/logs
+mkdir -p ~/.kiro/crew/logs
 launchctl load ~/Library/LaunchAgents/com.kirocrew.gateway.plist
 ```
 
@@ -172,6 +172,6 @@ export KIROCREW_PORT=6777
 kirocrew gateway
 ```
 
-This keeps dev data separate from your real `~/.kirocrew`. Useful for running
+This keeps dev data separate from your real `~/.kiro/crew`. Useful for running
 multiple KiroCrew instances simultaneously — each with its own memory, crons,
 and sessions.

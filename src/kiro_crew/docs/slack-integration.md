@@ -159,7 +159,7 @@ your own workspace.
 2. **Add a bot user** and OAuth scopes for the features you use (e.g.
    `chat:write`, `im:history`, `app_mentions:read`, `reactions:write`). Install
    the app to your workspace to get the bot token (`xoxb-`).
-3. **Set credentials** in `~/.kirocrew/.env` (`SLACK_APP_TOKEN`,
+3. **Set credentials** in `~/.kiro/crew/.env` (`SLACK_APP_TOKEN`,
    `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`).
 4. **Slash command** (optional) — the command name is configurable via
    `slack.command` in config.json (default: `kirocrew`). Each app instance

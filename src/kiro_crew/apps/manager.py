@@ -1,6 +1,6 @@
 """App Manager — install, uninstall, enable, disable lifecycle for KiroCrew apps.
 
-Apps are installed to ``~/.kirocrew/apps/{name}/``.  Each installed app has an
+Apps are installed to ``~/.kiro/crew/apps/{name}/``.  Each installed app has an
 ``installed.json`` metadata file tracking version, timestamp, and enabled state.
 
 The manager validates manifests, copies app files, and delegates resource
@@ -41,7 +41,7 @@ INSTALLED_META_FILENAME = "installed.json"
 
 
 def apps_dir() -> Path:
-    """Return the root directory for installed apps: ``~/.kirocrew/apps/``."""
+    """Return the root directory for installed apps: ``~/.kiro/crew/apps/``."""
     return config_dir() / "apps"
 
 
@@ -51,7 +51,7 @@ def app_dir(name: str) -> Path:
 
 
 def app_data_dir(name: str) -> Path:
-    """Return the app-scoped data directory: ``~/.kirocrew/apps/{name}/data/``."""
+    """Return the app-scoped data directory: ``~/.kiro/crew/apps/{name}/data/``."""
     d = app_dir(name) / "data"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -383,7 +383,7 @@ def install_app(source: str | Path) -> AppResult:
     """Install an app from a local directory path.
 
     1. Validate manifest
-    2. Copy to ``~/.kirocrew/apps/{name}/``
+    2. Copy to ``~/.kiro/crew/apps/{name}/``
     3. Write ``installed.json``
 
     Resource registration (agents, skills, crons) is handled separately

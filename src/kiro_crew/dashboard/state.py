@@ -2162,7 +2162,7 @@ class DashboardState:
         Path resolves through ``config_dir()`` so the snapshot lives next to
         every other dashboard persistence file and honors ``KIROCREW_HOME``
         — non-default homes (dev/test instances) restore from their own file
-        instead of bleeding through ``~/.kirocrew``.
+        instead of bleeding through ``~/.kiro/crew``.
 
         Restored on startup by ``restore_open_slots`` in chat_persistence.
         Failures are logged at debug level — losing the snapshot only

@@ -37,7 +37,7 @@ RESULT_SUMMARY_WORDS = 200
 # session. The full transcript stays in result.txt (capped by
 # RESULT_FILE_MAX_BYTES above) until cleanup removes it after delivery.
 # Override per-installation via ``agent.completion_keep_chars`` in
-# ``~/.kirocrew/config.json``. Pair with ``agent.completion_keep`` to choose
+# ``~/.kiro/crew/config.json``. Pair with ``agent.completion_keep`` to choose
 # whether the head, tail, or both ends of the transcript are kept (see
 # ``apply_completion_keep`` below).
 COMPLETION_KEEP_DEFAULT_CHARS = 3000
@@ -379,7 +379,7 @@ def apply_completion_keep(text: str, mode: str, max_chars: int) -> str:
     ``head``/``tail``/``both``.
 
     The full untruncated transcript stays in
-    ``~/.kirocrew/subagents/<id>/result.txt`` until the completion event is
+    ``~/.kiro/crew/subagents/<id>/result.txt`` until the completion event is
     delivered to the parent session, after which it is cleaned up by
     ``subagent.py`` (see ``delete_agent_folder``). Use the ``spawn_status``
     MCP tool to read it before delivery completes.

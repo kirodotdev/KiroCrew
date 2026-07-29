@@ -16,7 +16,7 @@ WebSocket to WeCom, so there's no callback URL or open port to manage.
 You don't have to edit anything by hand. In any KiroCrew session — the
 dashboard, Slack, or the CLI — say something like *"set up the WeCom channel."*
 KiroCrew tells you where to create the WeCom AI bot, then writes your Bot ID and
-Secret into `~/.kirocrew/.env` and `config.json` and restarts the gateway for
+Secret into `~/.kiro/crew/.env` and `config.json` and restarts the gateway for
 you. You just paste the two values when it asks.
 
 Prefer to wire it up yourself? The manual steps are below.
@@ -30,12 +30,12 @@ WeCom console.
    and create a bot. Its settings page shows a **Bot ID** and a **Secret**.
 2. **Note the userids** — every WeCom member has a `userid` (账号). Collect the
    ones you want to let in.
-3. **Save the credentials** to `~/.kirocrew/.env`:
+3. **Save the credentials** to `~/.kiro/crew/.env`:
    ```
    WECOM_BOT_ID=your-bot-id
    WECOM_SECRET=your-bot-secret
    ```
-4. **Turn it on** in `~/.kirocrew/config.json`:
+4. **Turn it on** in `~/.kiro/crew/config.json`:
    ```json
    "wecom": {
      "enabled": true,
@@ -88,7 +88,7 @@ Everything lives in the `wecom` section of `config.json`:
 | `hard_threshold_pct` | `95` | Context % hard cutoff |
 | `ws_url` | `wss://openws.work.weixin.qq.com` | WeCom AI-bot endpoint |
 
-Credentials go in `~/.kirocrew/.env`: `WECOM_BOT_ID` and `WECOM_SECRET`.
+Credentials go in `~/.kiro/crew/.env`: `WECOM_BOT_ID` and `WECOM_SECRET`.
 
 **If something's off:** no reply usually means the sender's userid isn't allowed
 or `enabled` is `false`; a missing `channel started` line means a credential is

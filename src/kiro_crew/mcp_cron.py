@@ -306,7 +306,7 @@ def _vet_shell_command(command: str) -> str | None:
 def _vet_script_contents(text: str) -> str | None:
     """Scan a cron SCRIPT body for credential-exfiltration patterns.
 
-    A ``cron_add`` ``script`` job points at a file under ``~/.kirocrew/crons/``
+    A ``cron_add`` ``script`` job points at a file under ``~/.kiro/crew/crons/``
     that the agent itself can write (via its file-write tool) and then register.
     ``resolve_script_path`` validates only the *path*, so without this the body
     is never inspected. The script runs under ``mode="standard"`` (user scripts
@@ -343,7 +343,7 @@ def _vet_script_file(file_path: str) -> str | None:
     """Read a resolved cron script file and run :func:`_vet_script_contents`.
 
     ``file_path`` is expected to come from ``resolve_script_path`` (under
-    ``~/.kirocrew/crons/``), but this function does NOT trust that — it
+    ``~/.kiro/crew/crons/``), but this function does NOT trust that — it
     independently resolves the real path and rejects it via ``is_sensitive_path``
     before opening, so a symlink under the crons dir pointing at a credential
     file (e.g. ``crons/evil.py -> ~/.aws/credentials``) cannot be read here. Read
@@ -590,8 +590,8 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Python callable path for code-based cron execution "
                         "(bypasses LLM entirely). Format: "
-                        "'~/.kirocrew/crons/file.py:function'. Scripts must be under "
-                        "~/.kirocrew/crons/. Function receives a "
+                        "'~/.kiro/crew/crons/file.py:function'. Scripts must be under "
+                        "~/.kiro/crew/crons/. Function receives a "
                         "ScriptContext and can raise Skip() to retry or Done() to "
                         "remove the job. Use ctx.notify() to deliver messages. "
                         "When set, 'message' is passed to the script as ctx.message "

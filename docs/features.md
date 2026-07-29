@@ -138,7 +138,7 @@ Defense-in-depth controls enforced at multiple layers.
 - **Credential redaction** — scans all LLM output for AWS keys, private key headers, Slack tokens
 - **Denied commands** — 137 regex patterns block destructive operations (cannot be bypassed in YOLO mode)
 - **Tamper-resistant config** — deny patterns sourced from the bundled package, replaced on every update
-- **Audit logging** — every bash command logged to `~/.kirocrew/audit.log`
+- **Audit logging** — every bash command logged to `~/.kiro/crew/audit.log`
 - **Governance model** — two-level policy ceiling (`POLICY ∩ PROFILE`, tightest-wins) enforced at KiroCrew's own tool gate
 - **Owner lock** — Slack gateway locked to `KIROCREW_OWNER_ID`; dashboard localhost-only by default
 - **XSS sanitization** — DOMPurify + CSP headers
@@ -263,7 +263,7 @@ Supports `--components` for selective restore and `--dry-run` preview.
 ## Persistent Memory
 
 ```
-~/.kirocrew/workspace/memory/
+~/.kiro/crew/workspace/memory/
 ├── preferences.md      # learned user preferences
 ├── projects.md         # active project context
 └── history/YYYY-MM-DD.md  # daily conversation summaries

@@ -301,7 +301,7 @@ def migrate_owned_playwright_registration() -> None:
        KiroCrew's legacy DIRECT ``npm:@playwright/mcp`` entry (written by installs
        that predate the compression proxy) to the proxy, preserving the original
        boot migration's direct-to-proxy behavior.
-    2. KiroCrew's own ``~/.kirocrew/mcp.json`` — the agent-specific MCP override
+    2. KiroCrew's own ``~/.kiro/crew/mcp.json`` — the agent-specific MCP override
        merged into the agent config on every rebuild — is converged at the
        SOURCE, so a stale ``playwright-proxy-mcp`` key there is healed once rather
        than re-injected on every rebuild for the per-rebuild

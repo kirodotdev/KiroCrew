@@ -57,7 +57,7 @@ uncompressed byte ceilings.
    magic-byte sniff, and persona bounds. Validating the snapshot (not the
    source) closes the validate/copy TOCTOU class.
 4. **Promote** — the validated snapshot is atomically renamed into
-   `~/.kirocrew/themes/<slug>/`. Concurrent installs of the same slug are
+   `~/.kiro/crew/themes/<slug>/`. Concurrent installs of the same slug are
    serialized so staging never clobbers a live pack. **Re-install overwrites**
    (the update path); a `409` is returned only when a slug collides with an
    editor-created custom record.

@@ -991,7 +991,7 @@ ungoverned):
   agent makes still passes the full PreToolUse gate, so the Level-1 POLICY
   ceiling continues to bind all agent *actions* regardless of persona.
 - Activation requires a locally installed pack (filesystem access to
-  `~/.kirocrew/themes/`) plus a per-content sha grant — an actor with that
+  `~/.kiro/crew/themes/`) plus a per-content sha grant — an actor with that
   access is already inside the trust boundary the POLICY ceiling models.
 - The persona-injection force-disable that a plain in-boundary actor could
   not otherwise get is now available to an enterprise POLICY via the

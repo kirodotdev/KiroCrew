@@ -21,7 +21,7 @@ defense-in-depth model:
 
 Trust-root invariant: the admission policy is loaded from a **fleet-controlled
 source** (`KIROCREW_ADMISSION_POLICY` env path, or
-`~/.kirocrew/admission_policy.json`), never from the plugin being admitted, so a
+`~/.kiro/crew/admission_policy.json`), never from the plugin being admitted, so a
 plugin cannot approve or un-ban itself. The public edition ships **no** policy →
 default-open (admit), preserving today's behavior; a managed fleet ships a policy
 and the gate enforces.

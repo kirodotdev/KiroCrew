@@ -53,7 +53,7 @@ User habits, tool preferences, communication style. Replaced wholesale by the co
 
 | Property    | Value                                              |
 |-------------|----------------------------------------------------|
-| Source      | `~/.kirocrew/workspace/memory/preferences.md`      |
+| Source      | `~/.kiro/crew/workspace/memory/preferences.md`      |
 | Injected    | Every new session via `get_context()`               |
 | Updated     | Every 30 messages by `HistoryConsolidator`          |
 | Context cap | 4,250 chars                                        |
@@ -72,7 +72,7 @@ Active work context — CRs, packages, branches, status.
 
 | Property    | Value                                              |
 |-------------|----------------------------------------------------|
-| Source      | `~/.kirocrew/workspace/memory/projects.md`         |
+| Source      | `~/.kiro/crew/workspace/memory/projects.md`         |
 | Injected    | Every new session                                  |
 | Updated     | Every 30 messages by `HistoryConsolidator`          |
 | Context cap | 6,400 chars                                        |
@@ -99,7 +99,7 @@ Daily conversation summaries with 3-tier natural decay:
 
 | Property    | Value                                              |
 |-------------|----------------------------------------------------|
-| Source      | `~/.kirocrew/workspace/memory/history/`            |
+| Source      | `~/.kiro/crew/workspace/memory/history/`            |
 | Injected    | Every new session                                  |
 | Updated     | On 3h idle per session (history consolidation)     |
 | Context cap | 26,600 chars                                       |
@@ -152,7 +152,7 @@ Example entries:
 Search uses decay scoring (see [Fading Mechanism](#fading-mechanism)) with MMR diversity reranking (Jaccard-based, λ=0.6) to avoid redundant results. Two-stage filtering: a raw-cosine pre-filter (`_EPISODIC_RELEVANCE_THRESHOLD = 0.55`, relaxed to `_EPISODIC_LONG_TEXT_THRESHOLD = 0.42` for entries longer than `_EPISODIC_LONG_TEXT_CHARS = 300` chars, since long texts dilute cosine scores) removes irrelevant matches, then decay-adjusted scoring ranks the survivors.
 
 **FAISS embeddings are always-on** (`embedding_provider` coerces every value — including legacy `"ollama"`/`"none"` — to `"llama_cpp"`). The flow:
-1. On gateway startup, the `Qwen/Qwen3-Embedding-0.6B` model (~610MB) downloads in the background over HTTPS from the KiroCrew CDN (sha256-verified, retried with backoff; `KIROCREW_EMBED_MODEL_URL` or `memory.embed_model_url` overrides the URL for mirrors) to `~/.kirocrew/models/`
+1. On gateway startup, the `Qwen/Qwen3-Embedding-0.6B` model (~610MB) downloads in the background over HTTPS from the KiroCrew CDN (sha256-verified, retried with backoff; `KIROCREW_EMBED_MODEL_URL` or `memory.embed_model_url` overrides the URL for mirrors) to `~/.kiro/crew/models/`
 2. Embeddings run in-process via the vendored llama-cpp-python runtime — no server or install step
 3. Once the model lands, all future episodic writes get FAISS embeddings for vector search (no restart needed)
 4. While the model is absent or not yet loaded, episodic search falls back to keyword matching (OR logic, LIKE on text + tags) — embeddings are always-on and cannot be disabled; keyword fallback is automatic
@@ -304,12 +304,12 @@ When KiroCrew is @mentioned in a group channel, the channel history buffer provi
 Key differences between modes:
 
 - **`mention` mode**: Only the last 50 messages within a 5-minute window are available. If nobody talked for 6 minutes, the buffer is empty when you @mention the bot. History is in-memory only — lost on restart.
-- **`observe` mode**: Up to 200 messages within a 1-week window, persisted to `~/.kirocrew/history/<channel_id>.jsonl`. Survives restarts. Lazy compaction removes expired entries on load.
+- **`observe` mode**: Up to 200 messages within a 1-week window, persisted to `~/.kiro/crew/history/<channel_id>.jsonl`. Survives restarts. Lazy compaction removes expired entries on load.
 - **Security**: Only messages from authorized users (owner + allowlist) are recorded in observe mode. Non-authorized messages are silently dropped to prevent prompt injection.
 
 ### All Channels Share the Same Memory Store
 
-Regardless of which channel a conversation happens in, all sessions write to the same memory store (`~/.kirocrew/workspace/memory/`). A lesson learned in a DM is available when responding in a group channel, and vice versa.
+Regardless of which channel a conversation happens in, all sessions write to the same memory store (`~/.kiro/crew/workspace/memory/`). A lesson learned in a DM is available when responding in a group channel, and vice versa.
 
 The exception is **workspace-scoped lessons** — if different channels use different workspaces (via per-channel config), their workspace-scoped lessons are isolated. Global lessons are always shared.
 
@@ -417,7 +417,7 @@ Heartbeat tick (every 60s)
     │        └── Yes → fire history consolidation
     │
     ├──► Every 15 ticks (15 min): rebuild FTS index
-    │    └── Rebuilds ~/.kirocrew/memory_index.db (SQLite FTS5, porter stemming)
+    │    └── Rebuilds ~/.kiro/crew/memory_index.db (SQLite FTS5, porter stemming)
     │
     └──► Every 1440 ticks (24h): prune old history + SEL
          ├── Delete history files older than history_max_days (default 365)
@@ -433,7 +433,7 @@ The consolidator has two paths (prefs and history), but neither has its own time
 
 ### HEARTBEAT.md — User-Facing Task Queue
 
-Separate from memory maintenance, the heartbeat also processes `~/.kirocrew/workspace/HEARTBEAT.md`:
+Separate from memory maintenance, the heartbeat also processes `~/.kiro/crew/workspace/HEARTBEAT.md`:
 
 ```markdown
 # Heartbeat Tasks

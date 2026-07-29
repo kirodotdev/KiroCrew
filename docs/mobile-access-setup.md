@@ -53,7 +53,7 @@ proxies to your local KiroCrew dashboard port (5476).
 
 ### 2. Configure the dashboard URL
 
-Set `dashboard.url` in `~/.kirocrew/config.json` to the tunnel URL:
+Set `dashboard.url` in `~/.kiro/crew/config.json` to the tunnel URL:
 
 ```json
 {

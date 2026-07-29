@@ -10,7 +10,11 @@ import sys
 import time
 
 
-_DATA_HOME = os.environ.get("KIROCREW_HOME", os.path.expanduser("~/.kiro/crew"))
+# A leading "~" is expanded because Docker `ENV` and systemd `Environment=`
+# pass one through unexpanded, and os.environ.get does not expand it -- without
+# this, KIROCREW_HOME='~/crew-data' would create a directory literally named
+# "~" under the cwd. Matches Path(override).expanduser() in config/paths.py.
+_DATA_HOME = os.path.expanduser(os.environ.get("KIROCREW_HOME") or "~/.kiro/crew")
 COOKIE_JAR_PATH = os.path.join(_DATA_HOME, "browser-cookies.txt")
 STORAGE_STATE_PATH = os.path.join(_DATA_HOME, "playwright-storage-state.json")
 

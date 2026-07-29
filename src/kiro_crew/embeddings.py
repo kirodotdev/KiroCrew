@@ -4,7 +4,7 @@ Embeddings run in-process via the vendored llama-cpp-python runtime
 (``kiro_crew/_vendor``) — no external Ollama server, no HTTP hop, no
 runtime pip install. The Qwen3-Embedding-0.6B GGUF model is downloaded in
 the background (sha256-verified, with retries) and installed persistently
-to ``~/.kirocrew/models/``. Sources are tried in order: a byte-identical
+to ``~/.kiro/crew/models/``. Sources are tried in order: a byte-identical
 blob salvaged from a legacy Ollama install, then the public CloudFront CDN
 (plain HTTPS — no git access, no cloud SDK). ``KIROCREW_EMBED_MODEL_URL``
 (or the ``memory.embed_model_url`` config knob) overrides the CDN URL for

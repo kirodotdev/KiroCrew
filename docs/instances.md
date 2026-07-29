@@ -78,7 +78,7 @@ shows an opt-in hint.
  │  dashboard/handlers_instances.py                                         │
  │            │                                                             │
  │  instances/ package                                                      │
- │   ├─ registry.py         ~/.kirocrew/instances.json                      │
+ │   ├─ registry.py         ~/.kiro/crew/instances.json                      │
  │   ├─ port_allocator.py   loopback ports from base 7778                   │
  │   ├─ token_mint.py       `ssh <host> kirocrew token` → JWT (never logged)│
  │   ├─ ssh_tunnel_manager  supervised `ssh -N -L`, probe, self-heal, refresh│
@@ -95,7 +95,7 @@ Module responsibilities:
 
 | Module | Responsibility |
 |--------|----------------|
-| `registry.py` | Persistent list of configured instances (`~/.kirocrew/instances.json`) + `last_active_id`. Validates `ssh_host`/`remote_bin` at add/update. |
+| `registry.py` | Persistent list of configured instances (`~/.kiro/crew/instances.json`) + `last_active_id`. Validates `ssh_host`/`remote_bin` at add/update. |
 | `port_allocator.py` | Hands out free loopback ports from `tunnel_base_port` (7778), skipping bound/excluded ports. |
 | `token_mint.py` | Runs `kirocrew token` on the remote over SSH via a bin-candidate ladder; parses the JWT from the printed URL. Token is returned in-memory only, **never logged**. |
 | `ssh_tunnel_manager.py` | Supervises one `ssh -N -L` child per instance: readiness wait, health probe, 2-tier self-heal, proactive token refresh, remote restart. |
@@ -148,7 +148,7 @@ All under `instances.*` (defaults in `kiro_crew.instances.constants`):
 kirocrew config set instances.warm_set_cap 3
 ```
 
-**Registry** (`~/.kirocrew/instances.json`) — one record per instance:
+**Registry** (`~/.kiro/crew/instances.json`) — one record per instance:
 `id, name, ssh_host, remote_port (default 7777), local_port, ttl (default 20h),
 remote_bin, was_connected`, plus a top-level `last_active_id`.
 

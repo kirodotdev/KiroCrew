@@ -5,7 +5,7 @@ Portable snapshot and restore of KiroCrew state.
 ## Quick Start
 
 ```bash
-kirocrew snapshot                                    # default: ~/.kirocrew/snapshots
+kirocrew snapshot                                    # default: ~/.kiro/crew/snapshots
 kirocrew snapshot ~/my-snapshots --keep 3             # custom dir, keep 3
 kirocrew snapshot --list                             # list existing snapshots
 kirocrew restore snapshot.tar.gz                     # auto-detects replace vs merge
@@ -34,7 +34,7 @@ Excludes `workspace/hygiene_data/` and `workspace/insert_facts*.py` (large, rege
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `OUTPUT_DIR` | `~/.kirocrew/snapshots` | Where to write the tarball |
+| `OUTPUT_DIR` | `~/.kiro/crew/snapshots` | Where to write the tarball |
 | `--keep N` | 7 | Prune to N most recent snapshots |
 | `--list` | — | List existing snapshots and exit |
 
@@ -51,7 +51,7 @@ Before snapshotting, `PRAGMA wal_checkpoint(TRUNCATE)` is attempted on `memory.d
 | `replace` | No existing `memory.db` | Overwrites target with snapshot contents (backs up any existing state first) |
 | `merge` | Existing `memory.db` found | Imports new data without overwriting existing |
 
-Auto-detected based on whether `~/.kirocrew/memory.db` exists. Override with `--mode replace|merge`.
+Auto-detected based on whether `~/.kiro/crew/memory.db` exists. Override with `--mode replace|merge`.
 
 ### Merge Behavior
 

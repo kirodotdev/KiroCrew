@@ -4,7 +4,7 @@ Spin up a **throwaway, full-stack KiroCrew gateway** for any feature worktree �
 its own port, its own `KIROCREW_HOME` (own DB / sessions / memory), no Slack
 tunnel, `--no-crons`, resource-capped, and `rm -rf`'d on stop. Test a branch's
 backend `/api/*` **and** the SPA bundle it serves, all **without touching your
-live gateway or your shared `~/.kirocrew` data**.
+live gateway or your shared `~/.kiro/crew` data**.
 
 Think **`kubectl` for local worktree test rigs.** This is the *test line*
 (multi-active, burn-on-evict); it is orthogonal to the *live line* (a single
@@ -72,7 +72,7 @@ be `..`. `MemoryMax`/`CPUQuota` cap a runaway pod; `Restart=on-failure` self-hea
 ### Port derivation
 
 `port = base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`), unless a
-`PORT=` is pinned in `~/.kirocrew/pods/<name>.env`. `pod up` refuses if a derived
+`PORT=` is pinned in `~/.kiro/crew/pods/<name>.env`. `pod up` refuses if a derived
 port ever resolves to the live port.
 
 ## Configuration (`PodConfig`, all `KIROCREW_POD_*`-overridable)
@@ -82,7 +82,7 @@ port ever resolves to the live port.
 | `KIROCREW_POD_REPO` | invoking cwd | repo git is queried from to resolve worktree names |
 | `KIROCREW_POD_WORKTREES_ROOT` | (unset) | optional `name→path` fallback root (hermetic planes) |
 | `KIROCREW_POD_ROOT` | `~/.kirocrew-pods` | isolated pod HOMEs (nuked on stop) |
-| `KIROCREW_POD_ENV_DIR` | `~/.kirocrew/pods` | per-pod `CHECKOUT=`/`PORT=`/`SEED=` files |
+| `KIROCREW_POD_ENV_DIR` | `~/.kiro/crew/pods` | per-pod `CHECKOUT=`/`PORT=`/`SEED=` files |
 | `KIROCREW_POD_BASE_PORT` | `7810` | port derivation base |
 | `KIROCREW_POD_LIVE_PORT` | `5476` | the port a pod must never bind |
 | `KIROCREW_POD_UNIT_PREFIX` | `kirocrew-pod` | systemd unit prefix |
@@ -94,7 +94,7 @@ that can't collide with a developer's live pods — used by the test suite.
 ## Safety
 
 - A pod runs its own `KIROCREW_HOME` and binds `127.0.0.1` only; it never touches
-  the shared `~/.kirocrew` data and refuses the live port.
+  the shared `~/.kiro/crew` data and refuses the live port.
 - Every pod's `config.json` forces `tunnel.enabled=false`, and the booted env
   scrubs `SLACK_*` + non-AWS `*_TOKEN`, so a pod can never grab the live Slack
   identity. Pod HOME is `0700`; `config.json` is `0600`.

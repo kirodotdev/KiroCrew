@@ -43,7 +43,7 @@ detection, limits, reserve-and-finalize, and success-criteria verification.
 ### File model
 
 ```
-~/.kirocrew/workspace/research/<campaign_id>/
+~/.kiro/crew/workspace/research/<campaign_id>/
 ├── brief.md               # question + sub-questions (written at launch)
 ├── status.json            # backend writes, agent reads each cycle
 ├── guidance.txt           # user nudge: agent reads + incorporates each cycle

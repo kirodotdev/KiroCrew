@@ -53,7 +53,7 @@ kiro-cli login
 
 See the [README](../README.md) for backend options and credentials.
 Configure your provider credentials (e.g. an Anthropic API key) in
-`~/.kirocrew/.env` as described in the README.
+`~/.kiro/crew/.env` as described in the README.
 
 ## Install KiroCrew
 
@@ -180,24 +180,24 @@ preferences, lessons, and agent configs from day one.
 
 | Category | Path | Why |
 |---|---|---|
-| **Memory** | `~/.kirocrew/workspace/memory/` | Preferences, projects, history — the agent's long-term knowledge of you |
-| **Databases** | `~/.kirocrew/memory.db`, `memory.db-wal`, `memory.db-shm`, `memory_index.db` | Episodic & semantic memory (SQLite + WAL for complete state) |
-| **Config** | `~/.kirocrew/config.json` | KiroCrew settings (Slack tokens, model prefs) |
+| **Memory** | `~/.kiro/crew/workspace/memory/` | Preferences, projects, history — the agent's long-term knowledge of you |
+| **Databases** | `~/.kiro/crew/memory.db`, `memory.db-wal`, `memory.db-shm`, `memory_index.db` | Episodic & semantic memory (SQLite + WAL for complete state) |
+| **Config** | `~/.kiro/crew/config.json` | KiroCrew settings (Slack tokens, model prefs) |
 | **Lessons** | Stored in `memory.db` | Learned corrections that override default behavior |
-| **Task specs** | `~/.kirocrew/tasks/` | Saved task runner specs |
-| **Skills** | `~/.kirocrew/skills/` | Custom skill definitions |
-| **Hooks** | `~/.kirocrew/hooks/` | Webhook listener configs |
-| **Cron jobs** | `~/.kirocrew/crons.json` | Scheduled recurring jobs |
+| **Task specs** | `~/.kiro/crew/tasks/` | Saved task runner specs |
+| **Skills** | `~/.kiro/crew/skills/` | Custom skill definitions |
+| **Hooks** | `~/.kiro/crew/hooks/` | Webhook listener configs |
+| **Cron jobs** | `~/.kiro/crew/crons.json` | Scheduled recurring jobs |
 | **Dotfiles** | `~/.gitconfig`, `~/.bashrc`, `~/.zshrc` | Shell & git config |
 
 > **Why sync WAL files?** SQLite uses Write-Ahead Logging — recent writes go to `memory.db-wal` before being checkpointed into `memory.db`. Without the WAL, the remote gets a stale snapshot missing your latest memories and lessons.
 
 ### What NOT to Sync
 
-- `~/.kirocrew/sessions/` — optional; sync if you want chat history on remote (sync-to-remote.sh includes this)
-- `~/.kirocrew/session_pid_*.txt` — process tracking files, host-specific
-- `~/.kirocrew/audit.log`, `security_events.jsonl` — large logs, not needed on new host
-- `~/.kirocrew/.env`, `.local_secret`, `sel_hmac.key` — secrets, regenerated on first run
+- `~/.kiro/crew/sessions/` — optional; sync if you want chat history on remote (sync-to-remote.sh includes this)
+- `~/.kiro/crew/session_pid_*.txt` — process tracking files, host-specific
+- `~/.kiro/crew/audit.log`, `security_events.jsonl` — large logs, not needed on new host
+- `~/.kiro/crew/.env`, `.local_secret`, `sel_hmac.key` — secrets, regenerated on first run
 
 ### Quick Sync Script
 
@@ -226,7 +226,7 @@ scripts/sync-to-remote.sh --dry-run
 scripts/sync-to-remote.sh --help
 ```
 
-> **Note on sessions**: The script syncs `~/.kirocrew/sessions/` by default so your chat history appears on the remote dashboard. If you prefer a clean slate, remove the sessions step from the script.
+> **Note on sessions**: The script syncs `~/.kiro/crew/sessions/` by default so your chat history appears on the remote dashboard. If you prefer a clean slate, remove the sessions step from the script.
 
 ### After Syncing
 
@@ -250,7 +250,7 @@ If you develop on both local and remote, keep memories in sync with a
 shell alias (replace `user@your-host.example.com` with your SSH target):
 
 ```bash
-alias sync-claw='rsync -avz ~/.kirocrew/workspace/memory/ user@your-host.example.com:~/.kirocrew/workspace/memory/ && rsync -avz ~/.kirocrew/memory.db ~/.kirocrew/memory_index.db user@your-host.example.com:~/.kirocrew/'
+alias sync-claw='rsync -avz ~/.kiro/crew/workspace/memory/ user@your-host.example.com:~/.kiro/crew/workspace/memory/ && rsync -avz ~/.kiro/crew/memory.db ~/.kiro/crew/memory_index.db user@your-host.example.com:~/.kiro/crew/'
 ```
 
 ## Access Dashboard via SSH Tunnel

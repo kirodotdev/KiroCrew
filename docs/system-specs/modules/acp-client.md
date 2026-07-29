@@ -111,7 +111,7 @@ MCP server fields translated: `disabled: true` entries are omitted; `autoApprove
 Data-driven — no code changes needed:
 - `config/defaults.json` — base config (tools, model, permissions), resolved via `_BUNDLED_CFG_DIR` in `agent.py`
 - `config/prompt.md` — system prompt, resolved via `_BUNDLED_CFG_DIR` in `agent.py`
-- `~/.kirocrew/agent.json` — user overrides (optional)
+- `~/.kiro/crew/agent.json` — user overrides (optional)
 - Run `kirocrew setup --agent-only` after editing
 
 Note: there IS a top-level `agents/` directory used at runtime for project-level overrides, but the bundled source lives in `src/kiro_crew/config/`.

@@ -133,7 +133,7 @@ If your app needs a build step or dependency installation:
 ```
 
 Rules:
-- `onInstall` — runs after first install. Required if your app needs build steps, dependency installation, or creates resources outside `~/.kirocrew/apps/{name}/`.
+- `onInstall` — runs after first install. Required if your app needs build steps, dependency installation, or creates resources outside `~/.kiro/crew/apps/{name}/`.
 - `onUpdate` — runs after update (new code in place, `data/` preserved). Use for recompilation, migrations, or restarting backend processes.
 - `onUninstall` — runs before removing files. Only needed if your app creates resources outside KiroCrew's managed directories (e.g. `~/Applications/MyApp.app`, shell aliases, launchd plists). KiroCrew automatically cleans up everything it manages.
 - `onEnable` — runs when the user enables the app. Use for starting backend processes or registering external services.
@@ -351,7 +351,7 @@ Your app can be installed in two ways:
 
 Users click "Install" in the App Store. KiroCrew clones the package into a workspace.
 
-1. KiroCrew creates a workspace at `~/.kirocrew/app-sources/.workspaces/{app_name}/` (one per app)
+1. KiroCrew creates a workspace at `~/.kiro/crew/app-sources/{app_name}/` (one per app)
 2. Clones the repo at the specified branch
 3. Runs the build step (npm/pip depending on the package type)
 4. Runs `setup.onInstall` if declared
@@ -404,7 +404,7 @@ Before submitting your registry Pull Request:
 - [ ] Install script is non-interactive and exits 0
 - [ ] Install script completes within 5 minutes
 - [ ] If `onInstall` is present, `onUninstall` is also present
-- [ ] Uninstall script cleans up all resources created outside `~/.kirocrew/apps/{name}/`
+- [ ] Uninstall script cleans up all resources created outside `~/.kiro/crew/apps/{name}/`
 - [ ] App works with `kirocrew app install /path/to/local/clone`
 - [ ] Permissions are minimal — only declare what you actually use
 
@@ -454,7 +454,7 @@ Apps can use npm (for TypeScript/React) or pip (for Python) as their build syste
 
 ### How It Works
 
-1. On install, KiroCrew creates a workspace at `~/.kirocrew/app-sources/.workspaces/{app_name}/` (one per app)
+1. On install, KiroCrew creates a workspace at `~/.kiro/crew/app-sources/{app_name}/` (one per app)
 2. Clones the package at the specified branch
 3. Runs `npm install && npm run build` (for JS/TS packages) or `pip install .` (for Python packages)
 4. `setup.onInstall` runs after build (for post-build steps like `electron-builder`)

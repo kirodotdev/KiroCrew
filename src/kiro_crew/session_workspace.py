@@ -23,7 +23,7 @@ def _validate_id(value: str, label: str = "id") -> str:
 
 
 def workspace_dir(session_id: str) -> Path:
-    """Return ~/.kirocrew/sessions/{session_id}/, creating if needed."""
+    """Return ~/.kiro/crew/sessions/{session_id}/, creating if needed."""
     d = config_dir() / _SESSIONS_DIR / _validate_id(session_id, "session_id")
     d.mkdir(parents=True, exist_ok=True)
     return d

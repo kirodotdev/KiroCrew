@@ -8,7 +8,7 @@ The heartbeat service (`kiro_crew/heartbeat.py`) runs periodic background tasks 
 
 ## Responsibilities
 
-1. **Task processing** — reads `~/.kirocrew/workspace/HEARTBEAT.md`, sends non-empty tasks to the agent
+1. **Task processing** — reads `~/.kiro/crew/workspace/HEARTBEAT.md`, sends non-empty tasks to the agent
 2. **FTS index rebuild** — every 15 ticks (~15 min at default interval)
 
 ## HEARTBEAT.md Format

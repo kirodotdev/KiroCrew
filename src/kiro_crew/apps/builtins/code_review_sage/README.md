@@ -40,7 +40,7 @@ code_review_sage/
 └── tests/                   # unit tests
 ```
 
-App-local runtime data lives under `~/.kirocrew/apps/code-review-sage/data/`
+App-local runtime data lives under `~/.kiro/crew/apps/code-review-sage/data/`
 (honors `KIROCREW_HOME`; created on first use, never committed).
 
 ## Enable

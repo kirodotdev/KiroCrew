@@ -439,7 +439,7 @@ def _collect_system_metrics() -> dict[str, object]:
     # optional backend; the signature is harmless when it is not installed.
     #
     # Sandbox counting platform differences:
-    #   Linux:  The namespace launcher (python3 ~/.kirocrew/run/kirocrew_sandbox_*.py ...)
+    #   Linux:  The namespace launcher (python3 ~/.kiro/crew/run/kirocrew_sandbox_*.py ...)
     #           forks — the parent stays alive with "kirocrew_sandbox" in its
     #           /proc/cmdline, so sandbox count is accurate.
     #   macOS:  sandbox-exec execs the target command, replacing the process

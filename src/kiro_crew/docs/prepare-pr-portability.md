@@ -308,7 +308,7 @@ src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/
     pr-body-template.md
 ```
 
-(This is the packaged source that ships via `package_data`; the runtime copy is synced to `~/.kirocrew/skills/…` at startup. An optional `.prepare-pr.toml` lives at a *consuming* repo's root — not in the skill.)
+(This is the packaged source that ships via `package_data`; the runtime copy is synced to `~/.kiro/crew/skills/…` at startup. An optional `.prepare-pr.toml` lives at a *consuming* repo's root — not in the skill.)
 
 ## 8. Migration & backward compatibility
 

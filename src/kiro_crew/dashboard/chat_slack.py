@@ -42,7 +42,7 @@ def _get_channel_resolver(state: DashboardState) -> ChannelNameResolver:
     The cache path is derived from ``dashboard_state.config_dir`` (accessed as a
     module attribute, not a ``from`` import) so it flows through the same seam
     tests patch — isolating the on-disk cache to ``tmp_path`` under test while
-    resolving to the real ``~/.kirocrew`` dir in production.
+    resolving to the real ``~/.kiro/crew`` dir in production.
     """
     if state._channel_resolver is None:
         cache_path = dashboard_state.config_dir() / _CACHE_FILENAME

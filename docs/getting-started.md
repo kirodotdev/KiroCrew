@@ -23,8 +23,8 @@ curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel nightly
 ```
 
 The installer uses `pipx` when available (else creates a managed venv at
-`~/.kirocrew/venv`), verifies the wheel's checksum against the published
-manifest, and records your channel to `~/.kirocrew/channel`.
+`~/.kiro/crew/venv`), verifies the wheel's checksum against the published
+manifest, and records your channel to `~/.kiro/crew/channel`.
 
 To pin a specific version:
 
@@ -178,7 +178,7 @@ Lessons are injected into every future session automatically.
 
 ## Configuration
 
-Config lives at `~/.kirocrew/config.json`. Manage it with:
+Config lives at `~/.kiro/crew/config.json`. Manage it with:
 
 ```bash
 kirocrew config get agent.sandbox
@@ -200,7 +200,7 @@ Key settings:
 Dashboard port is set via `KIROCREW_PORT` (default `5476`) or
 `kirocrew gateway --port <n>`.
 
-Slack credentials: `~/.kirocrew/.env` — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`,
+Slack credentials: `~/.kiro/crew/.env` — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`,
 `KIROCREW_OWNER_ID`. See [../docs/slack-setup.md](slack-setup.md) for the full
 Slack app creation guide.
 

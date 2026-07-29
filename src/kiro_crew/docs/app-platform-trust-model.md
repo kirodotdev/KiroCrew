@@ -34,7 +34,7 @@ code itself.
 - **SEL audit** — every module load is recorded in the Security Event Log with its
   trust class (`builtin` / `third_party`), so app-code execution is auditable.
 - **Hard off switch** — set `agent.apps_allow_third_party=false` (in
-  `~/.kirocrew/config.json` or the config modal) to refuse running any app whose
+  `~/.kiro/crew/config.json` or the config modal) to refuse running any app whose
   Python lives outside `apps/builtins/`. Both app-**Python** execution paths
   consult the switch: `module_loader` raises `ImportError` before `exec_module`
   (in-process hooks), and `backend._start_app_backend_body` returns `None` before

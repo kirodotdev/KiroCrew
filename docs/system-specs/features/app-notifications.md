@@ -72,7 +72,7 @@ Channels register lazily on an app's first push to each declared channel. On app
 
 ## Per-channel settings (Phase 3)
 
-User preferences per channel, stored in `~/.kirocrew/notification_settings.json` (`notifications/settings.py`, state-owned `ChannelSettings`, atomic-rename writes, corrupt file falls back to defaults):
+User preferences per channel, stored in `~/.kiro/crew/notification_settings.json` (`notifications/settings.py`, state-owned `ChannelSettings`, atomic-rename writes, corrupt file falls back to defaults):
 
 - **Mute**: the note still lands in history (mute silences, it does not destroy) but is stamped `silenced: true` with priority forced to `passive`, so every attention surface skips it — the unread badge counts only non-passive rows, and sound/banner/feed styling key off the same fields.
 - **Priority override**: the user's value replaces the producer-requested priority and channel default.

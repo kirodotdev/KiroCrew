@@ -16,7 +16,7 @@ At startup, `main()` auto-detects the project root and sets `KIROCREW_PROJECT_DI
 
 1. If `KIROCREW_PROJECT_DIR` env var is already set, use it
 2. Walk up from CWD looking for a directory with both `skills/` and `src/kiro_crew/` (`_PROJECT_MARKERS`). The project-level `agents/` dir was removed when agent config was consolidated into `src/kiro_crew/config/` (commit bbbc1f6e), so the marker no longer references it — a stale `agents/` requirement left detection (and the dashboard changelog) silently broken.
-3. Read saved path from `~/.kirocrew/project_dir` (written by `kirocrew setup`); the saved path is re-validated against the same markers
+3. Read saved path from `~/.kiro/crew/project_dir` (written by `kirocrew setup`); the saved path is re-validated against the same markers
 
 This allows `kirocrew` to find project-level agent config and skills from any directory.
 
@@ -49,7 +49,7 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 | `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. |
 | `kirocrew service uninstall` | Stop and remove the systemd unit / launchd plist. |
 | `kirocrew service status` | Show service status (`systemctl status` or `launchctl list`). No sudo required. |
-| `kirocrew logs` | Tail gateway logs from the systemd journal, launchd stdout file, or `~/.kirocrew/gateway.log`. |
+| `kirocrew logs` | Tail gateway logs from the systemd journal, launchd stdout file, or `~/.kiro/crew/gateway.log`. |
 | `kirocrew logs -f` | Follow logs live (long-running tail). |
 | `kirocrew cloud launch/list/status/connect/stop/start/destroy/iam-policy/doctor` | Provision, connect to, and manage a KiroCrew EC2 instance in the user's AWS account. |
 | `kirocrew security events` | Show recent SEL audit events (`-n N` for count) |
@@ -96,7 +96,7 @@ exfiltration redactors run.
 
 `kirocrew setup` performs:
 
-1. Saves `KIROCREW_PROJECT_DIR` to `~/.kirocrew/project_dir`
+1. Saves `KIROCREW_PROJECT_DIR` to `~/.kiro/crew/project_dir`
 2. Installs agent config to `~/.kiro/agents/kirocrew.json`
 3. Prompts for Slack credentials (unless `--agent-only`)
 4. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
@@ -309,7 +309,7 @@ after fixing the local SSM tunnel issue.
 
 ## Config Command
 
-`kirocrew config` manages `~/.kirocrew/config.json`:
+`kirocrew config` manages `~/.kiro/crew/config.json`:
 
 - **get** — prints full effective config (with defaults resolved) or a single dot-path value
 - **set key value** — sets a value with auto type detection (bool/int/float/JSON/string). Rejects unknown leaf keys.
@@ -320,7 +320,7 @@ All write paths emit SEL audit events (`config_get`, `config_set`, `config_set_f
 
 ### Gateway Auto-Create
 
-`kirocrew gateway` creates `~/.kirocrew/config.json` with defaults if the file doesn't exist. Does nothing if it already exists.
+`kirocrew gateway` creates `~/.kiro/crew/config.json` with defaults if the file doesn't exist. Does nothing if it already exists.
 
 ## Verbosity
 
@@ -352,7 +352,7 @@ CLI compaction is blocking (single-user, acceptable).
 
 | Variable | Purpose |
 |----------|---------|
-| `KIROCREW_HOME` | Override config/data directory (default `~/.kirocrew`) |
+| `KIROCREW_HOME` | Override config/data directory (default `~/.kiro/crew`) |
 | `KIROCREW_PORT` | Override dashboard port (default `5476`, validated as int at CLI startup) |
 | `KIROCREW_PROJECT_DIR` | Override agent config/skills directory |
 | `KIROCREW_WORKSPACE` | Override workspace root directory |
@@ -554,7 +554,7 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
      `sys.exit(1)`) does not abort the restart before the spawn.
    - Spawn a detached `kirocrew gateway` via `subprocess.Popen`, stdin set
      to `subprocess.DEVNULL`, and stdout + stderr redirected to
-     `~/.kirocrew/gateway.log` (the same file the `kirocrew logs` command
+     `~/.kiro/crew/gateway.log` (the same file the `kirocrew logs` command
      tails for foreground gateways). Detach is per-platform: POSIX uses
      `start_new_session=True`; Windows uses `creationflags=DETACHED_PROCESS
      | CREATE_NEW_PROCESS_GROUP` (there is no setsid) — both via
@@ -603,7 +603,7 @@ source is most appropriate:
    unprivileged `journalctl` first; falls back to `sudo journalctl`
    only if the unprivileged probe returns no rows.
 2. launchd stdout file if a plist exists on macOS
-3. `~/.kirocrew/gateway.log` for foreground gateways
+3. `~/.kiro/crew/gateway.log` for foreground gateways
 
 Uses `os.execvp` so signals (Ctrl+C) propagate naturally to the
 underlying `journalctl`/`tail` process.
@@ -638,7 +638,7 @@ live in `docs/app-kit/api-reference.md`; the durable contract surfaces this
 feature introduces are:
 
 - **Persisted schema — `installed.json` `dev: bool`** (default `false`): a
-  per-app flag in each app's `~/.kirocrew/apps/<name>/installed.json`. Tolerant
+  per-app flag in each app's `~/.kiro/crew/apps/<name>/installed.json`. Tolerant
   on read (absent ⇒ `false`), reversible, no migration. This field is the sole
   authoritative source of truth for an app's dev-mode state. Builtin apps cannot
   enter dev mode.
@@ -654,7 +654,7 @@ feature introduces are:
   with `Cache-Control: no-store`; otherwise the standard revalidation header
   applies.
 
-An internal, unstable sentinel cache under `~/.kirocrew/apps/` mirrors the set of
+An internal, unstable sentinel cache under `~/.kiro/crew/apps/` mirrors the set of
 dev-mode apps so the zero-dev-apps steady state costs one `stat()` per second.
 It is a derived cache reconciled from `installed.json` at watcher init (under a
 cross-process lock, atomic with concurrent toggles), **not** part of the App Kit

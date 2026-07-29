@@ -809,7 +809,7 @@ def generate_app_secret() -> str:
 def validate_app_secret(app_name: str, provided_secret: str) -> bool:
     """Validate an app secret against the stored secret on disk.
 
-    Reads ``~/.kirocrew/apps/{app_name}/.app_secret`` and performs
+    Reads ``~/.kiro/crew/apps/{app_name}/.app_secret`` and performs
     constant-time comparison via :func:`hmac.compare_digest`.
     Returns ``False`` if the file doesn't exist or doesn't match.
     """
@@ -826,7 +826,7 @@ def validate_app_secret(app_name: str, provided_secret: str) -> bool:
 
 
 def write_app_secret(app_name: str, secret: str) -> None:
-    """Write an app secret to ``~/.kirocrew/apps/{app_name}/.app_secret``.
+    """Write an app secret to ``~/.kiro/crew/apps/{app_name}/.app_secret``.
 
     Creates the directory if needed and sets file mode to 0o600.
     """
@@ -1153,7 +1153,7 @@ def token_auth_middleware(
 
     *internal_paths* are exact paths that internal processes (mcp-core,
     doctor) call — these require loopback AND a matching
-    ``X-Internal-Secret`` header (read from ``~/.kirocrew/.local_secret``).
+    ``X-Internal-Secret`` header (read from ``~/.kiro/crew/.local_secret``).
     Non-loopback access to these paths is always denied.
 
     *mixed_internal_paths* are paths called by BOTH internal processes

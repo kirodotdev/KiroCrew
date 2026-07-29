@@ -1,4 +1,4 @@
-"""Agent metadata store — plain .md files per agent in ~/.kirocrew/agent-metadata/."""
+"""Agent metadata store — plain .md files per agent in ~/.kiro/crew/agent-metadata/."""
 
 from __future__ import annotations
 

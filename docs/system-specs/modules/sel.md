@@ -8,7 +8,7 @@ Immutable, tamper-evident audit trail for all tool invocations, MCP calls, and d
 
 See also the SEL section in [`security.md`](security.md) for the threat-model view of these events.
 
-Storage: `~/.kirocrew/security_events.jsonl` (append-only JSONL with HMAC-SHA256 chain).
+Storage: `~/.kiro/crew/security_events.jsonl` (append-only JSONL with HMAC-SHA256 chain).
 
 ## Event Schema
 
@@ -38,7 +38,7 @@ The `config_bounds_clamped` event (`outcome=clamped`, `source=background`, `oper
 ## Integrity
 
 - HMAC-SHA256 chain: each entry signs over the previous entry's hash
-- HMAC key: `~/.kirocrew/sel_hmac.key` (32 random bytes, `chmod 600`)
+- HMAC key: `~/.kiro/crew/sel_hmac.key` (32 random bytes, `chmod 600`)
 - **Key + log are on the sensitive-path floor (`cdf82704`):** both `sel_hmac.key` and `security_events.jsonl` are in `security._SENSITIVE_HOME_DIRS`, so the audited agent's `fs_read`/file-edit tools (gated by `is_sensitive_path()`) cannot read the key to forge the chain or rewrite the log. The gateway's own writer/reader (`sel.py`, `dashboard/session_health.py`) opens the files directly and bypasses that gate. Residual: the key still lives in the agent's home namespace — a deeper out-of-process signer is future hardening.
 - Verification: `verify_integrity()` walks the chain and reports tampered entries
 - Append-only: no in-place edits; pruning rewrites with chain rebuild

@@ -63,7 +63,7 @@ def render_unit() -> str:
     """Render the systemd system-unit file contents.
 
     Runs the gateway as the invoking user (``User=``, ``Group=``) so it
-    has access to ``$HOME/.kirocrew``, the user's config, etc. The PATH
+    has access to ``$HOME/.kiro/crew``, the user's config, etc. The PATH
     is set explicitly so subprocess invocations of git, node, etc.
     resolve the same way they would from an interactive shell.
     """

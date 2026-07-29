@@ -2,7 +2,7 @@
 
 Storage layout
 --------------
-``~/.kirocrew/artifacts/<slug>/``
+``~/.kiro/crew/artifacts/<slug>/``
   ``meta.json``        canonical metadata
   ``current.html``     latest rendered content
   ``versions/v1.html`` older versions, never overwritten
@@ -839,7 +839,7 @@ class ArtifactStore:
             # after relocate could escape the allowed roots if we only checked
             # at set time. Re-validate that the RESOLVED path is under the
             # user's home, the KIROCREW_HOME tree (store root's parent — in
-            # production this is ~/.kirocrew which is under home, but in tests
+            # production this is ~/.kiro/crew which is under home, but in tests
             # may be a tmp dir), or a configured relocate root.
             allowed = [Path.home().resolve(), self._root.resolve().parent]
             try:

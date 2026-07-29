@@ -4,7 +4,7 @@ This is a **contained** app-facing admission gate for the App Kit install /
 update / enable / registry paths.  It is deliberately **distinct** from the
 CPP-seam plugin admission engine (``kiro_crew.platform.admission``): that layer
 gates signed *plugin* entry-points (banned / approved / require_signature /
-capability ceiling, trust-root at ``~/.kirocrew/admission_policy.json``); this
+capability ceiling, trust-root at ``~/.kiro/crew/admission_policy.json``); this
 layer gates *App Kit* apps (install/update/enable/register/registry) using a
 separate fleet-controlled policy the app can never source itself.  The two are
 different trust roots for different subsystems.

@@ -19,13 +19,13 @@ and distributed across KiroCrew, kiro-cli, and an external agent CLI.
 | `~/.claude/agents/kirocrew.md` + `~/.claude/agents/kirocrew.mcp.json` | _(removed)_ — the agent renderer was deleted with the standalone provider; KiroCrew is `kiro-cli`-only | Was the rendered agent + MCP registry; no longer written | (no current reader — dormant ACP seam only) |
 | `~/.kiro/settings/mcp.json` | User | Kiro global MCP servers | kiro-cli for ALL agents (merged into KiroCrew's agent file at render time) |
 | `~/.claude.json` (`mcpServers`) | User / external agent CLI | External agent-CLI global MCP servers | Interactive external agent-CLI sessions (merged into KiroCrew's rendered agent file at render time) |
-| `~/.kirocrew/mcp.json` | User (dashboard MCP panel) | KiroCrew-specific additions and per-server disables | KiroCrew gateway only |
+| `~/.kiro/crew/mcp.json` | User (dashboard MCP panel) | KiroCrew-specific additions and per-server disables | KiroCrew gateway only |
 
 ### Merge Priority (in `rebuild_agent_config()`)
 
 Highest wins at collisions:
 
-1. `~/.kirocrew/mcp.json` — KiroCrew-specific authority (user edits via
+1. `~/.kiro/crew/mcp.json` — KiroCrew-specific authority (user edits via
    dashboard, merged via `update()` so its fields override)
 2. Existing `~/.kiro/agents/kirocrew.json` — loaded as the merge base, so
    any server already present with user customizations (`autoApprove`,
@@ -67,8 +67,8 @@ explicitly (see [Apply Pipeline](#apply-pipeline-post-apimcpapply)).
 |--------|-----------|--------|
 | kirocrew-core | Managed defaults (rendered into both agent files) | Agent-scoped; gateway spawns directly, never in any global |
 | kirocrew-cron | Managed defaults (rendered into both agent files) | Same as above |
-| slack-mcp | Kiro global OR `~/.kirocrew/mcp.json` | Discovered on-demand when Slack is configured; merged into the agent files at render time |
-| User-added servers | Any of: `~/.kiro/settings/mcp.json`, `~/.claude.json`, `~/.kirocrew/mcp.json` | Merged into KiroCrew agent files at render time |
+| slack-mcp | Kiro global OR `~/.kiro/crew/mcp.json` | Discovered on-demand when Slack is configured; merged into the agent files at render time |
+| User-added servers | Any of: `~/.kiro/settings/mcp.json`, `~/.claude.json`, `~/.kiro/crew/mcp.json` | Merged into KiroCrew agent files at render time |
 
 ## How MCP Servers Are Probed
 
@@ -242,7 +242,7 @@ enabled):
 
 | Badge | Means | Source of truth |
 |-------|-------|-----------------|
-| KiroCrew | Server will load in KiroCrew sessions | Effective state after merge, minus explicit `disabled:true` overrides in `~/.kirocrew/mcp.json` |
+| KiroCrew | Server will load in KiroCrew sessions | Effective state after merge, minus explicit `disabled:true` overrides in `~/.kiro/crew/mcp.json` |
 | Kiro | Server is present in `~/.kiro/settings/mcp.json` | Raw file contents |
 | Claude | Server is present in `~/.claude.json` `mcpServers` | Raw file contents |
 
@@ -255,7 +255,7 @@ when the user clicks Apply does KiroCrew execute the imperative edits.
 The endpoint takes a batched payload of changes (scope add/remove,
 uninstall, per-tool overrides) and applies them atomically:
 
-1. **Uninstalls** first — removes from `~/.kirocrew/mcp.json`,
+1. **Uninstalls** first — removes from `~/.kiro/crew/mcp.json`,
    `~/.kiro/settings/mcp.json`, and `~/.claude.json`, and also strips
    the entry directly from `~/.kiro/agents/kirocrew.json` and
    `~/.claude/agents/kirocrew.mcp.json` so the additive merge base
@@ -264,10 +264,10 @@ uninstall, per-tool overrides) and applies them atomically:
 3. **Scope removes** — strip the server from the target scope file.
    If the server will no longer be inherited into KiroCrew but the user
    kept the KiroCrew badge ON, the full spec is first copied to
-   `~/.kirocrew/mcp.json` to preserve inheritance (the **preservation
+   `~/.kiro/crew/mcp.json` to preserve inheritance (the **preservation
    rule**)
 4. **Per-tool overrides** — update `disabledTools` on the server entry
-   in `~/.kirocrew/mcp.json`
+   in `~/.kiro/crew/mcp.json`
 5. **Single rebuild** at the end re-renders both agent files from the
    new source-of-truth state
 
@@ -282,7 +282,7 @@ External edits (e.g. `kiro-cli mcp remove <name>`, hand-edits to
   session spawn. The separate "Apply & Restart" button in the header
   calls `POST /api/sessions/restart` to drain the warm pool when needed
 - **Does not install servers for you** — install a new server by adding
-  it to a scope file (`~/.kirocrew/mcp.json` or one of the provider
+  it to a scope file (`~/.kiro/crew/mcp.json` or one of the provider
   globals), then use Discover & Sync. The MCP panel manages what's
   already installed
 
@@ -332,9 +332,9 @@ On gateway startup, `rebuild_agent_config()`:
    between the two globals)
 4. Merge `~/.claude.json` `mcpServers` (setdefault — external agent-CLI
    global, fills gaps only; lower priority than Kiro)
-5. Merge `~/.kirocrew/mcp.json` (`update`, wins over globals)
+5. Merge `~/.kiro/crew/mcp.json` (`update`, wins over globals)
 6. Re-resolve any per-server skill-directory paths from the local skill
-   locations (project `skills/`, `~/.kirocrew/skills`) so they never go
+   locations (project `skills/`, `~/.kiro/crew/skills`) so they never go
    stale across rebuilds
 7. Resolve commands to absolute paths, with a resolution-aware fallback:
    if the winning source's command doesn't resolve, try the same server's
@@ -376,7 +376,7 @@ provider global — file a bug.
 
 Check if the KiroCrew badge is still on. When the user keeps the
 server enabled for KiroCrew, the preservation rule copies its config
-into `~/.kirocrew/mcp.json` before removing it from the global so the
+into `~/.kiro/crew/mcp.json` before removing it from the global so the
 server stays loaded in KiroCrew sessions.
 
 ### "Newly added MCP server but sessions don't pick it up"

@@ -4,7 +4,7 @@ Persists run records as JSONL files per job, with a global index for
 cross-job queries.  Uses fcntl advisory locking for cross-process safety.
 
 Storage layout:
-    ~/.kirocrew/cron-history/
+    ~/.kiro/crew/cron-history/
         {job_id}.jsonl      — full records (including trace) for one job
         _index.jsonl        — lightweight index (no trace) for list queries
 """

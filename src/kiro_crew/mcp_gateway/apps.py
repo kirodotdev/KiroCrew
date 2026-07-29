@@ -43,7 +43,7 @@ from kiro_crew.mcp_apps_render import MAX_SPOOL_BYTES, SPOOL_SCHEMA_VERSION
 logger = logging.getLogger(__name__)
 
 # Env override for the spool directory (tests point this at a tmp dir so they
-# never touch a developer's real ~/.kirocrew). Read per-call, never cached.
+# never touch a developer's real ~/.kiro/crew). Read per-call, never cached.
 SPOOL_ENV = "KIROCREW_MCP_APPS_SPOOL"
 
 # Marker injected into the first text content item of an intercepted tool

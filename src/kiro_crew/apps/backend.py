@@ -529,7 +529,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     # installed record's ``origin`` (stamped "builtin" by register_builtin_apps for
     # shipped apps) — NOT the ``is_module_entry`` heuristic derived from the
     # attacker-controlled manifest entryPoint. A third-party app under
-    # ~/.kirocrew/apps/<x>/ could otherwise declare a dotted module-style entryPoint
+    # ~/.kiro/crew/apps/<x>/ could otherwise declare a dotted module-style entryPoint
     # (e.g. "kiro_crew.cli_server") to flip is_module_entry True and bypass both this
     # off-switch AND the entryPoint path-containment backstop. Fail-safe: if
     # provenance can't be read, treat as third-party (gated).

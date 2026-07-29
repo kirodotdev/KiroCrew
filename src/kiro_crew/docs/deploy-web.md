@@ -107,7 +107,7 @@ public.
 
 ### 3.1 Credentials never touch KiroCrew
 - KiroCrew stores **only the profile name** (in
-  `~/.kirocrew/apps/deploy-web/data/config.json`).
+  `~/.kiro/crew/apps/deploy-web/data/config.json`).
 - All AWS calls run through the **`aws` CLI subprocess** with `--profile`
   (never boto3), so credential resolution stays in your OS credential store.
 - KiroCrew **never** writes IAM and **never** creates/manages accounts, users,

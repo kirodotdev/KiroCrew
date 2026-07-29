@@ -5,12 +5,12 @@ Consent + local-first:
     a no-op recorder, so adding metric call sites is a zero-runtime-effect change
     until a host opts in (mirrors the ``mcp_gateway.enabled`` /
     ``skills.lazy_load`` default-off convention).
-  * Easy opt-in: set ``telemetry.enabled: true`` in ``~/.kirocrew/config.json``
+  * Easy opt-in: set ``telemetry.enabled: true`` in ``~/.kiro/crew/config.json``
     OR export the ``KIROCREW_TELEMETRY`` env var (``1``/``true``/``on`` to enable,
     ``0``/``false``/``off`` to force-disable). The env var overrides the config
     flag and gates LOCAL collection only — it never enables network egress.
   * When on, a ``PeriodicExportingMetricReader`` drains aggregated metrics to the
-    local JSONL exporter under ``~/.kirocrew/metrics``. Nothing egresses the host.
+    local JSONL exporter under ``~/.kiro/crew/metrics``. Nothing egresses the host.
   * Remote / OTLP egress is a separate opt-in exporter (deferred; not wired here).
 
 OSS-CLEAN: depends only on ``opentelemetry`` (Apache-2.0 / CNCF) + the stdlib +
@@ -91,7 +91,7 @@ _initialized = False
 _provider: Optional["MeterProvider"] = None
 
 # Env-var opt-in (rec #14: easy opt-in). ``KIROCREW_TELEMETRY`` lets a host turn
-# LOCAL metrics on (or force them off) without editing ~/.kirocrew/config.json —
+# LOCAL metrics on (or force them off) without editing ~/.kiro/crew/config.json —
 # handy for CI, containers, and one-off debugging. Truthy => enable, falsy =>
 # disable, unset/blank => defer to the ``telemetry.enabled`` config flag (itself
 # default False). This gates LOCAL collection ONLY: external OTLP egress still

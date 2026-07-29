@@ -67,11 +67,26 @@ channel_id=$(_walk_env KIROCREW_CHANNEL_ID)
 # PPID, the server name from argv, and the channel_id we recovered. Best-
 # effort; failures to log are silently swallowed so MCP traffic stays up.
 #
-# The fallback is the CURRENT data home. It used to be the pre-move
-# ~/.kirocrew, and since kiro-cli strips env when spawning MCP subprocesses the
-# fallback is the branch that actually runs -- so this line was the writer that
-# re-created the abandoned home on every launch.
-_LOG_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}/logs"
+# KIROCREW_HOME is recovered through the same ancestor-env walk used for
+# channel_id above: kiro-cli strips env when spawning MCP subprocesses, so a
+# custom instance's home only reaches us via the PPID chain. Without it an
+# isolated pod appends its records to the DEFAULT instance's log. The final
+# fallback is the current data home ($HOME/.kiro/crew); it used to be the
+# pre-move ~/.kirocrew, which made this line the writer that re-created the
+# abandoned home on every launch.
+_kc_home="${KIROCREW_HOME:-$(_walk_env KIROCREW_HOME)}"
+# Expand a leading "~" the way config_dir() does via
+# Path(override).expanduser(): Docker `ENV` and systemd `Environment=` both pass
+# a literal tilde through unexpanded, and neither parameter expansion nor the
+# ancestor walk expands one -- so without this, KIROCREW_HOME='~/crew-data'
+# would write beneath the process CWD instead of the configured home. "~user" is
+# deliberately not expanded: that needs getent, and guessing another account's
+# home is worse than leaving the value untouched.
+case "$_kc_home" in
+    "~")   _kc_home="$HOME" ;;
+    "~/"*) _kc_home="$HOME/${_kc_home#\~/}" ;;
+esac
+_LOG_DIR="${_kc_home:-$HOME/.kiro/crew}/logs"
 _LOG_FILE="$_LOG_DIR/stub_wrapper.jsonl"
 _server=""
 for ((i=1; i<=$#; i++)); do

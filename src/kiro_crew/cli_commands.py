@@ -78,7 +78,7 @@ def _format_schedule(schedule: object) -> str:
 def _internal_secret() -> str:
     """Read the per-session IPC secret written by the gateway.
 
-    The gateway writes ``~/.kirocrew/.local_secret`` (mode 0600) after a
+    The gateway writes ``~/.kiro/crew/.local_secret`` (mode 0600) after a
     successful port bind. CLI commands that hit internal API paths (e.g.
     ``/api/spawn``) send this value as ``X-Internal-Secret`` so the
     dashboard's ``token_auth_middleware`` accepts the request without a
@@ -814,7 +814,7 @@ def _cron_preview(args: argparse.Namespace) -> None:
     from kiro_crew.cron_script import Done, McpToolClient, Report, Skip, resolve_script_path
 
     # Resolve and validate script path (same validation as production cron runner:
-    # format, existence, sensitive path, containment under ~/.kirocrew/crons/)
+    # format, existence, sensitive path, containment under ~/.kiro/crew/crons/)
     try:
         script_path, func_name = resolve_script_path(args.script)
     except (ValueError, FileNotFoundError, PermissionError) as e:
@@ -855,7 +855,7 @@ def _cron_preview(args: argparse.Namespace) -> None:
         """Dry-run ctx: real MCP tools, suppressed hooks.
 
         Runs in-process (not sandboxed) unlike production's run_script_sandboxed.
-        Acceptable because: scripts are constrained to ~/.kirocrew/crons/ via
+        Acceptable because: scripts are constrained to ~/.kiro/crew/crons/ via
         resolve_script_path, and the command is user-initiated from their terminal."""
 
         def __init__(self, message: str):
@@ -1067,7 +1067,7 @@ def _policy(args: argparse.Namespace) -> None:
     elif action == "profile":
         prof = get_store_profile(args.name)
         if prof is None:
-            print(f"No profile named {args.name!r} in ~/.kirocrew/profiles/.")
+            print(f"No profile named {args.name!r} in ~/.kiro/crew/profiles/.")
             return
         bind = f"{prof.bind.type}:{prof.bind.id}" if prof.bind else "(unbound)"
         print(f"📄 Profile {prof.name!r}  bind={bind}  extends={prof.extends or '—'}")

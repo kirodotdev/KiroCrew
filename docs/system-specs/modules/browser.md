@@ -26,7 +26,7 @@ Playwright MCP handles all browser interaction. KiroCrew only handles enterprise
 
 **Two auth strategies:**
 - Extension mode: zero auth work — real Chrome session has everything
-- Headless mode: storage state (`~/.kirocrew/playwright-storage-state.json`) + Kerberos via `--auth-server-allowlist`
+- Headless mode: storage state (`~/.kiro/crew/playwright-storage-state.json`) + Kerberos via `--auth-server-allowlist`
 
 **Managed installation** — the Playwright MCP is auto-installed on gateway startup if missing.
 
@@ -35,7 +35,7 @@ Playwright MCP handles all browser interaction. KiroCrew only handles enterprise
 ### Auth Flow (Headless Mode)
 
 1. `kirocrew browse auth health` — validates SSO cookie, Kerberos ticket, AEA posture
-2. `kirocrew browse auth refresh` — converts `~/.kirocrew/browser-cookies.txt` → `~/.kirocrew/playwright-storage-state.json`
+2. `kirocrew browse auth refresh` — converts `~/.kiro/crew/browser-cookies.txt` → `~/.kiro/crew/playwright-storage-state.json`
 3. Playwright loads cookies from storage state at context creation (no manual injection)
 4. `--auth-server-allowlist=*.example.com` handles SPNEGO challenges (the OSS build ships no enterprise allowlist)
 5. For SSO-gated sites: `kirocrew browse auth federate <url>` completes the federated login SPNEGO chain via curl
@@ -50,10 +50,10 @@ Playwright MCP handles all browser interaction. KiroCrew only handles enterprise
 
 | File | Purpose |
 |------|---------|
-| `~/.kirocrew/playwright-config.json` | Playwright MCP config: `--auth-server-allowlist`, `storageState`, `isolated: true`, capabilities |
-| `~/.kirocrew/playwright-storage-state.json` | Playwright storage state (generated from `~/.kirocrew/browser-cookies.txt`) |
-| `~/.kirocrew/playwright-extension-mode` | Flag file: extension mode enabled |
-| `~/.kirocrew/playwright-extension-token` | Chrome extension connection token (0o600 perms) |
+| `~/.kiro/crew/playwright-config.json` | Playwright MCP config: `--auth-server-allowlist`, `storageState`, `isolated: true`, capabilities |
+| `~/.kiro/crew/playwright-storage-state.json` | Playwright storage state (generated from `~/.kiro/crew/browser-cookies.txt`) |
+| `~/.kiro/crew/playwright-extension-mode` | Flag file: extension mode enabled |
+| `~/.kiro/crew/playwright-extension-token` | Chrome extension connection token (0o600 perms) |
 | `~/.kiro/settings/mcp.json` | MCP server config (args: `--extension` or `--config`) |
 
 ### Source Files
@@ -65,7 +65,7 @@ Playwright MCP handles all browser interaction. KiroCrew only handles enterprise
 | `browser/cli.py` | `kirocrew browse` CLI: setup, auth health/refresh/inject/federate, extension on/off |
 | `mcp_playwright_proxy.py` | Stdio proxy: intercepts Playwright MCP responses, compresses accessibility trees |
 | `skills/browser-auth/SKILL.md` | Agent skill for auth + Playwright MCP workflow |
-| `scripts/refresh-playwright-cookies.py` | Standalone script: `~/.kirocrew/browser-cookies.txt` → storage state |
+| `scripts/refresh-playwright-cookies.py` | Standalone script: `~/.kiro/crew/browser-cookies.txt` → storage state |
 | `config/playwright-mcp-config.json.template` | Template for the Playwright config structure |
 
 ### Context Window Optimization (Playwright Proxy)
@@ -98,7 +98,7 @@ the superseded keys it historically used so exactly one Playwright entry survive
   browse entry in `~/.kiro/settings/mcp.json` to the canonical key — including
   upgrading a legacy *direct* `npm:@playwright/mcp` entry (from installs predating
   the compression proxy) to the proxy — converges KiroCrew's own
-  `~/.kirocrew/mcp.json` at the SOURCE (so a stale proxy key there is healed once,
+  `~/.kiro/crew/mcp.json` at the SOURCE (so a stale proxy key there is healed once,
   not re-injected into every rebuild), and sweeps the KiroCrew-generated agent
   configs (the exact `kirocrew*` filenames it writes, not a bare `*.json` glob, so
   a user's own agents are never rewritten) so a duplicate proxy entry collapses
@@ -122,7 +122,7 @@ the superseded keys it historically used so exactly one Playwright entry survive
 co-owned with kiro-cli, and kiro-cli validates it (and agent specs) with
 `deny_unknown_fields`, so an in-spec ownership sentinel is impossible. KiroCrew
 therefore records the MCP keys it writes in an out-of-band sidecar manifest
-`~/.kirocrew/owned-mcp-keys.json` (`_record_owned_mcp_key`, mode 0600), written by
+`~/.kiro/crew/owned-mcp-keys.json` (`_record_owned_mcp_key`, mode 0600), written by
 `patch_mcp_extension()` / `patch_mcp_headless()`. Drop/converge decisions consult
 this manifest **first** (`_load_owned_mcp_keys`); the `mcp-playwright-proxy`
 launch-target heuristic (`_spec_is_proxy`) and the `npm:@playwright/mcp` legacy-key

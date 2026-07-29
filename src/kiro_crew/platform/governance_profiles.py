@@ -281,7 +281,7 @@ def _dir_fingerprint(directory: Path) -> Tuple:
 
 
 class ProfileStore:
-    """Loads + caches profiles from ``~/.kirocrew/profiles`` with mtime hot-reload.
+    """Loads + caches profiles from ``~/.kiro/crew/profiles`` with mtime hot-reload.
 
     A schema-invalid profile is recorded as a deny-all sentinel (never the
     ceiling) so a broken file fails closed.  ``extends`` is resolved by

@@ -118,7 +118,7 @@ async def api_agent_config(request: web.Request) -> web.Response:
             return web.json_response({"error": "config must be an object"}, status=400)
         try:
             # Track tools the user intentionally removed from shipped defaults
-            # so they don't reappear on upgrade.  Stored in ~/.kirocrew/config.json
+            # so they don't reappear on upgrade.  Stored in ~/.kiro/crew/config.json
             # (NOT kirocrew.json — kiro-cli rejects unknown fields).
             # Per-key dict so removing from allowedTools only doesn't affect tools.
             from kiro_crew.agent import get_shipped_tools  # noqa: F811

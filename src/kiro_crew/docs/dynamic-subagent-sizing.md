@@ -58,7 +58,7 @@ KiroCrew doesn't hard-code how much an agent costs — it measures it:
   RSS (memory) and CPU, keeping the **high-water** mark for that run (a single
   reading at exit would miss a mid-run peak that has already declined).
 - At exit, one sample `{agent, mem_gb, cpu_cores, ts}` is appended to
-  `~/.kirocrew/subagents/cost_samples.jsonl`.
+  `~/.kiro/crew/subagents/cost_samples.jsonl`.
 - At the next startup, KiroCrew takes the **p90 of the last N samples per
   agent name** (robust to the occasional outlier run), then the worst case
   across agent types, as the divisor.
@@ -138,4 +138,4 @@ memory floor. They are independent guards.
   `/proc/meminfo` and therefore remains inert (fails open) on non-Linux hosts —
   auto-sizing and the runtime gate are independent guards.
 - Design rationale and worked examples:
-  `~/.kirocrew/workspace/dynamic-subagent-sizing.md`.
+  `~/.kiro/crew/workspace/dynamic-subagent-sizing.md`.

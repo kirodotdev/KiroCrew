@@ -2,7 +2,7 @@
 
 ## Config File
 
-`~/.kirocrew/config.json` — main configuration file. Created automatically
+`~/.kiro/crew/config.json` — main configuration file. Created automatically
 on first `kirocrew gateway` run.
 
 ### Managing Config
@@ -107,7 +107,7 @@ Set via `kirocrew config set sandbox.mode auto`.
 | `agent.subagent_max_turns` | Default tool-call budget per subagent | `100` |
 | `agent.spawn_min_memory_gb` | Minimum available memory (GB) to spawn a subagent (0 disables) | `4.0` |
 | `agent.completion_keep` | Which end of the subagent transcript to keep in the completion event injected into the parent session. Three values: `"head"` (first N chars), `"tail"` (last N chars), `"both"` (head + middle marker + tail). | `"head"` |
-| `agent.completion_keep_chars` | Maximum characters retained in the completion event after applying `completion_keep`. The full transcript stays in `~/.kirocrew/subagents/<id>/result.txt` until cleanup; use the `spawn_status` MCP tool to read it before delivery. `0` disables truncation entirely. | `3000` |
+| `agent.completion_keep_chars` | Maximum characters retained in the completion event after applying `completion_keep`. The full transcript stays in `~/.kiro/crew/subagents/<id>/result.txt` until cleanup; use the `spawn_status` MCP tool to read it before delivery. `0` disables truncation entirely. | `3000` |
 | `session.timeout_secs` | Idle session timeout (0 disables idle sweep) | `1800` (30 min) |
 | `session.pool_size` | Number of pre-warmed agent processes | `0` (disabled) |
 | `session.pool_agent` | Agent for warm pool processes (empty = default) | `""` |
@@ -141,7 +141,7 @@ Set via `kirocrew config set sandbox.mode auto`.
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `KIROCREW_HOME` | Override config/data directory | `~/.kirocrew` |
+| `KIROCREW_HOME` | Override config/data directory | `~/.kiro/crew` |
 | `KIROCREW_PORT` | Override dashboard port | `5476` |
 | `KIROCREW_PROJECT_DIR` | Override agent config/skills directory | Auto-detected |
 | `KIROCREW_SKIP_MODEL_DOWNLOAD` | Set to `1` to skip the background embedding-model download at gateway startup (tests/CI, air-gapped hosts) | unset |
@@ -159,7 +159,7 @@ When empty (default), falls back to UTC.
 
 ## Credentials
 
-`~/.kirocrew/.env` — Slack tokens and owner ID:
+`~/.kiro/crew/.env` — Slack tokens and owner ID:
 
 ```
 SLACK_APP_TOKEN=xapp-...
@@ -171,14 +171,14 @@ KIROCREW_OWNER_ID=UXXXXXXXX
 
 | Path | Purpose |
 |------|---------|
-| `~/.kirocrew/config.json` | Main config |
-| `~/.kirocrew/.env` | Slack credentials |
-| `~/.kirocrew/skills/` | User skills |
-| `~/.kirocrew/crons.json` | Scheduled jobs |
-| `~/.kirocrew/lessons.jsonl` | Learned corrections |
-| `~/.kirocrew/models/` | Embedding model (downloaded in background at startup) |
-| `~/.kirocrew/history/` | Chat history (JSONL) |
-| `~/.kirocrew/workspace/memory/` | Memory files |
-| `~/.kirocrew/session_map.json` | Session resume mapping |
+| `~/.kiro/crew/config.json` | Main config |
+| `~/.kiro/crew/.env` | Slack credentials |
+| `~/.kiro/crew/skills/` | User skills |
+| `~/.kiro/crew/crons.json` | Scheduled jobs |
+| `~/.kiro/crew/lessons.jsonl` | Learned corrections |
+| `~/.kiro/crew/models/` | Embedding model (downloaded in background at startup) |
+| `~/.kiro/crew/history/` | Chat history (JSONL) |
+| `~/.kiro/crew/workspace/memory/` | Memory files |
+| `~/.kiro/crew/session_map.json` | Session resume mapping |
 | `~/.kiro/agents/kirocrew.json` | Installed agent config |
 | `~/.kiro/settings/mcp.json` | Global MCP server config |

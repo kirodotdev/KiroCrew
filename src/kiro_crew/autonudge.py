@@ -5,7 +5,7 @@ completes (``HOOK_EVENT_STOP``), we arm an idle timer. If no new user input
 arrives within ``idle_secs``, we inject the configured nudge message as the
 next turn into the same slot.
 
-State is persisted to ``~/.kirocrew/autonudge.json`` (fcntl-locked, atomic
+State is persisted to ``~/.kiro/crew/autonudge.json`` (fcntl-locked, atomic
 write). On gateway restart, active loops are reloaded and timers re-armed.
 
 The browser observes the loop through the normal chat stream path — nudges

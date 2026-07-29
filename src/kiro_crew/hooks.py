@@ -1760,7 +1760,7 @@ _HOOKS_FILE = "hooks.json"
 
 
 class ScriptHookStore:
-    """Persist script hooks to ~/.kirocrew/hooks.json."""
+    """Persist script hooks to ~/.kiro/crew/hooks.json."""
 
     def __init__(self, config_dir: Path | None = None):
         from kiro_crew.config.loader import config_dir as _cfg_dir

@@ -11,7 +11,7 @@
     {
       "feature": "Configuration Reference",
       "title": "Configuration Reference",
-      "summary": "`~/.kirocrew/config.json` \u2014 main configuration file. Created automatically on first `kirocrew gateway` run.",
+      "summary": "`~/.kiro/crew/config.json` \u2014 main configuration file. Created automatically on first `kirocrew gateway` run.",
       "doc": "configuration.md",
       "mtime": 1784575659.0
     },
@@ -88,7 +88,7 @@
     {
       "feature": "Skills",
       "title": "Skills",
-      "summary": "Skills are markdown files that give KiroCrew specialized knowledge for specific workflows. They live in `~/.kirocrew/skills/` as `SKILL.md` files.",
+      "summary": "Skills are markdown files that give KiroCrew specialized knowledge for specific workflows. They live in `~/.kiro/crew/skills/` as `SKILL.md` files.",
       "doc": "skills.md",
       "mtime": 1784265640.0
     },

@@ -56,7 +56,7 @@ Threat model — what the sidecar does and does NOT defend against:
   local API token. The same equivalence covers STALE-pair replay: an agent
   retaining a valid ``.txt``/``.sig`` pair and restoring it after the pid
   is rekeyed to another session needs same-uid write access to
-  ``~/.kirocrew`` — the exact capability that already lets it read the
+  ``~/.kiro/crew`` — the exact capability that already lets it read the
   victim key from the pre-existing ``.txt`` and present it via env, so a
   generation/nonce scheme here would not remove any attacker capability
   (the publisher overwrites the pair atomically on every rekey, so stale

@@ -13,7 +13,7 @@ Why this exists:
 
 Cache behavior:
     * In-memory dict, refreshed lazily on cache miss or TTL expiry.
-    * Persisted to ``~/.kirocrew/slack-channels.cache.json`` so a gateway
+    * Persisted to ``~/.kiro/crew/slack-channels.cache.json`` so a gateway
       restart does not refetch.
     * TTL = 1 hour. Slack channel renames are rare; users can manually clear
       the cache file if needed.

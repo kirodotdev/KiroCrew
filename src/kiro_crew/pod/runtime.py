@@ -340,7 +340,7 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
         return None
     # Deny-by-default: force OFF every messaging channel that can self-activate
     # from config.json — not just the tunnel. A seed cloned from a real config
-    # (the intended ``--seed ~/.kirocrew`` workflow) would otherwise boot live
+    # (the intended ``--seed ~/.kiro/crew`` workflow) would otherwise boot live
     # Telegram / WeCom bots answering real users. Overwrite any non-dict section
     # value too, so the enabled=False guarantee can't be skipped by a falsy value.
     # (Slack has no config-level enable — it is credential-gated, and those creds

@@ -2329,7 +2329,7 @@ async def _run_chat(
         if not prompts:
             slot.append(
                 "assistant",
-                "No prompts found. Create prompts in `~/.kiro/prompts/` (or `~/.kirocrew/prompts/`).",
+                "No prompts found. Create prompts in `~/.kiro/prompts/` (or `~/.kiro/crew/prompts/`).",
                 "msg msg-a",
             )
             sel().log_tool_invocation(

@@ -1,7 +1,7 @@
 """Instances registry — persistent store of remote KiroCrew instances.
 
 Backs the *Instances* feature (multi-instance management). The registry is a
-small JSON file at ``~/.kirocrew/instances.json``. Each record describes how to
+small JSON file at ``~/.kiro/crew/instances.json``. Each record describes how to
 reach one remote KiroCrew over SSH; the *local* instance is implicit (the
 gateway itself) and is never stored here.
 

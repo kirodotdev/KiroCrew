@@ -1,7 +1,7 @@
 """Vector memory — structured semantic + episodic memory with audit trail.
 
-Storage: ~/.kirocrew/memory.db (SQLite, WAL mode)
-FAISS index: ~/.kirocrew/memory.faiss (optional, for vector search)
+Storage: ~/.kiro/crew/memory.db (SQLite, WAL mode)
+FAISS index: ~/.kiro/crew/memory.faiss (optional, for vector search)
 
 Semantic: key-value store with allow-list keys, confidence gating,
 conflict resolution, injection detection, and event logging.

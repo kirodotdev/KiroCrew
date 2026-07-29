@@ -748,7 +748,7 @@ def _spawn_detached_gateway(port: int | None = None) -> int:
     - Detaches via ``start_new_session=True`` (own session + process
       group), so closing the calling terminal does not SIGHUP it.
     - Drops stdin to ``/dev/null`` and redirects stdout/stderr to
-      ``~/.kirocrew/gateway.log`` (same file the existing ``logs``
+      ``~/.kiro/crew/gateway.log`` (same file the existing ``logs``
       command tails for foreground gateways), so the user has one
       place to look regardless of how the gateway was started.
     - Resolves the console script this CLI was invoked as
@@ -1345,7 +1345,7 @@ def _logs_cmd(args: argparse.Namespace) -> None:
     Order of preference:
       1. systemd journal (if the system service is installed on Linux)
       2. launchd stdout file (macOS)
-      3. ``~/.kirocrew/gateway.log`` (foreground gateway)
+      3. ``~/.kiro/crew/gateway.log`` (foreground gateway)
     """
     follow = bool(getattr(args, "follow", False))
     lines = int(getattr(args, "lines", 100) or 100)

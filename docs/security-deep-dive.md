@@ -52,7 +52,7 @@ Two-pipe synchronization ensures correct ordering. The child retains the real UI
 | Strict | `"strict"` | All above + `.aws`, `.ssh`, `.kube` | Only `~/.ssh/known_hosts` | Same |
 | Off | `"off"` | Nothing | Everything | Nothing |
 
-Config: `agent.sandbox` in `~/.kirocrew/config.json`.
+Config: `agent.sandbox` in `~/.kiro/crew/config.json`.
 
 The env scrub additionally strips `PYTHONPATH`/`PYTHONHOME` (`strip_python_env=True`), but **only** on the foreign kiro-cli/agent spawn path — never for KiroCrew's own sandboxed Python children, which import `kiro_crew` via `PYTHONPATH` and would break if it were stripped. This isolates the foreign process from KiroCrew's `PYTHONPATH`, which would otherwise leak in and shadow the agent's (and its MCP servers') own dependencies.
 
@@ -78,7 +78,7 @@ On some installs the agent backend (`kiro-cli`) is a bash shim that re-execs the
 ```
 ~/.aws, ~/.ssh, ~/.gnupg, ~/.gpg, ~/.config/gcloud, ~/.azure,
 ~/.docker/config.json, ~/.kube/config, ~/.npmrc, ~/.pypirc,
-~/.netrc, ~/.git-credentials, ~/.kirocrew/.env
+~/.netrc, ~/.git-credentials, ~/.kiro/crew/.env
 ```
 
 ### Sensitive Bash Command Detection
@@ -140,7 +140,7 @@ config that edits or omits its own deny list cannot weaken KiroCrew's ceiling.
 user-DISABLEABLE — a "disable all" toggle, per-rule toggles, and an add-your-own
 field for custom deny patterns. Opt-out state (`disable_all` / `disabled_ids` /
 `user_added`) persists in its own **keystone** file
-`~/.kirocrew/denied_commands.json`; a disable requires a confirm-modal ack + SEL
+`~/.kiro/crew/denied_commands.json`; a disable requires a confirm-modal ack + SEL
 audit. Because that state IS a security ceiling, the file lives on
 `_SENSITIVE_HOME_DIRS` (full read+write block, same floor as
 `security_policy.json`) — the agent can neither read nor write its own deny
@@ -340,7 +340,7 @@ Optional two-layer defense against data exfiltration to personal/external Slack 
 
 ## Credential File Permissions
 
-`load_credentials()` enforces `chmod 600` on `~/.kirocrew/.env` at load time. Too-open permissions are tightened automatically.
+`load_credentials()` enforces `chmod 600` on `~/.kiro/crew/.env` at load time. Too-open permissions are tightened automatically.
 
 ---
 
@@ -356,7 +356,7 @@ Optional two-layer defense against data exfiltration to personal/external Slack 
 
 ### Gap 3: Runtime Integrity of the Deny List — CLOSED
 **Was**: If an attacker modified `agents/defaults.json` to remove denied commands, there was no detection mechanism.
-**Now**: Denied commands are no longer injected into any agent config. They are first-class `BUILTIN_DENIED_RULES` in `security.py`, enforced solely at KiroCrew's PreToolUse gate, so editing/removing a kiro agent config's own deny list cannot weaken the ceiling. The user opt-out lives in the keystone `~/.kirocrew/denied_commands.json` (on the `_SENSITIVE_HOME_DIRS` read+write floor, so the agent can neither read nor write its own ceiling — same protection as `security_policy.json`), and an enterprise governance `commands`-scope pin is un-opt-out-able. The remaining residual is the deny *set contents* being code-defined (updated via release), not runtime-verified against a signed manifest — a much smaller surface than the former mutable-agent-config vector.
+**Now**: Denied commands are no longer injected into any agent config. They are first-class `BUILTIN_DENIED_RULES` in `security.py`, enforced solely at KiroCrew's PreToolUse gate, so editing/removing a kiro agent config's own deny list cannot weaken the ceiling. The user opt-out lives in the keystone `~/.kiro/crew/denied_commands.json` (on the `_SENSITIVE_HOME_DIRS` read+write floor, so the agent can neither read nor write its own ceiling — same protection as `security_policy.json`), and an enterprise governance `commands`-scope pin is un-opt-out-able. The remaining residual is the deny *set contents* being code-defined (updated via release), not runtime-verified against a signed manifest — a much smaller surface than the former mutable-agent-config vector.
 
 ### Gap 4: Denied Command Patterns Are Regex-Based
 **Problem**: Regex patterns can be bypassed with creative shell tricks (e.g., `c"a"t ~/.aws/credentials`, `$(echo cat) ~/.ssh/id_rsa`, variable expansion).

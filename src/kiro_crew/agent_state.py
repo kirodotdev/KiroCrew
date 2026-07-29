@@ -15,7 +15,7 @@ Two values are tracked, both formerly written as top-level kiro-spec keys:
 - ``cc_model`` (str): a per-agent model for the ``claude_code`` provider (that
   backend can't pick a per-agent model from ``--agent`` the way kiro-cli does).
 
-State file (``~/.kirocrew/agent_model_state.json``, honoring ``KIROCREW_HOME``)::
+State file (``~/.kiro/crew/agent_model_state.json``, honoring ``KIROCREW_HOME``)::
 
     {
       "kirocrew":           {"model_managed": true},

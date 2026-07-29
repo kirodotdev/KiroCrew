@@ -92,7 +92,7 @@ _ITER_CACHE_TTL_SECS = 5.0
 # ── Auto skill creation ──
 
 # Namespace for auto-generated skills — keeps them out of the way of
-# hand-authored skills.  Final path: ``~/.kirocrew/skills/auto/<name>/SKILL.md``.
+# hand-authored skills.  Final path: ``~/.kiro/crew/skills/auto/<name>/SKILL.md``.
 AUTO_SKILL_NAMESPACE = "auto"
 
 # Archive area for retired auto-skills. A dot-prefixed dir so it is pruned from
@@ -367,14 +367,14 @@ def skills_dir() -> Path:
 
 
 class SkillsLoader:
-    """Load skill markdown files from ~/.kirocrew/skills/.
+    """Load skill markdown files from ~/.kiro/crew/skills/.
 
     Supports nested directories. Each skill is identified by its
     relative path from the skills root (e.g. ``utils/tiny-url``).
 
     Directory layout::
 
-        ~/.kirocrew/skills/
+        ~/.kiro/crew/skills/
         ├── learn/SKILL.md
         ├── subagent/SKILL.md
         ├── code/

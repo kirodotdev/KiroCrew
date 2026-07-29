@@ -1183,7 +1183,7 @@ def sync_to_agent_config(servers: list[McpServerInfo]) -> bool:
     are also registered with it (so ``kiro-cli mcp list`` shows them).  This
     step is skipped silently when ``kiro-cli`` is not installed.  Either way,
     the function delegates to ``install_agent()`` — the single authoritative
-    merge function that reads all source files (``~/.kirocrew/mcp.json``,
+    merge function that reads all source files (``~/.kiro/crew/mcp.json``,
     ``~/.kiro/settings/mcp.json``), merges them with correct priority,
     resolves commands, and writes the final agent config.
 

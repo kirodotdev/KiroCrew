@@ -13,7 +13,7 @@ nothing to expose.
 You don't have to edit anything by hand. In any KiroCrew session — the
 dashboard, Slack, or the CLI — say something like *"set up the Telegram
 channel."* KiroCrew walks you through creating the bot, then writes the token
-and your user ID into `~/.kirocrew/.env` and `config.json` and restarts the
+and your user ID into `~/.kiro/crew/.env` and `config.json` and restarts the
 gateway for you. You just hand it the bot token when it asks.
 
 Prefer to wire it up yourself? The manual steps are below.
@@ -26,11 +26,11 @@ You'll need a running gateway (`kirocrew gateway`) and a Telegram account.
    prompts. You'll get a token like `123456789:AA…`.
 2. **Find your user ID** — message **@userinfobot**; it replies with your number
    (e.g. `123456789`). That's the only account your bot will answer.
-3. **Save the token** to `~/.kirocrew/.env`:
+3. **Save the token** to `~/.kiro/crew/.env`:
    ```
    TELEGRAM_BOT_TOKEN=123456789:AA…
    ```
-4. **Turn it on** in `~/.kirocrew/config.json`:
+4. **Turn it on** in `~/.kiro/crew/config.json`:
    ```json
    "telegram": { "enabled": true, "allowed_user_ids": [123456789] }
    ```

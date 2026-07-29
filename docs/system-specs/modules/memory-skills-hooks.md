@@ -8,12 +8,12 @@ Persistent memory, skill system, and config-driven hooks. Assembled by `ContextB
 
 ## Memory (`memory.py`)
 
-Structured files under `~/.kirocrew/workspace/memory/`:
+Structured files under `~/.kiro/crew/workspace/memory/`:
 - `preferences.md` — learned user preferences (replaced wholesale by consolidator)
 - `projects.md` — active project context (replaced wholesale by consolidator)
 - `history/{date}.md` — daily conversation summaries (append-only, pruned by heartbeat)
 
-FTS5 search via `~/.kirocrew/memory_index.db` (SQLite via `pysqlite3-binary` on Linux for FTS5/UPSERT compat, stdlib `sqlite3` on macOS). Self-healing: corrupted DB auto-rebuilt. Incremental updates on writes, full rebuild on gateway startup. Snowball stemming for keyword scoring. Connection leak prevention: all FTS methods use try/finally.
+FTS5 search via `~/.kiro/crew/memory_index.db` (SQLite via `pysqlite3-binary` on Linux for FTS5/UPSERT compat, stdlib `sqlite3` on macOS). Self-healing: corrupted DB auto-rebuilt. Incremental updates on writes, full rebuild on gateway startup. Snowball stemming for keyword scoring. Connection leak prevention: all FTS methods use try/finally.
 
 Context injection includes source citations per section. Agent can update memory files via kiro-cli's file tools.
 
@@ -58,7 +58,7 @@ The history consolidation prompt includes a `"lessons"` key that extracts only i
 
 ### Configuration
 
-`~/.kirocrew/config.json` → `"memory"` section:
+`~/.kiro/crew/config.json` → `"memory"` section:
 ```json
 {"history_idle_hours": 3.0, "history_max_days": 365}
 ```
@@ -116,7 +116,7 @@ Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kir
 - **Salvage fast-path** (`_salvage_legacy_ollama_blob`): before downloading, checks the legacy Ollama blob store (`~/.ollama/models/blobs/sha256-<digest>`, honoring `$OLLAMA_MODELS`) — Ollama stores layer blobs content-addressed and the Ollama-era GGUF is byte-identical, so migrating users skip the 610MB re-download entirely. The copy is sha256-verified like a real download; any failure falls through to the normal download
 - Downloads `qwen3-embedding-0.6b-q8_0.gguf` (Q8_0 quantized, 610MB) over plain HTTPS from the public KiroCrew CDN — URL resolution order: `KIROCREW_EMBED_MODEL_URL` env var, then the `memory.embed_model_url` config knob, then the built-in `_DEFAULT_MODEL_URL` CDN constant. No git, no cloud SDK. Streaming sha256 is computed while downloading and byte-level progress (`bytes_downloaded`/`bytes_total`) is written to `status` every ~16MB for the dashboard's determinate progress bar
 - sha256-verifies the file (`06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439` — the trust anchor for every source: a tampered CDN object or mirror can only fail verification); files under `_GGUF_MIN_BYTES` (1MB) are rejected as truncated
-- Installs persistently to `~/.kirocrew/models/qwen3-embedding-0.6b.gguf` — atomic install: stages into a per-process unique file in the TARGET directory (same filesystem) then `os.replace`, so two concurrent processes (gateway + one-shot CLI) can never interleave writes into a shared staging file
+- Installs persistently to `~/.kiro/crew/models/qwen3-embedding-0.6b.gguf` — atomic install: stages into a per-process unique file in the TARGET directory (same filesystem) then `os.replace`, so two concurrent processes (gateway + one-shot CLI) can never interleave writes into a shared staging file
 - **Daemon-thread download** (`_run_download_on_daemon_thread`): the blocking HTTPS transfer runs on a daemon thread (deliberately NOT `run_in_executor` — executor threads are joined at interpreter exit), so Ctrl-C or a finished one-shot CLI is never pinned by an in-flight 610MB transfer
 - **Retry ladder**: background startup task = up to 6 attempts with exponential backoff (60s base, 30min cap, may span hours); every gateway restart retries; dashboard Enable/Retry click = `DOWNLOAD_ATTEMPTS_INTERACTIVE` (3) attempts for fast feedback. `kirocrew run` (one-shot CLI) never kicks downloads — only the long-lived gateway does
 - Escape hatch: `KIROCREW_SKIP_MODEL_DOWNLOAD=1` skips the download entirely (tests/CI must never trigger a 610MB download; tests additionally pin `OLLAMA_MODELS` to a tmp dir so the salvage path can't fire)
@@ -303,7 +303,7 @@ concurrent native write from being duplicated.
 User-taught corrections ("always do X", "never do Y"). Single write path through `vector_memory.write_lesson()`:
 
 1. **Vector memory** (primary): stored as `lesson.<md5hash>` semantic entries with `confidence=1.0, source=user_explicit`. Negative rules stored as `"rule — NOT: negative"`. Injected via `get_lessons_context()` — separate from `[Semantic Memory]` block.
-2. **JSONL fallback** (`~/.kirocrew/lessons.jsonl`): only used when vector memory is not initialized. Read-only migration source once vector memory is active.
+2. **JSONL fallback** (`~/.kiro/crew/lessons.jsonl`): only used when vector memory is not initialized. Read-only migration source once vector memory is active.
 
 **Priority**: vector lessons override JSONL. If `vector_store.get_lessons()` returns entries, JSONL is skipped entirely.
 
@@ -324,11 +324,11 @@ Categories: `tool`, `preference`, `knowledge`. Injected as `[Learned corrections
 
 ## Skills (`skills.py`)
 
-Markdown files at `~/.kirocrew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).
+Markdown files at `~/.kiro/crew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).
 
 Supports nested directories (e.g. `skills/utils/tiny-url/SKILL.md`). The skill name is the relative path from the skills root (e.g. `utils/tiny-url`).
 
-**Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kirocrew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
+**Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
 
 **Loading:**
 1. **Always-on**: skills with `always: true` have full content injected every new session
@@ -409,7 +409,7 @@ Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kir
 **Server sources** (merged by `list_servers()`):
 1. `agents/defaults.json` → `mcpServers` (default: none beyond the managed servers)
 2. `~/.kiro/agents/kirocrew.json` → `mcpServers` (installed config, merged)
-3. `~/.kiro/settings/mcp.json` and `~/.kirocrew/mcp.json` (scanned at startup and on-demand)
+3. `~/.kiro/settings/mcp.json` and `~/.kiro/crew/mcp.json` (scanned at startup and on-demand)
 
 **Startup behavior**: gateway calls `_init_mcp_discovery()` which runs `discover_servers_to_sync()` + `sync_to_agent_config()` to auto-add new servers from mcp.json, then logs all configured servers. Discovery/sync failures are caught independently so `list_servers()` always runs. Additionally, `server.py` fires `_bg_mcp_probe()` as a background task at startup to populate the probe cache.
 
@@ -501,7 +501,7 @@ Prompt keys are only appended when ALL hold:
 
 ### Namespace
 
-Auto-generated skills live under `~/.kirocrew/skills/auto/<slug>/SKILL.md`. Slug validated against `^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`. The `auto/` prefix:
+Auto-generated skills live under `~/.kiro/crew/skills/auto/<slug>/SKILL.md`. Slug validated against `^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`. The `auto/` prefix:
 - Makes provenance visible without parsing frontmatter (`list_auto_skills()`)
 - Prevents accidental overwrite of hand-authored skills via the refine path (`update_auto_skill()` explicitly refuses names outside `auto/`)
 
@@ -565,7 +565,7 @@ No new command. Users interact via the existing skill management surface:
 - Off by default (opt-in). Enable: `kirocrew config set skills.auto_create_from_sessions true` (or dashboard Settings → Skills); auto-approve prose-only: `kirocrew config set skills.approval_required false`
 - Review pending candidates: dashboard Skills → Pending review, or `GET /api/skills/-/pending`
 - List auto skills: filter `kirocrew` skill listings to those under `auto/`, or use `SkillsLoader.list_auto_skills()` in code
-- Remove unwanted auto skill: `rm -rf ~/.kirocrew/skills/auto/<slug>` (or dashboard skill delete when UI lands)
+- Remove unwanted auto skill: `rm -rf ~/.kiro/crew/skills/auto/<slug>` (or dashboard skill delete when UI lands)
 - Audit trail: `kirocrew security events -n 20 | grep auto_skill`
 
 ## Hooks (`hooks.py`)
@@ -604,7 +604,7 @@ never reach an LLM/agent surface.
 ### User kiro-cli Hooks (`agent.kiro_hooks` in `config.json`)
 
 User-defined kiro-cli hooks that persist across `kirocrew update`. Follows the
-`removedTools` precedent — a raw key in `~/.kirocrew/config.json` read by
+`removedTools` precedent — a raw key in `~/.kiro/crew/config.json` read by
 `_refresh_dynamic_fields()` at install time.
 
 ```json

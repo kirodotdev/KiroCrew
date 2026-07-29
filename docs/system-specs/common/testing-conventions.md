@@ -82,7 +82,7 @@ monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SEC
 A test that drives a periodic/maintenance loop (e.g. `SessionManager.
 _cleanup_loop`) pins the loop's *wiring* — which operations run, with what
 args, and when. Stub **all** of them: any sweep left unstubbed runs for real
-against the dev machine (process-table scans, `~/.kirocrew` PID files), which
+against the dev machine (process-table scans, `~/.kiro/crew` PID files), which
 violates the isolation rules below and costs seconds per test (an unstubbed
 `find_orphan_mcp_candidates` alone added ~9s to every `TestCleanupLoop`
 test). The sweep's own behavior belongs in its own module's tests.
@@ -90,7 +90,7 @@ test). The sweep's own behavior belongs in its own module's tests.
 ## Rules
 
 - Tests MUST NOT spawn real kiro-cli processes
-- Tests MUST NOT depend on `~/.kirocrew/` existing
+- Tests MUST NOT depend on `~/.kiro/crew/` existing
 - Tests MUST NOT write into the operator's real data dir. A data-dir path that is
   bound **at import time** (e.g. `subagent_persistence._SUBAGENTS_DIR`, set to
   `config_dir() / "subagents"` on first import; or `sel._DEFAULT_DIR`) is NOT
@@ -100,7 +100,7 @@ test). The sweep's own behavior belongs in its own module's tests.
   `_isolate_sel_default_dir`, …). Paths that instead call `config_dir()` lazily on
   each use (e.g. `agent_state`) already honor `KIROCREW_HOME`. A test that spawns
   subagents or persists agent folders without isolating the import-time global
-  leaks stub folders into `~/.kirocrew/subagents/`, which a running gateway then
+  leaks stub folders into `~/.kiro/crew/subagents/`, which a running gateway then
   sweeps as orphans on its next restart.
 - Tests SHOULD be fast (< 1s each)
 - Async tests MUST use `@pytest.mark.asyncio`

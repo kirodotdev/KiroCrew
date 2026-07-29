@@ -48,7 +48,7 @@ def default_workflows_dir() -> Path:
     """Resolve ``workflows.dir`` (config key) with a per-user default.
 
     Honors the ``workflows.dir`` config entry when set; otherwise defaults to
-    ``<config_dir>/workflows`` (e.g. ``~/.kirocrew/workflows``, or the
+    ``<config_dir>/workflows`` (e.g. ``~/.kiro/crew/workflows``, or the
     ``KIROCREW_HOME`` override used by the dev instance).
     """
     # KiroCrewConfig is an optional dependency resolved at module top (gate F1);

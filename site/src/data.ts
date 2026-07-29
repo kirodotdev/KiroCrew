@@ -49,7 +49,7 @@ export const FAQ = [
   { q: 'Does any data leave my machine?', a: 'No. Kiro Crew runs entirely locally. Dashboard is bound to localhost. Voice transcription uses local Whisper. The only external calls are to the LLM provider for inference.' },
   { q: 'What LLM models are supported?', a: 'ACP (default) and Bedrock. Switch models mid-session from the dashboard. Claude Sonnet 4 is the default.' },
   { q: 'Can non-engineers use it?', a: 'Yes — PMs, designers, data scientists, and any role. The Slack interface requires zero setup beyond the install.' },
-  { q: 'How do I add custom tools?', a: "Drop an MCP server config in ~/.kirocrew/mcp.json. It's auto-discovered and synced. Or install via the dashboard MCP tab." },
+  { q: 'How do I add custom tools?', a: "Drop an MCP server config in ~/.kiro/crew/mcp.json. It's auto-discovered and synced. Or install via the dashboard MCP tab." },
   { q: 'How do I contribute?', a: 'Fork the repo on GitHub, create a branch, and open a PR. See CONTRIBUTING.md for full guidelines.' },
 ];
 

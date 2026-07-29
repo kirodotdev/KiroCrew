@@ -3703,7 +3703,7 @@ class SessionManager:
                 pass
 
             # Sweep orphaned sandbox launcher scripts and seatbelt profiles
-            # from ~/.kirocrew/run/.  PID-tagged filenames; the blocking
+            # from ~/.kiro/crew/run/.  PID-tagged filenames; the blocking
             # os.kill/os.remove loop is kept off the event loop.
             try:
                 sandbox_removed = await asyncio.get_running_loop().run_in_executor(

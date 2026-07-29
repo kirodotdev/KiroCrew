@@ -14,7 +14,7 @@ triggers: deploy, ship, publish demo, public link, deploy to aws, share external
 ## AWS config -- resolve the profile from the app's registry, don't ask
 
 The Artifact Deploy app owns the AWS configuration as a **multi-profile
-registry** at `~/.kirocrew/deploy/profiles.json`
+registry** at `~/.kiro/crew/deploy/profiles.json`
 (`{"profiles": [{"name", "region", ...}], "default": "<name>"}`). Resolve the
 deploy profile in this order, **before asking the user anything**:
 
@@ -25,7 +25,7 @@ deploy profile in this order, **before asking the user anything**:
    unregistered profile name.
 2. **Registry default**: otherwise use the entry named by `default`.
 3. **Legacy fallback**: if `profiles.json` doesn't exist, read the old
-   `~/.kirocrew/deploy/config.json (legacy: ~/.kirocrew/apps/deploy-web/data/config.json)` (`{"profile", "region"}`).
+   `~/.kiro/crew/deploy/config.json (legacy: ~/.kiro/crew/apps/deploy-web/data/config.json)` (`{"profile", "region"}`).
 4. **Unconfigured** (no registry, no legacy profile): do NOT walk the user
    through manual profile setup in chat -- link them to the app page
   (sidebar -> Artifact Deploy), which has the Profiles control plane (register /
@@ -171,7 +171,7 @@ not *rewrites business logic*.
   KiroCrew gateway if your host OS is Windows. The backend returns HTTP 400
   with a clear message on unsupported platforms.
 - AWS access configured **once in the Artifact Deploy app** (profiles registered
-  in `~/.kirocrew/deploy/profiles.json`, verified via the app page).
+  in `~/.kiro/crew/deploy/profiles.json`, verified via the app page).
   Prefer a **least-privilege deploy profile**, not admin (see Security).
 - The app is conformed to the **deploy contract** (above) — producing that
   layout is the skill's job (Greenfield: generate in-contract; Brownfield: run

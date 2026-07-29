@@ -394,7 +394,7 @@ passes it as `denied_regexes` into `is_denied`.
 
 **Opt-out state — keystone `denied_commands.json`.** The opt-out state is a
 security ceiling, so it lives in its OWN keystone file
-`~/.kirocrew/denied_commands.json` (respecting `KIROCREW_HOME`) — NOT in the
+`~/.kiro/crew/denied_commands.json` (respecting `KIROCREW_HOME`) — NOT in the
 agent-readable `config.json`. The file's root IS the opt-out object:
 
 ```json

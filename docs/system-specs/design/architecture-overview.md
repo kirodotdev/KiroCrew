@@ -28,7 +28,7 @@ User → CLI / Slack / Dashboard → KiroCrew
 | `agents/` + `skills/` | Project-level config and skills (edit without rebuilding) |
 | `KiroCrewWebsite/` | React 18 + TypeScript + Vite + Redux + Tailwind CSS SPA (separate package) |
 | `acp/` | JSON-RPC 2.0 client for kiro-cli |
-| `config/` | Dataclass config, `~/.kirocrew/config.json` loader |
+| `config/` | Dataclass config, `~/.kiro/crew/config.json` loader |
 | `providers/` | LLMProvider ABC + AcpProvider (kiro-cli — the only provider) |
 | `slack/` | Socket Mode gateway + handler |
 | `dashboard/` | Web dashboard backend (aiohttp + SSE + WebSocket) at localhost:5476 |

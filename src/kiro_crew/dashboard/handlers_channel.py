@@ -95,7 +95,7 @@ async def _get_channel_body(request: web.Request):
 async def api_channel_presets(request: web.Request) -> web.Response:
     """Return channel presets from config.json, falling back to built-in defaults.
 
-    Reads ``~/.kirocrew/config.json`` fresh on each call so users can edit the
+    Reads ``~/.kiro/crew/config.json`` fresh on each call so users can edit the
     ``channel_presets`` key without restarting the gateway.
     """
     config: dict = {}

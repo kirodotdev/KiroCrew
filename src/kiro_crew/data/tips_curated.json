@@ -73,7 +73,7 @@
       "id": "local-telemetry",
       "feature": "Local Telemetry",
       "title": "See local OpenTelemetry metrics",
-      "body": "Run `kirocrew config set telemetry.enabled true` to record OpenTelemetry metrics under `~/.kirocrew/metrics`, viewable in the Telemetry panel. Stays on your machine — nothing is exported.",
+      "body": "Run `kirocrew config set telemetry.enabled true` to record OpenTelemetry metrics under `~/.kiro/crew/metrics`, viewable in the Telemetry panel. Stays on your machine — nothing is exported.",
       "why": "",
       "doc": "",
       "cta_prompt": ""

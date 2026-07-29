@@ -1,7 +1,7 @@
 """Per-channel notification settings (RFC local notification bus, Phase 3).
 
 User preferences for each notification channel: mute and priority override.
-Stored in ``~/.kirocrew/notification_settings.json`` as::
+Stored in ``~/.kiro/crew/notification_settings.json`` as::
 
     {"channel_settings": {"system.heartbeat": {"muted": true},
                           "oncall-radar.ticket-update": {"priority": "critical"}}}

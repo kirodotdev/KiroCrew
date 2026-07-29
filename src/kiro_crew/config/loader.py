@@ -1,7 +1,7 @@
 """Configuration loader for KiroCrew.
 
-Config location: ~/.kirocrew/config.json (overridden by KIROCREW_HOME)
-Credentials:    ~/.kirocrew/.env (overridden by KIROCREW_HOME)
+Config location: ~/.kiro/crew/config.json (overridden by KIROCREW_HOME)
+Credentials:    ~/.kiro/crew/.env (overridden by KIROCREW_HOME)
 
 KiroCrew is KiroACP-only: the sole provider is the ACP adapter driving the
 kiro-cli backend. This module handles session timeouts, hook rules, and the
@@ -410,7 +410,7 @@ def workspace_dir_for(workspace: str | None = None) -> Path:
     format) or falls back to raw string values (legacy flat format).
 
     Values starting with ``/`` or ``~`` are treated as absolute paths.
-    Otherwise the value is relative to ``config_dir()`` (``~/.kirocrew/``).
+    Otherwise the value is relative to ``config_dir()`` (``~/.kiro/crew/``).
     Unmapped workspace names fall back to ``"workspace"``.
     """
     data = _raw_config()
@@ -1337,7 +1337,7 @@ class PublishConfig:
             "Artifact Relocate Roots",
             "Extra absolute filesystem roots an artifact may be relocated into, "
             "beyond your home directory. Empty = home-only (the secure default). "
-            "The sensitive-path denylist (~/.aws, ~/.ssh, ~/.kirocrew, …) still "
+            "The sensitive-path denylist (~/.aws, ~/.ssh, ~/.kiro/crew, …) still "
             "applies inside every allowed root.",
             tags=["artifacts"],
         ),
@@ -1795,7 +1795,7 @@ class SkillsConfig:
             "Extra Skill Paths",
             "Additional directories to scan for skills. Supports ~ expansion. "
             "Skills from extra_paths are read-only (trigger matching + loading). "
-            "Local ~/.kirocrew/skills/ takes precedence for duplicate names.",
+            "Local ~/.kiro/crew/skills/ takes precedence for duplicate names.",
         ),
     )
 
@@ -1843,7 +1843,7 @@ class TelemetryConfig:
     Default OFF: when disabled, metric call sites are cheap no-ops and nothing is
     written or exported (byte-identical to no telemetry), mirroring the
     ``mcp_gateway.enabled`` / ``skills.lazy_load`` opt-in convention. When
-    enabled, a local-first JSONL sink under ``~/.kirocrew/metrics`` is activated;
+    enabled, a local-first JSONL sink under ``~/.kiro/crew/metrics`` is activated;
     remote / OTLP egress is a separate opt-in requiring ``kirocrew[otlp]``.
     """
 
@@ -1853,14 +1853,14 @@ class TelemetryConfig:
             "Enabled",
             "Main switch for KiroCrew metrics telemetry. Off by default: metric "
             "call sites are no-ops and nothing is written. When on, a local-first "
-            "JSONL sink under ~/.kirocrew/metrics is enabled (no network egress).",
+            "JSONL sink under ~/.kiro/crew/metrics is enabled (no network egress).",
         ),
     )
     local_dir: str = field(
         default="",
         metadata=_meta(
             "Local Metrics Dir",
-            "Directory for local JSONL metric shards. Empty = ~/.kirocrew/metrics. "
+            "Directory for local JSONL metric shards. Empty = ~/.kiro/crew/metrics. "
             "Supports ~ expansion.",
         ),
     )
@@ -2435,7 +2435,7 @@ class McpGatewayConfig:
         metadata=_meta(
             "Response Spill Threshold",
             "Tool-call responses larger than this (bytes) have their text content "
-            "written to ~/.kirocrew/mcp_spill/ and truncated inline to 16 KiB + "
+            "written to ~/.kiro/crew/mcp_spill/ and truncated inline to 16 KiB + "
             "a file path marker. Default 256 KiB. Set 0 to disable spilling. "
             "Env override: KIROCREW_MCP_SPILL_THRESHOLD.",
         ),
@@ -2577,7 +2577,7 @@ class InstancesConfig:
 
 @dataclass
 class HeartbeatConfig:
-    """Heartbeat background task queue (~/.kirocrew/workspace/HEARTBEAT.md)."""
+    """Heartbeat background task queue (~/.kiro/crew/workspace/HEARTBEAT.md)."""
 
     default_deliver: str = field(
         default="slack",
@@ -3389,7 +3389,7 @@ class KiroCrewConfig:
         metadata=_meta(
             "Snapshot Directory",
             "Directory for kirocrew snapshot output. "
-            "Defaults to ~/.kirocrew/snapshots if empty.",
+            "Defaults to ~/.kiro/crew/snapshots if empty.",
         ),
     )
     registries: list[ExternalRegistryConfig] = field(
@@ -3428,7 +3428,7 @@ class KiroCrewConfig:
 
     @classmethod
     def load(cls) -> KiroCrewConfig:
-        """Load config from ~/.kirocrew/config.json, falling back to defaults.
+        """Load config from ~/.kiro/crew/config.json, falling back to defaults.
 
         If ``config.local.json`` exists alongside ``config.json``, it is
         deep-merged on top. User overrides in the local file survive
@@ -4266,7 +4266,7 @@ class KiroCrewConfig:
         return d
 
     def save(self) -> None:
-        """Write current config to ~/.kirocrew/config.json.
+        """Write current config to ~/.kiro/crew/config.json.
 
         Stamps a ``meta`` block with the current version and timestamp
         so we can tell which build last touched the file.
@@ -4350,7 +4350,7 @@ class KiroCrewConfig:
         return ""
 
     def load_credentials(self) -> dict[str, str]:
-        """Load credentials from ~/.kirocrew/.env and environment variables.
+        """Load credentials from ~/.kiro/crew/.env and environment variables.
 
         .env format: KEY=VALUE (one per line, # comments, no quotes required).
         Environment variables override .env values.
@@ -4380,7 +4380,7 @@ class KiroCrewConfig:
         # Propagate credentials into the process environment so spawned children
         # (sandboxed agents, MCP servers, cron-fired subprocesses) inherit them
         # via Popen's default env=os.environ.copy() — even when their view of
-        # ~/.kirocrew/.env is a bind-mounted empty file. setdefault() preserves
+        # ~/.kiro/crew/.env is a bind-mounted empty file. setdefault() preserves
         # any value the caller already set explicitly.
         for k, v in creds.items():
             if v:

@@ -18,7 +18,8 @@ custom-rules:
 
       - Never read sensitive credential paths (~/.aws, ~/.ssh, ~/.gnupg,
         ~/.docker, ~/.kube, ~/.npmrc, ~/.pypirc, ~/.netrc, ~/.git-credentials,
-        ~/.kirocrew/.env). File reads of user- or LLM-influenced paths MUST go
+        ~/.kiro/crew/.env and the pre-move ~/.kirocrew/.env). File reads of
+        user- or LLM-influenced paths MUST go
         through hooks.py, which enforces is_sensitive_path(); trusted
         fixed-path internal config/package reads are exempt. Never weaken that
         keystone.
@@ -39,7 +40,7 @@ custom-rules:
         token_auth.py:token_auth_middleware().
       - All tool invocations and permission decisions MUST emit a SEL audit
         event via sel.py.
-      - Never hardcode secrets. Store them in ~/.kirocrew/.env with chmod 600,
+      - Never hardcode secrets. Store them in ~/.kiro/crew/.env with chmod 600,
         enforced at load time (log a warning if the chmod fails).
       - Auto-approve / YOLO mode MUST auto-expire — never leave global
         auto-approve enabled indefinitely. Activations are capped via the

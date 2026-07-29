@@ -15,7 +15,7 @@ Design (full spec in ``docs/token-refresh/REQUIREMENTS.md``):
 - Reuse detection (RFC 6819 §5.2.2.3): a consumed ``jti`` presented again
   outside the multi-tab grace window auto-revokes the entire chain.
 - 60-second same-IP grace window absorbs benign multi-tab races.
-- Persistence: ``~/.kirocrew/refresh_chains.json`` (mode ``0600``).
+- Persistence: ``~/.kiro/crew/refresh_chains.json`` (mode ``0600``).
 """
 
 from __future__ import annotations
@@ -340,7 +340,7 @@ class RefreshStateManager:
                 # subprocess (icacls) that takes measurable time, so if we
                 # wrote the payload first the .tmp file would carry the
                 # parent-inherited DACL during that window and a local
-                # co-tenant able to enumerate ~/.kirocrew could read the
+                # co-tenant able to enumerate ~/.kiro/crew could read the
                 # consumed-JTI + revoked-chain state (breaking RFC-6819
                 # §5.2.2.3 reuse-detection secrecy) or, worse, truncate the
                 # .tmp before os.replace and substitute state that un-revokes

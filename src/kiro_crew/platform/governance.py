@@ -1589,7 +1589,7 @@ def load_security_policy(
     2. ``bundled_loader()`` — the companion-bundled resource, supplied by the
        caller when the active edition is ``amazon`` (Phase 9 packages it via
        ``importlib.resources``).  The public core passes ``None`` here.
-    3. ``~/.kirocrew/security_policy.json`` — standalone operator-authored.
+    3. ``~/.kiro/crew/security_policy.json`` — standalone operator-authored.
     4. None → editable secure-defaults (standalone, ungoverned ceiling).
 
     A **present-but-unreadable / invalid** policy at the env or home path raises

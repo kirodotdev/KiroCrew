@@ -117,7 +117,7 @@ class SubagentInfo:
     started: float        # time.time() at spawn
     done: bool            # True when finished (success or error)
     result: str           # LLM response text (trimmed to completion_keep for the event)
-    result_path: str      # ~/.kirocrew/subagents/<id>/result.txt (full transcript)
+    result_path: str      # ~/.kiro/crew/subagents/<id>/result.txt (full transcript)
     result_truncated: bool  # completion copy dropped content → event carries summary+path
     error: str            # error message if failed
     elapsed: float        # seconds from start to completion (set in _run finally)
@@ -197,7 +197,7 @@ An unmarked `CancelledError` (see intentional-cancel rule) triggers `_schedule_c
 The main-agent watchdog stack (liveness oracle, `tool_stall_suspect`) does **not** govern subagents; `_maybe_flag_stall(agent_id, info, now)` (called from the reaper sweep) is their equivalent. Each stream event calls `_touch_activity(info)`, which updates `info.last_activity` and clears a prior `stalled` flag (re-emitting `subagent_stalled {stalled: false}` when work resumes). `info.last_activity` is (re)initialised to `_exec_started` at the top of `_run_inner` so a queue / spawn-approval wait is never counted as idle.
 
 Per sweep, for an agent that has actually started (`turns > 0` or a live `_pid`) and is **not** blocked on a human approval prompt (`_awaiting_approval`):
-- `idle > _stall_idle_secs` and not already flagged → set `info.stalled = True`, emit `subagent_stalled {stalled: true, idle_secs}` (surface-only; the card shows a "no activity" warning), and append a record of the slow command to `~/.kirocrew/subagents/slow_commands.jsonl` for later analysis.
+- `idle > _stall_idle_secs` and not already flagged → set `info.stalled = True`, emit `subagent_stalled {stalled: true, idle_secs}` (surface-only; the card shows a "no activity" warning), and append a record of the slow command to `~/.kiro/crew/subagents/slow_commands.jsonl` for later analysis.
 - Detection is **surface-only**: `_maybe_flag_stall` never terminates the agent. A genuinely-hung subagent is closed by the user from the UX (per-row stop → `spawnDelete` → `SubagentManager.cancel(agent_id)`, or header Stop-all). This is a deliberate choice — because session-sharing subagents share the parent's runtime PID, no per-PID liveness oracle can distinguish a wedged tool from a slow-but-healthy one, so the system surfaces + records rather than guessing and killing.
 
 The slow-command record (`record_slow_command`, `subagent_persistence.py`) is append-only and deliberately NOT a tombstone: a tombstone marks an agent dead and is consumed by orphan-reconciliation / TTL cleanup, whereas a stalled subagent is still running. Fields: `id`, `flagged` (ts), `last_tool` (redacted), `tool_count`, `turns`, `idle_secs`, `elapsed_secs`, `parent_session`, `session_sharing`.
@@ -282,7 +282,7 @@ own stage synthesis).
 The gateway sets the `KIROCREW_SESSION_KEY` env var when spawning kiro-cli,
 and `mcp_core.py` reads it via `os.environ.get()`. If the env var is missing
 (e.g. older gateway), it falls back to reading
-`~/.kirocrew/session_pid_{getppid()}.txt` for backward compatibility. The
+`~/.kiro/crew/session_pid_{getppid()}.txt` for backward compatibility. The
 session key flows through the `/api/spawn` endpoint as `parent_session`.
 
 ## Scale Plumbing (60-100 concurrent agents)
@@ -413,10 +413,10 @@ them in the same turn.
 
 ## Orphan Recovery & Tombstoning
 
-Folder-per-agent persistence at `~/.kirocrew/subagents/{id}/`:
+Folder-per-agent persistence at `~/.kiro/crew/subagents/{id}/`:
 
 ```
-~/.kirocrew/subagents/{id}/
+~/.kiro/crew/subagents/{id}/
   state.json      # {task, parent_session_key, started, pid}
   result.txt      # full result text (written on completion)
   tombstone.json  # {error, elapsed, timestamp} (written on failure/orphan)
@@ -424,7 +424,7 @@ Folder-per-agent persistence at `~/.kirocrew/subagents/{id}/`:
 
 ### Gateway Restart Reconciliation
 
-On startup, `SubagentManager` scans `~/.kirocrew/subagents/` and reconciles:
+On startup, `SubagentManager` scans `~/.kiro/crew/subagents/` and reconciles:
 
 1. **PID alive** → kill process group, deliver result if available, tombstone if not
 2. **PID dead + result.txt exists** → deliver result to parent session
@@ -451,7 +451,7 @@ carries a **summary + the `result_path`** whenever the completion copy was
 truncated (`result_truncated`) or in orchestrator mode, so the parent reads the
 full transcript on demand instead of re-running the subagent.
 
-The full transcript stays in `~/.kirocrew/subagents/<id>/result.txt` for a
+The full transcript stays in `~/.kiro/crew/subagents/<id>/result.txt` for a
 **retention grace window** after delivery — on success the folder is *not*
 deleted immediately; `mark_delivered` writes a `cause="delivered"` tombstone and
 the reaper prunes it after `agent.subagent_result_ttl_secs` (default 3600s / 1h).

@@ -2366,7 +2366,7 @@ async def start_dashboard(
     # the PID by hand.
     #
     # Crash-dump discoverability: route dumps to a dedicated file under
-    # ~/.kirocrew/logs/crash-dumps/ so they are findable via `kirocrew doctor`
+    # ~/.kiro/crew/logs/crash-dumps/ so they are findable via `kirocrew doctor`
     # and startup warnings, rather than buried in interleaved stderr/journal.
     await asyncio.to_thread(rotate_dumps)
     _dump_file = await asyncio.to_thread(open_dump_file)

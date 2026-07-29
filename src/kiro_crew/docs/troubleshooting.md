@@ -46,7 +46,7 @@ kirocrew setup --agent-only
 
 ### Slack not responding
 
-- Verify credentials: check `~/.kirocrew/.env` has valid tokens
+- Verify credentials: check `~/.kiro/crew/.env` has valid tokens
 - Check owner ID: `KIROCREW_OWNER_ID` must match your Slack user ID
 - Check gateway logs: `kirocrew gateway -vv` for debug output
 - Confirm the Slack app has Socket Mode enabled and the app/bot tokens are current
@@ -128,9 +128,9 @@ Or change at runtime via the dashboard Logs page.
 
 If something goes wrong:
 1. Stop the gateway: Ctrl+C (or `systemctl stop kirocrew`)
-2. Check logs in `~/.kirocrew/` for error details
-3. Reset sessions: delete `~/.kirocrew/session_map.json`
-4. Reset config: `kirocrew config edit` or delete `~/.kirocrew/config.json`
+2. Check logs in `~/.kiro/crew/` for error details
+3. Reset sessions: delete `~/.kiro/crew/session_map.json`
+4. Reset config: `kirocrew config edit` or delete `~/.kiro/crew/config.json`
 5. Full reset: `kirocrew setup` to reconfigure from scratch
 
 ## Community-Reported Issues
@@ -171,7 +171,7 @@ kirocrew config set agent.completion_keep tail   # keep the conclusion
 kirocrew config set agent.completion_keep_chars 5000
 ```
 
-The full transcript lives at `~/.kirocrew/subagents/<agent_id>/result.txt`.
+The full transcript lives at `~/.kiro/crew/subagents/<agent_id>/result.txt`.
 After delivery it is **retained for a grace window** (default 1 hour,
 `agent.subagent_result_ttl_secs`) so `spawn_status` / `read` / `grep` can pull
 the full text, then the reaper prunes it. Raise the TTL if you routinely read

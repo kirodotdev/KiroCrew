@@ -10,10 +10,10 @@ Configuration files (edit these, then ``kirocrew setup --agent-only``):
   ``src/kiro_crew/config/prompt.md``
       System prompt.
 
-  ``~/.kirocrew/agent.json``
+  ``~/.kiro/crew/agent.json``
       User overrides merged on top of defaults (optional).
 
-  ``~/.kirocrew/prompt.md``
+  ``~/.kiro/crew/prompt.md``
       User prompt override (optional, takes priority over shipped prompt).
 
 Dynamic fields resolved at install time:
@@ -541,7 +541,7 @@ def _all_skill_paths() -> list[str]:
     Returns directories containing SKILL.md files from:
     - ``~/.aim/skills`` and ``~/.aim/packages/*/skills`` (AIM-installed)
     - ``KIROCREW_PROJECT_DIR/skills`` (project-level)
-    - ``~/.kirocrew/skills`` (user-created)
+    - ``~/.kiro/crew/skills`` (user-created)
     """
     paths: set[str] = set()
     # AIM skills — only known locations, not broad rglob.
@@ -1149,7 +1149,7 @@ def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
 
     Two sources, explicit first then auto-discovered:
 
-      1. ``agent.kiro_hooks`` in ``~/.kirocrew/config.json`` -- explicit entries
+      1. ``agent.kiro_hooks`` in ``~/.kiro/crew/config.json`` -- explicit entries
          the user wrote by hand.  Unchanged behavior.
       2. ``agent.kiro_hooks_autoimport`` (default true): scan
          ``agent.kiro_hooks_dir`` (default ``~/.kiro/hooks``) for executable
@@ -1316,7 +1316,7 @@ def build_agent_config() -> dict:
     silently drop the PreToolUse security gate. ``deniedCommands`` are NO
     LONGER injected here — command denial is enforced at KiroCrew's own
     hooks.py PreToolUse gate, not via the kiro agent spec. User-defined
-    ``kiro_hooks`` from ``~/.kirocrew/config.json`` are then additively merged;
+    ``kiro_hooks`` from ``~/.kiro/crew/config.json`` are then additively merged;
     bundled hooks always run first and cannot be removed.
     """
     config = _load_json(_shipped_defaults())
@@ -1334,7 +1334,7 @@ def build_agent_config() -> dict:
     # merged from a stale project defaults.json or user override cannot carry it.
     _strip_legacy_denied_commands(config)
 
-    # Merge user-defined kiro_hooks from ~/.kirocrew/config.json (additive).
+    # Merge user-defined kiro_hooks from ~/.kiro/crew/config.json (additive).
     mc_cfg = _load_json(_mc_config_path()) or {}
     _apply_user_kiro_hooks(config, mc_cfg)
 
@@ -1428,7 +1428,7 @@ def _refresh_dynamic_fields(config: dict) -> None:
     # the stale list ahead of the hooks gate (see _strip_legacy_denied_commands).
     _strip_legacy_denied_commands(config)
 
-    # Merge user-defined kiro_hooks from ~/.kirocrew/config.json (additive).
+    # Merge user-defined kiro_hooks from ~/.kiro/crew/config.json (additive).
     mc_cfg = _load_json(_mc_config_path()) or {}
     _apply_user_kiro_hooks(config, mc_cfg)
 
@@ -1680,7 +1680,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     and injects fresh AIM skill paths.
 
     Merge priority (highest wins):
-      1. ~/.kirocrew/mcp.json (agent-specific overrides)
+      1. ~/.kiro/crew/mcp.json (agent-specific overrides)
       2. ~/.kiro/settings/mcp.json (kiro global, fills gaps)
       3. Existing kirocrew.json (preserves user customizations)
       4. Bundled defaults (security, managed servers)
@@ -1763,7 +1763,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
                 # the fallback-candidate lookup.
                 config.setdefault("mcpServers", {}).setdefault(name, dict(spec))
 
-    # ~/.kirocrew/mcp.json overrides kiro mcp.json for the kirocrew agent —
+    # ~/.kiro/crew/mcp.json overrides kiro mcp.json for the kirocrew agent —
     # kirocrew-specific config wins in a tie.
     # Uses update() to merge into existing specs, preserving user-set fields
     # like autoApprove while letting kirocrew's command/args/env win.
@@ -1888,7 +1888,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # Converge every Playwright-proxy entry onto the single canonical
     # ``playwright-mcp`` server, keyed by resolved launch target. Runs on EVERY
     # rebuild (not just gateway boot) so a slash-free legacy proxy key —
-    # e.g. ``playwright-proxy-mcp`` re-injected from ~/.kirocrew/mcp.json by the
+    # e.g. ``playwright-proxy-mcp`` re-injected from ~/.kiro/crew/mcp.json by the
     # merges above — cannot survive to spawn a second backend. Slash-free legacy
     # keys are invisible to _normalize_mcp_server_keys (which only rewrites
     # slash-containing keys), so this launch-target-keyed pass closes the

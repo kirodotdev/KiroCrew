@@ -58,7 +58,7 @@ For responses that fit within the read limit but exceed the spill threshold:
 
 1. Parse the response as JSON-RPC.
 2. Check if it's a `tools/call` result (has `result.content` list with `text` items).
-3. Write the **full original response** to `~/.kirocrew/mcp_spill/<server>-<request_id>-<timestamp>.json`.
+3. Write the **full original response** to `~/.kiro/crew/mcp_spill/<server>-<request_id>-<timestamp>.json`.
 4. Truncate each text item to the first 16 KiB.
 5. Append a marker: `[KiroCrew: response truncated -- full <N> bytes at <path>. Read with bash: head/grep/jq.]`
 6. Forward the rewritten (smaller) response.
@@ -69,7 +69,7 @@ Any spill failure (disk full, permissions) → original forwarded unmodified.
 
 ### Spill file format
 
-- **Directory:** `~/.kirocrew/mcp_spill/` (mode 0700)
+- **Directory:** `~/.kiro/crew/mcp_spill/` (mode 0700)
 - **Filename:** `<server_name>-<request_id>-<unix_timestamp>.json`
 - **Content:** Complete original JSON-RPC response line
 - **Cleanup:** Files older than 24h are deleted on gatewayd startup
@@ -77,7 +77,7 @@ Any spill failure (disk full, permissions) → original forwarded unmodified.
 ### Inline marker format
 
 ```
-[KiroCrew: response truncated -- full 1482937 bytes at /home/user/.kirocrew/mcp_spill/example-mcp-gw-12345-7-1721200000.json. Read with bash: head/grep/jq.]
+[KiroCrew: response truncated -- full 1482937 bytes at /home/user/.kiro/crew/mcp_spill/example-mcp-gw-12345-7-1721200000.json. Read with bash: head/grep/jq.]
 ```
 
 ## Troubleshooting
@@ -85,7 +85,7 @@ Any spill failure (disk full, permissions) → original forwarded unmodified.
 If you see `-32000 "MCP response too large"` errors:
 
 1. **Narrow the query** — ask the tool for less data (e.g. specific sections vs full page).
-2. **Raise the limit** — set `KIROCREW_MCP_READ_LIMIT=134217728` (128 MiB) in your env, or add to `~/.kirocrew/config.json`:
+2. **Raise the limit** — set `KIROCREW_MCP_READ_LIMIT=134217728` (128 MiB) in your env, or add to `~/.kiro/crew/config.json`:
    ```json
    {
      "mcp_gateway": {

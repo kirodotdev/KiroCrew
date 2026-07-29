@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 SKILL_SUFFIXES = {".md", ".sh", ".py"}
@@ -112,3 +114,83 @@ def test_migration_exemption_is_narrow() -> None:
     assert LEGACY_HOME.search("SECRET=$(cat ~/.kirocrew/.local_secret)")
     # ...while prose about the move is allowed.
     assert _is_migration_prose("legacy installs auto-migrate from ~/.kirocrew")
+
+
+# ── Agent-instruction surfaces ────────────────────────────────────────────────
+# Skill files are not the only text that *tells an agent where to write*. The
+# system prompts, the MCP tool-schema descriptions and the AUTOSDE review rules
+# do too, and each of those named the pre-move home after the data-home move --
+# so an agent that obeyed them re-created the abandoned directory by hand. That
+# is the same defect as a stale skill instruction, so it gets the same guard.
+#
+# Scope is an explicit list rather than a glob, and stated honestly: these are
+# the instruction surfaces that were found to have rotted. A NEW MCP tool that
+# puts a legacy path in its schema description would not be caught here -- the
+# runtime write-path guard (``test_runtime_home_write_paths.py``) covers code,
+# this covers prose, and neither covers a brand-new description string.
+AGENT_INSTRUCTION_FILES = (
+    "src/kiro_crew/config/prompt.md",
+    "src/kiro_crew/config/prompt-orchestrator.md",
+    "src/kiro_crew/mcp_cron.py",
+    "AUTOSDE.yaml",
+    "website/AUTOSDE.yaml",
+)
+
+
+def test_agent_instruction_surfaces_do_not_name_the_legacy_home() -> None:
+    """Prompts, tool-schema descriptions and review rules must name the current home.
+
+    ``config/prompt.md`` is the concrete case this exists for: it instructed
+    every agent that cron scripts "must live under ``~/.kirocrew/crons/``" while
+    ``cron_script.py`` enforces ``config_dir()/crons``, so an obedient agent
+    created the abandoned directory and then had its registration refused.
+    """
+    scanned = 0
+    offenders: list[str] = []
+    for rel in AGENT_INSTRUCTION_FILES:
+        path = REPO_ROOT / rel
+        if not path.is_file():
+            continue
+        scanned += 1
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if LEGACY_HOME.search(line) and not _is_migration_prose(line):
+                offenders.append(f"{rel}:{lineno}: {line.strip()[:120]}")
+
+    assert scanned >= 3, f"guard scanned too few instruction surfaces: {scanned}"
+    assert not offenders, (
+        "An agent-instruction surface points at the pre-move legacy home. An "
+        "agent that follows it re-creates the abandoned directory, which is what "
+        f"the data-home conflict warning then reports. Use {CURRENT_HOME_POSIX}; "
+        "if the line documents the migration, say so explicitly (mention "
+        "'legacy' or 'migrates'):\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_shipped_user_docs_do_not_name_the_legacy_home() -> None:
+    """The docs that ship to users must state the current data home.
+
+    ``src/kiro_crew/docs/`` is packaged and surfaced in-product, so a stale path
+    there sends a user to a directory that does not exist -- or has them create
+    it. Top-level ``docs/`` is deliberately NOT covered: it holds dated design
+    records, RFCs and plans that describe the layout as it was when written, and
+    rewriting those would falsify history.
+    """
+    root = REPO_ROOT / "src" / "kiro_crew" / "docs"
+    if not root.is_dir():
+        pytest.skip("shipped docs directory not present")
+
+    files = [p for p in sorted(root.rglob("*.md")) if p.is_file()]
+    assert len(files) > 5, f"guard scanned too few shipped docs: {len(files)}"
+
+    offenders: list[str] = []
+    for path in files:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if LEGACY_HOME.search(line) and not _is_migration_prose(line):
+                rel = path.relative_to(REPO_ROOT)
+                offenders.append(f"{rel}:{lineno}: {line.strip()[:120]}")
+
+    assert not offenders, (
+        f"Shipped user docs must state the current data home ({CURRENT_HOME_POSIX}). "
+        "If a line documents the migration, say so explicitly:\n  "
+        + "\n  ".join(offenders)
+    )

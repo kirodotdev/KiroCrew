@@ -1,6 +1,6 @@
 """Issue Radar — on-disk data layout.
 
-Everything lives under ``~/.kirocrew/apps/issue-radar/data/`` (via
+Everything lives under ``~/.kiro/crew/apps/issue-radar/data/`` (via
 ``kiro_crew.apps.manager.app_data_dir``, the platform-standard app-scoped data
 dir). Nothing is stored on a KiroCrew-hosted backend and no GitHub App/PAT is
 used — auth is entirely delegated to the user's own ``gh`` CLI session.

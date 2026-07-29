@@ -95,7 +95,7 @@ For remote hosts, see [docs/remote-desktop-setup.md](docs/remote-desktop-setup.m
 
 ## Configuration
 
-Config lives at `~/.kirocrew/config.json` — manage via `kirocrew config get/set/edit`.
+Config lives at `~/.kiro/crew/config.json` — manage via `kirocrew config get/set/edit`.
 
 ```json
 {
@@ -107,7 +107,7 @@ Config lives at `~/.kirocrew/config.json` — manage via `kirocrew config get/se
 ```
 
 Dashboard port: `KIROCREW_PORT` env var (default `5476`).
-Credentials: `~/.kirocrew/.env` — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`.
+Credentials: `~/.kiro/crew/.env` — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`.
 
 ## Troubleshooting
 

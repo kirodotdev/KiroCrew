@@ -80,12 +80,12 @@ user who may run the agent, and optionally add approved server thread IDs.
 Or edit the local configuration directly:
 
 ```bash
-# ~/.kirocrew/.env
+# ~/.kiro/crew/.env
 DISCORD_BOT_TOKEN=<your bot token>
 ```
 
 ```json
-// ~/.kirocrew/config.json
+// ~/.kiro/crew/config.json
 {
   "discord": {
     "enabled": true,
@@ -145,7 +145,7 @@ Portal or clear the thread allow-list and restart in DM-only mode.
   threads whose membership and history are appropriate for that disclosure.
 - **Conversation scope.** Approved participants in one thread share that
   thread's agent session and context. DMs remain isolated per user.
-- **Token handling.** The token lives in `~/.kirocrew/.env` (mode 0600), is
+- **Token handling.** The token lives in `~/.kiro/crew/.env` (mode 0600), is
   masked in Settings, excluded from agent subprocess environments, and can be
   changed only from the machine running the gateway.
 

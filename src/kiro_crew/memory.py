@@ -1,13 +1,13 @@
 """Persistent memory — structured files, daily history, and FTS5 search.
 
 Structure:
-    ~/.kirocrew/workspace/memory/
+    ~/.kiro/crew/workspace/memory/
     ├── preferences.md      # Learned user preferences
     ├── projects.md         # Active project context
     └── history/
         └── 2026-02-16.md   # Daily conversation summaries
 
-    ~/.kirocrew/memory_index.db  # FTS5 full-text search index
+    ~/.kiro/crew/memory_index.db  # FTS5 full-text search index
 """
 
 from __future__ import annotations

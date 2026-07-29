@@ -82,7 +82,7 @@ def _fence_untrusted(text: str) -> str:
 
 
 # Resolve under the active KiroCrew home (honors KIROCREW_HOME for isolated dev
-# gateways) — NOT a hardcoded ~/.kirocrew, which would make dev instances collide
+# gateways) — NOT a hardcoded ~/.kiro/crew, which would make dev instances collide
 # with prod Research Lab state and contend with the prod gateway's watchdog.
 RESEARCH_DIR = config_dir() / "workspace" / "research"
 DB_PATH = config_dir() / "apps" / "auto-research" / "campaigns.db"

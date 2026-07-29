@@ -4,7 +4,7 @@ This package wires an asyncio unix-socket broker into KiroCrew as a
 sidecar subprocess. When enabled, it:
 
 1. Writes rewritten kiro agent JSON into an overlay directory
-   (``~/.kirocrew/mcp-gateway/agents/``) — never touches the user's
+   (``~/.kiro/crew/mcp-gateway/agents/``) — never touches the user's
    ``~/.kiro/agents/`` files on disk.
 2. Spawns ``python -m kiro_crew.mcp_gateway.gatewayd`` at KiroCrew
    startup and supervises it.

@@ -554,7 +554,7 @@ The wheel version is read from `pyproject.toml` `[project].version`, so the nigh
 # install, or switch channels
 curl -fsSL https://updates.kirocrew.dev/cli.sh | sh -s -- --channel {nightly|insider|stable}
 #   reads feed/{channel}/latest-cli.json -> downloads wheel -> verifies SHA256
-#   installs isolated via pipx (or uv tool) -> records channel in ~/.kirocrew/channel
+#   installs isolated via pipx (or uv tool) -> records channel in ~/.kiro/crew/channel
 
 # self-update, staying on the recorded channel
 kirocrew update

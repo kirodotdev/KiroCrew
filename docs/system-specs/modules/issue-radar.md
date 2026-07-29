@@ -51,7 +51,7 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 
 ## Storage Schema
 
-All data under `app_data_dir("issue-radar")` (typically `~/.kirocrew/apps/issue-radar/data/`):
+All data under `app_data_dir("issue-radar")` (typically `~/.kiro/crew/apps/issue-radar/data/`):
 
 ```
 config.json                         # Connected repos, per-repo settings

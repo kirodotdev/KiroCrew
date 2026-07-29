@@ -557,7 +557,7 @@ async def _fetch_app_manifest(
     """Fetch app.json for an app from its source repo (lightweight).
 
     Tries, in order:
-      1. The persistent clone under ``~/.kirocrew/app-sources/{app_name}/``
+      1. The persistent clone under ``~/.kiro/crew/app-sources/{app_name}/``
          (if the app was already cloned by a previous install).
       2. A throwaway shallow clone of *git_url* into a temp directory, from
          which only ``app.json`` is read (the clone is then discarded).
@@ -1524,7 +1524,7 @@ def _app_sources_dir() -> Path:
 
 
 def app_source_dir(name: str) -> Path:
-    """Return ~/.kirocrew/app-sources/{name}/ — persistent clone directory."""
+    """Return ~/.kiro/crew/app-sources/{name}/ — persistent clone directory."""
     return _app_sources_dir() / name
 
 
@@ -1681,7 +1681,7 @@ async def _clone_build_app(
 ) -> dict[str, Any]:
     """Clone an app repo and run its build, returning the source directory.
 
-    Source is cloned to ``~/.kirocrew/app-sources/{app_name}/`` (persistent;
+    Source is cloned to ``~/.kiro/crew/app-sources/{app_name}/`` (persistent;
     survives reboots and is reused for updates).  After clone/pull, the app's
     declared build commands run via :func:`_run_app_build`.
 
@@ -1832,14 +1832,14 @@ async def install_from_registry(
 ) -> dict[str, Any]:
     """Clone an app from its git repo and install it.
 
-    Source code is cloned to ``~/.kirocrew/app-sources/{name}/`` (persistent,
+    Source code is cloned to ``~/.kiro/crew/app-sources/{name}/`` (persistent,
     survives reboots, used by app update scripts).
 
     For self-managed apps (``managed: "self"`` in registry), only the clone +
-    install script is run — KiroCrew does NOT copy files to ``~/.kirocrew/apps/``
+    install script is run — KiroCrew does NOT copy files to ``~/.kiro/crew/apps/``
     or register resources via bridges.  The app registers itself at runtime.
 
-    For kirocrew-managed apps, files are copied to ``~/.kirocrew/apps/{name}/``
+    For kirocrew-managed apps, files are copied to ``~/.kiro/crew/apps/{name}/``
     and resources are registered via bridges.py as usual.
 
     Args:
@@ -1851,7 +1851,7 @@ async def install_from_registry(
 
     Steps:
     1. Validate the app exists in the trusted registry JSON
-    2. Clone the repo to ~/.kirocrew/app-sources/{name}/ (timeout: 60s)
+    2. Clone the repo to ~/.kiro/crew/app-sources/{name}/ (timeout: 60s)
     3. Build it (npm/pip, auto-detected) then run the install script from
        app.json if any (timeout: 300s)
     4. For kirocrew-managed: call install_app() or update_app()
@@ -2149,7 +2149,7 @@ async def install_from_registry(
                 "log": "\n".join(log_lines),
             }
 
-        # Kirocrew-managed: copy to ~/.kirocrew/apps/ and register resources
+        # Kirocrew-managed: copy to ~/.kiro/crew/apps/ and register resources
         log_lines.append("Installing app...")
         # Lock-free: the route handler holds app_lifecycle_lock(name) across
         # the whole transaction (clone/build → copy → register → backend

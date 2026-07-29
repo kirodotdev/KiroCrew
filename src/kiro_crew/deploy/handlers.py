@@ -283,7 +283,7 @@ def _allowed_local_roots() -> list[Path]:
                     roots.append(cand.resolve())
             except OSError:
                 pass
-    # Always allow the agent's own config-dir workspace (e.g. ~/.kirocrew/workspace).
+    # Always allow the agent's own config-dir workspace (e.g. ~/.kiro/crew/workspace).
     try:
         cdir_ws = config_dir() / "workspace"
         if cdir_ws.exists() and cdir_ws.resolve() not in roots:

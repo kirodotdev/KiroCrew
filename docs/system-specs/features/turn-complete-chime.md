@@ -24,5 +24,5 @@ Sound-only path. No Redux notification, no toast, no badge, no feed entry:
 ## Non-goals
 
 - Native OS banner for turn completion (feed/banner behavior is owned by the notification bus; this feature is a sound cue only).
-- Backend involvement: the `turn` kind is synthesized in the frontend and never appears in the notifications feed or `~/.kirocrew` state.
+- Backend involvement: the `turn` kind is synthesized in the frontend and never appears in the notifications feed or `~/.kiro/crew` state.
 - Attention gating (hidden tab / unfocused window / background-slot heuristics): the chime is an unconditional audible cue for any finished session; per-user silence lives in the sound settings, not in focus heuristics.

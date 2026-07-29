@@ -165,7 +165,7 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> Callable[
                 f"Refusing to load third-party app {app_name!r} module "
                 f"{module_path!r}: in-process execution of untrusted app code is "
                 f"disabled by agent.apps_allow_third_party=false. Set it to true in "
-                f"~/.kirocrew/config.json to re-enable (accepting that app code runs "
+                f"~/.kiro/crew/config.json to re-enable (accepting that app code runs "
                 f"with full gateway privileges)."
             )
         _warn_third_party_execution(app_name)

@@ -158,7 +158,7 @@ class CronSDK:
         if script:
             from kiro_crew.mcp_cron import _vet_script_file
 
-            # resolve_script_path rejects paths outside ~/.kirocrew/crons/ (and
+            # resolve_script_path rejects paths outside ~/.kiro/crew/crons/ (and
             # missing/sensitive files) by raising. Emit a SEL denied audit on
             # that path too, mirroring bridges.py, so every denial is audited.
             try:

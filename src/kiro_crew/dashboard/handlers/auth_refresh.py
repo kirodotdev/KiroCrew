@@ -489,7 +489,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     grace_payload["_refresh_token"] = new_refresh_token
 
     # Wrap mark_consumed in to_thread: it does sync file I/O
-    # (atomic-rename write to ~/.kirocrew/refresh_chains.json) — must
+    # (atomic-rename write to ~/.kiro/crew/refresh_chains.json) — must
     # not block the event loop. Per kirocrew-cr-reviewer rule 4d5.
     await asyncio.to_thread(
         state.mark_consumed,

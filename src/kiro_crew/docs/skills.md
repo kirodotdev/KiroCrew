@@ -1,7 +1,7 @@
 # Skills
 
 Skills are markdown files that give KiroCrew specialized knowledge for specific
-workflows. They live in `~/.kirocrew/skills/` as `SKILL.md` files.
+workflows. They live in `~/.kiro/crew/skills/` as `SKILL.md` files.
 
 ## How Skills Work
 
@@ -14,7 +14,7 @@ workflows. They live in `~/.kirocrew/skills/` as `SKILL.md` files.
 ## Skill Structure
 
 ```
-~/.kirocrew/skills/
+~/.kiro/crew/skills/
 ├── my-skill/
 │   └── SKILL.md
 ├── utils/
@@ -66,7 +66,7 @@ Ask KiroCrew: "Create a skill called X that does Y"
 
 ### Manually
 
-Create `~/.kirocrew/skills/my-skill/SKILL.md` with frontmatter and content.
+Create `~/.kiro/crew/skills/my-skill/SKILL.md` with frontmatter and content.
 
 ## Built-in Skills
 
@@ -79,8 +79,8 @@ shortening, code search, and writing assistance.
 1. `$KIROCREW_PROJECT_DIR/skills/` — project-level (edit without rebuilding)
 2. Built-in skills bundled in the Python package
 
-Both are synced into `~/.kirocrew/skills/` on startup. Newer source files
+Both are synced into `~/.kiro/crew/skills/` on startup. Newer source files
 overwrite older ones (mtime-based). User-created skills in
-`~/.kirocrew/skills/` persist as long as they don't share a name with a
+`~/.kiro/crew/skills/` persist as long as they don't share a name with a
 project-level or built-in skill — if they do, the source version wins when
 it's newer.

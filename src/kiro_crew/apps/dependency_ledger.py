@@ -9,7 +9,7 @@ with KiroCrew's existing file locking patterns.  Read-modify-write cycles
 hold a single exclusive lock across the entire operation to prevent lost
 updates.
 
-Storage: ``~/.kirocrew/dependency-ledger.json``
+Storage: ``~/.kiro/crew/dependency-ledger.json``
 """
 from __future__ import annotations
 

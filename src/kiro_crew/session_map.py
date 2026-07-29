@@ -26,7 +26,7 @@ _KIRO_SESSIONS_DIR = Path.home() / ".kiro" / "sessions" / "cli"
 class SessionMap:
     """Persistent mapping of session_key → kiro-cli session ID.
 
-    Stored as ``~/.kirocrew/session_map.json``. Atomic write via tmp+rename.
+    Stored as ``~/.kiro/crew/session_map.json``. Atomic write via tmp+rename.
     Only used for long-lived conversational sessions (Slack DM, dashboard).
     Stateless sessions (cron, subagent, taskrunner) are excluded.
 

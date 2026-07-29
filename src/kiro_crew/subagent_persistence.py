@@ -1,6 +1,6 @@
 """Subagent persistence — disk I/O for agent folders.
 
-Each subagent gets a folder at ``~/.kirocrew/subagents/{id}/`` containing:
+Each subagent gets a folder at ``~/.kiro/crew/subagents/{id}/`` containing:
 - ``state.json``   — running state (task, PID, turns, last_tool)
 - ``result.txt``   — streamed result text
 - ``tombstone.json`` — written on abnormal exit only
@@ -52,7 +52,7 @@ def create_agent_folder(
     parent_session: str = "",
     max_turns: int = 0,
 ) -> Path:
-    """Create ``~/.kirocrew/subagents/{id}/`` with ``state.json``."""
+    """Create ``~/.kiro/crew/subagents/{id}/`` with ``state.json``."""
     d = _agent_dir(agent_id)
     d.mkdir(parents=True, exist_ok=True)
     state = {

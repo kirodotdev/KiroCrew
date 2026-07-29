@@ -50,7 +50,7 @@ export default function DisplayTab() {
         </div>
       </Card>
       <Card>
-        <CardTitle>{i18nT('pages.overview.displayTab.color_theme')} <InfoTip text="Choose a color palette. Each theme supports dark and light modes. Custom themes are stored in ~/.kirocrew/themes/." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.displayTab.color_theme')} <InfoTip text="Choose a color palette. Each theme supports dark and light modes. Custom themes are stored in ~/.kiro/crew/themes/." /></CardTitle>
         <div className="flex flex-wrap items-center gap-2">
           {allThemes.map(t => (
             <div key={t.value} className="relative group">

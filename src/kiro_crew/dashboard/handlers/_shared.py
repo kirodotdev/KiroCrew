@@ -537,8 +537,8 @@ def _resolve_skill_root(name: str, state: DashboardState) -> Path | None:
     """Return the absolute skill directory for *name*, or None.
 
     Accepts the same nested-name scheme used by the existing skill API:
-    - ``foo`` → ``~/.kirocrew/skills/foo``
-    - ``utils/tiny-url`` → ``~/.kirocrew/skills/utils/tiny-url``
+    - ``foo`` → ``~/.kiro/crew/skills/foo``
+    - ``utils/tiny-url`` → ``~/.kiro/crew/skills/utils/tiny-url``
     - ``package/<skill>`` → resolved via _resolve_aim_skill_path() lookup
     - ``kiro-user/<skill>`` → ``~/.kiro/skills/<skill>``
     - ``kiro-workspace/<skill>`` → ``<project>/.kiro/skills/<skill>``

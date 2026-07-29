@@ -2,7 +2,7 @@
 
 An OpenTelemetry ``MetricExporter`` that appends one JSON line per export cycle
 to ``<dir>/metrics-YYYY-MM-DD-<pid>.jsonl``. This is KiroCrew's default metrics
-sink: data stays on the local disk (default ``~/.kirocrew/metrics``) and never
+sink: data stays on the local disk (default ``~/.kiro/crew/metrics``) and never
 leaves the host. Remote / OTLP egress is a separate, opt-in exporter (deferred).
 
 Per-process shards: the filename includes the PID so each shard has a single
@@ -16,7 +16,7 @@ never unlinks another process's active write.
 PRIVACY: attribute values are redacted at the ``MetricsRecorder``
 facade before they reach the SDK, so the serialized data points carry no secrets
 or PII. The directory (0o700) and shards (0o600) are created private -- matching
-the ``~/.kirocrew`` file-permission convention -- so no other local user on a
+the ``~/.kiro/crew`` file-permission convention -- so no other local user on a
 shared host can read another user's metrics.
 
 RETENTION: age + total-size rotation. Before an append would push the live

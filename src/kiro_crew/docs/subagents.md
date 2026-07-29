@@ -73,7 +73,7 @@ truncated blob), and the parent reads the rest on demand — the `read` tool
 (offset/limit), `grep`, or the `spawn_status` MCP tool — instead of re-running
 the subagent.
 
-The full transcript lives at `~/.kirocrew/subagents/<id>/result.txt` and is
+The full transcript lives at `~/.kiro/crew/subagents/<id>/result.txt` and is
 **retained for a grace window after delivery** (default 1 hour) so those reads
 succeed; the reaper then prunes it.
 
@@ -99,7 +99,7 @@ Pick the mode that matches how your agents emit their useful output:
 Set `completion_keep_chars: 0` to disable truncation entirely.
 
 Set via `kirocrew config set agent.completion_keep tail` or by editing
-`~/.kirocrew/config.json` directly.
+`~/.kiro/crew/config.json` directly.
 
 ### Reading the full transcript on demand
 

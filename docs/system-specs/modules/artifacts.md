@@ -11,7 +11,7 @@ A typical flow:
 
 1. Agent emits an `<mcwidget>` in chat ("here's your CR queue")
 2. Agent (or user) calls `artifact_save` — the widget is persisted under
-   `~/.kirocrew/artifacts/<slug>/current.html`
+   `~/.kiro/crew/artifacts/<slug>/current.html`
 3. Days later, in a fresh session, the user says "iterate on the cr-queue
    artifact and add an age column"
 4. Agent calls `artifact_get("cr-queue")` to read the current HTML, modifies
@@ -24,7 +24,7 @@ The dashboard provides a `/artifacts` library page for browse/search and a
 ## Storage Layout
 
 ```
-~/.kirocrew/artifacts/
+~/.kiro/crew/artifacts/
 └── <slug>/
     ├── meta.json        canonical metadata (no content)
     ├── current.html     latest content
@@ -183,7 +183,7 @@ rename-safe membership id, tolerant-loaded for legacy meta.json.
 `ArtifactStore.set_folder()` is a metadata-only move (NO version bump);
 `list(folder=)` filters (None = all, `""` = unfiled, id = that folder).
 `ArtifactFolderStore` keeps a flat `parent_id` tree in
-`~/.kirocrew/artifact_folders.json` — create/rename/reparent (cycle- and
+`~/.kiro/crew/artifact_folders.json` — create/rename/reparent (cycle- and
 depth-guarded, `MAX_FOLDER_DEPTH` 20)/reorder/delete, breadcrumb, item counts,
 and id-or-path resolution with mkdir -p semantics (`resolve_path`, all-or-nothing
 rollback). Folder delete is an explicit choice: keep (re-parent direct children

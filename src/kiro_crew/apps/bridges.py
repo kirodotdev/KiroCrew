@@ -126,7 +126,7 @@ _RESERVED_SKILL_DIRS = {"auto"}
 
 
 def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> list[str]:
-    """Symlink app skill directories into ~/.kirocrew/skills/.
+    """Symlink app skill directories into ~/.kiro/crew/skills/.
 
     Creates both a namespaced link (``skills/{app_name}/{skill_name}``) and a
     flat link (``skills/{skill_name}``) so the skill scanner finds the skill
@@ -150,7 +150,7 @@ def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> li
 
         skill_name = skill_path.name
 
-        # Namespaced link: ~/.kirocrew/skills/{app_name}/{skill_name}
+        # Namespaced link: ~/.kiro/crew/skills/{app_name}/{skill_name}
         link_path = app_skills_dir / skill_name
         if link_path.exists() or link_path.is_symlink():
             if link_path.is_symlink():
@@ -158,7 +158,7 @@ def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> li
             else:
                 shutil.rmtree(link_path)
 
-        # Flat link: ~/.kirocrew/skills/{skill_name} (for skill scanner)
+        # Flat link: ~/.kiro/crew/skills/{skill_name} (for skill scanner)
         if skill_name in _RESERVED_SKILL_DIRS:
             logger.info("App %s: skipping flat link for reserved name %s", app_name, skill_name)
             flat_link = None
@@ -202,7 +202,7 @@ def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> li
 
 
 def _deregister_skills(app_name: str) -> int:
-    """Remove the app's skill symlinks from ~/.kirocrew/skills/."""
+    """Remove the app's skill symlinks from ~/.kiro/crew/skills/."""
     skills_root = _skills_dir()
     app_skills_dir = skills_root / app_name
     if not app_skills_dir.exists():

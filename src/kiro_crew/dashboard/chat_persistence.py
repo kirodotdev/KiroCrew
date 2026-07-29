@@ -186,7 +186,7 @@ def restore_open_slots(state: DashboardState) -> int:
 
     Path resolves through ``config_dir()`` (honors ``KIROCREW_HOME``) so
     dev/test instances with non-default homes don't read the production
-    ``~/.kirocrew`` snapshot.
+    ``~/.kiro/crew`` snapshot.
 
     Returns the number of slots restored. Missing / malformed file is a
     no-op (returns 0). Sessions that have been explicitly closed

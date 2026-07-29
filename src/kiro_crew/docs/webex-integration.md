@@ -14,7 +14,7 @@ status placeholder ("🤔 Thinking…" → "🔧 Running: …") while the agent 
 You don't have to edit anything by hand. In any KiroCrew session — the
 dashboard, Slack, or the CLI — say something like *"set up the Webex
 channel."* KiroCrew walks you through creating the bot, then writes the token
-and your email into `~/.kirocrew/.env` and `config.json` and restarts the
+and your email into `~/.kiro/crew/.env` and `config.json` and restarts the
 gateway for you. You just hand it the bot token when it asks.
 
 Prefer to wire it up yourself? The manual steps are below.
@@ -28,11 +28,11 @@ You'll need a running gateway (`kirocrew gateway`) and a Webex account.
    **Create a Bot**, and fill in the name/username/icon. Copy the **Bot access
    token** shown on the confirmation page (it's displayed only once; you can
    regenerate it later from the app's edit page).
-2. **Save the token** to `~/.kirocrew/.env`:
+2. **Save the token** to `~/.kiro/crew/.env`:
    ```
    WEBEX_BOT_TOKEN=YmFzZTY0…
    ```
-3. **Turn it on** in `~/.kirocrew/config.json` — your own Webex account email
+3. **Turn it on** in `~/.kiro/crew/config.json` — your own Webex account email
    is the allow-list:
    ```json
    "webex": { "enabled": true, "allowed_emails": ["you@example.com"] }
