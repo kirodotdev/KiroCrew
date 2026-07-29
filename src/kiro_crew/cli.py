@@ -1411,6 +1411,11 @@ Examples:
     # mcp-core (MCP server — spawned by the agent backend, not user-facing)
     sub.add_parser("mcp-core", help=argparse.SUPPRESS)
 
+    # mcp-computer (MCP server — spawned by the agent backend, not user-facing).
+    # A THIN SHIM: it forwards to the gateway over loopback, where the
+    # fail-closed governance gate and all accessibility work live.
+    sub.add_parser("mcp-computer", help=argparse.SUPPRESS)
+
     # Builtin app MCP servers (spawned by the agent backend, not user-facing)
     for _bname in _BUILTIN_NAMES:
         sub.add_parser(f"mcp-{_bname}", help=argparse.SUPPRESS)
@@ -1434,6 +1439,30 @@ Examples:
         "browse_args",
         nargs=argparse.REMAINDER,
         help="browse sub-command and its arguments",
+    )
+
+    # computer — computer-use (desktop automation) diagnostics. READ-ONLY: there
+    # is deliberately no CLI verb that reads a window's contents or drives an
+    # app, because those are LLM-facing capabilities and the MCP-first rule puts
+    # them in the ``kirocrew-computer`` MCP server instead.
+    computer_parser = sub.add_parser(
+        "computer",
+        help="Computer-use (desktop automation) diagnostics",
+        epilog="""
+Examples:
+  kirocrew computer doctor                     # Support + permission report
+  kirocrew computer doctor --json              # The same report as JSON
+  kirocrew computer apps                       # Apps with an on-screen window
+
+Computer use is OFF by default and is enabled only from the dashboard
+(Settings -> Computer Use). An agent cannot enable it.
+""",
+        formatter_class=_fmt,
+    )
+    computer_parser.add_argument(
+        "computer_args",
+        nargs=argparse.REMAINDER,
+        help="computer sub-command and its arguments",
     )
 
     # learn
@@ -1885,11 +1914,23 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         from kiro_crew.mcp_core import run_mcp_core_server
 
         run_mcp_core_server()
+    elif args.command == "mcp-computer":
+        from kiro_crew.mcp_computer import run_mcp_server as run_mcp_computer_server
+
+        run_mcp_computer_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         _mod = importlib.import_module(f"kiro_crew.apps.builtins.{args.command[4:]}.mcp_server")
         _mod.run_mcp_server()
     elif args.command == "browse":
         run_browse(getattr(args, "browse_args", []))
+    elif args.command == "computer":
+        # Deferred import: ``computer_use.cli`` reaches the driver seam, and the
+        # macOS driver loads native frameworks on first use. Keeping it out of
+        # cli.py's module imports means every OTHER command — and the whole CI
+        # fleet — pays nothing for it.
+        from kiro_crew.computer_use.cli import run_computer
+
+        run_computer(getattr(args, "computer_args", []))
     elif args.command == "eval":
         asyncio.run(_run_eval(args))
     elif args.command == "security":

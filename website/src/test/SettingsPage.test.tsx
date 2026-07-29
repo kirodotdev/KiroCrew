@@ -25,6 +25,10 @@ vi.mock('../pages/settings/OverviewPanel', () => ({ OverviewPanel: () => <div da
 vi.mock('../pages/settings/ChatPanel', () => ({ ChatPanel: () => <div data-testid="chat-panel" /> }))
 vi.mock('../pages/settings/DisplayPanel', () => ({ DisplayPanel: () => <div data-testid="display-panel" /> }))
 vi.mock('../pages/settings/BrowserPanel', () => ({ BrowserPanel: () => <div data-testid="browser-panel" /> }))
+// MANDATORY, not tidiness: the `../api/client` mock below exposes a FIXED method
+// set, so an unmocked ComputerUsePanel calling api.getComputerUseConfig() would
+// throw during render.
+vi.mock('../pages/settings/ComputerUsePanel', () => ({ ComputerUsePanel: () => <div data-testid="computer-use-panel" /> }))
 vi.mock('../pages/settings/InstancesPanel', () => ({ InstancesPanel: () => <div data-testid="instances-panel" /> }))
 vi.mock('../pages/settings/SecurityPanel', () => ({ SecurityPanel: () => <div data-testid="security-panel" /> }))
 vi.mock('../pages/settings/NotificationsPanel', () => ({ NotificationsPanel: () => <div data-testid="notifications-panel" /> }))
@@ -97,6 +101,16 @@ describe('SettingsPage tabs', () => {
   it('renders the BrowserPanel when the browser tab is active', () => {
     renderAt('/settings?tab=browser')
     expect(screen.getByTestId('browser-panel')).toBeInTheDocument()
+  })
+
+  it('lists the Computer Use tab', () => {
+    renderAt('/settings')
+    expect(screen.getByText('Computer Use')).toBeInTheDocument()
+  })
+
+  it('renders the ComputerUsePanel when the computer-use tab is active', () => {
+    renderAt('/settings?tab=computer-use')
+    expect(screen.getByTestId('computer-use-panel')).toBeInTheDocument()
   })
 
   it('lists a single Channels tab instead of per-channel tabs', () => {

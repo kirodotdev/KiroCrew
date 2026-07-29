@@ -13,17 +13,17 @@ import subprocess
 import sys
 
 SIGNALS = [
-    (r"(^|/)(package\.json|requirements.*\.txt|Cargo\.toml|go\.mod|pom\.xml|"
-     r"build\.gradle|setup\.(py|cfg)|pyproject\.toml)",
-     "dependency/manifest changed - call out added/removed deps"),
-    (r"(^|/)(package-lock\.json|yarn\.lock|Cargo\.lock|poetry\.lock|go\.sum)",
-     "lockfile changed"),
+    (
+        r"(^|/)(package\.json|requirements.*\.txt|Cargo\.toml|go\.mod|pom\.xml|"
+        r"build\.gradle|setup\.(py|cfg)|pyproject\.toml)",
+        "dependency/manifest changed - call out added/removed deps",
+    ),
+    (r"(^|/)(package-lock\.json|yarn\.lock|Cargo\.lock|poetry\.lock|go\.sum)", "lockfile changed"),
     (r"(migrations?/|/migrate)", "database/migration change"),
     (r"(^|/)\.github/workflows/", "CI workflow changed"),
     (r"(?m)^D\t", "files DELETED - call out removals"),
     (r"(?m)^R[0-9]*\t", "files RENAMED/moved"),
-    (r"(Dockerfile|\.tf$|\.ya?ml$|\.toml$|\.ini$|(^|/)config)",
-     "config/infra file changed"),
+    (r"(Dockerfile|\.tf$|\.ya?ml$|\.toml$|\.ini$|(^|/)config)", "config/infra file changed"),
 ]
 
 
@@ -46,9 +46,10 @@ def main(argv):
 
     base = argv[1] if len(argv) > 1 else ""
     if not base:
-        sym = run(["git", "symbolic-ref", "--quiet", "--short",
-                   "refs/remotes/origin/HEAD"])[1].strip()
-        base = sym[len("origin/"):] if sym.startswith("origin/") else ""
+        sym = run(["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])[
+            1
+        ].strip()
+        base = sym[len("origin/") :] if sym.startswith("origin/") else ""
     if not base:
         base = "main"
 

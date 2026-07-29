@@ -20,7 +20,7 @@ const SETTINGS_DIR = path.resolve(__dirname, '../../../pages/settings')
 // Valid tabs from SettingsPage.tsx (fork: KiroACP-only + de-Amazoned, so no
 // provider/secretary/sync/tasks tabs).
 const VALID_TABS = new Set([
-  'overview', 'chat', 'voice', 'display', 'browser', 'skills',
+  'overview', 'chat', 'voice', 'display', 'browser', 'skills', 'computer-use',
   'instances', 'security', 'notifications', 'channels', 'developer', 'about',
 ])
 

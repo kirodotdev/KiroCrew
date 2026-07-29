@@ -70,6 +70,8 @@ import DeveloperPage from './pages/DeveloperPage'
 import SchedulePage from './pages/SchedulePage'
 import { useUpdateSubscription } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
+
+import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel from './components/BottomTerminalPanel'
 import { toggleBottomTerminal } from './hooks/useBottomTerminal'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
@@ -2099,6 +2101,12 @@ export default function App() {
             Toggled from the sidebar Terminal icon; hosts app-wide
             shells. Distinct from the chat-scoped activity-bar terminal tabs. */}
         {terminalEnabled && <BottomTerminalPanel />}
+
+        {/* Self-managed floating panels: lifecycle-driven (hidden → small → chip),
+            not motion.* children, so they live outside AnimatePresence. The browse
+            mirror docks bottom-right and the computer-use PiP bottom-left, so both
+            can be open at once. */}
+        <ComputerUseLiveView />
       </div>
     </div>{/* /Local dashboard grid */}
       </div>{/* /Local pane */}

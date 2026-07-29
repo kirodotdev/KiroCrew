@@ -16,7 +16,8 @@
     "report",
     "tool_search",
     "@kirocrew-cron",
-    "@kirocrew-core"
+    "@kirocrew-core",
+    "@kirocrew-computer"
   ],
   "allowedTools": [
     "fs_read",

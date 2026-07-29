@@ -24,6 +24,13 @@ from dataclasses import dataclass, field
 from pathlib import PureWindowsPath
 from typing import Any
 
+# Computer-use tool names and their argument bounds. Safe to import at module
+# scope: ``computer_use.types`` is deliberately dependency-free (it imports
+# nothing from ``kiro_crew`` and never touches ctypes), so there is no cycle and
+# no native library is loaded on any platform. Aliased so the schema block below
+# reads as "the computer-use vocabulary" rather than bare names.
+from kiro_crew.computer_use import types as _cu_types
+
 # ── Constants ──
 
 # Max lengths for string inputs
@@ -1896,6 +1903,201 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("job_id", str, required=True, max_len=16, pattern=_JOB_ID_RE),
         ],
     ),
+}
+
+
+# ── Tool Schemas (MCP Computer Use — server ``kirocrew-computer``) ──
+#
+# EVERY computer-use tool MUST have an entry here, including the ones with no
+# arguments. Two independent reasons, both load-bearing:
+#
+#   1. A tool absent from its schema map passes its arguments RAW through the
+#      server's ``_validate_args`` (the ``if schema:`` fallback the cron/core
+#      servers use), so an unvalidated dict would reach a handler that can
+#      synthesize keystrokes into another application's window.
+#   2. The dispatcher refuses any tool name not present here, which makes this
+#      dict the registration surface: a tenth tool added without a row is
+#      rejected rather than silently ungoverned.
+#
+# Bounds come from ``computer_use.types`` rather than being re-spelled, so the
+# schema ceiling and the driver's own budgets cannot drift. ``element_index`` is
+# an ``int`` FieldSpec, which ``validate_field`` guards against a bool
+# masquerading as an int (``True == 1`` would otherwise pass a range check and
+# address element 1).
+_CU_SCROLL_DIRECTIONS = frozenset(_cu_types.SCROLL_DIRECTIONS)
+# Key specs and accessibility action names are opaque single tokens. Anchored and
+# whitespace-free so a spec cannot smuggle a newline into a rendered result, and
+# deliberately NOT an enum: ``keymap.parse_key`` owns the key vocabulary (a
+# regex enum here would have to be kept in sync with it and would fail closed on
+# a legitimate alias), and accessibility action names are app-defined.
+_CU_KEY_SPEC_RE = re.compile(r"^[A-Za-z0-9+_.,;:'\"`~!@#$%^&*()\[\]{}<>?/\\|=-]+$")
+_CU_AX_ACTION_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+# ``app`` is the agent's REQUEST for a target, matched case-insensitively against
+# the on-screen window list. It is never the authorization identity — the gate is
+# queried with what the driver RESOLVED — so it only needs to be a bounded,
+# single-line string.
+_CU_APP_FIELD = FieldSpec("app", str, required=True, max_len=MAX_SHORT_STRING)
+_CU_ELEMENT_FIELD = FieldSpec(
+    "element_index", int, required=True, min_val=0, max_val=_cu_types.MAX_ELEMENT_INDEX
+)
+# ``computer_click``'s element index is OPTIONAL because the tool also accepts a
+# coordinate target. "Exactly one of (element_index | x+y)" is a CROSS-FIELD rule
+# and ``validate_tool_args`` validates fields independently, so it is enforced at
+# the dispatch chokepoint by ``policy.check_click_target`` — which the in-process
+# entry point also traverses. Keeping it out of the schema is deliberate: a
+# ``custom_validator`` here would duplicate the rule in a second place that the
+# gateway-side caller could still bypass.
+_CU_OPTIONAL_ELEMENT_FIELD = FieldSpec(
+    "element_index", int, min_val=0, max_val=_cu_types.MAX_ELEMENT_INDEX
+)
+_CU_CLICK_METHODS = frozenset(_cu_types.CLICK_METHODS)
+_CU_MOUSE_BUTTONS = frozenset(_cu_types.MOUSE_BUTTONS)
+
+
+def _cu_coord_field(name: str, *, required: bool = False) -> FieldSpec:
+    """A screen-coordinate field, bounded so nonsense never reaches the FFI.
+
+    ``(int, float)`` rather than ``float``: JSON has one number type and a model
+    writing ``x: 400`` produces an ``int``, which a ``float``-only spec would
+    reject for no reason. ``bool`` is still refused — it is an ``int`` subclass, and
+    ``validate_field`` rejects it unless ``bool`` is explicitly in the tuple.
+
+    The bound is a fixed generous range rather than a display-derived one: a
+    multi-display desktop legitimately extends far past one screen, and the OS
+    clamps a delivered event anyway.
+    """
+    return FieldSpec(
+        name,
+        (int, float),
+        required=required,
+        min_val=_cu_types.MIN_SCREEN_COORD,
+        max_val=_cu_types.MAX_SCREEN_COORD,
+    )
+
+
+MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
+    _cu_types.TOOL_LIST_APPS: ToolSchema(tool_name=_cu_types.TOOL_LIST_APPS, fields=[]),
+    _cu_types.TOOL_GET_STATE: ToolSchema(
+        tool_name=_cu_types.TOOL_GET_STATE,
+        fields=[
+            _CU_APP_FIELD,
+            FieldSpec("text_limit", int, min_val=1, max_val=_cu_types.MAX_TEXT_LIMIT),
+            FieldSpec("max_tree_nodes", int, min_val=1, max_val=_cu_types.MAX_TREE_NODES_LIMIT),
+            FieldSpec("max_tree_depth", int, min_val=1, max_val=_cu_types.MAX_TREE_DEPTH_LIMIT),
+            # No default: absent means "use the operator's config", which is
+            # resolved in ``service.snapshot_request``. A default here would
+            # override the operator's ``attach_screenshot: false``.
+            FieldSpec("screenshot", bool),
+        ],
+    ),
+    _cu_types.TOOL_CLICK: ToolSchema(
+        tool_name=_cu_types.TOOL_CLICK,
+        fields=[
+            _CU_APP_FIELD,
+            _CU_OPTIONAL_ELEMENT_FIELD,
+            _cu_coord_field("x"),
+            _cu_coord_field("y"),
+            # No default on ``click_count``: absent means "one click", which the
+            # dispatcher supplies from ``DEFAULT_CLICK_COUNT``. Bounded at 3 because
+            # macOS itself only reports up to a triple click as a distinct gesture.
+            FieldSpec(
+                "click_count",
+                int,
+                min_val=_cu_types.MIN_CLICK_COUNT,
+                max_val=_cu_types.MAX_CLICK_COUNT,
+            ),
+            # Closed enums, not free strings: an unknown value must be refused
+            # before any event is synthesized, because a substituted button or
+            # method performs a DIFFERENT gesture in a live application.
+            FieldSpec("mouse_button", str, max_len=8, allowed=_CU_MOUSE_BUTTONS),
+            FieldSpec("click_method", str, max_len=16, allowed=_CU_CLICK_METHODS),
+        ],
+    ),
+    _cu_types.TOOL_DRAG: ToolSchema(
+        tool_name=_cu_types.TOOL_DRAG,
+        fields=[
+            _CU_APP_FIELD,
+            # All four coordinates REQUIRED: a drag has no element form (no
+            # accessibility action expresses a sweep between two points), so a
+            # partial pair has no meaning to fall back on.
+            _cu_coord_field("from_x", required=True),
+            _cu_coord_field("from_y", required=True),
+            _cu_coord_field("to_x", required=True),
+            _cu_coord_field("to_y", required=True),
+            FieldSpec("mouse_button", str, max_len=8, allowed=_CU_MOUSE_BUTTONS),
+            # ``accessibility`` is accepted by the enum but refused by the driver
+            # for a drag — enumerating a smaller set here would put the same rule
+            # in two places and let them drift.
+            FieldSpec("click_method", str, max_len=16, allowed=_CU_CLICK_METHODS),
+        ],
+    ),
+    _cu_types.TOOL_TYPE_TEXT: ToolSchema(
+        tool_name=_cu_types.TOOL_TYPE_TEXT,
+        fields=[
+            _CU_APP_FIELD,
+            FieldSpec("text", str, required=True, max_len=_cu_types.MAX_TYPE_TEXT_LEN),
+            # Optional: typing into whatever the app has focused is a legitimate
+            # flow. A named element is still preferred (and is what the secure-field
+            # refusal inspects), which the tool description says.
+            _CU_OPTIONAL_ELEMENT_FIELD,
+        ],
+    ),
+    _cu_types.TOOL_PRESS_KEY: ToolSchema(
+        tool_name=_cu_types.TOOL_PRESS_KEY,
+        fields=[
+            _CU_APP_FIELD,
+            # Optional: sending a shortcut to whatever the app already has focused
+            # is a legitimate flow (cmd+S on the frontmost window). When an index IS
+            # given the driver focuses that element first.
+            _CU_OPTIONAL_ELEMENT_FIELD,
+            FieldSpec(
+                "key",
+                str,
+                required=True,
+                max_len=_cu_types.MAX_KEY_LEN,
+                pattern=_CU_KEY_SPEC_RE,
+            ),
+        ],
+    ),
+    _cu_types.TOOL_SET_VALUE: ToolSchema(
+        tool_name=_cu_types.TOOL_SET_VALUE,
+        fields=[
+            _CU_APP_FIELD,
+            _CU_ELEMENT_FIELD,
+            FieldSpec("value", str, required=True, max_len=_cu_types.MAX_TYPE_TEXT_LEN),
+        ],
+    ),
+    _cu_types.TOOL_SCROLL: ToolSchema(
+        tool_name=_cu_types.TOOL_SCROLL,
+        fields=[
+            _CU_APP_FIELD,
+            _CU_ELEMENT_FIELD,
+            FieldSpec("direction", str, required=True, max_len=8, allowed=_CU_SCROLL_DIRECTIONS),
+            FieldSpec(
+                "pages",
+                (int, float),
+                min_val=_cu_types.MIN_SCROLL_PAGES,
+                max_val=_cu_types.MAX_SCROLL_PAGES,
+                default=_cu_types.DEFAULT_SCROLL_PAGES,
+            ),
+        ],
+    ),
+    _cu_types.TOOL_PERFORM_ACTION: ToolSchema(
+        tool_name=_cu_types.TOOL_PERFORM_ACTION,
+        fields=[
+            _CU_APP_FIELD,
+            _CU_ELEMENT_FIELD,
+            FieldSpec(
+                "action",
+                str,
+                required=True,
+                max_len=_cu_types.MAX_ACTION_LEN,
+                pattern=_CU_AX_ACTION_RE,
+            ),
+        ],
+    ),
+    _cu_types.TOOL_END_TURN: ToolSchema(tool_name=_cu_types.TOOL_END_TURN, fields=[]),
 }
 
 

@@ -90,6 +90,31 @@ infrastructure that survives the upstream sync. Full map:
   so the agent cannot read/write its own ceiling — the single mechanism that makes
   the ceiling un-disableable. When editing `security.py`'s sensitive-path or
   bash-command matchers, keep these covered (incl. write/extract verbs).
+- **Computer use is deliberately NOT governed.** It is ONE operator opt-in on the
+  keystone `computer_use.json` (fenced by `security._SENSITIVE_HOME_DIRS`, so the
+  agent can neither read nor flip it). There are **no** `computer_use.*` scopes, no
+  `capabilities.computer_use*` rows, no approval ordinal and no pointer permit — an
+  earlier revision had all eight and they were removed by product decision. Do NOT
+  reintroduce them without that decision being reversed; `gate.py` is audit-only and
+  always permits.
+  What still refuses, all enforced **in band** on the `tools._dispatch` path (never
+  at the `hooks` PreToolUse gate, which is fail-OPEN and can be skipped by a
+  pre-authorized tool): the keystone enable, **KiroCrew's own window**
+  (`policy.check_app` — driving our Settings UI would route around the keystone),
+  secure/password fields, the sensitive-text scan, and credential redaction. Keep
+  these on the dispatch path. Secure-field redaction is an **always-on floor with no
+  policy key** — never make it governable.
+  **Element-targeted, non-pointer input is the DEFAULT.** `click_method: "global"` is
+  the only path that warps the operator's REAL pointer; it needs no separate opt-in,
+  but the model MUST NAME it — `auto` must NEVER resolve onto it (load-bearing
+  invariant with its own test; it is now the only thing between an ordinary click and
+  the user's cursor). Every such gesture is SEL-audited under its own `tool_kind`.
+  `sky_click` is deliberately not ported (private SkyLight API).
+  Flipping the enable RESTARTS chat sessions (`_reset_all_sessions`), because
+  kiro-cli caches `tools/list` per session and ACP has no `tools/list_changed`.
+  Keep prose in sync: `config/prompt.md` and `builtin_skills/computer-use/SKILL.md`
+  ship to users and must not describe refusals that no longer exist. See
+  `docs/system-specs/modules/computer-use.md` + `.../governance.md`.
 - Keep the `ACP_BACKEND_CLAUDE` seam and `platform/` extension points intact; don't
   add public registration glue, and keep the stubs stubbed.
 
@@ -371,6 +396,7 @@ Jane Doe (janedoe), John Smith (jsmith)
 | `cli_server.py` | CLI gateway/server commands (split from cli.py) |
 | `cli_setup.py` | CLI setup wizard (split from cli.py) |
 | `dashboard/chat_runner.py` | Chat execution logic (split from `dashboard/chat.py`) |
+| `computer_use/` | Native desktop GUI automation (macOS today; Windows/Linux refuse). `ComputerUseBackend` ABC + swap registry, the keystone primary enable, the audit-only `gate.py`, the in-band refusals in `policy.py`, and the ctypes driver — all in-gateway native work confined to `macos_ffi.py`. The **one documented exception**: `overlay_proc.py` (the Cursor Motion AppKit child) has its own ctypes surface because AppKit needs a main-thread run loop and the gateway's main thread is the asyncio loop, so it MUST be out of process. See `docs/system-specs/modules/computer-use.md`. |
 | `platform/` | **Composed Platform Providers (CPP) seam + Governance model** — see the dedicated section below. |
 
 ### Platform layer: Composed Platform Providers (CPP) + Governance
@@ -496,10 +522,11 @@ KiroCrew exposes capabilities to the LLM via two mechanisms:
 1. **MCP tools** (native): kiro-cli calls them directly with structured JSON params — **preferred for all LLM-facing operations**
    - `kirocrew-cron` MCP server: `cron_list`, `cron_add`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`
    - `kirocrew-core` MCP server: `spawn_run`, `spawn_list`, `spawn_status`, `learn_add`, `learn_list`, `learn_remove`, `task_run`, `wait`, `register_hook`, `send_message`, `send_notification`, `local_knowledge_search`
+   - `kirocrew-computer` MCP server (10 tools): `computer_list_apps`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` — native desktop GUI automation. Default-OFF behind a keystone primary enable (`~/.kiro/crew/computer_use.json`, NOT `config.json`); the stdio process is a thin shim and the authoritative fail-closed gate runs in the gateway. `computer_click` takes **either** `element_index` **or** `x`+`y` (never both) plus optional `click_count` (1-3), `mouse_button` (`left`/`right`/`middle`) and `click_method` (`auto`/`accessibility`/`app_post`/`global`); `computer_drag` is coordinate-only. Both keyboard tools (`computer_type_text`, `computer_press_key`) REQUIRE `element_index`: an unnamed target has no role/subrole, so the always-on secure-field (password) refusal could not inspect it. See `docs/system-specs/modules/computer-use.md`.
    - `playwright` MCP server (`@playwright/mcp`): `browser_navigate`, `browser_click`, `browser_snapshot`, `browser_take_screenshot`, `browser_fill_form`, `browser_type`, `browser_press_key`, `browser_evaluate`, `browser_hover`, `browser_drag`, `browser_select_option`, `browser_tabs`, `browser_close`, `browser_wait_for`, `browser_resize`
    - `slack-mcp` (mcpServers): Slack integration
    - Configured in `agents/defaults.json` → `mcpServers` → installed to `kirocrew.json`
-   - `kirocrew-cron` and `kirocrew-core` are managed MCP servers in `agent.py:_MANAGED_MCP_SERVERS` — auto-registered, refreshed preserving user customizations
+   - `kirocrew-cron`, `kirocrew-core` and `kirocrew-computer` are managed MCP servers in `agent.py:_MANAGED_MCP_SERVERS` — auto-registered, refreshed preserving user customizations. `kirocrew-computer` is deliberately added to `tools` but **NOT** `allowedTools`, and its managed spec carries **no `autoApprove` key** (an autoApproved MCP tool never reaches `hooks.on_tool_call`)
    - MCP discovery (`mcp_discovery.py`): on-demand only — users trigger from dashboard "Discover & Sync" button
 
 2. **Skills** (`skills/*/SKILL.md`): on-demand knowledge files for specialized workflows
@@ -557,6 +584,17 @@ should always use the MCP tool equivalents.
 | — | `artifact_post_comment` | kirocrew-core |
 | — | `artifact_mark_review` | kirocrew-core |
 | — | `artifact_delete_comment` | kirocrew-core |
+| `kirocrew computer apps` | `computer_list_apps` | kirocrew-computer |
+| — | `computer_get_state` | kirocrew-computer |
+| — | `computer_click` | kirocrew-computer |
+| — | `computer_drag` | kirocrew-computer |
+| — | `computer_type_text` | kirocrew-computer |
+| — | `computer_press_key` | kirocrew-computer |
+| — | `computer_set_value` | kirocrew-computer |
+| — | `computer_scroll` | kirocrew-computer |
+| — | `computer_perform_action` | kirocrew-computer |
+| — | `computer_end_turn` | kirocrew-computer |
+| `kirocrew computer call <tool>` / `call --calls '[…]'` | — (deliberately none) | — |
 | — | `browser_navigate` | playwright |
 | — | `browser_click` | playwright |
 | — | `browser_snapshot` | playwright |
@@ -568,6 +606,7 @@ should always use the MCP tool equivalents.
 
 - **Handler keywords**: only for instant user-typed commands with no LLM round-trip (e.g. `cron list`, `spawn list`)
 - **Do NOT** add regex to match NL variants — the LLM handles NL interpretation
+- **`kirocrew computer call` is the one deliberate "no MCP twin" row.** It is not a capability — it is a human debug/repro harness that runs the ten existing `computer_*` tools through the same gated chokepoint (optionally a JSON array of them in ONE process, so `element_index` values stay resolvable). The MCP-first rule exists so the model gets a structured tool instead of shelling out, and the model already has all ten. A tool that runs other tools would let a model launder one per-call gate decision into many — so do NOT add `computer_call`.
 
 #### Project-Level Configuration
 

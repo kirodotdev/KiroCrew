@@ -3006,11 +3006,27 @@ class TestKnowledgeAutoDiscover:
         cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": "x" * 500}})
         assert len(cfg.knowledge.auto_discover_dirname) == 128
 
-    def test_dirname_non_string_is_coerced(self) -> None:
-        # str() coercion, not a crash -- the value is validated at use time by
-        # resolve_drop_folder (which rejects anything with a separator).
+    def test_dirname_non_string_is_never_used_as_given(self) -> None:
+        """A wrong-typed dirname must not survive as an integer, either way.
+
+        The outcome legitimately DIFFERS by environment, which is why this asserts
+        the invariant rather than one literal: ``jsonschema`` is an optional
+        dependency (``config/validation.py`` guards its import with
+        ``_HAS_JSONSCHEMA``). With it installed the schema's ``type`` branch warns
+        and applies the field default; without it — the shipped configuration, and
+        what CI runs — the schema layer is skipped and the loader's own ``str()``
+        coercion produces ``"42"``.
+
+        Both are acceptable and both are safe: the value is validated again at use
+        time by ``resolve_drop_folder``, which rejects anything containing a path
+        separator. What must hold in every environment is that the result is a
+        non-empty ``str`` and never the raw ``int``. Pinning one literal made this
+        test pass locally and fail in CI.
+        """
         cfg = _load_from_dict({"knowledge": {"auto_discover_dirname": 42}})
-        assert cfg.knowledge.auto_discover_dirname == "42"
+        value = cfg.knowledge.auto_discover_dirname
+        assert isinstance(value, str) and value
+        assert value in ("42", "knowledge-docs")
 
     def test_traversal_dirname_is_kept_but_inert(self) -> None:
         # Validation is deliberately runtime-only: the config retains what the

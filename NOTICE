@@ -12,3 +12,11 @@ You may obtain a copy of the License at
 
 Portions of this software incorporate third-party components; see
 THIRD-PARTY-NOTICES for their respective copyright notices and licenses.
+
+The macOS computer-use feature's optional background-window click path
+(src/kiro_crew/computer_use/macos_skylight.py) uses undocumented macOS
+window-server interfaces. The symbol declarations and the event-field
+recipe are derived from prior MIT-licensed open-source projects that
+reverse-engineered that path. No third-party code is copied; the
+implementation is independent, and the module is isolated so the
+dependency is auditable in one place.

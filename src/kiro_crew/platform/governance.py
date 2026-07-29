@@ -205,6 +205,88 @@ def _match_mcp(item: str, pattern: str) -> bool:
     return False
 
 
+CU_CLASS_OBSERVE = "observe"
+CU_CLASS_MUTATE = "mutate"
+CU_CLASS_POINTER = "pointer"
+CU_CLASS_KEYBOARD = "keyboard"
+CU_CLASS_TEXT_ENTRY = "text_entry"
+CU_CLASS_CONTROL = "control"
+
+# The MCP tool-name prefix every computer-use tool carries
+# (``computer_click``…).  Stripped before a class lookup so ONE vocabulary works
+# in a policy document whichever form the operator writes: ``click`` and
+# ``computer_click`` are the same action, and a fleet that authored against the
+# governance spec's bare names does not silently stop matching if a tool is
+# renamed with/without the prefix.
+_CU_ACTION_TOOL_PREFIX = "computer_"
+
+# Enforcer-owned computer-use action -> semantic classes.  In CODE, never in a
+# policy/profile document — the same invariant as ``_ORDINAL_SCALES``: a malicious
+# profile must not be able to re-label ``type_text`` as an observation and slip
+# past a read-only ceiling.  Append-only by construction; keys are the
+# PREFIX-STRIPPED action names (see ``_cu_action_key``).
+_CU_ACTION_CLASSES: Dict[str, Tuple[str, ...]] = {
+    # Observation only — no input is synthesized into any window.
+    "list_apps": (CU_CLASS_OBSERVE,),
+    "get_state": (CU_CLASS_OBSERVE,),
+    # Control plane: drops KiroCrew's OWN cached snapshots and touches no other
+    # application, so it is neither observe nor mutate.  A read-only ceiling that
+    # wants the model to be able to release its cache explicitly must therefore
+    # allow ``["@observe", "@control"]`` (or leave ``end_turn`` ungated at the
+    # dispatcher, which is legitimate — it is internal state, not automation).
+    "end_turn": (CU_CLASS_CONTROL,),
+    # Mutators — each synthesizes input into another application's window.
+    "click": (CU_CLASS_MUTATE, CU_CLASS_POINTER),
+    # A drag is pointer-only by nature: there is no accessibility action that
+    # expresses "sweep from here to there", so unlike ``click`` it has no
+    # element-addressed form and an ``@pointer`` deny removes it entirely.
+    "drag": (CU_CLASS_MUTATE, CU_CLASS_POINTER),
+    "scroll": (CU_CLASS_MUTATE, CU_CLASS_POINTER),
+    "perform_action": (CU_CLASS_MUTATE, CU_CLASS_POINTER),
+    "type_text": (CU_CLASS_MUTATE, CU_CLASS_KEYBOARD, CU_CLASS_TEXT_ENTRY),
+    "press_key": (CU_CLASS_MUTATE, CU_CLASS_KEYBOARD),
+    "set_value": (CU_CLASS_MUTATE, CU_CLASS_TEXT_ENTRY),
+    # Reserved vocabulary: names the governance spec's copy-pasteable policies
+    # use and names a v2 may ship.  Carried here so a fleet policy authored
+    # against them is classified correctly the day the tool lands, rather than
+    # silently falling to the ("mutate",) unknown default and breaking an
+    # ``@observe`` allow-list.  Classifying a not-yet-shipped name is inert.
+    "get_app_state": (CU_CLASS_OBSERVE,),
+    "perform_secondary_action": (CU_CLASS_MUTATE, CU_CLASS_POINTER),
+}
+# An action absent from the table (a 10th tool a later build or a companion adds)
+# is treated as MUTATING — the fail-closed default in BOTH directions: it can
+# never satisfy an ``@observe`` allow-list, AND it IS caught by an ``@mutate``
+# deny-list.
+_CU_UNKNOWN_ACTION_CLASSES: Tuple[str, ...] = (CU_CLASS_MUTATE,)
+
+
+def _cu_action_key(name: str) -> str:
+    """Normalize an action name/pattern to its class-table key.
+
+    Casefolds and strips the ``computer_`` MCP tool-name prefix so the raw title
+    suffix (``computer_click``) and the bare action a policy document names
+    (``click``) resolve to the same row.  Applied to the PATTERN too, so
+    ``deny: ["computer_press_key"]`` and ``deny: ["press_key"]`` are equivalent
+    and neither is a silent no-op.
+    """
+    key = name.strip().casefold()
+    return key[len(_CU_ACTION_TOOL_PREFIX) :] if key.startswith(_CU_ACTION_TOOL_PREFIX) else key
+
+
+def computer_use_action_classes(action: str) -> Tuple[str, ...]:
+    """Public read of the code-owned class table for one computer-use *action*.
+
+    The single source of truth every enforcement site must derive from — the
+    Plane-B gate's "is this action mutating?" test reads THIS, never a private
+    copy (the ``test_floor_derives_rank_from_ssot_not_private_table`` precedent).
+    An unregistered action returns the fail-closed
+    :data:`_CU_UNKNOWN_ACTION_CLASSES` (``("mutate",)``), so a tool added without
+    a table row is treated as mutating everywhere at once.
+    """
+    return _CU_ACTION_CLASSES.get(_cu_action_key(action), _CU_UNKNOWN_ACTION_CLASSES)
+
+
 # Match-strategy registry.  A ScopedRuleset names its matcher; permits() looks
 # it up here.  Adding a domain = (optionally) one new entry, not evaluator code.
 _MATCHERS: Dict[str, Callable[[str, str], bool]] = {
@@ -269,6 +351,33 @@ def _reject_unknown_keys(d: Mapping[str, object], known: "set[str]", container: 
 
 _RUNNING_PREFIX = "Running: "
 _READING_PREFIX = "Reading "
+
+# The computer-use MCP server key and the raw ACP title prefix its tools arrive
+# under.  Named here (not in the feature package) because ``classify_tool_title``
+# is the ONE evaluator-adjacent function that must know the prefix, and this
+# module must not import a feature package (boot order: the policy loader runs
+# before any feature import).
+CU_MCP_SERVER = "kirocrew-computer"
+_CU_TITLE_PREFIX = f"mcp__{CU_MCP_SERVER}__"
+
+
+def is_computer_use_title(tool_name: str) -> bool:
+    """True when *tool_name* is a computer-use MCP tool title.
+
+    Shared by ``hooks.on_tool_call``'s approval clamp and read-only pair so the
+    prefix test lives in exactly one place.
+    """
+    return tool_name.startswith(_CU_TITLE_PREFIX)
+
+
+def computer_use_action_from_title(tool_name: str) -> str:
+    """The bare action name behind a computer-use MCP title, or ``""``.
+
+    ``mcp__kirocrew-computer__computer_click`` -> ``computer_click``.  Returns
+    ``""`` for any other title so a caller can branch without a second prefix
+    test.
+    """
+    return tool_name[len(_CU_TITLE_PREFIX) :] if is_computer_use_title(tool_name) else ""
 
 
 def classify_tool_title(tool_name: str) -> Tuple[Tuple[str, str], ...]:
@@ -2020,6 +2129,16 @@ __all__ = [
     "SIGNATURE_UNSIGNED",
     "SIGNATURE_UNCHECKED",
     "policy_signing_payload",
+    "CU_MCP_SERVER",
+    "CU_CLASS_OBSERVE",
+    "CU_CLASS_MUTATE",
+    "CU_CLASS_POINTER",
+    "CU_CLASS_KEYBOARD",
+    "CU_CLASS_TEXT_ENTRY",
+    "CU_CLASS_CONTROL",
+    "computer_use_action_classes",
+    "computer_use_action_from_title",
+    "is_computer_use_title",
     "register_scope",
     "register_matcher",
     "mcp_title_to_ref",

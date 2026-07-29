@@ -48,11 +48,13 @@ from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FIL
 from kiro_crew.browser.setup import converge_playwright_servers
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
+from kiro_crew.config.paths import _valid_override_home
 from kiro_crew.env import augmented_path
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.platform import current_context
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.platform import safe_context_call
+from kiro_crew.platform.governance import CU_MCP_SERVER
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import (  # circular import: sel imports config which imports agent
     SecurityEvent,
@@ -286,6 +288,31 @@ def _resolve_kirocrew_bin() -> str:
     return "kirocrew"
 
 
+def _managed_mcp_env() -> dict[str, str]:
+    """Env every managed KiroCrew MCP server is launched with.
+
+    Pins ``KIROCREW_HOME`` when the gateway is running under an override, because
+    a child process does NOT inherit it: the spec's ``env`` is the only channel.
+    Without this the gateway and its own stdio shims read DIFFERENT data homes,
+    which is silent and self-contradictory rather than merely wrong —
+    ``computer_use.json`` is written to the override home by Settings while
+    ``mcp_computer`` reads the DEFAULT home, so the panel shows the feature ON
+    while the shim publishes an empty ``tools/list`` and the agent truthfully
+    reports it has no computer-use tools. The same split would desynchronise the
+    cron store and the lessons file.
+
+    Resolved through ``_valid_override_home`` rather than reading the env var
+    directly, so an override the loader REFUSES (a filesystem root, ``/usr``) is
+    not propagated to children that would then disagree with the gateway in the
+    other direction.
+
+    Returns ``{}`` on a default install, which keeps the emitted spec
+    byte-for-byte what it is today (``_prune_empty`` drops an empty ``env``).
+    """
+    override = _valid_override_home()
+    return {"KIROCREW_HOME": str(override)} if override else {}
+
+
 def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
     """Resolve a CWD- and shebang-independent invocation for a built-in
     MCP server (``kirocrew-cron`` / ``kirocrew-core``).
@@ -319,6 +346,18 @@ def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
 _MANAGED_MCP_SERVERS: dict[str, dict] = {
     "kirocrew-cron": {"invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-cron")},
     "kirocrew-core": {"invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-core")},
+    # Computer use (native desktop GUI automation).  Registered unconditionally —
+    # its stdio shim returns an EMPTY tools/list while the keystone primary enable
+    # is off, so a disabled feature costs the model no context and needs no
+    # per-server ``enabled_fn`` in this loop.
+    #
+    # DELIBERATELY NO ``autoApprove`` KEY, and none may ever be added: kiro-cli
+    # approves an autoApproved MCP tool locally and emits no permission request,
+    # so ``hooks.on_tool_call`` — the PreToolUse gate carrying the always-on deny
+    # floor, the sensitive-path check and the governance ceiling — is NEVER
+    # reached for it. For a tool that can click in an already-authenticated
+    # application that would be a complete gate bypass.
+    "kirocrew-computer": {"invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-computer")},
 }
 
 
@@ -1348,6 +1387,12 @@ def build_agent_config() -> dict:
             cmd = spec.get("command") or spec["command_fn"]()
             args = list(spec["args"])
         entry = {"command": cmd, "args": args}
+        # Pin the data home so the shim cannot read a DIFFERENT one than the
+        # gateway that spawned it (see _managed_mcp_env). Omitted entirely on a
+        # default install, so the emitted spec is unchanged there.
+        env = _managed_mcp_env()
+        if env:
+            entry["env"] = env
         if "autoApprove" in spec:
             entry["autoApprove"] = list(spec["autoApprove"])
         mcp[name] = entry
@@ -1393,6 +1438,21 @@ def _refresh_dynamic_fields(config: dict) -> None:
         # the downstream stdio-force in cc_agent / acp.client.)
         entry.pop("url", None)
         entry.pop("headers", None)
+        # Data-home pin — refreshed like command/args rather than preserved like
+        # ``autoApprove``, because it is OURS, not a user customization: it must
+        # track the home the gateway is actually running under. A config written
+        # under an override and later refreshed on a default install would
+        # otherwise keep pointing the shims at the stale home. Merged into any
+        # existing ``env`` so a user's own variables survive, and the key is
+        # REMOVED (not left stale) when there is no override.
+        pinned = _managed_mcp_env()
+        env = dict(entry.get("env") or {})
+        env.pop("KIROCREW_HOME", None)
+        env.update(pinned)
+        if env:
+            entry["env"] = env
+        else:
+            entry.pop("env", None)
         # Seed autoApprove only for genuinely new entries; if the user
         # deliberately removed autoApprove from an existing entry we
         # must not re-add it on every refresh.
@@ -1964,6 +2024,48 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
                 outcome="ok",
                 source="install_agent",
                 resources=f"{', '.join(added_refs)} added to tools (fresh install)",
+            )
+
+    # Narrow ADD-only exception on EXISTING configs, mirroring the
+    # ``tool_search`` precedent in _refresh_dynamic_fields: ensure the
+    # computer-use @ref is in ``tools``.
+    #
+    # Without this, an UPGRADING install never gains the ref — the fresh-install
+    # branch above is the only place it is added — so ``kirocrew-computer`` is
+    # registered in ``mcpServers`` but kiro-cli exposes none of its tools, and the
+    # feature silently does nothing for every pre-existing user. (Unlike a
+    # third-party MCP, the user cannot have "opted out" of a ref that never
+    # existed on their install.)
+    #
+    # DELIBERATELY tools-only, never ``allowedTools``: that list is kiro-cli's
+    # blanket auto-approve, and an auto-approved MCP tool is approved locally by
+    # kiro-cli — it emits no permission request, so ``hooks.on_tool_call`` (the
+    # deny floor + governance ceiling + approval clamp) is never reached for it.
+    # Granting it here would delete the PreToolUse plane for a tool that can click
+    # and type into an already-authenticated application.
+    #
+    # Gated on the shipped template actually granting the ref (so an edition that
+    # drops computer use is respected) and on the server having resolved, and
+    # scoped to this ONE server so no other managed ref is re-added behind the
+    # user's back. The primary enable still lives in the keystone file, so a config
+    # that gains the ref is not a feature that turns itself on: the shim answers an
+    # empty tools/list until the user opts in from Settings.
+    if not fresh_install and CU_MCP_SERVER in valid_servers:
+        cu_ref = f"@{CU_MCP_SERVER}"
+        shipped_tools = get_shipped_tools().get("tools", [])
+        existing_tools = config.get("tools")
+        if (
+            isinstance(existing_tools, list)
+            and cu_ref in shipped_tools
+            and cu_ref not in existing_tools
+        ):
+            existing_tools.append(cu_ref)
+            sel().log_api_access(
+                caller="system",
+                operation="mcp_tools_added",
+                outcome="ok",
+                source="install_agent",
+                resources=f"{cu_ref} added to tools (existing config upgrade)",
             )
 
     # Final dedup (preserves order).

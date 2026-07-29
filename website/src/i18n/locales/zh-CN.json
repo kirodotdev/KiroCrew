@@ -4462,6 +4462,10 @@
         "description": "消息行为、历史、时间戳与上下文",
         "label": "聊天"
       },
+      "computerUse": {
+        "description": "让助手通过辅助功能读取并操作桌面应用窗口",
+        "label": "电脑操作"
+      },
       "developer": {
         "description": "开发者模式、日志、系统指标与诊断",
         "label": "开发者"

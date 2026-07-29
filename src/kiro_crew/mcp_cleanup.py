@@ -25,7 +25,7 @@ _KIRO_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
 # Only these are affected by install-method path changes.
 # Ordered tuple (not a set) so consumers that iterate — e.g. `kirocrew
 # doctor`'s MCP probe — get a deterministic order.
-KIROCREW_BIN_MCP_SERVERS = ("kirocrew-cron", "kirocrew-core")
+KIROCREW_BIN_MCP_SERVERS = ("kirocrew-cron", "kirocrew-core", "kirocrew-computer")
 
 # MeshClaw was the predecessor of KiroCrew. The rename left these managed
 # server entries — pointing at now-dead MeshClaw build paths — behind in the

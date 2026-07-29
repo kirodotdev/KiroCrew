@@ -58,23 +58,23 @@ def main():
     # Base branch: prefer an existing PR's base, else origin/HEAD, else "main".
     base = pr_base
     if not base:
-        sym = run(["git", "symbolic-ref", "--quiet", "--short",
-                   "refs/remotes/origin/HEAD"])[1]
+        sym = run(["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])[1]
         if sym.startswith("origin/"):
-            base = sym[len("origin/"):]
+            base = sym[len("origin/") :]
         else:
             base = sym
     if not base:
         base = "main"
 
-    on_protected = (cur == base)
+    on_protected = cur == base
     dirty = bool(run(["git", "status", "--porcelain"])[1])
 
     # Divergence vs base (non-destructive fetch).
     behind = ahead = "?"
     run(["git", "fetch", "--quiet", "origin", base])
-    rc, out, _ = run(["git", "rev-list", "--left-right", "--count",
-                      "origin/{}...HEAD".format(base)])
+    rc, out, _ = run(
+        ["git", "rev-list", "--left-right", "--count", "origin/{}...HEAD".format(base)]
+    )
     if rc == 0 and len(out.split()) == 2:
         behind, ahead = out.split()
 
@@ -85,17 +85,20 @@ def main():
     print("working tree:    " + ("dirty" if dirty else "clean"))
     print("vs origin/{}:  behind={} ahead={}".format(base, behind, ahead))
     print("gh authed:       " + ("yes" if gh_ok else "no"))
-    print("existing PR:     " + (pr_num or "none")
-          + (("  (" + pr_url + ")") if pr_url else ""))
+    print("existing PR:     " + (pr_num or "none") + (("  (" + pr_url + ")") if pr_url else ""))
 
     blocked = False
     if cur == "HEAD":
-        print("BLOCKER: detached HEAD (no branch checked out) - switch to a "
-              "feature branch first: git switch -c <type>/<slug>")
+        print(
+            "BLOCKER: detached HEAD (no branch checked out) - switch to a "
+            "feature branch first: git switch -c <type>/<slug>"
+        )
         blocked = True
     elif on_protected:
-        print("BLOCKER: on the integration branch '{}' - create a feature branch "
-              "first: git switch -c <type>/<slug>".format(cur))
+        print(
+            "BLOCKER: on the integration branch '{}' - create a feature branch "
+            "first: git switch -c <type>/<slug>".format(cur)
+        )
         blocked = True
     if not gh_ok:
         print("BLOCKER: gh not authenticated - run: gh auth login")

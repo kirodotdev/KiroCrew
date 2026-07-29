@@ -24,6 +24,26 @@ from pathlib import Path
 
 from kiro_crew import __version__, model_registry
 
+# Computer-use defaults/ceilings come from the feature's constants module rather
+# than being re-spelled here (AGENTS.md: no hardcoded values in business logic).
+# ``computer_use.types`` is deliberately dependency-free — it imports nothing from
+# ``kiro_crew`` — so this cannot create an import cycle with the loader, and the
+# ``computer_use`` package's ``__init__`` pulls in only ``platform_compat`` /
+# ``executors`` (both stdlib-only), never ``config``.
+from kiro_crew.computer_use.types import DEFAULT_ATTACH_SCREENSHOT as _CU_DEFAULT_ATTACH_SCREENSHOT
+from kiro_crew.computer_use.types import DEFAULT_MAX_TREE_DEPTH as _CU_DEFAULT_MAX_TREE_DEPTH
+from kiro_crew.computer_use.types import DEFAULT_MAX_TREE_NODES as _CU_DEFAULT_MAX_TREE_NODES
+from kiro_crew.computer_use.types import (
+    DEFAULT_SCREENSHOT_JPEG_QUALITY as _CU_DEFAULT_SCREENSHOT_JPEG_QUALITY,
+)
+from kiro_crew.computer_use.types import DEFAULT_SCREENSHOT_MAX_PX as _CU_DEFAULT_SCREENSHOT_MAX_PX
+from kiro_crew.computer_use.types import DEFAULT_TEXT_LIMIT as _CU_DEFAULT_TEXT_LIMIT
+from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
+from kiro_crew.computer_use.types import MAX_TEXT_LIMIT as _CU_MAX_TEXT_LIMIT
+from kiro_crew.computer_use.types import MAX_TREE_DEPTH_LIMIT as _CU_MAX_TREE_DEPTH
+from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES
+from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
+
 # Pure path primitives live in the leaf module ``config.paths`` (stdlib-only,
 # no ``kiro_crew`` imports) so the modules that only need ``config_dir()`` can
 # import them from there without transitively pulling in the full loader (DTOs,
@@ -116,6 +136,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "memory_stores",
         "default_memory_store",
         "stt",
+        "computer_use",
         "instances",
         "mcp_gateway",
         "taskrunner",
@@ -339,6 +360,31 @@ def denied_commands_path() -> Path:
     which do not route through the agent tool gate. Respects ``KIROCREW_HOME``.
     """
     return config_dir() / "denied_commands.json"
+
+
+def computer_use_state_path() -> Path:
+    """Return path to computer_use.json — the computer-use primary enable.
+
+    Same KEYSTONE reasoning as :func:`denied_commands_path`, and the leaf is on
+    ``security._CREW_SECRET_LEAVES`` for the same reason: enabling computer use
+    grants full desktop observation plus input synthesis into the operator's real
+    applications, which is a security ceiling, not a preference. Keeping it out
+    of the agent-readable ``config.json`` is what makes it un-flippable by a
+    prompt-injected agent — ``is_sensitive_path`` blocks the tool path and
+    ``is_sensitive_bash_command`` blocks the shell forms (``cat``, ``>``,
+    ``tee``, archive extraction into the trust root).
+
+    Holds ``{enabled, allowed_apps, extra_denied_apps}``; every read fails soft
+    to DISABLED (see ``computer_use.enable_state``). The only writer is the
+    dashboard ``/api/computer-use/config`` PUT, which does not route through the
+    agent tool gate. Respects ``KIROCREW_HOME``.
+
+    Note the deliberate asymmetry with the ``computer_use`` section of
+    ``config.json``: that section carries display/limit knobs ONLY and has no
+    ``enabled`` field, precisely so there is exactly one place the feature can be
+    turned on and it is not one the agent can reach.
+    """
+    return config_dir() / "computer_use.json"
 
 
 def read_local_secret() -> str:
@@ -2354,6 +2400,73 @@ class SttConfig:
 
 
 @dataclass
+class ComputerUseConfig:
+    """Computer-use DISPLAY and LIMIT knobs — deliberately no ``enabled`` field.
+
+    The primary enable is NOT here. It lives on the keystone
+    ``computer_use.json`` (see :func:`computer_use_state_path`) because turning
+    computer use on grants full desktop observation plus input synthesis, which
+    is a security ceiling rather than a preference: ``config.json`` is writable
+    by an auto-approved agent shell (``is_sensitive_bash_command`` does NOT block
+    ``echo … > config.json``), so an enable stored here could be flipped by
+    prompt injection. Adding an ``enabled`` field to this dataclass would
+    silently re-open that hole — do not.
+
+    Everything modelled here is safe for the agent to read and, at worst,
+    annoying for it to change: how many accessibility nodes one walk returns, how
+    deep it goes, how much text per node, and the screenshot's size/quality. The
+    ceilings (``*_LIMIT`` in ``computer_use.types``) are enforced independently by
+    the MCP tool schemas, so a hand-edited config cannot ask for an unbounded
+    walk.
+    """
+
+    max_tree_nodes: int = field(
+        default=_CU_DEFAULT_MAX_TREE_NODES,
+        metadata=_meta(
+            "Max Tree Nodes",
+            "Accessibility nodes one window walk may return before truncating.",
+        ),
+    )
+    max_tree_depth: int = field(
+        default=_CU_DEFAULT_MAX_TREE_DEPTH,
+        metadata=_meta("Max Tree Depth", "How deep one accessibility walk descends."),
+    )
+    text_limit: int = field(
+        default=_CU_DEFAULT_TEXT_LIMIT,
+        metadata=_meta("Text Limit", "Characters kept per element title/value."),
+    )
+    attach_screenshot: bool = field(
+        default=_CU_DEFAULT_ATTACH_SCREENSHOT,
+        metadata=_meta(
+            "Attach Screenshots",
+            "Capture the target window and relay the image path alongside the tree. "
+            "The accessibility tree is always the primary channel.",
+        ),
+    )
+    screenshot_max_px: int = field(
+        default=_CU_DEFAULT_SCREENSHOT_MAX_PX,
+        metadata=_meta(
+            "Screenshot Width",
+            "Longest edge of the downscaled screenshot, in pixels.",
+        ),
+    )
+    screenshot_jpeg_quality: int = field(
+        default=_CU_DEFAULT_SCREENSHOT_JPEG_QUALITY,
+        metadata=_meta("Screenshot Quality", "JPEG quality 1-100 for the screenshot."),
+    )
+    cursor_motion: bool = field(
+        default=False,
+        metadata=_meta(
+            "Cursor Motion",
+            "Draw a visible cursor gliding to each target before a real-pointer "
+            "click, so the operator can see what the agent is doing. macOS only; "
+            "purely visual and never a permit — the pointer opt-in and the "
+            "governance permit are what allow the click itself.",
+        ),
+    )
+
+
+@dataclass
 class McpGatewayConfig:
     """Sidecar MCP broker daemon — shares MCP backends across sessions."""
 
@@ -3267,6 +3380,14 @@ class KiroCrewConfig:
         default_factory=SttConfig,
         metadata=_meta("STT", "Speech-to-text transcription settings."),
     )
+    computer_use: ComputerUseConfig = field(
+        default_factory=ComputerUseConfig,
+        metadata=_meta(
+            "Computer Use",
+            "Desktop automation tree/screenshot budgets. The primary enable is NOT "
+            "here — it lives on the keystone computer_use.json.",
+        ),
+    )
     mcp_gateway: McpGatewayConfig = field(
         default_factory=McpGatewayConfig,
         metadata=_meta("MCP Gateway", "Sidecar MCP broker that shares backends across sessions."),
@@ -3572,6 +3693,9 @@ class KiroCrewConfig:
         stt_data = data.get("stt", {})
         if not isinstance(stt_data, dict):
             stt_data = {}
+        computer_use_data = data.get("computer_use", {})
+        if not isinstance(computer_use_data, dict):
+            computer_use_data = {}
         instances_data = data.get("instances", {})
         if not isinstance(instances_data, dict):
             instances_data = {}
@@ -4038,6 +4162,74 @@ class KiroCrewConfig:
                 language_code=stt_data.get("language_code", "en-US"),
                 streaming=stt_data.get("streaming", False),
             ),
+            # Every numeric knob is clamped to the same ceiling the MCP tool
+            # schemas enforce, so a hand-edited config.json cannot ask for an
+            # unbounded accessibility walk or a full-resolution screenshot.
+            # There is deliberately NO ``enabled`` key read here — see
+            # ComputerUseConfig's docstring and computer_use_state_path().
+            computer_use=ComputerUseConfig(
+                max_tree_nodes=min(
+                    _CU_MAX_TREE_NODES,
+                    max(
+                        1,
+                        _safe_int(
+                            computer_use_data.get("max_tree_nodes", _CU_DEFAULT_MAX_TREE_NODES),
+                            _CU_DEFAULT_MAX_TREE_NODES,
+                        ),
+                    ),
+                ),
+                max_tree_depth=min(
+                    _CU_MAX_TREE_DEPTH,
+                    max(
+                        1,
+                        _safe_int(
+                            computer_use_data.get("max_tree_depth", _CU_DEFAULT_MAX_TREE_DEPTH),
+                            _CU_DEFAULT_MAX_TREE_DEPTH,
+                        ),
+                    ),
+                ),
+                text_limit=min(
+                    _CU_MAX_TEXT_LIMIT,
+                    max(
+                        1,
+                        _safe_int(
+                            computer_use_data.get("text_limit", _CU_DEFAULT_TEXT_LIMIT),
+                            _CU_DEFAULT_TEXT_LIMIT,
+                        ),
+                    ),
+                ),
+                attach_screenshot=_safe_bool(
+                    computer_use_data.get("attach_screenshot", _CU_DEFAULT_ATTACH_SCREENSHOT),
+                    _CU_DEFAULT_ATTACH_SCREENSHOT,
+                ),
+                screenshot_max_px=min(
+                    _CU_MAX_SCREENSHOT_MAX_PX,
+                    max(
+                        _CU_MIN_SCREENSHOT_MAX_PX,
+                        _safe_int(
+                            computer_use_data.get(
+                                "screenshot_max_px", _CU_DEFAULT_SCREENSHOT_MAX_PX
+                            ),
+                            _CU_DEFAULT_SCREENSHOT_MAX_PX,
+                        ),
+                    ),
+                ),
+                screenshot_jpeg_quality=min(
+                    100,
+                    max(
+                        1,
+                        _safe_int(
+                            computer_use_data.get(
+                                "screenshot_jpeg_quality", _CU_DEFAULT_SCREENSHOT_JPEG_QUALITY
+                            ),
+                            _CU_DEFAULT_SCREENSHOT_JPEG_QUALITY,
+                        ),
+                    ),
+                ),
+                # Default False: a missing or unparseable value must mean "do not
+                # draw on the operator's screen", never the reverse.
+                cursor_motion=_safe_bool(computer_use_data.get("cursor_motion", False), False),
+            ),
             auto_update=data.get("auto_update", True),
             timezone=data.get("timezone", ""),
             snapshot_dir=data.get("snapshot_dir", ""),
@@ -4225,6 +4417,7 @@ class KiroCrewConfig:
             "memory_stores": {name: asdict(ms_cfg) for name, ms_cfg in self.memory_stores.items()},
             "default_memory_store": self.default_memory_store,
             "stt": asdict(self.stt),
+            "computer_use": asdict(self.computer_use),
             "instances": asdict(self.instances),
             "mcp_gateway": asdict(self.mcp_gateway),
             "taskrunner": asdict(self.taskrunner),

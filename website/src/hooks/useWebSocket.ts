@@ -934,6 +934,16 @@ export function useWebSocket() {
             // (WebPreviewPanel via useBrowserFrame) can render without a Redux slice.
             window.dispatchEvent(new CustomEvent('kirocrew-browser-frame', { detail: data }))
             break
+          case 'computer_use_frame':
+            // Computer-use PiP frame — the downscaled JPEG the agent's own
+            // computer_get_state call already captured, relayed by the gateway
+            // (owner sockets only; suppressed for secure windows and under a
+            // screenshot-denying ceiling). Same window-event routing as above so
+            // ComputerUseLiveView needs no Redux slice.
+            window.dispatchEvent(
+              new CustomEvent('kirocrew-computer-use-frame', { detail: data }),
+            )
+            break
         }
       } catch { /* ignore malformed */ }
     }

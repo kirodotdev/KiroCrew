@@ -490,6 +490,16 @@ def _list_aim_prompts() -> list[dict[str, Any]]:
     return [dict(p) for p in result]
 
 
+# Computer use — the Settings config pair (browser, cookie-authed) plus the two
+# loopback legs: ``invoke`` (the ``kirocrew-computer`` MCP shim's forward) and
+# ``frame`` (the live-view PiP mirror of an already-captured screenshot).
+from kiro_crew.dashboard.handlers.computer_use import (  # noqa: E402, F401
+    api_computer_use_config_get,
+    api_computer_use_config_save,
+    api_computer_use_frame,
+    api_computer_use_invoke,
+)
+
 # ── Core (extracted to handlers/core.py) ──
 from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     _DIST_DIR,

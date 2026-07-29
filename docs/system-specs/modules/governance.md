@@ -38,7 +38,9 @@ can reorder strictness or redefine matching):
 - `_ORDINAL_SCALES`: `approval = yolo < auto < interactive`;
   `sandbox = off < standard < cc < strict` (verified against `sandbox.py`).
 - `_MATCHERS`: `identifier` (case-insensitive), `command` (case-sensitive
-  `fnmatchcase`), `path`, `host`, `mcp` (a `@server` grant covers `@server/tool`).
+  `fnmatchcase`), `path`, `host`, `mcp` (a `@server` grant covers `@server/tool`),
+  `bundle_id` and `cu_action` (both added for computer use — see
+  [Governed capability: computer use](#governed-capability-computer-use-native-desktop-gui-automation)).
   The `path` matcher normalizes **only the queried item** (`_norm_item`: expand
   `~`/`$VAR` → `os.path.abspath`, which anchors a relative path to the host CWD
   and collapses `.`/`..`) and matches it against the operator's pattern **expanded
@@ -318,6 +320,23 @@ This is enforced solely by adding them to `security._SENSITIVE_HOME_DIRS`
 read+write gate across every surface. `assert_governance_paths_protected()` is a
 boot integrity check that fails closed if a refactor ever drops them.
 
+**`~/.kiro/agents/*.json` and `~/.kiro/settings/mcp.json` are NOT on the floor
+today** — an honest gap worth stating here because it bounds what the ceiling can
+claim. Verified on the current tree: `is_sensitive_path("~/.kiro/agents/kirocrew.json")`
+is `False` and `echo x > ~/.kiro/agents/kirocrew.json` is not blocked. Since
+`hooks.on_tool_call` runs **only** from the `EVENT_PERMISSION_REQUEST` branch (the
+`EVENT_TOOL_CALL` branch is documented informational-only — "the tool is already
+running (auto-approved by kiro-cli). Hook results cannot block execution"), an
+agent that writes itself into `allowedTools` makes kiro-cli stop sending
+permission requests and **Plane A never runs at all** for that tool. This affects
+every governed capability, not just computer use. Hardening those paths is
+deliberately deferred to its own PR (it changes a path floor every legitimate
+writer — `agent.py`, `handlers/mcp.py`, `handlers/agents.py`, `apps/backend.py` —
+touches, and deserves review on its own merits). Until it lands, a capability
+whose only enforcement is Plane A can be skipped this way. Computer use no longer
+relies on either plane — it is not governed at all, and rests on the keystone enable
+being agent-unwritable. See [computer-use.md](computer-use.md) → "Known limitations".
+
 ## Profile resolution + binding
 
 A profile binds to a `surface` (cron/slack/dashboard/subagent/…), an `app` slug,
@@ -330,6 +349,16 @@ canonical taxonomy parser — never re-implemented). Resolution is:
 - No bound profile on an **unattended + unproven** surface → `deny_all_profile`
   (fail-closed, never a permissive fall-through), mirroring the dashboard
   `api_session_tool_policy` precedent.
+
+**`identity_proven` is true for ANY non-empty session key**, so an unattended
+surface that *does* carry a key — `cron:<job>`, `subagent:<id>`, `taskrunner` —
+resolves to `None` (policy-ceiling-only), **not** `deny_all_profile`; only `_bg`
+and `_hb` fall to deny-all. That is correct for most scopes and wrong for
+computer use, which must not fall back to policy-only on a surface nobody is
+watching a mouse on. Hence the feature-local unattended refusal in
+`computer_use.gate` (a code rule that cannot be un-shipped by deleting a profile
+file) plus the shipped `cu-off` profiles bound to those surfaces as the visible,
+explainable form of the same decision.
 
 **`host` surface (in-process host actions).** A governance check that is not
 driven by a user-facing surface — app activation
@@ -604,9 +633,14 @@ read-your-writes should add it deliberately, with its own tests.
   durable memory writes in
   `mcp_core._vet_memory_writes_governance` (at `learn_add`); script-hook
   execution in `hooks._script_hooks_capability_denied` (at `run_script_hook`);
-  app activation in `apps.manager._app_activation_denied` (at `enable_app`). All
-  route through the same `governance_permits` / `governance_floor_ordinal`
-  decision source.
+  app activation in `apps.manager._app_activation_denied` (at `enable_app`).
+
+Plane A carries **no live ordinal clamp**. It used to: a computer-use title under a
+`computer_use.approval: interactive` floor had both auto-approve branches suppressed,
+so the call fell through to interactive approval. That row and its clamp were removed
+along with the rest of the computer-use governance model — see [Computer use is NOT
+governed](#computer-use-is-not-governed-deliberately). The global `approval_mode`
+row's live clamp remains reserved (see "Still-reserved in v1").
 
 ## Foreign-agent import interaction
 
@@ -852,9 +886,50 @@ denials leave the same forensic trail.
   profile. An app's own in-process tool calls (which carry `KIROCREW_APP_NAME`)
   do bind a per-app profile. App blast-radius is contained today by the `apps`
   activation allowlist + per-surface profiles.
-
-### Still-reserved in v1
-
+- **Shell GUI automation is a `commands` item, never re-parsed.** `osascript`,
+  `cliclick`, `xdotool`, `ydotool`, `wtype`, `screencapture`, `scrot`, `grim`,
+  `import -window` and `nircmd` inside a Bash tool are governed by the
+  **`commands`** scope on the command body — no `computer_use.*` scope applies to
+  them, because a shell command is never decomposed into its GUI sub-effects. A
+  fleet banning computer use must also deny those `commands` patterns (see the
+  copy-pasteable fleet-ban policy below); a deny-mode `commands` pattern also
+  becomes an un-opt-out-able force-pin via `resolve_pinned_commands`.
+- **The web terminal PTY is an ungoverned plane today.**
+  `dashboard/handlers/terminal.py` spawns a real PTY and contains **no**
+  `is_denied` / `is_sensitive_bash_command` / governance call, so
+  `screencapture` typed into it is bounded by neither the `commands` scope nor
+  any `computer_use.*` scope. It is an operator-only surface. Routing PTY input
+  through the same effective-deny floor as `on_tool_call` is tracked as its own
+  follow-up; do not describe computer-use governance as covering it.
+- **Raster capture has two channels and neither is governed.** Computer use has no
+  `observations` scope any more, and Playwright's already-shipped
+  `browser_take_screenshot` never had one — a fleet that means "no raster capture"
+  must deny both `@kirocrew-computer` and `@playwright/browser_take_screenshot` via
+  the `mcp` scope.
+- **The `mcp`-scope deny is now the ONLY governance lever over computer use, and it
+  is keyed on a renameable alias.** `mcp.deny: ["@kirocrew-computer"]` works on
+  unmodified shipped code, but the server key is derived by `mcp_server_alias()` from
+  an agent-mutable config: verified `mcp__kirocrew-computer2__click` and
+  `mcp__cu__click` both PERMIT under that deny. With the `capabilities.computer_use`
+  row removed there is no authoritative ban behind it — a fleet that must guarantee
+  the feature is off should not ship the keystone enable, and should treat the alias
+  deny as best-effort. See [Computer use is NOT
+  governed](#computer-use-is-not-governed-deliberately).
+- **Cursor Motion has no governance row, and deliberately gets none.** The
+  fake-cursor desktop overlay (`computer_use/overlay*.py`) grants the agent
+  *nothing*: it draws an image, it does not move the pointer, it cannot deliver
+  input, and it is invisible to `screencapture` so it cannot even alter what the
+  model reads. It is a `config.json` display preference
+  (`computer_use.cursor_motion`, default OFF), and adding a scope for it would
+  imply an authorization decision where there is no capability to authorize.
+  The real pointer path (`click_method: "global"`, which warps the operator's
+  physical cursor) has no row either — it is reachable whenever the feature is on,
+  and is audited under its own SEL `tool_kind` rather than gated.
+- **`kirocrew computer call` is subject to the same checks as an agent call.** The
+  CLI harness routes through the same `computer_use.tools.dispatch_tool` chokepoint,
+  so the keystone enable and the target policy apply to it, bound to the attended
+  `cli` surface (session key `cli_chat`). There is nothing governance-side left for a
+  policy author to bind to it.
 - **`approval_mode`** — the ordinal is parsed and **boot-floor-checked** (a
   profile looser than the policy mark aborts boot, like `sandbox.min_level`), but
   no approval chokepoint clamps the *live* approval pipeline through it yet: the
@@ -863,6 +938,11 @@ denials leave the same forensic trail.
   is the enforced half; the live clamp is the reserved half. Wiring it is the one
   genuinely-architectural follow-up (a single approval-policy resolution point
   fed by `governance_floor_ordinal("approval_mode")`).
+
+  There is no longer a second, live-clamped `approval` row to contrast this with:
+  `computer_use.approval` was removed with the rest of the computer-use governance
+  model, so `approval_mode` is once again the only row on the `approval` scale and
+  its live clamp is still the reserved half.
 
 > **Capability `profile-absence` semantics (deliberate deviation from spec A.4
 > rule 8).** The spec says a profile that OMITS a capability defaults it to
@@ -1014,6 +1094,44 @@ contract (a stricter server is backward-compatible with consenting clients).
 expansion (longer length bound, per-turn injection, or richer pack tiers) —
 scope growth without server-recorded grants is not covered by this decision.
 
+### Computer use is NOT governed (deliberately)
+
+Computer use (see [computer-use.md](computer-use.md)) has **no scope rows in
+`SCOPE_CATALOG`** and no governance decision anywhere in its dispatch path. That is
+a product decision, not an oversight, and it is a reversal: an earlier revision
+shipped eight rows here (`capabilities.computer_use`, `computer_use.actions`,
+`.apps`, `.app_names`, `.observations`, `.targets`, `.approval`, and
+`capabilities.computer_use_pointer`) plus two custom matchers (`bundle_id`,
+`cu_action`). All of it was removed.
+
+**What replaced it.** One operator opt-in on the keystone `computer_use.json`,
+which `security._SENSITIVE_HOME_DIRS` fences the agent away from. The agent cannot
+read or write that file, so it cannot enable its own desktop automation — and it
+cannot drive KiroCrew's own window either (`computer_use/policy.py`), so it cannot
+click the toggle in the UI. Those two facts are the entire boundary.
+
+**What this costs, stated plainly.** There is no way to express "computer use is
+allowed but only for Preview", "read-only desktop access", "never type into a
+password field" (beyond the always-on floor), or "every action must be approved" as
+policy. A fleet that needs any of those should not enable the feature. The
+`mcp` scope still works as a blunt instrument: denying `@kirocrew-computer` removes
+the tools entirely, which is the one governance lever that remains.
+
+**If it is ever re-governed**, the rows belong back in this file's `SCOPE_CATALOG`
+inline (never `register_scope()`d from the feature package): `load_security_policy()`
+runs at boot before any feature import, and a policy naming an unregistered scope
+raises "unknown governed key … (fail-closed)" — so a lazy registration would abort
+boot on every governed host the day a fleet adds the row.
+
+Two things computer use still shares with this module, neither of them a decision:
+
+* `_CU_ACTION_CLASSES` — the code-owned `observe` / `mutate` / `pointer` /
+  `keyboard` / `text_entry` / `control` labels. `hooks` reads them for the
+  read-only auto-approve, and `gate.is_mutating_action` reads them so "which verbs
+  synthesize input" has one definition;
+* `CU_MCP_SERVER` / `is_computer_use_title` — the server key and title prefix, used
+  by `classify_tool_title` to route a computer-use title to the ordinary `mcp` pair.
+
 ## Audit
 
 `sel.log_governance_decision` records a `governance_decision` event
@@ -1028,6 +1146,10 @@ read-only operator diagnostics. `show` reports the ceiling's **proven** provenan
 (`signed and verified` / `signed but UNVERIFIED` / `unsigned`) rather than a bare
 issuer string. `explain` traces the rule/layer/reason and the live gate verdict. Deliberately **not** exposed as an MCP tool: it surfaces
 governance internals that the agent (the governed subject) should not enumerate.
+
+(The two `validate` warnings that used to be listed here were specific to the
+computer-use `bundle_id` matcher and the `capabilities.computer_use` row, both of
+which are gone.)
 
 ## Companion (separate package, separate CR)
 
@@ -1053,7 +1175,9 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on),
   `vet_and_audit`.
 - `security.py` — `_SENSITIVE_HOME_DIRS` keystone entries.
-- `hooks.py` — Plane A gate threading.
+- `hooks.py` — Plane A gate threading + the computer-use read-only auto-approve
+  (`_cu_read_only_auto_approve`, which reads the action-class table rather than a
+  governance row).
 - `sel.py` — `log_governance_decision`.
 - chokepoints: `sandbox.py`, `mcp_cron.py`, `subagent.py`, `mcp_core.py`.
 - `messaging/identity.py` — `channel_inbound_permitted` (the per-message inbound
@@ -1063,6 +1187,9 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
 - `dashboard/handlers_system.py` — `GET /api/governance/channels`.
 - `dashboard/handlers/security.py` — `GET /api/governance/policy` (posture-only
   serialization).
+- chokepoints: `sandbox.py`, `mcp_cron.py`, `subagent.py`, `mcp_core.py`,
+  `computer_use/gate.py` (`require_computer_use` fail-closed +
+  `apply_observation_ceiling`).
 - `cli.py` / `cli_commands.py` — the `policy` command.
 
 ## Tests
@@ -1081,4 +1208,5 @@ the per-transport inbound gates), `test_governance_channels_endpoint.py`
 `test_governance_policy_viewer.py` (`/api/governance/policy` posture-only, incl.
 `test_detail_never_leaks_rule_contents`), `test_governance_updates.py` (the
 `updates` pins, the shared seam's fail-open-on-error disposition, and the
-tracked-remote resolution).
+tracked-remote resolution), and `test_computer_use_gate.py` (that the
+computer-use gate is audit-only and permits — see the section above).

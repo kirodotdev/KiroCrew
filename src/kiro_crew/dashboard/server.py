@@ -221,6 +221,22 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/browser-event",
         "/api/browser/frame",
         "/api/browser/pump-audit",
+        # Computer use: the ``kirocrew-computer`` stdio shim's forwarding leg.
+        # STRICT (not mixed): no browser calls it, and it is the entry point to
+        # accessibility reads and input synthesis into the operator's real
+        # applications — the one API surface where a cookie fall-through would be
+        # a genuinely new attack path rather than a convenience. The Settings pair
+        # (``/api/computer-use/config``) is deliberately NOT here: it is browser-
+        # called and cookie-authed. Note the prefix-matching in
+        # ``token_auth.middleware`` treats ``/api/computer-use/invoke/...`` as
+        # strict too, which is correct — nothing else lives under it.
+        "/api/computer-use/invoke",
+        # Computer use: the live-view (PiP) frame ingress. STRICT for the same
+        # reason as ``invoke`` — its body is a frame of the operator's own desktop
+        # and its only caller is this gateway's own capture thread, so no browser
+        # ever posts to it. The handler re-asserts loopback itself because a
+        # ``local_only=False`` deployment reclassifies strict paths as mixed.
+        "/api/computer-use/frame",
         "/api/session-keepalive",
         "/api/session-tool-policy",
         "/api/hooks/agent",
@@ -688,6 +704,18 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/browser/pump-audit", handlers.api_browser_pump_audit)
     app.router.add_get("/api/browser/config", handlers.api_browser_config_get)
     app.router.add_put("/api/browser/config", handlers.api_browser_config_save)
+    # Computer use: the thin ``kirocrew-computer`` stdio shim's only call. Lives
+    # HERE (rather than in the dashboard-only block, where the browser-called
+    # config pair sits) so the headless ``--slack-only`` server exposes it too —
+    # kiro-cli spawns the shim on both entrypoints. It is in
+    # ``_STRICT_INTERNAL_API_PATHS``: loopback + ``X-Internal-Secret`` only, no
+    # cookie fall-through, because no browser ever calls it.
+    app.router.add_post("/api/computer-use/invoke", handlers.api_computer_use_invoke)
+    # The live-view (PiP) frame ingress. Registered alongside ``invoke`` (not in
+    # the dashboard-only block) because the capture that produces a frame runs on
+    # BOTH entrypoints — a ``--slack-only`` gateway drives the desktop too, and its
+    # dashboard-less state simply has no owner sockets to deliver to.
+    app.router.add_post("/api/computer-use/frame", handlers.api_computer_use_frame)
     app.router.add_post("/api/session-keepalive", handlers.api_session_keepalive)
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)
@@ -1962,6 +1990,13 @@ async def start_dashboard(
     # Read-only governance policy viewer — effective Level-1 ∩ Level-2 ceiling
     # across every governed scope (no write path; the ceiling is file-authored).
     app.router.add_get("/api/governance/policy", handlers.api_governance_policy)
+
+    # Computer use (Settings > Computer Use). Browser-called and cookie-authed,
+    # like the browser-config pair — deliberately NOT in
+    # ``_STRICT_INTERNAL_API_PATHS``. The machine-only ``invoke`` leg IS in that
+    # set and is registered in ``_register_mcp_routes``.
+    app.router.add_get("/api/computer-use/config", handlers.api_computer_use_config_get)
+    app.router.add_put("/api/computer-use/config", handlers.api_computer_use_config_save)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)
 

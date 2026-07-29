@@ -38,6 +38,10 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   // Browser
   'browser.chrome-extension-mode': ['playwright', 'headless', 'web automation'],
 
+  // Computer use
+  'computer-use.enable-computer-use': ['accessibility', 'desktop', 'click', 'keyboard', 'screenshot', 'a11y', 'automation', 'gui'],
+  'computer-use.attach-screenshots': ['screen capture', 'screenshot', 'pixels', 'window image'],
+
   // General navigation
   'chat.split-view-session-grid': ['split pane', 'multi session', 'grid view'],
 }

@@ -391,6 +391,17 @@ class SttConfig:
     timeout_secs: int = 300
 
 @dataclass
+class ComputerUseConfig:
+    # DISPLAY + LIMITS ONLY. There is deliberately NO `enabled` field — see the
+    # note under "Computer use: no enabled field here" below.
+    max_tree_nodes: int = 1200          # accessibility-tree node budget per snapshot
+    max_tree_depth: int = 64            # depth budget (the walk is iterative, so this is a cost bound)
+    text_limit: int = 500               # per-element text truncation (chars)
+    attach_screenshot: bool = True      # default for the `screenshot` tool param
+    screenshot_max_px: int = 1280       # longest-edge downscale (NOT browse's 1920 — the tree is the primary channel)
+    screenshot_jpeg_quality: int = 55   # JPEG quality (NOT browse's 70); 1280/q55 measured at ~8.3K tokens vs 41K for a raw PNG
+
+@dataclass
 class MessagingConfig:
     use_transport: bool = True     # route inbound Slack through SlackTransport → TurnDriver → SlackRenderer (the canonical path); false falls back to the native handle_message monolith
 
@@ -445,6 +456,7 @@ class KiroCrewConfig:
     memory: MemoryConfig
     knowledge: KnowledgeConfig
     stt: SttConfig
+    computer_use: ComputerUseConfig
     hooks_data: dict               # raw hooks from config.json
     dashboard_url: str = ""        # e.g. "http://my-host.example.com:8080"
     auto_update: bool = True
@@ -452,6 +464,69 @@ class KiroCrewConfig:
     slack_channels: dict[str, ChannelConfig]  # per-channel config keyed by channel ID
     slack_dm_activation: str = "always"       # activation mode for DMs (D-prefix channels)
 ```
+
+### Computer use: no `enabled` field here, and no pointer flag either
+
+`ComputerUseConfig` carries display and limits only. **Two** switches for native
+desktop GUI automation live **outside `config.json`**, on the keystone at
+`~/.kiro/crew/computer_use.json` (path via `config.loader.computer_use_state_path()`,
+leaf on `security._CREW_SECRET_LEAVES`):
+
+```json
+{
+  "enabled": false,
+  "allow_pointer_move": false,
+  "allowed_apps": [],
+  "extra_denied_apps": []
+}
+```
+
+The absence is deliberate and the precedent is `denied_commands.json`:
+`is_sensitive_write_path("~/.kiro/crew/config.json")` is `True` (the *tool* path is
+protected), but `is_sensitive_bash_command("echo x > ~/.kiro/crew/config.json")` is
+`None` — `_WRITE_PROTECTED_BASH_LEAVES` is `('.data-home-ready',)` only. A config
+toggle would therefore be flippable by a prompt-injected agent through any shell
+redirect.
+
+- **`enabled`** — the primary enable for full desktop observation plus input
+  synthesis. A security ceiling, so it goes where the agent can neither read nor
+  write it.
+- **`allow_pointer_move`** — the operator's consent for `click_method: "global"`,
+  the one path that warps the **real** mouse pointer. Same class of control, same
+  treatment, for exactly the same reason. It is only half the permit: the
+  `capabilities.computer_use_pointer` governance row is required in addition
+  (tightest-wins), and neither substitutes for the other.
+
+Both are read with a strict `is True` identity test, so a truthy string such as
+`"allow_pointer_move": "false"` does **not** hand over the mouse, and both reads
+fail soft to `{}` → **off**. See [security.md](security.md),
+[governance.md](governance.md) and [computer-use.md](computer-use.md).
+
+#### `computer_use.cursor_motion` — the one new `config.json` flag
+
+Cursor Motion (the cosmetic fake-cursor desktop overlay) is the exception that
+proves the rule above: it belongs in `config.json` precisely *because* it grants no
+capability. `computer_use.cursor_motion` is a **display preference, default OFF** —
+the overlay draws an image, never moves the pointer, cannot deliver input, and is
+invisible to `screencapture`, so an agent flipping it could at most decorate its own
+clicks. A keystone flag would imply a security decision that does not exist.
+
+`overlay.cursor_motion_enabled()` reads it through `getattr(section,
+"cursor_motion", False)` rather than as a typed attribute, which makes the read
+**forward-compatible and fail-OFF**: a build whose `ComputerUseConfig` predates the
+field resolves to OFF rather than raising inside a tool call, and a missing field can
+only ever mean "no decoration", never "start drawing on the user's screen". The
+typed `ComputerUseConfig` field (and its `_EDITABLE_CONFIG` row) is the remaining
+wiring step; until it lands the flag is inert and the overlay stays off.
+
+Three consequences for this module: `"computer_use"` MUST be present in
+`_KNOWN_CONFIG_SECTIONS` (the guarded invariant that `to_dict()`'s emitted sections
+equal that set); the dashboard's `_EDITABLE_CONFIG` exposes only the limits
+(`computer_use.max_tree_nodes`, `computer_use.screenshot_max_px`) — never an
+`enabled` key and never `allow_pointer_move`; and every numeric knob is clamped to
+the same `*_LIMIT` ceiling the MCP tool schemas enforce, so a hand-edited
+`config.json` cannot ask for an unbounded accessibility walk or a full-resolution
+screenshot.
 
 ### Security-Bounded Config Clamp
 

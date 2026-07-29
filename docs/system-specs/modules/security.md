@@ -139,6 +139,8 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 - **App admission trust root (keystone invariant)** — `~/.kiro/crew/app_admission.json` (the sole fleet-controlled App Kit admission ceiling loaded by `apps/admission.py`) is on the sensitive floor, read- and write-blocked through the shared file gate. Because an **absent** policy falls open (admit), a governed agent that could `fs_write`/`tee`/`rm` this file could delete or neuter its own admission ceiling and re-admit a banned/unsigned app. Adding it to `_SENSITIVE_HOME_DIRS` also arms the bash write/extract matcher (`tee`/`rm`/redirect). The gateway's own loader (`apps.admission.load_app_admission_policy`) opens it directly via `path.read_text()` and does **not** route through `is_sensitive_path()`, so legitimate policy loading is unaffected.
 - **Runtime exec dir trust root (run-marker sandbox-escape)** — the `run/` dir under the crew home is on the sensitive floor (under every `_CREW_HOME_PREFIXES` entry) because the gateway executes its contents **outside** the agent sandbox: the sandbox launcher scripts (`sandbox.py` execs `python <home>/run/kirocrew_sandbox_*.py`) and the remote-instance run-marker `gateway-<port>.bin` (`instances/run_marker.py`), whose recorded launcher path the SSH token-mint **and** the `restart_remote` action read and `exec` on the remote host. Without this floor entry a prompt-injected / sandboxed agent that could `fs_write` (or `tee`/redirect) a marker — or a launcher — into `run/` could point it at an attacker-controlled binary that the next routine token refresh or restart execs unsandboxed (owner + `-x` checks don't help; agent writes run as the same user) — a reachable sandbox escape. Classifying the whole dir also arms the bash write/extract matcher. The gateway's own writers (`instances/run_marker.write_marker` via `atomic_write`, and the sandbox launcher writer) open these paths directly and do **not** route through `is_sensitive_path()`, so gateway startup/spawn is unaffected.
 
+- **Computer-use primary enable (keystone leaf `computer_use.json`)** — the on/off switch for native desktop GUI automation (see [computer-use.md](computer-use.md)) is `~/.kiro/crew/computer_use.json`, added to `_CREW_SECRET_LEAVES` so it is read+write-blocked under every `_CREW_HOME_PREFIXES` entry, on both the tool path (`is_sensitive_path`) and every shell form (`is_sensitive_bash_command` — `cat`, `>`, `tee`, `rm`, plus `tar -C` / `unzip -d` extraction into the trust root via `_EXTRACT_INTO_TRUST_ROOT_RE`). **It is deliberately NOT in `config.json`**, and the precedent is the denied-command opt-out immediately below: `is_sensitive_write_path("~/.kiro/crew/config.json")` is `True`, but `is_sensitive_bash_command("echo x > ~/.kiro/crew/config.json")` is `None` and `is_denied(...)` is `None` (`_WRITE_PROTECTED_BASH_LEAVES` is `('.data-home-ready',)` only), so a `config.json` toggle would be flippable by a prompt-injected agent through any redirect. A primary enable for full desktop observation plus input synthesis is a **security ceiling**, the same class as the deny opt-out, so it lives on the keystone. Reads fail soft to `{}` → **disabled**, and `is_enabled()` is a strict identity test against `True` (a hand-edited `"enabled": "false"` or `1` does not enable desktop control). The only writer is the dashboard PUT handler, which does not route through the agent tool gate; `enable_state.load_state()` opens the file directly, so legitimate reads are unaffected. The same file also carries `allow_pointer_move` — the opt-in for the one click path that warps the operator's REAL mouse pointer (`click_method: "global"`) — so that flag inherits the identical protection with no new leaf: it is read with the same strict `is True` identity test, and it is only half the gate (the `capabilities.computer_use_pointer` governance row is the other half, and neither substitutes for the other).
+
 **Write-only config protection** (`is_sensitive_write_path` in `security.py` + `hooks.py`) — runtime config files are protected against *modification* by agent tools while staying *readable*:
 - `~/.kiro/crew/config.json` and `~/.kiro/crew/config.local.json` are in a write-only tier (`_WRITE_PROTECTED_HOME_PATHS`, expanded under every `_CREW_HOME_PREFIXES` entry so the pre-move legacy copy is covered too), deliberately NOT in the read+write `_SENSITIVE_HOME_DIRS` list above — the dashboard file viewer, `cat`, and knowledge indexing legitimately read config.
 - `is_sensitive_write_path(path)` is a superset of `is_sensitive_path(path)`, sharing the same `_path_in_home_dirs` resolve/casefold core so the two gates can't drift. `hooks.on_tool_call` denies a file-EDIT tool call (ACP `edit` kind) whose `path`/`file_path` resolves to a config file.
@@ -511,6 +513,92 @@ auto-approves only when `command` is present and
 redirects/substitution/backgrounding); for a non-shell tool when
 `tool_kind in {"read", "fetch"}` or `slack.gateway._is_read_only_tool(tool_name)`
 is True. Both classifiers are imported function-locally to avoid an import cycle.
+
+Computer-use observation tools get their own **explicit** pair in that same
+branch (`_cu_read_only_auto_approve`), keyed on the code-owned
+`governance.computer_use_action_classes()` table rather than the
+`_is_read_only_tool` title heuristic — that heuristic keys on a leading verb, and
+an agent-supplied title must never decide whether a keystroke is synthesized into
+somebody's window. It is additionally gated on the keystone primary enable, so no
+auto-approval can exist while the feature is off. Immediately above it,
+`_cu_approval_floor_forces_prompt` implements the `computer_use.approval` ordinal
+clamp by suppressing BOTH auto-approve branches when a policy sets the floor to
+`interactive`; see [governance.md](governance.md).
+
+### Computer use: a pixel/AX surface the path matchers cannot see
+
+Native desktop GUI automation ([computer-use.md](computer-use.md)) is a security
+surface unlike every other one in this module, and the difference is worth stating
+plainly: **`is_sensitive_path` cannot see it.** A click has no path, a keystroke
+has no command body, and a window's pixels have no filename. So none of the
+mature matchers in this document apply — not the sensitive-dir regex, not the
+relative-traversal block, not the symlink resolution, not the write-protected
+tier. A Terminal window rendering `~/.aws/credentials` is, to the path gate, no
+different from a text editor.
+
+Three controls carry the weight instead:
+
+1. **The app denylist is a floor in code** (`computer_use/policy.py::_DENIED_BUNDLE_PREFIXES`),
+   matching by bundle-id PREFIX (so a helper process under a blocked bundle is
+   covered) or case-insensitive process-name SUBSTRING (the Windows/Linux drivers
+   may only ever learn a process name). Five categories: `terminal`,
+   `credential_manager`, `system_settings`, `auth_prompt`, `kirocrew_self`.
+   **`terminal` is refused for ALL verbs, reads included** — for two independent
+   and individually sufficient reasons: a terminal window renders whatever the
+   operator last `cat`ted as both AX text and pixels (and redaction only catches
+   shapes it knows — it will not recognise an SSH private-key body or an opaque
+   bearer token), and a keystroke into a shell prompt IS arbitrary command
+   execution that never passes `hooks.on_tool_call`, bypassing the entire
+   denied-command ceiling, the sensitive-path gate and the SEL audit of bash
+   calls. `kirocrew_self` is there because KiroCrew's own dashboard can flip this
+   feature's primary enable and the denied-command opt-out — controls that are
+   out-of-band precisely so the agent cannot reach them. The list is
+   operator-EXTENSIBLE (`extra_denied_apps` can only ADD) and never
+   operator-shrinkable; the governance `computer_use.apps` ruleset is the
+   enterprise force-pin on top.
+2. **The secure-SUBROLE check**, and it must be the subrole. A real macOS password
+   box reports `AXRole = "AXTextField"` (innocuous) with
+   `AXSubrole = "AXSecureTextField"` and a **readable** `AXValue` — live-verified.
+   So the intuitive `AXRole == "AXSecureTextField"` check **misses every password
+   field**. The driver sets `secure = (role == SECURE_SUBROLE or subrole ==
+   SECURE_SUBROLE)` and three protections key off that one flag: the renderer
+   emits `<secure>` for the value (never the bytes, not truncated, not
+   masked-with-a-hint), `policy.check_input_target` refuses
+   `set_value`/`type_text`/`press_key` at a secure target, and a window containing
+   ANY secure node gets **no screenshot at all** (whole-window suppression — there
+   is no reliable way to blank a sub-rectangle of an already-encoded JPEG, and a
+   partial redaction that missed would be worse than none). This floor has **no
+   policy key and none will be added**: `resolve(None, None, …)` permits
+   everything on an ungoverned host, so anything expressed only as a governance
+   scope leaks by default for every single-user install. It belongs with
+   `_SENSITIVE_HOME_DIRS` and the AKIA redaction, not with governance.
+3. **The input-text scan as an explicit SECOND layer**, not the primary control.
+   Text bound for another app's window is run through `is_sensitive_bash_command` →
+   `audit_bash_exfiltration` → `is_denied` (called with `denied_regexes=None`, so
+   it fails closed to the full built-in rule set — a user's opt-out from a bash
+   deny rule is a decision about commands the AGENT runs under the tool gate, not
+   a licence to type the same command into somebody else's window). This module
+   already records the maintainers' position that chasing shell-parser
+   completeness in a text matcher is a losing game, which is exactly why "refuse
+   the app wholesale" comes first.
+
+**Accepted residual — the screenshot directory stays agent-readable.** Persisted
+JPEGs live in `<tmp>/kirocrew-computer-shots`, created `mode=0o700` with each file
+passed through `platform_compat.restrict_to_owner` and ring-trimmed to 200 — but
+the agent can still reach them with `fs_read`. This is the same posture browse
+already ships; computer use widens WHAT can be in the frame (any window, not one
+browser tab), which is bounded by per-window capture only (never full-screen) and
+the whole-window suppression above. The design does not widen the posture and
+does not claim to close it. A reviewer will find this independently, so it is
+recorded here rather than left implicit.
+
+Two further boundaries this module does **not** cover, stated so nobody assumes
+otherwise: shell GUI automation (`osascript`, `cliclick`, `xdotool`,
+`screencapture`, …) is a `commands`-scope item governed by the deny floor, never
+re-parsed into GUI sub-effects; and the **web terminal PTY**
+(`dashboard/handlers/terminal.py`) contains no `is_denied` /
+`is_sensitive_bash_command` / governance call at all, so it is an operator-only,
+ungoverned plane today.
 
 ### Suspicious Bash Patterns (`security.py`)
 

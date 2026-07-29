@@ -21,6 +21,9 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
 from kiro_crew import platform_compat
+from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
+from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
+from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
 from kiro_crew.config.loader import (
     _VALID_STT_PROVIDERS,
     MAX_SUBAGENTS_FIXED_FLOOR,
@@ -1212,6 +1215,25 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # require approval regardless — enforced in the generation path).
     "skills.auto_create_from_sessions": {"type": "bool"},
     "skills.approval_required": {"type": "bool"},
+    # Computer use — BUDGET KNOBS ONLY. There is deliberately no
+    # "computer_use.enabled" key here: the primary enable lives on the keystone
+    # ``computer_use.json`` (see config.loader.computer_use_state_path) so the
+    # agent cannot reach it, and this generic PATCH route writes config.json.
+    # Adding an enable key here would reintroduce exactly the hole the keystone
+    # exists to close. The ComputerUsePanel drives these through
+    # PUT /api/computer-use/config; they are also exposed here so the command
+    # palette's generic config path can reach them. Bounds mirror
+    # computer_use.types' *_LIMIT ceilings, which the loader re-clamps at load.
+    "computer_use.max_tree_nodes": {
+        "type": "int",
+        "min": 1,
+        "max": _CU_MAX_TREE_NODES_LIMIT,
+    },
+    "computer_use.screenshot_max_px": {
+        "type": "int",
+        "min": _CU_MIN_SCREENSHOT_MAX_PX,
+        "max": _CU_MAX_SCREENSHOT_MAX_PX,
+    },
 }
 
 

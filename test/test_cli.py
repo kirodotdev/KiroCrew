@@ -58,14 +58,29 @@ def _healthy_agent_file(path: Path) -> None:
     so ``_doctor()``'s MCP section passes its static config check and only
     the (mocked) live probe remains. Used by doctor tests that exercise an
     unrelated section and must not trip the MCP exit path on an empty config.
+
+    The server set is DERIVED from the same registry ``cli_doctor`` iterates
+    (``mcp_cleanup.KIROCREW_BIN_MCP_SERVERS``) rather than hardcoded: doctor
+    reports every managed server missing from ``mcpServers`` as an issue and
+    exits 1, so a literal list here silently rots the moment a managed server is
+    added — which is exactly how these fixtures broke when ``kirocrew-computer``
+    landed.
     """
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+
+    refs = [f"@{name}" for name in KIROCREW_BIN_MCP_SERVERS]
     _write_agent_config(
         path,
-        tools=["@kirocrew-core", "@kirocrew-cron"],
-        allowed=["@kirocrew-core", "@kirocrew-cron"],
+        tools=refs,
+        allowed=refs,
         servers={
-            "kirocrew-core": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-core"]},
-            "kirocrew-cron": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-cron"]},
+            name: {
+                "command": "/usr/local/bin/kirocrew",
+                # The subcommand is the server name minus the "kirocrew-" prefix
+                # ("kirocrew-core" -> "mcp-core"), matching the real invocation.
+                "args": [f"mcp-{name.split('-', 1)[1]}"],
+            }
+            for name in KIROCREW_BIN_MCP_SERVERS
         },
     )
 
@@ -2753,15 +2768,10 @@ class TestDoctorMcpTools:
         from kiro_crew.cli_doctor import _doctor_mcp_tools
 
         agent_path = tmp_path / "kirocrew.json"
-        _write_agent_config(
-            agent_path,
-            tools=["@kirocrew-core", "@kirocrew-cron"],
-            allowed=["@kirocrew-core", "@kirocrew-cron"],
-            servers={
-                "kirocrew-core": {"command": "/bin/kirocrew", "args": ["mcp-core"]},
-                "kirocrew-cron": {"command": "/bin/kirocrew", "args": ["mcp-cron"]},
-            },
-        )
+        # Every managed server must be present or doctor reports it as a config
+        # issue, so the fixture is built from the registry doctor iterates rather
+        # than a literal pair (see _healthy_agent_file).
+        _healthy_agent_file(agent_path)
         issues: list[str] = []
         with self._mock_probe(
             {
@@ -2862,6 +2872,59 @@ class TestDoctorMcpTools:
         updated = json.loads(agent_path.read_text(encoding="utf-8"))
         assert updated["tools"] == ["@kirocrew-cron", "@kirocrew-core"]
         assert updated["allowedTools"] == ["@kirocrew-cron", "@kirocrew-core"]
+
+    def test_auto_fix_never_blanket_allows_computer_use(self, tmp_path, capsys):
+        """**Doctor must never add ``@kirocrew-computer`` to ``allowedTools``.**
+
+        ``allowedTools`` is kiro-cli's blanket auto-approve list, and an
+        auto-approved MCP tool is approved LOCALLY by kiro-cli: it emits no
+        permission request and therefore never reaches ``hooks.on_tool_call`` — so
+        the deny floor, the governance ceiling and the approval clamp would all be
+        skipped for a tool that can click and type into an already-authenticated
+        application.  ``agent.py``'s managed spec omits ``autoApprove`` for exactly
+        this reason; a diagnostic command silently undoing it would be a complete
+        Plane-A bypass.  The ``tools`` entry is still repaired — that only makes the
+        server's tools reachable, never pre-approved.
+        """
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _healthy_agent_file(agent_path)
+        # Start from the state an upgrade leaves behind: servers registered, no
+        # tool refs at all, so every ref doctor could add is attributable to it.
+        data = json.loads(agent_path.read_text(encoding="utf-8"))
+        data["tools"] = []
+        data["allowedTools"] = []
+        agent_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+        issues: list[str] = []
+        with self._mock_probe({}):
+            _doctor_mcp_tools(agent_path, issues)
+
+        updated = json.loads(agent_path.read_text(encoding="utf-8"))
+        assert "@kirocrew-computer" in updated["tools"]
+        assert "@kirocrew-computer" not in updated["allowedTools"]
+        assert not [t for t in updated["allowedTools"] if t.startswith("@kirocrew-computer/")]
+        # The other managed servers are unaffected — the carve-out is scoped.
+        assert "@kirocrew-core" in updated["allowedTools"]
+        assert "@kirocrew-cron" in updated["allowedTools"]
+
+    def test_auto_fix_preserves_a_user_made_computer_use_grant(self, tmp_path, capsys):
+        """Doctor never MINTS the grant, but never REMOVES a user's own either.
+
+        A user who deliberately added the ref owns that decision; silently
+        reverting their config on a diagnostic run would be its own surprise. The
+        two rules are independent and both matter.
+        """
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _healthy_agent_file(agent_path)
+        issues: list[str] = []
+        with self._mock_probe({}):
+            _doctor_mcp_tools(agent_path, issues)
+        updated = json.loads(agent_path.read_text(encoding="utf-8"))
+        assert "@kirocrew-computer" in updated["allowedTools"]
 
     def test_probe_exception_does_not_crash(self, tmp_path, capsys):
         """If `probe_server` itself raises (e.g. event-loop oddity), doctor

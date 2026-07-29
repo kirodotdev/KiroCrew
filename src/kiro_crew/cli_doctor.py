@@ -51,6 +51,7 @@ from kiro_crew.platform import (
     current_context,
     safe_context_call,
 )
+from kiro_crew.platform.governance import CU_MCP_SERVER
 from kiro_crew.transcribe import _find_whisper, ensure_ffmpeg_in_path
 
 _MIN_NODE_VERSION = 16
@@ -67,16 +68,30 @@ def _os_fix_hint(mac: str, linux: str) -> str:
 # optional seam rather than as a user-facing backend.
 _CLAUDE_ACP_BIN = "claude-agent-acp"
 
+# Managed servers doctor must NEVER add to ``allowedTools``.
+#
+# ``allowedTools`` is kiro-cli's blanket auto-approve list, and an auto-approved
+# MCP tool is approved LOCALLY by kiro-cli: it emits no permission request and
+# therefore NEVER reaches ``hooks.on_tool_call`` — the PreToolUse plane that
+# carries the always-on deny floor, the sensitive-path check and the governance
+# ceiling.  ``agent.py``'s managed spec deliberately omits ``autoApprove`` for
+# exactly this reason (a tool that can click and type into an
+# already-authenticated application must stay behind a prompt), and a diagnostic
+# command must not silently undo that.  Doctor still repairs the ``tools`` entry,
+# which only makes the server's tools *reachable*, never pre-approved.
+_NO_BLANKET_ALLOW_MCPS = frozenset({CU_MCP_SERVER})
+
 
 def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
     """Render the `MCP Tools` section of `kirocrew doctor`.
 
     Two passes scoped to the managed servers (`kirocrew-core`,
-    `kirocrew-cron`):
+    `kirocrew-cron`, `kirocrew-computer`):
 
     1. Static sanity check of the agent config: each server must be present
-       in ``mcpServers``, ``tools`` and ``allowedTools``. Missing ``tools``
-       / ``allowedTools`` entries are auto-appended and the file is
+       in ``mcpServers`` and ``tools``. Missing ``tools`` entries — and
+       ``allowedTools`` entries for every server outside
+       :data:`_NO_BLANKET_ALLOW_MCPS` — are auto-appended and the file is
        rewritten atomically. A missing ``mcpServers`` entry cannot be
        auto-added because the command path is install-specific.
     2. Live handshake probe via :func:`mcp_discovery.probe_server`. Reports
@@ -105,7 +120,10 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
         if ref not in tools:
             tools.append(ref)
             config_changed = True
-        if ref not in allowed:
+        # Computer use is never blanket-allowed here: see _NO_BLANKET_ALLOW_MCPS.
+        # A pre-existing user-made grant is left alone (doctor never REMOVES a
+        # decision the user owns); doctor simply never mints one.
+        if ref not in allowed and name not in _NO_BLANKET_ALLOW_MCPS:
             allowed.append(ref)
             config_changed = True
 

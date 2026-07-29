@@ -292,6 +292,43 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "computer-use.attach-screenshots",
+    "label": "Attach screenshots",
+    "description": "Also capture the target window and pass its file path. The accessibility tree stays the primary channel; windows containing a password field are never captured.",
+    "tab": "computer-use",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "computer-use.enable-computer-use",
+    "label": "Enable computer use",
+    "description": "Let the agent read desktop app windows through accessibility and act on their controls. Off until you turn it on here — an agent cannot enable it.",
+    "tab": "computer-use",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "computer-use.max-tree-nodes",
+    "label": "Max tree nodes",
+    "tab": "computer-use",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "computer-use.screenshot-width",
+    "label": "Screenshot width",
+    "tab": "computer-use",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "computer-use.show-cursor-motion",
+    "label": "Show cursor motion",
+    "tab": "computer-use",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.developer-mode",
     "label": "Developer Mode",
     "description": "Show Developer page in sidebar with Logs, System metrics, and Memory internals",

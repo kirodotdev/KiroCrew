@@ -40,6 +40,10 @@
         "description": "Message behavior, history, timestamps, and context",
         "label": "Chat"
       },
+      "computerUse": {
+        "description": "Let the agent read and drive desktop app windows through accessibility",
+        "label": "Computer Use"
+      },
       "developer": {
         "description": "Developer mode, logs, system metrics, and diagnostics",
         "label": "Developer"

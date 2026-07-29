@@ -67,8 +67,13 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 | `kirocrew config set --file <path>` | Replace config from a JSON file |
 | `kirocrew config edit` | Open config in `$EDITOR` |
 | `kirocrew memory show/edit` | Show or edit memory (preferences, projects, history) |
+| `kirocrew computer doctor [--json]` | Report computer-use availability: platform support, the keystone primary-enable state, and the **advisory** macOS Accessibility / Screen Recording probe with a `responsible_hint`. See [Computer Use Commands](#computer-use-commands). |
+| `kirocrew computer apps` | List on-screen applications the accessibility layer can address (human-facing twin of the `computer_list_apps` MCP tool). Gated by the same chokepoint as `call` — refused while the feature is off or the session is unattended. |
+| `kirocrew computer call <tool> [k=v ...]` | Run ONE computer-use tool through the same gated chokepoint the agent uses, and print its reply (debug / reproduction) |
+| `kirocrew computer call --calls '[…]'` | Run a JSON array of tool calls in a SINGLE process, so `element_index` values from an earlier `computer_get_state` are still resolvable |
 | `kirocrew mcp-cron` | MCP server for cron tools (spawned by kiro-cli) |
 | `kirocrew mcp-core` | MCP server for spawn, learn, task tools (spawned by kiro-cli) |
+| `kirocrew mcp-computer` | MCP server for computer-use tools (spawned by kiro-cli; `argparse.SUPPRESS`-hidden). A **thin shim** — it forwards to the gateway over loopback and does no accessibility work itself. |
 | `kirocrew --version` | Print version |
 
 ## Token Command Output Streams
@@ -659,3 +664,62 @@ dev-mode apps so the zero-dev-apps steady state costs one `stat()` per second.
 It is a derived cache reconciled from `installed.json` at watcher init (under a
 cross-process lock, atomic with concurrent toggles), **not** part of the App Kit
 contract — its path and format are internal and may change without notice.
+
+## Computer Use Commands
+
+`kirocrew computer {doctor [--json] | apps | call}` — hand-rolled dispatch
+mirroring `browser/cli.py` (see [computer-use.md](computer-use.md)).
+
+**`doctor`** reports, in order: whether the platform is supported (macOS today;
+Windows and Linux report a typed refusal), whether the keystone primary enable at
+`~/.kiro/crew/computer_use.json` is on, and the macOS TCC probe
+(`AXIsProcessTrusted()` + `CGPreflightScreenCaptureAccess()`). The probe is
+**advisory and never a gate**: macOS attributes a grant to the *responsible
+parent* of the process tree, so both rows can read `missing` while a
+full-fidelity capture succeeds — observed live. `doctor` therefore prints a
+`responsible_hint` naming the process a user should actually grant (the packaged
+app, or the terminal that launched a dev gateway) and says outright that "not
+detected" does not always mean unavailable. It never calls
+`CGRequestScreenCaptureAccess`, which would pop a system dialog from a background
+process.
+
+`--json` is the machine form the **gateway shells out to** for the Settings
+permission rows. That indirection is deliberate: a short-lived subprocess keeps
+native ctypes out of the gateway, so a native fault cannot take down the gateway
+and with it cron, Slack and the dashboard WebSocket.
+
+**`apps`** lists on-screen applications resolved from
+`CGWindowListCopyWindowInfo` (layer-0 windows only, never `pgrep` — a `pgrep -n`
+lookup returns short-lived helper pids whose accessibility tree is empty). It runs
+`computer_list_apps` through the SAME gated dispatcher as `call`, so it is refused
+while the feature is disabled, in an unattended session, or under a policy that bans
+computer use — the agent can run this command with bash, so an ungated version was
+an unauthorized read of every window title.
+
+**`call`** runs one tool — `call computer_get_state app=Finder` — or a whole
+sequence in ONE process: `call --calls '[{"tool":"computer_get_state","args":
+{"app":"Finder"}},{"tool":"computer_click","args":{"app":"Finder",
+"element_index":12}}]'`. The batch form exists because `element_index` values only
+resolve against the per-process snapshot cache that produced them, so two separate
+invocations cannot share them. `key=value` arguments are JSON-decoded when they can
+be (`element_index=3` → int, `screenshot=false` → bool) and kept as text otherwise
+(`app=Finder`). `--json` emits `[{tool, text}, …]`; the exit code is non-zero if any
+reply carries the `Error: ` prefix, and a batch runs to completion rather than
+aborting at the first refusal.
+
+`call` goes through `computer_use.tools.dispatch_tool`, the **same** chokepoint an
+agent call traverses, so the primary enable, the target policy and the secure-field
+floors all apply — it is a reproduction tool, not a bypass. Its session key is the
+attended `cli_chat` surface, which is what the SEL audit records. There is no
+separate diagnostics opt-in and no identity proof: the unattended-surface refusal
+that made one necessary was removed along with the rest of the computer-use
+governance model.
+
+All three are **human-facing**. `apps` has an MCP twin (`computer_list_apps`) per
+the MCP-first rule; `doctor` is a permission diagnostic rather than a capability,
+so the rule does not bind it; and `call` adds no capability at all — it is a
+harness over the ten existing MCP tools, and deliberately has **no** MCP twin,
+because a tool that runs other tools would let a model launder one per-call gate
+decision into many. There is deliberately **no** `kirocrew computer state <app>` —
+that would be a second, CLI-shaped spelling of an LLM-facing capability and would
+have to be an MCP tool instead (it is: `computer_get_state`).

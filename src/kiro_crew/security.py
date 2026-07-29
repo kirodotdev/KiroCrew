@@ -2492,6 +2492,19 @@ _CREW_SECRET_LEAVES: list[str] = [
     "profiles",
     "admission_policy.json",
     "denied_commands.json",
+    # The computer-use primary enable ({enabled, allowed_apps, extra_denied_apps}).
+    # Same class of control as ``denied_commands.json`` directly above, and here
+    # for the same reason: flipping ``enabled`` grants full desktop observation
+    # plus keystroke/click synthesis into the operator's real applications — a
+    # security ceiling, not a preference. Storing it in the agent-readable
+    # ``config.json`` would leave it writable by any auto-approved agent shell
+    # (verified: ``is_sensitive_bash_command("echo x > …/config.json")`` is None),
+    # so it lives here and gets read+write protection on BOTH the tool path
+    # (``is_sensitive_path``) and the shell forms (``cat``, ``>``, ``tee``,
+    # ``tar -C`` / ``unzip -d`` extraction into the trust root). The dashboard PUT
+    # handler is the only writer and it opens the path directly, not through this
+    # gate, so the operator's Settings toggle still works.
+    "computer_use.json",
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",
@@ -2542,7 +2555,18 @@ _SENSITIVE_HOME_DIRS += [
 # gate, so legitimate config changes still work.
 # (The denied-command opt-out state does NOT live here — it is a security
 # ceiling and lives on the read+write keystone floor in ``denied_commands.json``
-# above, so no bash-level write matcher is needed for it.)
+# above, so no bash-level write matcher is needed for it. The computer-use primary
+# enable is on that same floor, for the same reason.)
+#
+# SCOPE LIMIT worth stating where the matchers live: every path matcher in this
+# module reasons about a PATH STRING. Computer use reaches state that has no path
+# — a password field's ``AXValue``, a logged-in banking tab, an editor window
+# already showing ``~/.aws/credentials`` as pixels and as accessibility text. No
+# addition to either list here can see any of it. That is why
+# ``computer_use/policy.py``'s bundle-id denylist (terminals, password managers,
+# keychains) and its secure-subrole refusal are load-bearing security controls in
+# their own right rather than conveniences, and why the always-on secure-field
+# redaction has no policy key.
 _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES

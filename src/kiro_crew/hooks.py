@@ -17,6 +17,11 @@ from pathlib import Path
 
 from kiro_crew import platform_compat, security
 from kiro_crew.platform import current_context
+from kiro_crew.platform.governance import (
+    CU_CLASS_OBSERVE,
+    computer_use_action_classes,
+    computer_use_action_from_title,
+)
 from kiro_crew.security import (
     audit_bash_exfiltration,
     is_sensitive_bash_command,
@@ -592,6 +597,23 @@ class HookManager:
             from kiro_crew.slack.gateway import _is_read_only_tool
 
             kind = (tool_kind or "").strip().lower()
+            # Computer-use observation tools ("reads don't nag" for this feature
+            # too). Deliberately an EXPLICIT allowlist keyed on the code-owned
+            # action-class table rather than the `_is_read_only_tool` title
+            # heuristic: that heuristic keys on a leading verb, so it would
+            # auto-approve every `computer_*` tool or none of them depending on
+            # the name, and an agent-supplied title must never decide whether a
+            # keystroke is synthesized into somebody's window.
+            #
+            # Gated on the keystone primary enable so the auto-approval cannot
+            # exist while the feature is off — a disabled feature's tools should
+            # fall through to interactive approval (where they will be refused by
+            # the dispatcher anyway), not be silently pre-approved. Reached only
+            # AFTER the deny floor, _governance_denial and the approval-floor
+            # clamp above, so a governed fleet's read-only ceiling and its
+            # `interactive` approval floor both still win.
+            if _cu_read_only_auto_approve(tool_name):
+                return ToolHookResult.auto_approve()
             # Trust the SEMANTIC kind first. The (agent-supplied, spoofable)
             # title heuristic is only a fallback for when the kind is
             # absent/unknown and NOT a known mutating/executing kind, so a write
@@ -788,6 +810,39 @@ def _governance_denial(
         except Exception:
             logger.debug("governance degrade audit unavailable", exc_info=True)
         return None
+
+
+def _cu_read_only_auto_approve(tool_name: str) -> bool:
+    """True when *tool_name* is a computer-use OBSERVATION tool and the feature is on.
+
+    Two independent conditions, both required:
+
+    * the action is classified ``observe`` by the code-owned table in
+      ``platform/governance.py`` (never by a title heuristic, and never by a
+      private copy of the table — the class table is the single source of truth);
+    * the keystone primary enable says the feature is on, so a disabled feature's
+      tools are not silently pre-approved.
+
+    Fail-CLOSED (False on any error): failing to auto-approve merely falls through
+    to interactive approval, which is the safe direction.
+    """
+    action = computer_use_action_from_title(tool_name)
+    if not action:
+        return False
+    if CU_CLASS_OBSERVE not in computer_use_action_classes(action):
+        return False
+    try:
+        # Deferred deliberately: ``enable_state`` imports ``config.loader``, which
+        # hooks.py keeps OFF its module import path (the loader fires the data-home
+        # migration and pulls the whole config stack). Reached only after the
+        # cheap prefix + class tests above, so an ungoverned host with no
+        # computer-use traffic never pays for it.
+        from kiro_crew.computer_use import enable_state
+
+        return enable_state.is_enabled()
+    except Exception:
+        logger.debug("computer-use enable-state probe failed", exc_info=True)
+        return False
 
 
 def _audit_governance(session_key: str, agent: str, tool_name: str, decision: object) -> None:

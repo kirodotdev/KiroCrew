@@ -328,10 +328,13 @@ _MANAGED_MCP_NAMES = frozenset(
     {
         "kirocrew-core",
         "kirocrew-cron",
+        "kirocrew-computer",
         "meshclaw-core",
         "meshclaw-cron",
+        "meshclaw-computer",
         "openclaw-core",
         "openclaw-cron",
+        "openclaw-computer",
     }
 )
 

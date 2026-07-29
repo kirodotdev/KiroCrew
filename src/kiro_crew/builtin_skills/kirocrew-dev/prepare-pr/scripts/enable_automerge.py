@@ -30,8 +30,7 @@ VALID_METHODS = ("squash", "merge", "rebase")
 
 def run(args):
     try:
-        p = subprocess.run(args, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace")
+        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)
@@ -52,8 +51,10 @@ def main(argv):
         elif arg.startswith("#") and arg[1:].isdigit():
             pr = arg[1:]
         else:
-            err("ERROR: unrecognized argument '{}' (expected a PR number or one "
-                "of {}).".format(arg, "|".join(VALID_METHODS)))
+            err(
+                "ERROR: unrecognized argument '{}' (expected a PR number or one "
+                "of {}).".format(arg, "|".join(VALID_METHODS))
+            )
             return 2
 
     if run(["gh", "--version"])[0] != 0:
@@ -78,24 +79,29 @@ def main(argv):
         except ValueError:
             m = None
         if m:
-            print("[automerge] PR #{} already has auto-merge enabled "
-                  "(method={}).".format(pr, m.lower()))
+            print(
+                "[automerge] PR #{} already has auto-merge enabled "
+                "(method={}).".format(pr, m.lower())
+            )
             return 0
 
     rc, out, e = run(["gh", "pr", "merge", pr, "--auto", "--" + method])
     if rc == 0:
-        print("[automerge] enabled auto-merge (--{}) on PR #{} - GitHub will "
-              "merge it once the repo's required reviews + checks are met."
-              .format(method, pr))
+        print(
+            "[automerge] enabled auto-merge (--{}) on PR #{} - GitHub will "
+            "merge it once the repo's required reviews + checks are met.".format(method, pr)
+        )
         return 0
 
     err("[automerge] could not enable auto-merge on PR #{}:".format(pr))
     for line in (out, e):
         if line:
             err("  " + line)
-    err("[automerge] common causes: 'Allow auto-merge' disabled on the repo, no "
+    err(
+        "[automerge] common causes: 'Allow auto-merge' disabled on the repo, no "
         "branch rule to gate it, the method is not permitted, or the PR is "
-        "closed/merged.")
+        "closed/merged."
+    )
     return 20
 
 

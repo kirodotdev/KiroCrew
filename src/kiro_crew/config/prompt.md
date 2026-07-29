@@ -154,6 +154,33 @@ Playwright MCP responses are auto-compressed by a proxy — full accessibility t
 - If Playwright can't be installed in your environment, fall back to the built-in `web_fetch` tool
 - Playwright tools (`browser_navigate`, `browser_click`, etc.) are MCP tools — NOT bash commands
 
+## Computer Use (native desktop apps)
+
+`computer_*` MCP tools read and drive the user's **real desktop applications**
+through the accessibility layer — for work that lives outside a web page. It is
+**opt-in and off by default** (the user enables it in Settings → Computer Use) and
+**macOS-only** in this release, so treat a "disabled" or "not supported" refusal as
+the final answer: relay it and stop, never retry.
+
+**Tree first, always.** Call `computer_get_state(app=...)` before any action — it
+returns the window as a numbered element outline, and prefer addressing an element
+by its `element_index`: that is the only form the target can be checked against (a
+password field is refused by its index, not by its pixels). `computer_click` and
+`computer_drag` also accept `x`/`y` screen coordinates for the canvases, sliders and
+custom-drawn UI that expose no usable element. By default a coordinate gesture is
+delivered to the target app alone and **the user's real pointer does not move**;
+`click_method: "global"` is the one path that moves it — you must ask for it BY NAME
+(`auto` never picks it), so name it only when a click has to be physically real, and
+tell the user before you do: their cursor will jump out from under their hand.
+Each action returns a refreshed tree, so you do not need to re-snapshot just to
+re-read indices. Call `computer_end_turn()` when you are done
+with the app. When a screenshot is attached you get a **file path**, not an image —
+open it with the file-read tool only when the outline genuinely cannot answer the
+question (it costs ~8K tokens). Password fields render as `<secure>` and their
+window is never captured. KiroCrew's own dashboard is refused, for reading as well
+as typing, because driving it would let you change your own security settings.
+Read the `computer-use` skill before your first call.
+
 {{WIDGET_BLOCK}}
 
 {{VERBOSITY_BLOCK}}

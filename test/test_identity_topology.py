@@ -488,6 +488,13 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
     ),
     "mcp_gateway/claim.py": "docstring reference to the contract (no code reads)",
     "session_pid.py": "stale-file cleanup: globs session_pid_*.txt (+ .sig sidecars) for dead processes",
+    "mcp_computer.py": (
+        "comment reference only (no code reads): the computer-use stdio shim "
+        "explains why it resolves identity with mcp_core._resolve_session_key_strict "
+        "(HMAC-verified, direct KIROCREW_HOST_PID lookup) rather than the lenient "
+        "walk — an unresolved key is treated as an unattended surface and refused "
+        "before anything reaches the wire"
+    ),
 }
 
 

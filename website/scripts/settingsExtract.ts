@@ -100,6 +100,7 @@ const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'VoicePanel.tsx': 'voice',
   'DisplayPanel.tsx': 'display',
   'BrowserPanel.tsx': 'browser',
+  'ComputerUsePanel.tsx': 'computer-use',
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
   'NotificationsPanel.tsx': 'notifications',

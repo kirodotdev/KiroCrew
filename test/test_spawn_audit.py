@@ -201,12 +201,42 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_server.py::_spawn_detached_gateway",
         "cli_server.py::_update",
         "cli_setup.py::_setup_electron",
+        # Cursor Motion overlay renderer: `<this interpreter> -m
+        # kiro_crew.computer_use.overlay_proc`, a fixed argv built from
+        # sys.executable plus a module constant — no shell, no PATH lookup, and
+        # nothing agent-supplied (pinned structurally by
+        # test_computer_use_unsupported.py::test_overlay_spawn_is_a_fixed_module_launch).
+        # The only agent-influenced values in the subsystem are numeric screen
+        # coordinates, and they travel as JSON on the child's stdin, never as argv.
+        # It exists as a subprocess because AppKit requires a MAIN-THREAD run loop
+        # and the gateway's main thread is the asyncio loop; drawing in-process is
+        # impossible, and a segfaulting AppKit in the gateway would take the chat
+        # sessions, cron scheduler and Slack socket down with it. NOT sandbox-routed:
+        # the child's entire purpose is to draw on the user's real WindowServer
+        # session, which a sandbox that rewrites the process identity would deny.
+        # The child is purely cosmetic — it reads no window, captures no pixels, and
+        # imports none of the AX/capture modules (asserted in
+        # test_computer_use_overlay.py::test_the_renderer_never_reaches_into_the_ax_or_capture_surface).
+        "computer_use/overlay.py::_spawn",
         "cloud/source.py::_git_tracked_files",
         "cloud/source.py::_tracked_tree_is_dirty",
         "cloud/source.py::_use_git_archive",
         "cloud/ssm.py::_run_install_command",
         "cloud/ssm.py::open_port_forward",
         "dashboard/chat_voice.py::api_voice_voices",
+        # Computer-use permission probe: `<our own kirocrew binary> computer
+        # doctor --json`, a fixed argv (module constants) with no shell and no
+        # agent-reachable input — the handler passes nothing from the request
+        # body. The binary is resolved by `agent._kirocrew_mcp_invocation`, i.e.
+        # the SAME install as the running gateway (or `sys.executable -m
+        # kiro_crew`), never a PATH shim the agent could plant. It exists as a
+        # subprocess precisely to keep the native ctypes probe OUT of the
+        # gateway: a missing ctypes argtypes is a SIGSEGV, not an exception, and
+        # in-process it would take the chat sessions, cron scheduler and Slack
+        # socket down with it. NOT sandbox-routed because the whole point of the
+        # probe is to read the HOST's own macOS TCC grants, which a sandbox that
+        # rewrites the process identity would answer wrongly.
+        "dashboard/handlers/computer_use.py::_probe_permissions",
         "dashboard/handlers/core.py::_is_apple_silicon",
         "dashboard/handlers/core.py::_stt_prereq_commands",
         "dashboard/handlers/core.py::_unusable",

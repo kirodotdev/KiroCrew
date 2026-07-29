@@ -14,6 +14,7 @@ Load relevant module specs before making changes to that component. Read common 
 | [channel-history](modules/channel-history.md) | Group conversation context buffer |
 | [config](modules/config.md) | Dataclass config schema and loader |
 | [cli](modules/cli.md) | argparse CLI commands (chat, gateway, doctor, setup, manifest) |
+| [computer-use](modules/computer-use.md) | Native desktop GUI automation: accessibility-tree snapshots, element-indexed actions, keystone primary enable, fail-closed in-gateway gate |
 | [heartbeat](modules/heartbeat.md) | Periodic background tasks |
 | [history](modules/history.md) | Persistent conversation history with LLM consolidation |
 | [knowledge](modules/knowledge.md) | Knowledge Library ingest (FileReader/SUPPORTED formats incl. .org), folder watcher, LLMPool workers (sweep-shielded) |

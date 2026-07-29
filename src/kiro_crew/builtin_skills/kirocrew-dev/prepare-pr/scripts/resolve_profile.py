@@ -186,6 +186,7 @@ def load_bundled(name):
 
 def detect_gates(root):
     """Infer local gate commands from ecosystem marker files."""
+
     def has(rel):
         return os.path.exists(os.path.join(root, rel))
 

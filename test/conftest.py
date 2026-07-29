@@ -671,6 +671,45 @@ class MockSlackClient(SlackClientOps):
         return self._fetch_thread_replies_result
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _fake_computer_use_backend():
+    """Register the shipped FAKE computer-use backend for the whole suite.
+
+    Computer use reads another application's accessibility tree, captures its
+    window pixels, and synthesizes clicks/keystrokes into it. CI must never do
+    any of that, so this is one of the TWO mechanisms that keep the native path
+    unreachable in tests:
+
+    1. this process-wide registration, so ``get_shared_backend()`` always
+       returns ``FakeComputerUseBackend`` (``platform_id == "fake"``);
+    2. structural — the package has no module-scope ``CDLL``/``find_library``, so
+       importing it on a Linux runner loads nothing native.
+
+    Both are asserted: ``test_computer_use_backend.py::
+    test_ci_never_selects_a_native_backend`` pins (1) and
+    ``test_computer_use_unsupported.py`` pins (2).
+
+    MODULE-scoped, not function-scoped, deliberately: the registration is a
+    single module-global assignment plus a singleton drop, and paying that (plus
+    the ``kiro_crew.testing.fake_computer_use`` import) on all ~16k tests would
+    be pure overhead. Any test that swaps the backend itself is responsible for
+    restoring it (see that file's ``restore_registry`` fixture) — a
+    function-scoped fixture here would paper over such a leak instead of letting
+    it fail.
+    """
+    from kiro_crew.computer_use.backend import (
+        register_computer_use_backend,
+        reset_shared_backend,
+    )
+    from kiro_crew.testing.fake_computer_use import FakeComputerUseBackend
+
+    register_computer_use_backend(FakeComputerUseBackend)
+    reset_shared_backend()
+    yield
+    register_computer_use_backend(None)
+    reset_shared_backend()
+
+
 @pytest.fixture(autouse=True)
 def _reset_platform_context(monkeypatch):
     """Clear the process-global PlatformContext between tests.

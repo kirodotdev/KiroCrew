@@ -509,9 +509,12 @@ async def api_mcp_active(request: web.Request) -> web.Response:
         spec = global_mcps.get(s.name, {})
         enabled = not (isinstance(spec, dict) and spec.get("disabled"))
         result.append({"name": s.name, "enabled": enabled})
-    # Also include kirocrew-cron and kirocrew-core (always enabled)
+    # Also include the managed KiroCrew servers (always enabled). NOTE for
+    # ``kirocrew-computer``: "enabled" here means the SERVER is registered, not
+    # that computer use is on — the feature's primary enable lives on the keystone
+    # (Settings -> Computer Use) and its shim advertises zero tools while off.
     names = {r["name"] for r in result}
-    for builtin in ("kirocrew-cron", "kirocrew-core"):
+    for builtin in ("kirocrew-cron", "kirocrew-core", "kirocrew-computer"):
         if builtin not in names:
             result.insert(0, {"name": builtin, "enabled": True})
     return web.json_response(result)

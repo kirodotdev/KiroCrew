@@ -121,8 +121,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Dashboard final message",
         "dashboard/chat_runner.py",
-        "Full-text redaction pass over the assembled assistant turn before it is "
-        "finalized.",
+        "Full-text redaction pass over the assembled assistant turn before it is " "finalized.",
     ),
     (
         "Dashboard slot snapshot",
@@ -157,8 +156,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Slack messages",
         "slack/handler.py",
-        "StreamRedactor on the live edit stream plus a full pass on the final posted "
-        "message.",
+        "StreamRedactor on the live edit stream plus a full pass on the final posted " "message.",
     ),
     (
         "Slack cron / notification posts",
@@ -174,8 +172,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Voice reply (TTS)",
         "voice_reply.py",
-        "Spoken text is redacted before synthesis so a credential is never read "
-        "aloud.",
+        "Spoken text is redacted before synthesis so a credential is never read " "aloud.",
     ),
     (
         "SEL audit log",
@@ -373,6 +370,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Redacts INBOUND attacker-controllable provider metadata before it is
         # stored/displayed — a sanitizer on the way in, not an output boundary.
         "dashboard/handlers/mcp_discover.py",
+        # Computer use: the redaction pass runs on third-party desktop content
+        # (window titles, accessibility values) on its way INTO the model's
+        # context, exactly like the MCP tool-result paths above. `policy.py` owns
+        # the single pass, `render.py` ends every renderer with it, and `tools.py`
+        # applies it to the error string. The user-visible surface for all three is
+        # the dashboard/Slack transcript, which is a registered sink.
+        "computer_use/policy.py",
+        "computer_use/render.py",
+        "computer_use/tools.py",
         # redact_via_context helpers: the CredentialPolicy seam and its callers.
         # Each redacts a value bound for an audit record or a log tail, and the
         # user-facing surfaces that consume them are registered sinks above.
@@ -403,10 +409,19 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
 # The credential CLASSES the redaction regex matches. Family names only — never a
 # pattern that could be inverted into a generator, and never live secrets.
 _CREDENTIAL_FAMILIES: tuple[tuple[str, str], ...] = (
-    ("AWS access keys", "AKIA / ASIA key IDs, plus labelled secret-access-key and session-token forms"),
-    ("Private keys", "PEM blocks (RSA / DSA / EC / OPENSSH), including encrypted and truncated bodies"),
+    (
+        "AWS access keys",
+        "AKIA / ASIA key IDs, plus labelled secret-access-key and session-token forms",
+    ),
+    (
+        "Private keys",
+        "PEM blocks (RSA / DSA / EC / OPENSSH), including encrypted and truncated bodies",
+    ),
     ("Slack tokens", "xoxb / xoxp / xoxa / xoxs bot, user, and app tokens"),
-    ("GitHub tokens", "ghp / gho / ghu / ghs / ghr classic tokens and github_pat fine-grained tokens"),
+    (
+        "GitHub tokens",
+        "ghp / gho / ghu / ghs / ghr classic tokens and github_pat fine-grained tokens",
+    ),
     ("GitLab tokens", "glpat personal access tokens"),
     ("Stripe keys", "sk_live / rk_live / sk_test / rk_test secret and restricted keys"),
     ("SendGrid keys", "SG. prefixed API keys"),
@@ -425,8 +440,14 @@ _CREDENTIAL_FAMILIES: tuple[tuple[str, str], ...] = (
     # as "[REDACTED: credential]". A pinned test asserts the whole payload survives
     # redact_credentials() unchanged; keep new descriptions clear of live shapes.
     ("HTTP bearer tokens", "Bearer-scheme HTTP auth headers, including JSON-serialized log dumps"),
-    ("Database URIs", "postgres / mysql / mongodb / redis / amqp connection strings with an embedded password"),
-    ("Base64-encoded variants", "40+ char base64 chunks are decoded and re-scanned against every family above"),
+    (
+        "Database URIs",
+        "postgres / mysql / mongodb / redis / amqp connection strings with an embedded password",
+    ),
+    (
+        "Base64-encoded variants",
+        "40+ char base64 chunks are decoded and re-scanned against every family above",
+    ),
 )
 
 
@@ -816,9 +837,7 @@ def posture_counts() -> dict[str, int | None]:
 
 async def posture_counts_async() -> dict[str, int | None]:
     """``posture_counts`` off the event loop (see ``build_posture_snapshot_async``)."""
-    return await asyncio.get_running_loop().run_in_executor(
-        governance_executor(), posture_counts
-    )
+    return await asyncio.get_running_loop().run_in_executor(governance_executor(), posture_counts)
 
 
 async def build_posture_snapshot_async() -> dict:

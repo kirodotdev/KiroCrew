@@ -470,7 +470,11 @@ def _server_from_spec(name: str, spec: dict, source: str) -> McpServerInfo:
 
 
 # Managed server name -> the ``kirocrew`` CLI subcommand that serves it.
-_MANAGED_SERVER_SUBCOMMANDS = {"kirocrew-core": "mcp-core", "kirocrew-cron": "mcp-cron"}
+_MANAGED_SERVER_SUBCOMMANDS = {
+    "kirocrew-core": "mcp-core",
+    "kirocrew-cron": "mcp-cron",
+    "kirocrew-computer": "mcp-computer",
+}
 _MANAGED_SERVER_NAMES = set(_MANAGED_SERVER_SUBCOMMANDS)
 
 # Cached resolved (command, args) — avoids subprocess.run on every list_servers() call.
