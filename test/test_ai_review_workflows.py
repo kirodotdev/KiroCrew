@@ -415,10 +415,22 @@ class TestClaudeReviewCodeOnlyScope:
     def test_rescan_is_scaled_to_diff_size(self) -> None:
         workflow = _workflow("claude-review.yml")
 
-        # Small diffs get one pass; a second pass is reserved for
-        # security/data-integrity-sensitive paths.
-        assert "EFFORT: ONE careful pass" in workflow
-        assert "Make a second pass ONLY if" in workflow
+        # ONE pass with two internal phases (discover then falsify); extra
+        # falsification effort is reserved for security/data-integrity paths.
+        assert "EFFORT: ONE pass over the diff" in workflow
+        assert "PHASE A (DISCOVER, generous recall)" in workflow
+        assert "PHASE B (FALSIFY, strict precision)" in workflow
+        assert "Spend extra falsification effort ONLY where" in workflow
+
+    def test_verdict_is_gated_on_sha_scoped_markers_not_structured_output(self) -> None:
+        workflow = _workflow("claude-review.yml")
+
+        # The gate parses SHA-scoped markers captured from the run transcript;
+        # the flaky --json-schema structured_output path must stay retired.
+        assert "--json-schema" not in _line_containing(workflow, "--allowedTools")
+        assert "[OPUS-REVIEWED] $HEAD" in workflow
+        assert "[BLOCK-MERGE] $HEAD" in workflow
+        assert "steps.review.outputs.execution_file" in workflow
 
 
 class TestGptPrIntentGrounding:

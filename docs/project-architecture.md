@@ -88,6 +88,7 @@ graph LR
         ELEC["website/electron/<br/><i>Desktop app shell</i>"]
         AGENTS["agents/<br/><i>Agent config JSON</i>"]
         SKILLS["skills/<br/><i>Skill markdown files</i>"]
+        SCRIPTS["scripts/<br/><i>Build & dev tooling</i>"]
         DOCS["docs/<br/><i>Documentation</i>"]
         TEST["test/<br/><i>pytest suite</i>"]
     end
@@ -105,6 +106,7 @@ graph LR
 | `website/electron/` | Electron desktop app wrapper |
 | `agents/` | Agent configuration (`defaults.json`, `prompt.md`) |
 | `skills/` | Skill definitions (markdown, editable without rebuild) |
+| `scripts/` | Build tooling, linters, and dev-helper scripts |
 | `docs/` | User and developer documentation |
 | `test/` | pytest test suite |
 | `packages/` | Standalone SDK packages (`kirocrew-client-py`) |

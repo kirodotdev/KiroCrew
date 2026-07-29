@@ -22,8 +22,20 @@ const isSpawnRunItem = (it: TurnItem) =>
 // visible even when a turn's reasoning is collapsed (collapseAll mode).
 const isWorkflowCompletionItem = (it: TurnItem) =>
   it.kind === 'single' && isWorkflowCompletionMessage(it.msg)
-const isTool = (it: TurnItem) =>
-  it.kind === 'single' && it.msg.role === 'tool' && !isWorkflowRunItem(it) && !isSpawnRunItem(it)
+// An MCP App (SEP-1865) render is anchored to its tool-call row (ToolCallLine
+// mounts the sandboxed iframe below the row). Folding that row into a
+// collapsed pane hides the interactive app — and re-expanding REMOUNTS the
+// iframe, reloading the app and losing in-canvas state. Treat app-bearing
+// tool calls like workflow_run / spawn_run cards: first-class, always visible.
+// ``appToolCallIds`` is the set of tool_call_ids with a live render payload
+// in chat.mcpApps for this slot (computed once per turn render).
+const isMcpAppItem = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
+  it.kind === 'single' && it.msg.role === 'tool' &&
+  typeof it.msg.meta?.tool_call_id === 'string' &&
+  appToolCallIds.has(it.msg.meta.tool_call_id)
+const isTool = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
+  it.kind === 'single' && it.msg.role === 'tool' && !isWorkflowRunItem(it) &&
+  !isSpawnRunItem(it) && !isMcpAppItem(it, appToolCallIds)
 const isHiddenTool = (it: TurnItem) => it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')
 const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 'assistant' || it.msg.role === 'streaming' || it.msg.role === 'file')
 /**
@@ -46,9 +58,17 @@ const isRenderable = (it: TurnItem) =>
   it.kind === 'single' && isConclusion(it) && (it.msg.role === 'file' || HAS_RENDERABLE_RE.test(it.msg.content))
 
 /** Either a renderable assistant message (widget/image) or a role that must
- *  surface inline (mcp_oauth, error), or a workflow_run launch card. All bypass
- *  the collapse pane. */
-const isVisibleInline = (it: TurnItem) => isRenderable(it) || isAlwaysVisible(it) || isWorkflowRunItem(it) || isSpawnRunItem(it) || isWorkflowCompletionItem(it)
+ *  surface inline (mcp_oauth, error), a workflow_run / spawn_run launch card, or
+ *  an MCP App-bearing tool call (interactive iframe anchored to the row). All
+ *  bypass the collapse pane. */
+const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
+  isRenderable(it) || isAlwaysVisible(it) || isWorkflowRunItem(it) ||
+  isSpawnRunItem(it) || isWorkflowCompletionItem(it) ||
+  isMcpAppItem(it, appToolCallIds)
+
+/** Stable empty set so the mcpApps selector returns a referentially-equal
+ *  value when the slot has no app renders (avoids useless re-renders). */
+const EMPTY_ID_SET: ReadonlySet<string> = new Set()
 
 /** Strip OPTIONS/markdown formatting and return plain text content length */
 function substantiveLength(text: string): number {
@@ -76,8 +96,16 @@ function findConclusionIdx(items: TurnItem[]): number {
   return conclusionIdx === -1 ? fallbackIdx : conclusionIdx
 }
 
-/** Collapsible agent turn. collapseAll=false (default): only tool calls collapse. collapseAll=true: all working steps collapse, only final assistant text visible. */
-export default function TurnBlock({ turn, renderItem, collapseAll = false }: { turn: Extract<DisplayItem, {kind:'turn'}>; renderItem: (item: TurnItem, i: number) => ReactNode; collapseAll?: boolean }) {
+/** Collapsible agent turn. collapseAll=false (default): only tool calls collapse. collapseAll=true: all working steps collapse, only final assistant text visible.
+ *
+ *  ``appToolCallIds``: tool_call_ids in THIS pane's slot that have a live MCP
+ *  App render payload. Those rows carry an interactive iframe and must never
+ *  fold into the collapse (see isMcpAppItem). Passed in as a prop rather than
+ *  read from Redux so this component stays store-free — app-sdk/ChatMessageList
+ *  renders it for ChatEmbed with no Provider mounted, and a pane must scope the
+ *  set to its OWN session key, not the globally-active slot.
+ */
+export default function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMPTY_ID_SET }: { turn: Extract<DisplayItem, {kind:'turn'}>; renderItem: (item: TurnItem, i: number) => ReactNode; collapseAll?: boolean; appToolCallIds?: ReadonlySet<string> }) {
   const [expanded, setExpanded] = useState(!turn.complete)
   const wasComplete = useRef(turn.complete)
   useEffect(() => {
@@ -106,8 +134,8 @@ export default function TurnBlock({ turn, renderItem, collapseAll = false }: { t
     const conclusionIdx = findConclusionIdx(turn.items)
     const beforeItems = conclusionIdx > 0 ? turn.items.slice(0, conclusionIdx) : []
     // Only the non-visible-inline pre-conclusion items are actually collapsed.
-    return beforeItems.some(it => !isVisibleInline(it) && msgIdxs(it).includes(currentMessageIdx))
-  }, [turn.items, term, currentMessageIdx, collapseAll])
+    return beforeItems.some(it => !isVisibleInline(it, appToolCallIds) && msgIdxs(it).includes(currentMessageIdx))
+  }, [turn.items, term, currentMessageIdx, collapseAll, appToolCallIds])
   useEffect(() => {
     if (matchInCollapsedSegment) setExpanded(true)
   }, [matchInCollapsedSegment])
@@ -129,7 +157,7 @@ export default function TurnBlock({ turn, renderItem, collapseAll = false }: { t
     const segs: Seg[] = []
     for (let i = 0; i < beforeItems.length; i++) {
       const it = beforeItems[i]
-      if (isVisibleInline(it)) {
+      if (isVisibleInline(it, appToolCallIds)) {
         segs.push({ type: 'visible', it, idx: i })
       } else {
         const last = segs[segs.length - 1]
@@ -164,7 +192,7 @@ export default function TurnBlock({ turn, renderItem, collapseAll = false }: { t
   }
 
   // Default: only collapse tool calls
-  const toolCount = turn.items.filter(isTool).length
+  const toolCount = turn.items.filter(it => isTool(it, appToolCallIds)).length
   if (!turn.complete || toolCount === 0) {
     return <>{turn.items.map((it, i) => renderItem(it, i))}</>
   }
@@ -173,7 +201,7 @@ export default function TurnBlock({ turn, renderItem, collapseAll = false }: { t
   const segments: Segment[] = []
   for (let i = 0; i < turn.items.length; i++) {
     const it = turn.items[i]
-    if (isTool(it)) {
+    if (isTool(it, appToolCallIds)) {
       const last = segments[segments.length - 1]
       if (last?.type === 'tools') last.items.push({ it, idx: i })
       else segments.push({ type: 'tools', items: [{ it, idx: i }] })

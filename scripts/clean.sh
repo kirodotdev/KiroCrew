@@ -1,10 +1,10 @@
 #!/bin/sh
 # Remove build caches and generated artifacts
-# Usage: ./clean.sh
+# Usage: scripts/clean.sh
 
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 rm -rf build dist *.egg-info src/*.egg-info \
        .mypy_cache .pytest_cache \
