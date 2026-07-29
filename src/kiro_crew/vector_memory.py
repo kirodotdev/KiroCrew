@@ -665,8 +665,14 @@ class VectorMemoryStore:
             self.db.commit()
 
         # 9. Retire conflicting episodic entries that reference the old value
-        # (outside the lock — _retire_stale_episodic does a blocking embed and
-        # re-locks its own FAISS search section).
+        # (called outside the lock — _retire_stale_episodic does a blocking embed
+        # first, then takes _db_lock itself for its db writes).
+        #
+        # Best-effort: the semantic row is already committed at this point, so a
+        # failure here must not propagate. Callers batch many keys per call
+        # (history consolidation writes N semantic + M episodic items in one
+        # thread), and an exception raised after a successful commit discarded
+        # every remaining item in the batch.
         if existing and not existing["is_deleted"]:
             old_val = existing["value_json"]
             try:
@@ -674,7 +680,14 @@ class VectorMemoryStore:
             except (json.JSONDecodeError, TypeError):
                 old_text = str(old_val)
             if isinstance(old_text, str) and len(old_text) >= 3:
-                self._retire_stale_episodic(key, old_text)
+                try:
+                    self._retire_stale_episodic(key, old_text)
+                except Exception:
+                    logger.warning(
+                        "Stale-episodic retirement failed for key %r (semantic write kept)",
+                        key,
+                        exc_info=True,
+                    )
 
         return None
 
@@ -684,11 +697,12 @@ class VectorMemoryStore:
         if not existing:
             return False
         now = _now_iso()
-        self.db.execute(
-            "UPDATE semantic_memory SET is_deleted = 1, updated_at = ? WHERE key = ?",
-            (now, key),
-        )
-        self.db.commit()
+        with self._db_lock:
+            self.db.execute(
+                "UPDATE semantic_memory SET is_deleted = 1, updated_at = ? WHERE key = ?",
+                (now, key),
+            )
+            self.db.commit()
         self._log_event("delete", "semantic", key, existing["value_json"], None, source)
         return True
 
@@ -704,47 +718,55 @@ class VectorMemoryStore:
         # Vector similarity: embed "key_suffix: old_value" and find similar episodic
         key_suffix = key.rsplit(".", 1)[-1].replace("_", " ")
         query = f"{key_suffix}: {old_value}"
+        # The embed is the one blocking call here, so it stays OUTSIDE the lock.
+        # Everything after it touches the shared sqlite connection and MUST be
+        # serialized on _db_lock: an unsynchronized DML statement races the
+        # implicit BEGIN of any concurrent writer (search_episodic's
+        # last_accessed_at write, another consolidation) and the loser raises
+        # "cannot start a transaction within a transaction".
         emb = self._try_embed(query)
-        if emb is not None:
-            results = self.search_episodic(query_embedding=emb, query_text="", limit=10)
-            for r in results:
-                if r.get("cosine_sim", 0) > 0.7 and r["id"] not in seen:
-                    seen.add(r["id"])
-                    self.db.execute(
-                        "UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (r["id"],)
-                    )
-                    self._log_event(
-                        "conflict_retire",
-                        "episodic",
-                        r["id"],
-                        r["text"][:200],
-                        None,
-                        "semantic_update",
-                    )
+        with self._db_lock:
+            if emb is not None:
+                results = self.search_episodic(query_embedding=emb, query_text="", limit=10)
+                for r in results:
+                    if r.get("cosine_sim", 0) > 0.7 and r["id"] not in seen:
+                        seen.add(r["id"])
+                        self.db.execute(
+                            "UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (r["id"],)
+                        )
+                        self._log_event(
+                            "conflict_retire",
+                            "episodic",
+                            r["id"],
+                            r["text"][:200],
+                            None,
+                            "semantic_update",
+                        )
 
-        # Text fallback: exact phrase matching
-        patterns = [f"%{key_suffix}: {old_value}%", f"%{key_suffix} {old_value}%"]
-        for pat in patterns:
-            for r in self.db.execute(
-                "SELECT id, text FROM episodic_memories WHERE is_deleted = 0 AND text LIKE ?",
-                (pat,),
-            ).fetchall():
-                if r["id"] not in seen:
-                    seen.add(r["id"])
-                    self.db.execute(
-                        "UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (r["id"],)
-                    )
-                    self._log_event(
-                        "conflict_retire",
-                        "episodic",
-                        r["id"],
-                        r["text"][:200],
-                        None,
-                        "semantic_update",
-                    )
+            # Text fallback: exact phrase matching
+            patterns = [f"%{key_suffix}: {old_value}%", f"%{key_suffix} {old_value}%"]
+            for pat in patterns:
+                for r in self.db.execute(
+                    "SELECT id, text FROM episodic_memories WHERE is_deleted = 0 AND text LIKE ?",
+                    (pat,),
+                ).fetchall():
+                    if r["id"] not in seen:
+                        seen.add(r["id"])
+                        self.db.execute(
+                            "UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (r["id"],)
+                        )
+                        self._log_event(
+                            "conflict_retire",
+                            "episodic",
+                            r["id"],
+                            r["text"][:200],
+                            None,
+                            "semantic_update",
+                        )
 
+            if seen:
+                self.db.commit()
         if seen:
-            self.db.commit()
             logger.info("Retired %d stale episodic entries for key %r", len(seen), key)
 
     def search_semantic(self, prefix: str) -> list[dict]:
@@ -856,12 +878,16 @@ class VectorMemoryStore:
     ) -> None:
         """Append to the audit trail."""
         try:
-            self.db.execute(
-                "INSERT INTO memory_events (event_type, memory_type, memory_key, "
-                "old_value, new_value, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (event_type, memory_type, key, old_value, new_value, source, _now_iso()),
-            )
-            self.db.commit()
+            # Every write path funnels through here, from both locked and
+            # unlocked callers, so serialize on the (reentrant) _db_lock: an
+            # unsynchronized INSERT races a concurrent writer's implicit BEGIN.
+            with self._db_lock:
+                self.db.execute(
+                    "INSERT INTO memory_events (event_type, memory_type, memory_key, "
+                    "old_value, new_value, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (event_type, memory_type, key, old_value, new_value, source, _now_iso()),
+                )
+                self.db.commit()
         except Exception:
             logger.debug("Failed to log memory event", exc_info=True)
 
@@ -875,16 +901,17 @@ class VectorMemoryStore:
 
     def rotate_events(self, max_rows: int = _MAX_EVENTS) -> int:
         """Delete oldest events if over limit. Returns count deleted."""
-        count = self.db.execute("SELECT COUNT(*) FROM memory_events").fetchone()[0]
-        if count <= max_rows:
-            return 0
-        to_delete = count - max_rows
-        self.db.execute(
-            "DELETE FROM memory_events WHERE id IN "
-            "(SELECT id FROM memory_events ORDER BY id ASC LIMIT ?)",
-            (to_delete,),
-        )
-        self.db.commit()
+        with self._db_lock:
+            count = self.db.execute("SELECT COUNT(*) FROM memory_events").fetchone()[0]
+            if count <= max_rows:
+                return 0
+            to_delete = count - max_rows
+            self.db.execute(
+                "DELETE FROM memory_events WHERE id IN "
+                "(SELECT id FROM memory_events ORDER BY id ASC LIMIT ?)",
+                (to_delete,),
+            )
+            self.db.commit()
         return to_delete
 
     # ── FAISS Index ──
@@ -1336,11 +1363,19 @@ class VectorMemoryStore:
         q = [x / norm for x in query_embedding] if norm > 0 else query_embedding
         q_len = len(q)
 
-        rows = self.db.execute(
-            "SELECT id, conversation_id, text, tags, importance, created_at, "
-            "last_accessed_at, embedding FROM episodic_memories "
-            "WHERE is_deleted = 0 AND embedding IS NOT NULL"
-        ).fetchall()
+        # The fetch is serialized with every other statement on this shared
+        # connection. sqlite3 caches prepared statements per connection, so two
+        # threads running a statement at the same time can corrupt each other's
+        # row iteration — observed as DatabaseError("another row available") and,
+        # on Windows CI, a NULL value for a column the WHERE clause excludes
+        # (`embedding IS NOT NULL` returning None, TypeError on len()). Only the
+        # fetch is locked: the scoring loop below works on materialized rows.
+        with self._db_lock:
+            rows = self.db.execute(
+                "SELECT id, conversation_id, text, tags, importance, created_at, "
+                "last_accessed_at, embedding FROM episodic_memories "
+                "WHERE is_deleted = 0 AND embedding IS NOT NULL"
+            ).fetchall()
 
         logger.debug(
             "Episodic SQLite vector search: query=%s… rows_with_emb=%d",
@@ -1379,13 +1414,21 @@ class VectorMemoryStore:
 
         candidates.sort(key=lambda x: x["score"], reverse=True)
         result = _mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
-        for c in result:
-            self.db.execute(
-                "UPDATE episodic_memories SET last_accessed_at = ? WHERE id = ?",
-                (_now_iso(), c["id"]),
-            )
+        # Same lock discipline as the FAISS path in search_episodic. This UPDATE
+        # runs on every context assembly, so several threads reach it at once
+        # (parallel subagent spawns), and sqlite's implicit BEGIN is per
+        # connection: two unsynchronized writers can both observe autocommit=1
+        # and both issue BEGIN, and the loser raises "cannot start a transaction
+        # within a transaction". RLock is reentrant, so re-acquiring here is safe
+        # regardless of caller.
         if result:
-            self.db.commit()
+            with self._db_lock:
+                for c in result:
+                    self.db.execute(
+                        "UPDATE episodic_memories SET last_accessed_at = ? WHERE id = ?",
+                        (_now_iso(), c["id"]),
+                    )
+                self.db.commit()
         return result
 
     def get_episodic_list(
@@ -1413,8 +1456,9 @@ class VectorMemoryStore:
         existing = self._get_episodic(mem_id)
         if not existing:
             return False
-        self.db.execute("UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (mem_id,))
-        self.db.commit()
+        with self._db_lock:
+            self.db.execute("UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (mem_id,))
+            self.db.commit()
         self._log_event("delete", "episodic", mem_id, existing["text"][:200], None, source)
         return True
 
@@ -1503,27 +1547,29 @@ class VectorMemoryStore:
         return dict(row) if row else None
 
     def _delete_episodic_row(self, mem_id: str) -> None:
-        self.db.execute("UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (mem_id,))
-        self.db.commit()
+        with self._db_lock:
+            self.db.execute("UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (mem_id,))
+            self.db.commit()
 
     def _enforce_episodic_cap(self) -> None:
         """Tombstone lowest-importance oldest entries if over cap."""
-        count = self.db.execute(
-            "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted = 0"
-        ).fetchone()[0]
-        if count < self._episodic_max:
-            return
-        excess = count - self._episodic_max + 1
-        rows = self.db.execute(
-            "SELECT id FROM episodic_memories WHERE is_deleted = 0 "
-            "ORDER BY importance ASC, created_at ASC LIMIT ?",
-            (excess,),
-        ).fetchall()
-        for row in rows:
-            self.db.execute(
-                "UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (row["id"],)
-            )
-        self.db.commit()
+        with self._db_lock:
+            count = self.db.execute(
+                "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted = 0"
+            ).fetchone()[0]
+            if count < self._episodic_max:
+                return
+            excess = count - self._episodic_max + 1
+            rows = self.db.execute(
+                "SELECT id FROM episodic_memories WHERE is_deleted = 0 "
+                "ORDER BY importance ASC, created_at ASC LIMIT ?",
+                (excess,),
+            ).fetchall()
+            for row in rows:
+                self.db.execute(
+                    "UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (row["id"],)
+                )
+            self.db.commit()
 
     # ── Lessons ──
 
@@ -1556,11 +1602,12 @@ class VectorMemoryStore:
 
         def _flush_backfills() -> None:
             if pending_backfills:
-                for blob, bk in pending_backfills:
-                    self.db.execute(
-                        "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (blob, bk)
-                    )
-                self.db.commit()
+                with self._db_lock:
+                    for blob, bk in pending_backfills:
+                        self.db.execute(
+                            "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (blob, bk)
+                        )
+                    self.db.commit()
 
         for existing in self.get_lessons():
             existing_val = str(json.loads(existing["value_json"]))
@@ -1636,10 +1683,11 @@ class VectorMemoryStore:
         err = self.set_semantic(key, value, confidence, source)
         if err is None and rule_emb:
             emb_blob = struct.pack(f"{len(rule_emb)}f", *rule_emb)
-            self.db.execute(
-                "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (emb_blob, key)
-            )
-            self.db.commit()
+            with self._db_lock:
+                self.db.execute(
+                    "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (emb_blob, key)
+                )
+                self.db.commit()
         return err is None
 
     @staticmethod
@@ -2094,12 +2142,15 @@ class VectorMemoryStore:
             tag_conds = " OR ".join(["tags LIKE ?" for _ in tag_filter])
             conditions = f"({conditions}) AND ({tag_conds})"
             params.extend(f'%"{t.lower()}"%' for t in tag_filter)
-        rows = self.db.execute(
-            f"SELECT id, conversation_id, text, tags, importance, created_at, last_accessed_at "
-            f"FROM episodic_memories WHERE is_deleted = 0 AND ({conditions}) "
-            f"ORDER BY created_at DESC LIMIT ?",
-            (*params, limit),
-        ).fetchall()
+        # Serialized for the same reason as the vector fallback above: this runs
+        # on the context-assembly path, concurrently with memory writes.
+        with self._db_lock:
+            rows = self.db.execute(
+                f"SELECT id, conversation_id, text, tags, importance, created_at, last_accessed_at "
+                f"FROM episodic_memories WHERE is_deleted = 0 AND ({conditions}) "
+                f"ORDER BY created_at DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ── Episodic Promotion ──

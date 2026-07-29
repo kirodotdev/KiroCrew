@@ -1914,3 +1914,189 @@ class TestSearchLastAccessedLocking:
         # The locked, transactional UPDATE must not surface 'database is locked'
         # or interleave into a crash under concurrent search load.
         assert not errors, f"concurrent search-update raised: {errors!r}"
+
+
+class _TrackingLock:
+    """RLock wrapper that records, per thread, whether the lock is held."""
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+        self._local = threading.local()
+
+    @property
+    def held(self) -> bool:
+        return getattr(self._local, "depth", 0) > 0
+
+    def __enter__(self) -> "_TrackingLock":
+        self._inner.__enter__()  # type: ignore[attr-defined]
+        self._local.depth = getattr(self._local, "depth", 0) + 1
+        return self
+
+    def __exit__(self, *exc: object) -> object:
+        self._local.depth = getattr(self._local, "depth", 1) - 1
+        return self._inner.__exit__(*exc)  # type: ignore[attr-defined]
+
+
+class _AuditingConnection:
+    """sqlite connection proxy that flags statements issued without ``_db_lock``.
+
+    Python's sqlite3 emits an implicit ``BEGIN`` before INSERT/UPDATE/DELETE
+    when it observes ``sqlite3_get_autocommit() == 1``. Two threads writing on
+    the same connection can both pass that check and both issue ``BEGIN``, and
+    the loser raises ``OperationalError: cannot start a transaction within a
+    transaction``. Holding ``_db_lock`` across every DML statement is what
+    prevents it, so this proxy audits that discipline directly.
+
+    Reads are audited too, but only the two episodic-search fetches, which the
+    context-assembly path runs concurrently with memory writes. sqlite3 caches
+    prepared statements per connection, so a SELECT that overlaps another
+    statement can have its row iteration corrupted — that surfaced on Windows
+    CI as a NULL ``embedding`` from a query filtering ``embedding IS NOT NULL``,
+    raising ``TypeError`` on ``len()``. The other read methods are deliberately
+    NOT audited: they run unlocked by design and widening the audit to them
+    would assert an invariant this change does not establish.
+    """
+
+    _DML = ("INSERT", "UPDATE", "DELETE", "REPLACE", "BEGIN")
+    _GUARDED_READS = ("embedding IS NOT NULL", "text LIKE ?")
+
+    def __init__(self, inner: object, lock: _TrackingLock, violations: list[str]) -> None:
+        self._inner = inner
+        self._lock = lock
+        self._violations = violations
+
+    def _must_be_locked(self, sql: str) -> bool:
+        if sql.lstrip().upper().startswith(self._DML):
+            return True
+        return any(frag in sql for frag in self._GUARDED_READS)
+
+    def execute(self, sql: str, *args: object, **kwargs: object) -> object:
+        if self._must_be_locked(sql) and not self._lock.held:
+            self._violations.append(sql.strip()[:80])
+        return self._inner.execute(sql, *args, **kwargs)  # type: ignore[attr-defined]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+class TestSharedConnectionLockDiscipline:
+    """Every DML on the shared sqlite connection must hold ``_db_lock``."""
+
+    @staticmethod
+    def _fake_embed(dim: int):
+        def _embed(text: str) -> list[float]:
+            words = _tokenize(text)
+            vec = [0.0] * dim
+            for w in words:
+                vec[hash(w) % dim] += 1.0
+            return vec or [1.0] + [0.0] * (dim - 1)
+
+        return _embed
+
+    def _instrument(self, store: VectorMemoryStore) -> list[str]:
+        violations: list[str] = []
+        lock = _TrackingLock(store._db_lock)
+        store._db_lock = lock  # type: ignore[assignment]
+        store._db = _AuditingConnection(store._db, lock, violations)  # type: ignore[assignment]
+        return violations
+
+    def test_write_paths_hold_db_lock(self, tmp_path: Path) -> None:
+        dim = 16
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
+        store.init()
+        embed = self._fake_embed(dim)
+        store.embed_fn = embed
+        violations = self._instrument(store)
+
+        # Episodic writes + the two search fallbacks the context-assembly path
+        # uses when faiss is unavailable: the vector scan (which also updates
+        # last_accessed_at) and the LIKE fallback. Both fetches ran unlocked and
+        # raced consolidation.
+        store._faiss_index = None
+        for i in range(3):
+            text = f"the findings doc for topic alpha number {i} was written to disk"
+            assert store.write_episodic(text, embedding=embed(text)) is True
+        assert store.search_episodic(query_embedding=embed("findings doc"), limit=3)
+        assert store.search_episodic(query_text="findings doc", limit=3)
+
+        # Semantic write, then an overwrite so _retire_stale_episodic runs.
+        assert store.set_semantic("project.notes.findings_doc", "v1 draft", 0.9, "consolidation") is None
+        assert store.set_semantic("project.notes.findings_doc", "v2 final", 0.9, "consolidation") is None
+
+        # Remaining writers: lessons (incl. embedding backfill), deletes, rotation.
+        assert store.write_lesson("prefer explicit transactions over implicit ones") is True
+        store.delete_semantic("project.notes.findings_doc", "user_explicit")
+        rows = store.get_episodic_list(limit=1)
+        if rows:
+            store.delete_episodic(rows[0]["id"])
+        store.rotate_events(max_rows=1)
+
+        assert violations == [], f"statement issued without _db_lock held: {violations}"
+
+    def test_concurrent_search_and_semantic_write(self, tmp_path: Path) -> None:
+        """Consolidation-style writes must survive concurrent context assembly.
+
+        Reproduces the shape of the observed failure: several context-assembly
+        threads run the SQLite search fallback (which writes last_accessed_at)
+        while a consolidation thread overwrites semantic keys (which retires
+        stale episodic rows).
+        """
+        dim = 16
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
+        store.init()
+        embed = self._fake_embed(dim)
+        store.embed_fn = embed
+        store._faiss_index = None  # force the _sqlite_vector_search fallback
+        for i in range(12):
+            text = f"episodic entry {i} about the findings doc and topic alpha beta"
+            store.write_episodic(text, embedding=embed(text))
+
+        errors: list[BaseException] = []
+
+        def _searcher() -> None:
+            try:
+                for _ in range(25):
+                    store.search_episodic(query_embedding=embed("findings doc"), limit=5)
+            except BaseException as exc:  # noqa: BLE001 - capture any thread crash
+                errors.append(exc)
+
+        def _writer() -> None:
+            try:
+                for i in range(25):
+                    store.set_semantic(
+                        "project.notes.findings_doc", f"revision {i}", 0.9, "consolidation"
+                    )
+            except BaseException as exc:  # noqa: BLE001 - capture any thread crash
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_searcher) for _ in range(3)]
+        threads.append(threading.Thread(target=_writer))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"concurrent search/write raised: {errors!r}"
+        entry = store.get_semantic("project.notes.findings_doc")
+        assert entry is not None
+
+    def test_retire_failure_keeps_semantic_write(self, tmp_path: Path) -> None:
+        """A retirement failure must not discard the committed semantic write.
+
+        ``_write_semantic`` commits the row before retiring stale episodic
+        entries, so an exception raised in step 9 propagated out of
+        ``set_semantic`` and aborted the caller's whole batch — history
+        consolidation lost every remaining semantic and episodic item.
+        """
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert store.set_semantic("pref.editor", "vim", 0.9, "consolidation") is None
+
+        def _boom(key: str, old_value: str) -> None:
+            raise RuntimeError("cannot start a transaction within a transaction")
+
+        store._retire_stale_episodic = _boom  # type: ignore[assignment]
+        assert store.set_semantic("pref.editor", "emacs", 0.9, "consolidation") is None
+        entry = store.get_semantic("pref.editor")
+        assert entry is not None
+        assert entry["value_json"] == '"emacs"'
