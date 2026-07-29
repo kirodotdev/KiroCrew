@@ -16,13 +16,84 @@ const MAX_HEIGHT = 1200
 // MCP Apps UI-channel JSON-RPC method names (SEP-1865). The `ui/` namespace is
 // disjoint from the MCP tools namespace, carried over postMessage between the
 // host (this component) and the app iframe.
-const PROTOCOL_VERSION = '2026-01-26'
+const PROTOCOL_VERSION = '2025-11-21'
 const M_INITIALIZE = 'ui/initialize'
 const M_TOOLS_CALL = 'tools/call'
+const M_REQUEST_DISPLAY_MODE = 'ui/request-display-mode'
+const M_OPEN_LINK = 'ui/open-link'
 const N_INITIALIZED = 'ui/notifications/initialized'
 const N_TOOL_INPUT = 'ui/notifications/tool-input'
 const N_TOOL_RESULT = 'ui/notifications/tool-result'
 const N_SIZE_CHANGED = 'ui/notifications/size-changed'
+const N_HOST_CONTEXT_CHANGED = 'ui/notifications/host-context-changed'
+/** MCP logging notification (note: NOT under the `ui/` namespace). Apps send
+ *  their own diagnostics here; dropping it makes an app opaque to debugging. */
+const N_LOG_MESSAGE = 'notifications/message'
+
+/** Capabilities this host actually implements. Declaring them matters even though
+ *  the SDK's client-side gate is currently a no-op stub: a spec-conformant app is
+ *  entitled to skip a feature we don't advertise, so an empty object here is a
+ *  latent "the app silently stops trying" bug the moment that gate is enforced. */
+const HOST_CAPABILITIES = {
+  serverTools: {},
+  openLinks: {},
+} as const
+
+/** Display modes this host offers. `fullscreen` is honored as an EXPANDED
+ *  BUBBLE (a taller inline frame), never as a viewport-covering overlay: these
+ *  are conversational inline apps, and yanking the user out of the transcript
+ *  to a modal defeats that. The mode name is the app-facing contract (apps
+ *  commonly gate an editable/expanded surface on `fullscreen` — excalidraw only
+ *  mounts its editor there); how much room the host actually grants is
+ *  communicated separately via hostContext.containerDimensions. `pip` is in the
+ *  spec's enum but not offered here. */
+type DisplayMode = 'inline' | 'fullscreen'
+const AVAILABLE_DISPLAY_MODES: DisplayMode[] = ['inline', 'fullscreen']
+
+/** Fraction of the viewport an EXPANDED app gets. Big enough to cover the
+ *  response bubble and be genuinely usable for editing, without becoming a
+ *  viewport-covering modal. */
+const EXPANDED_VH = 0.8
+
+/** Concrete pixel height granted in `fullscreen`. */
+function expandedHeightPx(): number {
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 0
+  return vh > 0 ? Math.min(MAX_HEIGHT, Math.round(vh * EXPANDED_VH)) : MAX_HEIGHT
+}
+
+/**
+ * hostContext.containerDimensions for a mode.
+ *
+ * CRITICAL — `fullscreen` MUST carry a concrete `height`, not just `maxHeight`.
+ * An app cannot lay out a fullscreen surface from a ceiling alone: inside an
+ * iframe `position: fixed` gives the body no height, so a real app (excalidraw)
+ * keys its fullscreen layout off `containerDimensions.height` and renders into a
+ * ZERO-HEIGHT container when only `maxHeight` is supplied — the mode flips, the
+ * editor mounts, and nothing visibly changes. `inline` keeps advertising a
+ * ceiling because the app sizes itself there and reports back via
+ * ui/notifications/size-changed.
+ */
+function dimensionsFor(mode: DisplayMode): Record<string, number> {
+  return mode === 'fullscreen' ? { height: expandedHeightPx() } : { maxHeight: MAX_HEIGHT }
+}
+
+/**
+ * Gate for ui/open-link. The URL originates in SANDBOXED APP CONTENT, so it is
+ * untrusted input to a host-side navigation: accept ONLY absolute `https:`.
+ * That rejects `javascript:` (script execution in the host origin), `data:` and
+ * `blob:` (arbitrary attacker-authored documents), `file:` (local disk reads),
+ * and custom schemes that can hand off to native handlers. Callers must also
+ * pass `noopener,noreferrer` so the opened tab gets no `window.opener` handle
+ * back into the dashboard (reverse tabnabbing).
+ */
+function isOpenableUrl(raw: unknown): raw is string {
+  if (typeof raw !== 'string' || !raw) return false
+  try {
+    return new URL(raw).protocol === 'https:'
+  } catch {
+    return false // not absolute / unparseable
+  }
+}
 
 interface JsonRpcMessage {
   jsonrpc?: string
@@ -46,16 +117,28 @@ interface JsonRpcMessage {
  * APPBRIDGE: a minimal host-side implementation of the MCP Apps UI JSON-RPC
  * channel. It answers `ui/initialize`, drives the tool-input / tool-result
  * notifications after the app signals `ui/notifications/initialized`, honors
- * `ui/notifications/size-changed`, and relays `tools/call` requests to the
- * gateway via `POST /api/mcp-apps/call` (the gateway enforces that only
- * app-visible tools are callable). Every other not-yet-supported request is
- * rejected with a JSON-RPC method-not-found error. Every inbound message is
- * authenticated by `event.source === iframe.contentWindow` before it is acted on.
+ * `ui/notifications/size-changed`, negotiates `ui/request-display-mode` (granted
+ * as an expanded bubble — see DisplayMode — and mirrored back to the app with
+ * `ui/notifications/host-context-changed` when the host's own button toggles it),
+ * and relays `tools/call` requests to the gateway via
+ * `POST /api/mcp-apps/call` (the gateway enforces that only app-visible tools
+ * are callable). Every other not-yet-supported request is rejected with a
+ * JSON-RPC method-not-found error. Every inbound message is authenticated by
+ * `event.source === iframe.contentWindow` before it is acted on.
  */
 export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload }) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState(DEFAULT_HEIGHT)
-  const [expanded, setExpanded] = useState(false)
+  // Negotiated display mode (SEP-1865). Driven from BOTH directions: the app can
+  // request a change via ui/request-display-mode, and the host's own
+  // expand/collapse button sets it and notifies the app. `expanded` is derived
+  // so there is exactly one source of truth (the two used to be able to drift:
+  // the header button changed only the local height and the app was never told).
+  const [displayMode, setDisplayMode] = useState<DisplayMode>('inline')
+  const expanded = displayMode === 'fullscreen'
+  // Mirror for the stable message handler (which must not re-subscribe per mode).
+  const displayModeRef = useRef<DisplayMode>(displayMode)
+  displayModeRef.current = displayMode
 
   const srcDoc = useMemo(() => buildMcpAppSrcdoc(payload), [payload])
   const allow = useMemo(() => buildAllowAttribute(payload.permissions), [payload.permissions])
@@ -84,6 +167,10 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
   callbackSecretRef.current = payload.callback_secret ?? ''
   // Bound concurrent app→gateway callbacks: a hostile/buggy app document must
   // not be able to accumulate unbounded in-flight HTTP/socket/backend work.
+  // Stable label for log lines emitted by the app (the message handler has []
+  // deps, so it must read through a ref rather than close over `payload`).
+  const labelRef = useRef<string>(`${payload.server}/${payload.tool}`)
+  labelRef.current = `${payload.server}/${payload.tool}`
   const inFlightRef = useRef<number>(0)
   // Navigation guard: a sandboxed srcdoc iframe can self-navigate its own
   // document (CSP default-src/form-action 'none' do not block navigation), and
@@ -150,13 +237,13 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
               result: {
                 protocolVersion: PROTOCOL_VERSION,
                 hostInfo: { name: 'kirocrew', version: '0.1' },
-                hostCapabilities: {},
+                hostCapabilities: HOST_CAPABILITIES,
                 hostContext: {
                   theme: 'dark',
                   platform: 'web',
-                  displayMode: 'inline',
-                  availableDisplayModes: ['inline'],
-                  containerDimensions: { maxHeight: MAX_HEIGHT },
+                  displayMode: displayModeRef.current,
+                  availableDisplayModes: AVAILABLE_DISPLAY_MODES,
+                  containerDimensions: dimensionsFor(displayModeRef.current),
                 },
               },
             })
@@ -249,6 +336,89 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
           return
         }
 
+        case M_REQUEST_DISPLAY_MODE: {
+          // App-initiated display-mode change (e.g. excalidraw's fullscreen
+          // button, which is how it enters its EDITABLE canvas — in `inline` it
+          // renders a static preview). Previously this fell through to the
+          // method-not-found default, so the app's request rejected and it was
+          // stuck in a non-interactive mode forever.
+          //
+          // We grant `fullscreen` as an expanded bubble rather than a viewport
+          // overlay (see DisplayMode). Per spec the result reports the mode
+          // ACTUALLY set, so an unknown/unsupported mode (e.g. `pip`) is
+          // answered with the mode we keep rather than an error.
+          if (!isRequest) return
+          const requested = (msg.params as { mode?: unknown } | undefined)?.mode
+          const next: DisplayMode =
+            requested === 'fullscreen' || requested === 'inline'
+              ? requested
+              : displayModeRef.current
+          displayModeRef.current = next
+          setDisplayMode(next)
+          post({ jsonrpc: '2.0', id: msg.id, result: { mode: next } })
+          // The request-display-mode RESULT carries only `mode`, so the app has
+          // no way to learn the height it must lay its fullscreen surface out
+          // against. Follow the grant with the context update.
+          post({
+            jsonrpc: '2.0',
+            method: N_HOST_CONTEXT_CHANGED,
+            params: { displayMode: next, containerDimensions: dimensionsFor(next) },
+          })
+          return
+        }
+
+        case M_OPEN_LINK: {
+          // The app's "Open in Excalidraw" / menu links. Previously fell to the
+          // -32601 default, so the share flow uploaded the diagram and then the
+          // tab never opened — a silent dead end for the user.
+          if (!isRequest) return
+          const url = (msg.params as { url?: unknown } | undefined)?.url
+          if (!isOpenableUrl(url)) {
+            // Report the refusal in-band (spec: isError) instead of throwing a
+            // protocol error — the app can surface it to the user.
+            post({ jsonrpc: '2.0', id: msg.id, result: { isError: true } })
+            return
+          }
+          // noopener,noreferrer: the opened tab must not receive a window.opener
+          // handle back into the dashboard origin.
+          //
+          // The return value is deliberately NOT inspected: per the HTML spec
+          // `window.open` returns null whenever `noopener`/`noreferrer` is in the
+          // feature string, so a successful open is indistinguishable from a
+          // popup block. Treating null as failure would report `isError: true`
+          // on every successful open.
+          window.open(url, '_blank', 'noopener,noreferrer')
+          post({ jsonrpc: '2.0', id: msg.id, result: { isError: false } })
+          return
+        }
+
+        // NOTE: ui/update-model-context is deliberately NOT handled yet, so it
+        // still returns -32601 below. The app uses it to tell the MODEL about
+        // user edits, and there is no dashboard->session route to deliver that
+        // today; answering with an EmptyResult would falsely tell the app the
+        // context landed. Honest refusal until the backend route exists.
+
+        case N_LOG_MESSAGE: {
+          // App-emitted diagnostics. Silently dropping these (the old behavior,
+          // spec-legal for an unknown notification) makes a misbehaving app
+          // impossible to debug from outside: excalidraw routes its entire
+          // display-mode/editor-lifecycle trace through app.sendLog, so the one
+          // signal that explains a stuck app was being discarded. Forward to the
+          // console, tagged with the server/tool so multiple apps stay separable.
+          //
+          // Treated as UNTRUSTED text: passed as a console argument (never
+          // interpolated into a format string) and length-capped, so a hostile
+          // app cannot flood or forge host log lines.
+          if (isRequest) return // a log is a notification; ignore a malformed request form
+          const p = msg.params as { level?: unknown; logger?: unknown; data?: unknown } | undefined
+          const level = typeof p?.level === 'string' ? p.level : 'info'
+          const logger = typeof p?.logger === 'string' ? p.logger.slice(0, 40) : '-'
+          const data = typeof p?.data === 'string' ? p.data.slice(0, 2000) : p?.data
+          // eslint-disable-next-line no-console
+          console.debug(`[mcp-app ${labelRef.current}] ${level} ${logger}:`, data)
+          return
+        }
+
         default:
           // Unsupported REQUEST (e.g. tools/call) → JSON-RPC method-not-found.
           // Unsupported notifications (no id) are silently ignored per spec.
@@ -262,8 +432,69 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
     return () => window.removeEventListener('message', handler)
   }, [])
 
-  const toggleExpanded = useCallback(() => setExpanded((v) => !v), [])
-  const displayHeight = expanded ? MAX_HEIGHT : height
+  // Push a partial hostContext update into the app. Mirrors the inbound bridge's
+  // guards — never post into a document that navigated away.
+  const notifyHostContext = useCallback((mode: DisplayMode) => {
+    const cw = iframeRef.current?.contentWindow
+    if (!cw || navigatedRef.current) return
+    try {
+      // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
+      cw.postMessage(
+        {
+          jsonrpc: '2.0',
+          method: N_HOST_CONTEXT_CHANGED,
+          // Partial context update — only the changed fields, per spec.
+          params: { displayMode: mode, containerDimensions: dimensionsFor(mode) },
+        },
+        '*',
+      )
+    } catch { /* frame torn down */ }
+  }, [])
+
+  // Host-initiated display-mode change (the header expand/collapse button).
+  // The app MUST be told: it may gate an editable surface on the mode, and a
+  // host that silently resizes leaves the two out of sync.
+  //
+  // `next` is derived from the ref rather than inside a setState updater: React
+  // may invoke an updater twice (StrictMode), and the notify below is a side
+  // effect — running it in the updater double-posted per click in dev.
+  const toggleExpanded = useCallback(() => {
+    const next: DisplayMode = displayModeRef.current === 'fullscreen' ? 'inline' : 'fullscreen'
+    displayModeRef.current = next
+    setDisplayMode(next)
+    notifyHostContext(next)
+  }, [notifyHostContext])
+
+  // While expanded, the granted height is derived from the viewport — so a window
+  // resize invalidates it. The frame's own height recomputes on any re-render but
+  // the height the APP was told is posted once, so the two silently diverge: the
+  // app keeps laying out against the stale value (it hard-sets html/body height
+  // from containerDimensions.height) and gets clipped when the window shrinks, or
+  // leaves a dead band when it grows. Re-notify on resize, debounced, and only
+  // while expanded (inline apps self-size via size-changed).
+  const [resizeTick, setResizeTick] = useState(0)
+  useEffect(() => {
+    if (!expanded) return
+    let t: ReturnType<typeof setTimeout> | undefined
+    const onResize = () => {
+      if (t) clearTimeout(t)
+      t = setTimeout(() => {
+        setResizeTick((n) => n + 1) // recompute the frame height
+        notifyHostContext('fullscreen') // and tell the app the new one
+      }, 150)
+    }
+    window.addEventListener('resize', onResize)
+    return () => {
+      if (t) clearTimeout(t)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [expanded, notifyHostContext])
+
+  // Must match the `height` granted in dimensionsFor('fullscreen') — a frame
+  // shorter than the advertised height would clip the app's own layout.
+  // resizeTick is a deliberate recompute trigger, not a value.
+  void resizeTick
+  const displayHeight = expanded ? expandedHeightPx() : height
 
   return (
     <div className="my-2 rounded-md border border-border overflow-hidden bg-card">

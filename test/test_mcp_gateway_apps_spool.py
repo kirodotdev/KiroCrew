@@ -532,9 +532,10 @@ async def test_no_ui_resource_delivers_unmodified(apps_flag_on, spool_tmp):
 
 @pytest.mark.asyncio
 async def test_flag_off_no_interception(monkeypatch, spool_tmp):
-    """With the flag OFF, a ui:// result is delivered verbatim (no marker, no
-    resources/read, no spool) — byte-identical to pre-feature behavior."""
-    monkeypatch.delenv(MCP_APPS_ENV_FLAG, raising=False)
+    """With the kill-switch set, a ui:// result is delivered verbatim (no
+    marker, no resources/read, no spool) — byte-identical to pre-feature
+    behavior. The gate defaults to ON, so "off" is set explicitly."""
+    monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
     backend = _make_backend()
     inbox = await backend.attach_stub("s1")
     await backend.forward_from_stub(

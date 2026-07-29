@@ -28,6 +28,15 @@ def _init_frame(capabilities=None):
     return {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params}
 
 
+def _patch_pooling(monkeypatch, *, enabled: bool) -> None:
+    """Force ``mcp_gateway.enabled`` for the config-keyed gate."""
+    import kiro_crew.config.loader as loader
+
+    real = loader.KiroCrewConfig.load()
+    monkeypatch.setattr(real.mcp_gateway, "enabled", enabled, raising=False)
+    monkeypatch.setattr(loader.KiroCrewConfig, "load", staticmethod(lambda: real))
+
+
 @pytest.fixture
 def flag_on(monkeypatch):
     monkeypatch.setenv(MCP_APPS_ENV_FLAG, "1")
@@ -35,7 +44,9 @@ def flag_on(monkeypatch):
 
 @pytest.fixture
 def flag_off(monkeypatch):
-    monkeypatch.delenv(MCP_APPS_ENV_FLAG, raising=False)
+    # The gate is a KILL-SWITCH (default ON), so "off" must be set explicitly.
+    # Unsetting the var now means ENABLED -- see test_default_unset_is_on.
+    monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
 
 
 class TestFlagOff:
@@ -46,11 +57,59 @@ class TestFlagOff:
         assert out is msg
         assert msg == before
 
-    def test_falsy_flag_values_stay_off(self, monkeypatch):
-        for value in ("", "0", "false", "no", "off"):
+    def test_explicit_falsy_values_disable(self, monkeypatch):
+        # NOTE: "" is deliberately absent -- an empty/unset value is the DEFAULT,
+        # which is now ON. Only an explicit falsy value disables the feature.
+        for value in ("0", "false", "no", "off", "OFF", " off "):
             monkeypatch.setenv(MCP_APPS_ENV_FLAG, value)
             msg = _init_frame(capabilities={})
-            assert _inject_client_extensions(msg) is msg
+            assert _inject_client_extensions(msg) is msg, value
+
+    def test_unset_follows_pooling_enabled(self, monkeypatch):
+        """Unset => follow ``mcp_gateway.enabled`` read live from config."""
+        monkeypatch.delenv(MCP_APPS_ENV_FLAG, raising=False)
+        _patch_pooling(monkeypatch, enabled=True)
+        out = _inject_client_extensions(_init_frame(capabilities={}))
+        ext = out["params"]["capabilities"]["extensions"]
+        assert ext[MCP_APPS_EXTENSION_KEY] == {"mimeTypes": [MCP_APPS_MIME_TYPE]}
+
+    def test_unset_respects_pooling_opt_out(self, monkeypatch):
+        """Pooling disabled => apps off, even with the env var unset.
+
+        This is the adopted-daemon case: ``_shutdown_locked`` refuses to
+        terminate a daemon it did not spawn, so a survivor keeps serving stubs
+        after the operator disables ``mcp_gateway``. Keying the gate on "am I
+        running" would keep intercepting results and spooling payloads (which
+        carry a callback_secret) after an explicit opt-out.
+        """
+        monkeypatch.delenv(MCP_APPS_ENV_FLAG, raising=False)
+        _patch_pooling(monkeypatch, enabled=False)
+        msg = _init_frame(capabilities={})
+        assert _inject_client_extensions(msg) is msg
+
+    def test_kill_switch_beats_pooling_enabled(self, monkeypatch):
+        monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
+        _patch_pooling(monkeypatch, enabled=True)
+        msg = _init_frame(capabilities={})
+        assert _inject_client_extensions(msg) is msg
+
+    def test_explicit_on_beats_pooling_disabled(self, monkeypatch):
+        monkeypatch.setenv(MCP_APPS_ENV_FLAG, "1")
+        _patch_pooling(monkeypatch, enabled=False)
+        out = _inject_client_extensions(_init_frame(capabilities={}))
+        assert MCP_APPS_EXTENSION_KEY in out["params"]["capabilities"]["extensions"]
+
+    def test_unreadable_config_fails_closed(self, monkeypatch):
+        """A config we cannot read must not enable the feature."""
+        monkeypatch.delenv(MCP_APPS_ENV_FLAG, raising=False)
+        import kiro_crew.config.loader as loader
+
+        def _boom():
+            raise OSError("config unreadable")
+
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", staticmethod(_boom))
+        msg = _init_frame(capabilities={})
+        assert _inject_client_extensions(msg) is msg
 
 
 class TestFlagOn:

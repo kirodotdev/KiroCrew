@@ -191,9 +191,10 @@ async def test_full_pipeline_marker_and_spool(apps_flag_on, spool_tmp):
 
 
 async def test_flag_off_is_a_noop(spool_tmp, monkeypatch):
-    """Flag off: no capability injection (server sees no ui extension), no
-    marker, no spool file — byte-identical passthrough."""
-    monkeypatch.delenv(MCP_APPS_ENV_FLAG, raising=False)
+    """Kill-switch set: no capability injection (server sees no ui extension),
+    no marker, no spool file — byte-identical passthrough. The gate defaults to
+    ON, so disabling requires an explicit falsy value."""
+    monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
     live = await _spawn_live_server()
     try:
         reply = await _handshake_and_draw(live)
