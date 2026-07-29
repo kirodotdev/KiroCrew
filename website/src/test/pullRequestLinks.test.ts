@@ -22,8 +22,8 @@ describe('extractPullRequestLinks', () => {
       '[same PR](https://github.com/acme/widgets/pull/12) and https://github.com/acme/widgets/pull/14?tab=checks',
     ))
     expect(result).toEqual([
-      { url: 'https://github.com/acme/widgets/pull/12', provider: 'github', number: 12, repo: 'widgets' },
-      { url: 'https://github.com/acme/widgets/pull/14', provider: 'github', number: 14, repo: 'widgets' },
+      { url: 'https://github.com/acme/widgets/pull/12', provider: 'github', number: 12, repo: 'widgets', kind: 'change' },
+      { url: 'https://github.com/acme/widgets/pull/14', provider: 'github', number: 14, repo: 'widgets', kind: 'change' },
     ])
   })
 
@@ -31,7 +31,7 @@ describe('extractPullRequestLinks', () => {
     expect(extractPullRequestLinks(messages(
       'See https://gitlab.com/acme/platform/service/-/merge_requests/42!',
     ))).toEqual([
-      { url: 'https://gitlab.com/acme/platform/service/-/merge_requests/42', provider: 'gitlab', number: 42, repo: 'service' },
+      { url: 'https://gitlab.com/acme/platform/service/-/merge_requests/42', provider: 'gitlab', number: 42, repo: 'service', kind: 'change' },
     ])
   })
 
@@ -50,7 +50,7 @@ describe('extractPullRequestLinks', () => {
 
     it('extracts a self-hosted MR when its host is allowlisted', () => {
       expect(extractPullRequestLinks(messages(`Opened ${mr}`), ['gitlab.acme.internal'])).toEqual([
-        { url: mr, provider: 'gitlab', number: 7, repo: 'api' },
+        { url: mr, provider: 'gitlab', number: 7, repo: 'api', kind: 'change' },
       ])
     })
 
@@ -58,7 +58,7 @@ describe('extractPullRequestLinks', () => {
       const ported = 'https://gitlab.acme.internal:8443/team/api/-/merge_requests/9'
       expect(extractPullRequestLinks(messages(ported), ['gitlab.acme.internal'])).toEqual([])
       expect(extractPullRequestLinks(messages(ported), ['gitlab.acme.internal:8443'])).toEqual([
-        { url: 'https://gitlab.acme.internal:8443/team/api/-/merge_requests/9', provider: 'gitlab', number: 9, repo: 'api' },
+        { url: 'https://gitlab.acme.internal:8443/team/api/-/merge_requests/9', provider: 'gitlab', number: 9, repo: 'api', kind: 'change' },
       ])
       // Suffix and lookalike hosts stay unmatched.
       expect(extractPullRequestLinks(
@@ -78,7 +78,7 @@ describe('extractPullRequestLinks', () => {
         messages('https://gitlab.acme.internal./team/api/-/merge_requests/7'),
         ['gitlab.acme.internal'],
       )).toEqual([
-        { url: 'https://gitlab.acme.internal/team/api/-/merge_requests/7', provider: 'gitlab', number: 7, repo: 'api' },
+        { url: 'https://gitlab.acme.internal/team/api/-/merge_requests/7', provider: 'gitlab', number: 7, repo: 'api', kind: 'change' },
       ])
     })
 
@@ -88,10 +88,10 @@ describe('extractPullRequestLinks', () => {
         messages('https://gitlab.acme.internal:443/team/api/-/merge_requests/7'),
         ['gitlab.acme.internal'],
       )).toEqual([
-        { url: 'https://gitlab.acme.internal/team/api/-/merge_requests/7', provider: 'gitlab', number: 7, repo: 'api' },
+        { url: 'https://gitlab.acme.internal/team/api/-/merge_requests/7', provider: 'gitlab', number: 7, repo: 'api', kind: 'change' },
       ])
       expect(extractPullRequestLinks(messages(mr), ['gitlab.acme.internal:443'])).toEqual([
-        { url: mr, provider: 'gitlab', number: 7, repo: 'api' },
+        { url: mr, provider: 'gitlab', number: 7, repo: 'api', kind: 'change' },
       ])
     })
 
@@ -109,7 +109,7 @@ describe('extractPullRequestLinks', () => {
       const history = messages(`Opened ${mr}`, 'still working')
       expect(index.update('slot-1', history)).toEqual([])
       expect(index.update('slot-1', history, ['gitlab.acme.internal'])).toEqual([
-        { url: mr, provider: 'gitlab', number: 7, repo: 'api' },
+        { url: mr, provider: 'gitlab', number: 7, repo: 'api', kind: 'change' },
       ])
     })
   })
@@ -118,14 +118,14 @@ describe('extractPullRequestLinks', () => {
     const url = 'https://github.com/acme/widgets/pull/166'
     for (const wrapped of [`**${url}**`, `*${url}*`, `\`${url}\``, `__${url}__`, `~~${url}~~`]) {
       expect(extractPullRequestLinks(messages(`PR is up: ${wrapped} — fix(tips)`))).toEqual([
-        { url, provider: 'github', number: 166, repo: 'widgets' },
+        { url, provider: 'github', number: 166, repo: 'widgets', kind: 'change' },
       ])
     }
     // GitLab MRs get the same trim
     expect(extractPullRequestLinks(messages(
       'MR: **https://gitlab.com/acme/platform/-/merge_requests/42**',
     ))).toEqual([
-      { url: 'https://gitlab.com/acme/platform/-/merge_requests/42', provider: 'gitlab', number: 42, repo: 'platform' },
+      { url: 'https://gitlab.com/acme/platform/-/merge_requests/42', provider: 'gitlab', number: 42, repo: 'platform', kind: 'change' },
     ])
   })
 
@@ -264,6 +264,7 @@ describe('extractPullRequestLinks', () => {
       provider: 'github',
       number: 999,
       repo: 'widgets',
+      kind: 'change',
     }])).toBe(false)
     expect(seen.get('slot-a')?.size).toBe(MAX_PULL_REQUEST_SOURCES)
   })
@@ -432,7 +433,7 @@ describe('CJK / fullwidth punctuation after a PR URL (issue #507)', () => {
       `PR \u5DF2\u5F00：${gh}（\u5355 commit，Fixes #435），`
       + `CI \u5168\u7EFF，approve \u540E merge。`
     expect(extractPullRequestLinks(messages(content))).toEqual([
-      { url: gh, provider: 'github', number: 436, repo: 'KiroCrew' },
+      { url: gh, provider: 'github', number: 436, repo: 'KiroCrew', kind: 'change' },
     ])
   })
 })

@@ -114,6 +114,7 @@ from kiro_crew.dashboard.handlers.mcp_discover import (
     api_mcp_discover_install,
 )
 from kiro_crew.dashboard.handlers.source_providers import (
+    api_issue_source,
     api_pull_request_auto_merge,
     api_pull_request_checks,
     api_pull_request_ready,
@@ -1646,6 +1647,7 @@ async def start_dashboard(
     app.router.add_post("/api/source/pull-request/resolve", api_pull_request_resolve)
     app.router.add_post("/api/source/pull-request/auto-merge", api_pull_request_auto_merge)
     app.router.add_post("/api/source/pull-request/ready", api_pull_request_ready)
+    app.router.add_post("/api/source/issue", api_issue_source)
     app.router.add_get("/api/chat/slots", chat.api_chat_slots)
     app.router.add_post("/api/chat/slots", chat.api_chat_slot_create)
     app.router.add_post("/api/chat/slots/cleanup", chat.api_chat_slots_cleanup)

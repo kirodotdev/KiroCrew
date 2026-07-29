@@ -116,6 +116,7 @@ import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft }
 import { findPrevUserMsgDisplayIdx } from '../utils/findPrevUserMsgDisplayIdx'
 import {
   loadSeenPullRequestLinks,
+  partitionSourceLinks,
   persistSeenPullRequestLinks,
   PullRequestLinkIndex,
   recordNewPullRequestLinks,
@@ -1301,25 +1302,40 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     queryFn: () => api.dashboardConfig(),
     staleTime: 30_000,
   })
-  const sourceLinks = sourceLinkIndex.current.update(
+  const indexedSourceLinks = sourceLinkIndex.current.update(
     activeSlot,
     messages,
     sourceHostCfg?.gitlab_hosts ?? [],
   )
+  // One scan, one dedup map, two panels: the extractor returns pull requests and
+  // issues together (they share the per-role cap), and the two side-panel tabs
+  // consume the halves. useMemo keyed on the index's own result identity — the
+  // index returns the SAME array reference until the transcript actually changes,
+  // so the halves stay reference-stable and don't retrigger the reconciliation
+  // effects below on every render.
+  const { changes: sourceLinks, issues: issueLinks } = useMemo(
+    () => partitionSourceLinks(indexedSourceLinks),
+    [indexedSourceLinks],
+  )
   const [selectedSourceUrl, setSelectedSourceUrl] = useState('')
+  const [selectedIssueUrl, setSelectedIssueUrl] = useState('')
 
-  // Add and focus the per-slot Changes tab for newly detected source URLs,
-  // but leave panel visibility under explicit user control.
+  // Add and focus the per-slot Changes / Issues tabs for newly detected URLs,
+  // but leave panel visibility under explicit user control. Both kinds share one
+  // seen-url bookkeeping set (it is keyed by url, and the cap is a per-slot
+  // budget), so each kind is recorded separately only to learn WHICH tab to open.
   const [seenSourceUrls] = useState(loadSeenPullRequestLinks)
   useEffect(() => {
-    if (recordNewPullRequestLinks(seenSourceUrls, activeSlot, sourceLinks)) {
-      persistSeenPullRequestLinks(seenSourceUrls)
-      tabsCtl.openView('changes')
-    }
+    const newChanges = recordNewPullRequestLinks(seenSourceUrls, activeSlot, sourceLinks)
+    const newIssues = recordNewPullRequestLinks(seenSourceUrls, activeSlot, issueLinks)
+    if (!newChanges && !newIssues) return
+    persistSeenPullRequestLinks(seenSourceUrls)
+    if (newChanges) tabsCtl.openView('changes')
+    if (newIssues) tabsCtl.openView('issues')
     // tabsCtl is intentionally not a dependency: this effect reacts only to
     // source discovery, not tab focus or panel visibility changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, sourceLinks, seenSourceUrls])
+  }, [activeSlot, sourceLinks, issueLinks, seenSourceUrls])
 
   useEffect(() => {
     // An uncached slot temporarily has no messages while its history hydrates.
@@ -1340,6 +1356,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // reconciliation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceLinks, selectedSourceUrl, slotLoading])
+
+  useEffect(() => {
+    // Same first-wins / clear-on-empty reconciliation as the Changes selection
+    // above, and the same hydration guard: an uncached slot has no messages
+    // while its history loads, so an early clear would drop a valid selection.
+    if (slotLoading) return
+    if (issueLinks.length === 0) {
+      setSelectedIssueUrl('')
+      return
+    }
+    if (!issueLinks.some(issue => issue.url === selectedIssueUrl)) {
+      setSelectedIssueUrl(issueLinks[0].url)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [issueLinks, selectedIssueUrl, slotLoading])
 
   const addSourceCommentToChat = useCallback((text: string) => {
     setInput(previous => previous.trim() ? `${previous.trimEnd()}\n\n${text}` : text)
@@ -4399,7 +4430,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               subagents={subagents} toolLog={toolLog} slot={activeSlot || ''}
               files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
-              sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl} onAddSourceToChat={addSourceCommentToChat}
+              sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl}
+              issues={issueLinks} selectedIssueUrl={selectedIssueUrl} onSelectIssue={setSelectedIssueUrl}
+              onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
               inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
               expanded={previewFocused}
@@ -4431,7 +4464,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 subagents={subagents} toolLog={toolLog} slot={activeSlot || ''}
                 files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
-                sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl} onAddSourceToChat={addSourceCommentToChat}
+                sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl}
+              issues={issueLinks} selectedIssueUrl={selectedIssueUrl} onSelectIssue={setSelectedIssueUrl}
+              onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
                 inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
                 expanded={previewFocused}

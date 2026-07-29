@@ -4,13 +4,18 @@ import { safeSetItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'changes' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side' | 'browser'
+export type ViewKind = 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side' | 'browser'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal'
 
 /** Views that are AUTO-managed by content (see `syncPinned`): they appear —
  *  pinned to the front, non-closable, and absent from the + menu — only while
- *  they have content, and are removed when empty. Order here = strip order. */
+ *  they have content, and are removed when empty. Order here = strip order.
+ *
+ *  `issues` is deliberately NOT pinned: most sessions never mention an issue,
+ *  so a permanent Issues tab would be an always-empty tab for the majority.
+ *  It is opened on demand (from the + menu, or automatically by ChatPage when
+ *  an issue url is first seen). */
 export const PINNED_VIEWS: ViewKind[] = ['changes', 'files', 'artifacts']
 
 export interface PanelTab {
@@ -38,7 +43,7 @@ export interface PanelTab {
 }
 
 const VIEW_TITLES: Record<ViewKind, string> = {
-  changes: 'Changes', files: 'Files', artifacts: 'Artifacts', subagents: 'Subagents', workflows: 'Workflows',
+  changes: 'Changes', issues: 'Issues', files: 'Files', artifacts: 'Artifacts', subagents: 'Subagents', workflows: 'Workflows',
   logs: 'Logs', side: 'Side', browser: 'Browser',
 }
 

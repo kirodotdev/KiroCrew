@@ -3528,8 +3528,13 @@ def test_self_hosted_gitlab_still_requires_https_and_mr_path(monkeypatch) -> Non
         source.parse_source_url("http://gitlab.acme.internal/a/b/-/merge_requests/1")
     with pytest.raises(ValueError, match="HTTPS"):
         source.parse_source_url("https://user:pw@gitlab.acme.internal/a/b/-/merge_requests/1")
+    # An issue path is now a supported shape (kind="issue"), so the rejection
+    # case is a path that is neither: a self-managed host does not widen which
+    # OBJECTS are readable.
     with pytest.raises(ValueError, match="Expected a GitLab URL"):
-        source.parse_source_url("https://gitlab.acme.internal/a/b/-/issues/1")
+        source.parse_source_url("https://gitlab.acme.internal/a/b/-/tree/main")
+    with pytest.raises(ValueError, match="Expected a GitLab URL"):
+        source.parse_source_url("https://gitlab.acme.internal/a/b/-/snippets/1")
 
 
 @pytest.mark.asyncio
@@ -4175,6 +4180,7 @@ def _app(
     app.router.add_post("/api/source/pull-request/resolve", source.api_pull_request_resolve)
     app.router.add_post("/api/source/pull-request/auto-merge", source.api_pull_request_auto_merge)
     app.router.add_post("/api/source/pull-request/ready", source.api_pull_request_ready)
+    app.router.add_post("/api/source/issue", source.api_issue_source)
     return app
 
 
@@ -5144,3 +5150,712 @@ def test_record_full_payload_clears_ci_when_checks_genuinely_empty() -> None:
     finally:
         source.unregister_status_delta_sink(sink)
         source._check_cache.clear()
+
+
+# --- Issues -----------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_issue_cache():
+    source._ISSUE_CACHE.clear()
+    source._ISSUE_FETCH_INFLIGHT.clear()
+    source._ISSUE_FETCH_TASKS.clear()
+    yield
+    source._ISSUE_CACHE.clear()
+    source._ISSUE_FETCH_INFLIGHT.clear()
+    source._ISSUE_FETCH_TASKS.clear()
+
+
+def test_parse_github_issue_url() -> None:
+    ref = source.parse_source_url("https://github.com/kirodotdev/KiroCrew/issues/58#issue-1")
+    assert ref.provider == "github"
+    assert ref.owner == "kirodotdev"
+    assert ref.repo == "KiroCrew"
+    assert ref.number == 58
+    assert ref.kind == "issue"
+    assert ref.url == "https://github.com/kirodotdev/KiroCrew/issues/58"
+
+
+def test_parse_github_pull_request_still_reports_change_kind() -> None:
+    ref = source.parse_source_url("https://github.com/acme/repo/pull/12")
+    assert ref.kind == "change"
+
+
+def test_parse_gitlab_issue_url_with_nested_group() -> None:
+    ref = source.parse_source_url("https://gitlab.com/acme/platform/service/-/issues/42")
+    assert ref.provider == "gitlab"
+    assert ref.project == "acme/platform/service"
+    assert ref.repo == "service"
+    assert ref.number == 42
+    assert ref.kind == "issue"
+    assert ref.url == "https://gitlab.com/acme/platform/service/-/issues/42"
+
+
+def test_parse_gitlab_merge_request_still_reports_change_kind() -> None:
+    ref = source.parse_source_url("https://gitlab.com/acme/platform/-/merge_requests/9")
+    assert ref.kind == "change"
+
+
+def test_parse_gitlab_issue_rejects_a_traversal_project_path() -> None:
+    """The issue marker inherits the MR marker's segment rejection."""
+    with pytest.raises(ValueError, match="Invalid GitLab project path"):
+        source.parse_source_url("https://gitlab.com/a/../b/-/issues/1")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # GitLab issues live under the /-/ scope; the bare form is not a
+        # GitLab issue URL and must stay rejected.
+        "https://gitlab.com/group/project/issues/1",
+        "http://github.com/org/repo/issues/1",
+        "https://evil.example/github.com/org/repo/issues/1",
+        "https://github.com.evil.example/org/repo/issues/1",
+        "https://user@github.com/org/repo/issues/1",
+        "https://github.com/org/repo/issues/abc",
+        "https://gitlab.com/group/project/-/issues/",
+    ],
+)
+def test_parse_source_url_rejects_untrusted_issue_shapes(url: str) -> None:
+    with pytest.raises(ValueError):
+        source.parse_source_url(url)
+
+
+def test_self_hosted_gitlab_issue_rejected_when_allowlist_empty(monkeypatch) -> None:
+    monkeypatch.setattr(source, "_allowed_gitlab_hosts", lambda: frozenset())
+    with pytest.raises(ValueError, match="dashboard.gitlab_hosts"):
+        source.parse_source_url("https://gitlab.acme.internal/team/api/-/issues/7")
+
+
+def test_self_hosted_gitlab_issue_accepted_when_allowlisted(monkeypatch) -> None:
+    monkeypatch.setattr(
+        source, "_allowed_gitlab_hosts", lambda: frozenset({"gitlab.acme.internal"})
+    )
+    ref = source.parse_source_url("https://gitlab.acme.internal/team/platform/api/-/issues/7")
+    assert ref.kind == "issue"
+    assert ref.host == "gitlab.acme.internal"
+    assert ref.project == "team/platform/api"
+    assert ref.url == "https://gitlab.acme.internal/team/platform/api/-/issues/7"
+
+
+def test_self_hosted_gitlab_issue_matches_host_exactly(monkeypatch) -> None:
+    """An allowlist entry must not widen to a lookalike host for issues either."""
+    monkeypatch.setattr(
+        source, "_allowed_gitlab_hosts", lambda: frozenset({"gitlab.acme.internal"})
+    )
+    for url in (
+        "https://evil-gitlab.acme.internal/a/b/-/issues/1",
+        "https://gitlab.acme.internal.evil.test/a/b/-/issues/1",
+        "https://gitlab.acme.internal:8443/a/b/-/issues/1",
+    ):
+        with pytest.raises(ValueError):
+            source.parse_source_url(url)
+
+
+# Every pull-request-only entry point. An issue URL parses successfully now, so
+# each of these must refuse it explicitly or it would address the PR namespace.
+_ISSUE_URL = "https://github.com/acme/repo/issues/12"
+
+
+@pytest.mark.asyncio
+async def test_fetch_pull_request_refuses_an_issue_url(monkeypatch) -> None:
+    run = AsyncMock()
+    monkeypatch.setattr(source, "_run_json", run)
+    with pytest.raises(ValueError, match="points at an issue"):
+        await source.fetch_pull_request(_ISSUE_URL)
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_pull_request_checks_refuses_an_issue_url(monkeypatch) -> None:
+    run = AsyncMock()
+    monkeypatch.setattr(source, "_run_json", run)
+    with pytest.raises(ValueError, match="points at an issue"):
+        await source.fetch_pull_request_checks(_ISSUE_URL)
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_pull_request_thread_refuses_an_issue_url(monkeypatch) -> None:
+    run = AsyncMock()
+    monkeypatch.setattr(source, "_run_json", run)
+    with pytest.raises(ValueError, match="points at an issue"):
+        await source.resolve_pull_request_thread(_ISSUE_URL, "PRRT_thread1")
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enable_auto_merge_refuses_an_issue_url(monkeypatch) -> None:
+    run = AsyncMock()
+    monkeypatch.setattr(source, "_run_json", run)
+    with pytest.raises(ValueError, match="points at an issue"):
+        await source.enable_pull_request_auto_merge(_ISSUE_URL)
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_ready_refuses_an_issue_url(monkeypatch) -> None:
+    run = AsyncMock()
+    monkeypatch.setattr(source, "_run_json", run)
+    with pytest.raises(ValueError, match="points at an issue"):
+        await source.mark_pull_request_ready(_ISSUE_URL)
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_check_status_refuses_an_issue_url(monkeypatch) -> None:
+    """The chip refresh reaches `gh pr view`, so it must refuse an issue too."""
+    run = AsyncMock()
+    monkeypatch.setattr(source, "_run_json", run)
+    with pytest.raises(ValueError, match="points at an issue"):
+        await source._fetch_check_status(_ISSUE_URL)
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_status_endpoint_drops_issue_urls_before_scheduling(monkeypatch) -> None:
+    """An issue URL submitted to the chip-status endpoint is skipped, not scheduled."""
+    pr_url = "https://github.com/acme/repo/pull/12"
+    source._check_cache.clear()
+    refresh = MagicMock(return_value=[])
+    monkeypatch.setattr(source, "schedule_check_refresh", refresh)
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(
+            "/api/source/pull-request/status", json={"urls": [_ISSUE_URL, pr_url]}
+        )
+        assert response.status == 200
+        assert await response.json() == {
+            "statuses": {},
+            "refreshing": [],
+            "ttlSecs": source.CHECK_STATUS_TTL_SECS,
+        }
+
+    assert refresh.call_args.args[0] == [pr_url]
+
+
+@pytest.mark.asyncio
+async def test_fetch_issue_refuses_a_pull_request_url(monkeypatch) -> None:
+    """The refusal runs both ways: the issue reader must not read a PR."""
+    run = AsyncMock()
+    monkeypatch.setattr(source, "_run_json", run)
+    with pytest.raises(ValueError, match="not an issue"):
+        await source.fetch_issue("https://github.com/acme/repo/pull/12")
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_github_issue_normalizes_the_contract_payload(monkeypatch) -> None:
+    commands: list[str] = []
+
+    async def fake_run(*argv: str, **kwargs: int):
+        command = " ".join(argv)
+        commands.append(command)
+        if command.endswith("repos/acme/repo/issues/12"):
+            return {
+                "number": 999,
+                "html_url": "https://github.com/attacker/evil/issues/1",
+                "title": "Panel drops a link",
+                "body": "Steps to reproduce",
+                "state": "CLOSED",
+                "state_reason": "completed",
+                "user": {"login": "reporter"},
+                "created_at": "2026-07-01T10:00:00Z",
+                "updated_at": "2026-07-02T10:00:00Z",
+                "closed_at": "2026-07-03T10:00:00Z",
+                "closed_by": {"login": "maintainer"},
+                "labels": [
+                    {"name": "bug", "color": "d73a4a", "description": "Broken"},
+                    {"name": "ui", "color": "", "description": ""},
+                ],
+                "assignees": [{"login": "octocat"}, {}],
+                "milestone": {"title": "v2", "state": "open", "due_on": "2026-08-01T00:00:00Z"},
+                "comments": 1,
+                "locked": True,
+                "reactions": {"total_count": 3, "+1": 2, "-1": 1, "heart": 0},
+            }
+        if "/comments?" in command:
+            return [
+                {
+                    "id": 77,
+                    "user": {"login": "helper"},
+                    "body": "Confirmed",
+                    "created_at": "2026-07-01T11:00:00Z",
+                    "html_url": "https://github.com/acme/repo/issues/12#issuecomment-77",
+                }
+            ]
+        if "/timeline?" in command:
+            return [
+                {"event": "labeled"},
+                {
+                    "event": "cross-referenced",
+                    "source": {
+                        "issue": {
+                            "number": 34,
+                            "title": "Fix the panel",
+                            "state": "open",
+                            "html_url": "https://github.com/acme/repo/pull/34",
+                            "pull_request": {"url": "x"},
+                        }
+                    },
+                },
+                {
+                    # A plain issue-to-issue mention is NOT a linked change.
+                    "event": "cross-referenced",
+                    "source": {
+                        "issue": {
+                            "number": 35,
+                            "title": "Related report",
+                            "state": "open",
+                            "html_url": "https://github.com/acme/repo/issues/35",
+                        }
+                    },
+                },
+            ]
+        raise AssertionError(command)
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+    ref = source.parse_source_url("https://github.com/acme/repo/issues/12")
+    data = await source._fetch_github_issue(ref)
+
+    assert set(data) == {
+        "provider",
+        "url",
+        "number",
+        "title",
+        "description",
+        "state",
+        "stateReason",
+        "author",
+        "createdAt",
+        "updatedAt",
+        "closedAt",
+        "closedBy",
+        "labels",
+        "assignees",
+        "milestone",
+        "commentCount",
+        "locked",
+        "reactions",
+        "comments",
+        "linkedChanges",
+        "partialSections",
+    }
+    # Identity is the validated ref, never the provider echo.
+    assert data["url"] == "https://github.com/acme/repo/issues/12"
+    assert data["number"] == 12
+    assert data["state"] == "closed"
+    assert data["stateReason"] == "completed"
+    assert data["author"] == "reporter"
+    assert data["closedBy"] == "maintainer"
+    assert data["labels"] == [
+        {"name": "bug", "color": "d73a4a", "description": "Broken"},
+        {"name": "ui", "color": "", "description": ""},
+    ]
+    assert data["assignees"] == ["octocat"]
+    assert data["milestone"] == {"title": "v2", "state": "open", "dueOn": "2026-08-01T00:00:00Z"}
+    assert data["locked"] is True
+    assert data["reactions"] == {
+        "total": 3,
+        "plus1": 2,
+        "minus1": 1,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0,
+    }
+    assert data["comments"] == [
+        {
+            "id": "77",
+            "author": "helper",
+            "body": "Confirmed",
+            "createdAt": "2026-07-01T11:00:00Z",
+            "url": "https://github.com/acme/repo/issues/12#issuecomment-77",
+        }
+    ]
+    assert data["linkedChanges"] == [
+        {
+            "provider": "github",
+            "url": "https://github.com/acme/repo/pull/34",
+            "number": 34,
+            "title": "Fix the panel",
+            "state": "open",
+        }
+    ]
+    assert data["partialSections"] == []
+    assert not any("pr view" in command for command in commands)
+
+
+@pytest.mark.asyncio
+async def test_fetch_github_issue_degrades_failed_sections(monkeypatch) -> None:
+    async def fake_run(*argv: str, **kwargs: int):
+        command = " ".join(argv)
+        if command.endswith("repos/acme/repo/issues/12"):
+            return {"title": "T", "state": "open", "comments": 4}
+        raise source.SourceProviderError("boom")
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+    data = await source._fetch_github_issue(
+        source.parse_source_url("https://github.com/acme/repo/issues/12")
+    )
+
+    assert data["comments"] == []
+    assert data["linkedChanges"] == []
+    assert data["partialSections"] == ["comments", "linked changes"]
+    # The provider's own count survives a failed comment page.
+    assert data["commentCount"] == 4
+
+
+@pytest.mark.asyncio
+async def test_fetch_github_issue_rejects_a_non_https_linked_change(monkeypatch) -> None:
+    """A cross-reference URL reaches an href, so only https survives."""
+
+    async def fake_run(*argv: str, **kwargs: int):
+        command = " ".join(argv)
+        if command.endswith("repos/acme/repo/issues/12"):
+            return {"title": "T", "state": "open"}
+        if "/comments?" in command:
+            return []
+        return [
+            {
+                "event": "cross-referenced",
+                "source": {
+                    "issue": {
+                        "number": 1,
+                        "html_url": "javascript:alert(1)",
+                        "pull_request": {},
+                    }
+                },
+            }
+        ]
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+    data = await source._fetch_github_issue(
+        source.parse_source_url("https://github.com/acme/repo/issues/12")
+    )
+
+    assert data["linkedChanges"] == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_gitlab_issue_normalizes_the_contract_payload(monkeypatch) -> None:
+    hosts: list[str] = []
+
+    async def fake_run(*argv: str, **kwargs):
+        command = " ".join(argv)
+        hosts.append(kwargs.get("host", ""))
+        if "with_labels_details" in command:
+            assert command.startswith("glab api projects/acme%2Fplatform%2Fservice/issues/42")
+            return {
+                "iid": 999,
+                "web_url": "https://gitlab.evil.test/x/-/issues/1",
+                "title": "MR panel is blank",
+                "description": "Long form",
+                "state": "opened",
+                "author": {"username": "reporter"},
+                "created_at": "2026-07-01T10:00:00Z",
+                "updated_at": "2026-07-02T10:00:00Z",
+                "closed_at": "",
+                "closed_by": None,
+                "labels": [
+                    {"name": "bug", "color": "#d73a4a", "description": "Broken"},
+                    "plain-name-only",
+                ],
+                "assignees": [{"username": "dev"}],
+                "milestone": {"title": "v2", "state": "active", "due_date": "2026-08-01"},
+                "user_notes_count": 1,
+                "discussion_locked": False,
+                "upvotes": 4,
+                "downvotes": 1,
+            }
+        if "/notes?" in command:
+            return [
+                {"id": 5, "system": True, "body": "changed the description", "author": {}},
+                {
+                    "id": 6,
+                    "author": {"username": "helper"},
+                    "body": "Reproduced",
+                    "created_at": "2026-07-01T11:00:00Z",
+                },
+            ]
+        if command.endswith("/related_merge_requests"):
+            return [
+                {
+                    "iid": 34,
+                    "title": "Fix the panel",
+                    "state": "opened",
+                    "web_url": "https://gitlab.com/acme/platform/service/-/merge_requests/34",
+                }
+            ]
+        raise AssertionError(command)
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+    ref = source.parse_source_url("https://gitlab.com/acme/platform/service/-/issues/42")
+    data = await source._fetch_gitlab_issue(ref)
+
+    assert data["provider"] == "gitlab"
+    # Identity is the validated ref, not the provider's web_url/iid.
+    assert data["url"] == "https://gitlab.com/acme/platform/service/-/issues/42"
+    assert data["number"] == 42
+    assert data["state"] == "open"
+    assert data["stateReason"] == ""
+    assert data["author"] == "reporter"
+    assert data["closedBy"] == ""
+    # #rrggbb is normalized to the bare form GitHub already uses.
+    assert data["labels"] == [
+        {"name": "bug", "color": "d73a4a", "description": "Broken"},
+        {"name": "plain-name-only", "color": "", "description": ""},
+    ]
+    assert data["assignees"] == ["dev"]
+    assert data["milestone"] == {"title": "v2", "state": "active", "dueOn": "2026-08-01"}
+    assert data["locked"] is False
+    assert data["reactions"] == {
+        "total": 5,
+        "plus1": 4,
+        "minus1": 1,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0,
+    }
+    # System notes are lifecycle churn, not discussion.
+    assert data["comments"] == [
+        {
+            "id": "6",
+            "author": "helper",
+            "body": "Reproduced",
+            "createdAt": "2026-07-01T11:00:00Z",
+            "url": "https://gitlab.com/acme/platform/service/-/issues/42#note_6",
+        }
+    ]
+    assert data["linkedChanges"] == [
+        {
+            "provider": "gitlab",
+            "url": "https://gitlab.com/acme/platform/service/-/merge_requests/34",
+            "number": 34,
+            "title": "Fix the panel",
+            "state": "open",
+        }
+    ]
+    assert data["partialSections"] == []
+    # Every glab call is pinned to the ref's host.
+    assert set(hosts) == {"gitlab.com"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_gitlab_issue_passes_the_self_managed_host(monkeypatch) -> None:
+    monkeypatch.setattr(
+        source, "_allowed_gitlab_hosts", lambda: frozenset({"gitlab.acme.internal"})
+    )
+    hosts: list[str] = []
+
+    async def fake_run(*argv: str, **kwargs):
+        hosts.append(kwargs.get("host", ""))
+        if "with_labels_details" in " ".join(argv):
+            return {"title": "T", "state": "opened"}
+        return []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+    ref = source.parse_source_url("https://gitlab.acme.internal/team/api/-/issues/7")
+    await source._fetch_gitlab_issue(ref)
+
+    assert hosts == ["gitlab.acme.internal"] * 3
+
+
+@pytest.mark.asyncio
+async def test_fetch_issue_caches_and_coalesces_by_normalized_url(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    async def fake_fetch(ref):
+        calls["count"] += 1
+        await asyncio.sleep(0)
+        return {"provider": "github", "url": ref.url, "number": ref.number}
+
+    monkeypatch.setattr(source, "_fetch_github_issue", fake_fetch)
+    url = "https://github.com/acme/repo/issues/12"
+
+    first, second = await asyncio.gather(source.fetch_issue(url), source.fetch_issue(f"{url}/"))
+    assert first is second
+    assert calls["count"] == 1
+
+    # Served from cache inside the TTL.
+    assert await source.fetch_issue(url) is first
+    assert calls["count"] == 1
+
+    # refresh=True bypasses the cache.
+    await source.fetch_issue(url, refresh=True)
+    assert calls["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_issue_never_writes_the_chip_status_cache(monkeypatch) -> None:
+    """An issue has no CI or merge state, so it must not project a chip status."""
+    record = MagicMock()
+    monkeypatch.setattr(source, "record_full_payload_status", record)
+
+    async def fake_fetch(ref):
+        return {"provider": "github", "url": ref.url, "state": "open"}
+
+    monkeypatch.setattr(source, "_fetch_github_issue", fake_fetch)
+    source._check_cache.clear()
+
+    url = "https://github.com/acme/repo/issues/12"
+    await source.fetch_issue(url)
+
+    record.assert_not_called()
+    assert source.get_cached_check_status(url) is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_issue_rejects_an_oversized_payload(monkeypatch) -> None:
+    async def fake_fetch(ref):
+        return {"provider": "github", "url": ref.url, "description": "x" * 16}
+
+    monkeypatch.setattr(source, "_fetch_github_issue", fake_fetch)
+    monkeypatch.setattr(source, "_MAX_PAYLOAD_BYTES", 8)
+
+    with pytest.raises(source.SourceProviderError, match="issue payload was too large"):
+        await source.fetch_issue("https://github.com/acme/repo/issues/12")
+    assert source._ISSUE_CACHE == {}
+
+
+@pytest.mark.asyncio
+async def test_fetch_issue_reserves_direct_fetch_capacity(monkeypatch) -> None:
+    """The issue task must be visible to the shared pending/byte accounting.
+
+    A task absent from `_direct_fetch_tasks` would hold a reservation nothing
+    reads, making the cap decorative for issues.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_fetch(ref):
+        started.set()
+        await release.wait()
+        return {"provider": "github", "url": ref.url}
+
+    monkeypatch.setattr(source, "_fetch_github_issue", fake_fetch)
+    monkeypatch.setattr(source, "_DIRECT_FETCH_PENDING_MAX", 1)
+
+    inflight = asyncio.ensure_future(
+        source.fetch_issue("https://github.com/acme/repo/issues/12")
+    )
+    await started.wait()
+    try:
+        with pytest.raises(source.SourceProviderError, match="pending"):
+            await source.fetch_issue("https://github.com/acme/repo/issues/13")
+    finally:
+        release.set()
+        await inflight
+
+
+@pytest.mark.asyncio
+async def test_issue_endpoint_returns_the_payload(monkeypatch) -> None:
+    payload = {"provider": "github", "url": _ISSUE_URL, "number": 12}
+    fetch = AsyncMock(return_value=payload)
+    monkeypatch.setattr(source, "fetch_issue", fetch)
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post("/api/source/issue", json={"url": _ISSUE_URL})
+        assert response.status == 200
+        assert await response.json() == payload
+
+    fetch.assert_awaited_once_with(_ISSUE_URL, refresh=False)
+
+
+@pytest.mark.asyncio
+async def test_issue_endpoint_maps_value_error_to_400(monkeypatch) -> None:
+    monkeypatch.setattr(
+        source, "fetch_issue", AsyncMock(side_effect=ValueError("An issue URL is required."))
+    )
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post("/api/source/issue", json={"url": "nope"})
+        assert response.status == 400
+        assert await response.json() == {"error": "An issue URL is required."}
+
+
+@pytest.mark.asyncio
+async def test_issue_endpoint_maps_provider_error_to_503(monkeypatch) -> None:
+    monkeypatch.setattr(
+        source,
+        "fetch_issue",
+        AsyncMock(side_effect=source.SourceProviderError("gh timed out")),
+    )
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post("/api/source/issue", json={"url": _ISSUE_URL})
+        assert response.status == 503
+        assert await response.json() == {"error": "gh timed out"}
+
+
+@pytest.mark.asyncio
+async def test_issue_endpoint_rejects_a_non_owner(monkeypatch) -> None:
+    fetch = AsyncMock()
+    monkeypatch.setattr(source, "fetch_issue", fetch)
+
+    async with TestClient(TestServer(_app(user="U_OTHER"))) as client:
+        response = await client.post("/api/source/issue", json={"url": _ISSUE_URL})
+        assert response.status == 403
+
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_issue_endpoint_rejects_an_app_token(monkeypatch) -> None:
+    fetch = AsyncMock()
+    monkeypatch.setattr(source, "fetch_issue", fetch)
+
+    async with TestClient(TestServer(_app(app_name="issue-radar"))) as client:
+        response = await client.post("/api/source/issue", json={"url": _ISSUE_URL})
+        assert response.status == 403
+
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_issue_endpoint_audits_its_own_operation_name(monkeypatch, _mock_source_sel) -> None:
+    monkeypatch.setattr(
+        source, "fetch_issue", AsyncMock(return_value={"provider": "github", "url": _ISSUE_URL})
+    )
+
+    async with TestClient(TestServer(_app())) as client:
+        assert (await client.post("/api/source/issue", json={"url": _ISSUE_URL})).status == 200
+
+    operations = {
+        call.kwargs.get("operation")
+        for call in _mock_source_sel.log_api_access.call_args_list
+    }
+    assert operations == {"source.issue.read"}
+    assert _mock_source_sel.log_api_access.call_args.kwargs["outcome"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_issue_endpoint_warms_allowlist_before_parsing_self_hosted_urls(
+    monkeypatch,
+) -> None:
+    """A cold snapshot would drop an authorized self-managed issue URL as
+    unsupported, so the handler's fetch path must warm the allowlist first."""
+    url = "https://gitlab.acme.internal/team/api/-/issues/7"
+    monkeypatch.setattr(source, "_gitlab_hosts_snapshot", frozenset())
+    monkeypatch.setattr(source, "_gitlab_hosts_loaded_at", 0.0)
+
+    async def fake_ensure() -> frozenset:
+        source._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+        return frozenset({"gitlab.acme.internal"})
+
+    monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", fake_ensure)
+
+    async def fake_fetch(ref):
+        return {"provider": "gitlab", "url": ref.url, "number": ref.number}
+
+    monkeypatch.setattr(source, "_fetch_gitlab_issue", fake_fetch)
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post("/api/source/issue", json={"url": url})
+        assert response.status == 200
+        assert (await response.json())["url"] == url

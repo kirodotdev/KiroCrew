@@ -1054,7 +1054,7 @@ export default function PullRequestPanel({
           <div className="shrink-0 px-4 py-3 border-b border-border">
             <div className="flex items-center gap-2 text-[11px] text-muted">
               <span className={`px-1.5 py-0.5 rounded font-medium ${stateTone(source)}`}>{stateLabel(source)}</span>
-              <span className="capitalize">{source.provider}</span>
+              <span>{source.provider === 'github' ? 'GitHub' : 'GitLab'}</span>
               {source.headBranch && source.baseBranch && (
                 <span className="min-w-0 flex items-center gap-1 truncate"><CopyBranchButton branch={source.headBranch} /><ArrowRight className="lucide-inline shrink-0" /><span className="truncate">{source.baseBranch}</span></span>
               )}

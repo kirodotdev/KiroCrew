@@ -377,6 +377,27 @@ _MAX_SOURCE_LINKS_PER_SLOT = 64
 # renders at most this many chips). Shared with the periodic check-status
 # refresh so the driver and the serializer cannot drift.
 _SERIALIZED_SOURCE_LINKS_PER_SLOT = 3
+
+
+def _budgeted_source_links(links: list[dict]) -> list[dict]:
+    """Apply the sidebar chip budget PER KIND, changes first.
+
+    Pull requests and issues each get their own
+    ``_SERIALIZED_SOURCE_LINKS_PER_SLOT`` allowance. A single shared budget
+    sliced before the kind filter would let three mentioned issues crowd every
+    PR chip out of the sidebar -- and, because the check-status refresh reads
+    the same slice, would also stop scheduling that PR's CI status updates.
+    Budgeting per kind keeps pre-existing pull-request behaviour unchanged and
+    makes issues purely additive.
+    """
+    changes = [link for link in links if link.get("kind", "change") == "change"]
+    issues = [link for link in links if link.get("kind", "change") == "issue"]
+    return (
+        changes[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
+        + issues[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
+    )
+
+
 _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
 # FIFO ceiling on a slot's pending-context queue (app-kit context inject +
 # Slack thread backfill). Shared so the two eviction sites cannot drift.
@@ -1242,14 +1263,19 @@ class _ChatSlot:
         return self.title
 
     def invalidate_source_links(self) -> None:
-        """Mark cached sidebar PR/MR links stale after message-content mutation."""
+        """Mark cached sidebar PR/MR/issue links stale after message-content mutation."""
         self._source_links_revision += 1
 
     def _pr_source_links(self) -> list[dict]:
-        """PR/MR links found in this slot's messages, for sidebar wayfinding chips.
+        """PR/MR/issue links found in this slot's messages, for sidebar wayfinding chips.
 
         Linear scan (no regex backtracking) validated by the source-provider
         URL parser and cached behind an explicit content revision.
+
+        Each entry carries a ``kind`` discriminator (``"change"`` for a pull or
+        merge request, ``"issue"`` for an issue). Readers that only handle pull
+        requests -- the chip-status cache and every path that reaches ``gh pr
+        view`` -- must filter on it.
         """
         # Local import: handlers.source_providers does not import state, but
         # keep the dependency lazy to stay out of module-load ordering.
@@ -1293,7 +1319,11 @@ class _ChatSlot:
                 # never belong to a legitimate link tail.
                 candidate = content[idx:end].rstrip(".,!?;:*_~`")
                 idx = end
-                if "/pull/" not in candidate and "/merge_requests/" not in candidate:
+                if (
+                    "/pull/" not in candidate
+                    and "/merge_requests/" not in candidate
+                    and "/issues/" not in candidate
+                ):
                     continue
                 try:
                     ref = parse_source_url(candidate)
@@ -1304,6 +1334,10 @@ class _ChatSlot:
                         "provider": ref.provider,
                         "number": ref.number,
                         "url": ref.url,
+                        # "change" or "issue". Absent on the wire means
+                        # "change" for older payloads, so the frontend defaults
+                        # rather than requires it.
+                        "kind": ref.kind,
                     }
         links = list(found.values())
         self._source_links_cache = (cache_key, links)
@@ -1444,9 +1478,18 @@ class _ChatSlot:
             "source_links": [
                 {
                     **link,
-                    **((_cached_check_status(link["url"]) or {}) if include_check_status else {}),
+                    # The chip-status cache is pull-request-only: it holds a
+                    # {ci, state} projection of a PR/MR lifecycle. Consulting it
+                    # for an issue would key on a URL it never stores -- and if a
+                    # PR and an issue ever normalized to the same key, the issue
+                    # chip would inherit the PR's CI glyph. Gate on kind.
+                    **(
+                        (_cached_check_status(link["url"]) or {})
+                        if include_check_status and link.get("kind", "change") == "change"
+                        else {}
+                    ),
                 }
-                for link in source_links[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
+                for link in _budgeted_source_links(source_links)
             ],
             "source_links_total": len(source_links),
             # Agent TODO list. Absent-vs-empty is load-bearing: None means the
@@ -2779,22 +2822,28 @@ class DashboardState:
         ``_SERIALIZED_SOURCE_LINKS_PER_SLOT``) are returned — these are the
         chips whose check status the periodic owner-WS refresh keeps fresh.
         Reads the per-slot revision cache, so this is cheap to call on a timer.
+
+        Issue links are excluded: the check-status path reaches ``gh pr view``
+        and has no meaning for an issue.
         """
         urls: list[str] = []
         for s in self._slots.values():
             urls.extend(
-                link["url"] for link in s._pr_source_links()[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
+                link["url"]
+                for link in _budgeted_source_links(s._pr_source_links())
+                if link.get("kind", "change") == "change"
             )
         return urls
 
     def source_link_urls_for_slot(self, key: str) -> list[str]:
-        """Sidebar-visible PR/MR chip URLs for one slot (same cap as the sweep)."""
+        """Sidebar-visible PR/MR chip URLs for one slot (same cap and kind filter)."""
         slot = self._slots.get(key)
         if slot is None:
             return []
         return [
             link["url"]
-            for link in slot._pr_source_links()[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
+            for link in _budgeted_source_links(slot._pr_source_links())
+            if link.get("kind", "change") == "change"
         ]
 
     def push_source_status(self, delta: dict) -> None:

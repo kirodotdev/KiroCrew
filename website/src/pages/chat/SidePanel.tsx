@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } fro
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom, Globe } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom, Globe, CircleDot } from 'lucide-react'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -25,7 +25,7 @@ import type { PullRequestLink } from '../../utils/pullRequestLinks'
 
 import { i18nT } from '../../i18n/t'
 const KIND_ICON: Record<TabKind, ReactNode> = {
-  changes: <GitPullRequest size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
+  changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Package size={16} />,
 }
@@ -33,6 +33,7 @@ const KIND_ICON: Record<TabKind, ReactNode> = {
 /** Views offered by the + menu. */
 const NEW_MENU: { kind: ViewKind | 'terminal'; label: string; icon: ReactNode; desc: string }[] = [
   { kind: 'changes', label: 'Changes', icon: <GitPullRequest size={15} />, desc: 'Pull requests, checks & reviews' },
+  { kind: 'issues', label: 'Issues', icon: <CircleDot size={15} />, desc: 'Issues mentioned in this session' },
   { kind: 'files', label: 'Files', icon: <FileText size={15} />, desc: 'Browse & edit files' },
   { kind: 'artifacts', label: 'Artifacts', icon: <Component size={15} />, desc: 'In-session documents & stars' },
   { kind: 'subagents', label: 'Subagents', icon: <Bot size={15} />, desc: 'Live agent activity & transcripts' },
@@ -43,7 +44,7 @@ const NEW_MENU: { kind: ViewKind | 'terminal'; label: string; icon: ReactNode; d
   { kind: 'terminal', label: 'Terminal', icon: <TerminalSquare size={15} />, desc: 'Shell on the gateway host' },
 ]
 
-const VIEW_KINDS = new Set<TabKind>(['changes', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'side'])
+const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'side'])
 
 interface SidePanelProps {
   tabsCtl: ReturnType<typeof usePanelTabs>
@@ -60,6 +61,12 @@ interface SidePanelProps {
   sources?: PullRequestLink[]
   selectedSourceUrl?: string
   onSelectSource?: (url: string) => void
+  /** Issue links mentioned in this session (the `kind: 'issue'` half of the
+   *  extractor's output). Separate props — not a merged list — so the Changes
+   *  and Issues tabs each keep their own selection. */
+  issues?: PullRequestLink[]
+  selectedIssueUrl?: string
+  onSelectIssue?: (url: string) => void
   onAddSourceToChat?: (text: string) => void
   onSubmitComments?: (message: string) => void
   onFileSave: (filePath: string, content: string) => Promise<void>
@@ -173,6 +180,7 @@ export function measureSidePanelReservedW(): number {
 export default function SidePanel({
   tabsCtl, subagents, toolLog, slot, files, onFileOpen, onFileRemove, onFilesClear,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource,
+  issues, selectedIssueUrl, onSelectIssue,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
   inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth,
 }: SidePanelProps) {
@@ -466,13 +474,16 @@ export default function SidePanel({
             return (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
-                  view={t.kind as 'changes' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'}
+                  view={t.kind as 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'}
                   open onToggle={onClose} slot={slot}
                   subagents={subagents} toolLog={toolLog}
                   files={files}
                   sources={sources}
                   selectedSourceUrl={selectedSourceUrl}
                   onSelectSource={onSelectSource}
+                  issues={issues}
+                  selectedIssueUrl={selectedIssueUrl}
+                  onSelectIssue={onSelectIssue}
                   onAddToChat={onAddSourceToChat}
                   // The Files/Artifacts/Changes tabs are permanent (pinned).
                   // Files opens its file inline (kept in the Files tab, with a

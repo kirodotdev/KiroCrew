@@ -286,7 +286,7 @@ export interface TodoList {
 }
 
 export interface ChatSlot {
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: 'github' | 'gitlab'; number: number; url: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string }[]; source_links_total?: number
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: 'github' | 'gitlab'; number: number; url: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
   // Board fields
@@ -341,6 +341,65 @@ export interface PullRequestComment {
 
 export interface PullRequestFile {
   path: string; status: string; additions: number; deletions: number; patch: string
+}
+
+/* ── Issue sources (GitHub issues / GitLab issues) ─────────────────────────
+ * A session that MENTIONS an issue url gets an Issues side-panel tab, the same
+ * inferred association pull requests already have. Served by
+ * POST /api/source/issue. */
+
+/** `color` is a bare 6-hex-digit string with NO leading '#' (GitHub's format;
+ *  GitLab's `#rrggbb` is normalized to it server-side). The UI adds the '#'. */
+export interface IssueLabel {
+  name: string; color: string; description: string
+}
+
+export interface IssueMilestone {
+  title: string; state: string; dueOn: string
+}
+
+export interface IssueComment {
+  id: string; author: string; body: string; createdAt: string; url: string
+}
+
+/** A pull request / merge request the provider reports as linked to the issue. */
+export interface IssueLinkedChange {
+  provider: 'github' | 'gitlab'; url: string; number: number; title: string; state: string
+}
+
+/** Reaction tallies. Null on providers (or issues) that report none. */
+export interface IssueReactions {
+  total: number; plus1: number; minus1: number; laugh: number; hooray: number
+  confused: number; heart: number; rocket: number; eyes: number
+}
+
+export interface IssueSource {
+  provider: 'github' | 'gitlab'
+  /** Always the validated request url, never the provider's echo of it. */
+  url: string
+  number: number
+  title: string
+  /** Issue body, markdown. */
+  description: string
+  state: 'open' | 'closed'
+  /** 'completed' | 'not_planned' | 'reopened' | '' (always '' on GitLab). */
+  stateReason: string
+  author: string
+  /** ISO8601, or '' when the provider omitted it. */
+  createdAt: string
+  updatedAt: string
+  closedAt: string
+  closedBy: string
+  labels: IssueLabel[]
+  assignees: string[]
+  milestone: IssueMilestone | null
+  commentCount: number
+  locked: boolean
+  reactions: IssueReactions | null
+  comments: IssueComment[]
+  linkedChanges: IssueLinkedChange[]
+  /** Sections potentially incomplete because a provider request failed or hit a limit. */
+  partialSections?: string[]
 }
 
 export interface PullRequestSource {

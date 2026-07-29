@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, ArrowLeft, Square, RotateCcw, Clock } from 'lucide-react'
+import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, CircleDot, ArrowLeft, Square, RotateCcw, Clock } from 'lucide-react'
 import { api } from '../../api/client'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import { fileReadUrl } from '../../utils/fileReadUrl'
@@ -15,6 +15,7 @@ import type { ExtractedLink } from '../../utils/extractChatLinks'
 import { dedupResourceLinks, resourceKey } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import PullRequestPanel from '../../components/PullRequestPanel'
+import IssuePanel from '../../components/IssuePanel'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
@@ -33,16 +34,19 @@ const STATUS = {
   stopped: <Square size={12} className="text-muted" />,
 } as const
 
-// Keyed by extractChatLinks' LinkType, which is 'cr' | 'other' only — the OSS
-// fork classifies URLs as generic git PR/review vs everything else. Use design
-// tokens (not hardcoded Tailwind palette colors) so both themes stay consistent.
+// Keyed by extractChatLinks' LinkType, which is 'cr' | 'issue' | 'other' — the
+// OSS fork classifies URLs as generic git PR/review, provider issue, or
+// everything else. Use design tokens (not hardcoded Tailwind palette colors) so
+// both themes stay consistent.
 const RESOURCE_TYPE_COLORS: Record<string, string> = {
   cr: 'bg-accent-subtle text-accent',
+  issue: 'bg-ok/15 text-ok',
   other: 'bg-muted/15 text-muted',
 }
 
 const RESOURCE_TYPE_LABELS: Record<string, string> = {
   cr: 'PR',
+  issue: 'Issue',
   other: 'Link',
 }
 
@@ -630,12 +634,14 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, issues, selectedIssueUrl, onSelectIssue, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   files?: TouchedFile[]; onFileOpen?: (path: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
   navLinks?: ExtractedLink[]; navResolving?: boolean
   sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onAddToChat?: (text: string) => void
+  /** Issue links mentioned in this session, plus the Issues tab's own selection. */
+  issues?: PullRequestLink[]; selectedIssueUrl?: string; onSelectIssue?: (url: string) => void
   /** Save handler for the Files-tab inline file preview (opening a file keeps
    *  it in the Files tab instead of spawning a document tab). */
   onFileSave?: (filePath: string, content: string) => Promise<void>
@@ -651,7 +657,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   onPreviewPathChange?: (path: string | null) => void
   /** When set, render ONLY this view and hide the internal SegmentedControl.
    *  Used by SidePanel, which owns the top-level tab strip. */
-  view?: 'changes' | 'subagents' | 'logs' | 'files' | 'artifacts' | 'side' | 'workflows'
+  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'files' | 'artifacts' | 'side' | 'workflows'
 }) {
   const dispatch = useAppDispatch()
   const [, setSelected] = useState(0)
@@ -674,8 +680,9 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   const previewOpenRef = useRef(false)
   previewOpenRef.current = previewPathValue != null
   const reduxTab = useAppSelector(s => s.chat.activityTab)
-  const [tab, setTab] = useState<'changes' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>(reduxTab === ('nav' as string) ? 'files' : reduxTab)
+  const [tab, setTab] = useState<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>(reduxTab === ('nav' as string) ? 'files' : reduxTab)
   const hasSources = (sources?.length || 0) > 0
+  const hasIssues = (issues?.length || 0) > 0
   const explicitTab = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
   // Exception-first ordering: agents needing attention (failed, stalled,
@@ -785,10 +792,17 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   // When a `view` prop is supplied, SidePanel owns the tab strip — render only
   // that view and skip the internal SegmentedControl.
   const requestedTab = view ?? tab
+  // `changes` is a PINNED view, so its tab exists even with nothing to show and
+  // falling back to Files is the long-standing behaviour. `issues` is NOT
+  // pinned: it only appears once the session mentions an issue, or when the user
+  // opens it from the + menu. In that second case there is no auto-removal, so
+  // falling back would render the Files list under an "Issues" label. Keep the
+  // requested view and let it render its own empty state instead.
   const effectiveTab = requestedTab === 'changes' && !hasSources ? 'files' : requestedTab
 
   const TABS: { key: typeof tab; label: string; icon: ReactNode; count?: number }[] = [
     ...(hasSources ? [{ key: 'changes' as const, label: 'Changes', icon: <GitPullRequest size={13} />, count: sources!.length }] : []),
+    ...(hasIssues ? [{ key: 'issues' as const, label: 'Issues', icon: <CircleDot size={13} />, count: issues!.length }] : []),
     { key: 'files', label: 'Files', icon: <FileText size={13} />, count: files?.length || 0 },
     { key: 'artifacts', label: 'Artifacts', icon: <Component size={13} /> },
     { key: 'subagents', label: 'Subagents', icon: <Bot size={13} />, count: ids.length + visibleLog.filter(isSpawnApproval).length },
@@ -824,6 +838,24 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
             onSelect={onSelectSource || (() => {})}
             onAddToChat={onAddToChat || (() => {})}
           />
+        </div>
+      )}
+
+      {/* Issues (issue sources) view */}
+      {effectiveTab === 'issues' && (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {hasIssues ? (
+            <IssuePanel
+              issues={issues!}
+              selectedUrl={selectedIssueUrl || ''}
+              onSelect={onSelectIssue || (() => {})}
+              onAddToChat={onAddToChat}
+            />
+          ) : (
+            <div className="flex-1 flex items-center justify-center h-full text-muted text-[13px] py-8 px-6 text-center">
+              No issues in this session yet. Mention a GitHub or GitLab issue link and it will appear here.
+            </div>
+          )}
         </div>
       )}
 
@@ -952,12 +984,13 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           ? (p: string) => { if (openDocPaths?.has(p)) onFileOpen?.(p); else setPreviewPath(p) }
           : onFileOpen
         const changed = (files || []).filter(f => f.source === 'tool')
-        // Hide links that are already surfaced in the Changes tab (its `sources`);
-        // keep every other link — including cr-classified hosts (Bitbucket,
-        // self-hosted, code reviews) that the Changes parser can't render, so
+        // Hide links that already have a RICH panel of their own — the Changes
+        // tab's `sources` and the Issues tab's `issues`. Keep every other link,
+        // including cr-classified hosts (Bitbucket, self-hosted, code reviews)
+        // and non-allowlisted issue hosts that neither parser can render, so
         // they stay reachable in Resources instead of vanishing from the panel.
-        const sourceUrls = new Set((sources || []).map(s => resourceKey(s.url)))
-        const resourceLinks = dedupResourceLinks((navLinks || []).filter(l => !sourceUrls.has(resourceKey(l.url))))
+        const richUrls = new Set([...(sources || []), ...(issues || [])].map(s => resourceKey(s.url)))
+        const resourceLinks = dedupResourceLinks((navLinks || []).filter(l => !richUrls.has(resourceKey(l.url))))
         return (
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto py-2">

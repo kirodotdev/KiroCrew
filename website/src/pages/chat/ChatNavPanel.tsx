@@ -20,6 +20,7 @@ const TYPE_COLORS: Record<string, string> = {
   wiki: 'bg-green-500/15 text-green-400',
   sim: 'bg-yellow-500/15 text-yellow-400',
   cr: 'bg-cyan-500/15 text-cyan-400',
+  issue: 'bg-ok/15 text-ok',
   other: 'bg-muted/15 text-muted',
 }
 
@@ -31,6 +32,7 @@ const TYPE_LABELS: Record<string, string> = {
   wiki: 'Wiki',
   sim: 'SIM',
   cr: 'CR',
+  issue: 'Issue',
   other: 'Link',
 }
 

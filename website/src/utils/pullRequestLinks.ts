@@ -3,11 +3,31 @@ import { safeSetItem } from './safeStorage'
 
 export type PullRequestProvider = 'github' | 'gitlab'
 
+/**
+ * What a mentioned provider URL points at. 'change' is a pull request / merge
+ * request; 'issue' is a GitHub issue / GitLab issue. Both kinds are extracted by
+ * ONE scan and share one dedup map (a session routinely mentions both, and the
+ * per-role cap must be a single budget); callers split the result by `kind` to
+ * feed the Changes and Issues panels.
+ */
+export type SourceLinkKind = 'change' | 'issue'
+
 export interface PullRequestLink {
   url: string
   provider: PullRequestProvider
   number: number
   repo: string
+  kind: SourceLinkKind
+}
+
+/** Split one extraction result into its two kinds, preserving first-seen order. */
+export function partitionSourceLinks(
+  links: readonly PullRequestLink[],
+): { changes: PullRequestLink[]; issues: PullRequestLink[] } {
+  const changes: PullRequestLink[] = []
+  const issues: PullRequestLink[] = []
+  for (const link of links) (link.kind === 'issue' ? issues : changes).push(link)
+  return { changes, issues }
 }
 
 /**
@@ -24,17 +44,24 @@ interface AttributedLink extends PullRequestLink {
 }
 
 /**
- * Emit only PRs whose FIRST mention came from the agent. User-referenced PRs are
- * kept in the dedup map (so a later agent echo is still recognized as a
+ * Emit only links whose FIRST mention came from the agent. User-referenced links
+ * are kept in the dedup map (so a later agent echo is still recognized as a
  * duplicate and skipped) but excluded here — they surface in the Files-tab
  * Resources list instead. Clean PullRequestLink objects are rebuilt so the
- * public shape never leaks the internal attribution field.
+ * public shape never leaks the internal attribution field. Both kinds
+ * (pull requests and issues) pass through unchanged; the caller splits them.
  */
 function emitChangeSources(found: Map<string, AttributedLink>): PullRequestLink[] {
   const out: PullRequestLink[] = []
   for (const link of found.values()) {
     if (link.mentionedBy === 'user') continue
-    out.push({ url: link.url, provider: link.provider, number: link.number, repo: link.repo })
+    out.push({
+      url: link.url,
+      provider: link.provider,
+      number: link.number,
+      repo: link.repo,
+      kind: link.kind,
+    })
   }
   return out
 }
@@ -78,19 +105,41 @@ export function gitlabHostSet(hosts: readonly string[] | undefined): ReadonlySet
 
 const NO_GITLAB_HOSTS: ReadonlySet<string> = new Set<string>()
 
+/** GitLab path markers, in match order. Both a merge request and an issue live
+ * under the project's `/-/` namespace and end in a numeric id, so the marker
+ * that matches also decides the link's kind. */
+const GITLAB_MARKERS: ReadonlyArray<{ marker: string; kind: SourceLinkKind }> = [
+  { marker: '/-/merge_requests/', kind: 'change' },
+  { marker: '/-/issues/', kind: 'issue' },
+]
+
 function gitlabLink(origin: string, path: string): PullRequestLink | null {
-  const marker = '/-/merge_requests/'
-  const idx = path.lastIndexOf(marker)
-  if (idx <= 0) return null
-  const project = path.slice(1, idx)
-  const number = path.slice(idx + marker.length)
-  if (!project || !/^\d+$/.test(number)) return null
-  return {
-    url: `https://${origin}${path}`,
-    provider: 'gitlab',
-    number: Number(number),
-    repo: project.split('/').at(-1) || project,
+  for (const { marker, kind } of GITLAB_MARKERS) {
+    const idx = path.lastIndexOf(marker)
+    if (idx <= 0) continue
+    const project = path.slice(1, idx)
+    const number = path.slice(idx + marker.length)
+    if (!project || !/^\d+$/.test(number)) continue
+    return {
+      url: `https://${origin}${path}`,
+      provider: 'gitlab',
+      number: Number(number),
+      repo: project.split('/').at(-1) || project,
+      kind,
+    }
   }
+  return null
+}
+
+/** GitHub's third path segment decides the kind: `/pull/12` vs `/issues/12`. */
+function githubSegmentKind(segment: string): SourceLinkKind | null {
+  // An explicit comparison, not an object-literal lookup: a Record index also
+  // resolves INHERITED keys, so `/owner/repo/constructor/5` would survive the
+  // falsy-kind guard and yield a link whose kind is neither 'change' nor
+  // 'issue' -- routed to Changes, then rejected by the backend with a 400.
+  if (segment === 'pull') return 'change'
+  if (segment === 'issues') return 'issue'
+  return null
 }
 
 function parseCandidate(
@@ -120,13 +169,17 @@ function parseCandidate(
     .replace(/^www\./, '')
   const path = url.pathname.replace(/\/+$/, '')
   if (host === 'github.com') {
-    const parts = path.split('/').filter(Boolean) // [owner, repo, 'pull', number]
-    if (parts.length !== 4 || parts[2] !== 'pull' || !/^\d+$/.test(parts[3])) return null
+    // [owner, repo, 'pull' | 'issues', number]
+    const parts = path.split('/').filter(Boolean)
+    if (parts.length !== 4 || !/^\d+$/.test(parts[3])) return null
+    const kind = githubSegmentKind(parts[2])
+    if (!kind) return null
     return {
-      url: `https://github.com/${parts[0]}/${parts[1]}/pull/${parts[3]}`,
+      url: `https://github.com/${parts[0]}/${parts[1]}/${parts[2]}/${parts[3]}`,
       provider: 'github',
       number: Number(parts[3]),
       repo: parts[1],
+      kind,
     }
   }
   if (host === 'gitlab.com') return gitlabLink('gitlab.com', path)

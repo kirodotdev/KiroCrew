@@ -1,6 +1,6 @@
 import type { ChatMessage } from '../types'
 
-export type LinkType = 'cr' | 'other'
+export type LinkType = 'cr' | 'issue' | 'other'
 
 export interface ExtractedLink {
   url: string
@@ -10,8 +10,12 @@ export interface ExtractedLink {
   fromMarkdown?: boolean
 }
 
-/** Classify a URL into a known type (generic git/PR vs everything else) */
+/** Classify a URL into a known type (generic git/PR, provider issue, or
+ *  everything else). Issues are checked FIRST: they are a narrower shape than
+ *  the PR pattern and must not be mislabelled "PR" in the Resources list. */
 function classifyUrl(url: string): LinkType {
+  // GitHub `/issues/5` and GitLab `/-/issues/5` share one trailing shape.
+  if (/\/(?:issues)\/\d+/i.test(url)) return 'issue'
   // Generic pull request / code review detection (GitHub, GitLab, Bitbucket, etc.)
   if (/\/(?:pull|pull-requests|merge_requests)\/\d+/i.test(url) || /\/reviews\/[\w-]+/i.test(url)) return 'cr'
   return 'other'
@@ -23,6 +27,10 @@ function fallbackLabel(url: string, type: LinkType): string {
     case 'cr': {
       const m = url.match(/\/(?:pull|pull-requests|merge_requests)\/(\d+)/i) || url.match(/\/reviews\/([\w-]+)/i)
       return m ? `#${m[1]}` : 'PR'
+    }
+    case 'issue': {
+      const m = url.match(/\/issues\/(\d+)/i)
+      return m ? `#${m[1]}` : 'Issue'
     }
     default: { try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url.slice(0, 30) } }
   }
@@ -88,18 +96,23 @@ export function extractChatLinks(messages: ChatMessage[]): ExtractedLink[] {
  * specific PR diff/comment stays navigable), but the Resources panel should show
  * each underlying resource only ONCE. CR/PR links that point at the same request
  * (e.g. `.../pull/274`, `.../pull/274/files`, `.../pull/274#issuecomment-1`)
- * collapse to a single canonical key; every other link dedups on its
- * trailing-slash-normalized URL.
+ * collapse to a single canonical key; so do issue links that point at the same
+ * issue (`.../issues/5`, `.../issues/5#issuecomment-9`). Every other link dedups
+ * on its trailing-slash-normalized URL.
  */
 export function resourceIdentity(link: ExtractedLink): string {
   return resourceKey(link.url)
 }
 
-// Canonical request base for a CR/PR URL — the part that identifies the request
-// itself, minus any sub-path/query/fragment. Single source of truth (was
-// previously restated at each call site).
+// Canonical request base for a CR/PR or issue URL — the part that identifies the
+// resource itself, minus any sub-path/query/fragment. Single source of truth
+// (was previously restated at each call site). The issue arm matters for the
+// side panel: the Issues tab keys its rich entries on the canonical issue url,
+// so a fragment-bearing mention must collapse to the same key or the link would
+// show up twice — once with a panel, once in Resources.
 const CR_BASE_RE = [
   /^(https?:\/\/[^/]+\/.*?\/(?:pull|pull-requests|merge_requests)\/\d+)/i,
+  /^(https?:\/\/[^/]+\/.*?\/issues\/\d+)/i,
   /^(https?:\/\/[^/]+\/.*?\/reviews\/[\w-]+)/i,
 ]
 

@@ -84,6 +84,29 @@ class TestChatSlot:
         assert d["running"] is False
         assert d["pending_approval"] is False
 
+    def test_issue_links_do_not_crowd_out_pr_chips(self):
+        """Each kind gets its own chip budget, so a PR chip is never starved.
+
+        A single shared budget sliced before the kind filter would drop the PR
+        entirely once three issues are mentioned first -- and, because the
+        check-status refresh reads the same slice, would also stop scheduling
+        that PR's CI updates.
+        """
+        slot = _ChatSlot("s1")
+        pr_url = "https://github.com/acme/widgets/pull/12"
+        issue_urls = [f"https://github.com/acme/widgets/issues/{n}" for n in (1, 2, 3, 4)]
+        # The issues are mentioned FIRST, so a shared budget would spend all of
+        # it before ever reaching the pull request.
+        slot.append("assistant", "\n".join([*issue_urls, pr_url]), ts="t1")
+
+        payload = slot.to_dict()
+        serialized = payload["source_links"]
+        assert pr_url in [link["url"] for link in serialized]
+        assert [link["url"] for link in serialized if link["kind"] == "change"] == [pr_url]
+        # Three of the four issues fit their own budget; the fourth overflows.
+        assert len([link for link in serialized if link["kind"] == "issue"]) == 3
+        assert payload["source_links_total"] == 5
+
     def test_pr_source_links_refresh_after_same_length_content_edit(self):
         slot = _ChatSlot("s1")
         url = "https://github.com/acme/widgets/pull/12"
@@ -202,6 +225,79 @@ class TestChatSlot:
         payload = slot.to_dict()
         assert payload["source_links_total"] == 1
         assert calls == 1
+
+    def test_source_links_carry_a_kind_discriminator(self):
+        slot = _ChatSlot("s1")
+        pr = "https://github.com/acme/widgets/pull/12"
+        issue = "https://github.com/acme/widgets/issues/13"
+        mr = "https://gitlab.com/acme/widgets/-/merge_requests/14"
+        gitlab_issue = "https://gitlab.com/acme/widgets/-/issues/15"
+        slot.append("assistant", f"{pr} {issue} {mr} {gitlab_issue}")
+
+        payload = slot.to_dict()
+
+        assert payload["source_links_total"] == 4
+        # Assert on the full list: to_dict serializes only the first
+        # _SERIALIZED_SOURCE_LINKS_PER_SLOT entries.
+        assert [(link["url"], link["kind"]) for link in slot._pr_source_links()] == [
+            (pr, "change"),
+            (issue, "issue"),
+            (mr, "change"),
+            (gitlab_issue, "issue"),
+        ]
+        assert all("kind" in link for link in payload["source_links"])
+
+    def test_issue_links_never_inherit_a_chip_status(self, monkeypatch):
+        """The chip-status cache is pull-request-only, so an issue entry must
+        stay bare even when the cache would answer for its URL."""
+        from kiro_crew.dashboard import state as state_module
+
+        monkeypatch.setattr(
+            state_module, "_cached_check_status", lambda _url: {"ci": "passed", "state": "open"}
+        )
+        slot = _ChatSlot("s1")
+        pr = "https://github.com/acme/widgets/pull/12"
+        issue = "https://github.com/acme/widgets/issues/13"
+        slot.append("assistant", f"{pr} and {issue}")
+
+        links = slot.to_dict(include_check_status=True)["source_links"]
+
+        by_url = {link["url"]: link for link in links}
+        assert by_url[pr]["ci"] == "passed"
+        assert "ci" not in by_url[issue]
+        assert "state" not in by_url[issue]
+
+    def test_source_links_without_kind_are_treated_as_changes(self, monkeypatch):
+        """Older cached payloads have no `kind`; they must keep their status."""
+        from kiro_crew.dashboard import state as state_module
+
+        monkeypatch.setattr(state_module, "_cached_check_status", lambda _url: {"ci": "failed"})
+        slot = _ChatSlot("s1")
+        url = "https://github.com/acme/widgets/pull/12"
+        slot.append("assistant", url)
+        slot._pr_source_links()
+        # Simulate a pre-upgrade cache entry.
+        key, links = slot._source_links_cache
+        slot._source_links_cache = (key, [{"provider": "github", "number": 12, "url": url}])
+
+        assert slot.to_dict(include_check_status=True)["source_links"][0]["ci"] == "failed"
+
+    def test_gitlab_issue_link_requires_the_allowlist(self, monkeypatch):
+        from kiro_crew.dashboard.handlers import source_providers as sp
+
+        monkeypatch.setattr(sp, "_gitlab_hosts_snapshot", frozenset())
+        monkeypatch.setattr(sp, "_gitlab_hosts_loaded_at", 0.0)
+        monkeypatch.setattr(sp, "_gitlab_hosts_generation", 0)
+
+        slot = _ChatSlot("s1")
+        url = "https://gitlab.acme.internal/team/api/-/issues/7"
+        slot.append("assistant", f"Filed {url}", ts="t1")
+        assert slot.to_dict()["source_links_total"] == 0
+
+        sp._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+        refreshed = slot.to_dict()
+        assert refreshed["source_links_total"] == 1
+        assert refreshed["source_links"][0]["kind"] == "issue"
 
     def test_pending_approval_flag(self):
         slot = _ChatSlot("s1")
@@ -698,7 +794,7 @@ class TestSlotLifecycle:
 
         assert resp.status == 200
         link = next(item for item in payload if item["key"] == "source")["source_links"][0]
-        assert link == {"provider": "github", "number": 12, "url": url}
+        assert link == {"provider": "github", "number": 12, "url": url, "kind": "change"}
         scheduler.assert_not_called()
 
     def test_slot_status_serialization_requires_owner_opt_in(self, tmp_path, monkeypatch):
@@ -10441,6 +10537,59 @@ class TestSlotsGetWarmsGitLabAllowlist:
         assert order[:2] == ["ensure", "serialize"]
         links = [link["url"] for p in payloads for link in p.get("source_links", [])]
         assert url in links
+
+
+class TestSourceLinkUrlsExcludeIssues:
+    """The chip-status sweep reaches `gh pr view`, which has no meaning for an
+    issue. Issue links must be filtered out before scheduling, not merely
+    refused downstream, so a session that mentions only issues never generates
+    provider work at all."""
+
+    def test_state_sweep_skips_issue_links(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("source")
+        pr = "https://github.com/acme/widgets/pull/12"
+        slot.append(
+            "assistant", f"{pr} and https://github.com/acme/widgets/issues/13"
+        )
+
+        assert state.source_link_urls() == [pr]
+        assert state.source_link_urls_for_slot("source") == [pr]
+
+    @pytest.mark.asyncio
+    async def test_slots_get_schedules_only_change_links(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers import source_providers as sp
+
+        scheduler = MagicMock(return_value=[])
+        monkeypatch.setattr(sp, "schedule_check_refresh", scheduler)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.owner_id = "U_OWNER"
+        slot = state.get_or_create_slot("source")
+        pr = "https://github.com/acme/widgets/pull/12"
+        slot.append(
+            "assistant", f"{pr} and https://github.com/acme/widgets/issues/13"
+        )
+
+        app = _make_app(state)
+
+        @web.middleware
+        async def owner_auth(request, handler):
+            request["user"] = "U_OWNER"
+            request["app"] = ""
+            return await handler(request)
+
+        app.middlewares.append(owner_auth)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/chat/slots")
+            assert resp.status == 200
+            payload = await resp.json()
+
+        # Both links are serialized for the sidebar...
+        links = next(item for item in payload if item["key"] == "source")["source_links"]
+        assert len(links) == 2
+        # ...but only the pull request is scheduled for a status read.
+        assert scheduler.call_args.args[0] == [pr]
 
 
 class TestBulkModelSwitch:

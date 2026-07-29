@@ -56,6 +56,11 @@ _DIRECT_FETCH_PENDING_MAX = 16
 _DIRECT_FETCH_MAX_RESERVED_BYTES = 128 * 1024 * 1024
 _FULL_FETCH_RESERVATION_BYTES = 64 * 1024 * 1024
 _CHECKS_FETCH_RESERVATION_BYTES = 8 * 1024 * 1024
+# An issue payload is metadata plus comments -- no diffs, no check rollup -- so
+# both its aggregate cache and its retained-memory lease sit well below the
+# pull-request figures. TTL and entry count are shared with the PR cache.
+_ISSUE_CACHE_MAX_BYTES = 16 * 1024 * 1024
+_ISSUE_FETCH_RESERVATION_BYTES = 16 * 1024 * 1024
 _PROVIDER_EXECUTABLE_OVERRIDES = {
     "gh": "KIROCREW_GH_BIN",
     "glab": "KIROCREW_GLAB_BIN",
@@ -128,6 +133,16 @@ _FULL_FETCH_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
 _FULL_FETCH_TASKS: dict[str, set[asyncio.Task[dict[str, Any]]]] = {}
 _FULL_FETCH_GENERATIONS: dict[str, int] = {}
 _CHECKS_FETCH_INFLIGHT: dict[str, asyncio.Task[list[dict[str, Any]]]] = {}
+# Issues get their own cache and inflight map rather than sharing the
+# pull-request ones: the two live at different URLs but the same normalized-URL
+# key space would still be shared, and a PR mutation's cache invalidation
+# (_invalidate_pull_request_cache) must not evict issue payloads it knows
+# nothing about. No generation map is needed -- this phase never mutates an
+# issue, so there is no post-mutation write to order against.
+_ISSUE_CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
+_ISSUE_CACHE_LOCK = asyncio.Lock()
+_ISSUE_FETCH_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
+_ISSUE_FETCH_TASKS: dict[str, set[asyncio.Task[dict[str, Any]]]] = {}
 _DIRECT_FETCH_RESERVATIONS: dict[asyncio.Task[Any], int] = {}
 _provider_semaphore = asyncio.Semaphore(_PROVIDER_CONCURRENCY)
 _SAFE_ERROR_RE = re.compile(r"\s+")
@@ -416,6 +431,13 @@ class SourceRef:
     repo: str
     number: int
     project: str = ""
+    # Which namespace the number belongs to: "change" (pull/merge request) or
+    # "issue". Defaults to "change" so every pre-existing construction site and
+    # test fixture keeps its current meaning. Load-bearing for safety, not just
+    # display: GitHub shares one number counter between issues and pull
+    # requests, so an issue ref reaching a pull-request-only path would address a
+    # DIFFERENT object with the same number. See :func:`_require_change_ref`.
+    kind: str = "change"
 
 
 _GITLAB_HOSTS_TTL_SECS = 30.0
@@ -505,34 +527,63 @@ def _allowed_gitlab_hosts() -> frozenset[str]:
     return _gitlab_hosts_snapshot
 
 
-def _parse_gitlab_path(path: str) -> tuple[str, int]:
-    """Split a GitLab MR path into (project, number) or raise ``ValueError``."""
+# Path markers that identify a GitLab object, paired with the SourceRef kind
+# they produce. Plain string literals matched with rfind -- deliberately not a
+# regex alternation (see _parse_gitlab_path).
+_GITLAB_PATH_MARKERS: tuple[tuple[str, str], ...] = (
+    ("/-/merge_requests/", "change"),
+    ("/-/issues/", "issue"),
+)
+# GitHub keeps issues and pull requests in one number space under two path
+# segments. The captured segment is what derives the kind.
+_GITHUB_PATH_RE = re.compile(r"/([^/]+)/([^/]+)/(pull|issues)/(\d+)", re.IGNORECASE)
+_GITHUB_SEGMENT_KINDS = {"pull": "change", "issues": "issue"}
+
+
+def _parse_gitlab_path(path: str) -> tuple[str, int, str]:
+    """Split a GitLab MR/issue path into (project, number, kind) or raise ``ValueError``."""
     # String ops instead of a regex: the previous /(.+)/-/merge_requests/
-    # pattern backtracked polynomially on adversarial paths (CodeQL 192).
-    marker = "/-/merge_requests/"
-    idx = path.lower().rfind(marker)
-    project = path[1:idx] if idx > 0 else ""
-    number_text = path[idx + len(marker) :] if idx > 0 else ""
-    if not project or not number_text.isdigit():
+    # pattern backtracked polynomially on adversarial paths (CodeQL 192). The
+    # two markers are scanned independently and the RIGHTMOST valid one wins,
+    # preserving the original ``rfind`` semantics (a project path that itself
+    # contains the marker text is still split at the last occurrence) without
+    # reintroducing an alternating pattern.
+    best: tuple[str, int, str] | None = None
+    best_idx = -1
+    lowered = path.lower()
+    for marker, kind in _GITLAB_PATH_MARKERS:
+        idx = lowered.rfind(marker)
+        if idx <= 0 or idx <= best_idx:
+            continue
+        project = path[1:idx]
+        number_text = path[idx + len(marker) :]
+        if not project or not number_text.isdigit():
+            continue
+        best_idx = idx
+        best = (project, int(number_text), kind)
+    if best is None:
         raise ValueError(
-            "Expected a GitLab URL like https://gitlab.com/group/project/-/merge_requests/123."
+            "Expected a GitLab URL like https://gitlab.com/group/project/-/merge_requests/123 "
+            "or https://gitlab.com/group/project/-/issues/123."
         )
-    if any(segment in {"", ".", ".."} for segment in project.split("/")):
+    if any(segment in {"", ".", ".."} for segment in best[0].split("/")):
         raise ValueError("Invalid GitLab project path.")
-    return project, int(number_text)
+    return best
 
 
 def _gitlab_ref(host: str, path: str) -> SourceRef:
     """Build a GitLab ``SourceRef`` for an already-authorized host."""
-    project, number = _parse_gitlab_path(path)
+    project, number, kind = _parse_gitlab_path(path)
     normalized = urlunparse(("https", host, path, "", "", ""))
     repo = project.rsplit("/", 1)[-1]
     owner = project.rsplit("/", 1)[0] if "/" in project else ""
-    return SourceRef("gitlab", normalized, host, owner, repo, number, project=project)
+    return SourceRef(
+        "gitlab", normalized, host, owner, repo, number, project=project, kind=kind
+    )
 
 
 def parse_source_url(raw_url: str) -> SourceRef:
-    """Validate and normalize a supported pull/merge-request URL.
+    """Validate and normalize a supported pull/merge-request or issue URL.
 
     Public GitHub and gitlab.com are always accepted. A self-managed GitLab
     instance is accepted only when its exact ``host[:port]`` appears in the
@@ -540,6 +591,11 @@ def parse_source_url(raw_url: str) -> SourceRef:
     choose which instance the credential-bearing CLI talks to.
     Exact parsed-host checks prevent URLs that merely mention a trusted host in
     their path, query, or userinfo from reaching a provider CLI.
+
+    Issues and pull/merge requests share this one validator so both surfaces
+    inherit the same host, scheme, and path guarantees. The returned
+    ``SourceRef.kind`` says which namespace the number belongs to; every
+    pull-request-only caller must gate on it via :func:`_require_change_ref`.
     """
     if not isinstance(raw_url, str) or not raw_url or len(raw_url) > _MAX_URL_LENGTH:
         raise ValueError("A pull-request URL is required.")
@@ -554,14 +610,25 @@ def parse_source_url(raw_url: str) -> SourceRef:
     path = parsed.path.rstrip("/")
 
     if host in {"github.com", "www.github.com"}:
-        match = re.fullmatch(r"/([^/]+)/([^/]+)/pull/(\d+)", path, re.IGNORECASE)
+        match = _GITHUB_PATH_RE.fullmatch(path)
         if not match:
-            raise ValueError("Expected a GitHub URL like https://github.com/org/repo/pull/123.")
-        owner, repo, number = match.groups()
+            raise ValueError(
+                "Expected a GitHub URL like https://github.com/org/repo/pull/123 "
+                "or https://github.com/org/repo/issues/123."
+            )
+        owner, repo, segment, number = match.groups()
         if owner in {".", ".."} or repo in {".", ".."}:
             raise ValueError("Invalid GitHub owner/repo path.")
         normalized = urlunparse(("https", "github.com", path, "", "", ""))
-        return SourceRef("github", normalized, "github.com", owner, repo, int(number))
+        return SourceRef(
+            "github",
+            normalized,
+            "github.com",
+            owner,
+            repo,
+            int(number),
+            kind=_GITHUB_SEGMENT_KINDS[segment.lower()],
+        )
 
     if host in {"gitlab.com", "www.gitlab.com"}:
         return _gitlab_ref("gitlab.com", path)
@@ -577,9 +644,27 @@ def parse_source_url(raw_url: str) -> SourceRef:
         return _gitlab_ref(candidate, path)
 
     raise ValueError(
-        "Only github.com pull requests, gitlab.com merge requests, and merge "
-        "requests on a GitLab host listed in dashboard.gitlab_hosts are supported."
+        "Only github.com pull requests and issues, gitlab.com merge requests and "
+        "issues, and merge requests or issues on a GitLab host listed in "
+        "dashboard.gitlab_hosts are supported."
     )
+
+
+def _require_change_ref(ref: SourceRef) -> SourceRef:
+    """Refuse an issue ref at a pull-request-only entry point.
+
+    Issues and pull/merge requests now come out of the same validator, so every
+    pre-existing caller would otherwise accept an issue URL. That is not merely
+    a wrong-shaped read: on GitHub the two namespaces share one number counter,
+    so ``.../issues/58`` would be handed to ``gh pr view`` and answer about pull
+    request 58 -- a different object -- and on either provider an
+    owner-authenticated mutation (resolve, auto-merge, mark-ready) would be
+    aimed at whatever change carries that number. Fail closed with a
+    ``ValueError``, which every caller already maps to a 400.
+    """
+    if ref.kind != "change":
+        raise ValueError("This URL points at an issue, not a pull request or merge request.")
+    return ref
 
 
 def _safe_error(stderr: bytes) -> str:
@@ -1818,6 +1903,354 @@ async def _fetch_pull_request_checks_uncached(ref: SourceRef) -> list[dict[str, 
     return checks
 
 
+# --- Issues -----------------------------------------------------------------
+#
+# Issues reuse the pull-request transport wholesale (`_run_json` isolation,
+# redaction, byte caps, the validated-ref identity rule) and add only their own
+# normalization. They deliberately do NOT touch the chip-status cache: an issue
+# has no CI or merge state, so `record_full_payload_status` is never called for
+# one and `get_cached_check_status` is never consulted for one either.
+
+# Contract order for the reaction counters, paired with GitHub's own REST keys.
+_GITHUB_REACTION_KEYS: tuple[tuple[str, str], ...] = (
+    ("plus1", "+1"),
+    ("minus1", "-1"),
+    ("laugh", "laugh"),
+    ("hooray", "hooray"),
+    ("confused", "confused"),
+    ("heart", "heart"),
+    ("rocket", "rocket"),
+    ("eyes", "eyes"),
+)
+
+
+def _int_or_zero(value: Any) -> int:
+    """Coerce a provider-supplied count to a non-negative int."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value if value > 0 else 0
+
+
+def _safe_https_url(value: Any) -> str:
+    """Keep only an https URL from provider-echoed link fields.
+
+    Unlike the payload's own ``url`` (which comes from the validated ref), a
+    linked change or comment permalink can only come from the provider, and it
+    reaches an ``href`` in the browser. Restricting it to https drops
+    ``javascript:``/``data:`` and any other scheme before it can be rendered as
+    a link; a rejected value degrades to an empty string, which the frontend
+    renders as plain text.
+    """
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    return text if text.lower().startswith("https://") else ""
+
+
+def _issue_label(item: Any) -> dict[str, str]:
+    """Normalize one label to the contract's ``{name, color, description}``.
+
+    ``color`` is a BARE six-hex-digit string: GitHub already reports it that way
+    and GitLab reports ``#rrggbb``, so the leading ``#`` is stripped here rather
+    than left for the frontend to handle twice. GitLab also returns plain label
+    NAMES unless ``with_labels_details`` is requested, so a bare string is
+    accepted as a name-only label.
+    """
+    if isinstance(item, str):
+        return {"name": item, "color": "", "description": ""}
+    if not isinstance(item, dict):
+        return {"name": "", "color": "", "description": ""}
+    return {
+        "name": str(item.get("name") or ""),
+        "color": str(item.get("color") or "").lstrip("#"),
+        "description": str(item.get("description") or ""),
+    }
+
+
+def _issue_labels(value: Any) -> list[dict[str, str]]:
+    """Normalize a provider label list, tolerating GitLab's name-only form.
+
+    ``_as_list`` cannot be reused here: it keeps only dict rows, which would
+    silently drop every label from a GitLab reply that came back as bare
+    strings. Nameless rows are dropped -- there is nothing to render.
+    """
+    if not isinstance(value, list):
+        return []
+    labels = [_issue_label(item) for item in value if isinstance(item, (str, dict))]
+    return [label for label in labels if label["name"]]
+
+
+def _issue_milestone(value: Any) -> dict[str, str] | None:
+    """Normalize a milestone, or ``None`` when the issue has none."""
+    if not isinstance(value, dict):
+        return None
+    return {
+        "title": str(value.get("title") or ""),
+        "state": str(value.get("state") or ""),
+        # GitHub calls it due_on, GitLab due_date.
+        "dueOn": str(value.get("due_on") or value.get("due_date") or ""),
+    }
+
+
+def _github_issue_reactions(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    reactions = {"total": _int_or_zero(value.get("total_count"))}
+    for contract_key, github_key in _GITHUB_REACTION_KEYS:
+        reactions[contract_key] = _int_or_zero(value.get(github_key))
+    return reactions
+
+
+def _gitlab_issue_reactions(details: dict[str, Any]) -> dict[str, int] | None:
+    """Synthesize the reaction block from GitLab's up/down vote counters.
+
+    GitLab's issue payload exposes only ``upvotes``/``downvotes``, not the full
+    award-emoji breakdown, so the remaining counters stay zero rather than being
+    fetched from a separate endpoint this phase does not need. ``total`` is the
+    sum of what is actually known.
+    """
+    if "upvotes" not in details and "downvotes" not in details:
+        return None
+    plus1 = _int_or_zero(details.get("upvotes"))
+    minus1 = _int_or_zero(details.get("downvotes"))
+    reactions = {contract_key: 0 for contract_key, _ in _GITHUB_REACTION_KEYS}
+    reactions["plus1"] = plus1
+    reactions["minus1"] = minus1
+    return {"total": plus1 + minus1, **reactions}
+
+
+def _github_issue_comment(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(item.get("id") or item.get("node_id") or ""),
+        "author": _author(item.get("user") or item.get("author")),
+        "body": str(item.get("body") or ""),
+        "createdAt": str(item.get("created_at") or item.get("createdAt") or ""),
+        "url": _safe_https_url(item.get("html_url") or item.get("url")),
+    }
+
+
+def _github_linked_changes(timeline: Any) -> list[dict[str, Any]]:
+    """Cross-referenced PULL REQUESTS from an issue's timeline.
+
+    GitHub records "this was mentioned from X" as a ``cross-referenced`` event
+    whose ``source.issue`` is the mentioning item. Issues and pull requests are
+    the same REST object type, distinguished only by the presence of a
+    ``pull_request`` sub-object, so filtering on that key is what keeps a plain
+    issue-to-issue mention out of the linked-changes list. Duplicates are folded
+    because one pull request can cross-reference an issue repeatedly.
+    """
+    changes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for event in _as_list(timeline):
+        if str(event.get("event") or "") != "cross-referenced":
+            continue
+        origin = event.get("source")
+        item = origin.get("issue") if isinstance(origin, dict) else None
+        if not isinstance(item, dict) or not isinstance(item.get("pull_request"), dict):
+            continue
+        url = _safe_https_url(item.get("html_url"))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        changes.append(
+            {
+                "provider": "github",
+                "url": url,
+                "number": _int_or_zero(item.get("number")),
+                "title": str(item.get("title") or ""),
+                "state": str(item.get("state") or "").lower(),
+            }
+        )
+    return changes
+
+
+def _gitlab_linked_changes(related: Any) -> list[dict[str, Any]]:
+    """Normalize GitLab's ``related_merge_requests`` reply to linked changes."""
+    changes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in _as_list(related):
+        url = _safe_https_url(item.get("web_url"))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        changes.append(
+            {
+                "provider": "gitlab",
+                "url": url,
+                "number": _int_or_zero(item.get("iid") or item.get("id")),
+                "title": str(item.get("title") or ""),
+                # GitLab says "opened"; the contract's state field is free-form
+                # text but both providers should read the same in the panel.
+                "state": "open" if item.get("state") == "opened" else str(item.get("state") or ""),
+            }
+        )
+    return changes
+
+
+async def _fetch_github_issue(ref: SourceRef) -> dict[str, Any]:
+    issue_api = f"repos/{ref.owner}/{ref.repo}/issues/{ref.number}"
+    details = await _run_json("gh", "api", issue_api)
+    if not isinstance(details, dict):
+        raise SourceProviderError("GitHub returned an invalid issue payload")
+
+    # Secondary endpoints degrade to empty sections instead of failing the
+    # whole panel: the primary payload above already carries the core data.
+    comments_raw: Any
+    timeline_raw: Any
+    comments_raw, timeline_raw = await asyncio.gather(
+        _run_json(
+            "gh",
+            "api",
+            f"{issue_api}/comments?per_page={_SECONDARY_PAGE_SIZE}",
+            max_output_bytes=_DISCUSSION_OUTPUT_BYTES,
+        ),
+        _run_json(
+            "gh",
+            "api",
+            f"{issue_api}/timeline?per_page={_SECONDARY_PAGE_SIZE}",
+            max_output_bytes=_DISCUSSION_OUTPUT_BYTES,
+        ),
+        return_exceptions=True,
+    )
+    partial_sections: list[str] = []
+    if isinstance(comments_raw, BaseException):
+        _mark_partial(partial_sections, "comments")
+    if isinstance(timeline_raw, BaseException):
+        _mark_partial(partial_sections, "linked changes")
+    comment_rows = _as_list(_or_empty(comments_raw))
+    comment_count = _int_or_zero(details.get("comments"))
+    if len(comment_rows) >= _SECONDARY_PAGE_SIZE or comment_count > len(comment_rows):
+        _mark_partial(partial_sections, "comments")
+    timeline = _or_empty(timeline_raw)
+    if len(_as_list(timeline)) >= _SECONDARY_PAGE_SIZE:
+        # A full page may be truncated, so a cross-reference on a later page
+        # would be missing from the linked-changes list.
+        _mark_partial(partial_sections, "linked changes")
+
+    return {
+        "provider": "github",
+        # Identity comes from the VALIDATED ref, never the provider echo: the
+        # browser submits this url back for refresh, so a hostile or compromised
+        # instance echoing a different html_url could otherwise steer a
+        # credential-backed read at an unrelated repository or object.
+        "url": ref.url,
+        "number": ref.number,
+        "title": str(details.get("title") or ""),
+        "description": str(details.get("body") or ""),
+        "state": str(details.get("state") or "").lower(),
+        "stateReason": str(details.get("state_reason") or ""),
+        "author": _author(details.get("user")),
+        "createdAt": str(details.get("created_at") or ""),
+        "updatedAt": str(details.get("updated_at") or ""),
+        "closedAt": str(details.get("closed_at") or ""),
+        "closedBy": _author(details.get("closed_by")),
+        "labels": _issue_labels(details.get("labels")),
+        "assignees": [
+            name for name in (_author(item) for item in _as_list(details.get("assignees"))) if name
+        ],
+        "milestone": _issue_milestone(details.get("milestone")),
+        "commentCount": comment_count,
+        "locked": bool(details.get("locked")),
+        "reactions": _github_issue_reactions(details.get("reactions")),
+        "comments": [_github_issue_comment(item) for item in comment_rows],
+        "linkedChanges": _github_linked_changes(timeline),
+        "partialSections": partial_sections,
+    }
+
+
+async def _fetch_gitlab_issue(ref: SourceRef) -> dict[str, Any]:
+    project = quote(ref.project, safe="")
+    issue_api = f"projects/{project}/issues/{ref.number}"
+    # with_labels_details upgrades `labels` from bare names to objects carrying
+    # the colour the panel renders; without it every label would be colourless.
+    details = await _run_json(
+        "glab", "api", f"{issue_api}?with_labels_details=true", host=ref.host
+    )
+    if not isinstance(details, dict):
+        raise SourceProviderError("GitLab returned an invalid issue payload")
+
+    # Secondary endpoints degrade to empty sections instead of failing the
+    # whole panel: the primary payload above already carries the core data.
+    notes_raw: Any
+    related_raw: Any
+    notes_raw, related_raw = await asyncio.gather(
+        _run_json(
+            "glab",
+            "api",
+            f"{issue_api}/notes?per_page={_SECONDARY_PAGE_SIZE}",
+            max_output_bytes=_DISCUSSION_OUTPUT_BYTES,
+            host=ref.host,
+        ),
+        _run_json(
+            "glab",
+            "api",
+            f"{issue_api}/related_merge_requests",
+            host=ref.host,
+        ),
+        return_exceptions=True,
+    )
+    partial_sections: list[str] = []
+    if isinstance(notes_raw, BaseException):
+        _mark_partial(partial_sections, "comments")
+    if isinstance(related_raw, BaseException):
+        _mark_partial(partial_sections, "linked changes")
+    note_rows = _as_list(_or_empty(notes_raw))
+    if len(note_rows) >= _SECONDARY_PAGE_SIZE:
+        _mark_partial(partial_sections, "comments")
+
+    comments = []
+    for note in note_rows:
+        if note.get("system"):
+            # Label/milestone/state churn, not discussion.
+            continue
+        note_id = str(note.get("id") or "")
+        comments.append(
+            {
+                "id": note_id,
+                "author": _author(note.get("author")),
+                "body": str(note.get("body") or ""),
+                "createdAt": str(note.get("created_at") or ""),
+                # GitLab notes carry no permalink of their own, so anchor off the
+                # VALIDATED ref url rather than any provider-echoed link.
+                "url": f"{ref.url}#note_{note_id}" if note_id else "",
+            }
+        )
+    reported_comment_count = _int_or_zero(details.get("user_notes_count"))
+    if reported_comment_count > len(comments) and "comments" not in partial_sections:
+        _mark_partial(partial_sections, "comments")
+
+    return {
+        "provider": "gitlab",
+        # See _fetch_github_issue: identity is the validated ref, not the
+        # provider's web_url/iid. This matters most for a self-managed instance,
+        # whose responses are outside the trust boundary the allowlist sets.
+        "url": ref.url,
+        "number": ref.number,
+        "title": str(details.get("title") or ""),
+        "description": str(details.get("description") or ""),
+        # GitLab says "opened"; the contract's vocabulary is open/closed.
+        "state": "open" if details.get("state") == "opened" else str(details.get("state") or ""),
+        # GitLab has no equivalent of GitHub's state_reason.
+        "stateReason": "",
+        "author": _author(details.get("author")),
+        "createdAt": str(details.get("created_at") or ""),
+        "updatedAt": str(details.get("updated_at") or ""),
+        "closedAt": str(details.get("closed_at") or ""),
+        "closedBy": _author(details.get("closed_by")),
+        "labels": _issue_labels(details.get("labels")),
+        "assignees": [
+            name for name in (_author(item) for item in _as_list(details.get("assignees"))) if name
+        ],
+        "milestone": _issue_milestone(details.get("milestone")),
+        "commentCount": reported_comment_count or len(comments),
+        "locked": bool(details.get("discussion_locked")),
+        "reactions": _gitlab_issue_reactions(details),
+        "comments": comments,
+        "linkedChanges": _gitlab_linked_changes(_or_empty(related_raw)),
+        "partialSections": partial_sections,
+    }
+
+
 _T = TypeVar("_T")
 
 
@@ -1831,10 +2264,17 @@ def _finish_inflight(store: dict[str, asyncio.Task[_T]], url: str, task: asyncio
 
 
 def _direct_fetch_tasks() -> set[asyncio.Task[Any]]:
-    """Snapshot unique direct full/check tasks, including detached stale full work."""
+    """Snapshot unique direct full/issue/check tasks, including detached stale work.
+
+    Issue fetches are counted here so their reservations are real: the pending
+    cap and the retained-byte ceiling are computed from this set, so a task
+    absent from it would hold a lease nothing ever reads.
+    """
     tasks: set[asyncio.Task[Any]] = set(_CHECKS_FETCH_INFLIGHT.values())
     for full_tasks in _FULL_FETCH_TASKS.values():
         tasks.update(full_tasks)
+    for issue_tasks in _ISSUE_FETCH_TASKS.values():
+        tasks.update(issue_tasks)
     return tasks
 
 
@@ -1850,7 +2290,7 @@ def _ensure_direct_fetch_capacity(reservation_bytes: int) -> None:
         or reservation_bytes > _DIRECT_FETCH_MAX_RESERVED_BYTES - reserved
     ):
         raise SourceProviderError(
-            "Too many pull-request source requests are pending; retry shortly."
+            "Too many source requests are pending; retry shortly."
         )
 
 
@@ -1869,7 +2309,7 @@ async def fetch_pull_request_checks(raw_url: str) -> list[dict[str, Any]]:
     # Refresh the self-managed GitLab allowlist off the event loop before any
     # URL validation reads the cached snapshot.
     await ensure_gitlab_hosts_loaded()
-    ref = parse_source_url(raw_url)
+    ref = _require_change_ref(parse_source_url(raw_url))
     task = _CHECKS_FETCH_INFLIGHT.get(ref.url)
     if task is None:
         _ensure_direct_fetch_capacity(_CHECKS_FETCH_RESERVATION_BYTES)
@@ -1931,7 +2371,7 @@ async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str
     # Refresh the self-managed GitLab allowlist off the event loop before any
     # URL validation reads the cached snapshot.
     await ensure_gitlab_hosts_loaded()
-    ref = parse_source_url(raw_url)
+    ref = _require_change_ref(parse_source_url(raw_url))
     now = time.monotonic()
     async with _CACHE_LOCK:
         cached = _CACHE.get(ref.url)
@@ -1957,6 +2397,76 @@ async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str
                     _FULL_FETCH_GENERATIONS.pop(ref.url, None)
 
             task.add_done_callback(finish_full_fetch)
+    # Shield the shared fetch so one disconnected browser cannot cancel work
+    # still awaited by another request for the same URL.
+    return await asyncio.shield(task)
+
+
+async def _fetch_issue_uncached(ref: SourceRef) -> dict[str, Any]:
+    fetched = await (
+        _fetch_github_issue(ref) if ref.provider == "github" else _fetch_gitlab_issue(ref)
+    )
+    data = _redact_provider_data(fetched)
+    if not isinstance(data, dict):
+        raise SourceProviderError("provider returned an invalid issue payload")
+    payload_size = _payload_size_bytes(data)
+    if payload_size > _MAX_PAYLOAD_BYTES:
+        raise SourceProviderError("provider issue payload was too large")
+
+    async with _ISSUE_CACHE_LOCK:
+        now = time.monotonic()
+        # Sweep expired entries on write, then cap by both recency count and
+        # aggregate serialized weight -- an issue combines several provider
+        # commands, so per-command pipe limits alone do not bound retained
+        # cache memory. Deliberately NOT paired with `record_full_payload_status`:
+        # an issue has no chip status, so projecting one would publish a
+        # meaningless {ci, state} for a URL the sidebar never asks about.
+        for key in [
+            key
+            for key, (stored_at, _, _) in _ISSUE_CACHE.items()
+            if now - stored_at >= _CACHE_TTL_SECS
+        ]:
+            del _ISSUE_CACHE[key]
+        _ISSUE_CACHE[ref.url] = (now, payload_size, data)
+        while (
+            len(_ISSUE_CACHE) > _CACHE_MAX_ENTRIES
+            or sum(entry[1] for entry in _ISSUE_CACHE.values()) > _ISSUE_CACHE_MAX_BYTES
+        ):
+            del _ISSUE_CACHE[min(_ISSUE_CACHE, key=lambda key: _ISSUE_CACHE[key][0])]
+    return data
+
+
+async def fetch_issue(raw_url: str, *, refresh: bool = False) -> dict[str, Any]:
+    """Fetch an issue, sharing one provider fanout per normalized URL."""
+    # Refresh the self-managed GitLab allowlist off the event loop before any
+    # URL validation reads the cached snapshot.
+    await ensure_gitlab_hosts_loaded()
+    ref = parse_source_url(raw_url)
+    if ref.kind != "issue":
+        raise ValueError("This URL points at a pull request or merge request, not an issue.")
+    now = time.monotonic()
+    async with _ISSUE_CACHE_LOCK:
+        cached = _ISSUE_CACHE.get(ref.url)
+        if not refresh and cached and now - cached[0] < _CACHE_TTL_SECS:
+            return cached[2]
+        task = _ISSUE_FETCH_INFLIGHT.get(ref.url)
+        if task is None:
+            _ensure_direct_fetch_capacity(_ISSUE_FETCH_RESERVATION_BYTES)
+            task = asyncio.create_task(_fetch_issue_uncached(ref))
+            _ISSUE_FETCH_INFLIGHT[ref.url] = task
+            _ISSUE_FETCH_TASKS.setdefault(ref.url, set()).add(task)
+            _reserve_direct_fetch(task, _ISSUE_FETCH_RESERVATION_BYTES)
+
+            def finish_issue_fetch(done: asyncio.Task[dict[str, Any]]) -> None:
+                _finish_inflight(_ISSUE_FETCH_INFLIGHT, ref.url, done)
+                active = _ISSUE_FETCH_TASKS.get(ref.url)
+                if active is None:
+                    return
+                active.discard(done)
+                if not active:
+                    _ISSUE_FETCH_TASKS.pop(ref.url, None)
+
+            task.add_done_callback(finish_issue_fetch)
     # Shield the shared fetch so one disconnected browser cannot cancel work
     # still awaited by another request for the same URL.
     return await asyncio.shield(task)
@@ -1992,6 +2502,40 @@ async def api_pull_request_source(request: web.Request) -> web.Response:
         _audit_source_api(request, "source.pull_request.read", "failed", "provider_error")
         return web.json_response({"error": str(exc)}, status=503)
     _audit_source_api(request, "source.pull_request.read", "completed")
+    return web.json_response(data)
+
+
+async def api_issue_source(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/issue`` with ``{url, refresh?}``.
+
+    Same authorization, audit, and error mapping as
+    :func:`api_pull_request_source` -- an issue read is credential-backed
+    provider data too, so it is gated on the dashboard owner identically.
+    """
+    denied = _authorize_owner_request(request, "source.issue.read", allow_local_no_owner=True)
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except asyncio.CancelledError:
+        _audit_source_api(request, "source.issue.read", "failed", "request_cancelled")
+        raise
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        data = await fetch_issue(str(body.get("url") or ""), refresh=bool(body.get("refresh")))
+    except asyncio.CancelledError:
+        _audit_source_api(request, "source.issue.read", "failed", "request_cancelled")
+        raise
+    except ValueError as exc:
+        _audit_source_api(request, "source.issue.read", "failed", "invalid_request")
+        return web.json_response({"error": str(exc)}, status=400)
+    except SourceProviderError as exc:
+        _audit_source_api(request, "source.issue.read", "failed", "provider_error")
+        return web.json_response({"error": str(exc)}, status=503)
+    _audit_source_api(request, "source.issue.read", "completed")
     return web.json_response(data)
 
 
@@ -2075,7 +2619,11 @@ async def api_pull_request_status(request: web.Request) -> web.Response:
         if not isinstance(value, str):
             continue
         try:
-            ref = parse_source_url(value)
+            # An issue URL reaching here would be scheduled for a chip refresh
+            # and answered from the pull-request namespace. `_require_change_ref`
+            # raises ValueError, which this loop already treats as "not a
+            # supported source URL" and skips.
+            ref = _require_change_ref(parse_source_url(value))
         except ValueError:
             continue
         if ref.url not in canonical:
@@ -2232,7 +2780,7 @@ async def resolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
     # Refresh the self-managed GitLab allowlist off the event loop before any
     # URL validation reads the cached snapshot.
     await ensure_gitlab_hosts_loaded()
-    ref = parse_source_url(raw_url)
+    ref = _require_change_ref(parse_source_url(raw_url))
     thread_pattern = _GITHUB_THREAD_ID_RE if ref.provider == "github" else _GITLAB_THREAD_ID_RE
     if not thread_pattern.fullmatch(thread_id or ""):
         raise ValueError("A valid thread id is required.")
@@ -2344,7 +2892,7 @@ async def enable_pull_request_auto_merge(
     # the cached snapshot, so a cold mutation would otherwise be rejected as an
     # unsupported host (400) even though the operator authorized it.
     await ensure_gitlab_hosts_loaded()
-    ref = parse_source_url(raw_url)
+    ref = _require_change_ref(parse_source_url(raw_url))
     if ref.provider == "github":
         node_id, repository = await _github_pull_request_node(ref)
         pull_request = repository.get("pullRequest")
@@ -2421,7 +2969,7 @@ async def mark_pull_request_ready(raw_url: str) -> None:
     # the cached snapshot, so a cold mutation would otherwise be rejected as an
     # unsupported host (400) even though the operator authorized it.
     await ensure_gitlab_hosts_loaded()
-    ref = parse_source_url(raw_url)
+    ref = _require_change_ref(parse_source_url(raw_url))
     if ref.provider == "github":
         node_id, repository = await _github_pull_request_node(ref)
         pull_request = repository.get("pullRequest")
@@ -3164,7 +3712,11 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
     # Refresh the self-managed GitLab allowlist off the event loop before any
     # URL validation reads the cached snapshot.
     await ensure_gitlab_hosts_loaded()
-    ref = parse_source_url(url)
+    # Belt-and-braces: the callers that feed this path already drop issue links
+    # (see DashboardState.source_link_urls), but a chip refresh is what reaches
+    # `gh pr view`, so refuse an issue URL here too rather than rely on every
+    # future scheduling site remembering to filter.
+    ref = _require_change_ref(parse_source_url(url))
     result: dict[str, str] = {}
     if ref.provider == "github":
         data = await _run_json(

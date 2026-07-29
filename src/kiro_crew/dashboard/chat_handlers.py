@@ -574,7 +574,14 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     include_check_status = is_owner_dashboard_request(request)
     payloads = state.serialize_slots(include_check_status=include_check_status)
     if include_check_status:
-        urls = [link["url"] for payload in payloads for link in payload.get("source_links", [])]
+        # Issue links carry no check status — skip them so the scheduler never
+        # hands an issue URL to the pull-request-only chip fetch.
+        urls = [
+            link["url"]
+            for payload in payloads
+            for link in payload.get("source_links", [])
+            if link.get("kind", "change") == "change"
+        ]
         if urls:
             schedule_check_refresh(urls, state.push_slots_update)
     return web.json_response(payloads)

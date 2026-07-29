@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow } from 'lucide-react'
+import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
@@ -246,6 +246,9 @@ interface Slot {
     // carries the settled merge pair. Present only once the provider settled it.
     mergeable?: string
     mergeStateStatus?: string
+    // What the link points at. OPTIONAL on the wire — absent means 'change', so
+    // older payloads and existing fixtures keep rendering as PR/MR chips.
+    kind?: 'change' | 'issue'
   }>
   source_links_total?: number
 }
@@ -2019,46 +2022,77 @@ function ChatSidebar({
             ) : s.last_message ? (
               <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
             ) : null}
-            {s.source_links && s.source_links.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mt-1">
-                {s.source_links.map(link => (
-                  // The chip is a real link to the PR/MR. `link.url` is always
-                  // an `https://` URL on an allowlisted host (state.py scans for
-                  // the literal "https://" then validates via parse_source_url),
-                  // so no scheme sanitising is needed here.
-                  //
-                  // The row itself is a click-to-switch button AND a dnd-kit
-                  // draggable, so the anchor has to opt out of both: stop the
-                  // click from bubbling into the row's switchSlot handler, and
-                  // disable the anchor's own native HTML5 drag, which would
-                  // otherwise put the URL on the dataTransfer instead of the
-                  // slot key in the board/flat scopes that use native drag.
-                  <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
-                    draggable={false}
-                    onClick={e => e.stopPropagation()}
-                    className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
-                    title={`Open ${link.url}`}>
-                    {link.provider === 'github' ? <GithubLogo size={10} className="shrink-0" /> : <GitlabLogo size={10} className="shrink-0" />}
-                    {link.provider === 'github' ? `#${link.number}` : `!${link.number}`}
-                    {link.state === 'merged' && (
-                      <span className="inline-flex shrink-0 text-aim" aria-label={i18nT('pages.chatSidebar.merged')} title={i18nT('pages.chatSidebar.merged')}>
-                        <GitMerge className="lucide-inline" aria-hidden="true" />
-                      </span>
-                    )}
-                    {link.state === 'closed' && <span className="capitalize text-danger">{link.state}</span>}
-                    {/* CI status is moot once the PR is merged — the merge icon is the terminal signal. */}
-                    {link.state !== 'merged' && link.ci === 'running' && <Loader2 className="lucide-inline shrink-0 animate-spin" aria-label={i18nT('pages.chatSidebar.checks_running')} />}
-                    {link.state !== 'merged' && link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label={i18nT('pages.chatSidebar.checks_passed')} />}
-                    {link.state !== 'merged' && link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label={i18nT('pages.chatSidebar.checks_failed')} />}
-                  </a>
-                ))}
-                {typeof s.source_links_total === 'number' && s.source_links_total > s.source_links.length && (
-                  <span className="inline-flex items-center px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60" title={`${s.source_links_total - s.source_links.length} more pull request${s.source_links_total - s.source_links.length === 1 ? '' : 's'} in this session`}>
-                    +{s.source_links_total - s.source_links.length}
-                  </span>
-                )}
-              </div>
-            )}
+            {s.source_links && s.source_links.length > 0 && (() => {
+              // `kind` is OPTIONAL on the wire and absent means 'change', so an
+              // older payload (or a test fixture that predates the field) keeps
+              // rendering exactly the PR/MR chip it always did.
+              const changeLinks = s.source_links.filter(link => (link.kind ?? 'change') !== 'issue')
+              const issueLinks = s.source_links.filter(link => (link.kind ?? 'change') === 'issue')
+              const hidden = typeof s.source_links_total === 'number'
+                ? s.source_links_total - s.source_links.length
+                : 0
+              const overflowNoun = issueLinks.length
+                ? (hidden === 1 ? 'pull request or issue' : 'pull requests or issues')
+                : (hidden === 1 ? 'pull request' : 'pull requests')
+              return (
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {changeLinks.map(link => (
+                    // The chip is a real link to the PR/MR. `link.url` is always
+                    // an `https://` URL on an allowlisted host (state.py scans for
+                    // the literal "https://" then validates via parse_source_url),
+                    // so no scheme sanitising is needed here.
+                    //
+                    // The row itself is a click-to-switch button AND a dnd-kit
+                    // draggable, so the anchor has to opt out of both: stop the
+                    // click from bubbling into the row's switchSlot handler, and
+                    // disable the anchor's own native HTML5 drag, which would
+                    // otherwise put the URL on the dataTransfer instead of the
+                    // slot key in the board/flat scopes that use native drag.
+                    <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
+                      draggable={false}
+                      onClick={e => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
+                      title={`Open ${link.url}`}>
+                      {link.provider === 'github' ? <GithubLogo size={10} className="shrink-0" /> : <GitlabLogo size={10} className="shrink-0" />}
+                      {link.provider === 'github' ? `#${link.number}` : `!${link.number}`}
+                      {link.state === 'merged' && (
+                        <span className="inline-flex shrink-0 text-aim" aria-label={i18nT('pages.chatSidebar.merged')} title={i18nT('pages.chatSidebar.merged')}>
+                          <GitMerge className="lucide-inline" aria-hidden="true" />
+                        </span>
+                      )}
+                      {link.state === 'closed' && <span className="capitalize text-danger">{link.state}</span>}
+                      {/* CI status is moot once the PR is merged — the merge icon is the terminal signal. */}
+                      {link.state !== 'merged' && link.ci === 'running' && <Loader2 className="lucide-inline shrink-0 animate-spin" aria-label={i18nT('pages.chatSidebar.checks_running')} />}
+                      {link.state !== 'merged' && link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label={i18nT('pages.chatSidebar.checks_passed')} />}
+                      {link.state !== 'merged' && link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label={i18nT('pages.chatSidebar.checks_failed')} />}
+                    </a>
+                  ))}
+                  {issueLinks.map(link => (
+                    // Issue chip: the same anchor discipline (stop propagation,
+                    // no native drag) but deliberately NO ci / state / merge
+                    // decoration — the chip-status cache is pull-request-only in
+                    // this phase, so an issue chip has nothing truthful to colour
+                    // and a borrowed glyph would assert state we never fetched.
+                    // Both providers number issues with '#'.
+                    <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
+                      data-testid={`session-issue-chip-${link.number}`}
+                      draggable={false}
+                      onClick={e => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
+                      title={`Open ${link.url}`}>
+                      {link.provider === 'github' ? <GithubLogo size={10} className="shrink-0" /> : <GitlabLogo size={10} className="shrink-0" />}
+                      <CircleDot className="lucide-inline shrink-0" aria-hidden="true" />
+                      {`#${link.number}`}
+                    </a>
+                  ))}
+                  {hidden > 0 && (
+                    <span className="inline-flex items-center px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60" title={`${hidden} more ${overflowNoun} in this session`}>
+                      +{hidden}
+                    </span>
+                  )}
+                </div>
+              )
+            })()}
             {s.tags && s.tags.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">
                 {s.tags.map(tid => {

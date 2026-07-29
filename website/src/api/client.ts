@@ -1,6 +1,7 @@
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
 import type {
+  IssueSource,
   McpApplyChange,
   PullRequestCheck,
   PullRequestSource,
@@ -1054,6 +1055,9 @@ export const api = {
   resolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/resolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
   enablePullRequestAutoMerge: (url: string, confirmImmediateMerge = false) => post('/api/source/pull-request/auto-merge', { url, confirmImmediateMerge }).then(j) as Promise<{ autoMerge: boolean; mergeMethod: string }>,
   markPullRequestReady: (url: string) => post('/api/source/pull-request/ready', { url }).then(j) as Promise<{ ready: boolean }>,
+  // Issue sources. `refresh` bypasses the server's cached payload; the panel
+  // never polls, so a refresh is always an explicit user action.
+  fetchIssueSource: (url: string, refresh = false) => post('/api/source/issue', { url, refresh }).then(j) as Promise<IssueSource>,
   chatSlots: () => fetch('/api/chat/slots').then(j),
   chatSlotDetail: (slot: string, limit?: number, before?: number) => {
     const p = new URLSearchParams()

@@ -157,8 +157,13 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             }
         )
         if owner_request:
+            # Issue links carry no check status — skip them so the scheduler
+            # never hands an issue URL to the pull-request-only chip fetch.
             urls = [
-                link["url"] for payload in slots_data for link in payload.get("source_links", [])
+                link["url"]
+                for payload in slots_data
+                for link in payload.get("source_links", [])
+                if link.get("kind", "change") == "change"
             ]
             if urls:
                 schedule_check_refresh(urls, state.push_slots_update)
