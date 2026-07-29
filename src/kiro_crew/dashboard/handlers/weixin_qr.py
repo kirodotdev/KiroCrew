@@ -23,6 +23,8 @@ take — so a QR confirmation can never interleave with another config save.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import time
@@ -45,6 +47,24 @@ logger = logging.getLogger(__name__)
 # (a QR expires in minutes); pruned opportunistically on each start.
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
 _SESSION_TTL_SECONDS = 600
+
+
+def _render_qr_data_uri(scan_data: str) -> str:
+    """Encode ``scan_data`` (the iLink login URL) into a PNG data URI.
+
+    Runs in a worker thread: PNG encoding is CPU-bound and must not stall the
+    gateway event loop. Import is function-local deliberately — qrcode pulls
+    Pillow, and this is the only feature needing it at handler-module import.
+    """
+    import qrcode as _qrcode  # noqa: PLC0415 — heavy optional import, QR path only
+
+    qr = _qrcode.QRCode(border=2, box_size=8)
+    qr.add_data(scan_data)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def _prune_sessions() -> None:
@@ -228,15 +248,28 @@ async def weixin_qr_start(request: web.Request) -> web.Response:
         logger.warning("weixin QR start failed: %s", exc)
         return web.json_response({"error": "qr_start_failed", "detail": str(exc)[:200]}, status=502)
 
-    qrcode = resp.get("qrcode", "")
-    img = resp.get("qrcode_img_content", "")
-    if not qrcode:
+    qrcode_token = resp.get("qrcode", "")
+    scan_url = resp.get("qrcode_img_content", "")
+    if not qrcode_token:
         await client.close()
         return web.json_response({"error": "invalid_qr_response"}, status=502)
 
+    # Despite its name, iLink's `qrcode_img_content` is NOT image bytes — it is
+    # the full scannable login URL, while `qrcode` is just the hex token (the
+    # reference implementation encodes the URL itself, falling back to the
+    # token). Render the QR PNG here, off the event loop, and hand the panel a
+    # data URI so <img src> is actually loadable.
+    scan_data = scan_url or qrcode_token
+    try:
+        img_data_uri = await asyncio.to_thread(_render_qr_data_uri, scan_data)
+    except Exception:
+        await client.close()
+        logger.exception("weixin: QR image rendering failed")
+        return web.json_response({"error": "qr_render_failed"}, status=500)
+
     session_id = uuid.uuid4().hex
-    _SESSIONS[session_id] = {"client": client, "qrcode": qrcode, "created_at": time.time()}
-    return web.json_response({"session_id": session_id, "qrcode_img_content": img})
+    _SESSIONS[session_id] = {"client": client, "qrcode": qrcode_token, "created_at": time.time()}
+    return web.json_response({"session_id": session_id, "qrcode_img_content": img_data_uri})
 
 
 async def weixin_qr_status(request: web.Request) -> web.Response:

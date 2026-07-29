@@ -47,6 +47,10 @@ const json = (route, body) =>
   route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
 
 // A 1x1 red PNG stands in for Tencent's QR image (the panel only renders it).
+// The dashboard endpoint returns a rendered PNG **data URI** (the backend
+// encodes iLink's scannable login URL into a QR image server-side — see
+// weixin_qr._render_qr_data_uri). Keep this fixture a data URI: modeling it as
+// the raw iLink URL would re-mask the exact production bug this shape fixed.
 const FAKE_QR =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
