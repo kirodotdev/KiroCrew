@@ -53,7 +53,7 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
   { id: 'new-chat', key: 'n', alt: true, shift: true, label: 'New chat', group: 'Actions' },
   { id: 'close-chat', key: 'w', alt: true, shift: true, label: 'Close session', group: 'Actions' },
   { id: 'shortcuts-modal', key: 'k', alt: true, label: 'Open shortcuts help', group: 'Actions' },
-  { id: 'open-settings', key: ',', alt: true, label: 'Open settings', group: 'Actions' },
+  { id: 'open-settings', key: ',', alt: !IS_MAC, meta: IS_MAC, label: 'Open settings', group: 'Actions' },
   { id: 'cycle-agent', key: 'a', alt: true, shift: true, label: 'Cycle agent', group: 'Actions' },
   { id: 'cycle-prev-agent', key: 'z', alt: true, shift: true, label: 'Previous agent', group: 'Actions' },
   { id: 'cycle-reasoning', key: 'd', alt: true, shift: true, label: 'Cycle reasoning effort', group: 'Actions' },
@@ -112,7 +112,7 @@ export const CORE_PANEL_MAP: Record<string, string> = {
 export const RESERVED_PANEL_CODES: ReadonlySet<string> = new Set<string>([
   ...Object.keys(CORE_PANEL_MAP),
   'KeyK', // shortcuts modal (Alt+K)
-  'Comma', // settings (Alt+,)
+  'Comma', // settings (Cmd+, on macOS, Alt+, elsewhere; Alt+, stays bound on Mac)
   'Enter', // focus text input (Alt+Enter)
   'Backquote', // MRU toggle (Alt+`)
   'ArrowLeft',
@@ -165,6 +165,32 @@ export function registerPanelShortcut(entry: { code: string; path: string; label
 }
 
 const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+
+/**
+ * True when `e` is the platform's "open Settings" chord.
+ *
+ * macOS uses ⌘+, — the OS-standard Preferences chord, and the same one the
+ * desktop app's "Settings…" menu item advertises (electron/app-menu.js binds
+ * `CmdOrCtrl+,`). Windows/Linux uses Alt+,, matching every other in-page
+ * shortcut there.
+ *
+ * Option+, remains accepted on macOS, unadvertised: a Mac browser can claim
+ * ⌘+, as its own Preferences accelerator before the page ever sees the keydown,
+ * so dropping the Option chord would leave those users with no keyboard route
+ * to Settings. Exactly one primary modifier is required either way, so the
+ * chord can't fire from ⌘⌥, or ⌃, misses.
+ *
+ * `mac` is injectable so both platform behaviours are testable without
+ * reloading the module (IS_MAC is fixed at module load).
+ */
+export function isSettingsChord(
+  e: Pick<KeyboardEvent, 'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
+  mac: boolean = IS_MAC,
+): boolean {
+  if (e.code !== 'Comma' || e.shiftKey || e.ctrlKey) return false
+  const altOnly = e.altKey && !e.metaKey
+  return mac ? (e.metaKey && !e.altKey) || altOnly : altOnly
+}
 
 export function formatShortcut(def: ShortcutDef): string {
   const mac = isMac()
@@ -257,6 +283,18 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       return
     }
 
+    // Settings — ⌘+, on macOS, Alt+, on Windows/Linux (see isSettingsChord for
+    // why, and for the Option+, fallback Mac browsers still need). Handled
+    // BEFORE the Alt gate below because the Mac chord carries no Alt. Fires
+    // even when shortcuts are globally disabled, so the user can always reach
+    // the toggle that re-enables them. The `code` test is the cheap fast path
+    // that keeps the predicate off the hot keystroke path.
+    if (code === 'Comma' && isSettingsChord(e)) {
+      e.preventDefault()
+      navigate('/settings')
+      return
+    }
+
     // All other shortcuts use Alt (Option on Mac)
     if (!e.altKey || e.ctrlKey || e.metaKey) return
 
@@ -264,13 +302,6 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     if (code === 'KeyK' && !e.shiftKey) {
       e.preventDefault()
       onToggleShortcutsModal()
-      return
-    }
-
-    // Alt+,: Settings — always works so user can re-enable shortcuts
-    if (code === 'Comma' && !e.shiftKey) {
-      e.preventDefault()
-      navigate('/settings')
       return
     }
 
