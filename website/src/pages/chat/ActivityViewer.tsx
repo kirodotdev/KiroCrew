@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, CircleDot, ArrowLeft, Square, RotateCcw, Clock } from 'lucide-react'
+import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, CircleDot, ArrowLeft, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
 import { api } from '../../api/client'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import { fileReadUrl } from '../../utils/fileReadUrl'
@@ -34,21 +34,19 @@ const STATUS = {
   stopped: <Square size={12} className="text-muted" />,
 } as const
 
-// Keyed by extractChatLinks' LinkType, which is 'cr' | 'issue' | 'other' — the
-// OSS fork classifies URLs as generic git PR/review, provider issue, or
-// everything else. Use design tokens (not hardcoded Tailwind palette colors) so
-// both themes stay consistent.
-const RESOURCE_TYPE_COLORS: Record<string, string> = {
-  cr: 'bg-accent-subtle text-accent',
-  issue: 'bg-ok/15 text-ok',
-  other: 'bg-muted/15 text-muted',
-}
-
-const RESOURCE_TYPE_LABELS: Record<string, string> = {
-  cr: 'PR',
-  issue: 'Issue',
-  other: 'Link',
-}
+// Resource-link type ('cr' | 'issue' | 'other', from extractChatLinks) is
+// encoded on the ResourceRow ICON — a pull-request glyph in accent for code
+// reviews, a filled-dot glyph in ok for provider issues, a link glyph in muted
+// for everything else — rather than a leading text badge. A badge's width
+// varies with its label, which pushed link labels off the left text edge shared
+// with the Changed-files rows above; an icon is fixed-width, so both sections
+// line up. Since the icon is now the only VISUAL type signal, each row also
+// carries the type as sr-only text — translated, because it is the only signal
+// a screen-reader user gets.
+const resourceTypeLabel = (type: string): string =>
+  type === 'cr' ? i18nT('pages.chat.activityViewer.resource_type_pr')
+    : type === 'issue' ? i18nT('pages.chat.activityViewer.resource_type_issue')
+      : i18nT('pages.chat.activityViewer.resource_type_link')
 
 function fmtTime(ts: number) {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -451,6 +449,149 @@ function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
   )
 }
 
+/* ── Files tab ────────────────────────────────────────────────────────────────
+ * Two scannable lists — the files the agent touched this turn ("Changed files")
+ * and any links it surfaced ("Resources") — with a search box that filters both
+ * by name/path (and link label/URL). Opening a file previews it inline (see
+ * FilePreview) rather than spawning a document tab. Extracted from the render so
+ * it can own the search state as a real component (hooks can't live in the
+ * conditional render IIFE it replaced). */
+function FilesTab({
+  files, sources, issues, navLinks, navResolving, slot,
+  onFileOpen, onFileRemove, onFileSave, onSubmitComments, openDocPaths,
+  previewPathValue, setPreviewPath,
+}: {
+  files?: TouchedFile[]
+  sources?: PullRequestLink[]
+  issues?: PullRequestLink[]
+  navLinks?: ExtractedLink[]
+  navResolving?: boolean
+  slot: string
+  onFileOpen?: (path: string) => void
+  onFileRemove?: (path: string) => void
+  onFileSave?: (filePath: string, content: string) => Promise<void>
+  onSubmitComments?: (message: string) => void
+  openDocPaths?: Set<string>
+  previewPathValue: string | null
+  setPreviewPath: (p: string | null) => void
+}) {
+  const [query, setQuery] = useState('')
+
+  // Inline file preview: opening a file from this tab keeps it HERE (no new
+  // document tab) — the list is swapped for the file's content with a "Back to
+  // files" bar. A thin host of the shared MarkdownPanel editor (keyed by path);
+  // falls back to the tab opener only if no save handler was wired.
+  if (previewPathValue && onFileSave) {
+    return (
+      <FilePreview
+        key={previewPathValue}
+        path={previewPathValue}
+        slot={slot}
+        onBack={() => setPreviewPath(null)}
+        onFileSave={onFileSave}
+        onSubmitComments={onSubmitComments}
+      />
+    )
+  }
+  // One editor per path: if this file is already open as a document tab, focus
+  // that tab instead of spawning a second (inline) editor for it.
+  const openInline = onFileSave
+    ? (p: string) => { if (openDocPaths?.has(p)) onFileOpen?.(p); else setPreviewPath(p) }
+    : onFileOpen
+  const changed = (files || []).filter(f => f.source === 'tool')
+  // Hide links that already have a RICH panel of their own — the Changes tab's
+  // `sources` and the Issues tab's `issues`. Keep every other link, including
+  // cr-classified hosts (Bitbucket, self-hosted, code reviews) and
+  // non-allowlisted issue hosts that neither parser can render, so they stay
+  // reachable here instead of vanishing from the panel.
+  const richUrls = new Set([...(sources || []), ...(issues || [])].map(s => resourceKey(s.url)))
+  const resourceLinks = dedupResourceLinks((navLinks || []).filter(l => !richUrls.has(resourceKey(l.url))))
+
+  const q = query.trim().toLowerCase()
+  const filteredChanged = q
+    ? changed.filter(f => f.path.toLowerCase().includes(q))
+    : changed
+  const filteredLinks = q
+    ? resourceLinks.filter(l => (l.label || '').toLowerCase().includes(q) || l.url.toLowerCase().includes(q))
+    : resourceLinks
+
+  const isEmpty = changed.length === 0 && resourceLinks.length === 0
+  const noMatches = !isEmpty && filteredChanged.length === 0 && filteredLinks.length === 0
+  // Only offer the search box once the list is long enough that scanning it by
+  // eye stops being the faster option — a short list needs no filter. The
+  // `query` clause matters: the box must stay mounted while a query is active,
+  // or a filter that shrinks the list below the threshold would unmount its own
+  // input and keep filtering invisibly, with no way to clear it.
+  const showSearch = changed.length + resourceLinks.length > 5 || query !== ''
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {showSearch && (
+        <div className="px-3 pt-2 pb-0.5 shrink-0">
+          <div className="relative">
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted/60 pointer-events-none" />
+            <input
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder={i18nT('pages.chat.activityViewer.search_files')}
+              className="w-full h-7 pl-8 pr-8 rounded-md bg-bg-elevated border border-border text-[12px] text-text placeholder:text-muted/50 focus:outline-none focus:border-border-strong transition-colors"
+              aria-label={i18nT('pages.chat.activityViewer.search_files')}
+            />
+            {query && (
+              <button
+                onClick={() => setQuery('')}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded text-muted/50 hover:text-text transition-colors bg-transparent border-none cursor-pointer"
+                title={i18nT('pages.chat.activityViewer.clear')}
+                aria-label={i18nT('pages.chat.activityViewer.clear')}
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="flex-1 overflow-y-auto py-1.5">
+        {isEmpty ? (
+          <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{i18nT('pages.chat.activityViewer.no_files_changed_yet')}</div>
+        ) : noMatches ? (
+          <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{i18nT('pages.chat.activityViewer.no_matches')}</div>
+        ) : (
+          <>
+            {filteredChanged.length > 0 && (
+              <div className="px-3 mb-2">
+                <div className="flex items-center gap-2 mt-1 mb-0.5">
+                  <span className="text-[11.5px] font-semibold text-muted">{i18nT('pages.chat.activityViewer.changed_files')}</span>
+                  <span className="text-[10.5px] text-muted/50 font-mono tabular-nums">{filteredChanged.length}</span>
+                  <span className="flex-1 h-px bg-border" />
+                </div>
+                <div className="flex flex-col">
+                  {filteredChanged.map(f => <FileRow key={f.path} f={f} onFileOpen={openInline} onFileRemove={onFileRemove} />)}
+                </div>
+              </div>
+            )}
+            {filteredLinks.length > 0 && (
+              <div className="px-3 mb-2">
+                <div className="flex items-center gap-2 mt-1 mb-0.5">
+                  <span className="text-[11.5px] font-semibold text-muted">{i18nT('pages.chat.activityViewer.resources')}</span>
+                  <span className="text-[10.5px] text-muted/50 font-mono tabular-nums">{filteredLinks.length}</span>
+                  <span className="flex-1 h-px bg-border" />
+                  {navResolving && <span className="text-[10px] text-accent animate-pulse">{i18nT('pages.chat.activityViewer.resolving_2')}</span>}
+                </div>
+                <div className="flex flex-col">
+                  {filteredLinks.map((link, i) => (
+                    <ResourceRow key={i} link={link} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /* ── Main component ── */
 
 
@@ -463,8 +604,14 @@ export function countDiffStats(diff: string): { added: number; removed: number }
   return { added, removed }
 }
 
-function FileTile({ f, onFileOpen, onFileRemove }: { f: TouchedFile; onFileOpen?: (p: string) => void; onFileRemove?: (p: string) => void }) {
+/* ── Changed-files list row ──────────────────────────────────────────────────
+ * One touched file per full-width row: type-colored icon + filename (with the
+ * parent directory as a dimmed subtitle for disambiguation) on the left, a
+ * +N/-N diffstat on the right, and a hover-revealed remove control. Reads as a
+ * scannable list instead of a wrapping pile of cramped chips. */
+function FileRow({ f, onFileOpen, onFileRemove }: { f: TouchedFile; onFileOpen?: (p: string) => void; onFileRemove?: (p: string) => void }) {
   const name = f.path.split('/').pop() || f.path
+  const dir = f.path.slice(0, Math.max(0, f.path.length - name.length)).replace(/\/+$/, '')
   const Icon = fileIcon(f.path)
   const colorCls = colorForExt(f.path)
   const { data } = useQuery({
@@ -475,34 +622,75 @@ function FileTile({ f, onFileOpen, onFileRemove }: { f: TouchedFile; onFileOpen?
   const stats = data?.diff ? countDiffStats(data.diff) : null
   return (
     <div
-      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-border bg-bg-elevated text-[12px] cursor-pointer hover:bg-bg-hover hover:border-border-strong transition-all max-w-full"
+      className="group flex items-center gap-2 px-2 py-1 rounded-md cursor-pointer hover:bg-bg-hover transition-colors"
       onClick={() => onFileOpen?.(f.path)}
       title={f.path}
       role="button"
       tabIndex={0}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onFileOpen?.(f.path) } }}
     >
-      <span className="group/icon relative inline-flex items-center justify-center w-4 h-4 shrink-0">
-        <Icon size={12} className={`${colorCls} ${onFileRemove ? 'group-hover/icon:opacity-0' : ''} transition-opacity`} />
-        {onFileRemove && (
-          <button
-            className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/icon:opacity-100 transition-opacity text-danger cursor-pointer bg-transparent border-none p-0"
-            onClick={e => { e.stopPropagation(); onFileRemove(f.path) }}
-            title={i18nT('pages.chat.activityViewer.remove')}
-            aria-label={i18nT('pages.chat.activityViewer.remove_file_from_list')}
-          >
-            <X size={12} />
-          </button>
-        )}
+      <Icon size={14} className={`shrink-0 ${colorCls}`} />
+      <span className="min-w-0 flex-1 flex flex-col leading-tight">
+        <span className="text-[12.5px] text-text truncate">{name}</span>
+        {dir && <span className="text-[10.5px] text-muted/80 truncate">{dir}</span>}
       </span>
-      <span className="truncate text-text max-w-[140px]">{name}</span>
       {stats && (stats.added > 0 || stats.removed > 0) && (
-        <span className="flex items-center gap-1 text-[10px] font-mono shrink-0 ml-0.5">
+        <span className="flex items-center gap-1.5 text-[11px] font-mono shrink-0 tabular-nums">
           {stats.added > 0 && <span className="text-ok">+{stats.added}</span>}
           {stats.removed > 0 && <span className="text-danger">-{stats.removed}</span>}
         </span>
       )}
+      {onFileRemove && (
+        // Hover-revealed, but ALSO revealed on keyboard focus — otherwise a
+        // keyboard user tabs onto an invisible control.
+        <button
+          className="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted/50 hover:text-danger transition-all bg-transparent border-none cursor-pointer"
+          onClick={e => { e.stopPropagation(); onFileRemove(f.path) }}
+          title={i18nT('pages.chat.activityViewer.remove')}
+          aria-label={i18nT('pages.chat.activityViewer.remove_file_from_list')}
+        >
+          <X size={13} />
+        </button>
+      )}
     </div>
+  )
+}
+
+/* ── Resource-link list row ──────────────────────────────────────────────────
+ * Shares FileRow's anatomy so the two sections read as one list: a fixed-width
+ * type icon (pull-request glyph in accent for code reviews, a filled dot in ok
+ * for provider issues, link glyph in muted otherwise), the link label, the host
+ * as a dimmed subtitle, and a trailing external-link arrow in the same right
+ * slot the file rows use for +N/-N. */
+function ResourceRow({ link }: { link: ExtractedLink }) {
+  const { Icon, colorCls } = link.type === 'cr'
+    ? { Icon: GitPullRequest, colorCls: 'text-accent' }
+    : link.type === 'issue'
+      ? { Icon: CircleDot, colorCls: 'text-ok' }
+      : { Icon: LinkIcon, colorCls: 'text-muted' }
+  const typeLabel = resourceTypeLabel(link.type)
+  let host = ''
+  try { host = new URL(link.url).hostname.replace(/^www\./, '') } catch { host = link.url }
+  return (
+    <a
+      href={link.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group flex items-center gap-2 px-2 py-1 rounded-md hover:bg-bg-hover transition-colors no-underline"
+      title={link.url}
+    >
+      <Icon size={14} className={`shrink-0 ${colorCls}`} aria-hidden="true" />
+      {/* The icon carries the type VISUALLY; this keeps a text alternative so
+       *  the type is not conveyed by shape/colour alone (it would otherwise be
+       *  invisible to a screen reader). sr-only costs no layout, so the left
+       *  text edge stays aligned with the Changed-files rows. */}
+      <span className="sr-only">{typeLabel}</span>
+      <span className="min-w-0 flex-1 flex flex-col leading-tight">
+        <span className="text-[12.5px] text-text truncate">{link.label}</span>
+        {host && <span className="text-[10.5px] text-muted/80 truncate">{host}</span>}
+      </span>
+      <ExternalLink size={12} className="shrink-0 text-muted/40 group-hover:text-muted transition-colors" />
+    </a>
   )
 }
 
@@ -595,15 +783,15 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
   const loading = isFetching || artifactsFetching
 
   return (
-    <div className="flex-1 overflow-y-auto py-2">
+    <div className="flex-1 overflow-y-auto py-1.5">
       {rows.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{loading ? 'Loading…' : 'Nothing produced in this session yet'}</div>
       ) : (
-        <div className="px-3 flex flex-col gap-0.5">
+        <div className="px-3 flex flex-col">
           {rows.map(r => {
             const busy = (r.kind === 'doc' && busyPath === r.path) || (!!r.slug && busySlug === r.slug)
             return (
-              <div key={r.key} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-bg-hover transition-colors">
+              <div key={r.key} className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-bg-hover transition-colors">
                 <button
                   type="button"
                   onClick={() => { if (r.kind === 'doc') onFileOpen?.(r.path); else navigate(`/artifacts/${r.slug}`) }}
@@ -613,9 +801,9 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
                   {r.kind === 'doc'
                     ? <FileText size={14} className="text-emerald-400 shrink-0" />
                     : <Component size={14} className="text-accent shrink-0" />}
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-[13px] text-text truncate">{r.name}</span>
-                    <span className="block text-[11px] text-muted truncate">{r.sub}</span>
+                  <span className="min-w-0 flex-1 leading-tight">
+                    <span className="block text-[12.5px] text-text truncate">{r.name}</span>
+                    <span className="block text-[10.5px] text-muted/80 truncate">{r.sub}</span>
                   </span>
                 </button>
                 <button
@@ -970,88 +1158,23 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       )}
 
       {/* Files tab */}
-      {effectiveTab === 'files' && (() => {
-        // Inline file preview: opening a file from this tab keeps it HERE
-        // (no new document tab) — the list is swapped for the file's content
-        // with a "Back to files" bar. A thin host of the shared MarkdownPanel
-        // editor (keyed by path); falls back to the tab opener only if no save
-        // handler was wired (host without editing).
-        if (previewPathValue && onFileSave) {
-          return (
-            <FilePreview
-              key={previewPathValue}
-              path={previewPathValue}
-              slot={slot}
-              onBack={() => setPreviewPath(null)}
-              onFileSave={onFileSave}
-              onSubmitComments={onSubmitComments}
-            />
-          )
-        }
-        // One editor per path: if this file is already open as a document tab,
-        // focus that tab instead of spawning a second (inline) editor for it.
-        const openInline = onFileSave
-          ? (p: string) => { if (openDocPaths?.has(p)) onFileOpen?.(p); else setPreviewPath(p) }
-          : onFileOpen
-        const changed = (files || []).filter(f => f.source === 'tool')
-        // Hide links that already have a RICH panel of their own — the Changes
-        // tab's `sources` and the Issues tab's `issues`. Keep every other link,
-        // including cr-classified hosts (Bitbucket, self-hosted, code reviews)
-        // and non-allowlisted issue hosts that neither parser can render, so
-        // they stay reachable in Resources instead of vanishing from the panel.
-        const richUrls = new Set([...(sources || []), ...(issues || [])].map(s => resourceKey(s.url)))
-        const resourceLinks = dedupResourceLinks((navLinks || []).filter(l => !richUrls.has(resourceKey(l.url))))
-        return (
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-y-auto py-2">
-              {(changed.length === 0 && resourceLinks.length === 0) ? (
-                <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{i18nT('pages.chat.activityViewer.no_files_changed_yet')}</div>
-              ) : (
-                <>
-                  {changed.length > 0 && (
-                    <div className="px-3 mb-4">
-                      <div className="flex items-center gap-2 my-2">
-                        <span className="text-[14px] font-semibold text-muted">{i18nT('pages.chat.activityViewer.changed_files')}</span>
-                        <span className="flex-1 h-px bg-border" />
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {changed.map(f => <FileTile key={f.path} f={f} onFileOpen={openInline} onFileRemove={onFileRemove} />)}
-                      </div>
-                    </div>
-                  )}
-                  {resourceLinks.length > 0 && (
-                    <div className="px-3 mb-4">
-                      <div className="flex items-center gap-2 my-2">
-                        <span className="text-[14px] font-semibold text-muted">{i18nT('pages.chat.activityViewer.resources')}</span>
-                        <span className="flex-1 h-px bg-border" />
-                        {navResolving && <span className="text-[10px] text-accent animate-pulse">{i18nT('pages.chat.activityViewer.resolving_2')}</span>}
-                      </div>
-                      <div className="flex flex-col gap-0.5">
-                        {resourceLinks.map((link, i) => (
-                          <a
-                            key={i}
-                            href={link.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-2 px-2 py-1 rounded hover:bg-bg-hover transition-colors no-underline group"
-                          >
-                            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${RESOURCE_TYPE_COLORS[link.type] || RESOURCE_TYPE_COLORS.other}`}>
-                              {RESOURCE_TYPE_LABELS[link.type] || 'Link'}
-                            </span>
-                            <span className="text-[12px] text-text truncate group-hover:text-accent transition-colors">
-                              {link.label}
-                            </span>
-                          </a>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        )
-      })()}
+      {effectiveTab === 'files' && (
+        <FilesTab
+          files={files}
+          sources={sources}
+          issues={issues}
+          navLinks={navLinks}
+          navResolving={navResolving}
+          slot={slot}
+          onFileOpen={onFileOpen}
+          onFileRemove={onFileRemove}
+          onFileSave={onFileSave}
+          onSubmitComments={onSubmitComments}
+          openDocPaths={openDocPaths}
+          previewPathValue={previewPathValue}
+          setPreviewPath={setPreviewPath}
+        />
+      )}
 
       {/* Artifacts tab (in-session documents) */}
       {effectiveTab === 'artifacts' && <SessionArtifactsTab slot={slot} onFileOpen={onFileOpen} />}

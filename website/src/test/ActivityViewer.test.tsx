@@ -138,6 +138,90 @@ describe('ActivityViewer', () => {
     expect(screen.queryByText('PR #42')).not.toBeInTheDocument()
   })
 
+  it('search filters both files and links, with a no-matches state', async () => {
+    render(
+      <ActivityViewer
+        {...baseProps}
+        view="files"
+        // >5 total entries, so the search box clears its display threshold.
+        files={[
+          { path: '/proj/alpha.md', source: 'tool' },
+          { path: '/proj/beta.ts', source: 'tool' },
+          { path: '/proj/gamma.ts', source: 'tool' },
+          { path: '/proj/delta.ts', source: 'tool' },
+          { path: '/proj/epsilon.ts', source: 'tool' },
+        ]}
+        navLinks={[{ url: 'https://example.com/alpha-notes', type: 'other', label: 'Alpha notes', msgIdx: 0 }]}
+        onFileOpen={vi.fn()}
+      />,
+      { wrapper },
+    )
+    expect(screen.getByText('Changed files')).toBeInTheDocument()
+    expect(screen.getByText('Resources')).toBeInTheDocument()
+
+    // Typing filters ACROSS both sections (path match + link label match).
+    const box = screen.getByLabelText('Search by file name, folder, or link…')
+    fireEvent.change(box, { target: { value: 'alpha' } })
+    expect(screen.getByText('alpha.md')).toBeInTheDocument()
+    expect(screen.getByText('Alpha notes')).toBeInTheDocument()
+    expect(screen.queryByText('beta.ts')).not.toBeInTheDocument()
+
+    // A query matching nothing shows the no-matches state, not the empty state.
+    fireEvent.change(box, { target: { value: 'zzz-no-such-thing' } })
+    expect(screen.getByText('No matches')).toBeInTheDocument()
+    expect(screen.queryByText('No files changed yet')).not.toBeInTheDocument()
+
+    // Clearing restores everything.
+    fireEvent.change(box, { target: { value: '' } })
+    expect(screen.getByText('beta.ts')).toBeInTheDocument()
+  })
+
+  it('keeps the search box mounted while a query is active, even below the threshold', async () => {
+    render(
+      <ActivityViewer
+        {...baseProps}
+        view="files"
+        files={[
+          { path: '/proj/alpha.md', source: 'tool' },
+          { path: '/proj/beta.ts', source: 'tool' },
+          { path: '/proj/gamma.ts', source: 'tool' },
+          { path: '/proj/delta.ts', source: 'tool' },
+          { path: '/proj/epsilon.ts', source: 'tool' },
+          { path: '/proj/zeta.ts', source: 'tool' },
+        ]}
+        onFileOpen={vi.fn()}
+      />,
+      { wrapper },
+    )
+    const label = 'Search by file name, folder, or link…'
+    const box = screen.getByLabelText(label)
+    // Filtering down to ONE match takes the visible count below the 5-entry
+    // threshold. The box must NOT unmount — otherwise the stale query keeps
+    // filtering with no input left to clear it, and the hidden rows read as lost.
+    fireEvent.change(box, { target: { value: 'alpha' } })
+    expect(screen.getByLabelText(label)).toBeInTheDocument()
+    expect(screen.getByText('alpha.md')).toBeInTheDocument()
+    expect(screen.queryByText('beta.ts')).not.toBeInTheDocument()
+    // Clearing brings everything back.
+    fireEvent.change(screen.getByLabelText(label), { target: { value: '' } })
+    expect(screen.getByText('beta.ts')).toBeInTheDocument()
+  })
+
+  it('hides the search box for a short list (nothing to filter yet)', async () => {
+    render(
+      <ActivityViewer
+        {...baseProps}
+        view="files"
+        files={[{ path: '/proj/alpha.md', source: 'tool' }]}
+        onFileOpen={vi.fn()}
+      />,
+      { wrapper },
+    )
+    // The list renders, but a 1-item list is faster to scan than to filter.
+    expect(screen.getByText('alpha.md')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Search by file name, folder, or link…')).not.toBeInTheDocument()
+  })
+
   it('Files tab opens a file inline with a back button, not a new tab', async () => {
     const onFileOpen = vi.fn()
     const prevFetch = global.fetch
