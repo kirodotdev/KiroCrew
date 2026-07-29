@@ -1299,9 +1299,16 @@ async def start_dashboard(
                     status, _ = redact_credentials(status)
                     prompt = (
                         f"[Workflow `{name}` finished: {status}] Its result was just "
-                        "posted above. Interpret that result and continue with the "
-                        "task it was launched for — summarize the outcome, act on any "
-                        "artifacts, and surface anything the user needs to decide."
+                        "posted above. The user is waiting on the answer to the "
+                        "request that prompted this workflow — find that request "
+                        "earlier in this conversation and answer it directly. Your "
+                        "final message is the only part of this turn the user is "
+                        "guaranteed to see, so make it a standalone deliverable: lead "
+                        "with the answer, and keep run mechanics (which agents ran, "
+                        "what was verified, what is still uncertain) to a short "
+                        "closing note or a collapsed fold. If the workflow failed or "
+                        "came back incomplete, say that plainly and state what is "
+                        "still unknown."
                     )
                     started = slot.enqueue_or_run_prompt(prompt, _run_chat, state)
                     state.push_slots_update()
