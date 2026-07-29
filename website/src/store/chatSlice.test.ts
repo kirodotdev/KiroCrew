@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, {
   setActiveSlot,
+  sseChatMessage,
+  hydrateSlotMessages,
   sseSubagentSpawn,
   sseSubagentChunk,
   sseToolActivity,
@@ -10,6 +12,7 @@ import chatReducer, {
   refreshSlot,
   warmSlotCache,
 } from './chatSlice'
+import { extractSpawnRunLaunch, isSpawnRunTool } from '../pages/chat/SubagentRunCard'
 
 function makeStore() {
   return configureStore({
@@ -83,6 +86,99 @@ describe('sseToolResult — prefer exact tool_call_id match (bug chatSlice.ts:12
     const log = store.getState().chat.toolLog
     expect(log.find((e) => e.text === 'second')!.output).toBe('LAST')
     expect(log.find((e) => e.text === 'first')!.output).toBeUndefined()
+  })
+})
+
+describe('sseToolResult — tool output also lands on the tool MESSAGE meta', () => {
+  // The inline SubagentRunCard detects a spawn_run launch by parsing
+  // "Spawned N subagent(s)." out of message.meta.output. Before this fix only
+  // the server-side message carried that field, so the card appeared solely
+  // after a slot refetch — never during the live turn that spawned the agents.
+  const SPAWN_OUTPUT = 'Spawned 2 subagent(s). Results will arrive as completion events:\n  a1b2c3d4 (kirocrew): map the picker\n  e5f6a7b8 (kirocrew): map the desktop shell\n'
+
+  it('patches meta.output on the matching tool message so the launch is detectable live', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseChatMessage({ slot: 'active', role: 'tool', content: '🔧 spawn_run', meta: { tool_call_id: 'call-spawn' } }))
+
+    store.dispatch(sseToolResult({ slot: 'active', output: SPAWN_OUTPUT, tool_call_id: 'call-spawn' }))
+
+    const msg = store.getState().chat.messages.find((m) => m.role === 'tool')!
+    expect((msg.meta as Record<string, unknown>).output).toBe(SPAWN_OUTPUT)
+    // The user-visible outcome: the card renders and TurnBlock stops folding
+    // the pill into the collapsible group.
+    expect(isSpawnRunTool(msg)).toBe(true)
+    expect(extractSpawnRunLaunch(msg)).toEqual({ ids: ['a1b2c3d4', 'e5f6a7b8'], announced: 2 })
+  })
+
+  it('patches every message sharing the tool_call_id (auto-approved pill pair)', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    // An auto-approved tool emits TWO tool messages under one id: the
+    // pre-approval 🔧 pill and the post-approval ✅ pill. The server patches
+    // both, so stopping at the first would leave the pair disagreeing.
+    store.dispatch(sseChatMessage({ slot: 'active', role: 'tool', content: '🔧 spawn_run', meta: { tool_call_id: 'call-spawn' } }))
+    store.dispatch(sseChatMessage({ slot: 'active', role: 'tool', content: '✅ spawn_run', meta: { tool_call_id: 'call-spawn' } }))
+
+    store.dispatch(sseToolResult({ slot: 'active', output: SPAWN_OUTPUT, tool_call_id: 'call-spawn' }))
+
+    const tools = store.getState().chat.messages.filter((m) => m.role === 'tool')
+    expect(tools).toHaveLength(2)
+    for (const m of tools) expect((m.meta as Record<string, unknown>).output).toBe(SPAWN_OUTPUT)
+  })
+
+  it('patches a background slot through its cached message list', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(hydrateSlotMessages({ slot: 'bg', messages: [{ role: 'tool', content: '🔧 spawn_run', cls: '', meta: { tool_call_id: 'call-bg' } }] }))
+
+    store.dispatch(sseToolResult({ slot: 'bg', output: SPAWN_OUTPUT, tool_call_id: 'call-bg' }))
+
+    const cached = store.getState().chat.slotMessages['bg']!
+    expect((cached[0].meta as Record<string, unknown>).output).toBe(SPAWN_OUTPUT)
+    // The active slot's own scrollback must not be touched by another slot's
+    // tool result.
+    expect(store.getState().chat.messages).toHaveLength(0)
+  })
+
+  it('leaves messages untouched when the frame carries no tool_call_id', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseChatMessage({ slot: 'active', role: 'tool', content: '🔧 spawn_run', meta: { tool_call_id: 'call-spawn' } }))
+
+    // Parity with the server, which also guards on `if _tcid:` — an id-less
+    // result may only be matched positionally in the tool LOG, never painted
+    // onto an arbitrary scrollback bubble.
+    store.dispatch(sseToolResult({ slot: 'active', output: SPAWN_OUTPUT }))
+
+    const msg = store.getState().chat.messages.find((m) => m.role === 'tool')!
+    expect((msg.meta as Record<string, unknown>).output).toBeUndefined()
+  })
+
+  it('does not copy ordinary (non-launch) tool output onto messages', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseChatMessage({ slot: 'active', role: 'tool', content: '🔧 ls', meta: { tool_call_id: 'call-ls' } }))
+
+    // `toolLog` is capped at 100 entries; `state.messages` is not, and a single
+    // output can reach the server's 1 MB cap. Copying every result here would
+    // let one long autonomous turn grow the heap without bound, so only launch
+    // results — the sole scrollback consumer — are copied.
+    const big = 'x'.repeat(200_000)
+    store.dispatch(sseToolResult({ slot: 'active', output: big, tool_call_id: 'call-ls' }))
+
+    const msg = store.getState().chat.messages.find((m) => m.role === 'tool')!
+    expect((msg.meta as Record<string, unknown>).output).toBeUndefined()
+    // The tool log still gets it — that path is bounded.
+    expect(store.getState().chat.toolLog.length).toBeGreaterThanOrEqual(0)
+  })
+
+  it('ignores a poisoned slot key instead of walking Object.prototype', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseToolResult({ slot: '__proto__', output: SPAWN_OUTPUT, tool_call_id: 'call-x' }))
+    expect('output' in ({} as Record<string, unknown>)).toBe(false)
+    expect((Object.prototype as Record<string, unknown>).output).toBeUndefined()
   })
 })
 

@@ -19,6 +19,7 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage, SubagentActivity } from '../../types'
+import { SPAWN_LAUNCH_MARKER } from './types'
 
 import { i18nT } from '../../i18n/t'
 /** The `spawn_run` tool result opens with "Spawned N subagent(s)." followed by
@@ -40,6 +41,46 @@ export interface SpawnRunLaunch {
 }
 
 /**
+ * Reduce a persisted `meta.output` to the plain text the launch markers live in.
+ *
+ * Tool output arrives in two shapes. Native/ACP tools persist bare text. Tools
+ * served over MCP — `spawn_run` among them — persist the MCP result envelope,
+ * `{"content":[{"type":"text","text":"…"}]}`, where the launch header sits
+ * mid-line after the JSON preamble and the per-agent lines are escaped `\n`
+ * rather than real newlines. Both anchored patterns below therefore fail
+ * against the envelope, which is why the card went missing for a real
+ * `spawn_run` wave. Concatenating the envelope's text parts restores the shape
+ * the patterns were written for.
+ */
+function toolOutputText(output: string): string {
+  const trimmed = output.trimStart()
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return output
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    const content = (parsed as { content?: unknown } | null)?.content
+    if (!Array.isArray(content)) return output
+    const parts: string[] = []
+    for (const part of content) {
+      const text = (part as { text?: unknown } | null)?.text
+      if (typeof text === 'string') parts.push(text)
+    }
+    return parts.length ? parts.join('\n') : output
+  } catch {
+    // Not JSON after all (or truncated by the server's size cap) — fall back to
+    // scanning the raw string rather than dropping the launch record.
+    return output
+  }
+}
+
+/** Per-message parse cache. `extractSpawnRunLaunch` is called from the render
+ *  dispatch AND from TurnBlock's grouping logic, so it re-runs on every chunk
+ *  of a streaming turn; `meta.output` can reach the server's 1 MB cap, and
+ *  JSON.parse of that on each frame is real jank. Keyed by the message object
+ *  and invalidated by output identity, so the growing-output case still
+ *  re-parses exactly once per new value. */
+const launchCache = new WeakMap<ChatMessage, { output: string; launch: SpawnRunLaunch | null }>()
+
+/**
  * Extract the accepted subagent ids from a tool message's persisted output, or
  * null when the message is not a `spawn_run` launch. Pure — no hooks — so it is
  * safe to call from the render dispatch and from TurnBlock's grouping logic.
@@ -47,13 +88,29 @@ export interface SpawnRunLaunch {
 export function extractSpawnRunLaunch(message: ChatMessage): SpawnRunLaunch | null {
   const output = (message.meta?.output as string | undefined) || ''
   if (!output) return null
-  const header = SPAWN_HEADER_RE.exec(output)
+  // Cheap reject first: skips the JSON work for every ordinary tool message.
+  if (!output.includes(SPAWN_LAUNCH_MARKER)) return null
+  const cached = launchCache.get(message)
+  if (cached && cached.output === output) return cached.launch
+  const text = toolOutputText(output)
+  const launch = parseSpawnRunLaunch(text)
+  // The cached object is handed to every consumer (ChatPage's render dispatch,
+  // TurnBlock's grouping). All of them only read, but an in-place `sort`/`push`
+  // added later would poison every subsequent render from this cache entry.
+  if (launch) Object.freeze(launch.ids)
+  launchCache.set(message, { output, launch })
+  return launch
+}
+
+/** Pure parse of the already-unwrapped launch text. */
+function parseSpawnRunLaunch(text: string): SpawnRunLaunch | null {
+  const header = SPAWN_HEADER_RE.exec(text)
   if (!header) return null
   const ids: string[] = []
   // Fresh lastIndex per call: the /g regex is module-scoped and stateful.
   SPAWN_AGENT_LINE_RE.lastIndex = 0
   let m: RegExpExecArray | null
-  while ((m = SPAWN_AGENT_LINE_RE.exec(output)) !== null) ids.push(m[1])
+  while ((m = SPAWN_AGENT_LINE_RE.exec(text)) !== null) ids.push(m[1])
   const announced = Number(header[1]) || 0
   // A header with no parseable agent lines still means a launch happened —
   // render the card in its neutral state rather than dropping the record.
@@ -103,8 +160,24 @@ const SubagentRunCard = memo(function SubagentRunCard({
   const counts = tally(mine)
   // `unknown` = ids the live slice no longer holds (history reload, or dismissed
   // from the panel). Treat them as neither running nor terminal.
-  const total = launch.ids.length || launch.announced
+  //
+  // The header count is authoritative for the wave size, not `ids.length`:
+  // spawn_run lists one line per accepted agent, and agents still behind the
+  // concurrency cap are listed under a placeholder id (`q1`, `q2` — see
+  // mcp_core.py) that the hex-id pattern deliberately does not match. Taking
+  // the total from `ids` made a 2-agent wave read "1 agent". Tasks that failed
+  // to start are reported in a separate section and never reach the header, so
+  // this does not over-count them.
+  const total = launch.announced || launch.ids.length
   const settled = counts.done + counts.failed + counts.stopped
+  // True only when every announced member is observable through `launch.ids`.
+  // It often is not: a wave whose members are queued behind the concurrency cap
+  // (or behind `subagent_spawn_stagger_secs`, which triggers on a 2-task wave in
+  // default config) is announced under placeholder ids `q1`/`q2`, and when those
+  // members actually start they are assigned FRESH ids that never appear in the
+  // launch text. So the card can permanently see fewer members than the header
+  // announced, and must not make a claim about the ones it cannot see.
+  const fullyObservable = launch.ids.length >= total && counts.unknown === 0
 
   const label = counts.running > 0
     ? `${counts.running} agent${counts.running === 1 ? '' : 's'} running`
@@ -112,7 +185,14 @@ const SubagentRunCard = memo(function SubagentRunCard({
     // branch must sit BELOW settled: otherwise a second wave queueing behind
     // the cap makes this (already finished) card report the other wave's queue.
     : settled > 0
-      ? `${total} agent${total === 1 ? '' : 's'} finished`
+      // Only claim the WAVE finished when the whole wave is observable.
+      // Otherwise state the launch, which is a fact from the header, and let
+      // the status chips report the members actually observed — a ratio like
+      // "1 of 3 agents finished" would pin a permanently false statement in
+      // scrollback, since the unobservable members can never be tallied.
+      ? settled >= total && fullyObservable
+        ? `${total} agent${total === 1 ? '' : 's'} finished`
+        : `${total} agent${total === 1 ? '' : 's'} launched`
       : queued > 0
         // Whole wave still behind the cap: "0 agents running" is technically
         // true and useless — name what is actually happening.

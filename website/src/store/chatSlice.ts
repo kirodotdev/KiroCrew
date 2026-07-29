@@ -5,7 +5,7 @@ import { resolveDefaultColor } from '../utils/sessionColors'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
 import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity } from '../types'
-import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
+import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
 import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
@@ -756,6 +756,41 @@ export const requestStop = createAsyncThunk(
 /** Get subagents map for a slot (read-only lookup) */
 function getSlotSubs(state: ChatState, slot: string) {
   return slot !== state.activeSlot ? state.slotActivity[slot]?.subagents : state.subagents
+}
+
+/**
+ * Attach a tool result's output to the tool MESSAGE meta for every message
+ * carrying `tid`, in both the live list and the per-slot cache.
+ *
+ * All matching messages, not just the newest: an auto-approved tool produces
+ * TWO tool messages sharing one tool_call_id (🔧 pre-approval + ✅
+ * post-approval) and the server patches both, so stopping at the first would
+ * leave the pair disagreeing about the same call.
+ */
+function applyToolOutputToMessages(
+  state: ChatState,
+  slot: string,
+  tid: string,
+  output: string,
+): void {
+  if (isUnsafeKey(slot)) return
+  const patch = (msgs: ChatMessage[] | undefined): void => {
+    if (!Array.isArray(msgs)) return
+    for (const m of msgs) {
+      if (m.role !== 'tool') continue
+      const meta = m.meta as Record<string, unknown> | undefined
+      if (!meta || meta.tool_call_id !== tid) continue
+      m.meta = { ...meta, output }
+    }
+  }
+  if (slot === state.activeSlot) patch(state.messages)
+  // The cache can hold the SAME array reference as state.messages (switchSlot
+  // caches by reference), so this may be a second pass over one list — the
+  // patch is idempotent, and skipping it would strand a genuinely separate
+  // cached copy with no output. `safeKey` mirrors hydrateSlotMessages: the
+  // early return above already rejects unsafe keys, this is the codebase's
+  // defense-in-depth companion.
+  patch(state.slotMessages[safeKey(slot)])
 }
 
 /** Central, fail-closed accessor for a single subagent entry by wire-supplied
@@ -1537,11 +1572,37 @@ const chatSlice = createSlice({
       log.push(entry)
     },
     sseToolResult(state, action: PayloadAction<{ slot: string; output: string; tool_call_id?: string }>) {
+      const tid = action.payload.tool_call_id
+      // Land the output on the tool MESSAGE's meta as well as the tool log, for
+      // the one consumer that reads scrollback rather than the tool log: the
+      // inline SubagentRunCard detects a spawn_run launch by parsing
+      // "Spawned N subagent(s)." out of `meta.output`. Without this the card
+      // saw nothing until the slot was refetched, because `chatSlotDetail` was
+      // the only source that ever carried this field — making it a reload-only
+      // artifact. Mirrors the server, which writes the same redacted string to
+      // the same field (chat_runner.py EVENT_TOOL_RESULT), so live and reloaded
+      // state now agree.
+      //
+      // Restricted to launch results on purpose. `toolLog` is capped at 100
+      // entries but `state.messages` is not, and a single output can reach the
+      // server's 1 MB cap, so copying EVERY tool result here would let one long
+      // autonomous turn grow the heap without bound.
+      //
+      // Runs BEFORE the tool-log lookup below, which returns early for a slot
+      // that has no toolLog yet — a background slot's scrollback still needs
+      // the output.
+      //
+      // Only with an explicit tool_call_id: the id-less fallback below is safe
+      // for the tool log (positional, single-writer) but would attach output
+      // to an arbitrary tool bubble in scrollback. The server applies the same
+      // condition (`if _tcid:`), so skipping is parity, not a gap.
+      if (tid && action.payload.output.includes(SPAWN_LAUNCH_MARKER)) {
+        applyToolOutputToMessages(state, action.payload.slot, tid, action.payload.output)
+      }
       const log = action.payload.slot !== state.activeSlot
         ? state.slotActivity[action.payload.slot]?.toolLog
         : state.toolLog
       if (!log) return
-      const tid = action.payload.tool_call_id
       // Prefer an exact tool_call_id match when a tid is supplied. Only if no
       // entry carries that id do we fall back to the most-recent id-less tool
       // entry. The old single-pass `... || !log[i].tool_call_id` clause let a
