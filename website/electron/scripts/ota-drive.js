@@ -128,8 +128,37 @@ async function waitForState(wsUrl, wanted, deadline) {
   const ws = await findUpdateTarget(deadline);
   await evaluate(ws, RECORDER);
 
-  const info = await evaluate(ws, "JSON.stringify(window.updateAPI.getInfo())");
-  log("app info:", info.value);
+  // Wait for the update IPC to actually ANSWER before driving anything.
+  //
+  // preload.js exposes window.updateAPI unconditionally, so findUpdateTarget's
+  // `typeof window.updateAPI` probe succeeds while main.js may not have called
+  // ipcMain.handle("update:*") yet. Driving straight into that produced a bare
+  // "No handler registered for 'update:check'" and killed the run before the
+  // swap was ever attempted. main.js now registers the handlers before the
+  // awaited gateway boot, so this should pass on the first poll -- but keep the
+  // gate: if it ever regresses we get a named failure at the right step instead
+  // of an unhandled rejection three lines later.
+  //
+  // NOTE the .then(): the expression is stringified in-page, and
+  // JSON.stringify(aPromise) is "{}" -- awaitPromise cannot rescue that, because
+  // the value handed back is already a string. This is why every previous run
+  // logged "app info: {}" and told us nothing.
+  const infoExpr = "window.updateAPI.getInfo().then(i => JSON.stringify(i))";
+  let info = null;
+  for (let attempt = 1; Date.now() < deadline; attempt++) {
+    const r = await evaluate(ws, infoExpr).catch((e) => ({ __err: e.message }));
+    if (r && !r.__err && typeof r.value === "string" && r.value !== "{}") { info = r.value; break; }
+    const why = r && r.__err ? r.__err : `unusable result ${JSON.stringify(r && r.value)}`;
+    if (attempt === 1 || attempt % 5 === 0) log(`update IPC not answering yet (${why})`);
+    await sleep(2000);
+  }
+  if (info === null) {
+    throw new Error(
+      "update IPC never answered: window.updateAPI exists but no ipcMain handler responded. " +
+      "Check that main.js registers ipcMain.handle(\"update:*\") BEFORE `await startGateway()`.",
+    );
+  }
+  log("app info:", info);
 
   log("triggering a check (the launch-delay check may already have run)");
   await evaluate(ws, "window.updateAPI.check()");

@@ -268,3 +268,87 @@ test("STAGING contract: nothing in electron-updater can un-arm a staged Squirrel
     "MacUpdater gained something that looks like an un-arm hook -- if a staged update can be cancelled, revisit eager staging (and the retraction path)",
   );
 });
+
+// --------------------------------------------------------------------------
+// Host coordination: the install must disarm gateway recovery BEFORE the
+// gateway stops.
+//
+// Field incident (gateway-launch.log 2026-07-29T22:18): install stopped the
+// gateway intentionally; the liveness watchdog counted 3 failed probes and
+// "recovered" it 20s later -- respawning the gateway into the middle of the
+// bundle swap, reloading the page, and re-arming the install button. ORDER is
+// the contract: fired after stopGateway would leave the race open.
+// --------------------------------------------------------------------------
+
+test("install() fires onInstallDispatched BEFORE stopping the gateway", async () => {
+  const order = [];
+  const { deps, emit } = makeDeps();
+  const updater = initAutoUpdate({
+    ...deps,
+    onInstallDispatched: () => order.push("dispatched"),
+    stopGateway: async () => { order.push("stopGateway"); },
+  });
+  // Stage an update so install() passes the updateReady guard.
+  emit("update-downloaded", { version: "9.9.9" });
+  await updater.install();
+  assert.deepStrictEqual(order.slice(0, 2), ["dispatched", "stopGateway"]);
+});
+
+test("a throwing onInstallDispatched cannot block the install", async () => {
+  const order = [];
+  const { deps, emit } = makeDeps();
+  const updater = initAutoUpdate({
+    ...deps,
+    onInstallDispatched: () => { throw new Error("host hook broke"); },
+    stopGateway: async () => { order.push("stopGateway"); },
+  });
+  emit("update-downloaded", { version: "9.9.9" });
+  await updater.install();
+  assert.deepStrictEqual(order, ["stopGateway"], "install must proceed past a broken advisory hook");
+});
+
+test("a FAILED install fires onInstallFailed and allows a retry", async () => {
+  // GPT round-3 finding on #786: dispatch disarms gateway recovery, so a
+  // Squirrel failure at handoff time (observed live in the OTA lane: signature
+  // rejection) left a running app with a dead dashboard and a dead button.
+  const calls = { failed: 0, stops: 0 };
+  const { deps, emit } = makeDeps();
+  const updater = initAutoUpdate({
+    ...deps,
+    onInstallDispatched: () => {},
+    onInstallFailed: () => { calls.failed += 1; },
+    stopGateway: async () => { calls.stops += 1; },
+  });
+  emit("update-downloaded", { version: "9.9.9" });
+  await updater.install();
+  assert.strictEqual(calls.stops, 1);
+
+  emit("error", new Error("Code signature at URL ... did not pass validation"));
+  assert.strictEqual(calls.failed, 1, "host must be told the install failed");
+
+  // `installing` was reset, so the user can click Restart & Update again.
+  await updater.install();
+  assert.strictEqual(calls.stops, 2, "retry must reach stopGateway again");
+});
+
+test("a failure OUTSIDE an install does not fire onInstallFailed", async () => {
+  const calls = { failed: 0 };
+  const { deps, emit } = makeDeps();
+  initAutoUpdate({ ...deps, onInstallFailed: () => { calls.failed += 1; } });
+  emit("error", new Error("HttpError: 503"));
+  assert.strictEqual(calls.failed, 0, "check/download failures must not trigger gateway recovery");
+});
+
+test("a throwing onInstallFailed cannot swallow the error state", async () => {
+  const states = [];
+  const { deps, emit } = makeDeps();
+  const updater = initAutoUpdate({
+    ...deps,
+    onUpdateState: (s) => states.push(s.state),
+    onInstallFailed: () => { throw new Error("host hook broke"); },
+  });
+  emit("update-downloaded", { version: "9.9.9" });
+  await updater.install();
+  emit("error", new Error("swap failed"));
+  assert.ok(states.includes("error"), "the UI must still hear about the failure");
+});

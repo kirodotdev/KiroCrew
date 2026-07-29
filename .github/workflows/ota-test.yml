@@ -12,10 +12,19 @@
 # flakier than a unit test. It runs nightly and on demand; a failure here is a
 # signal to investigate, not an automatic merge block.
 #
-# WHAT IT DOES *NOT* PROVE: the apps are ad-hoc signed (no Developer ID needed,
-# so this job requires no secrets). That validates the SWAP MECHANISM, not
-# Gatekeeper acceptance or notarization -- those are separate questions covered
-# by the signing lane.
+# WHAT IT DOES *NOT* PROVE: the apps are signed with a throwaway SELF-SIGNED
+# identity minted in a temporary keychain (no Developer ID, so this job needs no
+# secrets). That validates the SWAP MECHANISM, not Gatekeeper acceptance or
+# notarization -- those are separate questions covered by the signing lane.
+#
+# WHY NOT AD-HOC (it used to be, and the lane could never pass): Squirrel.Mac
+# checks that the downloaded bundle satisfies the RUNNING app's designated code
+# requirement. An ad-hoc signature has no identity, so its requirement degrades
+# to the bundle's own cdhash, which differs for every build -- the update can
+# never satisfy it. Run 30490303783 failed with "code failed to satisfy
+# specified code requirement(s)" (SQRLCodeSignatureErrorDomain -1) for exactly
+# this reason. Signing BOTH bundles with one shared identity is what makes the
+# requirement match.
 #
 # HOW THE CONSENT GATE IS DRIVEN: the updater is deliberately consent-first
 # (autoDownload=false), so a human normally clicks Download then
@@ -85,7 +94,7 @@ jobs:
         working-directory: website/electron
         run: npm test
 
-      - name: Build both versions (ad-hoc signed)
+      - name: Build both versions (self-signed with a shared throwaway identity)
         working-directory: website/electron
         env:
           BUILD_ONLY: "1"

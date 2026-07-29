@@ -185,6 +185,10 @@ function buildFeedBase({ base, channel }) {
  */
 function manualDownloadUrl(channel, osPlatform) {
   if (!KNOWN_CHANNELS.has(channel)) return null;
+  // ARCH ASSUMPTION: the mac dmg is universal, but the only Linux desktop lane
+  // publish-linux.yml builds is x86_64 (LINUX_BASENAME + "-x86_64.AppImage"). If
+  // an aarch64 lane ever ships, this must branch on process.arch or it hands ARM
+  // users an incompatible binary.
   const file = osPlatform === "darwin"
     ? "KiroCrew.dmg"
     : osPlatform === "linux"
@@ -350,6 +354,15 @@ function initAutoUpdate(deps) {
     getChannelPreference = () => "",
     notifyUpdateFound = null,
     stopGateway,
+    // Host hook: an install is now in flight, so a gateway that stops answering
+    // is INTENTIONAL. main.js uses it to disarm the liveness watchdog, which
+    // otherwise resurrects the gateway mid-swap. Optional (absent in tests).
+    onInstallDispatched = null,
+    // Host hook: the install FAILED after dispatch (Squirrel error at handoff
+    // time). The gateway was stopped on purpose and recovery was disarmed, so
+    // without this the user is left in a live app whose dashboard is dead until
+    // they relaunch by hand. main.js re-arms recovery and respawns the gateway.
+    onInstallFailed = null,
     platform = "darwin-arm64",
     osPlatform = process.platform,
     resourcesPath = process.resourcesPath,
@@ -647,6 +660,9 @@ function initAutoUpdate(deps) {
       return;
     }
     installing = true;
+    // BEFORE stopGateway, or the watchdog can win the race and respawn the
+    // gateway into the middle of the bundle swap.
+    try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
     // STRICT ORDER: stop the gateway and await its exit, THEN quitAndInstall.
     // A live gateway child during the bundle swap can leave a half-replaced app.
     log.info("[update] stopping gateway before install");
@@ -670,6 +686,8 @@ function initAutoUpdate(deps) {
     quitHandled = true;
     event.preventDefault();
     (async () => {
+      // No onInstallDispatched here: this handler only runs from before-quit,
+      // where main.js has already set isQuitting -- the watchdog is covered.
       log.info("[update] deferred install on quit");
       try { await stopGateway(); } catch (err) { log.error("[update] stop on quit errored", err); }
       quitAndInstall();
@@ -716,6 +734,14 @@ function initAutoUpdate(deps) {
     // a mid-download failure would be reported as a check failure.
     const phase = downloading ? "download" : installing ? "install" : "check";
     downloading = false;
+    if (phase === "install") {
+      // The dispatch is over: allow a retry (updateReady is still true -- the
+      // zip is still staged) and tell the host to bring the gateway back.
+      // Observed live in the OTA lane: a Squirrel signature rejection lands
+      // here; without recovery the app survives with a dead dashboard.
+      installing = false;
+      try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+    }
     emitError(phase, err);
   });
   autoUpdater.on("checking-for-update", () => { log.info("[update] checking…"); emit("checking"); });

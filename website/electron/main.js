@@ -210,6 +210,16 @@ let livenessMonitor = null;
 // path). Consulted only during the primary boot wait (see showLoadingThenConnect).
 let gatewayStartFailure = null;
 let isQuitting = false;
+// True from the moment an update install is dispatched. The updater stops the
+// gateway ON PURPOSE before the bundle swap; without this flag the liveness
+// watchdog reads that intentional stop as a wedge and resurrects the gateway
+// mid-swap. Observed live (gateway-launch.log 2026-07-29T22:18): probe failed
+// 3/3 twenty seconds after the stop, the gateway respawned while ShipIt was
+// moving the bundle, the reconnect reloaded the page, and the install button
+// re-armed. Checked ONLY by the liveness watchdog -- unlike isQuitting it must
+// NOT change window-close semantics, because a real quit mid-handoff before
+// Squirrel finishes staging would lose the update entirely.
+let installingUpdate = false;
 
 // ── Backend lifecycle ──
 
@@ -1367,7 +1377,7 @@ function startLivenessMonitor(win) {
     isWindowAlive: () => !!win && !win.isDestroyed(),
     onUnresponsive: () => {
       if (livenessMonitor) { livenessMonitor.stop(); livenessMonitor = null; }
-      if (isQuitting) return; // intentional shutdown — not a wedge
+      if (isQuitting || installingUpdate) return; // intentional shutdown or install — not a wedge
       recoverWedgedGateway(win).catch((e) => glog(`liveness recovery failed: ${e && e.message}`));
     },
     onRecovered: () => glog("liveness: backend responsive again (transient blip)"),
@@ -1974,9 +1984,17 @@ app.whenReady().then(async () => {
   createTray();
   const win = createWindow();
 
-  await startGateway();
-  await showLoadingThenConnect(win);
-
+  // Wired BEFORE the awaited gateway boot ON PURPOSE. preload.js exposes
+  // window.updateAPI unconditionally, so Settings > About renders a live Check
+  // button the moment the renderer loads. If these ipcMain.handle registrations
+  // sit after `await startGateway()` / `await showLoadingThenConnect()`, then any
+  // slow or failed gateway boot leaves the buttons present with no handler, and
+  // the renderer's invoke rejects with a raw
+  // "No handler registered for 'update:check'". That is not hypothetical: it is
+  // what made the nightly OTA lane (ota-test.yml) fail before it could ever
+  // assert a bundle swap, so the one gate that would have caught the install
+  // handoff bug never ran. Nothing in this block needs the gateway -- stopGateway
+  // is passed as a lazy callback and the window already exists.
   // Desktop auto-update (electron-updater; Squirrel.Mac underneath on macOS,
   // AppImage on Linux). No-op in dev / on platforms without a publish lane.
   // The gateway is stopped gracefully before any bundle swap. Update state is
@@ -1992,7 +2010,16 @@ app.whenReady().then(async () => {
       }
     } catch { /* webContents unavailable */ }
   }
-  const updater = initAutoUpdate({
+  // FAIL-OPEN: the updater is auxiliary and must never gate the gateway. This
+  // block deliberately runs BEFORE the awaited gateway boot (see the note
+  // above), which means a throw here would otherwise abort the ready-handler
+  // and leave the app fully unusable -- before the reorder the same throw only
+  // broke the updater. Catch, stub, continue: the About panel renders its
+  // generic "updates unavailable" copy for the unknown disabled reason, and
+  // every update:* handler still registers against the stub.
+  let updater;
+  try {
+    updater = initAutoUpdate({
     app,
     // electron-updater's AppUpdater, NOT electron's built-in autoUpdater: it
     // generates/validates the feed metadata, verifies sha512 fail-closed, and
@@ -2023,8 +2050,38 @@ app.whenReady().then(async () => {
       } catch { /* notifications optional */ }
     },
     stopGateway: () => stopGatewayGracefully(),
+    // Called BEFORE the updater stops the gateway. Both actions matter: the
+    // flag closes the race where the monitor fires between dispatch and stop,
+    // and stopping the monitor means nothing is even probing during the swap.
+    onInstallDispatched: () => {
+      installingUpdate = true;
+      if (livenessMonitor) { livenessMonitor.stop(); livenessMonitor = null; }
+      glog("update install dispatched — liveness recovery disarmed");
+    },
+    // The install FAILED after the gateway was stopped on purpose. Undo both
+    // halves of the dispatch: clear the flag so recovery is legal again, and
+    // actively bring the gateway back -- nothing else will (the monitor was
+    // stopped, and a failed install does not quit the app). recoverWedgedGateway
+    // handles the whole path: port sweep, respawn, window reconnect, and it
+    // restarts the liveness monitor once the backend answers.
+    onInstallFailed: () => {
+      if (!installingUpdate) return; // deferred-quit path: app is quitting anyway
+      installingUpdate = false;
+      glog("update install failed — restoring gateway and liveness recovery");
+      recoverWedgedGateway(mainWindow).catch((e) => glog(`post-install-failure recovery failed: ${e && e.message}`));
+    },
     onUpdateState: broadcastUpdateState,
-  });
+    });
+  } catch (e) {
+    glog(`auto-update init failed — continuing WITHOUT auto-update: ${(e && e.stack) || e}`);
+    updater = {
+      check: () => {},
+      download: async () => {},
+      install: async () => {},
+      getInfo: () => ({ version: app.getVersion(), packaged: !!app.isPackaged }),
+      disabled: "init-failed",
+    };
+  }
   // Renderer-callable bridges for Settings > About + the UpdateModal.
   // `disabled` lives on the updater handle, NOT inside getInfo() — every
   // disabled path returns it as a sibling key. Merge it in here, once, so
@@ -2051,6 +2108,10 @@ app.whenReady().then(async () => {
     updater.check();
     return { ok: true, info: updaterInfo() };
   });
+
+  await startGateway();
+  await showLoadingThenConnect(win);
+
 
   app.on("activate", () => {
     if (!mainWindow?.isVisible()) mainWindow?.show();

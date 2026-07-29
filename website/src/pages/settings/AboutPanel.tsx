@@ -57,7 +57,14 @@ function updateErrorText(st: UpdateState | null | undefined): string {
     case 'no-release': return i18nT(ap + 'update_error_no_release')
     case 'integrity': return i18nT(ap + 'update_error_integrity')
     case 'misconfigured': return i18nT(ap + 'update_error_misconfigured')
-    default: return st?.message || i18nT(ap + 'update_error_unknown')
+    // Unclassified failure. The localized generic WINS over st.message: the raw
+    // value is electron-updater's exception text, written for a developer reading
+    // logs ("ShipIt could not replace the application bundle") and always English.
+    // Preferring it was the exact defect #736 was filed for, just on the fallback
+    // branch. The detail still reaches the log via the main process; only fall
+    // back to it if the catalog key is somehow missing, since a raw string beats
+    // an empty error line.
+    default: return i18nT(ap + 'update_error_unknown') || st?.message || ''
   }
 }
 
@@ -268,7 +275,14 @@ export function AboutPanel() {
         </span>
       )}
       {cardReady && (
-        <span className="text-[12px] text-muted">{i18nT('pages.settings.aboutPanel.downloaded_and_verified_the_app_restarts_to_fini')}</span>
+        <span className="text-[12px] text-muted">
+          {/* Once dispatched, the gateway goes down ON PURPOSE and the dashboard
+              disconnects for the ~1-2 min Squirrel handoff. This line is the last
+              thing the card says, so it must explain the coming silence. */}
+          {installDispatched
+            ? i18nT('pages.settings.aboutPanel.installing_quiet_note')
+            : i18nT('pages.settings.aboutPanel.downloaded_and_verified_the_app_restarts_to_fini')}
+        </span>
       )}
       {showManualFallback && (
         <span className="text-[12px] text-muted flex items-start gap-1.5 pt-0.5 border-t border-border" data-testid="update-manual-fallback">

@@ -92,6 +92,7 @@
         "download_failed": "Download failed",
         "download_the_latest_version": "download the latest version",
         "install_failed": "Couldn’t install the update",
+        "installing_quiet_note": "Installing — KiroCrew will go quiet for a minute or two, then restart itself.",
         "manual_install_fallback": "If updating doesn't work, you can {{link}} and reinstall over this copy. Your settings, chats, and files are kept.",
         "restarting": "Restarting...",
         "retry": "Retry",

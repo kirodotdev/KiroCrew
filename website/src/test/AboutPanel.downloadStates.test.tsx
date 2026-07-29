@@ -144,11 +144,16 @@ describe('AboutPanel download states', () => {
     expect(row.textContent).not.toContain('sha512')
   })
 
-  it('falls back to the raw message only for an unclassified failure', async () => {
+  it('prefers localized copy over raw library text for an unclassified failure', async () => {
+    // #736's fallback branch: st.message is electron-updater's developer-facing
+    // English. The localized generic must win.
     const { setState } = mountWithStates()
-    setState({ state: 'error', phase: 'check', message: 'something odd happened' })
-    expect(await screen.findByText(/something odd happened/)).toBeTruthy()
+    setState({ state: 'error', phase: 'check', code: 'unknown', message: 'ShipIt could not replace the application bundle.' })
+    const row = await screen.findByText(/couldn.t check for updates/i)
+    expect(row.textContent).not.toMatch(/ShipIt/)
+    expect(row.textContent).toMatch(/something went wrong/i)
   })
+
   it('keeps the install button terminal after dispatch (no re-arm before the quit)', async () => {
     // `update:install` resolves as soon as the install is DISPATCHED; on macOS the
     // platform installer then works for several more seconds before the app quits.
@@ -162,6 +167,9 @@ describe('AboutPanel download states', () => {
     fireEvent.click(btn)
 
     const restarting = await screen.findByRole('button', { name: /restarting/i })
+    // The card's last words before the gateway goes down must explain the
+    // coming silence -- the dashboard disconnects for the whole handoff.
+    expect((await screen.findByTestId('update-card')).textContent).toMatch(/go quiet/i)
     expect(restarting.hasAttribute('disabled')).toBe(true)
     expect(screen.queryByRole('button', { name: /restart & update/i })).toBeNull()
   })
