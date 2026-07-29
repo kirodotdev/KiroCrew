@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
-import heapq
 import json
 import logging
 import math
@@ -14,7 +14,7 @@ import sqlite3
 import stat
 import tempfile
 from collections.abc import Iterable, Mapping
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import islice
@@ -39,6 +39,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.embeddings import make_sync_embed_fn
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.learn import _MAX_LESSONS_TOTAL, Lesson, LessonStore
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.security import (
     contains_injection,
@@ -74,8 +75,24 @@ class _NoAliasSafeLoader(yaml.SafeLoader):
 
 
 SOURCE_IDS = ("codex", "claude_code", "meshclaw", "openclaw", "hermes")
+# Conflict strategies. ``skip`` is the default and the only non-destructive one;
+# the other two require an explicit user choice per apply request. See
+# docs/system-specs/modules/onboarding-import.md -> "Conflict strategy".
+STRATEGY_SKIP = "skip"
+STRATEGY_RENAME = "rename"
+STRATEGY_OVERWRITE = "overwrite"
+CONFLICT_STRATEGIES = (STRATEGY_SKIP, STRATEGY_RENAME, STRATEGY_OVERWRITE)
+# Categories whose destination collisions a strategy can actually resolve. The
+# rest are merge-only (instructions, memories, denied_commands, settings) or
+# semantically deduplicated (schedules), so a strategy has nothing to act on.
+STRATEGY_CATEGORIES = frozenset({"skills", "mcp_servers", "workspaces"})
+# Categories whose destination holds exactly ONE item per identity and can be
+# REPLACED after a first import (via ``overwrite``). Their ledger records cannot
+# be trusted as a fast path, because the destination may have moved on since.
+_REPLACEABLE_CATEGORIES = frozenset({"skills", "mcp_servers"})
+
 CATEGORY_IDS = (
-    "sessions",
+    "instructions",
     "memories",
     "workspaces",
     "mcp_servers",
@@ -92,7 +109,7 @@ _SOURCE_NAMES = {
     "hermes": "Hermes Agent",
 }
 _CATEGORY_LABELS = {
-    "sessions": "Sessions",
+    "instructions": "Instructions",
     "memories": "Memories",
     "workspaces": "Workspaces",
     "mcp_servers": "MCP servers",
@@ -107,48 +124,73 @@ _SOURCE_ROOTS = {
     "hermes": (("HERMES_HOME", "HERMES_AGENT_HOME", "HERMES_CONFIG_DIR"), ".hermes"),
 }
 _OPENCLAW_LEGACY_ROOTS = (".clawdbot",)
-_CLAUDE_RUNTIME_PARTS = frozenset({"subagents", "subagent", "runtime", "tool-results"})
+# Directory names a foreign agent's OWN importer uses for skills it pulled in
+# from a third agent (Hermes: ``hermes import-agent`` / ``hermes claw migrate``).
+_FOREIGN_REIMPORT_SKILL_DIRS = (
+    "claude-code-imports",
+    "codex-imports",
+    "openclaw-imports",
+)
 _OPENCLAW_PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-_OPENCLAW_CREATED_VIA = frozenset({"operator", "channel", "talk"})
-_OPENCLAW_RUNTIME_NAMESPACES = frozenset(
-    {
-        "cron",
-        "subagent",
-        "acp",
-        "acp-bridge",
-        "hook",
-        "node",
-        "heartbeat",
-        "internal-session-effects",
-    }
-)
-_OPENCLAW_SESSION_OWNERSHIP_FIELDS = frozenset(
-    {
-        "completionownersessionkey",
-        "forkedfromparent",
-        "forksource",
-        "pluginownerid",
-    }
-)
-_OPENCLAW_CHECKPOINT_RE = re.compile(
-    r"\.checkpoint\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-" r"[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$",
-    re.IGNORECASE,
-)
-_HERMES_RUNTIME_SESSION_SOURCES = frozenset({"subagent", "tool", "cron"})
 _HERMES_SKILL_EXCLUDED_PARTS = frozenset(
-    {".archive", ".hub", "dependency", "dependencies", "cache", ".cache"}
+    {
+        ".archive",
+        ".hub",
+        "dependency",
+        "dependencies",
+        "cache",
+        ".cache",
+        # Hermes ships its own importer, which writes FOREIGN skills into these
+        # dirs. Importing them from Hermes would duplicate what the original
+        # source already contributes, and neither dedupe layer can catch it: the
+        # fingerprint is source-scoped (``hermes`` != ``claude_code``) and the
+        # destination differs too (``skills/imported/hermes/`` vs
+        # ``skills/imported/claude_code/``), so not even a conflict is reported.
+        # The originals are still on disk, so excluding these loses nothing.
+        *_FOREIGN_REIMPORT_SKILL_DIRS,
+    }
+)
+# Import's own ceiling on lessons. ``LessonStore`` prunes OLDEST-first at 200,
+# so an unbounded instruction import would silently evict the user's own
+# accumulated corrections. See docs/system-specs/modules/onboarding-import.md.
+_MAX_IMPORTED_LESSONS = 50
+_MIN_INSTRUCTION_CHARS = 10
+# Identity/self-description openers. Anchored at the paragraph start so an
+# ordinary directive that merely mentions "you" ("Always tell the user when you
+# skip a test") is unaffected.
+# Leading Markdown structure: ATX heading, blockquote, unordered/ordered list
+# marker, or a task-list checkbox. Stripped one layer at a time so nested forms
+# ("> - [ ] You are Aria") reduce to the prose.
+_MARKDOWN_PREFIX_RE = re.compile(r"^(?:#{1,6}\s+|>+\s*|[-*+]\s+|\d+[.)]\s+|\[[ xX]\]\s*)")
+_IDENTITY_PARAGRAPH_RE = re.compile(
+    r"^\s*(?:"
+    r"you\s+are\b"
+    r"|your\s+(?:name|persona|identity|role)\b"
+    r"|i\s+am\b"
+    r"|my\s+(?:name|persona|identity|role)\b"
+    r"|(?:you|i)\s+(?:will\s+)?(?:act|behave|speak|respond)\s+as\b"
+    r"|(?:the\s+)?(?:assistant|agent)\s+is\b"
+    # Subjectless imperatives. A persona doc often writes the identity as a
+    # command ("Act as Aria") rather than a statement ("You are Aria"), and an
+    # imperative reads as a directive, so nothing else would catch it.
+    r"|(?:act|behave|speak|respond|roleplay|role-play)\s+as\b"
+    r"|pretend\s+(?:to\s+be|you(?:\s+are|\'re)?)\b"
+    r"|assume\s+the\s+(?:role|persona|identity)\b"
+    r"|adopt\s+the\s+(?:role|persona|identity|voice|tone)\s+of\b"
+    r")",
+    re.IGNORECASE,
 )
 _LEDGER_VERSION = 1
 _PLAN_VERSION = 1
 _LEDGER_RELATIVE_PATH = Path("imports") / "foreign-agent-imports.json"
+# ``overwrite`` never destroys without a restore copy. One dir per apply run so a
+# user can find everything a single import replaced together.
+_REPLACED_RELATIVE_DIR = Path("imports") / "replaced"
 _MAX_FILES = 500
 _MAX_FILE_BYTES = 8 * 1024 * 1024
 _MAX_SKILL_BYTES = 256 * 1024
 _MAX_YAML_BYTES = 1024 * 1024
 _MAX_TOTAL_BYTES = 64 * 1024 * 1024
-_MAX_JSONL_LINES = 10_000
-_MAX_LINE_BYTES = 256 * 1024
-_MAX_MESSAGES_PER_SESSION = 1_000
 _MAX_TEXT_CHARS = 100_000
 _MAX_DB_BYTES = 64 * 1024 * 1024
 _MAX_DB_ROWS = 10_000
@@ -292,23 +334,6 @@ _MANAGED_MCP_NAMES = frozenset(
         "openclaw-cron",
     }
 )
-_VISIBLE_ROLES = frozenset({"user", "assistant"})
-_VISIBLE_TEXT_TYPES = frozenset(
-    {"text", "input_text", "output_text", "user_message", "assistant_message"}
-)
-_NON_TEXT_TYPES = frozenset(
-    {
-        "thinking",
-        "reasoning",
-        "tool",
-        "tool_call",
-        "tool_use",
-        "tool_result",
-        "function_call",
-        "function_result",
-        "computer_initialize_state",
-    }
-)
 
 
 @dataclass
@@ -322,6 +347,25 @@ class _Item:
     def fingerprint(self) -> str:
         material = f"{self.source_id}\0{self.category}\0{self.key}".encode("utf-8")
         return hashlib.sha256(material).hexdigest()
+
+
+@dataclass(frozen=True)
+class _WriteOutcome:
+    """One writer's result plus the details the API must report back.
+
+    ``status`` is the four-value writer vocabulary (imported/existing/conflict/
+    rejected). ``renamed_to`` and ``restored_to`` are set only when a strategy
+    actually took effect, so a plain ``skip`` apply reports exactly what it did
+    before this existed.
+    """
+
+    status: str
+    renamed_to: str = ""
+    restored_to: str = ""
+    # The destination identity this item now occupies (currently only an MCP
+    # server name). Lets the ledger keep one record per single-occupancy
+    # destination instead of one per source.
+    destination_key: str = ""
 
 
 @dataclass
@@ -568,7 +612,6 @@ def _walk_files(
         return []
     remaining = max(0, _MAX_FILES - scan.files_seen.get(category, 0)) if count_files else _MAX_FILES
     candidates: list[Path] = []
-    session_candidates: list[tuple[float, str, Path]] = []
     omitted = 0
     excluded_count = 0
     visited_entries = 0
@@ -581,7 +624,7 @@ def _walk_files(
             break
         kept_dirs: list[str] = []
         exhausted = False
-        for dirname in sorted(dirnames, reverse=category == "sessions"):
+        for dirname in sorted(dirnames):
             if visited_entries >= _MAX_WALK_ENTRIES:
                 traversal_omitted += len(dirnames) - len(kept_dirs) + len(filenames)
                 exhausted = True
@@ -598,7 +641,7 @@ def _walk_files(
         if exhausted:
             dirnames[:] = []
             break
-        for index, filename in enumerate(sorted(filenames, reverse=category == "sessions")):
+        for index, filename in enumerate(sorted(filenames)):
             if visited_entries >= _MAX_WALK_ENTRIES:
                 traversal_omitted += len(filenames) - index
                 exhausted = True
@@ -621,40 +664,15 @@ def _walk_files(
                 if parts & excluded_parts:
                     excluded_count += 1
                     continue
-            if category == "sessions":
-                try:
-                    candidate_mtime = candidate.stat().st_mtime
-                except OSError:
-                    candidate_mtime = 0
-                entry = (candidate_mtime, str(candidate), candidate)
-                if len(session_candidates) < remaining:
-                    heapq.heappush(session_candidates, entry)
-                elif remaining and entry > session_candidates[0]:
-                    heapq.heapreplace(session_candidates, entry)
-                else:
-                    omitted += 1
+            if len(candidates) < remaining:
+                candidates.append(candidate)
             else:
-                if len(candidates) < remaining:
-                    candidates.append(candidate)
-                else:
-                    omitted += 1
+                omitted += 1
         if exhausted:
             break
-    if category == "sessions":
-        candidates = [entry[2] for entry in session_candidates]
     if excluded_count and excluded_category and excluded_reason:
         scan.diagnostic(excluded_category, excluded_reason, count=excluded_count)
-    if category == "sessions":
-
-        def _mtime(path: Path) -> float:
-            try:
-                return path.stat().st_mtime
-            except OSError:
-                return 0
-
-        candidates.sort(key=_mtime, reverse=True)
-    else:
-        candidates.sort(key=lambda path: str(path).casefold())
+    candidates.sort(key=lambda path: str(path).casefold())
     if omitted and count_files:
         scan.diagnostic(category, "file_count_limit", count=omitted)
     if traversal_omitted:
@@ -875,166 +893,6 @@ def _read_simple_yaml(path: Path, anchor: Path, scan: _Scan) -> dict[str, Any]:
         scan.diagnostic("settings", "invalid_config")
         return {}
     return result if isinstance(result, dict) else {}
-
-
-def _extract_visible_content(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if not isinstance(value, list):
-        return ""
-    parts: list[str] = []
-    for block in value:
-        if isinstance(block, str):
-            parts.append(block)
-            continue
-        if not isinstance(block, dict):
-            continue
-        block_type = str(block.get("type", "")).lower()
-        if block_type in _NON_TEXT_TYPES:
-            continue
-        if block_type and block_type not in _VISIBLE_TEXT_TYPES:
-            continue
-        text = block.get("text")
-        if not isinstance(text, str) and block_type in _VISIBLE_TEXT_TYPES:
-            text = block.get("content")
-        if isinstance(text, str):
-            parts.append(text)
-    return "\n".join(part for part in parts if part)
-
-
-def _message_from_record(record: Any, scan: _Scan) -> tuple[str, str] | None:
-    if not isinstance(record, dict):
-        return None
-    record_type = str(record.get("type", "")).lower()
-    if record_type in _NON_TEXT_TYPES:
-        return None
-    candidates = [record]
-    for key in ("payload", "message"):
-        child = record.get(key)
-        if isinstance(child, dict):
-            candidates.insert(0, child)
-    for candidate in candidates:
-        candidate_type = str(candidate.get("type", "")).lower()
-        if candidate_type in _NON_TEXT_TYPES:
-            continue
-        role = candidate.get("role")
-        if not isinstance(role, str) or role.lower() not in _VISIBLE_ROLES:
-            fallback_type = record.get("type")
-            role = fallback_type if isinstance(fallback_type, str) else ""
-        role = role.lower()
-        if role not in _VISIBLE_ROLES:
-            continue
-        content = candidate.get("content")
-        if content is None:
-            content = candidate.get("text")
-        text = _extract_visible_content(content)
-        if not text and isinstance(content, str):
-            text = content
-        cleaned = _sanitize_text(text, scan) if text else ""
-        if cleaned:
-            return role, cleaned
-    return None
-
-
-def _claude_record_is_excluded(record: Any) -> bool:
-    if not isinstance(record, dict):
-        return False
-    if record.get("isMeta") is True or record.get("isSidechain") is True:
-        return True
-    if "toolUseResult" in record:
-        return True
-    if "userType" in record:
-        user_type = record.get("userType")
-        return not isinstance(user_type, str) or user_type.casefold() != "external"
-    return False
-
-
-def _record_workspaces(record: Any) -> list[str]:
-    if not isinstance(record, dict):
-        return []
-    workspaces: list[str] = []
-    for container in (record, record.get("payload"), record.get("message")):
-        if not isinstance(container, dict):
-            continue
-        for key in ("cwd", "project", "project_path", "workspace_path", "projectPath"):
-            value = container.get(key)
-            if isinstance(value, str) and value.strip():
-                workspaces.append(value.strip())
-        roots = container.get("workspace_roots")
-        if isinstance(roots, list):
-            workspaces.extend(
-                value.strip() for value in roots if isinstance(value, str) and value.strip()
-            )
-    return workspaces
-
-
-def _jsonl_session_items(
-    paths: list[Path],
-    anchor: Path,
-    scan: _Scan,
-) -> tuple[list[_Item], set[str]]:
-    items: list[_Item] = []
-    workspaces: set[str] = set()
-    for path in paths:
-        content = _read_bytes(path, anchor, scan, "sessions")
-        if content is None:
-            continue
-        groups: dict[str, list[tuple[str, str]]] = {}
-        file_workspaces: set[str] = set()
-        incomplete_file = False
-        capped_groups: set[str] = set()
-        for line_number, raw_line in enumerate(content.splitlines()):
-            if line_number >= _MAX_JSONL_LINES:
-                scan.diagnostic("sessions", "line_count_limit")
-                incomplete_file = True
-                break
-            if not raw_line.strip():
-                continue
-            if len(raw_line) > _MAX_LINE_BYTES:
-                scan.diagnostic("sessions", "line_too_large")
-                incomplete_file = True
-                continue
-            try:
-                record = json.loads(raw_line)
-            except json.JSONDecodeError:
-                scan.diagnostic("sessions", "invalid_jsonl_record")
-                incomplete_file = True
-                continue
-            if scan.source_id == "claude_code" and _claude_record_is_excluded(record):
-                continue
-            for record_workspace in _record_workspaces(record):
-                if len(workspaces) + len(file_workspaces) >= _MAX_WORKSPACES:
-                    break
-                file_workspaces.add(record_workspace)
-            message = _message_from_record(record, scan)
-            if message is None:
-                continue
-            group_value = ""
-            if isinstance(record, dict):
-                for key in ("session_id", "sessionId", "conversation_id", "conversationId"):
-                    if isinstance(record.get(key), (str, int)):
-                        group_value = str(record[key])
-                        break
-            group = group_value or "file"
-            messages = groups.setdefault(group, [])
-            if len(messages) < _MAX_MESSAGES_PER_SESSION:
-                messages.append(message)
-            else:
-                scan.diagnostic("sessions", "message_count_limit")
-                capped_groups.add(group)
-        if incomplete_file:
-            continue
-        workspaces.update(file_workspaces)
-        try:
-            relative = str(path.relative_to(anchor))
-        except ValueError:
-            relative = path.name
-        for group, messages in groups.items():
-            if not messages or group in capped_groups:
-                continue
-            key = f"session\0{group}" if group != "file" else f"file\0{relative}"
-            items.append(_Item(scan.source_id, "sessions", key, messages))
-    return items, workspaces
 
 
 def _workspace_item(scan: _Scan, workspace: str) -> str | None:
@@ -1457,6 +1315,119 @@ def _add_memory_files(scan: _Scan, paths: list[tuple[Path, Path]]) -> None:
                     "text": chunk,
                     "importance": 0.5,
                 },
+            )
+
+
+def _strip_markdown_prefix(line: str) -> str:
+    """Drop list/quote/emphasis markers so identity matching sees the prose.
+
+    A persona document routinely bullets its identity ("- You are Aria",
+    "> **You are Aria**"), and an anchored match would test the marker rather
+    than the sentence.
+    """
+
+    stripped = line.strip()
+    while True:
+        candidate = _MARKDOWN_PREFIX_RE.sub("", stripped, count=1).strip()
+        if candidate == stripped:
+            return stripped.lstrip("*_`~ ").strip()
+        stripped = candidate
+
+
+def _instruction_paragraphs(text: str, scan: _Scan) -> list[str]:
+    """Split an instruction document into individually-injectable directives.
+
+    Reuses the memory chunker's paragraph packing so a directive and its
+    memory-tier sibling are bounded identically, then keeps only paragraphs that
+    read as instructions rather than narrative. A heading-only line carries no
+    directive on its own and is dropped.
+    """
+
+    directives: list[str] = []
+    for chunk in _memory_chunks(text, scan):
+        for paragraph in chunk.split("\n\n"):
+            candidate = paragraph.strip()
+            if len(candidate) < _MIN_INSTRUCTION_CHARS:
+                continue
+            lines = [line.strip() for line in candidate.splitlines() if line.strip()]
+            if not lines or all(line.startswith("#") for line in lines):
+                continue
+            # Check EVERY non-heading line, not just the paragraph start or its
+            # first content line. A persona document writes identity under a
+            # heading ("# Persona\nYou are Aria") and also mixes it in after a
+            # directive ("Always cite paths.\nYou are Aria."), so any single
+            # anchor leaves a hole. One identity line taints the paragraph: it is
+            # imported whole, so a partial match would still inject the identity.
+            # Check EVERY line, headings included. Each previous narrowing of this
+            # scan (paragraph-start, then first content line, then non-heading
+            # lines only) left a hole, because the exclusion itself was the bug:
+            # "# You are Aria" is a heading AND an identity statement. Normalizing
+            # heading markers away and scanning everything removes the last
+            # place identity can hide.
+            if any(_IDENTITY_PARAGRAPH_RE.match(_strip_markdown_prefix(line)) for line in lines):
+                # A persona document mixes IDENTITY ("You are Aria, a laconic
+                # assistant") with DIRECTIVES ("Always cite a file path"). Only
+                # the directives are in scope: importing an identity statement
+                # into an always-injected lesson would make foreign text act as
+                # the agent's persona through a path that bypasses
+                # capabilities.theme_persona -- exactly what excluding the
+                # persona role is meant to prevent.
+                scan.diagnostic("instructions", "persona_identity_excluded")
+                continue
+            directives.append(candidate)
+    return directives
+
+
+def _add_instruction_files(
+    scan: _Scan,
+    paths: list[tuple[Path, Path]],
+) -> None:
+    """Project user-authored instruction documents onto KiroCrew's memory tiers.
+
+    ``CLAUDE.md`` / ``AGENTS.md`` and the DIRECTIVE body of a persona document
+    (OpenClaw / Hermes ``SOUL.md``) are the least replaceable thing a user owns,
+    so they land in ``lessons.jsonl`` — the highest-priority durable tier
+    (see docs/system-specs/modules/onboarding-import.md). The persona *role* is
+    deliberately NOT imported: KiroCrew's persona surface is theme-pack persona,
+    governed by ``capabilities.theme_persona``, and no foreign text may become
+    system-prompt identity through this path.
+
+    ``preferences.md`` / ``projects.md`` are NOT valid destinations — the memory
+    consolidator replaces both wholesale, so an import there is destroyed on the
+    next consolidation run.
+    """
+
+    seen: set[str] = set()
+    for path, anchor in paths:
+        marker = os.path.normcase(os.path.abspath(str(path)))
+        if marker in seen or not path.is_file():
+            continue
+        seen.add(marker)
+        content = _read_text(path, anchor, scan, "instructions")
+        if content is None:
+            continue
+        cleaned = _sanitize_text(content, scan)
+        # Mirror the memory gate: only an actual redaction drops the file, not
+        # the size-cap truncation of an otherwise clean one.
+        if cleaned != content[:_MAX_TEXT_CHARS].strip():
+            scan.diagnostic("instructions", "credential_bearing_instruction")
+            continue
+        if contains_injection(cleaned):
+            scan.diagnostic("instructions", "injection_instruction_excluded")
+            continue
+        try:
+            relative = str(path.relative_to(anchor))
+        except ValueError:
+            relative = path.name
+        for index, directive in enumerate(_instruction_paragraphs(cleaned, scan)):
+            if len(scan.items["instructions"]) >= _MAX_IMPORTED_LESSONS:
+                scan.diagnostic("instructions", "instruction_count_limit")
+                return
+            digest = hashlib.sha256(directive.encode()).hexdigest()
+            scan.add(
+                "instructions",
+                f"{relative}\0{index}\0{digest}",
+                {"kind": "lesson", "rule": directive},
             )
 
 
@@ -1911,38 +1882,6 @@ def _diagnose_unsupported_config(scan: _Scan, configs: list[dict[str, Any]]) -> 
             scan.diagnostic("settings", "security_setting_excluded")
 
 
-def _add_sessions_and_workspaces(
-    scan: _Scan,
-    paths: list[Path],
-    anchor: Path,
-) -> set[str]:
-    items, workspaces = _jsonl_session_items(paths, anchor, scan)
-    scan.items["sessions"].extend(items)
-    accepted: set[str] = set()
-    for workspace in sorted(workspaces)[:_MAX_WORKSPACES]:
-        canonical = _workspace_item(scan, workspace)
-        if canonical:
-            accepted.add(canonical)
-    return accepted
-
-
-def _without_runtime_sessions(scan: _Scan, paths: list[Path], anchor: Path) -> list[Path]:
-    accepted: list[Path] = []
-    excluded = 0
-    for path in paths:
-        try:
-            parts = {part.casefold() for part in path.relative_to(anchor).parts}
-        except ValueError:
-            parts = set()
-        if parts & {"subagents", "subagent", "runtime", "tool-results"}:
-            excluded += 1
-            continue
-        accepted.append(path)
-    if excluded:
-        scan.diagnostic("runtime", "runtime_sessions_excluded", count=excluded)
-    return accepted
-
-
 def _scan_codex_automations(scan: _Scan) -> None:
     path = scan.root / "sqlite" / "codex-dev.db"
     if not path.is_file():
@@ -1985,14 +1924,6 @@ def _scan_codex_automations(scan: _Scan) -> None:
 
 def _scan_codex(scan: _Scan) -> None:
     root = scan.root
-    session_paths = _walk_files(root / "sessions", scan, "sessions", suffixes=(".jsonl",))
-    session_paths += _walk_files(
-        root / "archived_sessions",
-        scan,
-        "sessions",
-        suffixes=(".jsonl",),
-    )
-    _add_sessions_and_workspaces(scan, session_paths, root)
     configs = _parse_configs(scan, [(root / "config.toml", root, "toml")])
     _diagnose_unsupported_config(scan, configs)
     for config in configs:
@@ -2012,8 +1943,7 @@ def _scan_codex(scan: _Scan) -> None:
         scan.diagnostic("hooks", "unsupported_category", unsupported=True)
     if (root / "agents").exists():
         scan.diagnostic("agents", "unsupported_category", unsupported=True)
-    if (root / "AGENTS.md").exists():
-        scan.diagnostic("instructions", "unsupported_category", unsupported=True)
+    _add_instruction_files(scan, [(root / "AGENTS.md", root)])
     _scan_codex_automations(scan)
     settings: dict[str, Any] = {}
     for config in configs:
@@ -2024,16 +1954,23 @@ def _scan_codex(scan: _Scan) -> None:
 
 def _scan_claude(scan: _Scan) -> None:
     root = scan.root
-    sessions = _walk_files(
-        root / "projects",
+    # Workspaces come from explicit configuration ONLY. Session transcripts are
+    # not imported (see docs/system-specs/modules/onboarding-import.md), so the
+    # former "reverse the workspace list out of session records" path is gone.
+    # That means the root configs must be parsed FIRST to learn the workspaces,
+    # then each workspace's own config files are parsed in a second pass.
+    root_configs = _parse_configs(
         scan,
-        "sessions",
-        suffixes=(".jsonl",),
-        excluded_parts=_CLAUDE_RUNTIME_PARTS,
-        excluded_category="runtime",
-        excluded_reason="runtime_sessions_excluded",
+        [
+            (root / "settings.local.json", root, "json"),
+            (root / "settings.json", root, "json"),
+            (root / ".claude.json", root, "json"),
+            (root.parent / ".claude.json", root.parent, "json"),
+        ],
     )
-    workspaces = _add_sessions_and_workspaces(scan, sessions, root)
+    workspaces: set[str] = set()
+    for config in root_configs:
+        workspaces.update(_collect_project_paths(config))
     project_configs: list[tuple[Path, Path, str]] = []
     for workspace_value in sorted(workspaces):
         workspace_path = Path(workspace_value)
@@ -2044,16 +1981,7 @@ def _scan_claude(scan: _Scan) -> None:
                 (workspace_path / ".mcp.json", workspace_path, "json"),
             ]
         )
-    configs = _parse_configs(
-        scan,
-        project_configs
-        + [
-            (root / "settings.local.json", root, "json"),
-            (root / "settings.json", root, "json"),
-            (root / ".claude.json", root, "json"),
-            (root.parent / ".claude.json", root.parent, "json"),
-        ],
-    )
+    configs = root_configs + _parse_configs(scan, project_configs)
     _diagnose_unsupported_config(scan, configs)
     for config in configs:
         for configured_workspace in _collect_project_paths(config):
@@ -2072,25 +2000,20 @@ def _scan_claude(scan: _Scan) -> None:
     _add_memories(scan, memory_roots)
     if (root / "tasks").exists():
         scan.diagnostic("runtime", "runtime_state_excluded")
-    instruction_count = int((root / "CLAUDE.md").is_file())
-    instruction_count += len(
-        _walk_files(
+    instruction_paths: list[tuple[Path, Path]] = [(root / "CLAUDE.md", root)]
+    instruction_paths += [
+        (path, root)
+        for path in _walk_files(
             root / "rules",
             scan,
             "instructions",
             suffixes=(".md", ".markdown"),
         )
-    )
-    instruction_count += sum(
-        1 for workspace in workspaces if (Path(workspace) / "CLAUDE.md").is_file()
-    )
-    if instruction_count:
-        scan.diagnostic(
-            "instructions",
-            "unsupported_category",
-            unsupported=True,
-            count=instruction_count,
-        )
+    ]
+    instruction_paths += [
+        (Path(workspace) / "CLAUDE.md", Path(workspace)) for workspace in sorted(workspaces)
+    ]
+    _add_instruction_files(scan, instruction_paths)
     settings: dict[str, Any] = {}
     for config in configs:
         _merge_missing(settings, _settings_from(config, "claude_code"))
@@ -2100,8 +2023,7 @@ def _scan_claude(scan: _Scan) -> None:
 
 def _scan_meshclaw(scan: _Scan) -> None:
     root = scan.root
-    sessions = _walk_files(root / "sessions", scan, "sessions", suffixes=(".jsonl",))
-    workspaces = _add_sessions_and_workspaces(scan, sessions, root)
+    workspaces: set[str] = set()
     configs = _parse_configs(
         scan,
         [
@@ -2136,6 +2058,16 @@ def _scan_meshclaw(scan: _Scan) -> None:
     skill_roots = [root / "workspace" / "skills"]
     skill_roots.extend(Path(workspace) / "skills" for workspace in sorted(workspaces))
     _add_skills(scan, skill_roots)
+    # MeshClaw's workspace holds arbitrary user documents, so only the canonical
+    # instruction filenames are read — never a blind sweep of every .md there.
+    _add_instruction_files(
+        scan,
+        [
+            (base / filename, base)
+            for base in (root / "workspace", *(Path(w) for w in sorted(workspaces)))
+            for filename in ("AGENTS.md", "CLAUDE.md")
+        ],
+    )
     has_memory_db = _scan_meshclaw_memory_db(scan)
     _add_memories(scan, [root / "workspace" / "memory"])
     if not has_memory_db:
@@ -2212,7 +2144,7 @@ def _openclaw_agent_dirs(scan: _Scan) -> list[Path]:
     agents_root = scan.root / "agents"
     if not agents_root.is_dir() or _is_link_like(agents_root):
         if _is_link_like(agents_root):
-            scan.diagnostic("sessions", "symlink_rejected")
+            scan.diagnostic("workspaces", "symlink_rejected")
         return []
     children: list[Path] = []
     truncated = False
@@ -2225,139 +2157,15 @@ def _openclaw_agent_dirs(scan: _Scan) -> list[Path]:
     except OSError:
         return []
     if truncated:
-        scan.diagnostic("sessions", "agent_count_limit", count=1)
+        scan.diagnostic("workspaces", "agent_count_limit", count=1)
     agent_dirs: list[Path] = []
     for child in sorted(children, key=lambda path: path.name.casefold()):
         if _is_link_like(child):
-            scan.diagnostic("sessions", "symlink_rejected")
+            scan.diagnostic("workspaces", "symlink_rejected")
             continue
         if child.is_dir():
             agent_dirs.append(child)
     return agent_dirs
-
-
-def _openclaw_session_artifact(path: Path) -> bool:
-    name = path.name.casefold()
-    return (
-        name.endswith(".trajectory.jsonl")
-        or _OPENCLAW_CHECKPOINT_RE.search(name) is not None
-        or ".deleted." in name
-        or name.endswith(".deleted.jsonl")
-        or ".reset." in name
-        or name.endswith(".reset.jsonl")
-    )
-
-
-def _openclaw_registry_map(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict):
-        return {}
-    sessions = data.get("sessions")
-    if isinstance(sessions, dict):
-        return sessions
-    return data
-
-
-def _openclaw_entry_matches_file(entry: dict[str, Any], path: Path) -> bool:
-    references: list[Path] = []
-    session_id = entry.get("sessionId")
-    if isinstance(session_id, str) and session_id:
-        references.append(path.parent / f"{session_id}.jsonl")
-    session_file = entry.get("sessionFile")
-    if isinstance(session_file, str) and session_file:
-        referenced_file = Path(session_file)
-        references.append(
-            referenced_file if referenced_file.is_absolute() else path.parent / referenced_file
-        )
-    if not references:
-        return False
-    path_marker = os.path.normcase(os.path.abspath(str(path)))
-    return all(
-        os.path.normcase(os.path.abspath(str(reference))) == path_marker for reference in references
-    )
-
-
-def _openclaw_session_provenance_is_user_owned(
-    session_key: str,
-    entry: dict[str, Any],
-) -> bool:
-    namespaces = {part for part in re.split(r"[:/]", session_key.casefold()) if part}
-    if namespaces & _OPENCLAW_RUNTIME_NAMESPACES:
-        return False
-    created_via = entry.get("createdVia")
-    if not isinstance(created_via, str) or created_via.casefold() not in _OPENCLAW_CREATED_VIA:
-        return False
-    actor = entry.get("createdActor")
-    if not isinstance(actor, dict) or str(actor.get("type", "")).casefold() != "human":
-        return False
-    for key, value in entry.items():
-        folded = key.casefold().replace("_", "")
-        if (
-            folded.startswith("parent")
-            or folded.startswith("spawn")
-            or folded.startswith("runtime")
-            or folded in _OPENCLAW_SESSION_OWNERSHIP_FIELDS
-        ) and value not in (None, "", False, [], {}):
-            return False
-    return True
-
-
-def _openclaw_session_paths(scan: _Scan, agent_dirs: list[Path]) -> list[Path]:
-    accepted: list[Path] = []
-    remaining_entries = _MAX_FILES
-    for agent_dir in agent_dirs:
-        if remaining_entries <= 0:
-            break
-        sessions_root = agent_dir / "sessions"
-        if not sessions_root.is_dir() or _is_link_like(sessions_root):
-            if _is_link_like(sessions_root):
-                scan.diagnostic("sessions", "symlink_rejected")
-            continue
-        registry_path = sessions_root / "sessions.json"
-        registry: dict[str, Any] = {}
-        if registry_path.is_file():
-            registry = _openclaw_registry_map(
-                _read_json(registry_path, scan.root, scan, "sessions")
-            )
-        candidates: list[Path] = []
-        truncated = False
-        try:
-            for child in sessions_root.iterdir():
-                if remaining_entries <= 0:
-                    truncated = True
-                    break
-                remaining_entries -= 1
-                if child.name.casefold().endswith(".jsonl"):
-                    candidates.append(child)
-        except OSError:
-            continue
-        if truncated:
-            scan.diagnostic("sessions", "file_count_limit", count=1)
-        for path in sorted(candidates, key=lambda path: path.name.casefold()):
-            if _openclaw_session_artifact(path):
-                scan.diagnostic("sessions", "session_artifact_excluded")
-                continue
-            matches = [
-                (session_key, entry)
-                for session_key, entry in registry.items()
-                if isinstance(session_key, str)
-                and isinstance(entry, dict)
-                and _openclaw_entry_matches_file(entry, path)
-            ]
-            if len(matches) != 1:
-                scan.diagnostic(
-                    "sessions",
-                    "session_provenance_missing_or_ambiguous",
-                )
-                continue
-            session_key, entry = matches[0]
-            if not _openclaw_session_provenance_is_user_owned(session_key, entry):
-                scan.diagnostic("sessions", "session_provenance_rejected")
-                continue
-            if _safe_regular_file(path, scan.root, scan, "sessions"):
-                accepted.append(path)
-    if remaining_entries == 0:
-        scan.diagnostic("sessions", "file_count_limit", count=1)
-    return accepted
 
 
 def _openclaw_workspace_source(scan: _Scan, raw_path: str | Path) -> Path | None:
@@ -2399,15 +2207,6 @@ def _diagnose_openclaw_database(
 def _scan_openclaw(scan: _Scan) -> None:
     root = scan.root
     agent_dirs = _openclaw_agent_dirs(scan)
-    sessions = _openclaw_session_paths(scan, agent_dirs)
-    _add_sessions_and_workspaces(scan, sessions, root)
-    for agent_dir in agent_dirs:
-        _diagnose_openclaw_database(
-            scan,
-            agent_dir / "agent" / "openclaw-agent.sqlite",
-            "sessions",
-            "unsupported_session_database",
-        )
     _diagnose_openclaw_database(
         scan,
         root / "openclaw.sqlite",
@@ -2453,6 +2252,16 @@ def _scan_openclaw(scan: _Scan) -> None:
     _add_memory_files(
         scan,
         [(workspace / "MEMORY.md", workspace) for workspace in ordered_workspaces],
+    )
+    # SOUL.md's DIRECTIVE text becomes lessons; its persona ROLE is not imported
+    # (see _add_instruction_files). AGENTS.md is a plain instruction document.
+    _add_instruction_files(
+        scan,
+        [
+            (workspace / filename, workspace)
+            for workspace in ordered_workspaces
+            for filename in ("SOUL.md", "AGENTS.md")
+        ],
     )
     if (root / "agents").exists():
         scan.diagnostic("agents", "unsupported_category", unsupported=True)
@@ -2783,29 +2592,6 @@ def _scan_meshclaw_memory_db(scan: _Scan) -> bool:
     return True
 
 
-def _sqlite_visible_text(content: str) -> str:
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        return content
-    except RecursionError:
-        return ""
-    if isinstance(parsed, str):
-        return parsed
-    if isinstance(parsed, list):
-        return _extract_visible_content(parsed)
-    if isinstance(parsed, dict):
-        block_type = str(parsed.get("type", "")).lower()
-        if block_type in _NON_TEXT_TYPES:
-            return ""
-        if block_type in _VISIBLE_TEXT_TYPES:
-            return _extract_visible_content([parsed])
-        value = parsed.get("content")
-        if isinstance(value, (str, list)):
-            return _extract_visible_content(value) if isinstance(value, list) else value
-    return ""
-
-
 def _sqlite_workspace_values(
     connection: sqlite3.Connection,
     table: str,
@@ -2822,116 +2608,6 @@ def _sqlite_workspace_values(
         for (workspace,) in rows:
             if isinstance(workspace, str):
                 _workspace_item(scan, workspace)
-
-
-def _scan_hermes_db(scan: _Scan, root: Path) -> None:
-    candidates = [
-        path
-        for path in (root / "state.db", root / "hermes.db", root / "sessions.db")
-        if path.is_file()
-    ]
-    if not candidates:
-        return
-    path = candidates[0]
-    with _open_snapshot_db(path, root, scan, "sessions") as connection:
-        if connection is None:
-            return
-        try:
-            tables = {
-                str(row[0]) for row in connection.execute(_SQLITE_TABLE_NAMES_QUERY).fetchall()
-            }
-            if "messages" not in tables:
-                scan.diagnostic("sessions", "unsupported_database_schema", unsupported=True)
-                return
-            message_columns = _sqlite_columns(connection, "messages")
-            if not {"session_id", "role", "content"} <= message_columns:
-                scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
-                return
-            if "sessions" not in tables:
-                scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
-                return
-            session_columns = _sqlite_columns(connection, "sessions")
-            if not {"id", "source", "parent_session_id"} <= session_columns:
-                scan.diagnostic("sessions", "missing_session_provenance", unsupported=True)
-                return
-
-            workspace_columns = [
-                name
-                for name in ("cwd", "git_repo_root", "project_path", "workdir", "workspace")
-                if name in session_columns
-            ]
-            selected_session_columns = ["id", "source", "parent_session_id", *workspace_columns]
-            connection.execute("BEGIN")
-            session_rows = connection.execute(
-                "SELECT "
-                + ", ".join(f'"{name}"' for name in selected_session_columns)
-                + ' FROM "sessions" ORDER BY "id" LIMIT ?',
-                (_MAX_DB_ROWS + 1,),
-            ).fetchall()
-            if len(session_rows) > _MAX_DB_ROWS:
-                scan.diagnostic("sessions", "row_count_limit")
-                return
-
-            filters = ['"session_id" IS ?']
-            if "active" in message_columns:
-                filters.append('"active" = 1')
-            where = " WHERE " + " AND ".join(filters)
-            ordering = [
-                name for name in ("timestamp", "created_at", "id") if name in message_columns
-            ]
-            order_by = (
-                " ORDER BY " + ", ".join(f'"{name}"' for name in ordering) if ordering else ""
-            )
-            remaining_rows = _MAX_DB_ROWS
-            for row in session_rows:
-                values = dict(zip(selected_session_columns, row))
-                session_id = values["id"]
-                source = values["source"]
-                parent_session_id = values["parent_session_id"]
-                if not isinstance(source, str) or not source.strip():
-                    scan.diagnostic("sessions", "runtime_session_excluded")
-                    continue
-                if source.strip().casefold() in _HERMES_RUNTIME_SESSION_SOURCES:
-                    scan.diagnostic("sessions", "runtime_session_excluded")
-                    continue
-                if parent_session_id is not None:
-                    scan.diagnostic("sessions", "parented_session_excluded")
-                    continue
-
-                for column in workspace_columns:
-                    workspace = values.get(column)
-                    if isinstance(workspace, str):
-                        _workspace_item(scan, workspace)
-
-                rows = connection.execute(
-                    f'SELECT "role", "content" FROM "messages"{where}{order_by} LIMIT ?',
-                    (session_id, remaining_rows + 1),
-                ).fetchall()
-                if len(rows) > remaining_rows:
-                    scan.diagnostic("sessions", "row_count_limit")
-                    continue
-                remaining_rows -= len(rows)
-                messages: list[tuple[str, str]] = []
-                capped = False
-                for role, content in rows:
-                    if not isinstance(role, str) or role.casefold() not in _VISIBLE_ROLES:
-                        continue
-                    if not isinstance(content, str):
-                        continue
-                    cleaned = _sanitize_text(_sqlite_visible_text(content), scan)
-                    if not cleaned:
-                        continue
-                    if len(messages) >= _MAX_MESSAGES_PER_SESSION:
-                        capped = True
-                        continue
-                    messages.append((role.casefold(), cleaned))
-                if capped:
-                    scan.diagnostic("sessions", "message_count_limit")
-                    continue
-                if messages:
-                    scan.add("sessions", f"sqlite\0{session_id}", messages)
-        except sqlite3.Error:
-            scan.diagnostic("sessions", "unsupported_database_schema", unsupported=True)
 
 
 def _scan_hermes_projects_db(scan: _Scan, root: Path) -> None:
@@ -3045,8 +2721,6 @@ def _hermes_managed_skill_names(scan: _Scan, root: Path) -> frozenset[str]:
 
 def _scan_hermes(scan: _Scan) -> None:
     roots = _hermes_roots(scan)
-    for root in roots:
-        _scan_hermes_db(scan, root)
     _add_memory_files(
         scan,
         [
@@ -3055,6 +2729,7 @@ def _scan_hermes(scan: _Scan) -> None:
             for filename in ("MEMORY.md", "USER.md")
         ],
     )
+    _add_instruction_files(scan, [(root / "SOUL.md", root) for root in roots])
     unsupported_memory_databases = sum(
         int(os.path.lexists(root / "memory_store.db")) for root in roots
     )
@@ -3110,19 +2785,6 @@ def _scan_hermes(scan: _Scan) -> None:
 def _deduplicate_items(scan: _Scan) -> None:
     for category in CATEGORY_IDS:
         items = scan.items[category]
-        if category == "sessions":
-            canonical_by_transcript: dict[str, _Item] = {}
-            for item in items:
-                transcript = hashlib.sha256(
-                    json.dumps(item.payload, ensure_ascii=False, separators=(",", ":")).encode(
-                        "utf-8"
-                    )
-                ).hexdigest()
-                existing = canonical_by_transcript.get(transcript)
-                if existing is None or item.key < existing.key:
-                    canonical_by_transcript[transcript] = item
-            canonical_ids = {id(item) for item in canonical_by_transcript.values()}
-            items = [item for item in items if id(item) in canonical_ids]
         unique: list[_Item] = []
         seen: set[str] = set()
         for item in items:
@@ -3379,6 +3041,23 @@ def _record_ledger(
     destination_key: str = "",
 ) -> None:
     records = ledger.setdefault("records", {})
+    if destination_key:
+        # A destination that holds exactly ONE item per key (an MCP server name)
+        # can only be described by one ledger record. Without this, two sources
+        # overwriting the same name leave two live fingerprints: when the first
+        # source's definition later changes, its new fingerprint overwrites the
+        # destination while the SECOND source's stale fingerprint still
+        # deduplicates — so the definition the user selected silently vanishes.
+        stale = [
+            fingerprint
+            for fingerprint, existing in records.items()
+            if isinstance(existing, dict)
+            and existing.get("category_id") == item.category
+            and existing.get("destination_key") == destination_key
+            and fingerprint != item.fingerprint
+        ]
+        for fingerprint in stale:
+            del records[fingerprint]
     record = {
         "source_id": item.source_id,
         "category_id": item.category,
@@ -3389,66 +3068,177 @@ def _record_ledger(
     records[item.fingerprint] = record
 
 
-def _session_destination_key(item: _Item) -> str:
-    return f"imported-{item.source_id}-{item.fingerprint[:16]}"
+def _normalize_strategy(value: Any) -> str:
+    """Coerce a client-supplied strategy to a known one, defaulting to skip."""
+
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in CONFLICT_STRATEGIES else STRATEGY_SKIP
 
 
-def _write_session(item: _Item, conversation_log: Any) -> str:
-    key = _session_destination_key(item)
-    update_metadata = getattr(conversation_log, "update_metadata", None)
-    if not callable(update_metadata):
-        raise TypeError("conversation log does not support metadata updates")
-    lock_factory = getattr(conversation_log, "_locked", None)
-    lock = lock_factory(key) if callable(lock_factory) else nullcontext()
-    with lock:
-        has_log = getattr(conversation_log, "has_log", None)
-        if callable(has_log) and has_log(key):
-            read_messages = getattr(conversation_log, "read_messages", None)
-            rewrite_session = getattr(conversation_log, "rewrite_session", None)
-            if not callable(read_messages) or not callable(rewrite_session):
-                update_metadata(key, {"closed": True})
-                return "existing"
-            existing = read_messages(key)
-            expected = [{"role": role, "content": content} for role, content in item.payload]
-            normalized = [
-                {"role": message.get("role"), "content": message.get("content")}
-                for message in existing
-                if isinstance(message, dict)
-            ]
-            if normalized == expected:
-                update_metadata(key, {"closed": True})
-                return "existing"
-            if len(normalized) < len(expected) and normalized == expected[: len(normalized)]:
-                rewrite_session(key, expected)
-                update_metadata(key, {"closed": True})
-                return "imported"
-            return "conflict"
-        init = getattr(conversation_log, "init", None)
-        if callable(init):
-            init()
-        try:
-            for role, content in item.payload:
-                conversation_log.append(key, role, content)
-            update_metadata(key, {"closed": True})
-        except BaseException:
-            delete_session = getattr(conversation_log, "delete_session", None)
-            if callable(delete_session):
-                try:
-                    delete_session(key)
-                except Exception:
-                    logger.warning("Failed to roll back imported session", exc_info=True)
-            raise
-        return "imported"
+def _rename_candidates(base: str, item: _Item) -> list[str]:
+    """Derived non-colliding names, most readable first.
+
+    A user who renames wants to recognize the result, so the source-suffixed
+    form is tried before the digest-suffixed fallback.
+    """
+
+    suffixed = f"{base}-{item.source_id}"
+    digest = f"{base}-{item.fingerprint[:8]}"
+    return [name for name in (suffixed, digest) if name != base]
+
+
+def _restore_dir(data_home: Path, run_stamp: str, category: str) -> Path:
+    return data_home / _REPLACED_RELATIVE_DIR / run_stamp / category
+
+
+def _preserve_replaced_tree(source: Path, destination: Path) -> str:
+    """Copy a directory aside before it is replaced. Returns the restore path.
+
+    Raises so the caller can refuse to overwrite: losing the restore copy is the
+    one failure that makes ``overwrite`` unrecoverable.
+
+    The run stamp has one-second resolution, so two overwrites of the same item
+    inside one second would collide. Suffix on collision rather than refusing (a
+    refusal here reads to the user as an unresolvable conflict) and never
+    overwrite an existing restore copy, which would defeat the point of keeping
+    one.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    target = destination
+    for attempt in range(1, 100):
+        if not target.exists():
+            break
+        target = destination.with_name(f"{destination.name}-{attempt}")
+    shutil.copytree(source, target, symlinks=True, dirs_exist_ok=False)
+    return str(target)
+
+
+def _preserve_replaced_json(payload: Any, destination: Path) -> str:
+    """Write a replaced JSON fragment aside. Returns the restore path.
+
+    Suffixes on collision for the same reason as ``_preserve_replaced_tree``: the
+    run stamp is second-resolution, and clobbering an earlier restore copy would
+    defeat the point of keeping one.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    target = destination
+    for attempt in range(1, 100):
+        if not target.exists():
+            break
+        target = destination.with_name(f"{destination.stem}-{attempt}{destination.suffix}")
+    _write_json(target, payload)
+    return str(target)
+
+
+def _lessons_overlap(incoming: str, existing: str) -> bool:
+    """Whether two lesson rules are close enough to treat as the same lesson.
+
+    Mirrors ``VectorMemoryStore.write_lesson``'s own dedupe (substring, then
+    >50% significant-word overlap) so import RECOGNIZES the same collisions --
+    but reports them instead of replacing, which is what that writer would do.
+    """
+
+    left = incoming.lower().strip()
+    right = existing.lower().strip()
+    if not left or not right:
+        return False
+    if left in right or right in left:
+        return True
+    left_words = {word for word in re.findall(r"[a-z0-9]{4,}", left)}
+    right_words = {word for word in re.findall(r"[a-z0-9]{4,}", right)}
+    if not left_words or not right_words:
+        return False
+    shared = left_words & right_words
+    return len(shared) / min(len(left_words), len(right_words)) > 0.5
+
+
+def _write_instruction(
+    item: _Item,
+    lesson_store: Any,
+    vector_store: VectorMemoryStore | None = None,
+) -> _WriteOutcome:
+    """Append one imported directive to the highest-priority durable tier.
+
+    ``LessonStore.save`` is itself exact-rule deduplicating, so a re-import is
+    naturally idempotent; this reports ``existing`` for that case so the ledger
+    still records it and the outcome is ``deduplicated`` rather than a false
+    ``accepted``.
+    """
+
+    rule = str(item.payload.get("rule", "")).strip()
+    if not rule:
+        return _WriteOutcome("rejected")
+
+    # ContextBuilder reads lesson.* from the VECTOR store when it holds any, and
+    # then never reads lessons.jsonl (context.py: `if memory.vector_store and
+    # memory.vector_store.get_lessons()`). Writing only the JSONL there would
+    # record the item as imported while the agent never sees it, so route through
+    # whichever store is actually authoritative.
+    # Route on AVAILABILITY, not current emptiness. An empty vector store still
+    # becomes authoritative the moment any native lesson lands, and ContextBuilder
+    # then stops reading lessons.jsonl -- so a JSONL write made while the store
+    # happened to be empty would silently disappear later, with the ledger
+    # preventing a re-import.
+    if vector_store is not None:
+        # NOT ``write_lesson``: it deletes an existing lesson on exact-substring
+        # OR >50% topic overlap ("newer replaces older"), which for an import
+        # means a foreign directive can delete a correction the USER taught the
+        # agent. Import is merge-only, so overlap yields ``existing`` (nothing
+        # written, nothing deleted) and only a genuinely new rule is inserted --
+        # via the absent-only writer, which cannot replace anything.
+        for existing in vector_store.get_lessons():
+            try:
+                stored = json.loads(str(existing.get("value_json", "")))
+            except (TypeError, ValueError):
+                continue
+            stored_rule = str(stored.get("rule", "")) if isinstance(stored, dict) else str(stored)
+            if _lessons_overlap(rule, stored_rule):
+                return _WriteOutcome("existing")
+        key = f"lesson.{hashlib.sha256(rule.encode()).hexdigest()[:16]}"
+        outcome = vector_store.set_semantic_if_absent(
+            key,
+            {"rule": rule, "category": "preference", "negative": None},
+            1.0,
+            "import",
+        )
+        return _WriteOutcome("imported" if outcome == "imported" else "existing")
+
+    if lesson_store is None:
+        return _WriteOutcome("rejected")
+    load_all = getattr(lesson_store, "load_all", None)
+    if callable(load_all):
+        existing_lessons = list(load_all())
+        normalized = rule.lower()
+        for existing in existing_lessons:
+            if str(getattr(existing, "rule", "")).lower().strip() == normalized:
+                return _WriteOutcome("existing")
+        # ``LessonStore.save`` prunes OLDEST-first once the store passes its own
+        # ceiling, and the user's own corrections are the oldest entries. A
+        # per-import cap alone does not protect them: 151 existing + 50 imported
+        # still evicts one. Refuse to write past the store's REMAINING capacity
+        # so an import can never delete a lesson the user taught the agent.
+        if len(existing_lessons) >= _MAX_LESSONS_TOTAL:
+            return _WriteOutcome("rejected")
+    lesson_store.save(
+        Lesson(
+            ts=datetime.now(timezone.utc).isoformat(),
+            rule=rule,
+            category="preference",
+        )
+    )
+    return _WriteOutcome("imported")
 
 
 def _write_memory(
     item: _Item,
     data_home: Path,
     vector_store: VectorMemoryStore | None,
-) -> str:
+) -> _WriteOutcome:
     if isinstance(item.payload, dict) and item.payload.get("kind") == "semantic":
         if vector_store is None:
-            return "rejected"
+            return _WriteOutcome("rejected")
         key = str(item.payload["key"])
         value = item.payload["value"]
         outcome = vector_store.set_semantic_if_absent(
@@ -3458,20 +3248,21 @@ def _write_memory(
             "import",
         )
         if outcome == "imported":
-            return "imported"
+            return _WriteOutcome("imported")
         existing = vector_store.get_semantic(key)
         if existing is not None:
             try:
-                return "existing" if json.loads(existing["value_json"]) == value else "conflict"
+                same = json.loads(existing["value_json"]) == value
+                return _WriteOutcome("existing" if same else "conflict")
             except (KeyError, TypeError, json.JSONDecodeError, RecursionError):
-                return "conflict"
-        return "rejected"
+                return _WriteOutcome("conflict")
+        return _WriteOutcome("rejected")
     if isinstance(item.payload, dict) and item.payload.get("kind") == "episodic":
         if vector_store is None:
-            return "rejected"
+            return _WriteOutcome("rejected")
         text = str(item.payload["text"])
         if vector_store.has_episodic_text(text):
-            return "existing"
+            return _WriteOutcome("existing")
         written = vector_store.write_episodic(
             text,
             tags=["imported", item.source_id],
@@ -3480,14 +3271,26 @@ def _write_memory(
             preserve_existing=True,
         )
         if written:
-            return "imported"
-        return "existing" if vector_store.has_episodic_text(text) else "rejected"
+            return _WriteOutcome("imported")
+        present = vector_store.has_episodic_text(text)
+        return _WriteOutcome("existing" if present else "rejected")
 
-    return "rejected"
+    return _WriteOutcome("rejected")
 
 
-def _write_workspace(item: _Item, data_home: Path) -> str:
-    workspace = Path(str(item.payload)).resolve(strict=True)
+def _write_workspace(
+    item: _Item,
+    data_home: Path,
+    *,
+    strategy: str = STRATEGY_SKIP,
+) -> _WriteOutcome:
+    workspace = Path(str(item.payload))
+    try:
+        workspace = workspace.resolve(strict=True)
+    except OSError:
+        # A configured workspace that no longer exists is a normal skip, not a
+        # write failure.
+        return _WriteOutcome("rejected")
     destination = data_home.resolve()
     if (
         not workspace.is_dir()
@@ -3495,7 +3298,7 @@ def _write_workspace(item: _Item, data_home: Path) -> str:
         or workspace == destination
         or destination in workspace.parents
     ):
-        return "rejected"
+        return _WriteOutcome("rejected")
 
     path = data_home / "config.json"
     data = _load_json_dict(path, fail_closed=True)
@@ -3504,7 +3307,7 @@ def _write_workspace(item: _Item, data_home: Path) -> str:
         workspaces = {}
         data["workspaces"] = workspaces
     if not isinstance(workspaces, dict):
-        return "conflict"
+        return _WriteOutcome("conflict")
 
     canonical = str(workspace)
     for existing in workspaces.values():
@@ -3517,23 +3320,31 @@ def _write_workspace(item: _Item, data_home: Path) -> str:
             continue
         try:
             if str(Path(existing_dir).expanduser().resolve()) == canonical:
-                return "existing"
+                return _WriteOutcome("existing")
         except (OSError, RuntimeError):
             continue
 
     base_name = _SAFE_NAME_RE.sub("-", workspace.name).strip("-._").lower()
     base_name = base_name[:64] or f"imported-{item.source_id}"
-    name = base_name
-    if name in workspaces:
-        name = f"{base_name}-{item.source_id}"[:64]
-    if name in workspaces:
-        suffix = item.fingerprint[:8]
-        name = f"{base_name[:55]}-{suffix}"
-    if name in workspaces:
-        return "conflict"
-    workspaces[name] = {"dir": canonical}
-    _write_json(path, data)
-    return "imported"
+    if base_name not in workspaces:
+        workspaces[base_name] = {"dir": canonical}
+        _write_json(path, data)
+        return _WriteOutcome("imported")
+
+    # The name is taken by a DIFFERENT directory. Deriving a suffixed name is a
+    # rename, so it now requires the user to have asked for one; a plain skip
+    # reports the collision instead of quietly inventing a name.
+    if strategy != STRATEGY_RENAME:
+        return _WriteOutcome("conflict")
+    for candidate in (
+        f"{base_name}-{item.source_id}"[:64],
+        f"{base_name[:55]}-{item.fingerprint[:8]}",
+    ):
+        if candidate not in workspaces:
+            workspaces[candidate] = {"dir": canonical}
+            _write_json(path, data)
+            return _WriteOutcome("imported", renamed_to=candidate)
+    return _WriteOutcome("conflict")
 
 
 @contextmanager
@@ -3549,7 +3360,14 @@ def _mcp_lock(_path: Path) -> Iterator[None]:
         yield
 
 
-def _write_mcp(item: _Item, data_home: Path, user_home: Path) -> str:
+def _write_mcp(
+    item: _Item,
+    data_home: Path,
+    user_home: Path,
+    *,
+    strategy: str = STRATEGY_SKIP,
+    run_stamp: str = "",
+) -> _WriteOutcome:
     path = data_home / "mcp.json"
     with _mcp_lock(path):
         data = _load_json_dict(path, fail_closed=True)
@@ -3559,21 +3377,76 @@ def _write_mcp(item: _Item, data_home: Path, user_home: Path) -> str:
         else:
             servers = data["mcpServers"]
             if not isinstance(servers, dict):
-                return "conflict"
-        name = item.payload["name"]
+                return _WriteOutcome("conflict")
+        name = str(item.payload["name"])
         spec = item.payload["spec"]
-        if name in servers:
-            return "existing" if servers[name] == spec else "conflict"
         from kiro_crew.mcp_discovery import configured_mcp_aliases
 
-        if mcp_server_alias(name) in configured_mcp_aliases(
-            data_home=data_home,
-            user_home=user_home,
-        ):
-            return "conflict"
-        servers[name] = spec
-        _write_json(path, data)
-    return "imported"
+        reserved = configured_mcp_aliases(data_home=data_home, user_home=user_home)
+
+        def _install(target_name: str) -> None:
+            servers[target_name] = spec
+            _write_json(path, data)
+
+        if name not in servers:
+            # An alias collision means some OTHER effective MCP source already
+            # owns this name, so writing it here would shadow a server the user
+            # did not import. A rename is a legitimate way out.
+            if mcp_server_alias(name) not in reserved:
+                _install(name)
+                return _WriteOutcome("imported", destination_key=name)
+        elif servers[name] == spec:
+            return _WriteOutcome("existing", destination_key=name)
+
+        if strategy == STRATEGY_RENAME:
+            for candidate in _rename_candidates(name, item):
+                if candidate in servers:
+                    if servers[candidate] == spec:
+                        return _WriteOutcome(
+                            "existing",
+                            renamed_to=candidate,
+                            destination_key=candidate,
+                        )
+                    continue
+                if mcp_server_alias(candidate) in reserved:
+                    continue
+                _install(candidate)
+                return _WriteOutcome(
+                    "imported",
+                    renamed_to=candidate,
+                    destination_key=candidate,
+                )
+            return _WriteOutcome("conflict")
+
+        if strategy == STRATEGY_OVERWRITE:
+            # Only an entry WE can see in this file is replaceable; a name
+            # reserved by another source is not ours to overwrite.
+            if name not in servers:
+                return _WriteOutcome("conflict")
+            try:
+                restored = _preserve_replaced_json(
+                    {name: servers[name]},
+                    _restore_dir(data_home, run_stamp, "mcp_servers")
+                    # Scope by source + fingerprint: two selected sources can
+                    # define the SAME server name, and a bare-name file would let
+                    # the second overwrite clobber the user's only restore copy.
+                    / item.source_id
+                    / f"{_SAFE_NAME_RE.sub('-', name)}-{item.fingerprint[:8]}.json",
+                )
+            except OSError:
+                logger.warning(
+                    "Could not preserve the MCP server being replaced; refusing to overwrite",
+                    exc_info=True,
+                )
+                return _WriteOutcome("conflict")
+            _install(name)
+            return _WriteOutcome(
+                "imported",
+                restored_to=restored,
+                destination_key=name,
+            )
+
+        return _WriteOutcome("conflict")
 
 
 def _has_symlink_component(path: Path, anchor: Path) -> bool:
@@ -3595,35 +3468,77 @@ def _has_symlink_component(path: Path, anchor: Path) -> bool:
     return False
 
 
-def _write_skill(item: _Item, data_home: Path) -> str:
-    destination = data_home / "skills" / "imported" / item.source_id / item.payload["name"]
-    files = item.payload.get("files")
+def _skill_destination_key(source_id: str, name: str) -> str:
+    """The single-occupancy identity a skill package occupies.
+
+    A skill dir holds exactly ONE package per (source, name), so the ledger must
+    keep one record for it. Without this, importing V1, overwriting with V2, then
+    reverting the source to V1 leaves V1's stale fingerprint deduplicating the
+    revert while V2 stays installed.
+    """
+
+    return f"skills:{source_id}/{name}"
+
+
+def _skill_files_are_valid(files: Any) -> bool:
     if not isinstance(files, dict) or "SKILL.md" not in files:
-        return "rejected"
-    if _has_symlink_component(destination, data_home):
-        return "rejected"
-    existing_count = 0
+        return False
     for relative, content in files.items():
         if not isinstance(relative, str) or not isinstance(content, str):
-            return "rejected"
+            return False
         relative_path = Path(relative)
         if relative_path.is_absolute() or ".." in relative_path.parts:
-            return "rejected"
-        target = destination / relative_path
+            return False
+    return True
+
+
+def _skill_tree_state(
+    destination: Path,
+    files: dict[str, str],
+    data_home: Path,
+) -> str:
+    """Classify a candidate skill destination: absent / existing / conflict."""
+
+    present = 0
+    for relative, content in files.items():
+        target = destination / Path(relative)
         if _has_symlink_component(target, data_home):
             return "rejected"
         if not target.exists():
             continue
-        existing_count += 1
+        present += 1
         try:
             if target.read_bytes() != content.encode("utf-8"):
                 return "conflict"
         except OSError:
             return "conflict"
-    if existing_count == len(files):
-        return "existing"
-    if existing_count:
+    if present == len(files):
+        # Every file we carry is present and identical -- but the destination may
+        # also hold files we DON'T carry, i.e. ones the upstream source deleted.
+        # Reporting "existing" there would leave the stale file installed forever,
+        # so treat an extra file as a conflict the user resolves (overwrite
+        # replaces the whole tree, which removes it).
+        try:
+            installed = {
+                path.relative_to(destination).as_posix()
+                for path in destination.rglob("*")
+                if path.is_file()
+            }
+        except OSError:
+            return "conflict"
+        expected = {Path(relative).as_posix() for relative in files}
+        return "existing" if installed == expected else "conflict"
+    if present:
         return "conflict"
+    # A destination dir that exists but holds none of our files is still occupied.
+    if destination.exists() or _is_link_like(destination):
+        return "conflict"
+    return "absent"
+
+
+def _install_skill_tree(destination: Path, files: dict[str, str], data_home: Path) -> str:
+    """Stage the package in a sibling temp dir and move it into place atomically."""
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     if _has_symlink_component(destination, data_home):
         return "rejected"
@@ -3638,6 +3553,8 @@ def _write_skill(item: _Item, data_home: Path) -> str:
             target = staging / Path(relative)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content.encode("utf-8"))
+        # Re-check immediately before the move: the plan-time check is a TOCTOU
+        # window, and this is the last moment we can still refuse.
         if _has_symlink_component(destination, data_home):
             return "rejected"
         if destination.exists() or _is_link_like(destination):
@@ -3646,6 +3563,133 @@ def _write_skill(item: _Item, data_home: Path) -> str:
         return "imported"
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def _write_skill(
+    item: _Item,
+    data_home: Path,
+    *,
+    strategy: str = STRATEGY_SKIP,
+    run_stamp: str = "",
+) -> _WriteOutcome:
+    files = item.payload.get("files")
+    if not _skill_files_are_valid(files):
+        return _WriteOutcome("rejected")
+    name = str(item.payload["name"])
+    root = data_home / "skills" / "imported" / item.source_id
+    destination = root / name
+    if _has_symlink_component(destination, data_home):
+        return _WriteOutcome("rejected")
+
+    state = _skill_tree_state(destination, files, data_home)
+    if state == "rejected":
+        return _WriteOutcome(state)
+    if state == "existing":
+        return _WriteOutcome(
+            state,
+            destination_key=_skill_destination_key(item.source_id, name),
+        )
+    if state == "absent":
+        return _WriteOutcome(
+            _install_skill_tree(destination, files, data_home),
+            destination_key=_skill_destination_key(item.source_id, name),
+        )
+
+    # state == "conflict": a different package already occupies this name.
+    if strategy == STRATEGY_RENAME:
+        for candidate in _rename_candidates(name, item):
+            alternate = root / candidate
+            if _has_symlink_component(alternate, data_home):
+                continue
+            alternate_state = _skill_tree_state(alternate, files, data_home)
+            if alternate_state == "existing":
+                # The renamed copy is already installed and identical.
+                return _WriteOutcome(
+                    "existing",
+                    renamed_to=candidate,
+                    destination_key=_skill_destination_key(item.source_id, candidate),
+                )
+            if alternate_state == "absent":
+                status = _install_skill_tree(alternate, files, data_home)
+                return _WriteOutcome(
+                    status,
+                    renamed_to=candidate if status == "imported" else "",
+                    destination_key=(
+                        _skill_destination_key(item.source_id, candidate)
+                        if status == "imported"
+                        else ""
+                    ),
+                )
+        return _WriteOutcome("conflict")
+
+    if strategy == STRATEGY_OVERWRITE:
+        # The restore copy is written FIRST and its failure aborts the
+        # overwrite: an unrecoverable replace is worse than a reported conflict.
+        try:
+            restored = _preserve_replaced_tree(
+                destination,
+                _restore_dir(data_home, run_stamp, "skills") / item.source_id / name,
+            )
+        except (OSError, shutil.Error):
+            logger.warning(
+                "Could not preserve the skill being replaced; refusing to overwrite",
+                exc_info=True,
+            )
+            return _WriteOutcome("conflict")
+        # MOVE the old tree aside rather than deleting it in place. A partial
+        # delete (a locked file on Windows) would otherwise leave the installed
+        # skill mangled AND the install failing, so the user ends up with
+        # neither version. Renaming is atomic: it either frees the name
+        # completely or fails with the old tree still whole.
+        # Pick an UNUSED retired path rather than clearing one. A leftover
+        # retired tree from an interrupted overwrite is the only surviving copy of
+        # that earlier version, so deleting it to make room would destroy exactly
+        # what the move-aside exists to preserve. (Same reasoning as the
+        # suffix-on-collision restore paths above.)
+        base = destination.with_name(f".{destination.name}.replaced-{item.fingerprint[:8]}")
+        retired = base
+        for attempt in range(1, 100):
+            if not (retired.exists() or _is_link_like(retired)):
+                break
+            retired = base.with_name(f"{base.name}-{attempt}")
+        try:
+            if retired.exists() or _is_link_like(retired):
+                # 99 leftovers means something is badly wrong; refuse rather than
+                # delete someone else's copy.
+                return _WriteOutcome("conflict")
+            os.replace(destination, retired)
+        except OSError:
+            logger.warning(
+                "Could not move the skill being replaced out of the way; " "refusing to overwrite",
+                exc_info=True,
+            )
+            return _WriteOutcome("conflict")
+
+        def _restore_retired() -> None:
+            # Put the original back so a failed replace is a no-op, not data loss.
+            with contextlib.suppress(OSError):
+                if not destination.exists():
+                    os.replace(retired, destination)
+
+        try:
+            status = _install_skill_tree(destination, files, data_home)
+        except BaseException:
+            # A RAISE (disk full, permissions, cancellation) must restore too --
+            # handling only the non-"imported" return left the original stranded
+            # under its retired name with nothing installed.
+            _restore_retired()
+            raise
+        if status != "imported":
+            _restore_retired()
+            return _WriteOutcome(status)
+        shutil.rmtree(retired, ignore_errors=True)
+        return _WriteOutcome(
+            status,
+            restored_to=restored,
+            destination_key=_skill_destination_key(item.source_id, name),
+        )
+
+    return _WriteOutcome("conflict")
 
 
 def _same_schedule(job: Any, payload: dict[str, Any]) -> bool:
@@ -3665,7 +3709,7 @@ def _same_schedule(job: Any, payload: dict[str, Any]) -> bool:
     return getattr(schedule, "at_ts", None) == payload.get("at_ts")
 
 
-def _write_schedule(item: _Item, cron_service: Any) -> str:
+def _write_schedule(item: _Item, cron_service: Any) -> _WriteOutcome:
     payload = item.payload
     add_if_absent = getattr(cron_service, "add_job_if_absent", None)
     if callable(add_if_absent) and "add_job" not in vars(cron_service):
@@ -3680,10 +3724,10 @@ def _write_schedule(item: _Item, cron_service: Any) -> str:
             enabled=False,
             timezone=payload.get("timezone", ""),
         )
-        return "existing" if job is None else "imported"
+        return _WriteOutcome("existing" if job is None else "imported")
     for job in cron_service.list_jobs(include_disabled=True):
         if _same_schedule(job, payload):
-            return "existing"
+            return _WriteOutcome("existing")
     cron_service.add_job(
         name=payload["name"],
         message=payload["message"],
@@ -3694,28 +3738,37 @@ def _write_schedule(item: _Item, cron_service: Any) -> str:
         enabled=False,
         timezone=payload.get("timezone", ""),
     )
-    return "imported"
+    return _WriteOutcome("imported")
 
 
-def _write_settings(item: _Item, data_home: Path) -> str:
+def _write_settings(item: _Item, data_home: Path) -> _WriteOutcome:
     path = data_home / "config.json"
     data = _load_json_dict(path, fail_closed=True)
     changed = _merge_missing(data, item.payload)
     if not changed:
-        return "existing"
+        return _WriteOutcome("existing")
     _write_json(path, data)
-    return "imported"
+    return _WriteOutcome("imported")
 
 
 def apply_import(
     plan: dict[str, Any],
     *,
     data_home: Path | None = None,
-    conversation_log: Any = None,
     cron_service: Any = None,
     vector_store: VectorMemoryStore | None = None,
+    lesson_store: Any = None,
+    conflict_strategy: str = STRATEGY_SKIP,
 ) -> dict[str, Any]:
-    """Apply selected source/category pairs with merge-only, idempotent writes."""
+    """Apply selected source/category pairs with merge-only, idempotent writes.
+
+    ``conflict_strategy`` decides what happens when a destination already holds a
+    DIFFERENT item under the same identity. ``skip`` (the default) leaves it
+    alone and reports a conflict; ``rename`` installs alongside it under a
+    derived name; ``overwrite`` replaces it after writing a restore copy under
+    ``imports/replaced/<timestamp>/``. Only ``skills``, ``mcp_servers``, and
+    ``workspaces`` have resolvable collisions — the rest are merge-only.
+    """
     destination = Path(data_home) if data_home is not None else config_dir()
     destination.mkdir(parents=True, exist_ok=True)
     selected = _selected_pairs(plan)
@@ -3723,9 +3776,19 @@ def apply_import(
     user_homes = _plan_user_homes(plan)
     config_paths = _plan_private_paths(plan, "_config_paths")
     workspace_paths = _plan_private_paths(plan, "_workspace_paths")
+    strategy = _normalize_strategy(conflict_strategy)
+    # One restore dir per apply run, so everything a single import replaced is
+    # found together. Stamped once here rather than per item.
+    run_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     ledger_path = destination / _LEDGER_RELATIVE_PATH
     ledger = _load_ledger(ledger_path)
     records = ledger["records"]
+    # The ledger is rewritten WHOLE (atomic temp-file + rename), so flushing it
+    # once per item is O(n**2) in serialization and rename cost for a large
+    # import. Flush once per source/category instead, and once more in the
+    # ``finally`` below, so an interrupted apply still cannot re-import an item
+    # it already wrote.
+    ledger_dirty = False
     imported = {category: 0 for category in CATEGORY_IDS}
     already_imported = 0
     item_outcomes: list[dict[str, str]] = []
@@ -3761,14 +3824,12 @@ def apply_import(
                 if diagnostic not in skipped:
                     skipped.append(diagnostic)
 
-    if conversation_log is None and any(category == "sessions" for _source, category in selected):
-        from kiro_crew.history import ConversationLog
-
-        conversation_log = ConversationLog(destination / "sessions")
     if cron_service is None and any(category == "schedules" for _source, category in selected):
         from kiro_crew.cron import CronService
 
         cron_service = CronService(base_dir=destination)
+    if lesson_store is None and any(category == "instructions" for _source, category in selected):
+        lesson_store = LessonStore(base_dir=destination)
 
     owned_vector_store: VectorMemoryStore | None = None
     needs_vector_store = any(
@@ -3783,6 +3844,12 @@ def apply_import(
         owned_vector_store.init()
         vector_store = owned_vector_store
 
+    def _flush_ledger() -> None:
+        nonlocal ledger_dirty
+        if ledger_dirty:
+            _write_json(ledger_path, ledger)
+            ledger_dirty = False
+
     try:
         for source_id, category in sorted(selected):
             scan = scans.get(source_id)
@@ -3794,26 +3861,50 @@ def apply_import(
                     "category_id": category,
                     "item_hash": item.fingerprint,
                 }
-                if item.fingerprint in records:
+                # The ledger is a fast path, NOT the authority: it says "this
+                # exact item was imported once", which is only equivalent to
+                # "the destination still holds it" for categories that cannot be
+                # replaced afterwards. For a single-occupancy destination an
+                # overwrite (or a later revert) moves the destination out from
+                # under an older fingerprint, so the writer's own destination
+                # check has to decide. It reports ``existing`` when the item
+                # really is already there, which lands as ``deduplicated`` all
+                # the same.
+                if item.fingerprint in records and category not in _REPLACEABLE_CATEGORIES:
                     already_imported += 1
                     item_outcomes.append({**outcome, "outcome": "deduplicated"})
                     continue
-                status = "skipped"
+                written = _WriteOutcome("skipped")
                 try:
-                    if category == "sessions":
-                        status = _write_session(item, conversation_log)
+                    if category == "instructions":
+                        written = _write_instruction(item, lesson_store, vector_store)
                     elif category == "memories":
-                        status = _write_memory(item, destination, vector_store)
+                        written = _write_memory(item, destination, vector_store)
                     elif category == "workspaces":
-                        status = _write_workspace(item, destination)
+                        written = _write_workspace(
+                            item,
+                            destination,
+                            strategy=strategy,
+                        )
                     elif category == "mcp_servers":
-                        status = _write_mcp(item, destination, scan.user_home)
+                        written = _write_mcp(
+                            item,
+                            destination,
+                            scan.user_home,
+                            strategy=strategy,
+                            run_stamp=run_stamp,
+                        )
                     elif category == "skills":
-                        status = _write_skill(item, destination)
+                        written = _write_skill(
+                            item,
+                            destination,
+                            strategy=strategy,
+                            run_stamp=run_stamp,
+                        )
                     elif category == "schedules":
-                        status = _write_schedule(item, cron_service)
+                        written = _write_schedule(item, cron_service)
                     elif category == "settings":
-                        status = _write_settings(item, destination)
+                        written = _write_settings(item, destination)
                 except (OSError, ValueError, TypeError, sqlite3.Error):
                     logger.warning(
                         "Foreign-agent import failed for %s/%s",
@@ -3830,27 +3921,39 @@ def apply_import(
                     )
                     item_outcomes.append({**outcome, "outcome": "rejected"})
                     continue
+                status = written.status
+                # Only set when a strategy actually took effect, so a plain skip
+                # apply reports exactly the shape it did before strategies existed.
+                details = {
+                    key: value
+                    for key, value in (
+                        ("renamed_to", written.renamed_to),
+                        ("restored_to", written.restored_to),
+                    )
+                    if value
+                }
                 if status in ("imported", "existing"):
                     _record_ledger(
                         ledger,
                         item,
-                        destination_key=(
-                            _session_destination_key(item) if category == "sessions" else ""
-                        ),
+                        destination_key=written.destination_key,
                     )
-                    _write_json(ledger_path, ledger)
+                    ledger_dirty = True
                     if status == "imported":
                         imported[category] += 1
-                        item_outcomes.append({**outcome, "outcome": "accepted"})
+                        item_outcomes.append({**outcome, **details, "outcome": "accepted"})
                     else:
                         already_imported += 1
-                        item_outcomes.append({**outcome, "outcome": "deduplicated"})
+                        item_outcomes.append({**outcome, **details, "outcome": "deduplicated"})
                 elif status == "conflict":
                     conflicts.append(
                         {
                             "source_id": source_id,
                             "category_id": category,
                             "reason": "destination_conflict",
+                            # Tell the client which strategies could resolve this
+                            # one, so a retry is an informed choice.
+                            "resolvable": category in STRATEGY_CATEGORIES,
                         }
                     )
                     item_outcomes.append({**outcome, "outcome": "rejected"})
@@ -3863,7 +3966,9 @@ def apply_import(
                         }
                     )
                     item_outcomes.append({**outcome, "outcome": "rejected"})
+            _flush_ledger()
     finally:
+        _flush_ledger()
         if owned_vector_store is not None:
             owned_vector_store.close()
 
@@ -3883,4 +3988,5 @@ def apply_import(
             sum(scan.unsupported_count for scan in scans.values()),
         ),
         "ledger": str(_LEDGER_RELATIVE_PATH).replace("\\", "/"),
+        "conflict_strategy": strategy,
     }

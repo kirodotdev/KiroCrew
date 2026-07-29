@@ -5,12 +5,12 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
   ArrowRight,
+  BookOpen,
   Brain,
   CalendarClock,
   FileSearch,
   FolderOpen,
   Loader2,
-  MessageCircle,
   Plug,
   RefreshCw,
   Settings2,
@@ -21,6 +21,7 @@ import {
 import {
   api,
   type AgentImportApplyRequest,
+  type AgentImportConflictStrategy,
   type AgentImportSource,
 } from '../api/client'
 import { KiroGhost } from './KiroGhost'
@@ -38,7 +39,7 @@ const SUPPORTED_SOURCE_IDS = new Set([
   'hermes',
 ])
 const SUPPORTED_CATEGORY_IDS = new Set([
-  'sessions',
+  'instructions',
   'memories',
   'workspaces',
   'mcp_servers',
@@ -47,7 +48,7 @@ const SUPPORTED_CATEGORY_IDS = new Set([
   'settings',
 ])
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
-  sessions: MessageCircle,
+  instructions: BookOpen,
   memories: Brain,
   workspaces: FolderOpen,
   mcp_servers: Plug,
@@ -143,6 +144,7 @@ export default function AgentImportFlow({
   const [stage, setStage] = useState<Stage>(1)
   const [scanGeneration, setScanGeneration] = useState(0)
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set())
+  const [strategy, setStrategy] = useState<AgentImportConflictStrategy>('skip')
   const [selectedCategories, setSelectedCategories] = useState<Record<string, Set<string>>>({})
   const dialogRef = useRef<HTMLDivElement>(null)
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -166,6 +168,7 @@ export default function AgentImportFlow({
     setStage(1)
     setSelectedSources(new Set())
     setSelectedCategories({})
+    setStrategy('skip')
     applyMutation.reset()
     completionMutation.reset()
     if (refresh) setScanGeneration(value => value + 1)
@@ -181,10 +184,18 @@ export default function AgentImportFlow({
           .map(category => category.id),
       }))
       .filter(source => source.categories.length > 0),
-  }), [selectedCategories, selectedSources, sources])
+    conflict_strategy: strategy,
+  }), [selectedCategories, selectedSources, sources, strategy])
 
   const applyMutation = useMutation({
-    mutationFn: () => api.onboardingImportApply(applyPayload),
+    // Takes the strategy as an argument so a resolution click cannot race the
+    // re-render: `setStrategy(...)` then `mutate()` in one handler would send
+    // the payload memoized for the PREVIOUS strategy and silently repeat the
+    // unresolved import.
+    mutationFn: (override?: AgentImportConflictStrategy) =>
+      api.onboardingImportApply(
+        override ? { ...applyPayload, conflict_strategy: override } : applyPayload,
+      ),
     onSuccess: () => setStage(4),
   })
   const completionMutation = useMutation({
@@ -333,7 +344,7 @@ export default function AgentImportFlow({
     0,
   )
   const beginImport = () => {
-    applyMutation.mutate()
+    applyMutation.mutate(undefined)
   }
   const importAnother = () => resetFlow(true)
   const completionError = completionMutation.error
@@ -414,7 +425,7 @@ export default function AgentImportFlow({
     const headings: Record<Stage, { title: string; description: string }> = {
       1: {
         title: 'Choose sources',
-        description: 'KiroCrew found agent setup on this gateway host. Select the sources to review.',
+        description: 'Kiro Crew found agent setup on this gateway host. Select the sources to review.',
       },
       2: {
         title: 'Select items to import',
@@ -422,11 +433,11 @@ export default function AgentImportFlow({
       },
       3: {
         title: 'Review import',
-        description: 'Review the merge before KiroCrew changes local setup.',
+        description: 'Review the merge before Kiro Crew changes local setup.',
       },
       4: {
         title: 'Import complete',
-        description: 'Your selected setup is ready in KiroCrew.',
+        description: 'Your selected setup is ready in Kiro Crew.',
       },
     }
     const { title, description } = headings[stage]
@@ -667,6 +678,39 @@ export default function AgentImportFlow({
             <dd className="mt-1 text-2xl font-semibold text-text-strong">{summary?.skipped ?? 0}</dd>
           </div>
         </dl>
+        {!!summary?.resolvable_conflicts && (
+          <div
+            className="mt-5 rounded-lg border border-warn/30 bg-warn/10 p-3 text-sm"
+            role="status"
+          >
+            <p className="font-medium text-text-strong">
+              {summary.resolvable_conflicts === 1
+                ? i18nT('components.agentImportFlow.one_item_already_exists_with_different_content')
+                : `${summary.resolvable_conflicts} ${i18nT(
+                  'components.agentImportFlow.items_already_exist_with_different_content',
+                )}`}
+            </p>
+            <p className="mt-1 text-[13px] text-muted">
+              {i18nT('components.agentImportFlow.nothing_was_changed_import_the_new_copy_alongsid')}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Btn
+                type="button"
+                disabled={isBusy}
+                onClick={() => { setStrategy('rename'); applyMutation.mutate('rename') }}
+              >
+                {i18nT('components.agentImportFlow.keep_both')}
+              </Btn>
+              <Btn
+                type="button"
+                disabled={isBusy}
+                onClick={() => { setStrategy('overwrite'); applyMutation.mutate('overwrite') }}
+              >
+                {i18nT('components.agentImportFlow.replace_mine')}
+              </Btn>
+            </div>
+          </div>
+        )}
         {completionError && (
           <div className="mt-5 rounded-lg border border-danger/20 bg-danger/10 p-3 text-sm text-danger" role="alert">
             {errorMessage(completionError, 'Could not save onboarding state.')}

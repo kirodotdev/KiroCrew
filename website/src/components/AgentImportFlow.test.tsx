@@ -72,10 +72,25 @@ const SCAN_RESPONSE: AgentImportScanResponse = {
 
 const APPLY_RESPONSE: AgentImportApplyResponse = {
   ok: true,
+  conflict_strategy: 'skip',
   summary: {
     imported: 10,
     deduplicated: 1,
     skipped: 2,
+    conflicts: 0,
+    resolvable_conflicts: 0,
+  },
+}
+
+const CONFLICTED_APPLY_RESPONSE: AgentImportApplyResponse = {
+  ok: true,
+  conflict_strategy: 'skip',
+  summary: {
+    imported: 0,
+    deduplicated: 0,
+    skipped: 2,
+    conflicts: 2,
+    resolvable_conflicts: 2,
   },
 }
 
@@ -166,7 +181,9 @@ describe('AgentImportFlow', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: /Workspaces.*6/ }))
     await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
-    expect(screen.getByText(/existing KiroCrew setup is never overwritten/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/existing Kiro Crew setup is never overwritten by default/i),
+    ).toBeInTheDocument()
     expect(screen.getByText(/matching items are deduplicated/i)).toBeInTheDocument()
     expect(screen.getByText(/Secrets are never imported/i)).toBeInTheDocument()
     expect(screen.getByText(/Unsupported category/i)).toBeInTheDocument()
@@ -178,6 +195,9 @@ describe('AgentImportFlow', () => {
           { id: 'claude_code', categories: ['skills'] },
           { id: 'meshclaw', categories: ['skills'] },
         ],
+        // The first apply is always the non-destructive strategy; rename and
+        // overwrite require an explicit click on the conflict notice.
+        conflict_strategy: 'skip',
       })
     })
   })
@@ -329,5 +349,48 @@ describe('AgentImportFlow', () => {
     )
     expect(screen.getByRole('dialog', { name: 'Import agent setup' })).toBeInTheDocument()
     expect(onComplete).not.toHaveBeenCalled()
+  })
+
+  it('offers a resolution when items conflict, and does not by default', async () => {
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportApply).mockResolvedValue(CONFLICTED_APPLY_RESPONSE)
+
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await startImport()
+    await screen.findByText('Import complete')
+
+    // The user is told nothing changed, and given both ways out.
+    await screen.findByText('2 items already exist with different content.')
+    const keepBoth = screen.getByRole('button', { name: 'Keep both' })
+    expect(screen.getByRole('button', { name: 'Replace mine' })).toBeInTheDocument()
+
+    await userEvent.click(keepBoth)
+
+    // The retry re-sends the SAME selection with the chosen strategy. It must be
+    // the FIRST call after the click: passing the strategy through the mutation
+    // (rather than relying on a re-render landing first) is what stops the click
+    // from repeating the unresolved 'skip' import.
+    await waitFor(() => {
+      expect(api.onboardingImportApply).toHaveBeenCalledTimes(2)
+    })
+    expect(api.onboardingImportApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({ conflict_strategy: 'rename' }),
+    )
+    expect(
+      vi.mocked(api.onboardingImportApply).mock.calls.filter(
+        ([body]) => body?.conflict_strategy === 'skip',
+      ),
+    ).toHaveLength(1)
+  })
+
+  it('shows no conflict resolution when nothing conflicted', async () => {
+    mockSuccessfulRequests()
+
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await startImport()
+    await screen.findByText('Import complete')
+
+    expect(screen.queryByRole('button', { name: 'Keep both' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Replace mine' })).not.toBeInTheDocument()
   })
 })

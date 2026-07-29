@@ -715,18 +715,27 @@ export interface AgentImportSelection {
   categories: string[]
 }
 
+/** Skip keeps KiroCrew's item; rename installs alongside; overwrite replaces it
+ *  after the backend writes a restore copy. Omitting the field means 'skip'. */
+export type AgentImportConflictStrategy = 'skip' | 'rename' | 'overwrite'
+
 export interface AgentImportApplyRequest {
   sources: AgentImportSelection[]
+  conflict_strategy?: AgentImportConflictStrategy
 }
 
 export interface AgentImportSummary {
   imported: number
   deduplicated: number
   skipped: number
+  conflicts: number
+  /** How many of `conflicts` a retry with rename/overwrite could clear. */
+  resolvable_conflicts: number
 }
 
 export interface AgentImportApplyResponse {
   ok: true
+  conflict_strategy: AgentImportConflictStrategy
   summary: AgentImportSummary
 }
 

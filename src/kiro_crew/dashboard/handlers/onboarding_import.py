@@ -26,7 +26,7 @@ _SOURCE_IDS = frozenset(
 )
 _CATEGORY_IDS = frozenset(
     {
-        "sessions",
+        "instructions",
         "memories",
         "workspaces",
         "mcp_servers",
@@ -43,7 +43,6 @@ _SOURCE_NAMES = {
     "hermes": "Hermes Agent",
 }
 _CATEGORY_NAMES = {
-    "sessions": "Sessions",
     "memories": "Memories",
     "workspaces": "Workspaces",
     "mcp_servers": "MCP servers",
@@ -55,9 +54,10 @@ _CATEGORY_NAMES = {
     "instructions": "Instructions",
     "credentials": "Credentials",
     "runtime": "Runtime state",
+    "sessions": "Conversation history",
 }
 _CATEGORY_DESCRIPTIONS = {
-    "sessions": "Visible user and assistant messages",
+    "instructions": "Your own rules, as high-priority memory",
     "memories": "Durable preferences and memories",
     "workspaces": "Existing local project folders",
     "mcp_servers": "Server definitions, imported disabled",
@@ -65,6 +65,7 @@ _CATEGORY_DESCRIPTIONS = {
     "schedules": "Compatible schedules, imported paused",
     "settings": "Compatible display and timezone settings",
 }
+_CONFLICT_STRATEGIES = frozenset({"skip", "rename", "overwrite"})
 _ITEM_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _ITEM_OUTCOMES = frozenset({"accepted", "deduplicated", "rejected"})
 _IMPORT_LOCK = asyncio.Lock()
@@ -123,6 +124,27 @@ def _caller(request: web.Request, operation: str) -> tuple[str | None, web.Respo
         )
         return None, web.json_response({"error": "authentication required"}, status=401)
     return str(request["user"]), None
+
+
+def _parse_conflict_strategy(body: object) -> str:
+    """Read the requested strategy, rejecting anything unrecognized.
+
+    Absent means ``skip`` (the safe default), but a PRESENT-but-unknown value is
+    a hard 400: silently downgrading "overwrite" to "skip" would tell the client
+    its destructive request succeeded when nothing was replaced.
+    """
+
+    if not isinstance(body, dict):
+        raise _InvalidSelection
+    # ABSENT means the safe default. A PRESENT null is a malformed value like any
+    # other and must 400 -- silently defaulting it contradicts the documented
+    # contract and would tell a client its request was understood.
+    if "conflict_strategy" not in body:
+        return "skip"
+    raw = body["conflict_strategy"]
+    if not isinstance(raw, str) or raw not in _CONFLICT_STRATEGIES:
+        raise _InvalidSelection
+    return raw
 
 
 def _parse_selection(body: object) -> tuple[list[str], set[tuple[str, str]]]:
@@ -320,8 +342,16 @@ def _apply_response(result: object) -> dict[str, Any]:
     if not isinstance(skipped, list) or not isinstance(conflicts, list):
         raise RuntimeError("invalid import result")
 
+    # A conflict the user can act on (rename/overwrite) vs one they cannot.
+    # Counts only — never the restore/rename PATHS: those are filesystem details
+    # and this response crosses into the browser.
+    resolvable = sum(
+        1 for entry in conflicts if isinstance(entry, dict) and entry.get("resolvable")
+    )
+    strategy = result.get("conflict_strategy")
     return {
         "ok": True,
+        "conflict_strategy": strategy if isinstance(strategy, str) else "skip",
         "summary": {
             "imported": _nonnegative_count(imported_count),
             "deduplicated": _nonnegative_count(
@@ -333,6 +363,9 @@ def _apply_response(result: object) -> dict[str, Any]:
                 + len(conflicts)
                 + _nonnegative_count(result.get("secret_count"), default=0)
             ),
+            "conflicts": len(conflicts),
+            # How many of those a retry with rename/overwrite could clear.
+            "resolvable_conflicts": resolvable,
         },
     }
 
@@ -340,9 +373,10 @@ def _apply_response(result: object) -> dict[str, Any]:
 def _apply_import(
     source_ids: list[str],
     selected: set[tuple[str, str]],
-    conversation_log: object | None,
     cron_service: object | None,
     vector_store: object | None,
+    lesson_store: object | None,
+    conflict_strategy: str,
 ) -> object:
     backend = _backend()
     plan = _select_fresh_plan(
@@ -351,14 +385,19 @@ def _apply_import(
     )
     return backend.apply_import(
         plan,
-        conversation_log=conversation_log,
         cron_service=cron_service,
         vector_store=vector_store,
+        lesson_store=lesson_store,
+        conflict_strategy=conflict_strategy,
     )
 
 
-def _merge_import_results(results: list[object]) -> dict[str, Any]:
+def _merge_import_results(
+    results: list[object],
+    conflict_strategy: str = "skip",
+) -> dict[str, Any]:
     merged: dict[str, Any] = {
+        "conflict_strategy": conflict_strategy,
         "imported": {},
         "imported_count": 0,
         "already_imported": 0,
@@ -479,13 +518,14 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
     try:
         body = await request.json()
         source_ids, selected = _parse_selection(body)
+        conflict_strategy = _parse_conflict_strategy(body)
     except (ValueError, TypeError):
         _audit(caller=caller, operation=operation, outcome="failed", error="invalid_request")
         return web.json_response({"error": "invalid request"}, status=400)
 
     state = request.app.get("state")
-    conversation_log = getattr(state, "conversation_log", None)
     cron_service = getattr(state, "crons", None)
+    lesson_store = getattr(state, "lessons", None)
     vector_store = getattr(state, "vector_memory", None)
     if vector_store is None:
         context_builder = getattr(state, "context_builder", None)
@@ -503,9 +543,10 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
                             _apply_import,
                             source_ids,
                             config_selected,
-                            conversation_log,
                             cron_service,
                             vector_store,
+                            lesson_store,
+                            conflict_strategy,
                         )
                     )
             if mcp_selected:
@@ -516,13 +557,14 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
                         _apply_import,
                         source_ids,
                         mcp_selected,
-                        conversation_log,
                         cron_service,
                         vector_store,
+                        lesson_store,
+                        conflict_strategy,
                     )
                 )
                 await asyncio.to_thread(_rebuild_agent_config)
-            result = _merge_import_results(results)
+            result = _merge_import_results(results, conflict_strategy)
             response = web.json_response(_apply_response(result))
     except _InvalidSelection:
         _audit(caller=caller, operation=operation, outcome="failed", error="invalid_request")

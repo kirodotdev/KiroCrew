@@ -1,6 +1,6 @@
 # Memory, Skills & Hooks Modules
 
-Last Updated: 2026-07-26 (foreign-agent import boundaries for memories/preferences, MCP servers, user-authored skills, and hooks. Prior — 2026-07-19 in-process embeddings: always-on with no disable path, non-blocking background model load, download robustness — daemon-thread HTTPS download, Ollama-blob salvage, retry ladder — and the `EmbeddingBackend` swap seam; skills lazy-load usage-ranked top-K + skill_search + SkillUsageLedger, /api/skills discovery_executor offload)
+Last Updated: 2026-07-28 (foreign-agent instruction/persona-directive text is rewritten into the durable memory tiers — directives to `lessons.jsonl`, narrative knowledge to episodic memory — and import may never write the consolidator-replaced `preferences.md`/`projects.md`; full contract in `docs/system-specs/modules/onboarding-import.md`. Prior — 2026-07-26 foreign-agent import boundaries for memories/preferences, MCP servers, user-authored skills, and hooks. Prior — 2026-07-19 in-process embeddings: always-on with no disable path, non-blocking background model load, download robustness — daemon-thread HTTPS download, Ollama-blob salvage, retry ladder — and the `EmbeddingBackend` swap seam; skills lazy-load usage-ranked top-K + skill_search + SkillUsageLedger, /api/skills discovery_executor offload)
 
 ## Overview
 
@@ -229,6 +229,11 @@ The model download requires only outbound HTTPS (no git/git-lfs) on all platform
 
 ### Foreign-agent memory import
 
+The full import contract — scope, destination mapping, dry run, conflict
+strategies, and per-source assumptions — lives in
+`docs/system-specs/modules/onboarding-import.md`. This section covers only the
+memory-side invariants the destination writers enforce.
+
 The selectable `memories` category covers durable memories and preferences from
 supported foreign agents. It is not a raw file-copy path. Imported values pass
 through the same KiroCrew memory writers, key allowlists, per-entry size/count
@@ -246,10 +251,26 @@ SQLite immediate transaction, so separate store instances cannot both claim the
 last slot. Exact-text classification goes through the store's lock-safe lookup
 instead of reading its shared connection from the importer.
 
-The importer cannot turn a foreign system prompt, raw instruction, persona,
-tool transcript, credential, or runtime record into memory. Items that cannot
-be represented within the destination writers and limits are reported as
-unsupported or skipped rather than copied around those writers.
+The importer cannot turn a foreign system prompt, tool transcript, credential, or
+runtime record into memory. Items that cannot be represented within the
+destination writers and limits are reported as unsupported or skipped rather than
+copied around those writers.
+
+User-authored **instruction** documents (`CLAUDE.md`, `AGENTS.md`,
+`~/.claude/rules/*.md`, a workspace's own `CLAUDE.md`) and the directive body of
+a **persona** document (`SOUL.md`) ARE in scope, and are rewritten into
+KiroCrew's own tiers by the `instructions` category: each directive paragraph
+becomes a `Lesson(category="preference")` in `lessons.jsonl` — the highest-priority
+durable tier — while narrative knowledge continues to go to episodic memory via
+the `memories` category. Import contributes at most 50 lessons
+(`_MAX_IMPORTED_LESSONS`) because `LessonStore` prunes oldest-first at 200; an
+unbounded import would silently evict the user's own accumulated corrections. What is excluded
+is the persona *role*: a foreign persona document never becomes KiroCrew's
+persona (that surface is theme-pack persona, gated by
+`capabilities.theme_persona`), and no foreign text is injected as system-prompt
+identity. Import MUST NOT write `preferences.md` or `projects.md` — the
+consolidator replaces both wholesale, so an import there is silently destroyed.
+See `onboarding-import.md` → "Destination mapping".
 
 Markdown and supported database memory values are injection-screened before they
 become selectable, then screened again by the destination writer. When an

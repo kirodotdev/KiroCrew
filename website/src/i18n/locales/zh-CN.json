@@ -743,12 +743,12 @@
     "agentImportFlow": {
       "back": "上一步",
       "bring_your_crew_with_you": "带上你的团队一起走。",
-      "bring_your_supported_setup_sessions_memories_wor": "将你支持的配置—会话、记忆、工作区、MCP 服务器、\n                技能、日程和安全设置—迁入 Kiro Crew。",
+      "bring_your_supported_setup_sessions_memories_wor": "把你支持迁移的设置——指令、记忆、工作区、MCP 服务器、技能、定时任务和安全设置——带入 Kiro Crew。",
       "checking_supported_tools_on_this_gateway_host": "正在检查此网关主机上支持的工具。",
       "continue": "继续",
-      "credentials_remain_with_their_source_rules_hooks": "凭证仍保留在原来源。规则、钩子、代理或人设，以及\n              原始指令暂不支持，将保持不变。",
+      "credentials_remain_with_their_source_rules_hooks": "凭证保留在原处。对话历史、钩子、agent 定义以及来源的人格身份不会被导入。你自己编写的规则和指令会作为高优先级记忆导入。",
       "deduplicated": "已去重",
-      "existing_kirocrew_setup_is_never_overwritten_mat": "现有的 KiroCrew 配置绝不会被覆盖。匹配的项目会去重，\n              冲突时保留当前的 KiroCrew 版本。",
+      "existing_kirocrew_setup_is_never_overwritten_mat": "默认不会覆盖已有的 Kiro Crew 设置。相同的条目会去重；冲突的条目会保留你当前的版本，除非你在导入后另行选择。",
       "found": "已找到",
       "import_agent_setup": "导入代理配置",
       "import_another": "导入其他",
@@ -757,7 +757,7 @@
       "importing": "正在导入",
       "items_selected": "已选项目",
       "kiro_crew": "Kiro Crew",
-      "kirocrew_did_not_find_supported_setup_to_import": "KiroCrew 未在此网关主机上找到可导入的受支持配置。",
+      "kirocrew_did_not_find_supported_setup_to_import": "Kiro Crew 未在此网关主机上找到可导入的受支持设置。",
       "merge_only": "仅合并",
       "merge_only_setup_credentials_stay_where_they_are": "仅合并配置 · 凭证保持原处不动",
       "no_supported_setup_found": "未找到受支持的配置",
@@ -770,7 +770,12 @@
       "skipped": "已跳过",
       "try_again": "重试",
       "we_could_not_scan_agent_setup": "我们无法扫描代理配置",
-      "your_existing_kirocrew_setup_will_not_be_affecte": "你现有的 KiroCrew 配置不会受到影响。"
+      "your_existing_kirocrew_setup_will_not_be_affecte": "你已有的 Kiro Crew 设置不会受到影响。",
+      "keep_both": "两者都保留",
+      "replace_mine": "替换我的",
+      "nothing_was_changed_import_the_new_copy_alongsid": "未做任何更改。你可以在保留自己版本的同时导入新副本，或替换自己的版本（网关上会保留一份可恢复的副本）。",
+      "one_item_already_exists_with_different_content": "有 1 个条目已存在且内容不同。",
+      "items_already_exist_with_different_content": "个条目已存在且内容不同。"
     },
     "agentSelector": {
       "agent_list": "代理列表",
