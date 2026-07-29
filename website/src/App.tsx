@@ -18,6 +18,7 @@ import { useTheme } from './hooks/useTheme'
 import { useBranding } from './hooks/useBranding'
 import { useRumPageView } from './hooks/useRumPageView'
 import { useIsMobile } from './hooks/useIsMobile'
+import { setRailWidth, railWidthFor } from './hooks/useRailWidth'
 import { useNativeNotification } from './hooks/useNativeNotification'
 import { useNotificationSound } from './hooks/useNotificationSound'
 import { recordSessionStart, recordEvent } from './rum'
@@ -1359,6 +1360,13 @@ export default function App() {
   // Reset mobile nav state when leaving mobile viewport
   useEffect(() => { if (!isMobile) setMobileNavOpen(false) }, [isMobile])
   const effectiveCollapsed = (navCollapsed || previewFocused) && !isMobile
+  // Publish the rail track so consumers outside the shell can size against the
+  // space actually left for content — ChatPage's activity panel decides
+  // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value
+  // below; railWidthFor is the single source for both.
+  useEffect(() => {
+    setRailWidth(railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
+  }, [isMobile, effectiveCollapsed])
   const topbarBrandRef = useRef<HTMLDivElement>(null)
   const topbarActionsRef = useRef<HTMLDivElement>(null)
   const [topbarSearchLayout, setTopbarSearchLayout] = useState({ gutter: 360, visible: true })
@@ -1451,7 +1459,7 @@ export default function App() {
       style={{
         gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar topbar" "nav content actbar"',
         ...(!isMobile && {
-          gridTemplateColumns: `${effectiveCollapsed ? 74 : 236}px minmax(0,1fr) auto`,
+          gridTemplateColumns: `${railWidthFor({ isMobile, collapsed: effectiveCollapsed })}px minmax(0,1fr) auto`,
           // Transition fires only when the template string itself changes (the
           // collapse toggle) — content-driven resizes of the auto track (e.g.
           // the Activity panel opening) don't alter the value, so keeping this

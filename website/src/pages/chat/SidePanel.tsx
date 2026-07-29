@@ -72,6 +72,12 @@ interface SidePanelProps {
   /** Preview "focus" mode: when true the panel takes its maximum width (chat
    *  shrinks to its minimum), driven by the Web Preview tab's expand toggle. */
   expanded?: boolean
+  /** FILL mode (set by ChatPage): an explicit px width covering the whole chat
+   *  column, used when the space left after the nav rail and session sidebar
+   *  cannot seat the panel BESIDE a usable chat pane. Overrides the responsive
+   *  clamp and the user's persisted width, and retires the resize handle —
+   *  there is nothing to resize against. Undefined = beside mode. */
+  fillWidth?: number
 }
 
 /**
@@ -102,6 +108,33 @@ export const SIDE_PANEL_RESERVED_W = 560
  * started shrinking. Returns the larger of the two constraints; falls back
  * to the static reserve when there's no header (embed/popout frames).
  */
+/** Usable minimum for the chat pane itself, beside the panel. */
+export const CHAT_PANE_MIN_W = 320
+
+/**
+ * Decide the panel's mode from the width left for the CHAT, not from the
+ * viewport: subtract the shell's hideable chrome (nav rail track, session
+ * sidebar) and ask whether the remainder seats the panel at SIDE_PANEL_MIN_W
+ * beside a CHAT_PANE_MIN_W chat pane.
+ *
+ * Returns `undefined` for BESIDE mode, or the px width the panel should take to
+ * FILL the chat column. Mobile always fills (its viewport cannot seat both, and
+ * its sidebar is a fixed-position drawer that consumes no row width).
+ *
+ * Pure and loop-free on purpose: every input is a shell-level fact that does
+ * NOT change when the panel opens. Feeding it the chat container's painted
+ * width instead would oscillate, since opening the panel shrinks that width.
+ */
+export function sidePanelFillWidth(
+  { winW, railW, sidebarW, isMobile }:
+  { winW: number; railW: number; sidebarW: number; isMobile: boolean },
+): number | undefined {
+  if (isMobile) return Math.max(SIDE_PANEL_MIN_W, winW)
+  const chatAvail = winW - railW - sidebarW
+  if (chatAvail >= SIDE_PANEL_MIN_W + CHAT_PANE_MIN_W) return undefined
+  return Math.max(SIDE_PANEL_MIN_W, chatAvail)
+}
+
 export function measureSidePanelReservedW(): number {
   const header = document.querySelector('header.topbar-glass')
   if (!header) return SIDE_PANEL_RESERVED_W
@@ -119,7 +152,7 @@ export default function SidePanel({
   tabsCtl, subagents, toolLog, slot, files, onFileOpen, onFileRemove, onFilesClear,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
-  inlinePreviewPath, onInlinePreviewChange, expanded,
+  inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth,
 }: SidePanelProps) {
   const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
   const terminalEnabled = useTerminalEnabled()
@@ -223,7 +256,11 @@ export default function SidePanel({
       .forEach(c => ro.observe(c))
     return () => { window.removeEventListener('resize', recalc); ro.disconnect() }
   }, [])
-  const effectiveWidth = isMobile ? '100%' : (expanded ? Math.max(MIN_W, maxW) : Math.max(MIN_W, Math.min(width, maxW)))
+  const effectiveWidth = isMobile
+    ? '100%'
+    : fillWidth != null
+      ? fillWidth
+      : (expanded ? Math.max(MIN_W, maxW) : Math.max(MIN_W, Math.min(width, maxW)))
   // While the user drags the resize handle, every mousemove shifts the whole
   // panel's viewport position (the handle is on the LEFT edge; the right edge
   // is pinned to the window). Framer's layout projection on each Reorder.Item
@@ -253,9 +290,9 @@ export default function SidePanel({
   return (
     <div className="shrink-0 min-h-0 my-2 flex flex-col bg-bg overflow-hidden relative border-l border-t border-b border-border rounded-l-xl" style={{ width: effectiveWidth, maxWidth: '100vw' }}>
       {/* Left-edge resize handle */}
-      <div role="separator" aria-orientation="vertical" aria-label={i18nT('pages.chat.sidePanel.resize_panel')} className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResize}>
+      {fillWidth == null && <div role="separator" aria-orientation="vertical" aria-label={i18nT('pages.chat.sidePanel.resize_panel')} className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResize}>
         <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
-      </div>
+      </div>}
       {/* Tab strip — drag chips horizontally to reorder (framer Reorder).
           Per Figma "left-nav" (7328:10637): the row is a rounded elevated card
           (bg-elevated, 12px radius, 8px padding) floating above the content,

@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useNavigationType, useSearchParams } from 're
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 import { modelListRefetchInterval } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { useSwipeEdge } from '../hooks/useSwipeEdge'
@@ -103,7 +104,7 @@ import TypewriterText from '../components/TypewriterText'
 import { useChatNavigation } from '../hooks/useChatNavigation'
 import SubagentProgressBar from './chat/SubagentProgressBar'
 import TaskProgressBar from './chat/TaskProgressBar'
-import SidePanel, { SIDE_PANEL_MIN_W, measureSidePanelReservedW } from './chat/SidePanel'
+import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
 import { setSessionPreviewPending, normalizeUrl, PREVIEW_FOCUS_EVENT, PREVIEW_SNIP_EVENT, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
 import { fileLandingSlot } from '../utils/uploadRouting'
@@ -2992,38 +2993,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
 
   const lastRole = messages[messages.length - 1]?.role ?? ''
   // Precompute: index of last finalized assistant message (tools after this are "trailing")
-  // Auto-collapse the activity panel when the window shrinks past the point
-  // where its minimum width still fits beside the chat's reserved minimum;
-  // reopen automatically when space returns. Crossing-based (compares against
-  // the previous window width) so a deliberate manual open on an
-  // already-narrow window is respected rather than instantly fought.
-  const autoCollapsedRef = useRef(false)
-  const activityOpenRef = useRef(activityOpen); activityOpenRef.current = activityOpen
+  // The activity panel has exactly two modes, and the question that picks one
+  // is NOT "how wide is the window" — it is "how much width is left for the
+  // chat". Subtract the shell's nav rail and the session sidebar (both of which
+  // the user can hide) from the viewport: if what remains still seats the panel
+  // at its minimum PLUS a usable chat pane, the panel sits BESIDE the chat.
+  // Otherwise it FILLS the chat column, with the sidebar and rail untouched.
+  //
+  // Consequences worth stating:
+  //  - Hiding the rail (162px) or the sidebar (~260px) can promote fill -> beside
+  //    at a viewport width that could not seat both a moment earlier.
+  //  - Mobile needs no special case: rail 0 + sidebar 0 (its drawer is fixed,
+  //    not a flex sibling) always lands under the threshold. isMobile is still
+  //    forced to fill so a 700px phone-class viewport cannot go beside.
+  //  - The measurement is loop-free ON PURPOSE. It reads the rail TRACK and the
+  //    sidebar's own state, never the chat container's painted width — that
+  //    shrinks when the panel opens, which would oscillate beside <-> fill.
+  const railWidth = useRailWidth()
+  const [winW, setWinW] = useState(() => window.innerWidth)
   useEffect(() => {
-    if (isMobile || embedMode) return
-    let lastW = window.innerWidth
-    const onResize = () => {
-      // Live threshold: the reserve includes the header row's content need
-      // (wide readout capsule etc.), so it's re-measured per event rather
-      // than fixed at the static constant.
-      const THRESHOLD = SIDE_PANEL_MIN_W + measureSidePanelReservedW()
-      const w = window.innerWidth
-      const crossedBelow = lastW >= THRESHOLD && w < THRESHOLD
-      const crossedAbove = lastW < THRESHOLD + 40 && w >= THRESHOLD + 40 // small hysteresis
-      lastW = w
-      if (crossedBelow && activityOpenRef.current) {
-        autoCollapsedRef.current = true
-        dispatch(toggleActivity())
-      } else if (crossedAbove && autoCollapsedRef.current && !activityOpenRef.current) {
-        autoCollapsedRef.current = false
-        dispatch(openActivityPanel())
-      }
-    }
+    const onResize = () => setWinW(window.innerWidth)
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [isMobile, embedMode, dispatch])
+  }, [])
   const toggleAct = useCallback(() => {
-    autoCollapsedRef.current = false
     // Opening with no tabs shows the empty-state launcher grid (no seeded
     // default view) -- the user picks what to open.
     dispatch(toggleActivity())
@@ -3035,21 +3028,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     window.addEventListener('toggle-activity-panel', h)
     return () => window.removeEventListener('toggle-activity-panel', h)
   }, [toggleAct])
-  // Whether the window has room for the activity panel beside the chat's
-  // reserved minimum. When it doesn't (the panel would be force-collapsed
-  // anyway) the session-header activity toggle is disabled. Mirrors the
-  // crossing-based threshold used by the auto-collapse effect above.
-  const [actSpace, setActSpace] = useState(true)
-  useEffect(() => {
-    const check = () => setActSpace(window.innerWidth >= SIDE_PANEL_MIN_W + measureSidePanelReservedW())
-    check()
-    window.addEventListener('resize', check)
-    return () => window.removeEventListener('resize', check)
-  }, [])
-  // On mobile the panel is full-width (SidePanel: effectiveWidth = '100%') and
-  // is rendered inline rather than in the actbar grid column, so "does it fit
-  // beside the chat" is the wrong question — the toggle stays enabled.
-  const actEnabled = isMobile || actSpace
   // Bridge explicit view requests (e.g. the /side slash command dispatches
   // openActivityToTab('side')) into the tab model.
   const activityTab = useAppSelector(s => s.chat.activityTab)
@@ -3633,8 +3611,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // past its flex row and collapses the chat pane: the open sidebar's width
   // plus a usable chat-pane minimum. On mobile the panel is full-screen (no
   // shared row), so no reserve applies.
-  const CHAT_PANE_MIN = 320
+  const CHAT_PANE_MIN = CHAT_PANE_MIN_W
   const panelReserve = isMobile ? undefined : (sidebarOpen ? sidebarWidth : 0) + CHAT_PANE_MIN
+
+  // FILL vs BESIDE for the activity panel, decided from the width left for the
+  // CHAT once the shell's hideable chrome is subtracted — the nav rail track and
+  // the session sidebar (a shrink-0 flex sibling of exactly sidebarWidth; on
+  // mobile its drawer is fixed-position and consumes no row width). Undefined =
+  // beside. A px width = fill the chat column, squeezing the chat pane to zero
+  // while the rail and sidebar stay exactly where they are.
+  //
+  // The panel's render PATH is unchanged either way, so crossing the threshold
+  // never remounts it (no terminal re-attach, no Virtuoso churn) — only its
+  // width changes. See sidePanelFillWidth for why this is loop-free.
+  const panelFillWidth = sidePanelFillWidth({
+    winW,
+    railW: railWidth,
+    sidebarW: !isMobile && sidebarOpen ? sidebarWidth : 0,
+    isMobile,
+  })
 
   return (
     <TagPopoverProvider>
@@ -3845,17 +3840,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               {/* Activity panel open toggle — relocated here from the top bar
                   (item 2.4) so opening the panel no longer narrows the now
                   full-width header. Shown only while the panel is closed; the
-                  panel's own header carries the close button. On desktop it is
-                  disabled when the window is too narrow (the panel would be
-                  force-collapsed); on mobile the panel takes the full width
-                  instead of sitting beside the chat, so the fits-beside test
-                  (actSpace) does not apply and the button is always live. */}
+                  panel's own header carries the close button. Never disabled:
+                  below the mobile breakpoint the panel opens full width, at or
+                  above it opens beside the chat. There is no width at which
+                  the button does nothing. */}
               {!embedMode && !popout && !activityOpen && (
                 <Clickable
-                  className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto ${actEnabled ? 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer' : 'text-muted opacity-40 !cursor-not-allowed'}`}
-                  onClick={() => { if (actEnabled) toggleAct() }}
-                  title={actEnabled ? 'Open activity panel' : 'Window too narrow for the activity panel'}
-                  aria-label={actEnabled ? 'Open activity panel' : 'Window too narrow for the activity panel'}
+                  className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                  onClick={toggleAct}
+                  title="Open activity panel"
+                  aria-label="Open activity panel"
                 >
                   <PanelRight size={15} />
                 </Clickable>
@@ -4393,6 +4387,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
               inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
               expanded={previewFocused}
+              fillWidth={panelFillWidth}
             />
           </motion.div>
         )}
@@ -4424,6 +4419,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
                 inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
                 expanded={previewFocused}
+                fillWidth={panelFillWidth}
               />
             </motion.div>
           )}

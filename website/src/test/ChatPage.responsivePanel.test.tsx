@@ -39,10 +39,19 @@ vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentW
 // SidePanel: stub the component (pulls in xterm etc.) but keep the space
 // contract deterministic: threshold = 320 + 560 = 880, reopen at 920.
 vi.mock('../pages/chat/SidePanel', () => ({
-  default: () => <div data-testid="side-panel" />,
+  default: ({ fillWidth }: { fillWidth?: number }) => (
+    <div data-testid="side-panel" data-fill-width={fillWidth ?? ''} />
+  ),
   SIDE_PANEL_MIN_W: 320,
   SIDE_PANEL_RESERVED_W: 560,
+  CHAT_PANE_MIN_W: 320,
   measureSidePanelReservedW: () => 560,
+  // Real arithmetic (the gate under test lives here); only the component is stubbed.
+  sidePanelFillWidth: ({ winW, railW, sidebarW, isMobile }: { winW: number; railW: number; sidebarW: number; isMobile: boolean }) => {
+    if (isMobile) return Math.max(320, winW)
+    const avail = winW - railW - sidebarW
+    return avail >= 640 ? undefined : Math.max(320, avail)
+  },
 }))
 
 // --- Stub hooks ---
@@ -150,61 +159,39 @@ describe('ChatPage — pull request panel discovery', () => {
   })
 })
 
-describe('ChatPage — responsive activity panel auto-collapse', () => {
+describe('ChatPage — activity panel open state is resize-independent', () => {
   beforeEach(() => setWindowWidth(1400))
   afterEach(() => {
     document.getElementById('activity-bar-slot')?.remove()
   })
 
-  it('auto-collapses when the window crosses below the space threshold (880)', () => {
+  it('stays open when the window shrinks below the old 880 space threshold', () => {
     const { store } = renderChat()
     act(() => { store.dispatch(toggleActivity()) })
     expect(store.getState().chat.activityOpen).toBe(true)
 
-    resizeTo(850) // crosses 1400 -> 850, below 880
-    expect(store.getState().chat.activityOpen).toBe(false)
-  })
-
-  it('auto-reopens when space returns past the hysteresis point (920), only after an auto-collapse', () => {
-    const { store } = renderChat()
-    act(() => { store.dispatch(toggleActivity()) })
-    resizeTo(850)
-    expect(store.getState().chat.activityOpen).toBe(false)
-
-    // Not enough clearance yet (below threshold+40): stays closed.
-    resizeTo(900)
-    expect(store.getState().chat.activityOpen).toBe(false)
-
-    // Crosses 920: reopens because the collapse was automatic.
-    resizeTo(1000)
+    resizeTo(850) // used to auto-collapse here
+    expect(store.getState().chat.activityOpen).toBe(true)
+    resizeTo(700) // and again below the mobile breakpoint
     expect(store.getState().chat.activityOpen).toBe(true)
   })
 
-  it('does NOT auto-reopen a panel the user closed manually', () => {
+  it('does not auto-reopen when space returns', () => {
     const { store } = renderChat()
-    act(() => { store.dispatch(toggleActivity()) })
-    // Manual close via the header/panel toggle event.
-    act(() => { window.dispatchEvent(new CustomEvent('toggle-activity-panel')) })
+    resizeTo(850)
     expect(store.getState().chat.activityOpen).toBe(false)
 
-    resizeTo(850)
     resizeTo(1000)
     expect(store.getState().chat.activityOpen).toBe(false)
   })
 
-  it('a manual open+close after an auto-collapse cancels the pending auto-reopen', () => {
+  it('does not undo a manual close on a later resize', () => {
     const { store } = renderChat()
     act(() => { store.dispatch(toggleActivity()) })
-    resizeTo(850) // auto-collapse: pending reopen armed
-    expect(store.getState().chat.activityOpen).toBe(false)
-
-    // User manually opens then closes on the narrow window.
-    act(() => { window.dispatchEvent(new CustomEvent('toggle-activity-panel')) })
-    expect(store.getState().chat.activityOpen).toBe(true)
     act(() => { window.dispatchEvent(new CustomEvent('toggle-activity-panel')) })
     expect(store.getState().chat.activityOpen).toBe(false)
 
-    // Widening must respect the explicit close — no surprise reopen.
+    resizeTo(850)
     resizeTo(1000)
     expect(store.getState().chat.activityOpen).toBe(false)
   })
@@ -279,11 +266,49 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     expect(store.getState().chat.activityOpen).toBe(true)
   })
 
-  it('disables the toggle with an explanatory label when the window is too narrow', async () => {
+  it('stays live in the 768-880 band that used to disable it, and opens beside the chat', async () => {
+    const { store } = renderWithSlot()
+    await screen.findByLabelText('Open activity panel')
+    resizeTo(800) // below the old 880 space threshold (320 + 560), above mobile (768)
+
+    const btn = await screen.findByLabelText('Open activity panel')
+    expect(screen.queryByLabelText('Window too narrow for the activity panel')).not.toBeInTheDocument()
+    fireEvent.click(btn)
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  it('stays live at 768 exactly (tablet portrait)', async () => {
     renderWithSlot()
     await screen.findByLabelText('Open activity panel')
-    resizeTo(800) // below the 880 space threshold (320 + 560)
-    expect(await screen.findByLabelText('Window too narrow for the activity panel')).toBeInTheDocument()
+    resizeTo(768)
+    expect(await screen.findByLabelText('Open activity panel')).toBeInTheDocument()
+  })
+
+  it('opens BESIDE the chat on a wide window (no fill width)', async () => {
+    // 1400 - rail 236 - sidebar 260 = 904 >= 640
+    renderWithSlot()
+    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '')
+  })
+
+  it('opens FILLING the chat column when the rail + sidebar leave too little', async () => {
+    renderWithSlot()
+    resizeTo(800) // 800 - 236 - 260 = 304 < 640
+    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '320')
+  })
+
+  it('switches an already-open panel from beside to fill on resize, without remounting it', async () => {
+    renderWithSlot()
+    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    const before = await screen.findByTestId('side-panel')
+    expect(before).toHaveAttribute('data-fill-width', '')
+
+    resizeTo(800)
+    const after = await screen.findByTestId('side-panel')
+    expect(after).toHaveAttribute('data-fill-width', '320')
+    // Same DOM node: the mode change must not tear the panel down (live PTYs).
+    expect(after).toBe(before)
   })
 })
 
@@ -291,8 +316,7 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
  * Mobile regression: the toggle used to be gated on `!isMobile`, so a phone had
  * NO way to open the activity panel even though SidePanel already renders
  * full-width there and ChatPage keeps an inline (non-portal) render path
- * specifically for mobile. The `actSpace` "does it fit beside the chat" test is
- * also meaningless at full width, so it must not disable the button on mobile.
+ * specifically for mobile.
  */
 describe('ChatPage — activity toggle on mobile', () => {
   beforeEach(() => { mockIsMobile = true; setWindowWidth(390); localStorage.clear() })
