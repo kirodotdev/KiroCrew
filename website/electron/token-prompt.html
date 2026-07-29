@@ -44,12 +44,40 @@
   <div class="container">
     <div class="logo">👻</div>
     <h2>Token Required</h2>
-    <p>Run <code>kirocrew token</code> on your dev desktop, then paste the URL below.</p>
+    <p id="why"></p>
     <input id="url" type="text" placeholder="Paste token URL or raw token…" autofocus>
     <button onclick="go()">Connect</button>
     <div class="error" id="err">Invalid URL — must be http://localhost with a ?token= parameter</div>
   </div>
   <script>
+    // WHICH machine to act on depends on who holds the port. main.js probes the
+    // listening socket and passes the verdict in as ?kind=. Three cases, not
+    // two: on a platform without lsof the probe cannot determine an owner, and
+    // asserting "not this app" there would be a confident guess. Default to the
+    // hedged wording, which is right whenever we are unsure.
+    (function explain() {
+      const q = new URLSearchParams(window.location.search);
+      const port = q.get('port') || '5476';
+      const host = q.get('host') || '';
+      const where = host ? host : 'the machine running that gateway';
+      const kind = q.get('kind');
+      var msg;
+      if (kind === 'local') {
+        msg = 'Port ' + port + ' is served by this app\u2019s own gateway, but it could not issue a '
+          + 'dashboard token. Run kirocrew token on THIS machine and paste the URL below.';
+      } else if (kind === 'foreign') {
+        msg = 'Port ' + port + ' is held by a gateway this app did not start \u2014 most often an SSH '
+          + 'tunnel to another machine. Its access key is its own, so a token has to come from '
+          + 'there: run kirocrew token on ' + where + ', then paste the URL below.';
+      } else {
+        msg = 'The gateway on port ' + port + ' would not issue a dashboard token, and this app '
+          + 'could not determine which machine it is running on. If you reached it through an SSH '
+          + 'tunnel, run kirocrew token on ' + where + '; otherwise run it on this machine. Then '
+          + 'paste the URL below.';
+      }
+      document.getElementById('why').textContent = msg;
+    })();
+
     function go() {
       const v = document.getElementById('url').value.trim();
       if (!v) return;

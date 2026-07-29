@@ -59,6 +59,7 @@
       "find-bin.js",
       "data-home.js",
       "auto-update.js",
+      "gateway-auth-hint.js",
       "gateway-stop.js",
       "gateway-wait.js",
       "home-dir.js",

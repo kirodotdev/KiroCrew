@@ -44,6 +44,7 @@ const http = require("http");
 const { findKirocrewBin } = require("./find-bin");
 const { findConfiguredDashboardPort } = require("./data-home");
 const { createTokenRetryHandler } = require("./token-retry");
+const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
 const { createDisplayMediaHandler } = require("./display-media");
 const { initAutoUpdate } = require("./auto-update");
 const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort, classifyPortOwner } = require("./gateway-stop");
@@ -1389,7 +1390,25 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
       });
       if (win.isDestroyed()) return;
       if (status === 403) {
-        wc.loadFile(path.join(__dirname, "token-prompt.html"), { query: { port: new URL(backendUrl).port } });
+        // The page has to say WHICH machine to mint on. A gateway we did not
+        // spawn (an `ssh -L` forward, or an externally-started one) has its own
+        // .local_secret, so our CLI can only mint against it FROM that machine;
+        // pointing the user at this one would send them where the gateway is
+        // not. Reuse the boot-time port-owner probe rather than guessing.
+        //
+        // NOTE `URL.port` is "" for a default-port URL (http://host/ on :80).
+        // Left empty it would look up the wrong remote-host entry, probe no
+        // port at all, and let the page fall back to :5476 — i.e. describe and
+        // submit to a gateway that isn't the one we just got a 403 from.
+        const promptPort = defaultedPort(backendUrl);
+        const remoteHost = getRemoteHostConfig(store, promptPort)?.host || "";
+        const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(promptPort);
+        const kind = classifyAuthBlock({ localOwner, remoteHost });
+        glog(`token prompt: kind=${kind} owner=${localOwner} port=${promptPort} host=${remoteHost || "(none)"}`);
+        if (win.isDestroyed()) return;
+        wc.loadFile(path.join(__dirname, "token-prompt.html"), {
+          query: { port: promptPort, kind, host: remoteHost },
+        });
       } else {
         wc.loadURL(backendUrl);
         if (backendUrl === BACKEND_URL) startLivenessMonitor(win);
