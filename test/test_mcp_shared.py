@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
+import os
+import sys
 from unittest.mock import patch
+
+import pytest
 
 import kiro_crew.mcp_shared as mcp_shared
 from kiro_crew.mcp_shared import _read_message, respond
@@ -214,6 +219,284 @@ class TestRespondFraming:
         assert out.getvalue() == ""
 
 
+class TestRespondStdoutFdSnapshot:
+    """``respond()`` must survive a process-wide ``dup2(devnull, 1)``.
+
+    The vendored llama-cpp runtime wraps its multi-second GGUF load in
+    ``suppress_stdout_stderr``, which dup2's fd 1 to /dev/null process-wide AND
+    rebinds the ``sys.stdout`` object. The first ``local_knowledge_search``
+    kicks that load on a background thread and answers in milliseconds, so its
+    JSON-RPC response raced the window and was silently destroyed -- no
+    exception, SEL still logged success, and the client hung until the 600s
+    ACP tool-stall watchdog killed the turn.
+    """
+
+    def setup_method(self):
+        mcp_shared._use_content_length = False
+        mcp_shared.release_stdout_fd()
+
+    def teardown_method(self):
+        mcp_shared._use_content_length = False
+        mcp_shared.release_stdout_fd()
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _stdout_on_fd1():
+        """Make ``sys.stdout`` an fd-1-backed stream, as in a real server.
+
+        Under pytest's fd-capture ``sys.stdout`` is a capture object whose
+        ``fileno()`` is NOT 1, so without this the snapshot would dup pytest's
+        capture file and the test would assert nothing about the real bug.
+        Writes go straight to fd 1 (so they follow a later ``dup2``), and
+        ``fileno()`` reports 1 (so the snapshot dups the right descriptor).
+        """
+
+        class _Buffer:
+            @staticmethod
+            def write(data: bytes) -> int:
+                return os.write(1, data)
+
+            @staticmethod
+            def flush() -> None:
+                pass
+
+        class _Fd1Stdout:
+            buffer = _Buffer()
+
+            @staticmethod
+            def fileno() -> int:
+                return 1
+
+            @staticmethod
+            def write(text: str) -> int:
+                return os.write(1, text.encode("utf-8"))
+
+            @staticmethod
+            def flush() -> None:
+                pass
+
+        with patch("sys.stdout", _Fd1Stdout()):
+            yield
+
+    @staticmethod
+    def _redirect_stdout_to_pipe():
+        """Point fd 1 at a pipe; returns (read_fd, restore_callable)."""
+        read_fd, write_fd = os.pipe()
+        saved = os.dup(1)
+        os.dup2(write_fd, 1)
+        os.close(write_fd)
+
+        def _restore():
+            os.dup2(saved, 1)
+            os.close(saved)
+
+        return read_fd, _restore
+
+    @staticmethod
+    def _drain(read_fd) -> bytes:
+        os.set_blocking(read_fd, False)
+        try:
+            return os.read(read_fd, 65536)
+        except BlockingIOError:
+            return b""
+        finally:
+            os.close(read_fd)
+
+    @contextlib.contextmanager
+    def _devnull_over_fd1(self):
+        """Mimic ``suppress_stdout_stderr``: swap fd 1 AND the sys.stdout object."""
+        devnull = open(os.devnull, "w")
+        saved_fd = os.dup(1)
+        saved_obj = sys.stdout
+        os.dup2(devnull.fileno(), 1)
+        sys.stdout = devnull
+        try:
+            yield
+        finally:
+            os.dup2(saved_fd, 1)
+            os.close(saved_fd)
+            sys.stdout = saved_obj
+            devnull.close()
+
+    def test_response_survives_dup2_devnull_bare_json(self):
+        read_fd, restore = self._redirect_stdout_to_pipe()
+        try:
+            with self._stdout_on_fd1():
+                mcp_shared.snapshot_stdout_fd()
+                with self._devnull_over_fd1():
+                    respond(1, {"ok": True})
+        finally:
+            restore()
+        got = self._drain(read_fd)
+        assert got, "response was destroyed by the dup2 window (the reported bug)"
+        parsed = json.loads(got.decode("utf-8").strip())
+        assert parsed["id"] == 1
+        assert parsed["result"] == {"ok": True}
+
+    def test_response_survives_dup2_devnull_content_length(self):
+        mcp_shared._use_content_length = True
+        read_fd, restore = self._redirect_stdout_to_pipe()
+        try:
+            with self._stdout_on_fd1():
+                mcp_shared.snapshot_stdout_fd()
+                with self._devnull_over_fd1():
+                    respond(2, {"ok": True})
+        finally:
+            restore()
+        got = self._drain(read_fd)
+        assert got.startswith(b"Content-Length:"), got
+        header, body = got.split(b"\r\n\r\n", 1)
+        assert int(header.split(b":")[1].strip()) == len(body)
+        assert json.loads(body.decode("utf-8"))["id"] == 2
+
+    def test_without_snapshot_the_response_is_lost(self):
+        """Negative control: this is exactly the pre-fix failure mode.
+
+        Locks in that the snapshot -- not some incidental buffering -- is what
+        saves the response, so a future refactor that drops it fails here.
+        """
+        read_fd, restore = self._redirect_stdout_to_pipe()
+        try:
+            with self._stdout_on_fd1():
+                assert mcp_shared._stdout_fd is None
+                with self._devnull_over_fd1():
+                    respond(3, {"ok": True})
+        finally:
+            restore()
+        assert self._drain(read_fd) == b""
+
+    def test_snapshot_is_idempotent_and_released(self):
+        read_fd, restore = self._redirect_stdout_to_pipe()
+        try:
+            with self._stdout_on_fd1():
+                first = mcp_shared.snapshot_stdout_fd()
+                assert first is not None
+                assert mcp_shared.snapshot_stdout_fd() == first
+        finally:
+            restore()
+        os.close(read_fd)
+        mcp_shared.release_stdout_fd()
+        assert mcp_shared._stdout_fd is None
+        # Idempotent: a second release must not raise (nor close a reused fd).
+        mcp_shared.release_stdout_fd()
+
+    def test_falls_back_when_stdout_has_no_fileno(self):
+        """Captured/StringIO stdout has no usable fileno — keep the old path."""
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            assert mcp_shared.snapshot_stdout_fd() is None
+            respond(4, {"ok": True})
+        assert json.loads(out.getvalue().strip())["id"] == 4
+
+    def test_falls_back_when_snapshot_fd_is_broken(self):
+        """A closed/unusable snapshot fd must fall back, not lose the response."""
+        out = io.StringIO()
+        read_fd, restore = self._redirect_stdout_to_pipe()
+        try:
+            with self._stdout_on_fd1():
+                mcp_shared.snapshot_stdout_fd()
+        finally:
+            restore()
+        os.close(read_fd)
+        # Close the snapshot behind respond()'s back so os.write raises EBADF.
+        os.close(mcp_shared._stdout_fd)
+        try:
+            with patch("sys.stdout", out):
+                respond(5, {"ok": True})
+            assert json.loads(out.getvalue().strip())["id"] == 5
+        finally:
+            mcp_shared._stdout_fd = None
+
+    def test_write_all_loops_on_short_writes(self):
+        """A short ``os.write`` must not truncate the frame."""
+        chunks = []
+
+        def _short_write(_fd, buf):
+            take = min(4, len(buf))
+            chunks.append(bytes(buf[:take]))
+            return take
+
+        with patch.object(mcp_shared.os, "write", _short_write):
+            written = mcp_shared._write_all(99, b"0123456789abcdef")
+        assert b"".join(chunks) == b"0123456789abcdef"
+        assert written == 16
+
+    def test_write_all_reports_bytes_written_on_failure(self):
+        """A mid-frame failure must expose how much already went out."""
+
+        def _fail_after_one(_fd, buf):
+            if chunks:
+                raise BrokenPipeError("gone")
+            chunks.append(bytes(buf[:4]))
+            return 4
+
+        chunks: list = []
+        with patch.object(mcp_shared.os, "write", _fail_after_one):
+            with pytest.raises(OSError) as excinfo:
+                mcp_shared._write_all(99, b"0123456789")
+        assert excinfo.value.bytes_written == 4
+
+    def test_partial_write_is_not_duplicated_on_fallback(self):
+        """A torn frame must be dropped, never re-sent whole via sys.stdout.
+
+        Falling back after a PARTIAL os.write would put the frame's prefix on
+        the wire twice and desync the JSON-RPC stream for every later message.
+        """
+        out = io.StringIO()
+        sent: list = []
+
+        def _partial_then_fail(_fd, buf):
+            if sent:
+                raise BrokenPipeError("gone")
+            sent.append(bytes(buf[:5]))
+            return 5
+
+        read_fd, restore = self._redirect_stdout_to_pipe()
+        try:
+            with self._stdout_on_fd1():
+                mcp_shared.snapshot_stdout_fd()
+        finally:
+            restore()
+        os.close(read_fd)
+        try:
+            with patch.object(mcp_shared.os, "write", _partial_then_fail):
+                with patch("sys.stdout", out):
+                    respond(9, {"ok": True})
+            assert out.getvalue() == "", "torn frame was duplicated onto sys.stdout"
+        finally:
+            mcp_shared.release_stdout_fd()
+
+    def test_clean_failure_still_falls_back(self):
+        """Zero bytes written → safe to retry on sys.stdout (no duplication)."""
+        out = io.StringIO()
+
+        def _fail_immediately(_fd, _buf):
+            raise BrokenPipeError("gone")
+
+        read_fd, restore = self._redirect_stdout_to_pipe()
+        try:
+            with self._stdout_on_fd1():
+                mcp_shared.snapshot_stdout_fd()
+        finally:
+            restore()
+        os.close(read_fd)
+        try:
+            with patch.object(mcp_shared.os, "write", _fail_immediately):
+                with patch("sys.stdout", out):
+                    respond(10, {"ok": True})
+            assert json.loads(out.getvalue().strip())["id"] == 10
+        finally:
+            mcp_shared.release_stdout_fd()
+
+    def test_run_loop_releases_fd_on_exit(self):
+        """``run_mcp_stdio_loop`` must not leak the dup across invocations."""
+        with patch.object(mcp_shared, "_read_message", lambda _stdin: None):
+            mcp_shared.run_mcp_stdio_loop(
+                "test-server", "0.1.0", lambda: [], lambda _n, _a: "ok"
+            )
+        assert mcp_shared._stdout_fd is None
+
+
 class TestCallToolWithLoggingRedaction:
     """The SEL audit ``resources`` (serialized tool args) must be redacted, so a
     credential passed in a free-text arg (e.g. artifact_post_comment ``text``,
@@ -260,8 +543,6 @@ class TestCallToolWithLoggingRedaction:
 # and assert queued calls are answered FIFO once the worker frees. The
 # worker-thread + select() interleave is POSIX-only (the Windows loop
 # dispatches synchronously), so gate the class accordingly.
-
-import pytest  # noqa: E402
 
 from kiro_crew import platform_compat  # noqa: E402
 

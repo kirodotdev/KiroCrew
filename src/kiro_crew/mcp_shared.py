@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import contextlib
 import ctypes
 import json
 import logging
@@ -140,6 +141,94 @@ class ToolCancelled(Exception):
 
 # Module-level flag: set True once we detect Content-Length framing from client.
 _use_content_length = False
+
+# ── Private stdout descriptor for JSON-RPC responses ───────────────────────
+# The vendored llama-cpp runtime wraps its multi-second GGUF model load in
+# ``suppress_stdout_stderr``, which does a PROCESS-WIDE ``dup2(devnull, 1)``
+# for the duration of the load (``_vendor/llama_cpp/_utils.py``). The first
+# ``local_knowledge_search`` kicks that load on a background thread and returns
+# a keyword-only result in milliseconds, so the JSON-RPC response for that very
+# call races the load window. Written through fd 1, the bytes land in
+# /dev/null: no exception, no short write, the SEL audit still records
+# ``success`` -- and the client waits forever until the ACP tool-stall watchdog
+# (``acp/client.py::_TOOL_STALL_TIMEOUT``, 600s) kills the turn.
+#
+# ``snapshot_stdout_fd()`` takes an ``os.dup(1)`` at server startup, BEFORE any
+# tool can run. A dup'd descriptor keeps pointing at the original pipe no
+# matter what a later ``dup2`` does to fd 1, so responses always reach the
+# client. Guarded by a lock because it is a raw unbuffered fd: ``os.write`` is
+# not atomic across interleaved callers, and a torn frame desyncs the stream
+# for every subsequent message.
+#
+# NOTE: the suppressor also rebinds the ``sys.stdout`` OBJECT to a devnull
+# file, so "has sys.stdout been swapped?" is NOT a usable liveness check -- it
+# is false exactly inside the window we must survive. The snapshot is the only
+# reliable route.
+_stdout_fd: Optional[int] = None
+_stdout_fd_lock = threading.Lock()
+
+
+def snapshot_stdout_fd() -> Optional[int]:
+    """Capture a private dup of the real stdout descriptor. Idempotent.
+
+    Called once at ``run_mcp_stdio_loop`` entry. Returns the dup'd fd, or
+    ``None`` when stdout is not fd-backed (pytest's captured stdout, an
+    embedded host handing us a StringIO) -- in that case ``respond()`` falls
+    back to ``sys.stdout`` exactly as before.
+    """
+    global _stdout_fd
+    with _stdout_fd_lock:
+        if _stdout_fd is not None:
+            return _stdout_fd
+        try:
+            _stdout_fd = os.dup(sys.stdout.fileno())
+        except (AttributeError, OSError, ValueError):
+            # No usable fileno (StringIO / captured / closed stdout).
+            _stdout_fd = None
+        return _stdout_fd
+
+
+def release_stdout_fd() -> None:
+    """Close the private stdout dup, if one was captured. Idempotent.
+
+    Keeps the descriptor from leaking when a loop is run repeatedly in one
+    process (the test suite drives ``run_mcp_stdio_loop`` many times); a real
+    server process exits after its single loop returns.
+    """
+    global _stdout_fd
+    with _stdout_fd_lock:
+        fd = _stdout_fd
+        _stdout_fd = None
+    if fd is not None:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def _write_all(fd: int, payload: bytes) -> int:
+    """Write every byte of ``payload`` to ``fd``; return the count written.
+
+    ``os.write`` on a pipe may accept fewer bytes than offered; a silently
+    truncated frame desyncs the JSON-RPC stream for every later message, so
+    loop until the payload is fully handed over. Mirrors the short-read loop
+    in :func:`_read_message`.
+
+    On failure the ``OSError`` propagates, but the bytes written so far are
+    attached as ``bytes_written`` so the caller can tell a clean failure (zero
+    bytes — safe to retry on another stream) from a partial one (retrying would
+    duplicate the prefix and tear the frame).
+    """
+    view = memoryview(payload)
+    written = 0
+    while view:
+        try:
+            n = os.write(fd, view)
+        except OSError as exc:
+            exc.bytes_written = written  # type: ignore[attr-defined]
+            raise
+        view = view[n:]
+        written += n
+    return written
+
 
 # ── Managed tool policy cache ──────────────────────────────────────────────
 # Keyed per SESSION: in the pooled topology one backend process serves many
@@ -433,11 +522,48 @@ def respond(req_id: Any, result: Any, error: dict | None = None) -> None:
     body = json.dumps(resp)
     if _use_content_length:
         payload = body.encode("utf-8")
-        header = f"Content-Length: {len(payload)}\r\n\r\n".encode("utf-8")
-        sys.stdout.buffer.write(header + payload)
+        frame = f"Content-Length: {len(payload)}\r\n\r\n".encode("utf-8") + payload
+    else:
+        frame = (body + "\n").encode("utf-8")
+
+    # Preferred path: the private descriptor captured before any tool ran, so a
+    # library's process-wide dup2 on fd 1 (see _stdout_fd above) cannot swallow
+    # this response. Serialized -- os.write is unbuffered and a partial
+    # interleave would tear the frame.
+    with _stdout_fd_lock:
+        # Re-read INSIDE the lock: a concurrent release_stdout_fd() between an
+        # outside-the-lock read and the write could otherwise hand os.write a
+        # closed descriptor whose number has already been recycled by another
+        # open() -- sending JSON-RPC bytes into an unrelated file. Not reachable
+        # from today's single-threaded dispatch, but the lock is already held
+        # here, so pay nothing to make it structurally safe.
+        fd = _stdout_fd
+        if fd is not None:
+            try:
+                _write_all(fd, frame)
+                return
+            except OSError as exc:
+                # The dup'd fd is unusable (client pipe closed). Fall back to
+                # sys.stdout ONLY if nothing was written, so a genuinely broken
+                # pipe surfaces the way it did before this indirection. After a
+                # PARTIAL write, re-emitting the whole frame would duplicate the
+                # prefix and desync the stream for every later message -- drop
+                # it instead and let the client's own timeout handle the turn.
+                if getattr(exc, "bytes_written", 0):
+                    logger.error(
+                        "Torn JSON-RPC frame for request %s: wrote %d of %d bytes "
+                        "before %s; dropping rather than duplicating the prefix",
+                        req_id,
+                        exc.bytes_written,  # type: ignore[attr-defined]
+                        len(frame),
+                        exc.__class__.__name__,
+                    )
+                    return
+    if _use_content_length:
+        sys.stdout.buffer.write(frame)
         sys.stdout.buffer.flush()
     else:
-        sys.stdout.write(body + "\n")
+        sys.stdout.write(frame.decode("utf-8"))
         sys.stdout.flush()
 
 
@@ -572,6 +698,38 @@ def run_mcp_stdio_loop(
     On Windows ``select.select`` cannot poll ``sys.stdin`` (it only accepts
     sockets), so tool calls dispatch synchronously exactly as the pre-worker
     loop did — no in-flight cancel/ping interleave there (POSIX-only feature).
+
+    Before serving anything, a private dup of stdout is captured
+    (:func:`snapshot_stdout_fd`) so responses survive a library's process-wide
+    ``dup2`` on fd 1 — see the ``_stdout_fd`` comment block. It is released on
+    exit so repeated loops in one process (the test suite) cannot leak fds.
+    """
+    snapshot_stdout_fd()
+    try:
+        _run_stdio_dispatch_loop(
+            server_name,
+            server_version,
+            list_tools_fn,
+            call_tool_fn,
+            advertise_caller_identity=advertise_caller_identity,
+        )
+    finally:
+        release_stdout_fd()
+
+
+def _run_stdio_dispatch_loop(
+    server_name: str,
+    server_version: str,
+    list_tools_fn: Callable[[], list[dict[str, Any]]],
+    call_tool_fn: Callable[[str, dict[str, Any]], str],
+    *,
+    advertise_caller_identity: bool = False,
+) -> None:
+    """Read/dispatch body of :func:`run_mcp_stdio_loop`.
+
+    Split out so the public entry point can own the stdout-snapshot lifecycle
+    (capture before the first request, release on exit) without indenting the
+    whole dispatch loop under a ``try``.
     """
     # In-flight tool execution state: at most one at a time (sequential dispatch).
     _current_req_id: Any = None
