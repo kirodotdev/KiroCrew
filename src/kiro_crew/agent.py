@@ -366,6 +366,40 @@ def _extra_mcp_scope_globals() -> list[Path]:
     return [s.global_json for s in scopes]
 
 
+def _in_linked_git_worktree(path: Path) -> bool:
+    """Whether *path* lives inside a git **linked worktree** (``git worktree add``).
+
+    A linked worktree's ``.git`` is a FILE holding
+    ``gitdir: <git-dir>/worktrees/<name>``; an ordinary clone's ``.git`` is a
+    DIRECTORY. Walks up from *path* and answers on the nearest repository marker,
+    so a linked worktree is distinguished from the main clone it belongs to.
+
+    The pointer is matched on the ``/worktrees/`` segment rather than
+    ``/.git/worktrees/``, because a **bare** repository's git dir *is* the repo
+    dir and carries no ``.git`` component — ``git -C myrepo.git worktree add``
+    writes ``gitdir: /…/myrepo.git/worktrees/<name>``, which a ``/.git/`` match
+    would miss, silently reopening the very bypass this guard exists to close.
+    ``/worktrees/`` stays precise: the only other producer of a ``gitdir:``
+    ``.git`` file is a submodule, which points into ``modules/`` instead.
+
+    Deliberately stdlib-only and subprocess-free: this runs on the gateway start
+    path, where shelling out to ``git`` would add latency and fail wherever git is
+    absent (notably the packaged desktop app).
+    """
+    for parent in (path, *path.parents):
+        marker = parent / ".git"
+        if marker.is_dir():
+            return False  # ordinary clone — nearest marker wins
+        if marker.is_file():
+            try:
+                head = marker.read_text(encoding="utf-8", errors="replace")[:4096]
+            except OSError:
+                return False
+            # Normalize separators so a Windows-style gitdir also matches.
+            return head.startswith("gitdir:") and "/worktrees/" in head.replace("\\", "/")
+    return False
+
+
 def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
     """Ensure a ``kirocrew`` launcher is reachable on the user's PATH.
 
@@ -388,6 +422,30 @@ def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
     target = _resolve_kirocrew_bin()
     # Nothing concrete to point at — bare "kirocrew" or a non-executable file.
     if not (os.path.isabs(target) and os.path.isfile(target) and os.access(target, os.X_OK)):
+        return None
+
+    # Never aim the user's machine-wide launcher at a linked git worktree. A
+    # worktree is ephemeral by construction: `git worktree remove` deletes its
+    # `.venv` along with the tree, and the shim is then a dangling symlink, so
+    # `kirocrew` stops working EVERYWHERE — not just in the tree that went away.
+    # Any process running out of a worktree's venv (a pod gateway, a dev run, a
+    # `kirocrew setup` invoked from that tree) resolves its own venv entrypoint
+    # here, so without this guard routine worktree work silently hijacks the
+    # global command. `instances/token_mint.py` documents the same hazard from
+    # the consuming side. Declining leaves whatever already worked in place.
+    #
+    # `.resolve()` first: the ancestry walk is LEXICAL, and the resolved target
+    # is frequently itself a symlink into a worktree (a PATH entry, or the very
+    # shim we are about to rewrite). Walking the symlink's own parents would find
+    # no `.git` marker and wave the worktree through — reopening this hole.
+    if _in_linked_git_worktree(Path(target).resolve()):
+        logger.info(
+            "Not installing a kirocrew launcher: %s is inside a linked git worktree, "
+            "which is ephemeral (removing the worktree would break `kirocrew` "
+            "machine-wide). Install from your primary clone, or link it yourself: "
+            "ln -sfn <clone>/.venv/bin/kirocrew ~/.local/bin/kirocrew",
+            target,
+        )
         return None
 
     # Already reachable on PATH as the same binary? Then there's nothing to do.

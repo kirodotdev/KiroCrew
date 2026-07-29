@@ -370,7 +370,24 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
         "KIROCREW_HOME": str(home_dir),
         "KIROCREW_PORT": str(port),
         "KIROCREW_PROJECT_DIR": str(checkout),
-        "PATH": cfg.gateway_path,
+        # Give the pod its OWN workspace root. Without this, `workspace_root()`
+        # finds no `KIROCREW_WORKSPACE` and no `config_dir()/workspace_dir` file in
+        # a fresh pod home, so it falls through to the platform default under the
+        # REAL `HOME` — and every agent turn in the pod (a `chat`/`run`/`tui`
+        # through `pod exec`, and the pod gateway's own sessions) would read and
+        # WRITE the live workspace. `KIROCREW_WORKSPACE` is the documented override
+        # (config/loader.py:220, used as-is) and `eval/runner.py` already scopes a
+        # run the same way, so this is the existing mechanism rather than new
+        # resolution behaviour. Placing it inside the pod HOME means the
+        # zero-residue `ExecStopPost` teardown removes it with everything else.
+        "KIROCREW_WORKSPACE": str(home_dir / "workspace"),
+        # The pod's OWN venv leads PATH, ahead of cfg.gateway_path (which starts
+        # with ~/.local/bin). Without this a bare `kirocrew` inside a pod — an
+        # agent bash turn, a subprocess, `_kirocrew_bin()`'s "console-script on
+        # PATH" probe — resolves the machine-wide shim instead of the checkout
+        # under test, so the pod silently exercises the global install and stays
+        # coupled to a symlink it does not own.
+        "PATH": os.pathsep.join([str(checkout / ".venv" / "bin"), cfg.gateway_path]),
     }
     for key in [
         k
@@ -394,6 +411,9 @@ def write_pod_config(home_dir: Path, seed: str) -> None:
     """
     home_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(home_dir, stat.S_IRWXU)  # 0o700 owner-only (mkdir mode is umask-masked)
+    # The pod's own workspace root (see build_pod_env's KIROCREW_WORKSPACE).
+    # Created here so the gateway never falls back to the live workspace.
+    (home_dir / "workspace").mkdir(mode=0o700, exist_ok=True)
     dst_cfg = home_dir / "config.json"
     if dst_cfg.exists():
         return
@@ -425,6 +445,202 @@ def cleanup_home(cfg: PodConfig, name: str) -> int:
         return 2
     shutil.rmtree(target, ignore_errors=True)
     return 0
+
+
+def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
+    """Resolve pod *name* to ``(its own kirocrew binary, its isolated env)``.
+
+    The single seam every pod-scoped command goes through, so ``boot``,
+    :func:`exec_in_pod` and ``pod env`` cannot drift apart. Notably the env comes
+    from :func:`build_pod_env`, which means a command run against a pod inherits
+    the SAME messaging-credential scrubbing as the pod's own gateway — a
+    hand-rolled env here would silently let a throwaway instance act as the live
+    Slack / WeCom / Telegram identity.
+
+    Raises :class:`PodError` when the pod has no pinned checkout (never brought
+    up from inside a checkout) or that checkout has no provisioned venv.
+    """
+    validate_name(name)
+    checkout_str = read_env_file(cfg, name).get("CHECKOUT")
+    if not checkout_str:
+        raise PodError(
+            f"pod {name!r} has no pinned checkout — run `kirocrew pod up {name}` "
+            f"from inside a kirocrew checkout first"
+        )
+    checkout = Path(checkout_str).expanduser()
+    bin_path = checkout / ".venv" / "bin" / "kirocrew"
+    if not (bin_path.exists() and os.access(bin_path, os.X_OK)):
+        raise PodError(f"no kirocrew venv at {bin_path} (provision {name} first)")
+    env = build_pod_env(cfg, cfg.home_dir(name), derive_port(cfg, name), checkout)
+    return bin_path, env
+
+
+# `pod exec` forwards to a real kirocrew, so it inherits the WHOLE CLI — including
+# verbs that manage the HOST rather than any one instance. An earlier revision
+# denied the dangerous ones by name and that list was incomplete three times over
+# (`stop`, then `restart` for a second reason, then `service`), because the set of
+# host-scoped verbs is open-ended. So this is an ALLOWLIST: every verb below acts
+# only on `KIROCREW_HOME` state, which `pod exec` has already pointed at the pod.
+# Anything else — present or newly added — is refused until it is deliberately
+# listed, so the failure mode of drift is "temporarily unavailable" rather than
+# "silently operated on the user's live machine".
+#
+# Deliberately EXCLUDED, with the reason each is host-scoped, not pod-scoped:
+#   setup, update  — rewrite the install and the ~/.local/bin launcher
+#   app            — `apps/bridges.py` symlinks app agent JSONs into
+#                    `Path.home()/".kiro"/"agents"` and edits
+#                    `~/.kiro/settings/mcp.json` — the HOST registry, not
+#                    KIROCREW_HOME. A pod install/uninstall would replace or
+#                    delete symlinks the live gateway depends on, and point them
+#                    into a checkout that is about to be deleted: the same
+#                    dangling-symlink failure this PR exists to fix.
+#   stop, restart  — service-aware: `cli_server._stop` short-circuits to
+#                    systemctl when no explicit --port is passed, so they hit the
+#                    LIVE gateway; and `restart` additionally makes systemd run
+#                    the pod unit's ExecStopPost (erasing the pod HOME) while
+#                    leaving a DETACHED replacement `pod down` cannot stop
+#   service        — installs/removes the machine-wide systemd unit
+#   gateway        — would race a second gateway against the pod's own unit
+#   pod            — pod management from inside a pod (a nested `pod down` would
+#                    tear down its own supervisor)
+#   cloud          — provisions resources in the user's AWS account
+#   browse         — writes browser auth state outside KIROCREW_HOME
+#   manifest       — emits a Slack app manifest tied to the real identity
+#   run            — `task_reporter.save_progress` writes `TASK_PROGRESS.md`
+#                    "next to the spec file" (`Path(run.spec_path).parent`), so
+#                    `run /host/TASK.md` writes `/host/TASK_PROGRESS.md`. An
+#                    IMPLICIT write outside the pod, derived from a path the user
+#                    supplied as an input rather than a destination.
+#   snapshot       — its destination is CONFIGURABLE (`snapshot_dir`, or a
+#                    positional dir) and `--keep N` DELETES older archives beyond
+#                    N. `sanitized_seed_config` only forces tunnel/telegram/wecom
+#                    off, so a pod seeded from the live config inherits the user's
+#                    real backup directory — `snapshot --keep 1` from a pod would
+#                    prune live backups. Destructive and cross-plane.
+#   doctor         — NOT read-only: `cli_doctor.py:126` does
+#                    `atomic_write(agent_path, ...)` where `agent_path` is
+#                    `KIRO_AGENTS_DIR / AGENT_FILENAME` (line 405), i.e. under the
+#                    real HOME. It auto-adds missing MCP servers, so a pod
+#                    `doctor` rewrites the LIVE agent configuration.
+#   tui, chat      — `cli_chat._tui` resolves its port as
+#                    `getattr(args, "port", None) or cfg…get("port", 5476)` — the
+#                    CONFIG dashboard port, falling back to literal 5476, never
+#                    `KIROCREW_PORT`. A pod's config names no dashboard port, so it
+#                    lands on the LIVE gateway. `chat` is excluded too because
+#                    `chat --tui` branches straight into `_tui` (cli.py:1818), so
+#                    excluding only `tui` left the same hole open. Every OTHER
+#                    client verb (`status`, `logout`, and the credential verb) goes
+#                    through `cli_server.resolve_client_port`, which DOES honour
+#                    `KIROCREW_PORT` — so this hazard is confined to `_tui`.
+#   logs           — `cli_server._logs_cmd` runs `journalctl -u <SERVICE_NAME>`,
+#                    the HOST service unit, so inside a pod it would show the LIVE
+#                    gateway's journal while appearing to show the pod's. Wrong
+#                    answer rather than damage, but a confidently wrong one.
+#                    `kirocrew pod logs NAME` reads the pod's own unit.
+#   mcp-*          — stdio server entrypoints, not user-facing commands
+#
+# `agent` and `workspace` ARE listed: both dispatchers were checked and operate
+# only on `config_dir()` state (the config.json agents/workspaces maps), never on
+# `~/.kiro/agents`. `workspace` is safe specifically because it asserts every
+# source and destination `is_relative_to(config_dir())`; without that guard it
+# would belong with `snapshot`. `restore` is listed because although its SOURCE
+# archive path is arbitrary, that is a read — everything it writes lands in
+# `config_dir()`.
+#
+# The inclusion test, stated once so it does not have to be rediscovered. A verb
+# qualifies only if BOTH hold:
+#   (a) every path it writes IMPLICITLY — anywhere the user did not name as a
+#       destination — is inside `config_dir()`; and
+#   (b) it deletes nothing outside `config_dir()`.
+# An explicitly-named output destination is fine (`memory export -o FILE` writes
+# where the user pointed it, no differently from shell redirection). What fails is
+# an implicit write derived from an INPUT path (`run` → `TASK_PROGRESS.md` beside
+# the spec), a host registry (`app`), a host service (`service`, `stop`,
+# `restart`), a deletion driven by config (`snapshot --keep`), or a host-scoped
+# read that merely LOOKS pod-scoped (`logs`).
+_POD_SAFE_VERBS = frozenset(
+    {
+        "agent",
+        "artifact",
+        "config",
+        "consolidate",
+        "cron",
+        "eval",
+        "knowledge",
+        "learn",
+        "logout",
+        "memory",
+        "policy",
+        "restore",
+        "security",
+        "spawn",
+        "status",
+        "token",
+        "workspace",
+    }
+)
+
+# The pod-native equivalent to suggest for the verbs users are most likely to try.
+_POD_EQUIVALENT: dict[str, str] = {
+    "stop": "kirocrew pod down {name}",
+    "restart": "kirocrew pod down {name} && kirocrew pod up {name}",
+    "gateway": "kirocrew pod up {name}",
+    "logs": "kirocrew pod logs {name}",
+}
+
+
+def require_pod_safe_verb(argv: list[str], name: str) -> None:
+    """Raise :class:`PodError` unless ``argv[0]`` is a pod-scoped verb.
+
+    The verb must come FIRST. That is a deliberate constraint rather than a
+    limitation to work around: allowing global flags ahead of it reintroduces the
+    parsing ambiguity that made the previous denylist bypassable (``-v stop``, and
+    worse ``--log-level DEBUG stop``, where the flag's value is indistinguishable
+    from a verb). Flags AFTER the verb are untouched, so `-- status --json` works.
+    """
+    verb = argv[0] if argv else ""
+    if verb in _POD_SAFE_VERBS:
+        return
+    hint = ""
+    if verb in _POD_EQUIVALENT:
+        hint = f" Use `{_POD_EQUIVALENT[verb].format(name=name)}` instead."
+    elif verb.startswith("-"):
+        hint = " The verb must come first; put global flags after it."
+    else:
+        hint = (
+            " Only verbs that act on the pod's own data are allowed: "
+            + ", ".join(sorted(_POD_SAFE_VERBS))
+            + "."
+        )
+    raise PodError(f"refusing `{verb or '(nothing)'}` inside `pod exec`:{hint}")
+
+
+def exec_in_pod(cfg: PodConfig, name: str, argv: list[str]) -> int:
+    """``exec`` *argv* as the pod's own kirocrew, in the pod's isolated env.
+
+    Replaces the current process on success, so the child's exit status and its
+    stdio (including a TTY, which matters for ``chat`` / ``tui``) reach the caller
+    untouched. Returns an exit code only when the exec itself fails.
+    """
+    require_pod_safe_verb(argv, name)
+    bin_path, env = pod_context(cfg, name)
+    # Run INSIDE the pod's workspace, not the caller's cwd. Agent verbs resolve
+    # relative paths against the working directory, so inheriting the invoking
+    # shell's cwd (often the live checkout) would let `-- run ./TASK.md` or a file
+    # edit land outside the pod even with KIROCREW_WORKSPACE set correctly.
+    workspace = Path(env["KIROCREW_WORKSPACE"])
+    try:
+        workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chdir(workspace)
+    except OSError as exc:
+        print(f"FATAL: could not enter the pod workspace {workspace}: {exc}")
+        return 70
+    try:
+        os.execve(str(bin_path), [str(bin_path), *argv], env)
+    except OSError as exc:  # pragma: no cover - exec failure is environmental
+        print(f"FATAL: could not exec {bin_path}: {exc}")
+        return 70
+    return 0  # unreachable on success
 
 
 # --------------------------------------------------------------------------- #

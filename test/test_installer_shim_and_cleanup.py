@@ -382,6 +382,151 @@ def test_ensure_shim_noop_when_already_on_path(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# ensure_kirocrew_on_path — never follow an ephemeral git worktree
+#
+# `git worktree remove` deletes the tree's .venv with it, so a shim pointing
+# there dangles and `kirocrew` breaks machine-wide, not just in that tree.
+# --------------------------------------------------------------------------
+def _checkout_with_kirocrew(root: Path, *, linked_worktree: bool, bare_parent: bool = False) -> Path:
+    """Build a fake checkout at *root* whose venv holds a `kirocrew` entrypoint.
+
+    ``linked_worktree`` chooses the repository marker: a ``.git`` FILE with a
+    ``gitdir:`` pointer (what `git worktree add` writes) versus a ``.git``
+    DIRECTORY (an ordinary clone). ``bare_parent`` selects the pointer shape a
+    **bare** repo produces — ``<repo>.git/worktrees/<name>``, with no ``.git``
+    path component — verified against real git, not assumed.
+    """
+    binary = root / ".venv" / "bin" / "kirocrew"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    if linked_worktree:
+        git_dir = (
+            f"{root.parent}/myrepo.git" if bare_parent else f"{root.parent}/main/.git"
+        )
+        (root / ".git").write_text(f"gitdir: {git_dir}/worktrees/{root.name}\n")
+    else:
+        (root / ".git").mkdir()
+    return binary
+
+
+def _resolve_to(monkeypatch, binary: Path) -> None:
+    """Make resolution land on *binary* and leave nothing else on PATH."""
+    monkeypatch.setattr(agent, "_KIROCREW_BIN", "", raising=False)
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.setattr(agent, "_resolve_kirocrew_bin", lambda: str(binary))
+    monkeypatch.setattr(agent.shutil, "which", lambda c, **kw: None)
+
+
+def test_in_linked_git_worktree_distinguishes_marker_kind(tmp_path):
+    """The detector answers on the nearest marker: `.git` file vs `.git` dir."""
+    wt = _checkout_with_kirocrew(tmp_path / "wt-feature", linked_worktree=True)
+    clone = _checkout_with_kirocrew(tmp_path / "clone", linked_worktree=False)
+
+    assert agent._in_linked_git_worktree(wt) is True
+    assert agent._in_linked_git_worktree(clone) is False
+    # Not a repository at all — nothing to decline.
+    assert agent._in_linked_git_worktree(tmp_path / "nowhere" / "bin" / "kirocrew") is False
+
+
+def test_in_linked_git_worktree_matches_a_bare_repo_pointer(tmp_path):
+    """A bare repo's git dir IS the repo dir, so its worktree pointer carries no
+    `.git` component (`/…/myrepo.git/worktrees/<name>`). Matching on `/.git/`
+    would miss it and reopen the bypass."""
+    wt = _checkout_with_kirocrew(
+        tmp_path / "wt-from-bare", linked_worktree=True, bare_parent=True
+    )
+    pointer = (tmp_path / "wt-from-bare" / ".git").read_text()
+    assert "/.git/worktrees/" not in pointer, "fixture must reproduce the bare shape"
+
+    assert agent._in_linked_git_worktree(wt) is True
+
+
+def test_in_linked_git_worktree_ignores_a_submodule_pointer(tmp_path):
+    """`/worktrees/` must not be so loose that a submodule matches: submodules
+    write `gitdir: ../.git/modules/<name>`, a different subtree."""
+    root = tmp_path / "sub"
+    binary = root / ".venv" / "bin" / "kirocrew"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    (root / ".git").write_text("gitdir: ../.git/modules/sub\n")
+
+    assert agent._in_linked_git_worktree(binary) is False
+
+
+def test_ensure_shim_declines_a_worktree_target(tmp_path, monkeypatch):
+    """A venv inside a linked worktree must never become the global launcher."""
+    binary = _checkout_with_kirocrew(tmp_path / "wt-feature", linked_worktree=True)
+    _resolve_to(monkeypatch, binary)
+    bin_dir = tmp_path / "localbin"
+
+    assert agent.ensure_kirocrew_on_path(bin_dir=bin_dir) is None
+    assert not (bin_dir / "kirocrew").exists(), "worktree venv must not be linked"
+
+
+def test_ensure_shim_declines_a_symlink_pointing_into_a_worktree(tmp_path, monkeypatch):
+    """The ancestry walk is lexical, so a target that is ITSELF a symlink into a
+    worktree must be resolved first — otherwise its own parents carry no `.git`
+    marker and the worktree is waved through."""
+    real = _checkout_with_kirocrew(tmp_path / "wt-feature", linked_worktree=True)
+    # A PATH-style indirection outside any repo, pointing into the worktree.
+    link_dir = tmp_path / "elsewhere"
+    link_dir.mkdir()
+    link = link_dir / "kirocrew"
+    link.symlink_to(real)
+    assert agent._in_linked_git_worktree(link) is False, "lexical walk cannot see through it"
+
+    _resolve_to(monkeypatch, link)
+    bin_dir = tmp_path / "localbin"
+
+    assert agent.ensure_kirocrew_on_path(bin_dir=bin_dir) is None
+    assert not (bin_dir / "kirocrew").exists()
+
+
+def test_ensure_shim_declines_a_bare_repo_worktree_target(tmp_path, monkeypatch):
+    """Same refusal for a worktree of a bare repo — the shape that bypassed the
+    first version of this guard."""
+    binary = _checkout_with_kirocrew(
+        tmp_path / "wt-from-bare", linked_worktree=True, bare_parent=True
+    )
+    _resolve_to(monkeypatch, binary)
+    bin_dir = tmp_path / "localbin"
+
+    assert agent.ensure_kirocrew_on_path(bin_dir=bin_dir) is None
+    assert not (bin_dir / "kirocrew").exists()
+
+
+def test_ensure_shim_links_an_ordinary_clone_target(tmp_path, monkeypatch):
+    """Negative control: the same setup in a normal clone still gets linked, so
+    the guard rejects worktrees specifically rather than disabling the shim."""
+    binary = _checkout_with_kirocrew(tmp_path / "clone", linked_worktree=False)
+    _resolve_to(monkeypatch, binary)
+    bin_dir = tmp_path / "localbin"
+
+    created = agent.ensure_kirocrew_on_path(bin_dir=bin_dir)
+
+    assert created == str(bin_dir / "kirocrew")
+    assert os.path.realpath(bin_dir / "kirocrew") == os.path.realpath(binary)
+
+
+def test_ensure_shim_keeps_a_working_shim_when_target_is_a_worktree(tmp_path, monkeypatch):
+    """The regression that broke the machine: an existing, working shim must
+    survive a resolution that lands in a worktree — not be replaced by it."""
+    good = _checkout_with_kirocrew(tmp_path / "clone", linked_worktree=False)
+    bin_dir = tmp_path / "localbin"
+    bin_dir.mkdir()
+    (bin_dir / "kirocrew").symlink_to(good)
+
+    worktree_binary = _checkout_with_kirocrew(tmp_path / "wt-feature", linked_worktree=True)
+    _resolve_to(monkeypatch, worktree_binary)
+
+    assert agent.ensure_kirocrew_on_path(bin_dir=bin_dir) is None
+    assert os.path.realpath(bin_dir / "kirocrew") == os.path.realpath(good)
+    assert os.path.exists(bin_dir / "kirocrew"), "shim must not be left dangling"
+
+
+# --------------------------------------------------------------------------
 # clean_stale_managed_mcp — edge cases + command-based (playwright) purge
 # --------------------------------------------------------------------------
 def test_clean_stale_missing_file_returns_empty(tmp_path, monkeypatch):

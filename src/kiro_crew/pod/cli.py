@@ -247,6 +247,25 @@ def _url(cfg: PodConfig, args: argparse.Namespace) -> None:
     print(f"http://127.0.0.1:{rt.derive_port(cfg, name)}")
 
 
+def _exec(cfg: PodConfig, args: argparse.Namespace) -> None:
+    name = rt.validate_name(args.name)
+    argv = list(args.argv or [])
+    if not argv:
+        _die("nothing to run — usage: kirocrew pod exec <name> -- <args…>")
+    # Validate BEFORE auditing: emitting "allowed" and then having the runtime
+    # refuse the verb would record the opposite of the decision actually taken,
+    # which is worse than no audit trail at all — SEL would attest that a denied
+    # `service uninstall` was permitted.
+    try:
+        rt.require_pod_safe_verb(argv, name)
+    except rt.PodError as exc:
+        _audit("pod.exec", "denied", f"name={name} argv={argv[0]}", error=str(exc))
+        _die(str(exc))
+    _audit("pod.exec", "allowed", f"name={name} argv={argv[0]}")
+    # execve replaces this process; on success nothing below runs.
+    sys.exit(rt.exec_in_pod(cfg, name, argv))
+
+
 def _logs(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     subprocess.run(
@@ -316,13 +335,17 @@ _VERBS: dict[str, PodHandler] = {
     "provision": _provision,
     "_run": _run_internal,
     "_cleanup": _cleanup_internal,
+    "exec": _exec,
 }
 
 
 def dispatch(args: argparse.Namespace) -> None:
     action = getattr(args, "pod_action", None)
     if not action:
-        print("Usage: kirocrew pod {up|down|ls|status|token|url|logs|install|provision} …")
+        print(
+            "Usage: kirocrew pod "
+            "{up|down|ls|status|token|url|logs|exec|install|provision} …"
+        )
         sys.exit(2)
     cfg = PodConfig.load()
     handler = _VERBS.get(action)

@@ -1132,7 +1132,7 @@ Examples:
     )
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
-        metavar="{up,down,ls,status,token,url,logs,provision,install}",
+        metavar="{up,down,ls,status,token,url,logs,exec,provision,install}",
     )
     pod_up = pod_sub.add_parser("up", help="Schedule an isolated pod for a worktree")
     pod_up.add_argument("name", help="Worktree name")
@@ -1159,6 +1159,19 @@ Examples:
     pod_logs = pod_sub.add_parser("logs", help="Tail a pod's journal")
     pod_logs.add_argument("name", help="Worktree name")
     pod_logs.add_argument("-n", "--lines", type=int, default=50, help="Lines to tail (default: 50)")
+    pod_exec = pod_sub.add_parser(
+        "exec",
+        help="Run a kirocrew command against a pod, using the pod's own binary and data",
+    )
+    pod_exec.add_argument("name", help="Worktree name")
+    # REMAINDER so the pod's own flags (--json, -n, --ttl …) reach the child
+    # instead of being claimed by this parser.
+    pod_exec.add_argument(
+        "argv",
+        nargs=argparse.REMAINDER,
+        metavar="-- ARGS",
+        help="Command to run in the pod, e.g. `-- status` or `-- cron list`",
+    )
     pod_prov = pod_sub.add_parser("provision", help="Build a worktree's venv + SPA dist")
     pod_prov.add_argument("name", help="Worktree name")
     pod_prov.add_argument(
