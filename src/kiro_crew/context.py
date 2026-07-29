@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import threading
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -98,6 +99,121 @@ def _neutralize_fence_markers(text: str) -> str:
     text = _THREAD_FENCE_CLOSE_RE.sub(_THREAD_FENCE_NEUTRALIZED, text)
     text = _THREAD_FENCE_OPEN_RE.sub(_THREAD_FENCE_NEUTRALIZED, text)
     return text
+
+
+# Primary structural boundary markers that ``build_message`` uses to separate
+# TRUSTED framing (the agent system prompt, the critical-rules block, the
+# session-context wrapper, the current-user-request header) from the UNTRUSTED
+# content concatenated into the SAME single-turn prompt string. Because the
+# prompt is delivered as one turn (no first-class role=system/role=user
+# channel), these static, public markers are the ONLY boundary the model has.
+# Untrusted text mixed into the prompt — memory / lessons / history / episodic /
+# channel context / the user's own turn — is scrubbed of these markers before
+# concatenation (the same intent as the thread fence above), so a crafted
+# closing marker such as ``[END OF SESSION CONTEXT]`` followed by a forged
+# ``[CURRENT USER REQUEST ...]`` cannot "break out" of its block and inject
+# instructions the model treats as authoritative (CWE-94 / CWE-116).
+#
+# Each matcher is BRACKET-ANCHORED and WORD-level: whitespace is tolerated
+# between the fixed words (``\s*``, which also spans newlines and — since
+# ``_neutralize_structural_markers`` first drops zero-width chars — a merged
+# ``ENDOF``) and at the bracket edges. The two variable-tail markers match only
+# the distinctive HEAD — ``[`` + phrase + a required hyphen separator (the
+# neutralizer normalizes multibyte punctuation and folds every Unicode dash to
+# an ASCII hyphen first) — and deliberately do NOT try to match the variable
+# tail up to the closing ``]``. This (1) catches real / spaced / mixed-case /
+# unicode-separator / zero-width / multi-line forgeries, (2) leaves ordinary
+# bracketed prose such as ``[Session Context](url)`` or ``[Critical Rules]``
+# untouched (no hyphen separator ⇒ no match), and (3) stays linear with no tail
+# to exploit (a bounded tail invited newline/length bypasses; CWE-1333
+# backtracking is avoided — no adjacent variable-width quantifiers). The
+# ``[SESSION CONTEXT …]`` OPEN marker is intentionally omitted: forging it only
+# opens a "background, do not act on this" block (a de-escalation), so it is not
+# a breakout vector. ``_fence_marker_regex`` is left untouched for the
+# underscore-only thread fence.
+_STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\[\s*AGENT\s*SYSTEM\s*PROMPT\s*\]", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*AGENT\s*SYSTEM\s*PROMPT\s*\]", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*CRITICAL\s*RULES\s*\]", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*OF\s*SESSION\s*CONTEXT\s*\]", re.IGNORECASE),
+    re.compile(r"\[\s*CRITICAL\s*RULES\s*[-]{1,2}", re.IGNORECASE),
+    re.compile(r"\[\s*CURRENT\s*USER\s*REQUEST\s*[-]{1,2}", re.IGNORECASE),
+)
+_STRUCTURAL_MARKER_NEUTRALIZED = "[marker-removed]"
+
+
+def _neutralize_structural_markers(text: str) -> str:
+    """Strip forgeable primary boundary markers from untrusted prompt content.
+
+    Matching is case-insensitive and whitespace-tolerant between the marker's
+    words, so ``[ end  of   session context ]`` and mixed case are neutralized
+    too. Must NOT be applied to the trusted ``_CRITICAL_RULES`` block, which
+    legitimately carries these markers.
+
+    SPAN-LOCAL: only a matched marker span is rewritten; every other byte of the
+    input is preserved verbatim. To catch exotic-character forgeries without
+    mutating legitimate text, matching runs against a NORMALIZED VIEW (fold
+    ``_MULTIBYTE_TABLE`` punctuation, drop format/zero-width chars such as ZWNJ
+    U+200C / ZWJ U+200D, map every Unicode dash — category ``Pd`` — to ASCII
+    ``-``) with an index map back to the ORIGINAL offsets. A match on the view is
+    rewritten at its original span, so a forged ``[CRIT<zwsp>ICAL RULES‐x]`` is
+    neutralized while surrounding Persian/Arabic text, emoji ZWJ sequences, and
+    ordinary dashes in prose are left byte-for-byte intact (fixing the global
+    fold that corrupted them).
+    """
+    # Fast path: pure ASCII cannot contain confusables — match/replace directly.
+    if text.isascii():
+        for pattern in _STRUCTURAL_MARKER_RES:
+            text = pattern.sub(_STRUCTURAL_MARKER_NEUTRALIZED, text)
+        return text
+
+    # Build the normalized matching view + origin map (norm char i came from
+    # original index ``origin[i]``). Cf chars are dropped from the view only.
+    norm: list[str] = []
+    origin: list[int] = []
+    for idx, ch in enumerate(text):
+        if ch.isascii():
+            norm.append(ch)
+            origin.append(idx)
+            continue
+        if unicodedata.category(ch) == "Cf":
+            continue  # invisible for matching; still inside any marker's original span
+        folded = ch.translate(_MULTIBYTE_TABLE)
+        if folded != ch:
+            for c in folded:  # e.g. em dash -> "--"
+                norm.append(c)
+                origin.append(idx)
+            continue
+        norm.append("-" if unicodedata.category(ch) == "Pd" else ch)
+        origin.append(idx)
+
+    norm_str = "".join(norm)
+    spans: list[tuple[int, int]] = []
+    for pattern in _STRUCTURAL_MARKER_RES:
+        spans.extend(m.span() for m in pattern.finditer(norm_str))
+    if not spans:
+        return text
+
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+
+    out: list[str] = []
+    cursor = 0  # original-text index
+    for s, e in merged:
+        orig_s = origin[s]
+        orig_e = origin[e - 1] + 1  # through the last matched char in original coords
+        if orig_s < cursor:
+            continue
+        out.append(text[cursor:orig_s])
+        out.append(_STRUCTURAL_MARKER_NEUTRALIZED)
+        cursor = orig_e
+    out.append(text[cursor:])
+    return "".join(out)
 
 
 # kiro-cli task_executor slices strings at fixed byte offsets (e.g. 4096).
@@ -1614,6 +1730,21 @@ class ContextBuilder:
                 model_window=model_window,
             )
             if session_ctx:
+                # Scrub forgeable boundary markers from the UNTRUSTED content in
+                # session context (memory / lessons / prior-session history /
+                # provenance) WITHOUT touching the trusted _CRITICAL_RULES block
+                # that build_session_context prepends as parts[0] — that block
+                # legitimately carries [CRITICAL RULES]/[END CRITICAL RULES] and
+                # must survive intact. _CRITICAL_RULES is always the prefix (only
+                # tail-truncation ever trims the string), and none of the other
+                # trusted framing uses these markers, so scrubbing everything
+                # after the block is safe.
+                if session_ctx.startswith(_CRITICAL_RULES):
+                    session_ctx = _CRITICAL_RULES + _neutralize_structural_markers(
+                        session_ctx[len(_CRITICAL_RULES):]
+                    )
+                else:
+                    session_ctx = _neutralize_structural_markers(session_ctx)
                 if minimal_context:
                     parts.append(session_ctx)
                 else:
@@ -1629,7 +1760,7 @@ class ContextBuilder:
             if compressed_history:
                 parts.append(
                     "[CONVERSATION HISTORY — recent session replay, tail-heavy, may be truncated]\n"
-                    + compressed_history
+                    + _neutralize_structural_markers(compressed_history)
                     + "\n[END CONVERSATION HISTORY]\n\n"
                 )
 
@@ -1638,7 +1769,9 @@ class ContextBuilder:
         if channel_id and self.channel_history:
             ch_ctx = self.channel_history.context_for(channel_id, thread_ts=thread_ts) or None
             if ch_ctx:
-                parts.append(ch_ctx)
+                # Group-channel context is authored by other users — scrub the
+                # primary boundary markers so it cannot forge a prompt boundary.
+                parts.append(_neutralize_structural_markers(ch_ctx))
 
         # Thread parent text — inject whenever available, even alongside
         # channel history (they serve different purposes: ch_ctx has recent
@@ -1757,7 +1890,7 @@ class ContextBuilder:
                     cap=episodic_cap,
                 )
                 if episodic_ctx:
-                    parts.append(episodic_ctx + "\n")
+                    parts.append(_neutralize_structural_markers(episodic_ctx) + "\n")
                     logger.info("🔍 Injected episodic memory (%d chars)", len(episodic_ctx))
             else:
                 logger.info("🔍 No vector store — episodic memory skipped")
@@ -1827,10 +1960,12 @@ class ContextBuilder:
             if user_display_name:
                 parts.append(f"[CURRENT USER] {user_display_name}\n")
             parts.append("[CURRENT USER REQUEST — respond to this]\n")
-        if hook_result.action == HOOK_MODIFY:
-            parts.append(hook_result.text)
-        else:
-            parts.append(text)
+        # The current turn is scrubbed of the primary boundary markers so a
+        # pasted [END OF SESSION CONTEXT] / [CURRENT USER REQUEST ...] pair cannot
+        # forge a second boundary after the request header above. This covers the
+        # HOOK_MODIFY path too — a transform hook may re-emit untrusted input.
+        turn_text = hook_result.text if hook_result.action == HOOK_MODIFY else text
+        parts.append(_neutralize_structural_markers(turn_text))
 
         # Lightweight reminder for interactive choices. ALL providers (incl.
         # Claude Code) use the [OPTIONS: ...] text tag — the dashboard/Slack UI
