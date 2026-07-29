@@ -14,39 +14,14 @@
  * Usage: node scripts/capture-default-model.mjs [outDir]
  */
 import { chromium } from 'playwright'
-import { mkdirSync, readFileSync, existsSync, statSync } from 'node:fs'
-import { createServer } from 'node:http'
-import { join, extname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { mkdirSync } from 'node:fs'
+import { serveDist } from './lib/serve-dist.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/default-model'
-// fileURLToPath, not URL.pathname: on Windows .pathname yields "/C:/…", which
-// join() then turns into an invalid "\C:\…" and every read fails with ENOENT.
-const DIST = fileURLToPath(new URL('../dist/', import.meta.url))
 const SLOT = 'chat-default-model'
 const PROJECT = '/home/user/workspace/KiroCrew'
 
 mkdirSync(OUT, { recursive: true })
-
-const MIME = {
-  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
-  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
-  '.woff2': 'font/woff2', '.woff': 'font/woff', '.ico': 'image/x-icon',
-}
-
-/** Static server with index.html fallback so /settings deep-links resolve. */
-function serveDist() {
-  return new Promise(resolve => {
-    const srv = createServer((req, res) => {
-      const rel = decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/^\/+/, '')
-      let file = join(DIST, rel)
-      if (!rel || !existsSync(file) || statSync(file).isDirectory()) file = join(DIST, 'index.html')
-      res.writeHead(200, { 'Content-Type': MIME[extname(file)] || 'application/octet-stream' })
-      res.end(readFileSync(file))
-    })
-    srv.listen(0, '127.0.0.1', () => resolve({ srv, base: `http://127.0.0.1:${srv.address().port}` }))
-  })
-}
 
 /** The model list /api/models would return from a live kiro-cli. */
 const MODELS = [

@@ -313,6 +313,11 @@ export function AboutPanel() {
                   value={channel === 'insider' ? 'insider' : 'stable'}
                   onChange={next => { if (next !== channel && !channelMutation.isPending) channelMutation.mutate(next) }}
                   layoutId="update-channel"
+                  // Both lanes stay visible: the wrapper is shrink-0 (so the
+                  // responsive measurement would be circular) and Card's
+                  // .card-glow rule would trap a dropdown overlay under the
+                  // Platform row below.
+                  collapse={false}
                 />
               </div>
             </div>

@@ -62,24 +62,16 @@ describe('AboutPanel channel switcher', () => {
     )
     const switcher = await screen.findByTestId('channel-switcher')
     expect(switcher).toBeTruthy()
-    // jsdom reports zero width, so SegmentedControl renders its responsive
-    // dropdown mode: a toggle labeled with the current lane, options after
-    // opening. The mode is decided by a measure() effect + ResizeObserver, so
-    // an initial 'full' render can flip to 'dropdown' asynchronously and
-    // unmount the option between find and click. Retry open+select+assert in a
-    // single waitFor so a mode re-render (or CI slowness) can't strand it:
-    // reopen the dropdown when the option isn't shown, otherwise pick Insider.
-    await waitFor(
-      () => {
-        if (screen.queryAllByRole('button', { name: /insider/i }).length === 0) {
-          fireEvent.click(screen.getByRole('button', { name: /stable/i }))
-        }
-        const insiders = screen.getAllByRole('button', { name: /insider/i })
-        fireEvent.click(insiders[insiders.length - 1]) // the option, not a toggle
-        expect(setChannel).toHaveBeenCalledWith('insider')
-      },
-      { timeout: 3000 },
-    )
+    // jsdom reports zero width, so the responsive measurement would collapse
+    // the control to its dropdown mode -- where the overlay is trapped beneath
+    // the Platform row by .card-glow's `> * { z-index: 1 }`. collapse={false}
+    // keeps both lanes rendered side by side, one click away.
+    const stable = screen.getByRole('button', { name: /stable/i })
+    const insider = screen.getByRole('button', { name: /insider/i })
+    expect(switcher.contains(stable)).toBe(true)
+    expect(switcher.contains(insider)).toBe(true)
+    fireEvent.click(insider)
+    await waitFor(() => expect(setChannel).toHaveBeenCalledWith('insider'))
   })
 
   it('does not call setChannel when re-picking the current lane', async () => {
@@ -89,12 +81,9 @@ describe('AboutPanel channel switcher', () => {
       setChannel,
     )
     await screen.findByTestId('channel-switcher')
-    // Open the dropdown (toggle carries the current lane's label), then
-    // re-pick the CURRENT lane -- onChange fires but the handler must not
-    // call setChannel for a no-op selection.
+    // Re-pick the CURRENT lane -- onChange fires but the handler must not call
+    // setChannel for a no-op selection.
     fireEvent.click(screen.getByRole('button', { name: /stable/i }))
-    const stableButtons = await screen.findAllByRole('button', { name: /stable/i })
-    fireEvent.click(stableButtons[stableButtons.length - 1]) // the option, not the toggle
     await new Promise(r => setTimeout(r, 20))
     expect(setChannel).not.toHaveBeenCalled()
   })

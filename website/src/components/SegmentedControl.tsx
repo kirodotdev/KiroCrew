@@ -15,11 +15,21 @@ interface SegmentedControlProps<T extends string = string> {
   value: T
   onChange: (value: T) => void
   layoutId?: string
+  /**
+   * Responsive collapsing (full -> compact -> dropdown) is measured against the
+   * PARENT element, so it only works when the parent's width is independent of
+   * this control. Pass false when the parent hugs its content (`shrink-0`,
+   * `inline-flex`, a table cell): the measurement is then circular and the
+   * control collapses to the dropdown for no reason. Also pass false inside a
+   * `.card-glow` Card, where `> * { z-index: 1 }` traps the dropdown overlay
+   * beneath the rows that follow it.
+   */
+  collapse?: boolean
 }
 
 type Mode = 'full' | 'compact' | 'dropdown'
 
-export default function SegmentedControl<T extends string = string>({ segments, value, onChange, layoutId = 'segment' }: SegmentedControlProps<T>) {
+export default function SegmentedControl<T extends string = string>({ segments, value, onChange, layoutId = 'segment', collapse = true }: SegmentedControlProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [mode, setMode] = useState<Mode>('full')
   const [dropdownOpen, setDropdownOpen] = useState(false)
@@ -34,6 +44,7 @@ export default function SegmentedControl<T extends string = string>({ segments, 
   }, [dropdownOpen])
 
   const measure = useCallback(() => {
+    if (!collapse) { setMode('full'); return }
     const el = containerRef.current?.parentElement
     if (!el) return
     const w = el.clientWidth
@@ -43,14 +54,15 @@ export default function SegmentedControl<T extends string = string>({ segments, 
     if (w >= fullWidth) setMode('full')
     else if (w >= compactWidth) setMode('compact')
     else setMode('dropdown')
-  }, [segments.length])
+  }, [segments.length, collapse])
 
   useEffect(() => {
     measure()
+    if (!collapse) return
     const ro = new ResizeObserver(measure)
     if (containerRef.current?.parentElement) ro.observe(containerRef.current.parentElement)
     return () => ro.disconnect()
-  }, [measure])
+  }, [measure, collapse])
 
   const active = segments.find(s => s.key === value)
 
