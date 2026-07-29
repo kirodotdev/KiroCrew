@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Scale, CheckCircle2, AlertCircle, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Package, X } from 'lucide-react'
+import { RefreshCw, Scale, CheckCircle2, AlertCircle, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Package, X, Download } from 'lucide-react'
 import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
 import { useBranding } from '../../hooks/useBranding'
 import { useAppSelector } from '../../store'
@@ -18,6 +18,47 @@ type UpdateState = {
   pubDate?: string
   channel?: string
   message?: string
+  /** Which stage failed. Absent on builds older than the phase-aware emit. */
+  phase?: 'check' | 'download' | 'install'
+  /** Stable failure class; the user-facing copy is chosen from this, not from `message`. */
+  code?: string
+  httpStatus?: number
+  /** Download progress, 0-100. Absent until the first progress event arrives. */
+  percent?: number
+  bytesPerSecond?: number
+}
+
+/** Human-readable transfer rate for the progress label. */
+function formatRate(bps: number): string {
+  if (!Number.isFinite(bps) || bps <= 0) return ''
+  const mb = bps / (1024 * 1024)
+  return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${Math.round(bps / 1024)} KB/s`
+}
+
+/**
+ * User-facing copy for a failure class. `message` from the updater is raw
+ * library text (multi-line HttpError dumps, digest comparisons), so it is only
+ * used as a last-resort detail for an unclassified failure.
+ */
+function updateErrorText(st: UpdateState | null | undefined): string {
+  const ap = 'pages.settings.aboutPanel.'
+  switch (st?.code) {
+    case 'offline': return i18nT(ap + 'update_error_offline')
+    case 'server': {
+      // Guard the interpolation: i18nT returns undefined for a key missing from
+      // every catalog, and calling .replace() on that took the whole panel down
+      // via the error boundary. A status-less fallback is strictly better than a
+      // blank Settings page.
+      const template = i18nT(ap + 'update_error_server_status')
+      return st.httpStatus && typeof template === 'string'
+        ? template.replace('{{status}}', String(st.httpStatus))
+        : i18nT(ap + 'update_error_server')
+    }
+    case 'no-release': return i18nT(ap + 'update_error_no_release')
+    case 'integrity': return i18nT(ap + 'update_error_integrity')
+    case 'misconfigured': return i18nT(ap + 'update_error_misconfigured')
+    default: return st?.message || i18nT(ap + 'update_error_unknown')
+  }
 }
 
 type UpdateInfo = {
@@ -27,6 +68,8 @@ type UpdateInfo = {
   channelSwitchable?: boolean
   channelPreference?: string
   platform?: string
+  /** Manual-reinstall permalink from the main process; absent when no lane. */
+  downloadUrl?: string | null
   packaged?: boolean
   disabled?: string
 }
@@ -103,6 +146,14 @@ export function AboutPanel() {
   // and installing each happen only when the user clicks.
   const downloadMutation = useMutation({ mutationFn: () => desktopApi!.download() })
   const installMutation = useMutation({ mutationFn: () => desktopApi!.install() })
+  // Install is a ONE-WAY door, so the control must never become actionable
+  // again. Note isSuccess, not just isPending: `update:install` resolves as soon
+  // as the install is DISPATCHED, and on macOS the platform installer then works
+  // for several more seconds before the app quits. Keying `disabled` on
+  // isPending alone let the button re-arm during that window, so the user saw a
+  // clickable "Restart & Update" followed by an unexplained quit -- which reads
+  // as a crash.
+  const installDispatched = installMutation.isPending || installMutation.isSuccess
   // Channel switcher (stable ⇄ insider opt-in). Switching persists the
   // preference and triggers a check; the other channel's build then arrives
   // as the normal consent card above -- never an automatic install. Nightly
@@ -124,16 +175,39 @@ export function AboutPanel() {
     status = <span className="text-muted flex items-center gap-1.5"><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.checking_for_updates')}</span>
   } else if (updateState?.state === 'not-available') {
     status = <span className="text-ok flex items-center gap-1.5"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_are_on_the_latest_version')}</span>
-  } else if (updateState?.state === 'error') {
-    status = <span className="text-danger flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates')}{updateState.message ? `: ${updateState.message}` : ''}.</span>
+  } else if (updateState?.state === 'error' && updateState.phase !== 'download' && updateState.phase !== 'install') {
+    // Download failures are NOT rendered here: they render inside the update
+    // card so the found version stays on screen and can be retried (#735).
+    status = <span className="text-danger flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates')}: {updateErrorText(updateState)}</span>
   }
 
   // Update card: shown whenever an update is found / downloading / ready.
   const cardState = updateState?.state
-  const showUpdateCard = !checking && (cardState === 'found' || cardState === 'available' || cardState === 'downloading' || cardState === 'downloaded')
+  // A download-phase failure keeps the card: the user consented to this
+  // version, so losing it on a transient error would strand them with a check
+  // complaint and no way back (#735).
+  // Both post-consent phases keep the card mounted: they are the states where a
+  // Retry and the manual-reinstall link are the user's only way forward. A
+  // CHECK failure has no card to keep (nothing was ever offered) and stays in
+  // the status line.
+  const cardFailedPhase = updateState?.phase === 'download' || updateState?.phase === 'install'
+  const cardFailed = cardState === 'error' && cardFailedPhase
+  const cardInstallFailed = cardState === 'error' && updateState?.phase === 'install'
+  const showUpdateCard = !checking && (cardState === 'found' || cardState === 'available' || cardState === 'downloading' || cardState === 'downloaded' || cardFailed)
   const cardBusy = cardState === 'available' || cardState === 'downloading'
   const cardReady = cardState === 'downloaded'
+  // Determinate only once a progress event has arrived; before that the label
+  // stays indeterminate, since `percent` is optional in the emit.
+  const cardPercent = cardState === 'downloading' && typeof updateState?.percent === 'number'
+    ? Math.max(0, Math.min(100, updateState.percent))
+    : null
   const cardPubDate = updateState?.pubDate ? new Date(updateState.pubDate) : null
+  // Escape hatch shown once the installer is the thing that could fail. The URL
+  // is built in the main process (auto-update.js manualDownloadUrl) because only
+  // it knows the real platform -- getInfo().platform is a display string that
+  // reports its darwin default everywhere.
+  const manualUrl = info?.downloadUrl || null
+  const showManualFallback = !!manualUrl && (cardReady || cardFailed)
   const updateCard: React.ReactNode = showUpdateCard ? (
     <div className="p-3 bg-bg rounded-lg border border-border flex flex-col gap-2" data-testid="update-card">
       <div className="flex items-start justify-between gap-3">
@@ -149,20 +223,75 @@ export function AboutPanel() {
         </div>
         <div className="shrink-0">
           {cardReady ? (
-            <Btn primary onClick={() => installMutation.mutate()} disabled={installMutation.isPending}>
-              <RefreshCw size={13} className={`lucide-inline ${installMutation.isPending ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.restart_update')}
+            <Btn primary onClick={() => installMutation.mutate()} disabled={installDispatched}>
+              <RefreshCw size={13} className={`lucide-inline ${installDispatched ? 'animate-spin' : ''}`} /> {installMutation.isSuccess
+                ? i18nT('pages.settings.aboutPanel.restarting')
+                : i18nT('pages.settings.aboutPanel.restart_update')}
             </Btn>
           ) : (
             <Btn primary onClick={() => downloadMutation.mutate()} disabled={cardBusy || downloadMutation.isPending}>
               {cardBusy || downloadMutation.isPending
                 ? (<><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.downloading')}</>)
-                : (<><ArrowUp size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.download_install')}</>)}
+                : cardFailed
+                  ? (<><RefreshCw size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.retry')}</>)
+                  : (<><ArrowUp size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.download_install')}</>)}
             </Btn>
           )}
         </div>
       </div>
+      {cardState === 'downloading' && (
+        <>
+          <div
+            className="h-1 bg-border rounded-full overflow-hidden"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            {...(cardPercent === null ? {} : { 'aria-valuenow': Math.round(cardPercent) })}
+            data-testid="update-progress"
+          >
+            <div
+              className={`h-full bg-accent ${cardPercent === null ? 'w-1/3 animate-pulse' : ''}`}
+              style={cardPercent === null ? undefined : { width: `${cardPercent}%` }}
+            />
+          </div>
+          <span className="text-[12px] text-muted" data-testid="update-progress-label">
+            {cardPercent === null
+              ? i18nT('pages.settings.aboutPanel.downloading')
+              : `${Math.round(cardPercent)}%${updateState?.bytesPerSecond ? ` · ${formatRate(updateState.bytesPerSecond)}` : ''}`}
+          </span>
+        </>
+      )}
+      {cardFailed && (
+        <span className="text-[12px] text-danger flex items-start gap-1.5" data-testid="update-download-error">
+          <AlertCircle size={13} className="lucide-inline shrink-0" />
+          <span>{i18nT(cardInstallFailed ? 'pages.settings.aboutPanel.install_failed' : 'pages.settings.aboutPanel.download_failed')}: {updateErrorText(updateState)}</span>
+        </span>
+      )}
       {cardReady && (
         <span className="text-[12px] text-muted">{i18nT('pages.settings.aboutPanel.downloaded_and_verified_the_app_restarts_to_fini')}</span>
+      )}
+      {showManualFallback && (
+        <span className="text-[12px] text-muted flex items-start gap-1.5 pt-0.5 border-t border-border" data-testid="update-manual-fallback">
+          <Download size={13} className="lucide-inline shrink-0 mt-2" />
+          <span className="pt-1.5">
+            {/* ONE catalog string with a {{link}} placeholder: assembling the
+                sentence from separate fragments would lock every language into
+                English clause order. */}
+            {(() => {
+              const tpl = i18nT('pages.settings.aboutPanel.manual_install_fallback') || ''
+              const [before, after] = tpl.split('{{link}}')
+              return (
+                <>
+                  {before}
+                  <a href={manualUrl!} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                    {i18nT('pages.settings.aboutPanel.download_the_latest_version')}
+                  </a>
+                  {after ?? ''}
+                </>
+              )
+            })()}
+          </span>
+        </span>
       )}
       {updateState?.notes ? (
         <div className="p-2.5 bg-card rounded-md border border-border max-h-40 overflow-y-auto text-[12px] text-text whitespace-pre-wrap">{updateState.notes}</div>

@@ -137,12 +137,21 @@ test("configureUpdater: autoDownload=false (consent-first: discovery must never 
   assert.strictEqual(updater.autoDownload, false);
 });
 
-test("configureUpdater: autoInstallOnAppQuit=false (gateway must stop before the bundle swap)", () => {
+test("configureUpdater: autoInstallOnAppQuit=false on EVERY platform", () => {
+  for (const osPlatform of ["darwin", "linux", "win32"]) {
+    const updater = {};
+    configureUpdater(updater, osPlatform);
+    assert.strictEqual(updater.autoInstallOnAppQuit, false, osPlatform);
+  }
+  // Library default is TRUE, and it is unsafe on all three for two DIFFERENT
+  // reasons. Off darwin, BaseUpdater.addQuitHandler() swaps the bundle on quit
+  // without stopping the Python gateway. ON darwin the flag instead controls
+  // when Squirrel is handed the zip -- and staging is what ARMS ShipIt, a
+  // launchd job that swaps on any process death. Keeping it false is what makes
+  // the gateway-before-swap ordering self-enforcing: Squirrel has no bytes until
+  // quitAndInstall(), which is only reachable after an awaited stopGateway().
   const updater = {};
   configureUpdater(updater);
-  // Library default is TRUE: it would swap the bundle on quit WITHOUT
-  // stopping the bundled Python gateway -- the half-replaced-app race this
-  // module exists to prevent. deferredInstallOnQuit() does it in order.
   assert.strictEqual(updater.autoInstallOnAppQuit, false);
 });
 

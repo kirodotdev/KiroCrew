@@ -88,7 +88,20 @@
         "automatic_updates_unavailable_dev_build": "Automatic updates are unavailable in this build (development build).",
         "automatic_updates_unavailable_platform": "Automatic updates are unavailable in this build on this platform.",
         "automatic_updates_unavailable_translocated": "Automatic updates are unavailable because macOS is running this app from a temporary read-only copy. Move it to your Applications folder and reopen it.",
-        "automatic_updates_unavailable_volume": "Automatic updates are unavailable because this app is running from a read-only disk image. Move it to your Applications folder and reopen it."
+        "automatic_updates_unavailable_volume": "Automatic updates are unavailable because this app is running from a read-only disk image. Move it to your Applications folder and reopen it.",
+        "download_failed": "Download failed",
+        "download_the_latest_version": "download the latest version",
+        "install_failed": "Couldn’t install the update",
+        "manual_install_fallback": "If updating doesn't work, you can {{link}} and reinstall over this copy. Your settings, chats, and files are kept.",
+        "restarting": "Restarting...",
+        "retry": "Retry",
+        "update_error_integrity": "The download failed its integrity check and was discarded.",
+        "update_error_misconfigured": "This build can't check for updates. Reinstall to fix it.",
+        "update_error_no_release": "No update has been published for this channel yet.",
+        "update_error_offline": "Couldn't reach the update server. Check your connection.",
+        "update_error_server": "The update server returned an error.",
+        "update_error_server_status": "The update server returned an error (HTTP {{status}}).",
+        "update_error_unknown": "Something went wrong. Try checking for updates again."
       }
     }
   }

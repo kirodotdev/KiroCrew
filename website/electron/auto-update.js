@@ -70,6 +70,12 @@ const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndI
 /** Platforms with a working publish lane + updater. win32 lands with NSIS (#598). */
 const SUPPORTED_PLATFORMS = new Set(["darwin", "linux"]);
 
+// Byte host for human (manual) downloads -- deliberately the same CDN the
+// updater pulls from, so a manual reinstall lands on identical artifacts.
+const DOWNLOAD_BASE = "https://download.crew.kiro.dev";
+// Channels with a desktop publish lane. "dev" has none.
+const KNOWN_CHANNELS = new Set(["nightly", "insider", "stable"]);
+
 /**
  * Map the build flavor ("beta" | "stable") to an update channel. Retained
  * for the internal beta flavor and as the fallback when the running version
@@ -157,6 +163,38 @@ function buildFeedBase({ base, channel }) {
 }
 
 /**
+ * Human download permalink for a channel + platform, or null when there is no
+ * publish lane (dev builds, Windows until the NSIS migration).
+ *
+ * Why the UI needs this: an update that downloads but fails to APPLY leaves the
+ * user with no next step -- the card simply re-offers the same update after
+ * relaunch (observed in the field on 0.1.2-nightly.20260729t073648). Reinstalling
+ * over the top is the supported recovery and is non-destructive: user data lives
+ * in the KiroCrew home directory, never inside the app bundle.
+ *
+ * Computed HERE rather than in the renderer because the renderer has no
+ * trustworthy platform: getInfo()'s `platform` field is a display string that
+ * main.js does not currently supply, so it reports its "darwin-arm64" default on
+ * every OS. osPlatform is the real one.
+ *
+ * Paths are the documented mutable "latest" aliases (max-age=300).
+ *
+ * @param {string} channel    resolved update channel
+ * @param {string} osPlatform process.platform value
+ * @returns {string|null}
+ */
+function manualDownloadUrl(channel, osPlatform) {
+  if (!KNOWN_CHANNELS.has(channel)) return null;
+  const file = osPlatform === "darwin"
+    ? "KiroCrew.dmg"
+    : osPlatform === "linux"
+      ? "KiroCrew-x86_64.AppImage"
+      : null;
+  if (!file) return null;
+  return `${DOWNLOAD_BASE}/desktop/${channel}/latest/${file}`;
+}
+
+/**
  * Apply the update-policy flags this app REQUIRES. Every one of these differs
  * from the electron-updater default, and each maps to a decision we already
  * made deliberately — so they are set in one audited place rather than
@@ -165,10 +203,50 @@ function buildFeedBase({ base, channel }) {
  * - autoDownload=false        consent-first UX: discovery must never download.
  *                             The default (true) would download megabytes on a
  *                             background check with no user action.
- * - autoInstallOnAppQuit=false the default would swap the bundle on quit
- *                             WITHOUT stopping the Python gateway — exactly the
- *                             half-replaced-app race this module prevents.
- *                             deferredInstallOnQuit() does it in the right order.
+ * - autoInstallOnAppQuit=false FALSE ON EVERY PLATFORM, for two different
+ *                             reasons -- electron-updater gives this one flag
+ *                             two unrelated meanings:
+ *
+ *                             • Linux/Windows (AppImageUpdater/NsisUpdater
+ *                               extend BaseUpdater): it means what the name
+ *                               says. BaseUpdater.addQuitHandler() installs on
+ *                               quit WITHOUT stopping the Python gateway.
+ *                               deferredInstallOnQuit() does it in order.
+ *
+ *                             • macOS (MacUpdater extends AppUpdater, NOT
+ *                               BaseUpdater, so electron-updater registers no
+ *                               quit handler at all): it decides WHEN Squirrel
+ *                               is handed the zip. That is NOT merely a latency
+ *                               choice, because Squirrel.Mac arms the installer
+ *                               at STAGE time, not at install time:
+ *                               SQRLUpdater's prepareUpdateForInstallation
+ *                               writes ShipItState.plist and LAUNCHES ShipIt,
+ *                               a launchd job that waits on our pid and swaps
+ *                               the bundle as soon as we die -- by any exit,
+ *                               including a crash, Force Quit or logout.
+ *                               Electron documents the consequence: "a
+ *                               successfully downloaded update will always be
+ *                               applied the next time the application starts."
+ *                               quitAndInstall() only flips
+ *                               launchAfterInstallation and terminates.
+ *
+ *                               Keeping this false is therefore what makes the
+ *                               gateway-before-swap ordering SELF-ENFORCING:
+ *                               Squirrel cannot swap because it does not have
+ *                               the bytes until quitAndInstall(), which is only
+ *                               reachable after an awaited stopGateway(). There
+ *                               is no API to un-arm ShipIt once armed, so
+ *                               eager staging would also defeat retraction --
+ *                               a withdrawn build would still install on quit.
+ *
+ *                               Cost of this choice: the ~350MB loopback pull
+ *                               happens inside quitAndInstall(), so the handoff
+ *                               is slow. forceExitFailsafe() is gated on
+ *                               before-quit-for-update precisely because of
+ *                               that. Making staging eager safely needs an
+ *                               "armed" flag that is never cleared plus an
+ *                               awaited stopGateway() on EVERY quit path.
+ *
  * - allowDowngrade=true       our update gate is DIFFERENCE-based, not
  *                             greater-than: a feed repointed to an older
  *                             version must be offered. This is what makes
@@ -181,9 +259,57 @@ function buildFeedBase({ base, channel }) {
  */
 function configureUpdater(autoUpdater) {
   autoUpdater.autoDownload = false;
+  // Never true. See the note above: on darwin this is a staging-time switch and
+  // staging is what arms ShipIt, so flipping it hands Squirrel a licence to swap
+  // the bundle on ANY exit -- including exits that skip our gateway teardown.
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowDowngrade = true;
   autoUpdater.allowPrerelease = true;
+}
+
+/**
+ * Classify an updater failure into a STABLE code the renderer can translate,
+ * plus a short detail string.
+ *
+ * Why a code instead of a message: the pre-migration client hand-rolled its
+ * fetch and so produced its own curated text ("feed HTTP 404", "feed request
+ * timed out"). electron-updater owns fetching now, and its exceptions are
+ * written for developers reading logs -- HttpErrors are multi-line dumps, and a
+ * checksum mismatch is a digest comparison no user can act on. Emitting a code
+ * keeps the user-facing wording in the renderer where it can be localized,
+ * instead of shipping English from the main process (#736).
+ *
+ * `detail` is the first line only, length-capped: enough to disambiguate two
+ * failures of the same class without pasting a stack into a settings panel.
+ * The full error still goes to the log.
+ *
+ * @param {unknown} err
+ * @returns {{code:string, detail:string, httpStatus?:number}}
+ */
+function classifyError(err) {
+  const raw = String((err && err.message) || err || "");
+  const code = (err && err.code) || "";
+  const status = err && (err.statusCode || err.status);
+  const detail = raw.split("\n")[0].slice(0, 200);
+
+  // Order matters: check the specific signals before the generic HTTP one,
+  // since a 404 on the channel file is far more actionable than "HTTP 404".
+  if (code === "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND" || /Cannot find channel/i.test(raw)) {
+    return { code: "no-release", detail };
+  }
+  if (code === "ERR_UPDATER_NO_CHECKSUM" || /sha512|checksum/i.test(raw)) {
+    return { code: "integrity", detail };
+  }
+  if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|timed? ?out/i.test(`${code} ${raw}`)) {
+    return { code: "offline", detail };
+  }
+  if (typeof status === "number") {
+    return { code: "server", detail, httpStatus: status };
+  }
+  if (code === "ERR_UPDATER_INVALID_UPDATE_INFO" || /ENOENT/i.test(`${code} ${raw}`)) {
+    return { code: "misconfigured", detail };
+  }
+  return { code: "unknown", detail };
 }
 
 /**
@@ -205,6 +331,8 @@ function configureUpdater(autoUpdater) {
  *   for the bundle's containing directory. Injected because the real one does
  *   filesystem I/O: a test cannot make /Volumes/X writable, so without a seam
  *   the "writable external disk still updates" case is unassertable.
+ * @param {object} [deps.nativeAutoUpdater]     - Electron's native autoUpdater, observed
+ *   for `before-quit-for-update` to know the installer took over (tests inject a stub)
  * @param {string} [deps.feedBase]             - override feed host
  * @param {(state:object) => void} [deps.onUpdateState] - if provided, the
  *   in-app UI drives the install prompt: state transitions are pushed here
@@ -226,6 +354,14 @@ function initAutoUpdate(deps) {
     osPlatform = process.platform,
     resourcesPath = process.resourcesPath,
     probeBundleWritable = isBundleContainerWritable,
+    // Electron's NATIVE autoUpdater, used only to observe
+    // `before-quit-for-update` -- the signal that the platform installer has
+    // actually taken over (see forceExitFailsafe). electron-updater drives it
+    // internally on macOS; we never call it. Resolved lazily so the module still
+    // loads outside an Electron runtime (tests), where it is simply absent.
+    nativeAutoUpdater = (() => {
+      try { return require("electron").autoUpdater || null; } catch { return null; }
+    })(),
     feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
     onUpdateState = null,
     log = console,
@@ -262,6 +398,8 @@ function initAutoUpdate(deps) {
       channelPreference: getChannelPreference() || "",
       platform,
       packaged: !!app.isPackaged,
+      // Escape hatch for a failed install (see manualDownloadUrl).
+      downloadUrl: manualDownloadUrl(currentChannel(), osPlatform),
     };
   }
 
@@ -333,6 +471,31 @@ function initAutoUpdate(deps) {
    * was downloading the version already installed (fixed in #709; preserved
    * here through the electron-updater migration).
    */
+  /**
+   * Emit a failure WITH ITS PHASE. Without the phase the renderer cannot tell a
+   * discovery failure from a download failure, so it labelled every error
+   * "Couldn't check for updates" and unmounted the update card -- a user who
+   * clicked Download saw a complaint about checking and lost the version they
+   * had just consented to (#735).
+   *
+   * A download-phase failure also carries the pending version, so the card can
+   * stay on screen and offer a retry instead of vanishing.
+   *
+   * @param {"check"|"download"|"install"} phase
+   * @param {unknown} err
+   */
+  function emitError(phase, err) {
+    const { code, detail, httpStatus } = classifyError(err);
+    log.error(`[update] ${phase} failed (${code})`, err);
+    emit("error", {
+      phase,
+      code,
+      message: detail,
+      ...(httpStatus === undefined ? {} : { httpStatus }),
+      ...(phase === "download" ? { version: pendingVersion() } : {}),
+    });
+  }
+
   function pendingVersion() {
     return foundVersion || stagedVersion || app.getVersion();
   }
@@ -376,8 +539,7 @@ function initAutoUpdate(deps) {
       emit("checking");
       await autoUpdater.checkForUpdates();
     } catch (err) {
-      log.error("[update] check failed", err);
-      emit("error", { message: String((err && err.message) || err) });
+      emitError("check", err);
     } finally {
       checking = false;
     }
@@ -407,21 +569,60 @@ function initAutoUpdate(deps) {
       await autoUpdater.downloadUpdate();
     } catch (err) {
       downloading = false;
-      log.error("[update] download failed", err);
-      emit("error", { message: String((err && err.message) || err) });
+      emitError("download", err);
     }
   }
 
-  // The bundle swap aborts if ANY instance of the app is alive during its
-  // install window — and the user silently relaunches into the OLD version. If
-  // anything blocks the Electron quit (a renderer beforeunload, a lingering
-  // child holding the process open), force-exit so the swap can proceed.
+  // Force-exit failsafe — ONLY safe once the platform's installer has actually
+  // taken over.
+  //
+  // Why this is event-gated and not a plain timer: on macOS the expensive work
+  // happens INSIDE quitAndInstall(), not before it. Because
+  // autoInstallOnAppQuit=false (deliberately -- see configureUpdater),
+  // electron-updater withholds the downloaded zip from Squirrel until install
+  // time, so quitAndInstall() returns immediately while Squirrel is still
+  // fetching ~350MB from the loopback proxy, unpacking it and verifying its
+  // signature. A 5s app.exit(0) lands in the middle of that: the staged app is
+  // left on disk, ShipIt is never armed, and the user relaunches into the OLD
+  // version with no error shown. Observed in the field on
+  // 0.1.2-nightly.20260729t073648.
+  //
+  // The pre-migration client was safe with the same 5s constant because it drove
+  // Squirrel directly: "update-downloaded" then meant Squirrel had ALREADY
+  // staged the bundle, so quitAndInstall() was a millisecond-scale handoff. The
+  // migration changed what that event means; the timer did not notice.
+  //
+  //
+  // `before-quit-for-update` is emitted by Electron's native autoUpdater when
+  // the install is genuinely armed and the app is being torn down for it -- the
+  // only signal that proves the handoff happened. Until it fires, exiting can
+  // only destroy the update. On darwin the failsafe therefore stays DISARMED
+  // and Squirrel quits the app itself; the original hazard it guarded (a
+  // renderer beforeunload or lingering child blocking the quit, letting ShipIt
+  // abort with "App Still Running Error" Code=-9) is handled by exiting only
+  // AFTER that event.
   function forceExitFailsafe(reason) {
-    const t = setTimeout(() => {
-      log.error(`[update] process still alive ${FORCE_EXIT_AFTER_MS}ms after quitAndInstall (${reason}) — forcing exit so the install can swap the app`);
-      try { app.exit(0); } catch { process.exit(0); }
-    }, FORCE_EXIT_AFTER_MS);
-    if (typeof t.unref === "function") t.unref();
+    const arm = () => {
+      const t = setTimeout(() => {
+        log.error(`[update] still alive ${FORCE_EXIT_AFTER_MS}ms after the installer took over (${reason}) — forcing exit so the swap can proceed`);
+        try { app.exit(0); } catch { process.exit(0); }
+      }, FORCE_EXIT_AFTER_MS);
+      if (typeof t.unref === "function") t.unref();
+    };
+
+    // The native updater is the one that emits this; electron-updater's
+    // BaseUpdater re-emits it for the platforms it installs itself.
+    const native = nativeAutoUpdater;
+    if (native && typeof native.once === "function") {
+      native.once("before-quit-for-update", () => {
+        log.info(`[update] installer took over (${reason}) — arming the exit failsafe`);
+        arm();
+      });
+      return;
+    }
+    // No native updater surface to listen on (tests, unexpected platform):
+    // fall back to the timer rather than losing the guarantee entirely.
+    arm();
   }
 
   // isSilent=false (no installer UI to suppress on these platforms),
@@ -510,9 +711,12 @@ function initAutoUpdate(deps) {
   }
 
   autoUpdater.on("error", (err) => {
+    // The library funnels every failure through one event, so derive the phase
+    // from what we were doing. Read the flags BEFORE clearing `downloading`, or
+    // a mid-download failure would be reported as a check failure.
+    const phase = downloading ? "download" : installing ? "install" : "check";
     downloading = false;
-    log.error("[update] error", err);
-    emit("error", { message: String((err && err.message) || err) });
+    emitError(phase, err);
   });
   autoUpdater.on("checking-for-update", () => { log.info("[update] checking…"); emit("checking"); });
   autoUpdater.on("update-not-available", () => {
@@ -622,6 +826,9 @@ module.exports = {
   resolveChannel,
   buildFeedBase,
   configureUpdater,
+  classifyError,
+  manualDownloadUrl,
   DEFAULT_FEED_BASE,
+  DOWNLOAD_BASE,
   SUPPORTED_PLATFORMS,
 };
