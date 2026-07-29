@@ -90,6 +90,15 @@ test("win/linux: Help menu is last with About", () => {
   assert.strictEqual(help.submenu[0].label, "About Kiro Crew");
 });
 
+test("win/linux: every custom-titlebar menu has a stable native menu id", () => {
+  const { deps } = makeDeps({ isMac: false });
+  const template = buildMenuTemplate(deps);
+  assert.deepStrictEqual(
+    template.map((item) => item.id),
+    ["file-menu", "edit-menu", "view-menu", "connection-menu", "window-menu", "help-menu"],
+  );
+});
+
 test("win/linux: no macOS-only roles anywhere in the template", () => {
   const { deps } = makeDeps({ isMac: false });
   const template = buildMenuTemplate(deps);

@@ -1224,6 +1224,28 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* Fullscreen: AppKit hides the traffic lights, so the clearance inset drops
    and the branding sits flush left again (back to the header's own pl-5). */
 .mac-electron.mac-fullscreen header.topbar-glass{padding-left:1.25rem}
+/* Windows uses Electron's titleBarOverlay: the dashboard header fills the old
+   frame area while native minimize/maximize/close controls remain on the right.
+   Keep interactive menu buttons out of the drag region and reserve the native
+   caption-control strip so dashboard actions never sit underneath it. */
+.windows-electron header.topbar-glass{
+  padding-right:144px;
+  -webkit-app-region:drag;
+}
+.windows-electron header.topbar-glass button,
+.windows-electron header.topbar-glass a,
+.windows-electron header.topbar-glass input,
+.windows-electron header.topbar-glass [role="button"],
+.windows-electron .windows-titlebar-menu{
+  -webkit-app-region:no-drag;
+}
+.windows-titlebar-menu-item{
+  border:0;
+  background:transparent;
+  font-family:inherit;
+  cursor:default;
+  transition:background-color .12s ease,color .12s ease;
+}
 /* Embedded remote pane (option B): the pane is a separate document loaded in an
    iframe, so its SPA can't see Electron — `isMacElectron` is false inside it and
    the `.mac-electron` rule never applies. The parent relays whether it is a

@@ -34,7 +34,7 @@ import AgentImportFlow from './components/AgentImportFlow'
 import { PREVIEW_FOCUS_EVENT } from './components/WebPreviewPanel'
 import { motion, AnimatePresence } from 'framer-motion'
 import { usePersistedBool } from './hooks/usePersistedBool'
-import { isMacElectron } from './lib/electron'
+import { isMacElectron, isWindowsElectron } from './lib/electron'
 import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragOverlay, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -91,6 +91,7 @@ import { useAgents } from './hooks/useAgents'
 import ShortcutsModal from './components/ShortcutsModal'
 import CommandPalette from './components/CommandPalette'
 import Modal from './components/Modal'
+import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 
 import { i18nT } from './i18n/t'
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
@@ -1377,7 +1378,10 @@ export default function App() {
     if (!brand || !actions) return
     const update = () => {
       const brandWidth = brand.getBoundingClientRect().width
-      const actionsWidth = actions.getBoundingClientRect().width
+      // Windows' native caption controls are overlaid on the right edge of the
+      // 42px header. Include that reserved strip when deciding whether the
+      // genuinely window-centred command palette still has enough room.
+      const actionsWidth = actions.getBoundingClientRect().width + (isWindowsElectron ? 144 : 0)
       if (brandWidth <= 0 || actionsWidth <= 0) return
       const next = calculateTopbarSearchLayout(brandWidth, actionsWidth, window.innerWidth)
       setTopbarSearchLayout(current => current.gutter === next.gutter && current.visible === next.visible ? current : next)
@@ -1455,7 +1459,7 @@ export default function App() {
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
     <div
       data-testid="dashboard-shell"
-      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWindowsElectron ? 'windows-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
       style={{
         gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar topbar" "nav content actbar"',
         ...(!isMobile && {
@@ -1490,6 +1494,7 @@ export default function App() {
           ref={topbarBrandRef}
           className={`relative flex items-center h-full shrink-0 gap-2 ${isMobile ? 'px-2' : ''}`}
         >
+          {!isMobile && isWindowsElectron && <WindowsTitlebarMenu />}
           {isMobile && (
             <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')}>
               <Menu size={20} />
