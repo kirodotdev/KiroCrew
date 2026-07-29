@@ -19,6 +19,7 @@ import {
   TAILWIND_RUNTIME_PATH,
   TAILWIND_RUNTIME_SRC,
 } from './src/lib/vendorPaths'
+import { precompressPlugin } from './scripts/precompress.mjs'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 const backendPort = process.env.KIROCREW_PORT || 5476
@@ -392,7 +393,7 @@ function appWindowUrls(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls()],
+  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
