@@ -118,6 +118,34 @@ class BoundedCapabilityManager:
             self._inner.uninstall_skill(package), timeout=CAPABILITY_UNINSTALL_TIMEOUT
         )
 
+    async def install_agent(self, package: str) -> "CapabilityResult":
+        return await asyncio.wait_for(
+            self._inner.install_agent(package), timeout=CAPABILITY_INSTALL_TIMEOUT
+        )
+
+    async def uninstall_agent(self, package: str) -> "CapabilityResult":
+        return await asyncio.wait_for(
+            self._inner.uninstall_agent(package), timeout=CAPABILITY_UNINSTALL_TIMEOUT
+        )
+
+    async def list_plugins(self) -> List[Dict[str, Any]]:
+        return await asyncio.wait_for(
+            self._inner.list_plugins(), timeout=CAPABILITY_READ_TIMEOUT
+        )
+
+    async def plugins_out_of_sync(self) -> List[str]:
+        return await asyncio.wait_for(
+            self._inner.plugins_out_of_sync(), timeout=CAPABILITY_READ_TIMEOUT
+        )
+
+    async def sync_plugins(self) -> "CapabilityResult":
+        # An INSTALL bound: reconciling drift can shell a package manager once
+        # per drifted package, so it inherits the generous install budget rather
+        # than the tight uninstall one.
+        return await asyncio.wait_for(
+            self._inner.sync_plugins(), timeout=CAPABILITY_INSTALL_TIMEOUT
+        )
+
 
 def bind_capability_manager(inner: "CapabilityManager") -> "CapabilityManager":
     """Return *inner* wrapped in :class:`BoundedCapabilityManager` (idempotent).

@@ -603,6 +603,57 @@ class CapabilityManager(Protocol):
         own output). Conventional keys: ``name``, ``package``, ``version``."""
         ...
 
+    async def install_agent(self, package: str) -> "CapabilityResult":
+        """Install an agent package by name.
+
+        Symmetric with :meth:`install_skill`: the edition resolves version and
+        source internally, so no registry-specific concept reaches the public API.
+        An agent package typically carries agents PLUS its own skills and prompt
+        sources, so a caller should refresh the agent catalog after this returns
+        ``ok`` (the dashboard handler rebuilds the agent config and pushes a
+        refresh).
+        """
+        ...
+
+    async def uninstall_agent(self, package: str) -> "CapabilityResult": ...
+
+    async def list_plugins(self) -> List[Dict[str, Any]]:
+        """Installed editor/CLI plugin packages, as structured rows.
+
+        A "plugin" here is an agent-client integration an edition's package
+        manager can install alongside the agent packages themselves — the rows
+        are informational for the dashboard, which pairs them with
+        :meth:`plugins_out_of_sync` to offer a one-click reconcile. Conventional
+        keys: ``name``, ``package``, ``version``.
+
+        Deliberately generic: the core neither knows nor names any particular
+        client. An edition with no plugin concept returns ``[]`` and the
+        dashboard's reconcile affordance stays hidden.
+        """
+        ...
+
+    async def plugins_out_of_sync(self) -> List[str]:
+        """Packages installed as agents but MISSING their plugin counterpart.
+
+        The drift set — non-empty means the two installers have diverged (an
+        agent package landed without its plugin registration), which presents as
+        an agent the client cannot see. Returning ``[]`` means "in sync" and is
+        also the correct answer for an edition with no plugin concept.
+
+        A READ op: it must not mutate. :meth:`sync_plugins` is the writer.
+        """
+        ...
+
+    async def sync_plugins(self) -> "CapabilityResult":
+        """Reconcile the plugin set with the installed agent packages.
+
+        Installs the plugin counterpart for every package
+        :meth:`plugins_out_of_sync` reports, so the two installers agree. Bounded
+        as an INSTALL op — it may shell a package manager once per drifted
+        package.
+        """
+        ...
+
 
 # ── install / structural extension points ──
 

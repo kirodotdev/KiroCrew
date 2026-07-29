@@ -259,18 +259,19 @@ export class AcpAdapter implements ProviderAdapter {
   }
 
   async installPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp') {
-    // Package (agent) install/uninstall/update routes were removed; only
-    // skill + MCP install remain (Kiro-only apply). The edition capability
-    // manager owns any version/source resolution — no version_set is sent.
+    // The edition capability manager owns any version/source resolution — no
+    // version_set is sent. Agent packages are now installable too (the seam
+    // gained install_agent/uninstall_agent); on an edition without a capability
+    // manager the backend answers 503 and this surfaces as a normal error.
     if (type === 'skill') return api.capabilitySkillsInstall(pkg)
     if (type === 'mcp') return api.capabilityMcpInstall(pkg)
-    return { ok: false as const, error: 'agent install is not supported' }
+    return api.capabilityAgentsInstall(pkg)
   }
 
   async uninstallPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp') {
     if (type === 'skill') return api.capabilitySkillsUninstall(pkg)
     if (type === 'mcp') return api.capabilityMcpUninstall(pkg)
-    return { ok: false as const, error: 'agent uninstall is not supported' }
+    return api.capabilityAgentsUninstall(pkg)
   }
 
   async updatePlugins(_type: 'agent' | 'skill' | 'mcp') {

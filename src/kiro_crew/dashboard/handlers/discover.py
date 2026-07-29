@@ -30,18 +30,51 @@ logger = logging.getLogger(__name__)
 _SAFE_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 
+# Credential-bearing URL query/fragment parameters. ``redact_credentials`` matches
+# credential SHAPES (AKIA…, xoxb-…, PEM headers) and ``redact_exfiltration_urls``
+# is a length/entropy heuristic, so a SHORT opaque value in a conventionally-named
+# parameter -- ``?api_key=abc123`` -- slips past both. Provider and
+# package-manager output is exactly where such a URL appears (an endpoint echoed
+# on failure), so here the parameter NAME is the signal, not the value's shape.
+# The `(?!\[REDACTED)` guard skips a value an earlier layer already replaced.
+# Without it, `?token=AKIA…` (which `redact_credentials` turns into
+# `?token=[REDACTED: credential]`) gets re-matched: the value class stops at the
+# space, so only `[REDACTED:` is replaced and the label is left mangled as
+# `[REDACTED] credential]`. The secret was gone either way — this keeps the
+# message readable.
+_URL_SECRET_PARAM_RE = re.compile(
+    r"(?i)\b(access_token|refresh_token|id_token|api[-_]?key|auth|token|"
+    r"password|passwd|secret|signature|sig|credential)"
+    r"(=|%3D)(?!\[REDACTED)[^\s&#\"']+"
+)
+
+
 def _redact_external(text: str) -> str:
     """Scrub provider-sourced strings before returning them to the dashboard.
 
-    Any skills.sh publisher controls these fields -- scan for credential
-    patterns and exfiltration URLs per the security-controls guideline.
-    Benign content passes through unchanged.
+    Any skills.sh publisher -- or, via the capability seam, any edition package
+    manager -- controls these fields, so scan for credential patterns and
+    exfiltration URLs per the security-controls guideline. Benign content passes
+    through unchanged.
+
+    Three layers. The purely-lexical URL-parameter scrub runs **LAST**, and that
+    order is load-bearing: ``redact_exfiltration_urls`` classifies a URL as
+    suspicious partly by query LENGTH (``_EXFIL_QUERY_MIN_LEN``), and it replaces
+    the ENTIRE url when it fires. Scrubbing first shortens
+    ``?token=<210 chars>&host=…&path=…`` below that threshold, so the exfil scan
+    stops firing and every OTHER parameter -- the actual payload, which this
+    regex does not name -- renders verbatim. Running the scrub last keeps the
+    whole-URL redaction intact and still catches the short tokens the shape
+    matcher and the entropy heuristic both miss (``?token=abc123`` was passing
+    through verbatim before).
     """
     if not text:
         return text
     scrubbed, _ = redact_credentials(text)
     scrubbed, _ = redact_exfiltration_urls(scrubbed)
-    return scrubbed
+    return _URL_SECRET_PARAM_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", scrubbed
+    )
 
 
 def _build_registry() -> ProviderRegistry:

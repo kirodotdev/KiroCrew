@@ -1718,6 +1718,15 @@ async def start_dashboard(
     app.router.add_delete("/api/agents/{name}", handlers.api_kirocrew_agent_delete)
     # Edition capability agents
     app.router.add_get("/api/capability/agents", handlers.api_capability_agents_list)
+    app.router.add_post(
+        "/api/capability/agents/install", handlers.api_capability_agents_install
+    )
+    app.router.add_post(
+        "/api/capability/agents/uninstall", handlers.api_capability_agents_uninstall
+    )
+    # Edition capability plugins (agent-client integrations + drift reconcile)
+    app.router.add_get("/api/capability/plugins", handlers.api_capability_plugins_list)
+    app.router.add_post("/api/capability/plugins/sync", handlers.api_capability_plugins_sync)
     # Agent metadata (Phase 1)
     app.router.add_get("/api/agent-metadata/{name}", handlers.api_agent_metadata_get)
     app.router.add_put("/api/agent-metadata/{name}", handlers.api_agent_metadata_put)

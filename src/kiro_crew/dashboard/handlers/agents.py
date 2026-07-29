@@ -7,6 +7,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -36,6 +37,7 @@ from kiro_crew.dashboard.handlers._shared import (
     agent_skill_views,
     apply_skill_mapping,
 )
+from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor
@@ -212,6 +214,58 @@ async def api_config_schema(request: web.Request) -> web.Response:
 
 _CAPABILITY_UNAVAILABLE = "capability manager not available"
 
+#: Upper bound on a capability package name. Generous for a real package id, but
+#: it stops an unbounded string from reaching an edition's argv or a path join.
+_MAX_CAPABILITY_PACKAGE_LEN = 200
+#: Package-name charset. Deliberately permissive enough for the real shapes
+#: (scoped npm ids, ``Pkg-1.0``, ``package/skill`` paths) while excluding
+#: whitespace and every shell metacharacter.
+#:
+#: A leading ``@`` is allowed so a bare scoped npm id (``@scope/pkg``) is accepted,
+#: but it must be FOLLOWED by an alphanumeric: what excluding ``-`` at position 0
+#: buys is that a flag-shaped value can never be read as an option, and ``@-evil``
+#: would hand ``-evil`` to an installer that strips the scope prefix.
+_VALID_CAPABILITY_PACKAGE_RE = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9._@:/-]*$")
+
+
+def _is_valid_capability_package(name: str) -> bool:
+    """Return True if *name* is a well-formed, non-traversal package name.
+
+    The structural twin of ``mcp._is_valid_mcp_name``, for the package-shaped ids
+    the capability seam takes. Anchoring the first character to alphanumeric is
+    what makes flag injection (``--force``, ``-o``) impossible, and ``..`` is
+    rejected explicitly even though the charset would admit it.
+    """
+    if not name or len(name) > _MAX_CAPABILITY_PACKAGE_LEN:
+        return False
+    if ".." in name:  # reject path traversal even if it matches the charset
+        return False
+    return bool(_VALID_CAPABILITY_PACKAGE_RE.match(name))
+
+
+def _audit_capability(operation: str, outcome: str, resource: str) -> None:
+    """Emit a SEL line naming the package a capability mutation touched.
+
+    ``sel_audit_middleware`` already logs every mutating request, but only with
+    ``resources=request.path`` — it never reads the body. That records "an agent
+    package was installed" and not WHICH one. Installing an agent package
+    materializes new spawnable agent configs (persisted into ``config.json`` by
+    ``_do_agents_sync`` and treated as the spawn allowlist by
+    ``subagent._validate_agent``) plus new skills and prompt sources, so the
+    package name is the one fact an incident responder needs. Mirrors
+    ``mcp_discover``'s explicit per-outcome audit.
+    """
+    try:
+        _sel().log_api_access(
+            caller="dashboard",
+            operation=operation,
+            outcome=outcome,
+            source="dashboard",
+            resources=f"capability:{resource}",
+        )
+    except Exception:  # audit must never change the outcome
+        logger.debug("capability audit emit failed", exc_info=True)
+
 
 async def api_capability_mcp_list(request: web.Request) -> web.Response:
     """GET /api/capability/mcp — list installed MCP servers (edition capability manager)."""
@@ -353,6 +407,131 @@ async def api_capability_skills_uninstall(request: web.Request) -> web.Response:
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "package": package})
+    except Exception as exc:
+        return _err500(exc)
+
+
+async def _mutate_agent_package(request: web.Request, *, install: bool) -> web.Response:
+    """Shared body for the agent-package install/uninstall handlers.
+
+    The two differ only in which seam op they call and the failure noun, and both
+    must rebuild the agent config afterwards: an agent package carries agents plus
+    its own skills and prompt sources, so the on-disk catalog and the generated
+    agent config are both stale until ``install_agent()`` re-runs.
+
+    Mirrors the guards ``mcp_discover.api_mcp_discover_install`` applies to the
+    same seam: an allowlist on the name BEFORE it leaves core, ``_redact_external``
+    on the manager's message, and an explicit SEL line naming the package.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    # A body that is valid JSON but not an object (or carries a non-string
+    # ``package``) must be a 400, not an unhandled AttributeError -> 500.
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body must be an object"}, status=400)
+    package = body.get("package")
+    if not isinstance(package, str):
+        return web.json_response({"error": "package required"}, status=400)
+    package = package.strip()
+    if not package:
+        return web.json_response({"error": "package required"}, status=400)
+    # The name crosses into the edition manager verbatim, and that manager owns
+    # its own invocation grammar — so bound it here rather than trusting every
+    # edition to reject a traversal or a shell metacharacter. Same allowlist the
+    # MCP mutation endpoints use.
+    if not _is_valid_capability_package(package):
+        return web.json_response(
+            {"error": f"Invalid package name '{package[:64]}'"}, status=400
+        )
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
+    verb = "install" if install else "uninstall"
+    try:
+        res = await (mgr.install_agent(package) if install else mgr.uninstall_agent(package))
+        if not res.ok:
+            _audit_capability(f"capability_agent_{verb}", "error", package)
+            # The message is edition subprocess output in all but name: it can
+            # echo a registry URL with an embedded token, so it is redacted (both
+            # scans) and length-bounded before reaching the dashboard.
+            message = (res.message or f"{verb} failed")[:500]
+            return web.json_response({"error": _redact_external(message)}, status=500)
+        # Filesystem-heavy config rebuild — offload so it never blocks the asyncio
+        # event loop (chat turn + liveness heartbeat) on a slow FS.
+        from kiro_crew.agent import install_agent  # noqa: F811
+
+        await asyncio.to_thread(install_agent)
+        # list_agents() caches on a (count, newest-mtime-ns) signature, so a
+        # mutation landing inside one mtime tick would otherwise serve a stale
+        # catalog until some unrelated write bumped the signature.
+        clear_list_agents_cache()
+        state: DashboardState = request.app["state"]
+        state.push_refresh("agents")
+        _audit_capability(f"capability_agent_{verb}", "ok", package)
+        return web.json_response({"ok": True, "package": package})
+    except Exception as exc:
+        return _err500(exc)
+
+
+async def api_capability_agents_install(request: web.Request) -> web.Response:
+    """POST /api/capability/agents/install — install an agent package."""
+    return await _mutate_agent_package(request, install=True)
+
+
+async def api_capability_agents_uninstall(request: web.Request) -> web.Response:
+    """POST /api/capability/agents/uninstall — uninstall an agent package."""
+    return await _mutate_agent_package(request, install=False)
+
+
+async def api_capability_plugins_list(request: web.Request) -> web.Response:
+    """GET /api/capability/plugins — installed plugin packages + the drift set.
+
+    Returns the installed rows AND ``out_of_sync`` in one response: the dashboard
+    renders them together (a list plus a "reconcile N packages" affordance), and
+    splitting them would mean two polls that can disagree mid-install.
+
+    The two reads are independent, so they run CONCURRENTLY rather than in
+    sequence. Each carries its own ``CAPABILITY_READ_TIMEOUT`` bound, and that
+    bound is sized tight precisely because the dashboard POLLS the list endpoints
+    — awaiting them one after the other would let a single request pend for twice
+    the designed budget and accumulate pending gateway tasks per poll, which is
+    the wedge class the bound exists to prevent. Gathering caps the endpoint at
+    one read bound and halves its latency.
+    """
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
+    try:
+        plugins, out_of_sync = await asyncio.gather(
+            mgr.list_plugins(), mgr.plugins_out_of_sync()
+        )
+        return web.json_response({"plugins": plugins, "out_of_sync": out_of_sync})
+    except Exception as exc:
+        return _err500(exc)
+
+
+async def api_capability_plugins_sync(request: web.Request) -> web.Response:
+    """POST /api/capability/plugins/sync — reconcile plugins with agent packages."""
+    mgr = _capability_manager()
+    if not mgr.available():
+        return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
+    try:
+        res = await mgr.sync_plugins()
+        if not res.ok:
+            _audit_capability("capability_plugins_sync", "error", "*")
+            message = (res.message or "sync failed")[:500]
+            return web.json_response({"error": _redact_external(message)}, status=500)
+        state: DashboardState = request.app["state"]
+        state.push_refresh("agents")
+        _audit_capability("capability_plugins_sync", "ok", "*")
+        # Redacted AND length-bounded on the success path too: this message names
+        # what was reconciled and can carry edition subprocess output, so it gets
+        # the same treatment as the failure path rather than passing through raw.
+        return web.json_response(
+            {"ok": True, "message": _redact_external((res.message or "")[:500])}
+        )
     except Exception as exc:
         return _err500(exc)
 

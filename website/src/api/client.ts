@@ -1028,6 +1028,13 @@ export const api = {
   capabilitySkillsInstall: (pkg: string) => post('/api/capability/skills/install', { package: pkg }).then(j),
   capabilitySkillsUninstall: (pkg: string) => post('/api/capability/skills/uninstall', { package: pkg }).then(j),
   capabilityAgentsList: () => fetch('/api/capability/agents').then(j),
+  capabilityAgentsInstall: (pkg: string) => post('/api/capability/agents/install', { package: pkg }).then(j),
+  capabilityAgentsUninstall: (pkg: string) => post('/api/capability/agents/uninstall', { package: pkg }).then(j),
+  // Plugin packages (agent-client integrations). The response pairs the installed
+  // rows with `out_of_sync` — packages installed as agents but missing their
+  // plugin counterpart — so the UI can offer a one-click reconcile.
+  capabilityPluginsList: () => fetch('/api/capability/plugins').then(j),
+  capabilityPluginsSync: () => post('/api/capability/plugins/sync', {}).then(j),
   capabilityMcpRegistry: () => fetch('/api/capability/mcp/registry').then(j),
   // STT
   sttConfig: () => fetch('/api/config/stt').then(j),

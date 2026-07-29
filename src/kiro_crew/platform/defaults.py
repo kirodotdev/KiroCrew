@@ -277,6 +277,23 @@ class DefaultCapabilityManager:
     async def list_agents(self) -> List[Dict[str, Any]]:
         return []
 
+    async def install_agent(self, package: str) -> "CapabilityResult":
+        return CapabilityResult(ok=False, message="capability manager not available")
+
+    async def uninstall_agent(self, package: str) -> "CapabilityResult":
+        return CapabilityResult(ok=False, message="capability manager not available")
+
+    async def list_plugins(self) -> List[Dict[str, Any]]:
+        return []
+
+    async def plugins_out_of_sync(self) -> List[str]:
+        # Empty = "in sync", which is the correct answer for an edition with no
+        # plugin concept (not merely a fail-closed stub).
+        return []
+
+    async def sync_plugins(self) -> "CapabilityResult":
+        return CapabilityResult(ok=False, message="capability manager not available")
+
 
 class DefaultAppRegistryPolicy:
     """Today's public trusted-host set + clone-sandbox-mode decision.

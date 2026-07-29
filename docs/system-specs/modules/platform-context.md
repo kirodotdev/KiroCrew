@@ -47,7 +47,7 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (all methods empty) | enterprise MCP server + skills + provider MCP scopes |
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
 | `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
-| `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package/skill/MCP manager |
+| `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package manager: MCP servers, skills, agent packages, and client plugins |
 | `registry` | adapter | `DefaultAppRegistryPolicy` (public-forge baseline) | internal git hosts |
 | `apps_loader` | adapter | `DefaultAppsLoader` (OSS builtins) | internal app sources (code-reviewer; team_manager/mimir follow-on) |
 | `package_manager` | adapter | **RESERVED** — `DefaultPackageManager`; installs are inline in `cli_doctor.py` (use `CapabilityManager`) | — (slot inert) |
@@ -568,6 +568,34 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `McpToolingProvider` into its own Protocol** — agent-catalog contribution is a
   distinct concern from MCP tooling; each edition hook lands on its own interface
   rather than accreting onto the nearest existing one.
+- **Agent packages + plugins (the symmetry completion).** `list_agents()` was
+  originally READ-only, so an edition could show installed agent packages but not
+  manage them — the dashboard had install/uninstall for MCP servers and skills and
+  a dead end for agents. `install_agent/uninstall_agent(package)` closes that
+  asymmetry (`POST /api/capability/agents/{install,uninstall}`); both rebuild the
+  agent config and clear the `list_agents()` cache, because an agent package
+  carries agents PLUS its own skills and prompt sources.
+  Alongside them, three ops cover **plugin packages** — agent-client integrations
+  an edition's package manager installs next to the agent packages themselves:
+  `async list_plugins() -> List[Dict[str, Any]]` (informational rows),
+  `async plugins_out_of_sync() -> List[str]` (the DRIFT set: packages installed as
+  agents but missing their plugin counterpart — which presents to a user as an
+  agent their client cannot see), and `async sync_plugins() -> CapabilityResult`
+  (the writer that reconciles the drift). `GET /api/capability/plugins` returns the
+  rows and the drift set in ONE response so the UI cannot render a list and a
+  reconcile affordance that disagree mid-install. All three are deliberately
+  client-agnostic: the core neither knows nor names any particular editor or CLI,
+  and an edition with no plugin concept returns `[]`/`[]` — for
+  `plugins_out_of_sync` an empty list genuinely means "in sync", which is why its
+  Default is not a fail-closed error like the mutation stubs.
+  **Implementer note (learned wiring a real edition):** package managers commonly
+  publish one plugin per package SUBSET (`<Package>-<subset>`) while agent
+  packages carry the bare `<Package>`. Comparing the two name spaces directly
+  reports EVERY package as drifted. Resolve a plugin's owner by matching against
+  the known installed package set (longest match wins) rather than splitting on a
+  separator — a split silently misattributes any package whose own name contains
+  that separator, which makes the package permanently "drifted" so every
+  `sync_plugins` reinstalls a plugin that already exists.
 - `CapabilityManager` (operations-based external package/capability manager) —
   **replaces the former `external_capability_bin()` binary-name seam.** Rather
   than naming a binary whose exact CLI grammar the core then hardcodes, the
@@ -585,7 +613,8 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   this at runtime — `collect_skills_blocking` logs a loud warning for any listed
   row outside every `extra_skills()` root);
   `async install_mcp/uninstall_mcp(server_id)`,
-  `async install_skill/uninstall_skill(package)` → `CapabilityResult(ok, message)`
+  `async install_skill/uninstall_skill(package)`,
+  `async install_agent/uninstall_agent(package)` → `CapabilityResult(ok, message)`
   (the manager translates its own errors — the core never matches
   package-manager error strings, and **no Amazon-internal `version_set` field is
   exposed** on the op or the public `/api/capability/skills/install` schema;
@@ -605,11 +634,12 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   generous `CAPABILITY_INSTALL_TIMEOUT` (600s) for install so a legitimate cold
   package-manager download is not cancelled mid-mutation (which could leave
   partial state), and a tight `CAPABILITY_READ_TIMEOUT` (30s) on the async READ
-  ops (`list_mcp`/`list_skills`/`list_agents`/`registry`) — the dashboard POLLS
-  those list endpoints, so a stalled unbounded read would accumulate pending
-  gateway tasks on every poll (the same wedge class the bound exists to prevent),
-  even though reads mutate nothing. Only the synchronous `available()` probe is
-  unwrapped (no I/O). `/api/mcp/apply` orders the two mutations to be both
+  ops (`list_mcp`/`list_skills`/`list_agents`/`registry`/`list_plugins`/
+  `plugins_out_of_sync`) — the dashboard POLLS those list endpoints, so a stalled
+  unbounded read would accumulate pending gateway tasks on every poll (the same
+  wedge class the bound exists to prevent), even though reads mutate nothing.
+  `sync_plugins` takes the INSTALL bound (it may shell a package manager once per
+  drifted package). Only the synchronous `available()` probe is unwrapped (no I/O). `/api/mcp/apply` orders the two mutations to be both
   lock-safe and race-safe: it runs the companion `uninstall_mcp` calls FIRST, in
   a phase BEFORE acquiring the process-wide MCP file lock (`_get_mcp_lock`) —
   deduped by name, bounded-concurrent (`_MCP_DEFERRED_UNINSTALL_CONCURRENCY`)
