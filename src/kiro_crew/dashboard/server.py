@@ -336,7 +336,15 @@ _BASE_CSP = (
     "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
     "img-src 'self' data: blob: https:; "
     "font-src 'self' data:; "
-    "connect-src 'self' ws://localhost:* ws://127.0.0.1:*; "
+    # Loopback http(s) origins ({connect_src_extra}) mirror the frame-src note
+    # below: WebPreviewPanel does not merely FRAME the local dev server, it also
+    # polls it with a no-cors `fetch` liveness probe (a cross-origin iframe
+    # cannot report that its server died). Framing without connecting made that
+    # probe throw on every tick, so two strikes flipped a perfectly healthy
+    # preview to "server stopped responding" and unmounted the iframe. The
+    # probe is no-cors, so no response data is ever readable — this admits the
+    # reachability check only, and to the same origins frame-src already allows.
+    "connect-src 'self' ws://localhost:* ws://127.0.0.1:*{connect_src_extra}; "
     "media-src 'self' blob:; "
     "worker-src 'self' blob:; "
     # https://*.cloudfront.net: live preview iframes for deployed webapp
@@ -354,10 +362,12 @@ _BASE_CSP = (
     "object-src 'none'; base-uri 'self'; frame-ancestors {frame_ancestors}"
 )
 
-# Loopback preview origins — always framable (see frame-src note above).
-# Aligned with the URLs WebPreviewPanel.normalizeUrl accepts: http+https on
-# every loopback host (127.0.0.1 / localhost / [::1] / 0.0.0.0), so a preview
-# never renders blank due to a CSP-blocked frame.
+# Loopback preview origins — always framable AND connectable (see the
+# frame-src / connect-src notes above). Aligned with the URLs
+# WebPreviewPanel.normalizeUrl accepts: http+https on every loopback host
+# (127.0.0.1 / localhost / [::1] / 0.0.0.0), so a preview never renders blank
+# due to a CSP-blocked frame, nor gets declared unreachable due to a
+# CSP-blocked liveness probe.
 _LOOPBACK_FRAME_SRC = (
     " http://127.0.0.1:* http://localhost:* http://[::1]:* http://0.0.0.0:*"
     " https://127.0.0.1:* https://localhost:* https://[::1]:* https://0.0.0.0:*"
@@ -512,7 +522,11 @@ def _apply_security_headers(
     frame_ancestors = " ".join(["'self'", *extra_ancestors])
     resp.headers.setdefault(
         "Content-Security-Policy",
-        _BASE_CSP.format(frame_src_extra=frame_src_extra, frame_ancestors=frame_ancestors),
+        _BASE_CSP.format(
+            connect_src_extra=_LOOPBACK_FRAME_SRC,
+            frame_src_extra=frame_src_extra,
+            frame_ancestors=frame_ancestors,
+        ),
     )
     resp.headers.setdefault("Permissions-Policy", _PERMISSIONS_POLICY)
     # Defense-in-depth browser headers (CWE-1021/693/200/319). All via setdefault

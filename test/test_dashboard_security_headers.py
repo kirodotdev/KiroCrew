@@ -128,6 +128,41 @@ class TestApplySecurityHeaders:
         assert "http://*.localhost:*" not in csp
         assert "frame-ancestors 'self'" in csp
 
+    def test_csp_connect_src_allows_loopback_liveness_probe(self) -> None:
+        """WebPreviewPanel polls the framed dev server with a no-cors ``fetch``
+        because a cross-origin iframe cannot report that its server died. When
+        connect-src admitted only ``'self'`` + ws:// loopback, that probe threw
+        on every tick and two strikes declared a healthy preview
+        "stopped responding", unmounting the iframe. connect-src must therefore
+        admit the SAME loopback origins frame-src does."""
+        for with_instances in (False, True):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(with_instances=with_instances))
+            csp = resp.headers["Content-Security-Policy"]
+            connect_src = next(
+                d for d in csp.split(";") if d.strip().startswith("connect-src")
+            )
+            frame_src = next(d for d in csp.split(";") if d.strip().startswith("frame-src"))
+            # Every loopback origin the panel can frame, it can also probe.
+            for origin in (
+                "http://127.0.0.1:*",
+                "http://localhost:*",
+                "http://[::1]:*",
+                "http://0.0.0.0:*",
+                "https://127.0.0.1:*",
+                "https://localhost:*",
+            ):
+                assert origin in frame_src, (origin, frame_src)
+                assert origin in connect_src, (origin, connect_src)
+            # Pre-existing WebSocket loopback grants stay.
+            assert "ws://localhost:*" in connect_src
+            assert "ws://127.0.0.1:*" in connect_src
+            # The probe is loopback-only: no bare wildcard, no public egress,
+            # and the *.localhost tunnel wildcard stays frame-src/instances-only.
+            assert "http://*.localhost:*" not in connect_src
+            assert "https://*" + " " not in connect_src
+            assert "*.cloudfront.net" not in connect_src
+
     def test_csp_frame_src_allows_cloudfront_previews(self) -> None:
         """Webapp artifact live previews iframe the deployed CloudFront site
         (WebAppArtifactCard / WebAppThumb): https-only wildcard, present in
