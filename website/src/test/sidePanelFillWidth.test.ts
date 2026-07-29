@@ -7,7 +7,7 @@
  * which is the whole point of the rule.
  */
 import { describe, it, expect } from 'vitest'
-import { SIDE_PANEL_MIN_W, CHAT_PANE_MIN_W, sidePanelFillWidth } from '../pages/chat/SidePanel'
+import { SIDE_PANEL_MIN_W, CHAT_PANE_MIN_W, sidePanelFillWidth, sidePanelEffectiveWidth } from '../pages/chat/SidePanel'
 
 const THRESHOLD = SIDE_PANEL_MIN_W + CHAT_PANE_MIN_W // 640
 const RAIL_EXPANDED = 236
@@ -64,5 +64,39 @@ describe('sidePanelFillWidth', () => {
     expect(fill({ winW: 390, railW: 0, sidebarW: 0, isMobile: true })).toBe(390)
     // …but never below the panel floor.
     expect(fill({ winW: 280, railW: 0, sidebarW: 0, isMobile: true })).toBe(SIDE_PANEL_MIN_W)
+  })
+})
+
+/**
+ * Branch ORDER regression. The mobile arm used to be checked before fillWidth,
+ * so a mobile frame got `width: '100%'` and the computed fill width was thrown
+ * away. That percentage cannot resolve inside the inline render path's
+ * shrink-to-fit `width: auto` wrapper, so the panel rendered at its own
+ * max-content width instead of filling the screen.
+ */
+describe('sidePanelEffectiveWidth', () => {
+  const base = { isMobile: false, expanded: false, width: 460, maxW: 800 }
+
+  it('prefers the explicit fill width over the mobile percentage', () => {
+    expect(sidePanelEffectiveWidth({ ...base, isMobile: true, fillWidth: 390 })).toBe(390)
+  })
+
+  it('prefers the explicit fill width over the persisted width on desktop', () => {
+    expect(sidePanelEffectiveWidth({ ...base, fillWidth: 520 })).toBe(520)
+  })
+
+  it('falls back to the percentage on a mobile frame with no fill width', () => {
+    expect(sidePanelEffectiveWidth({ ...base, isMobile: true })).toBe('100%')
+  })
+
+  it('clamps the persisted width to the responsive maximum in beside mode', () => {
+    expect(sidePanelEffectiveWidth({ ...base, width: 460, maxW: 800 })).toBe(460)
+    expect(sidePanelEffectiveWidth({ ...base, width: 900, maxW: 800 })).toBe(800)
+    expect(sidePanelEffectiveWidth({ ...base, width: 460, maxW: 100 })).toBe(SIDE_PANEL_MIN_W)
+  })
+
+  it('takes the maximum in preview-focus (expanded) mode', () => {
+    expect(sidePanelEffectiveWidth({ ...base, expanded: true, maxW: 800 })).toBe(800)
+    expect(sidePanelEffectiveWidth({ ...base, expanded: true, maxW: 100 })).toBe(SIDE_PANEL_MIN_W)
   })
 })

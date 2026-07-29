@@ -135,6 +135,28 @@ export function sidePanelFillWidth(
   return Math.max(SIDE_PANEL_MIN_W, chatAvail)
 }
 
+/**
+ * Resolve the panel's rendered width.
+ *
+ * Order matters. FILL (an explicit px width) wins over the mobile percentage:
+ * `width: 100%` is unreliable because the inline (non-portal) render path wraps
+ * the panel in a shrink-to-fit `width: auto` flex item, and a percentage child
+ * cannot resolve against an auto containing block during intrinsic sizing — the
+ * browser falls back to the panel's own max-content width, so the panel comes
+ * out narrow and the chat pane keeps the rest. An explicit px width is
+ * deterministic in BOTH paths. '100%' survives only as the fallback for a
+ * mobile frame that somehow receives no fillWidth.
+ */
+export function sidePanelEffectiveWidth(
+  { fillWidth, isMobile, expanded, width, maxW }:
+  { fillWidth?: number; isMobile: boolean; expanded?: boolean; width: number; maxW: number },
+): number | string {
+  if (fillWidth != null) return fillWidth
+  if (isMobile) return '100%'
+  if (expanded) return Math.max(SIDE_PANEL_MIN_W, maxW)
+  return Math.max(SIDE_PANEL_MIN_W, Math.min(width, maxW))
+}
+
 export function measureSidePanelReservedW(): number {
   const header = document.querySelector('header.topbar-glass')
   if (!header) return SIDE_PANEL_RESERVED_W
@@ -256,11 +278,7 @@ export default function SidePanel({
       .forEach(c => ro.observe(c))
     return () => { window.removeEventListener('resize', recalc); ro.disconnect() }
   }, [])
-  const effectiveWidth = isMobile
-    ? '100%'
-    : fillWidth != null
-      ? fillWidth
-      : (expanded ? Math.max(MIN_W, maxW) : Math.max(MIN_W, Math.min(width, maxW)))
+  const effectiveWidth = sidePanelEffectiveWidth({ fillWidth, isMobile, expanded, width, maxW })
   // While the user drags the resize handle, every mousemove shifts the whole
   // panel's viewport position (the handle is on the LEFT edge; the right edge
   // is pinned to the window). Framer's layout projection on each Reorder.Item
