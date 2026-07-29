@@ -308,6 +308,88 @@ describe('Lightbox keyboard navigation', () => {
       window.removeEventListener('lightbox', spy)
     }
   })
+
+  it('enlarges and shrinks the image via +/- keys, clamped, and resets on close', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const style = () => container.querySelector('img')!.getAttribute('style') || ''
+    // Fit-to-screen baseline: scale(1), fit box.
+    expect(style()).toContain('scale(1)')
+    expect(style()).toContain('max-width: 90vw')
+    // Zoom in one step rides the transform, not the fit box.
+    act(() => { fireEvent.keyDown(window, { key: '+' }) })
+    expect(style()).toContain('scale(1.5)')
+    expect(style()).toContain('max-width: 90vw')
+    // Zoom back out to the fit floor and clamp there.
+    act(() => { fireEvent.keyDown(window, { key: '-' }) })
+    expect(style()).toContain('scale(1)')
+    act(() => { fireEvent.keyDown(window, { key: '-' }) })
+    expect(style()).toContain('scale(1)')
+    // Re-zoom, then '0' resets to fit.
+    act(() => { fireEvent.keyDown(window, { key: '+' }) })
+    act(() => { fireEvent.keyDown(window, { key: '0' }) })
+    expect(style()).toContain('scale(1)')
+  })
+
+  it('ignores +/-/0 when chorded with a browser-zoom modifier', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const style = () => container.querySelector('img')!.getAttribute('style') || ''
+    act(() => { fireEvent.keyDown(window, { key: '+', metaKey: true }) })
+    expect(style()).toContain('scale(1)')
+    act(() => { fireEvent.keyDown(window, { key: '+', ctrlKey: true }) })
+    expect(style()).toContain('scale(1)')
+  })
+
+  it('clicking the image does not change zoom (zoom lives in the toolbar/keyboard)', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const imgEl = () => container.querySelector('img')!
+    const style = () => imgEl().getAttribute('style') || ''
+    expect(style()).toContain('scale(1)')
+    // Clicks on the image are inert now — no zoom stepping.
+    act(() => { fireEvent.click(imgEl()) })
+    expect(style()).toContain('scale(1)')
+    act(() => { fireEvent.click(imgEl()) })
+    expect(style()).toContain('scale(1)')
+    // Zoom still works via the keyboard.
+    act(() => { fireEvent.keyDown(window, { key: '+' }) })
+    expect(style()).toContain('scale(1.5)')
+  })
+
+  it('resets zoom when navigating to another image', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }, { src: 'b.png', alt: 'b' }], 0))
+    act(() => { fireEvent.keyDown(window, { key: '+' }) })
+    expect(container.querySelector('img')!.getAttribute('style')).toContain('scale(1.5)')
+    act(() => { fireEvent.keyDown(window, { key: 'ArrowRight' }) })
+    expect(container.querySelector('img')!.getAttribute('src')).toBe('b.png')
+    expect(container.querySelector('img')!.getAttribute('style')).toContain('scale(1)')
+  })
+
+  it('drags an enlarged image to pan it, and a pan-drag does not step the zoom', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const imgEl = () => container.querySelector('img')!
+    // Give the image a layout box larger than the viewport so the clamp allows travel.
+    Object.defineProperty(imgEl(), 'offsetWidth', { configurable: true, value: 3000 })
+    Object.defineProperty(imgEl(), 'offsetHeight', { configurable: true, value: 3000 })
+    // Zoom in first (fit can't pan) — via keyboard, since clicks are inert.
+    act(() => { fireEvent.keyDown(window, { key: '+' }) })
+    act(() => { fireEvent.keyDown(window, { key: '+' }) })
+    expect(imgEl().getAttribute('style')).toContain('scale(2)')
+    const styleBefore = imgEl().getAttribute('style') || ''
+    expect(styleBefore).toContain('translate(0px, 0px)')
+    // Drag: pointer down, move well past the 4px threshold, up.
+    act(() => { fireEvent.pointerDown(imgEl(), { clientX: 500, clientY: 500, pointerId: 1 }) })
+    act(() => { fireEvent.pointerMove(imgEl(), { clientX: 380, clientY: 420, pointerId: 1 }) })
+    act(() => { fireEvent.pointerUp(imgEl(), { clientX: 380, clientY: 420, pointerId: 1 }) })
+    expect(imgEl().getAttribute('style')).toContain('translate(-120px, -80px)')
+    expect(imgEl().className).toContain('cursor-grab')
+    // A click after the drag must not change zoom (stays 2x) or close anything.
+    act(() => { fireEvent.click(imgEl()) })
+    expect(imgEl().getAttribute('style')).toContain('scale(2)')
+  })
 })
 
 describe('MarkdownRenderer mcwidget strip is inline-code-aware', () => {

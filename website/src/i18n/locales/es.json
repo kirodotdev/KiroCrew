@@ -1398,7 +1398,10 @@
       "close": "Cerrar",
       "download_d": "Descargar (d)",
       "download_image": "Descargar la imagen",
-      "generating_diagram": "generando el diagrama…"
+      "generating_diagram": "generando el diagrama…",
+      "reset_zoom": "Restablecer zoom (0)",
+      "zoom_in": "Acercar (+)",
+      "zoom_out": "Alejar (-)"
     },
     "markdownToc": {
       "contents": "Contenido",

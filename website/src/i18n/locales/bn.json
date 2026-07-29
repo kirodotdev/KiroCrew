@@ -1381,7 +1381,10 @@
       "close": "বন্ধ করুন",
       "download_d": "ডাউনলোড (d)",
       "download_image": "ছবি ডাউনলোড করুন",
-      "generating_diagram": "ডায়াগ্রাম তৈরি হচ্ছে…"
+      "generating_diagram": "ডায়াগ্রাম তৈরি হচ্ছে…",
+      "reset_zoom": "জুম রিসেট করুন (0)",
+      "zoom_in": "জুম ইন (+)",
+      "zoom_out": "জুম আউট (-)"
     },
     "markdownToc": {
       "contents": "বিষয়সূচি",

@@ -1415,7 +1415,10 @@
       "close": "Закрыть",
       "download_d": "Скачать (d)",
       "download_image": "Скачать изображение",
-      "generating_diagram": "создание диаграммы…"
+      "generating_diagram": "создание диаграммы…",
+      "reset_zoom": "Сбросить масштаб (0)",
+      "zoom_in": "Увеличить (+)",
+      "zoom_out": "Уменьшить (-)"
     },
     "markdownToc": {
       "contents": "Содержание",

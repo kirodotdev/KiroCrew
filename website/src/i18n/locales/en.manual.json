@@ -105,6 +105,11 @@
       "origin": "Origin",
       "post_reminder": "Post reminder in {{label}}",
       "stop_mirroring": "Stop mirroring to {{label}}"
+    },
+    "markdownRenderer": {
+      "reset_zoom": "Reset zoom (0)",
+      "zoom_in": "Zoom in (+)",
+      "zoom_out": "Zoom out (-)"
     }
   },
   "pages": {

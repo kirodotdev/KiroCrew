@@ -1381,7 +1381,10 @@
       "close": "बंद करें",
       "download_d": "डाउनलोड (d)",
       "download_image": "छवि डाउनलोड करें",
-      "generating_diagram": "डायग्राम बन रहा है…"
+      "generating_diagram": "डायग्राम बन रहा है…",
+      "reset_zoom": "ज़ूम रीसेट करें (0)",
+      "zoom_in": "ज़ूम इन (+)",
+      "zoom_out": "ज़ूम आउट (-)"
     },
     "markdownToc": {
       "contents": "विषय-सूची",

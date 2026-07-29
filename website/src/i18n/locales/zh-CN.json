@@ -1364,7 +1364,10 @@
       "close": "关闭",
       "download_d": "下载（d）",
       "download_image": "下载图片",
-      "generating_diagram": "正在生成图表…"
+      "generating_diagram": "正在生成图表…",
+      "reset_zoom": "重置缩放（0）",
+      "zoom_in": "放大（+）",
+      "zoom_out": "缩小（-）"
     },
     "markdownToc": {
       "contents": "目录",
