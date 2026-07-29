@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
 import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
+import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import VoiceStatusBar from './VoiceStatusBar'
 import { createPortal } from 'react-dom'
@@ -241,6 +242,10 @@ interface ChatInputProps {
   onFileSelect?: (path: string) => void
   onFileOpen?: (path: string) => void
   project?: string
+  /** Checked-out branch of the active project (or short SHA when detached). */
+  projectBranch?: string
+  /** True when the project's HEAD is detached, so the label is a commit. */
+  projectDetached?: boolean
   memoryMode?: string
   cleanMode?: boolean
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
@@ -419,6 +424,8 @@ function ChatInput({
   onFileSelect,
   onFileOpen,
   project,
+  projectBranch,
+  projectDetached,
   memoryMode,
   cleanMode,
   sentMessages,
@@ -640,6 +647,18 @@ function ChatInput({
   // Below ~340px the labels no longer fit comfortably alongside the context bar
   // + model chip, so collapse the chips (agent/project) to icon-only.
   const shelfCompact = shelfWidth < 340
+  // Tooltip for the project chip. The chip itself shows the basename (plus the
+  // branch when known); the tooltip carries the full path so nothing that was
+  // previously discoverable is lost, and names the branch even when the label
+  // is truncated or the shelf has collapsed to icon-only.
+  const projectChipTitle = useMemo(() => {
+    if (!project) return 'Select project'
+    const base = `Project: ${project}`
+    if (!projectBranch) return base
+    return projectDetached
+      ? `${base}\nDetached HEAD at ${projectBranch}`
+      : `${base}\nBranch: ${projectBranch}`
+  }, [project, projectBranch, projectDetached])
   const ctxWrapRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!ctxPopoverOpen) return
@@ -2392,16 +2411,40 @@ function ChatInput({
             </button>
           )}
           {onProjectClick && (
+          /* Two sibling buttons inside one visual pill, NOT a nested button:
+             the folder segment opens the project picker and the branch segment
+             copies. A <button> inside a <button> is invalid HTML and browsers
+             collapse it, so the pill is a plain container and each segment owns
+             its own click target and hover state. */
+          <div className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono text-muted">
           <button
             className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
             onClick={e => onProjectClick(e.currentTarget.getBoundingClientRect())}
             disabled={isRunning}
-            title={isRunning ? 'Stop the current response to switch project' : (project ? `Project: ${project}` : 'Select project')}
-            aria-label={isRunning ? 'Stop the current response to switch project' : (project ? `Project: ${project}` : 'Select project')}
+            title={isRunning ? 'Stop the current response to switch project' : projectChipTitle}
+            aria-label={isRunning ? 'Stop the current response to switch project' : projectChipTitle}
           >
             <FolderOpen size={13} className="shrink-0 opacity-70" />
-            {!shelfCompact && <span className="truncate max-w-[200px]">{project ? (project.split('/').filter(Boolean).pop() || project) : 'Project'}</span>}
+            {/* Budget favours the branch: the folder name is also in the tooltip
+                and the picker, whereas a clipped branch ("feat/pro…") is exactly
+                the ambiguity this label exists to remove. The enclosing shelf
+                group is flex-1/min-w-0, so both segments still shrink below
+                these caps on a narrow window. */}
+            {!shelfCompact && <span className="truncate max-w-[160px]">{project ? (project.split('/').filter(Boolean).pop() || project) : 'Project'}</span>}
           </button>
+          {!shelfCompact && !!projectBranch && (
+            <>
+              <span className="opacity-40 shrink-0" aria-hidden="true">·</span>
+              {/* Copying stays enabled while a response is running — unlike
+                  switching project, reading the branch name is harmless. */}
+              <CopyBranchButton
+                branch={projectBranch}
+                label={projectDetached ? 'commit' : 'branch name'}
+                className="max-w-[220px] opacity-70 hover:opacity-100 hover:text-text"
+              />
+            </>
+          )}
+          </div>
           )}
           </div>
           <div className="flex items-center shrink-0">

@@ -1843,6 +1843,7 @@ async def start_dashboard(
     app.router.add_get("/api/file-search", handlers.api_file_search)
     app.router.add_get("/api/browse-dirs", handlers.api_browse_dirs)
     app.router.add_get("/api/browse-files", handlers.api_browse_files)
+    app.router.add_get("/api/project/git", handlers.api_project_git)
     app.router.add_post("/api/upload", handlers.api_upload)
     app.router.add_post("/api/upload/file", handlers.api_upload_file)
     app.router.add_post("/api/slack/upload-file", handlers.api_slack_upload_file)

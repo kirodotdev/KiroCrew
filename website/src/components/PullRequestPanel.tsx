@@ -7,7 +7,6 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
-  Copy,
   ExternalLink,
   GitCommitHorizontal,
   GitMerge,
@@ -34,7 +33,7 @@ import {
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
 import { parseUnifiedDiff } from '../utils/parseUnifiedDiff'
-import { copyToClipboard } from '../utils/clipboard'
+import CopyBranchButton from './CopyBranchButton'
 import hljs from '../utils/hljs'
 import DOMPurify from 'dompurify'
 import { DIFF_BG, DIFF_FG } from '../utils/diffUtils'
@@ -541,52 +540,6 @@ export function pullRequestIsLive(source: PullRequestSource): boolean {
   const state = source.state.toLowerCase()
   if (source.mergedAt) return false
   return state === 'open' || state === 'opened' || state === 'draft'
-}
-
-/** The head branch name in the panel header, rendered as a click-to-copy
- * affordance. Clicking copies the raw branch name to the clipboard via the
- * shared {@link copyToClipboard} helper (which falls back to a hidden textarea +
- * execCommand on non-secure origins where navigator.clipboard is absent) and
- * briefly swaps the trailing copy glyph for a check. If the copy genuinely
- * fails, the failure is swallowed and the label stays put rather than falsely
- * announcing success. */
-export function CopyBranchButton({ branch }: { branch: string }) {
-  const [copied, setCopied] = useState(false)
-  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(
-    () => () => {
-      if (resetTimer.current) clearTimeout(resetTimer.current)
-    },
-    [],
-  )
-  const handleCopy = async () => {
-    try {
-      await copyToClipboard(branch)
-    } catch {
-      // Both clipboard paths failed (no clipboard API and execCommand denied):
-      // leave the label as-is rather than announcing a copy that did not happen.
-      return
-    }
-    setCopied(true)
-    if (resetTimer.current) clearTimeout(resetTimer.current)
-    resetTimer.current = setTimeout(() => setCopied(false), 1500)
-  }
-  return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      className="group/branch min-w-0 inline-flex items-center gap-1 truncate rounded px-1 -mx-1 border-none bg-transparent text-inherit hover:bg-bg-hover cursor-pointer"
-      aria-label={copied ? `Copied branch name ${branch}` : `Copy branch name ${branch}`}
-      title={copied ? 'Copied!' : 'Copy branch name'}
-    >
-      <span className="truncate">{branch}</span>
-      {copied ? (
-        <Check className="lucide-inline shrink-0 text-ok" />
-      ) : (
-        <Copy className="lucide-inline shrink-0 opacity-0 group-hover/branch:opacity-70 transition-opacity" />
-      )}
-    </button>
-  )
 }
 
 /** Provider-write actions on the loaded pull request: take it out of draft, and
