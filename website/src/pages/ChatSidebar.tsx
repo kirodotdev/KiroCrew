@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
@@ -287,6 +287,28 @@ function readStoredRecentWindow(): number {
     return Number.isFinite(saved) && saved > 0 ? saved : DEFAULT_RECENT_WINDOW_MS
   } catch {
     return DEFAULT_RECENT_WINDOW_MS
+  }
+}
+
+/** Folders excluded from the flat lane (see `filterHiddenFolders`). Stored as a JSON
+ *  array of folder ids under this key. */
+const HIDDEN_FOLDERS_LS_KEY = 'mc-flat-hidden-folders'
+
+/** Whether the filter menu's Folders section is rolled up to its heading. */
+const FOLDERS_SHELVED_LS_KEY = 'mc-filter-folders-shelved'
+
+/** Read the persisted hidden-folder ids. Runs in a useState initializer during
+ *  render, so a throwing localStorage (private mode / disabled storage) or a
+ *  hand-corrupted value must fall back to "nothing hidden", never crash. */
+function readStoredHiddenFolders(): Set<string> {
+  try {
+    const raw = localStorage.getItem(HIDDEN_FOLDERS_LS_KEY)
+    if (!raw) return new Set()
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(parsed.filter((id): id is string => typeof id === 'string'))
+  } catch {
+    return new Set()
   }
 }
 
@@ -633,6 +655,34 @@ function ChatSidebar({
     for (const filterDef of SESSION_FILTERS) { if (localStorage.getItem(filterDef.storageKey) === '1') initialFilters.add(filterDef.key) }
     return initialFilters
   })
+  // Which folders are excluded from the flat lane, chosen from the filter
+  // menu's folder checkboxes. We persist the HIDDEN ids (not the visible ones)
+  // so a folder created later defaults to visible instead of silently
+  // vanishing. Purely a view preference — folder membership and the folder
+  // tree's own collapse state are untouched.
+  const [filterHiddenFolders, setFilterHiddenFolders] = useState<Set<string>>(() => readStoredHiddenFolders())
+  const toggleFolderFilter = useCallback((id: string) => {
+    setFilterHiddenFolders(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      safeSetItem(HIDDEN_FOLDERS_LS_KEY, JSON.stringify([...next]))
+      return next
+    })
+  }, [])
+  const showAllFolders = useCallback(() => {
+    setFilterHiddenFolders(new Set())
+    safeSetItem(HIDDEN_FOLDERS_LS_KEY, '[]')
+  }, [])
+  // Shelved = the Folders section is rolled up to its heading, so a long folder
+  // list stops crowding the Filter and Sort rows. Purely cosmetic: shelving
+  // changes nothing about which folders are hidden, and the heading keeps
+  // showing the hidden count so the state stays visible while rolled up.
+  const [foldersShelved, setFoldersShelved] = useState(() => {
+    try { return localStorage.getItem(FOLDERS_SHELVED_LS_KEY) === '1' } catch { return false }
+  })
+  const toggleFoldersShelved = useCallback(() => {
+    setFoldersShelved(v => { const next = !v; safeSetItem(FOLDERS_SHELVED_LS_KEY, next ? '1' : '0'); return next })
+  }, [])
   const toggleFilter = useCallback((key: SessionFilterKey) => {
     setActiveFilters(prev => {
       const next = new Set(prev)
@@ -1276,11 +1326,13 @@ function ChatSidebar({
     [enrichedSlots, slotFilter, slotSearchKeys, pinned, sortKey, activeFilters]
   )
 
-  // Folder IDs whose sessions are hidden in flat view because the folder — or
-  // any ancestor — is collapsed. Flat view has no folder headers, so without
-  // this a collapsed folder's sessions would leak into the flat lane; this
-  // makes "flat view" mean "flatten the folders I currently have expanded".
-  const collapsedHiddenFolders = useMemo(() => {
+  // Folder IDs whose sessions are excluded from the flat lane because the
+  // folder — or any ancestor — is unchecked in the filter menu's folder list.
+  // Unchecking a parent hides its whole subtree, matching what the user sees
+  // in the tree. Cycle-guarded: a hand-edited folders.json can contain a
+  // parent_id loop and must not freeze the tab.
+  const filterHiddenSubtree = useMemo(() => {
+    if (filterHiddenFolders.size === 0) return new Set<string>()
     const byId = new Map(folders.map(f => [f.id, f]))
     const hidden = new Set<string>()
     for (const f of folders) {
@@ -1288,52 +1340,144 @@ function ChatSidebar({
       const visited = new Set<string>()
       while (cur && !visited.has(cur.id)) {
         visited.add(cur.id)
-        if (cur.collapsed) { hidden.add(f.id); break }
+        if (filterHiddenFolders.has(cur.id)) { hidden.add(f.id); break }
         cur = cur.parent_id ? byId.get(cur.parent_id) : undefined
       }
     }
     return hidden
-  }, [folders])
+  }, [folders, filterHiddenFolders])
 
-  // Flat-view slot list: filteredSlots minus sessions in collapsed folders —
-  // EXCEPT while searching, where every match must stay reachable so a
-  // collapsed folder never becomes a search dead-end.
+  // Which lane the sidebar is actually rendering. Mirrors the render branches
+  // below exactly: flat wins when there are folders to flatten, otherwise the
+  // tag-column board when columns exist, otherwise the folder tree. The folder
+  // filter applies to the flat lane and the tree, NOT to the board.
+  const flatLaneActive = flatView && folders.length > 0
+  const boardLaneActive = !flatLaneActive && orderedColumns.length > 0
+
+  // The folder filter goes inert while searching, in BOTH views: a query must
+  // reach every match, so an unchecked folder can never become a search dead
+  // end. Everything that consults the filter routes through this flag.
+  const folderFilterActive = slotFilter.trim() === '' && filterHiddenFolders.size > 0
+
+  // List view (the folder tree) drops an unchecked folder's whole block —
+  // header and sessions together. Only the folder's OWN id is checked here:
+  // removing a parent block already takes its descendants with it.
+  const isFolderFilteredOut = useCallback(
+    (f: ChatFolder) => folderFilterActive && filterHiddenFolders.has(f.id),
+    [folderFilterActive, filterHiddenFolders],
+  )
+
+  // Which reveal rows are peeked open. Deliberately EPHEMERAL (not persisted):
+  // a reveal is a "let me look" gesture, not a preference — the folder is still
+  // hidden, and the durable way back is the row's ⋯ → Show folder. Keyed by
+  // container: 'root' for the top level, 'flat' for the flat lane, else the
+  // parent folder's id.
+  const [revealedContainers, setRevealedContainers] = useState<Set<string>>(new Set())
+  const toggleReveal = useCallback((key: string) => {
+    setRevealedContainers(prev => {
+      const next = new Set(prev)
+      if (!next.delete(key)) next.add(key)
+      return next
+    })
+  }, [])
+  // Collapse every peek the moment nothing is hidden any more, so a stale open
+  // row can't linger after "Show all folders".
+  useEffect(() => {
+    if (!folderFilterActive) setRevealedContainers(prev => (prev.size === 0 ? prev : new Set()))
+  }, [folderFilterActive])
+
+  // Folders the filter is hiding, grouped by the container they would have
+  // rendered in — 'root' for top-level, else the parent's id. A folder whose
+  // ANCESTOR is hidden is deliberately absent: that whole block is already gone,
+  // so its container is not on screen to host a row. That is what keeps the
+  // announcement at exactly one level per hide.
+  const hiddenByContainer = useMemo(() => {
+    const m = new Map<string, ChatFolder[]>()
+    if (!folderFilterActive) return m
+    for (const f of folders) {
+      if (isFolderHidden(f) || !filterHiddenFolders.has(f.id)) continue
+      // An ancestor already hidden ⇒ this folder's container is not rendered.
+      let cur = f.parent_id ? folders.find(p => p.id === f.parent_id) : undefined
+      const seen = new Set<string>([f.id])
+      let coveredByAncestor = false
+      while (cur && !seen.has(cur.id)) {
+        seen.add(cur.id)
+        if (filterHiddenFolders.has(cur.id)) { coveredByAncestor = true; break }
+        cur = cur.parent_id ? folders.find(p => p.id === cur!.parent_id) : undefined
+      }
+      if (coveredByAncestor) continue
+      const key = f.parent_id || 'root'
+      const list = m.get(key)
+      if (list) list.push(f); else m.set(key, [f])
+    }
+    for (const list of m.values()) list.sort((a, b) => a.order - b.order)
+    return m
+  }, [folders, folderFilterActive, filterHiddenFolders, isFolderHidden])
+
+  // Every folder the filter is hiding, flattened — the flat lane has no
+  // containers to anchor to, so all hides collapse into its single row.
+  const allHiddenFolders = useMemo(
+    () => [...hiddenByContainer.values()].flat().sort((a, b) => a.order - b.order),
+    [hiddenByContainer],
+  )
+
+  // Flat-view slot list: filteredSlots minus sessions in hidden folders —
+  // EXCEPT while searching, where every match must stay reachable so a hidden
+  // folder never becomes a search dead-end.
   const flatSlots = useMemo(() => {
-    if (slotFilter.trim() !== '' || collapsedHiddenFolders.size === 0) return filteredSlots
+    if (!folderFilterActive) return filteredSlots
     return filteredSlots.filter(s => {
       const fid = slotFolders[s.key]
-      return !(fid && collapsedHiddenFolders.has(fid))
+      return !(fid && filterHiddenSubtree.has(fid))
     })
-  }, [filteredSlots, slotFilter, collapsedHiddenFolders, slotFolders])
+  }, [filteredSlots, folderFilterActive, filterHiddenSubtree, slotFolders])
 
-  // Topmost collapsed folders that actually hide ≥1 flat-view session — the
-  // pills in the flat-lane reveal strip. Only the highest collapsed folder in
-  // each chain is listed (expanding it reveals its sessions; a nested collapsed
-  // child re-appears here once its parent is expanded). Empty while searching.
-  const collapsedFolderPills = useMemo(() => {
-    if (slotFilter.trim() !== '' || collapsedHiddenFolders.size === 0) return [] as ChatFolder[]
-    const byId = new Map(folders.map(f => [f.id, f]))
-    const topCollapsedOf = (fid: string): ChatFolder | undefined => {
-      let cur: ChatFolder | undefined = byId.get(fid)
-      let top: ChatFolder | undefined
-      const visited = new Set<string>()
-      while (cur && !visited.has(cur.id)) {
-        visited.add(cur.id)
-        if (cur.collapsed) top = cur
-        cur = cur.parent_id ? byId.get(cur.parent_id) : undefined
-      }
-      return top
-    }
-    const seen = new Map<string, ChatFolder>()
+  // Folder rows for the filter menu: every folder in tree order, each with the
+  // count of flat-lane sessions filed directly in it, and whether an unchecked
+  // ancestor is already hiding it (that row renders inert).
+  const folderFilterRows = useMemo(() => {
+    const directCounts = new Map<string, number>()
     for (const s of filteredSlots) {
       const fid = slotFolders[s.key]
-      if (fid && collapsedHiddenFolders.has(fid)) {
-        const top = topCollapsedOf(fid)
-        if (top && !seen.has(top.id)) seen.set(top.id, top)
+      if (fid) directCounts.set(fid, (directCounts.get(fid) ?? 0) + 1)
+    }
+    // Same roots + childrenOf walk the "New chat in folder" menu uses, with a
+    // visited set so a parent_id cycle terminates instead of recursing forever.
+    const byOrder = (a: ChatFolder, b: ChatFolder) => a.order - b.order
+    const roots = folders.filter(f => !f.parent_id).sort(byOrder)
+    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(byOrder)
+    const rows: { folder: ChatFolder; depth: number; count: number; hidden: boolean; hiddenByAncestor: boolean }[] = []
+    const visited = new Set<string>()
+    const walk = (list: ChatFolder[], depth: number) => {
+      for (const f of list) {
+        if (visited.has(f.id)) continue
+        visited.add(f.id)
+        rows.push({
+          folder: f,
+          depth,
+          count: directCounts.get(f.id) ?? 0,
+          hidden: filterHiddenFolders.has(f.id),
+          hiddenByAncestor: !filterHiddenFolders.has(f.id) && filterHiddenSubtree.has(f.id),
+        })
+        walk(childrenOf(f.id), depth + 1)
       }
     }
-    return [...seen.values()].sort((a, b) => a.order - b.order)
-  }, [folders, filteredSlots, slotFolders, collapsedHiddenFolders, slotFilter])
+    walk(roots, 0)
+    // Orphans (parent_id pointing at a deleted folder, or inside a cycle) are
+    // unreachable from the roots — append them so no folder is unlistable.
+    for (const f of folders) {
+      if (visited.has(f.id)) continue
+      visited.add(f.id)
+      rows.push({
+        folder: f,
+        depth: 0,
+        count: directCounts.get(f.id) ?? 0,
+        hidden: filterHiddenFolders.has(f.id),
+        hiddenByAncestor: !filterHiddenFolders.has(f.id) && filterHiddenSubtree.has(f.id),
+      })
+    }
+    return rows
+  }, [folders, filteredSlots, slotFolders, filterHiddenFolders, filterHiddenSubtree])
 
   // Flat-view projection: every visible session (foldered + unfoldered) in one
   // list. Removes ONLY the folder rendering hierarchy — the user's sort
@@ -2146,9 +2290,11 @@ function ChatSidebar({
 
   // ── Folder row: matches session-row width (full width minus drawer padding) ──
   // Recursively check if a folder or any descendant contains an unread slot.
-  const folderTreeHasUnread = (folderId: string): boolean => {
+  const folderTreeHasUnread = (folderId: string, visited = new Set<string>()): boolean => {
+    if (visited.has(folderId)) return false
+    visited.add(folderId)
     for (const k of unreadSet) { if (slotFolders[k] === folderId) return true }
-    return folders.some(f => f.parent_id === folderId && folderTreeHasUnread(f.id))
+    return folders.some(f => f.parent_id === folderId && folderTreeHasUnread(f.id, visited))
   }
 
   const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>) => {
@@ -2229,6 +2375,16 @@ function ChatSidebar({
                 onPick={pid => moveFolderTo(folder.id, pid)} />
               <DropdownMenuItem onClick={() => { setLinking({ folderId: folder.id, scope: 'list' }) }}><Link2 size={13} /> {folders.find(f => f.id === folder.id)?.project_dir ? 'Change project directory' : 'Link project directory'}</DropdownMenuItem>
               {renderFolderMenuConfigSections(folder)}
+              {/* Hide this folder from the session lists (flat lane + tree).
+               *  Same state the filter menu's checkboxes drive, reached from the
+               *  folder itself — which is where the user is looking when they
+               *  decide a folder is noise. Distinct from "Hide when empty"
+               *  below, which is a server-persisted archive affordance. */}
+              <DropdownMenuItem data-testid={`folder-visibility-${folder.id}`} onClick={() => { toggleFolderFilter(folder.id) }}>
+                {filterHiddenFolders.has(folder.id)
+                  ? <><Eye size={13} /> {i18nT('pages.chatSidebar.show_folder')}</>
+                  : <><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_folder')}</>}
+              </DropdownMenuItem>
               {folderOffersHide(folder, foldersWithActiveSubtree) && (
                 <DropdownMenuItem data-testid={`folder-hide-${folder.id}`} onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</DropdownMenuItem>
               )}
@@ -2244,6 +2400,39 @@ function ChatSidebar({
     )
   }
 
+  // One row announcing the folders this container is hiding, rendered at the
+  // BOTTOM of that container's folder list and indented to its depth. Peeking it
+  // open renders those folders' real blocks (dimmed), so every normal
+  // affordance — including ⋯ → Show folder, the durable undo — still works.
+  // `containerKey` is 'root' | 'flat' | parent folder id.
+  const renderHiddenReveal = (containerKey: string, hidden: readonly ChatFolder[], depth: number): React.ReactNode => {
+    if (hidden.length === 0) return null
+    const open = revealedContainers.has(containerKey)
+    const n = hidden.length
+    return (
+      <div key={`hidden-reveal-${containerKey}`} data-testid={`hidden-reveal-${containerKey}`}>
+        <button
+          type="button"
+          onClick={() => toggleReveal(containerKey)}
+          aria-expanded={open}
+          title={open ? 'Collapse hidden folders' : `Show ${n} hidden folder${n === 1 ? '' : 's'}`}
+          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-muted hover:text-fg hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
+          style={{ paddingLeft: `${8 + depth * 12}px` }}
+        >
+          <ChevronRight size={11} className="shrink-0 transition-transform" style={{ transform: open ? 'rotate(90deg)' : 'none' }} />
+          <span>{n} {n === 1 ? i18nT('pages.chatSidebar.hidden_folder') : i18nT('pages.chatSidebar.hidden_folders')}</span>
+        </button>
+        {open && (
+          <div className="opacity-70">
+            {hidden.map(f => (
+              <Fragment key={`revealed-${f.id}`}>{renderFolderBlock(f, depth)}</Fragment>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const renderFolderBlock = (folder: ChatFolder, depth: number, visited = new Set<string>(), dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed = false): React.ReactNode[] => {
     if (depth > 10 || visited.has(folder.id)) return []
     visited.add(folder.id)
@@ -2254,7 +2443,7 @@ function ChatSidebar({
     // re-parents it — drop on another folder to move inside, or on the root
     // lane to move to the top level. The subtree ids ride along in the drag
     // data so collision detection can exclude self/descendants as targets.
-    for (const cf of childFolders.filter(cf => !isFolderHidden(cf))) {
+    for (const cf of childFolders.filter(cf => !isFolderHidden(cf) && !isFolderFilteredOut(cf))) {
       childNodes.push(
         <DndDraggable key={`subfolder-drag-${cf.id}`} id={cf.id}
           data={{ type: 'folder', nested: true, subtree: [...(folderSubtrees.get(cf.id) ?? collectFolderSubtreeIds(folders, cf.id))] }}
@@ -2275,6 +2464,11 @@ function ChatSidebar({
         </DndDraggable>
       )
     }
+    // Bottom of THIS container's folder list: announce what the filter is
+    // hiding here, at this depth. Sits after the sibling folders and before the
+    // new-subfolder input, so it reads as part of the folder list.
+    const hiddenHere = hiddenByContainer.get(folder.id)
+    if (hiddenHere?.length) childNodes.push(renderHiddenReveal(folder.id, hiddenHere, depth + 1))
     // New-subfolder name input sits after the existing subfolders, just above the
     // sessions — a new folder is appended (order = folder count), so it lands at the
     // bottom of the sibling folders, above the chats. The placeholder matches that.
@@ -2342,7 +2536,7 @@ function ChatSidebar({
   }
 
   const rootFolders = useMemo(() => folders.filter(f => !f.parent_id).sort((a, b) => a.order - b.order), [folders])
-  const visibleRootFolders = useMemo(() => rootFolders.filter(f => !isFolderHidden(f)), [rootFolders, isFolderHidden])
+  const visibleRootFolders = useMemo(() => rootFolders.filter(f => !isFolderHidden(f) && !isFolderFilteredOut(f)), [rootFolders, isFolderHidden, isFolderFilteredOut])
   const rootFolderIds = useMemo(() => visibleRootFolders.map(f => f.id), [visibleRootFolders])
   const ungroupedSlots = filteredSlots.filter(s => !slotFolders[s.key])
   // True while actively dragging a session that currently lives in a folder.
@@ -2620,7 +2814,7 @@ function ChatSidebar({
                   )}
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-[180px]">
+              <DropdownMenuContent align="end" className="min-w-[180px] max-h-[70vh] overflow-y-auto">
                 <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em]">{i18nT('pages.chatSidebar.filter')}</DropdownMenuLabel>
                 {SESSION_FILTERS.map(filterDef => {
                   const active = activeFilters.has(filterDef.key)
@@ -2745,6 +2939,74 @@ function ChatSidebar({
                     {sortKey === o.value && <Check size={14} className="text-accent shrink-0" />}
                   </DropdownMenuItem>
                 ))}
+                {/* Folders sit LAST on purpose: the list grows with the user's
+                    folder count, so anything below it would get pushed out of
+                    easy reach. Being last, it can simply overflow into the
+                    menu's own scroll (max-h on DropdownMenuContent) with no
+                    inner scroll region of its own. */}
+                {!boardLaneActive && folderFilterRows.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    {/* The heading doubles as the shelve control: activating it
+                        rolls the folder list up or down. It stays a menu item so
+                        keyboard users reach it with the same arrow keys as every
+                        other row, and preventDefault keeps the menu open. */}
+                    <DropdownMenuItem
+                      onSelect={e => { e.preventDefault(); toggleFoldersShelved() }}
+                      data-testid="folder-filter-shelve"
+                      aria-expanded={!foldersShelved}
+                      title={foldersShelved ? i18nT('pages.chatSidebar.show_the_folder_list') : i18nT('pages.chatSidebar.roll_the_folder_list_up')}
+                      className="text-[11px] uppercase tracking-[.04em] text-muted"
+                    >
+                      {foldersShelved
+                        ? <ChevronRight size={12} className="shrink-0" />
+                        : <ChevronDown size={12} className="shrink-0" />}
+                      <span className="flex-1">
+                        {i18nT('pages.chatSidebar.folders')}
+                        {filterHiddenFolders.size > 0 && (
+                          <span className="normal-case tracking-normal"> · {filterHiddenFolders.size} hidden</span>
+                        )}
+                      </span>
+                    </DropdownMenuItem>
+                    {!foldersShelved && (
+                      <>
+                    {filterHiddenFolders.size > 0 && (
+                      <DropdownMenuItem onSelect={e => { e.preventDefault(); showAllFolders() }} data-testid="folder-filter-show-all">
+                        <RotateCcw size={12} className="text-muted shrink-0" />
+                        <span className="flex-1">{i18nT('pages.chatSidebar.show_all_folders')}</span>
+                      </DropdownMenuItem>
+                    )}
+                    {folderFilterRows.map(({ folder: f, depth, count, hidden, hiddenByAncestor }) => (
+                      <DropdownMenuItem
+                        key={f.id}
+                        style={{ paddingLeft: `${8 + depth * 14}px` }}
+                        title={hiddenByAncestor
+                          ? `${f.name} is hidden because a parent folder is hidden`
+                          : hidden ? `Show ${f.name} in flat view` : `Hide ${f.name} from flat view`}
+                        // Keep the menu open so several folders can be toggled.
+                        onSelect={e => { e.preventDefault(); toggleFolderFilter(f.id) }}
+                        data-testid={`folder-filter-${f.id}`}
+                        role="menuitemcheckbox"
+                        aria-checked={!hidden && !hiddenByAncestor}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center"
+                          style={hidden || hiddenByAncestor
+                            ? { borderColor: 'var(--border)', background: 'transparent' }
+                            : { borderColor: 'var(--accent)', background: 'var(--accent)' }}
+                        >
+                          {!hidden && !hiddenByAncestor && <Check size={10} className="text-accent-fg" strokeWidth={3} />}
+                        </span>
+                        <FolderGlyph icon={f.icon} size={12} className="shrink-0 text-muted" />
+                        <span className={`flex-1 truncate${hiddenByAncestor ? ' opacity-50' : ''}`}>{f.name}</span>
+                        {count > 0 && <span className="text-muted text-[11px] shrink-0">{count}</span>}
+                      </DropdownMenuItem>
+                    ))}
+                      </>
+                    )}
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -2780,25 +3042,6 @@ function ChatSidebar({
           // Inactive without folders (the toggle is hidden then too), so a
           // persisted flat preference can never strand the user.
           <motion.div layoutScroll className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col" data-testid="flat-view-lane">
-            {collapsedFolderPills.length > 0 && (
-              <div className="px-1 pb-2 flex items-center gap-1.5 flex-wrap" data-testid="flat-collapsed-strip">
-                <span className="text-[11px] text-muted select-none">{i18nT('pages.chatSidebar.show_collapsed_folders')}</span>
-                {collapsedFolderPills.map(f => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    className="inline-flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors border-none"
-                    style={{ background: 'color-mix(in srgb, var(--muted) 12%, transparent)', color: 'var(--muted)', borderWidth: 1, borderColor: 'color-mix(in srgb, var(--muted) 30%, transparent)' }}
-                    onClick={() => toggleCollapse(f.id)}
-                    title={`Show sessions in ${f.name}`}
-                    aria-label={`Show sessions in folder ${f.name}`}
-                  >
-                    <FolderGlyph icon={f.icon} size={11} className="shrink-0" />
-                    <span className="truncate max-w-[110px]">{f.name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
             {(() => {
               // Date segments (Today / Yesterday / Last 7 Days / …) between
               // rows — resurrects the 9bb0f71 active-list pattern: only for
@@ -2831,6 +3074,9 @@ function ChatSidebar({
             {flatSlots.length === 0 && (
               <div className="px-3 py-4 text-[12px] text-muted">{i18nT('pages.chatSidebar.no_sessions_match')}</div>
             )}
+            {/* Flat view has no containers to anchor to — every hide, top-level
+             *  or nested, collapses into this one row at the bottom of the lane. */}
+            {renderHiddenReveal('flat', allHiddenFolders, 0)}
             {!historyOpen && (
               <button
                 type="button"
@@ -2867,6 +3113,10 @@ function ChatSidebar({
                     <SortableContext items={rootFolderIds} strategy={verticalListSortingStrategy}>
                       {visibleRootFolders.map(f => <SortableFolderBlock key={f.id} folder={f} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} renderFolderBlock={renderFolderBlock} />)}
                     </SortableContext>
+                    {/* Bottom of the ROOT folder list. For a top-level hide this
+                     *  is the sidebar's own bottom, which is exactly the "single
+                     *  footer row" shape — the nested case is what needs depth. */}
+                    {renderHiddenReveal('root', hiddenByContainer.get('root') ?? [], 0)}
                     {creatingIn === '__root__' && (
                       <div className="px-2 py-1">
                         <Input ref={folderCreateInputRef} className="w-full py-1 text-[13px]" placeholder={i18nT('pages.chatSidebar.folder_name')} value={newName} onChange={e => setNewName(e.target.value)} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => createFolder(newName), onEscape: () => { cancelledRef.current = true; setCreatingIn(null); setNewName('') }, onBlur: () => { if (cancelledRef.current) { cancelledRef.current = false; return } if (newName.trim()) createFolder(newName); else setCreatingIn(null) } })} />
