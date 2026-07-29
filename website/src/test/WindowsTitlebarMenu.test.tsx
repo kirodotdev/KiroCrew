@@ -5,6 +5,7 @@ import WindowsTitlebarMenu from '../components/WindowsTitlebarMenu'
 describe('WindowsTitlebarMenu', () => {
   afterEach(() => {
     delete (window as Window & { electronAPI?: unknown }).electronAPI
+    delete document.documentElement.dataset.mode
   })
 
   it('renders the native application menu anchors in titlebar order', () => {
@@ -20,9 +21,10 @@ describe('WindowsTitlebarMenu', () => {
   })
 
   it('opens the matching native submenu below its trigger', () => {
+    document.documentElement.dataset.mode = 'dark'
     const showAppMenu = vi.fn()
     ;(window as Window & { electronAPI?: { showAppMenu: typeof showAppMenu } }).electronAPI = { showAppMenu }
-    const { getByText } = render(<WindowsTitlebarMenu />)
+    const { getByText } = render(<header><WindowsTitlebarMenu /></header>)
     const view = getByText('View')
     vi.spyOn(view, 'getBoundingClientRect').mockReturnValue({
       x: 91,
@@ -35,9 +37,20 @@ describe('WindowsTitlebarMenu', () => {
       height: 28,
       toJSON: () => ({}),
     })
+    vi.spyOn(view.closest('header') as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 42,
+      width: 800,
+      height: 42,
+      toJSON: () => ({}),
+    })
 
     fireEvent.click(view)
 
-    expect(showAppMenu).toHaveBeenCalledWith('view-menu', { x: 91, y: 32 })
+    expect(showAppMenu).toHaveBeenCalledWith('view-menu', { x: 91, y: 42 }, 'dark')
   })
 })

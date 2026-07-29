@@ -27,7 +27,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setDevMode: (enabled) => ipcRenderer.send("dev-mode-changed", !!enabled),
   // Windows custom titlebar: ask the main process to anchor one of the
   // existing native application submenus below its renderer-side trigger.
-  showAppMenu: (id, anchor) => ipcRenderer.send("app-menu:popup", id, anchor),
+  showAppMenu: (id, anchor, mode) => ipcRenderer.send("app-menu:popup", id, anchor, mode),
   // App-menu navigation: main.js sends an in-app path ("/settings",
   // "/settings?tab=about") when the user picks Settings…/About from the
   // native application menu; the SPA routes to it (see App.tsx).

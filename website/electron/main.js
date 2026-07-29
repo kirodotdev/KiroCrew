@@ -1871,7 +1871,7 @@ app.whenReady().then(async () => {
   // keyboard accelerators, but the visible anchors live in the dashboard's
   // custom titlebar. Only known top-level menus and finite coordinates cross
   // this narrow renderer-to-main bridge.
-  ipcMain.on("app-menu:popup", (event, id, anchor) => {
+  ipcMain.on("app-menu:popup", (event, id, anchor, mode) => {
     if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return;
     const item = appMenu.getMenuItemById(id);
     const win = windowForWebContents(event.sender);
@@ -1879,6 +1879,13 @@ app.whenReady().then(async () => {
     const x = Number(anchor && anchor.x);
     const y = Number(anchor && anchor.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    // The application menu is process-global and Windows paints a popup using
+    // nativeTheme at the instant it opens. Re-apply the renderer's live mode
+    // here so a just-switched dark theme cannot inherit a stale light popup.
+    if (mode === "dark" || mode === "light") {
+      nativeTheme.themeSource = mode;
+      updateWindowsTitleBarOverlay(win, mode);
+    }
     const zoom = event.sender.getZoomFactor();
     const bounds = win.getContentBounds();
     item.submenu.popup({

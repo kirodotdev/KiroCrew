@@ -11,7 +11,7 @@ const WINDOWS_MENUS = [
 ] as const
 
 type ElectronMenuAPI = {
-  showAppMenu?: (id: string, anchor: { x: number; y: number }) => void
+  showAppMenu?: (id: string, anchor: { x: number; y: number }, mode: 'dark' | 'light') => void
 }
 
 /**
@@ -24,7 +24,9 @@ export default function WindowsTitlebarMenu() {
     const api = (window as Window & { electronAPI?: ElectronMenuAPI }).electronAPI
     if (!api?.showAppMenu) return
     const rect = target.getBoundingClientRect()
-    api.showAppMenu(id, { x: rect.left, y: rect.bottom })
+    const titlebarBottom = target.closest('header')?.getBoundingClientRect().bottom
+    const mode = document.documentElement.dataset.mode === 'light' ? 'light' : 'dark'
+    api.showAppMenu(id, { x: rect.left, y: titlebarBottom ?? rect.bottom }, mode)
   }, [])
 
   return (
@@ -32,7 +34,7 @@ export default function WindowsTitlebarMenu() {
       {WINDOWS_MENUS.map(menu => (
         <Clickable
           key={menu.id}
-          className="windows-titlebar-menu-item h-7 rounded px-2 text-[12px] font-medium text-muted hover:bg-bg-hover hover:text-text focus-visible:bg-bg-hover focus-visible:text-text"
+          className="windows-titlebar-menu-item inline-flex h-6 items-center justify-center rounded-md px-2 text-[12px] font-medium leading-none text-muted hover:bg-bg-hover hover:text-text focus-visible:bg-bg-hover focus-visible:text-text focus-visible:outline-none"
           aria-haspopup="menu"
           onClick={event => event && openMenu(menu.id, event.currentTarget as HTMLElement)}
         >

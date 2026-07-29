@@ -298,8 +298,10 @@ desktop app, local browser, remote browser, Linux, and Windows.
 The dashboard's 42px top bar is also the window titlebar on macOS and Windows.
 macOS insets the native traffic lights on the left. Windows uses Electron's
 title-bar overlay to retain native minimize/maximize/close controls on the right,
-while File/Edit/View/Connection/Window/Help are compact triggers on the left
-that open the existing native application submenus through a narrow IPC bridge.
+while File/Edit/View/Connection/Window/Help are compact, vertically centered
+triggers on the left that open the existing native application submenus through
+a narrow IPC bridge. Each popup synchronizes with the dashboard's current
+light/dark mode as it opens.
 The command-palette trigger is positioned from the window midpoint rather than
 the remaining flex space, so asymmetric menu and status controls do not shift it.
 Linux retains the window manager's native frame and menu bar.
