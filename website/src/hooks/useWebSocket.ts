@@ -473,8 +473,16 @@ export function useWebSocket() {
       }
       wasConnectedRef.current = true
       dispatch(sseConnected())
-      dispatch(fetchSlots())
       seedGoalLoops()
+      // FIRST connect only: App's mount effect already dispatched fetchSlots,
+      // and this handler fires strictly after it, so repeating it here is a
+      // redundant round-trip at the worst possible moment. The reconnect branch
+      // above still refetches — there it recovers state missed while the socket
+      // was down. fetchNotifications IS still dispatched here despite the
+      // mount-effect copy: syncPendingApprovals must only run after a
+      // notifications fetch has settled, because fetchNotifications.fulfilled
+      // replaces `items` wholesale and would wipe any approval notifications
+      // synced before it.
       dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       syncPendingQuestions()
       // Eagerly subscribe to subagent events on first connect too.

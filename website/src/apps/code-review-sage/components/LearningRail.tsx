@@ -26,6 +26,9 @@ export default function LearningRail() {
   const settingsQuery = useQuery({
     queryKey: ['code-review-sage', 'settings'],
     queryFn: () => sageApi.settings(),
+    // putSettings sends a replace-all PUT from this cache; finite staleTime
+    // lets focus-refetch fire here (global default is Infinity).
+    staleTime: 30_000,
   })
 
   const invalidate = () => {

@@ -75,6 +75,10 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
   const { data, isLoading } = useQuery({
     queryKey: ['registries'],
     queryFn: () => api.listRegistries(),
+    // handleAdd sends a REPLACE-ALL PUT built from this cached list, so a stale
+    // cache would silently erase a registry added from another tab. Use a finite
+    // staleTime so focus-refetch fires here (the global default is Infinity).
+    staleTime: 30_000,
   })
   const registries: Registry[] = data?.registries || []
 

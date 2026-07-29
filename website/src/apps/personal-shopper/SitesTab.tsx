@@ -51,6 +51,10 @@ export function SitesTab() {
   const { data, isLoading } = useQuery({
     queryKey: ['personal-shopper', 'sites'],
     queryFn: fetchSites,
+    // add/remove send a replace-all PUT built from this cache, so a stale cache
+    // would erase a site added from another tab. Finite staleTime lets
+    // focus-refetch fire here (global default is Infinity).
+    staleTime: 30_000,
   })
 
   const mutation = useMutation({

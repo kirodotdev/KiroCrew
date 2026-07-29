@@ -43,7 +43,13 @@ export const queryClient = new QueryClient({
     queries: {
       retry: retryPolicy,
       retryDelay: retryDelayPolicy,
-      staleTime: 30_000,
+      // Infinity: queries never go stale on their own. Freshness is driven
+      // exclusively by WebSocket push (invalidateQueries on server events).
+      // This eliminates the focus-refetch storm (refetchOnWindowFocus only
+      // fires on *stale* queries) without changing the safe default — the
+      // option stays true, so any query that sets a finite staleTime will
+      // still refetch on focus as React Query intends.
+      staleTime: Infinity,
     },
   },
 })
