@@ -119,3 +119,80 @@ Each PR lands green on the existing suites; no behavior change until ⑤.
 - **Channels as separate processes (MCP-style).** Real isolation, but adds IPC latency to typing-indicator lifecycles, complicates session/renderer state, and duplicates the app platform's trust story. Deferred as the isolation tier, not the foundation.
 - **Keep typed dataclass config.** Defensible in a monolith; incompatible with out-of-tree plugins (they cannot edit `loader.py`). Schema validation + contract tests replace the type safety, matching the manifest's existing trade.
 - **A channel-only plugin mechanism separate from apps.** Rejected: two discovery/trust/distribution systems to maintain, and the apps platform already solved loading, admission, and signing.
+
+## 9. Amendment: session address model (decided 2026-07-29)
+
+PR ③ introduces the channel registry and the host's control seams. Before it
+lands, the shape of a session address must be fixed — otherwise the control
+plane inherits the dashboard's slot-shaped addressing, which is exactly what
+makes channel sessions unmanageable today.
+
+### Motivation (measured)
+
+- The dashboard's stop/interrupt path (`/api/chat/slots/{slot}/stop`) resolves
+  its target via `state._slots.get(name)`. All cancellation state
+  (`_stop_state`, queue, pending steers, soft→hard escalation) lives on the
+  slot object. A channel conversation has no slot, so a stuck WeChat turn
+  cannot be observed or stopped from the dashboard — there is no address by
+  which to name it.
+- Cross-surface mirroring (`dashboard/chat_mirror.py`) is one-way (dashboard →
+  channel) and fires on turn completion — a hung turn never mirrors anything.
+- `InboundMessage` carries exactly two address levels (`conversation_id`,
+  `thread_id`); real topologies need more (Discord guild/channel/thread,
+  Feishu group/topic), and the shortfall has already degraded into key
+  string-munging (`session_map.py`'s `dashboard:dashboard_*` double-prefix
+  repair).
+
+### Options considered
+
+| | A: typed address object everywhere | B: opaque key + canonical grammar + single builder/parser | C: two-level ids (status quo) | D: URI scheme |
+|---|---|---|---|---|
+| Migration | every `sessions.*` call site | **zero — existing keys already fit** | zero | full rekey |
+| Arbitrary depth | yes | **yes (scope path)** | no — already proven insufficient | yes |
+| Fits a behavior-preserving PR ③ | no | **yes** | bakes in the wrong shape | no |
+| Matches existing code | no | **yes** (`_STATELESS_PREFIXES` routes on first segment; `build_dm_session_key` shared by 6 of 7 channels) | partial | no |
+
+**Decision: B.**
+
+### Rules
+
+1. **`session_key` is THE address** for every session (channel, dashboard,
+   cron, subagent). Control-plane operations (observe/steer/stop) are keyed by
+   session: `/api/sessions/{key}/…`, never `/api/chat/slots/{slot}/…`. A slot
+   is a dashboard-local alias resolved to a key at the dashboard edge.
+2. **Canonical conversational grammar** (blessing `build_dm_session_key`'s
+   existing shape): `{surface}:{agent}:{chat_type}:{scope…}[:genN]`. The first
+   segment is the surface and is the routing authority — the same convention
+   `_STATELESS_PREFIXES` already uses. `scope…` is one or more segments and is
+   where hierarchy depth lives.
+3. **Address ≠ organization.** The scope path encodes where a conversation
+   lives in the transport's own topology (immutable). Dashboard folders are
+   mutable UI metadata and stay out of the address: moving a session between
+   folders never changes its identity.
+4. **Exactly one builder/parser module** (extend `messaging/link.py` in PR ③).
+   Segments are colon-free, enforced at build time. The `session_map.py`
+   double-prefix repair moves into this parser and dies in one place.
+5. **The dispatch pipeline stays address-agnostic** — it passes keys through
+   verbatim and never parses them. Pinned in `messaging/dispatch.py`
+   docstrings by PR ①, contract-tested when the parser lands in PR ③.
+
+### Accepted debts
+
+- Slack and `dashboard:` keys predate the grammar. The parser must tolerate
+  them; migration is explicitly out of PR ③'s scope.
+- The app-platform `channel:{id}:{agent}` prefix collides with messaging
+  vocabulary. Noted, not renamed now. New code says `conversation_id` for
+  transport conversation identity (the legacy `channel_id=` kwarg survives
+  only at the `sessions.*` boundary).
+
+### Consequences for the migration plan
+
+- PR ③ keys the registry and any session-control surface by `session_key` and
+  ships the parser module with contract tests (including
+  `channel_type == first segment`).
+- PR ①'s `drive_turn` is the single seam through which every channel turn
+  passes; future cancellation checks attach there — one insertion point, not
+  seven.
+- The eventual dashboard-as-surface unification (dashboard = host + one
+  builtin surface with declared capabilities) builds on this address model; it
+  is deliberately out of scope for PRs ①–⑤.
