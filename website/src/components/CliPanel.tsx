@@ -6,7 +6,9 @@ import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check } from 'lucide-react'
 import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd } from '../utils/terminalRegistry'
+import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import TerminalCompletion from './TerminalCompletion'
+import TerminalKeyBar from './TerminalKeyBar'
 
 import { i18nT } from '../i18n/t'
 /* ── Per-session xterm instance cache ──
@@ -162,6 +164,8 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
   const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle')
   const [sending, setSending] = useState<'idle' | 'busy' | 'failed'>('idle')
   const toolbarRef = useRef<HTMLDivElement>(null)
+  // The soft keys exist for one reason — no physical keyboard.
+  const touchDevice = useIsTouchDevice()
 
   if (!entryRef.current) {
     entryRef.current = getOrCreateTerm(sessionId)
@@ -346,15 +350,26 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
   return (
     <div
       ref={wrapperRef}
-      className="relative flex-1 min-h-0 h-full overflow-hidden"
-      style={{ display: visible ? 'block' : 'none' }}
+      className="relative flex flex-col flex-1 min-h-0 h-full overflow-hidden"
+      style={{ display: visible ? 'flex' : 'none' }}
     >
-      <div ref={containerRef} className="w-full h-full overflow-hidden" />
-      {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
-          (it reserves Tab/Enter/arrows/Escape while its menu is open). A later
-          feature that attaches its own handler here would silently replace it —
-          extend the handler inside TerminalCompletion instead. */}
-      <TerminalCompletion term={term} sessionId={sessionId} active={visible} />
+      {/* Positioning context for the completion menu, sized to the TERMINAL
+          only. The menu clamps itself inside its `offsetParent`; anchoring it to
+          the outer wrapper would let it count the key bar's height as free space
+          and drop over the soft keys — covering Tab on exactly the devices the
+          bar exists for. */}
+      <div className="relative w-full flex-1 min-h-0 overflow-hidden">
+        <div ref={containerRef} className="w-full h-full overflow-hidden" />
+        {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
+            (it reserves Tab/Enter/arrows/Escape while its menu is open). A later
+            feature that attaches its own handler here would silently replace it —
+            extend the handler inside TerminalCompletion instead. */}
+        <TerminalCompletion term={term} sessionId={sessionId} active={visible} />
+      </div>
+      {/* Below the terminal in flow, never over it: the shell prompt occupies the
+          bottom row, so an overlay would hide the line being typed. The terminal
+          shrinks by the bar's height and the ResizeObserver above refits it. */}
+      {touchDevice && <TerminalKeyBar term={term} />}
       {sel && (
         // Positioning-only container; the interactive affordances are the
         // native <button>s inside. The mouse handlers merely guard event
