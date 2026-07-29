@@ -53,8 +53,8 @@
         "label": "Import / Export"
       },
       "instances": {
-        "description": "Manage remote KiroCrew instances over SSH tunnels; switch between them from the top header",
-        "label": "Instances"
+        "description": "Manage remote crews over SSH tunnels; switch between them from the top header",
+        "label": "Remote Crew"
       },
       "notifications": {
         "description": "Sound effects and per-source alert preferences",

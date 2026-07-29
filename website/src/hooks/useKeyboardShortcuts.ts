@@ -25,7 +25,7 @@ export interface ShortcutDef {
   meta?: boolean  // Cmd on Mac, Ctrl on Windows/Linux
   shift?: boolean
   label: string
-  group: 'Chat Navigation' | 'Panel Navigation' | 'Actions' | 'Instances'
+  group: 'Chat Navigation' | 'Panel Navigation' | 'Actions' | 'Remote Crews'
 }
 
 export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
@@ -67,12 +67,12 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
   // 1st..5th remote instance, matching the InstanceTabBar left-to-right order.
   // Handled by useInstanceShortcuts (not the Alt-based handler below); listed
   // here so they appear in the shortcuts modal + Settings → Shortcuts.
-  { id: 'instance-1', key: '1', meta: true, label: 'Switch to Local', group: 'Instances' },
-  { id: 'instance-2', key: '2', meta: true, label: 'Switch to instance 1', group: 'Instances' },
-  { id: 'instance-3', key: '3', meta: true, label: 'Switch to instance 2', group: 'Instances' },
-  { id: 'instance-4', key: '4', meta: true, label: 'Switch to instance 3', group: 'Instances' },
-  { id: 'instance-5', key: '5', meta: true, label: 'Switch to instance 4', group: 'Instances' },
-  { id: 'instance-6', key: '6', meta: true, label: 'Switch to instance 5', group: 'Instances' },
+  { id: 'instance-1', key: '1', meta: true, label: 'Switch to Local', group: 'Remote Crews' },
+  { id: 'instance-2', key: '2', meta: true, label: 'Switch to remote crew 1', group: 'Remote Crews' },
+  { id: 'instance-3', key: '3', meta: true, label: 'Switch to remote crew 2', group: 'Remote Crews' },
+  { id: 'instance-4', key: '4', meta: true, label: 'Switch to remote crew 3', group: 'Remote Crews' },
+  { id: 'instance-5', key: '5', meta: true, label: 'Switch to remote crew 4', group: 'Remote Crews' },
+  { id: 'instance-6', key: '6', meta: true, label: 'Switch to remote crew 5', group: 'Remote Crews' },
 ]
 
 /**
@@ -81,7 +81,7 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
  * INSTANCE_SHORTCUTS.length, so the chords the modal advertises and the chords
  * the handler claims can never drift apart.
  */
-export const INSTANCE_SHORTCUTS = DEFAULT_SHORTCUTS.filter(s => s.group === 'Instances')
+export const INSTANCE_SHORTCUTS = DEFAULT_SHORTCUTS.filter(s => s.group === 'Remote Crews')
 
 /**
  * The core Alt+<key> panel-navigation chords. Single source of truth for both

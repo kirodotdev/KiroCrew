@@ -1912,7 +1912,7 @@ export default function App() {
               <NavItem
                 navId="apps"
                 path="/apps"
-                label={i18nT('app.explore')}
+                label={i18nT('app.explore_apps')}
                 icon={<LayoutGrid size={16} />}
                 active={activePath === '/apps'}
                 collapsed

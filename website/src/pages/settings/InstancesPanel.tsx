@@ -90,7 +90,7 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
   const err = addMutation.error
     ? addMutation.error instanceof ApiError
       ? addMutation.error.message
-      : 'Failed to add instance'
+      : 'Failed to add remote crew'
     : ''
 
   const inputCls =
@@ -114,8 +114,7 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
           {i18nT('pages.settings.instancesPanel.remote_port')}
           <input id="add-instance-remote-port" aria-label={i18nT('pages.settings.instancesPanel.remote_port')} className={inputCls} value={remotePort} onChange={e => setRemotePort(e.target.value)} placeholder="7777" inputMode="numeric" />
           <span className="text-[12px] text-muted leading-snug">
-            {i18nT('pages.settings.instancesPanel.must_match_the_port_the_remote_gateway_serves_on')}{' '}
-            <code className="text-text">{i18nT('pages.settings.instancesPanel.dashboard_url')}</code>{i18nT('pages.settings.instancesPanel.each_connected_instance_needs_a')} <strong>{i18nT('pages.settings.instancesPanel.distinct')}</strong> {i18nT('pages.settings.instancesPanel.port_the_local_forward_mirrors_it')}
+            {i18nT('pages.settings.instancesPanel.must_match_the_port_the_remote_gateway_serves_on')}
           </span>
           {dupPort ? (
             <span className="text-[12px] text-danger leading-snug">
@@ -150,7 +149,7 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
           onClick={() => addMutation.mutate()}
           disabled={addMutation.isPending || !name.trim() || !sshHost.trim() || dupPort}
         >
-          {addMutation.isPending ? 'Adding…' : 'Add instance'}
+          {addMutation.isPending ? 'Adding…' : 'Add remote crew'}
         </Btn>
       </div>
       <p className="mt-2 text-[12px] text-muted">
@@ -241,7 +240,7 @@ export function InstancesPanel() {
     instancesQuery.error && !disabled
       ? instancesQuery.error instanceof ApiError
         ? instancesQuery.error.message
-        : 'Failed to load instances'
+        : 'Failed to load remote crews'
       : ''
   const loading = instancesQuery.isLoading
   const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data])
@@ -348,7 +347,7 @@ export function InstancesPanel() {
           </div>
         )}
         <Btn primary onClick={() => setEnabledMutation.mutate(true)} disabled={setEnabledMutation.isPending}>
-          <Power className="lucide-inline" /> {setEnabledMutation.isPending ? 'Enabling…' : 'Enable multi-instance management'}
+          <Power className="lucide-inline" /> {setEnabledMutation.isPending ? 'Enabling…' : 'Enable remote crew management'}
         </Btn>
         {actionErr && <div className="mt-2 text-[13px] text-danger">{actionErr}</div>}
         <p className="mt-2 text-[12px] text-muted">

@@ -71,7 +71,7 @@ const EXTRA_PAGES: readonly PageEntry[] = [
   { key: 'hooks', title: 'Hooks', route: '/hooks', icon: inlineIcon(Webhook) },
   { key: 'tasks', title: 'Tasks', route: '/tasks', icon: inlineIcon(ListChecks) },
   { key: 'mc-agents', title: 'KiroCrew Agents', route: '/mc-agents', icon: inlineIcon(Bot) },
-  { key: 'instances', title: 'Instances', route: '/instances', icon: inlineIcon(Server) },
+  { key: 'instances', title: 'Remote Crew', route: '/instances', icon: inlineIcon(Server) },
 ]
 
 /**

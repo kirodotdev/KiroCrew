@@ -260,7 +260,7 @@ describe('InstancesViewport', () => {
 
     expect(await screen.findByText(/Connection error/i)).toBeInTheDocument()
     // The full switcher renders atop the panel: Local + the instance tab.
-    const bar = await screen.findByRole('tablist', { name: /Instances/i })
+    const bar = await screen.findByRole('tablist', { name: /Remote crews/i })
     expect(bar).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /Local/i })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /Cloud One/i })).toBeInTheDocument()
@@ -292,7 +292,7 @@ describe('InstancesViewport', () => {
     })
     renderWithProviders(<InstancesViewport macInset />, { store })
 
-    const bar = await screen.findByRole('tablist', { name: /Instances/i })
+    const bar = await screen.findByRole('tablist', { name: /Remote crews/i })
     expect(bar.style.paddingLeft).toBe('84px')
   })
 
@@ -348,7 +348,7 @@ describe('InstancesViewport', () => {
 
     expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
     // The full switcher renders atop the overlay: the user can always escape.
-    const bar = await screen.findByRole('tablist', { name: /Instances/i })
+    const bar = await screen.findByRole('tablist', { name: /Remote crews/i })
     expect(bar).toBeInTheDocument()
     // Not the error panel — no Retry while the load is still in flight.
     expect(screen.queryByText(/Connection error/i)).toBeNull()
@@ -467,7 +467,7 @@ describe('InstancesViewport', () => {
       vi.useRealTimers()
     }
     // The escape-hatch strip is on the panel (query resolves under real timers).
-    expect(await screen.findByRole('tablist', { name: /Instances/i })).toBeInTheDocument()
+    expect(await screen.findByRole('tablist', { name: /Remote crews/i })).toBeInTheDocument()
   })
 
   it('Retry after a load timeout force-reloads the iframe even for an identical token', async () => {

@@ -7,7 +7,7 @@ import { Toggle } from './ui'
 
 import { i18nT } from '../i18n/t'
 /** Shortcut group headings, in display order. Shared with Settings → Shortcuts. */
-export const SHORTCUT_GROUPS = ['Chat Navigation', 'Panel Navigation', 'Actions', 'Instances'] as const
+export const SHORTCUT_GROUPS = ['Chat Navigation', 'Panel Navigation', 'Actions', 'Remote Crews'] as const
 
 export function Kbd({ children }: { children: string }) {
   return <kbd className="inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 rounded-md bg-bg border border-border text-[12px] font-mono font-medium text-text-strong shadow-sm">{children}</kbd>
@@ -44,7 +44,7 @@ export function groupShortcuts(group: string, macCtrl: boolean) {
   // plain browser those chords are reserved for browser tab switching and the
   // handler never binds (see useInstanceShortcuts). Don't advertise a binding
   // the host environment will steal.
-  if (group === 'Instances' && !isElectron) return []
+  if (group === 'Remote Crews' && !isElectron) return []
   return DEFAULT_SHORTCUTS.filter(s => s.group === group).map(s => {
     // When Mac user toggles back to Alt+digit, adjust the display
     if (IS_MAC && !macCtrl && s.id.startsWith('chat-') && s.ctrl) {

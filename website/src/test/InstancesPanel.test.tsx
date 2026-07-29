@@ -38,8 +38,8 @@ describe('InstancesPanel', () => {
     ;vi.mocked(api.patchConfig).mockResolvedValue({})
     const u = userEvent.setup()
     renderWithProviders(<InstancesPanel />)
-    expect(await screen.findByText(/Multi-instance management is off/i)).toBeInTheDocument()
-    await u.click(screen.getByRole('button', { name: /Enable multi-instance management/i }))
+    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    await u.click(screen.getByRole('button', { name: /Enable remote crew management/i }))
     await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('instances.enabled', true))
   })
 
@@ -48,14 +48,14 @@ describe('InstancesPanel', () => {
     renderWithProviders(<InstancesPanel />)
     expect(await screen.findByText(/not active yet/i)).toBeInTheDocument()
     expect(screen.getByText(/kirocrew restart/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Disable multi-instance management/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Disable remote crew management/i })).toBeInTheDocument()
   })
 
   it('renders the empty state + Add form when no instances configured', async () => {
     ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [], warm_set_cap: 5 })
     renderWithProviders(<InstancesPanel />)
-    expect(await screen.findByText(/No instances configured yet/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Add instance' })).toBeInTheDocument()
+    expect(await screen.findByText(/No remote crews configured yet/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add remote crew' })).toBeInTheDocument()
   })
 
   it('passes the optional remote_bin path through the Add form', async () => {
@@ -64,14 +64,14 @@ describe('InstancesPanel', () => {
     const u = userEvent.setup()
     renderWithProviders(<InstancesPanel />)
 
-    await screen.findByText(/No instances configured yet/i)
+    await screen.findByText(/No remote crews configured yet/i)
     await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Shizuka')
     await u.type(screen.getByPlaceholderText('host-1-alias'), 'shizuka-alias')
     await u.type(
       screen.getByPlaceholderText(/leave blank for standard installs/i),
       '/home/shizuka/.local/bin/kirocrew',
     )
-    await u.click(screen.getByRole('button', { name: 'Add instance' }))
+    await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
 
     await waitFor(() =>
       expect(api.addInstance).toHaveBeenCalledWith(
@@ -105,14 +105,14 @@ describe('InstancesPanel', () => {
 
     // Default remote port is 7777, which collides with the existing instance.
     expect(
-      await screen.findByText(/already used by another instance/i),
+      await screen.findByText(/already used by another remote crew/i),
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Add instance' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Add remote crew' })).toBeDisabled()
 
     // A distinct port clears the guard and re-enables Add.
     const portInput = screen.getByPlaceholderText('7777')
     await u.clear(portInput)
     await u.type(portInput, '7800')
-    expect(screen.queryByText(/already used by another instance/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/already used by another remote crew/i)).not.toBeInTheDocument()
   })
 })
