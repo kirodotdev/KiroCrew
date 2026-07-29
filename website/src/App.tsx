@@ -1189,7 +1189,8 @@ export default function App() {
               expiresLabel: typeof u.bonus_expires_label === 'string' ? u.bonus_expires_label : undefined,
             }
           : undefined
-        return { used, limit, overage, resets: u.resets, plan: u.plan, costUsd: u.cost_usd, overageRate: u.overage_rate, bonus, stale: u.stale === true }
+        const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
+        return { used, limit, overage, resets: u.resets, plan: u.plan, costUsd: u.cost_usd, overageRate: u.overage_rate, bonus, stale: u.stale === true, account: str(u.account), email: str(u.email), accountType: str(u.account_type), startUrl: str(u.start_url) }
       }
       // Non-Kiro provider (kiro-cli absent) -> hide. Empty cache (Kiro warming) -> spinner.
       if (u.available === false) return 'none' as const
@@ -2146,8 +2147,40 @@ export default function App() {
             {meta && <div className="text-[11px] text-muted mt-1.5">{meta}</div>}
           </div>
         )
+        // Sign-in description shown under the identity: account type + issuer
+        // host ("IAM Identity Center · amzn.awsapps.com"). Collapses gracefully
+        // when either half is missing.
+        // kiro-cli distinguishes four auth kinds (social | idc | builderId |
+        // external_idp); social login covers Google/GitHub and reports
+        // accountType "Social". Unmapped values pass through verbatim rather
+        // than being hidden, so a new kind still says something truthful.
+        const acctKind = kiroUsage.accountType === 'IamIdentityCenter' ? 'IAM Identity Center'
+          : kiroUsage.accountType === 'BuilderId' ? 'Builder ID'
+          : kiroUsage.accountType === 'Social' ? 'Social login'
+          : kiroUsage.accountType
+        let issuerHost: string | undefined
+        if (kiroUsage.startUrl) { try { issuerHost = new URL(kiroUsage.startUrl).host } catch { issuerHost = undefined } }
+        const signedInWith = [acctKind, issuerHost].filter(Boolean).join(' · ')
+        // Identity line prefers the real email; the org profile name is only a
+        // fallback for accounts where whoami gave us nothing.
+        const who = kiroUsage.email || kiroUsage.account
         return (
           <div className="flex flex-col gap-3">
+            {who && (
+              <div className="flex items-center gap-3 pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
+                <div
+                  className="shrink-0 rounded-full flex items-center justify-center text-[15px] font-semibold uppercase"
+                  style={{ width: 40, height: 40, background: 'var(--accent)', color: '#fff' }}
+                  aria-hidden="true"
+                >
+                  {who.slice(0, 1)}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[15px] font-medium text-text truncate" title={who}>{who}</div>
+                  {signedInWith && <div className="text-[12px] text-muted truncate">Signed in with {signedInWith}</div>}
+                </div>
+              </div>
+            )}
             <div className="flex items-baseline gap-2">
               <span className="text-2xl font-bold text-text">{totalUsed.toLocaleString()}</span>
               <span className="text-sm text-muted">/ {totalLimit.toLocaleString()} {bonus ? i18nT('app.credits_total') : i18nT('app.credits')}</span>

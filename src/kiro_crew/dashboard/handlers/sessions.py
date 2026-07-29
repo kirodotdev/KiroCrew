@@ -250,6 +250,116 @@ def _cache_transient_failure() -> None:
     _usage_cache_ts = time.time()
 
 
+async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
+    """Return the signed-in identity from ``kiro-cli whoami --format json``.
+
+    Answers "who is this Kiro account?" — the credit API cannot: GetUsageLimits
+    carries no identity, and the SSO token cache holds only opaque tokens (no
+    email/openid scopes). kiro-cli resolves the identity itself, so it is the
+    only local source of the account email.
+
+    Returns a dict with any of ``email`` / ``account_type`` / ``start_url``, or
+    ``{}`` on any failure — identity is decorative, so it must never break the
+    credit readout. stdout is untrusted: only the LEADING JSON object is parsed
+    (kiro-cli appends a non-JSON "Profile:" block after it), values must be
+    strings, and each is length-bounded before it can reach the cache/UI.
+    """
+    proc = None
+    cleanup = None
+    try:
+        argv, cleanup = wrap_argv([kiro_bin, "whoami", "--format", "json"], mode="standard")
+        argv = cgroup_scope_argv(argv)
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            preexec_fn=resource_limit_preexec(),
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+        raw = (out or err or b"").decode(errors="replace")
+        full = raw  # keep the whole output; the ARN lives AFTER the JSON object
+        # Take only the first {...} block; trailing "Profile:\n<name>" is not JSON.
+        depth = 0
+        start = raw.find("{")
+        if start < 0:
+            return {}
+        for i in range(start, len(raw)):
+            if raw[i] == "{":
+                depth += 1
+            elif raw[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    raw = raw[start : i + 1]
+                    break
+        else:
+            return {}
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        out_map: dict[str, object] = {}
+        for src, dst, cap in (
+            ("email", "email", 254),
+            ("accountType", "account_type", 60),
+            ("startUrl", "start_url", 200),
+        ):
+            v = data.get(src)
+            if isinstance(v, str) and v:
+                out_map[dst] = v[:cap]
+        # whoami's own profile ARN, printed in the trailing (non-JSON) "Profile:"
+        # block. Private (leading underscore): used only to prove this identity
+        # belongs to the same account the credit numbers came from, and stripped
+        # before anything is cached or served.
+        m = re.search(r"arn:aws:codewhisperer:[^\s\"']+", full)
+        if m:
+            out_map["_profile_arn"] = m.group(0)[:200]
+        return out_map
+    except (asyncio.TimeoutError, json.JSONDecodeError, ValueError, OSError):
+        logger.debug("whoami identity fetch failed", exc_info=True)
+        return {}
+    except Exception:
+        logger.debug("whoami identity fetch failed (unexpected)", exc_info=True)
+        return {}
+    finally:
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except Exception:
+                pass
+        if cleanup:
+            try:
+                os.remove(cleanup)
+            except OSError:
+                pass
+
+
+def _identity_matches_account(api_arn: object, identity: dict[str, object]) -> bool:
+    """True only when ``identity`` provably describes the account billed for the credits.
+
+    ``fetch_usage_limits`` tries several candidate credentials (IDE cache first,
+    then the kiro-cli store) and keeps whichever the API accepted, while
+    ``kiro-cli whoami`` always reports kiro-cli's own identity. With two
+    different accounts signed in those are different accounts — showing one's
+    email above the other's overage would misattribute a bill.
+
+    The ONLY accepted proof is a matching profile ARN on both sides. In
+    particular, "there was just one credential we could read" is NOT proof:
+    kiro-cli may authenticate from a store this module does not enumerate (e.g.
+    a platform-specific app-data path), so a lone readable credential does not
+    establish that whoami used it.
+
+    Consequence, deliberately: accounts with no profile ARN at all (individual /
+    Builder ID) can never be proven, so they show no identity. Under-reporting an
+    identity is a cosmetic gap; mislabelling whose overage bill this is, is not.
+    """
+    whoami_arn = identity.get("_profile_arn")
+    return (
+        isinstance(api_arn, str)
+        and isinstance(whoami_arn, str)
+        and api_arn == whoami_arn
+    )
+
+
 async def _fetch_usage_bg() -> None:
     """Background task: fetch usage and update cache."""
     global _usage_cache, _usage_cache_ts, _usage_fetching
@@ -281,6 +391,19 @@ async def _fetch_usage_bg() -> None:
         if api_usage and api_usage.get("credits_plan") is not None:
             # API output is untrusted too: redact every string leaf before caching.
             api_usage = {k: _redact_strings(v) for k, v in api_usage.items()}
+            # Strip the private coupling metadata before it can reach the cache.
+            api_arn = api_usage.pop("_profile_arn", None)
+            # Attach the signed-in identity ONLY when it provably belongs to the
+            # account these credits were billed to (see _identity_matches_account).
+            identity = await _fetch_whoami(kiro_bin)
+            if identity and _identity_matches_account(api_arn, identity):
+                api_usage.update(
+                    {
+                        k: _redact_strings(v)
+                        for k, v in identity.items()
+                        if not k.startswith("_")
+                    }
+                )
             _usage_cache = api_usage
             _usage_cache_ts = time.time()
             logger.info(
@@ -315,6 +438,16 @@ async def _fetch_usage_bg() -> None:
             # dict is cached and served (kiro-cli output is untrusted).
             parsed = _normalize_text_usage(parsed)
             parsed = {k: _redact_strings(v) for k, v in parsed.items()}
+            # No coupling check needed here: this scrape IS kiro-cli's own
+            # `/usage` output, so it and `whoami` describe the same account by
+            # construction.
+            parsed.update(
+                {
+                    k: _redact_strings(v)
+                    for k, v in (await _fetch_whoami(kiro_bin)).items()
+                    if not k.startswith("_")
+                }
+            )
             _usage_cache = parsed
             _usage_cache_ts = time.time()
             logger.info(

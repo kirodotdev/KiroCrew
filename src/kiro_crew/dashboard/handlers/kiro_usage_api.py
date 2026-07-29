@@ -120,6 +120,14 @@ _MAX_RESP_BYTES = 1_000_000
 # accounts); transient failures are never cached. See _list_profile_arn.
 _PROFILE_ARN_CACHE: dict[str, str | None] = {}
 
+# Human profile/display name for the signed-in account, captured as a side
+# effect of the same ListAvailableProfiles probe that yields the ARN and keyed
+# by the same token digest. Surfaced as the usage dict's ``account`` field so
+# the dashboard can show WHO the plan belongs to. Populated only alongside a
+# found ARN (control-flow-coupled to _PROFILE_ARN_CACHE); may be None when the
+# profile carries no name.
+_PROFILE_NAME_CACHE: dict[str, str | None] = {}
+
 # One WARN per api->text degradation transition (reset on the next success) so
 # a persistently-failing API path is diagnosable at the default log level
 # without spamming, and the legitimate no-token case stays at DEBUG.
@@ -440,16 +448,34 @@ def _list_profile_arn(token: str) -> str | None:
     if not isinstance(profiles, list):
         return None
     arn: str | None = None
+    name: str | None = None
     for p in profiles:
         if not isinstance(p, dict):
             continue
         candidate = p.get("arn") or p.get("profileArn")
         if candidate:
             arn = candidate
+            # Human label for the signed-in account. Bounded like the plan name
+            # so a hostile/oversized value can't reach the cache/UI unbounded;
+            # only a non-empty string qualifies.
+            pname = p.get("profileName") or p.get("profileDisplayName")
+            if isinstance(pname, str) and pname:
+                name = pname[:100]
             break
     if arn is not None:
         _PROFILE_ARN_CACHE[key] = arn  # memoize only a found ARN, per token
+        _PROFILE_NAME_CACHE[key] = name  # co-cached; None when profile had no name
     return arn
+
+
+def _account_name(token: str) -> str | None:
+    """Return the cached profile display name for ``token``, or None.
+
+    Populated as a side effect of :func:`_list_profile_arn`; this getter never
+    issues a request itself, so the ARN probe must have run first (it always
+    does in ``fetch_usage_limits``). Keyed by the same token digest (never the
+    token itself)."""
+    return _PROFILE_NAME_CACHE.get(hashlib.sha256(token.encode()).hexdigest()[:16])
 
 
 def _bounded(value: object) -> float | None:
@@ -648,6 +674,24 @@ def fetch_usage_limits() -> dict | None:
                 continue
             mapped = _map_response(body)
             if mapped is not None:
+                # Tag the usage with WHO the plan belongs to (profile display
+                # name from the ListAvailableProfiles probe above). Absent for
+                # individual Builder ID accounts, which have no profile.
+                account = _account_name(token)
+                if account:
+                    mapped["account"] = account
+                # Coupling metadata for the caller's identity check (private —
+                # stripped before the payload is cached or served).
+                #
+                # These numbers may come from a DIFFERENT account than
+                # ``kiro-cli whoami`` reports: this client tries several
+                # candidate credentials (IDE cache first, then the kiro-cli
+                # store) and uses whichever the API accepts, while whoami always
+                # reports kiro-cli's own identity. Attaching an unverified email
+                # to these credits would misattribute an overage bill, so the
+                # caller must prove they refer to the same account before
+                # displaying an identity alongside them.
+                mapped["_profile_arn"] = arn  # None for individual accounts
                 _note_api_outcome(True)
                 return mapped
             # A 200 with no usable CREDIT breakdown is a shape problem, not an auth

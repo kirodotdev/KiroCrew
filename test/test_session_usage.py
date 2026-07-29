@@ -294,11 +294,16 @@ class TestFetchUsageBgApi:
                           return_value=api_dict), \
              patch("asyncio.create_subprocess_exec", spawn):
             await sessions_mod._fetch_usage_bg()
-        # API path wins: real total cached, text-scrape subprocess never spawned.
+        # API path wins: real total cached, and the CREDIT-CONSUMING text scrape
+        # (`kiro-cli chat ... /usage`) is never spawned. A cheap `whoami` spawn
+        # for the identity row is allowed -- it costs no credits -- so assert on
+        # the invariant that matters rather than on zero subprocesses.
         assert sessions_mod._usage_cache["credits_used"] == 29527.0
         assert sessions_mod._usage_cache["credits_overage"] == 19527.0
         assert sessions_mod._usage_cache["source"] == "api"
-        spawn.assert_not_called()
+        for call in spawn.call_args_list:
+            assert "/usage" not in call.args, f"credit-consuming scrape spawned: {call.args}"
+            assert "chat" not in call.args, f"chat subprocess spawned: {call.args}"
 
     @pytest.mark.asyncio
     async def test_api_none_falls_back_to_text_scrape(self):
@@ -324,3 +329,186 @@ class TestFetchUsageBgApi:
             await sessions_mod._fetch_usage_bg()
         assert sessions_mod._usage_cache["plan"] == "REDACTED"
         assert sessions_mod._usage_cache["credits_plan"] == 10.0
+
+
+class TestFetchWhoami:
+    """``_fetch_whoami`` parses the signed-in identity from kiro-cli whoami.
+
+    kiro-cli prints a JSON object FOLLOWED by a non-JSON "Profile:" block, so
+    the parser must take only the leading object. Identity is decorative — every
+    failure path must yield {} rather than raising into the credit refresh.
+    """
+
+    def _run(self, stdout: bytes):
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(stdout, b""))
+        proc.returncode = 0
+        with patch.object(sessions_mod, "wrap_argv", return_value=(["kiro-cli"], None)), \
+             patch.object(sessions_mod, "cgroup_scope_argv", side_effect=lambda a: a), \
+             patch.object(sessions_mod, "resource_limit_preexec", return_value=None), \
+             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            return asyncio.run(sessions_mod._fetch_whoami("kiro-cli"))
+
+    def test_parses_identity_ignoring_trailing_profile_block(self):
+        out = self._run(
+            b'{\n "accountType": "IamIdentityCenter",\n "email": "me@corp.com",\n'
+            b' "region": "us-east-1",\n "startUrl": "https://x.awsapps.com/start"\n}\n'
+            b"\nProfile:\nKiroProfile-us-east-1\narn:aws:codewhisperer:...\n"
+        )
+        assert out["email"] == "me@corp.com"
+        assert out["account_type"] == "IamIdentityCenter"
+        assert out["start_url"] == "https://x.awsapps.com/start"
+
+    def test_builder_id_account_type(self):
+        out = self._run(b'{"accountType":"BuilderId","email":"a@b.com"}')
+        assert out == {"email": "a@b.com", "account_type": "BuilderId"}
+
+    def test_non_string_values_dropped(self):
+        assert self._run(b'{"email":{"nested":1},"accountType":null}') == {}
+
+    def test_no_json_returns_empty(self):
+        assert self._run(b"Not logged in\n") == {}
+
+    def test_unterminated_json_returns_empty(self):
+        assert self._run(b'{"email":"a@b.com"') == {}
+
+    def test_values_are_length_bounded(self):
+        out = self._run(b'{"email":"' + b"x" * 400 + b'@b.com"}')
+        assert len(out["email"]) <= 254
+
+
+class TestIdentityAccountCoupling:
+    """An identity may only be shown next to credits it provably belongs to.
+
+    fetch_usage_limits picks whichever candidate credential the API accepts
+    (IDE cache first, then the kiro-cli store) while whoami always reports
+    kiro-cli's identity -- so with two accounts signed in they can disagree.
+    Attaching the wrong email to an overage bill is a misattribution, so the
+    merge is refused unless the accounts provably match.
+    """
+
+    def test_matching_arns_are_coupled(self):
+        assert sessions_mod._identity_matches_account(
+            "arn:aws:codewhisperer:us-east-1:1:profile/A",
+            {"email": "a@b.com", "_profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/A"},
+        ) is True
+
+    def test_differing_arns_are_refused(self):
+        # The exact misattribution the reviewer flagged: API billed account A,
+        # whoami describes account B.
+        assert sessions_mod._identity_matches_account(
+            "arn:aws:codewhisperer:us-east-1:1:profile/A",
+            {"email": "b@b.com", "_profile_arn": "arn:aws:codewhisperer:us-east-1:2:profile/B"},
+        ) is False
+
+    def test_no_arns_is_never_coupled(self):
+        # A lone READABLE credential is not proof: kiro-cli may authenticate from
+        # a store this module does not enumerate, so whoami's account cannot be
+        # tied to the billed one. Individual / Builder ID accounts (no profile
+        # ARN) therefore show no identity rather than a possibly-foreign one.
+        assert sessions_mod._identity_matches_account(None, {"email": "solo@b.com"}) is False
+
+    def test_one_sided_arn_is_refused(self):
+        assert sessions_mod._identity_matches_account(
+            "arn:aws:codewhisperer:us-east-1:1:profile/A", {"email": "x@b.com"}
+        ) is False
+        assert sessions_mod._identity_matches_account(
+            None, {"email": "x@b.com", "_profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/A"}
+        ) is False
+
+    def test_whoami_extracts_profile_arn_from_trailing_block(self):
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(
+            b'{"accountType":"IamIdentityCenter","email":"me@corp.com"}\n\n'
+            b"Profile:\nKiroProfile-us-east-1\n"
+            b"arn:aws:codewhisperer:us-east-1:713669222412:profile/7KHC74QYC9PQ\n", b""))
+        proc.returncode = 0
+        with patch.object(sessions_mod, "wrap_argv", return_value=(["kiro-cli"], None)), \
+             patch.object(sessions_mod, "cgroup_scope_argv", side_effect=lambda a: a), \
+             patch.object(sessions_mod, "resource_limit_preexec", return_value=None), \
+             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            out = asyncio.run(sessions_mod._fetch_whoami("kiro-cli"))
+        assert out["email"] == "me@corp.com"
+        assert out["_profile_arn"].endswith("profile/7KHC74QYC9PQ")
+
+    @pytest.mark.asyncio
+    async def test_private_coupling_keys_never_reach_the_cache(self):
+        _reset_usage_globals()
+        api_dict = {
+            "credits_used": 100.0, "credits_plan": 10.0, "source": "api",
+            "_profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/A",
+        }
+        identity = {
+            "email": "me@corp.com",
+            "_profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/A",
+        }
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", return_value=api_dict), \
+             patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value=identity)):
+            await sessions_mod._fetch_usage_bg()
+        cache = sessions_mod._usage_cache
+        assert cache["email"] == "me@corp.com"          # coupled -> shown
+        assert "_profile_arn" not in cache              # private, never served
+        _reset_usage_globals()
+
+    @pytest.mark.asyncio
+    async def test_mismatched_identity_is_not_cached(self):
+        _reset_usage_globals()
+        api_dict = {
+            "credits_used": 100.0, "credits_plan": 10.0, "source": "api",
+            "_profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/A",
+        }
+        identity = {
+            "email": "other@corp.com",
+            "_profile_arn": "arn:aws:codewhisperer:us-east-1:2:profile/B",
+        }
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", return_value=api_dict), \
+             patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value=identity)):
+            await sessions_mod._fetch_usage_bg()
+        cache = sessions_mod._usage_cache
+        assert "email" not in cache, "a foreign identity must not ride on these credits"
+        assert cache["credits_used"] == 100.0
+        _reset_usage_globals()
+
+
+class TestIdentityIsNotStale:
+    """Identity must be re-resolved on every refresh, never memoized.
+
+    A gateway-lifetime cache misattributed credits after an account switch:
+    Builder ID A cached -> user signs in as Builder ID B -> the refresh accepts
+    B's sole credential and, with no profile ARN on either side, the coupling
+    check's single-credential branch passed the STALE A identity onto B's
+    credits. whoami is credit-free, so it is simply fetched every refresh.
+    """
+
+    @pytest.mark.asyncio
+    async def test_identity_refetched_each_refresh(self):
+        _reset_usage_globals()
+        ARN = "arn:aws:codewhisperer:us-east-1:1:profile/A"
+        api_dict = {"credits_used": 1.0, "credits_plan": 10.0, "source": "api",
+                    "_profile_arn": ARN}
+        calls = []
+
+        async def fake_whoami(_bin):
+            calls.append(1)
+            return {"email": f"user{len(calls)}@corp.com", "_profile_arn": ARN}
+
+        for _ in range(2):
+            sessions_mod._usage_cache_ts = 0.0
+            with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+                 patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)), \
+                 patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
+                              return_value=dict(api_dict)), \
+                 patch.object(sessions_mod, "_fetch_whoami", fake_whoami):
+                await sessions_mod._fetch_usage_bg()
+        # Two refreshes -> two whoami resolutions, and the SECOND identity wins.
+        assert len(calls) == 2, "whoami must not be memoized across refreshes"
+        assert sessions_mod._usage_cache["email"] == "user2@corp.com"
+        _reset_usage_globals()
+
+    def test_no_lifetime_identity_cache_exists(self):
+        # Guard against the memoization being reintroduced.
+        assert not hasattr(sessions_mod, "_identity_cache")

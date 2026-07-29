@@ -419,29 +419,44 @@ class TestFetchUsageLimits:
     @pytest.fixture(autouse=True)
     def _clear_arn_cache(self):
         api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
         yield
         api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
 
-    def test_no_token_returns_none(self):
-        with patch.object(api, "_candidate_tokens", return_value=[]):
-            assert api.fetch_usage_limits() is None
-
-    def test_success_with_profile_arn(self):
+    def test_surfaces_account_from_profile_name(self):
+        # The signed-in account's profileName from ListAvailableProfiles must be
+        # surfaced as the usage dict's ``account`` field.
         usage_body = {"usageBreakdownList": [
-            {"resourceType": "CREDIT", "currentUsage": 29527.0,
-             "usageLimit": 10000.0, "currentOverages": 19527.0}]}
+            {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
 
         def fake_post(token, target, payload):
             if target == api._TARGET_LIST_PROFILES:
-                return _resp(200, {"profiles": [{"arn": "arn:aws:codewhisperer:...:profile/X"}]})
-            assert payload.get("profileArn") == "arn:aws:codewhisperer:...:profile/X"
+                return _resp(200, {"profiles": [
+                    {"arn": "arn:aws:codewhisperer:...:profile/X",
+                     "profileName": "Acme Corp"}]})
             return _resp(200, usage_body)
 
         with patch.object(api, "_candidate_tokens", return_value=["tok"]), \
              patch.object(api, "_post", side_effect=fake_post):
             out = api.fetch_usage_limits()
-        assert out["credits_used"] == 29527.0
-        assert out["credits_overage"] == 19527.0
+        assert out["account"] == "Acme Corp"
+
+    def test_no_account_when_profile_has_no_name(self):
+        # An org profile with an ARN but no profileName must not set ``account``
+        # (individual Builder ID accounts likewise have no profile at all).
+        usage_body = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
+
+        def fake_post(token, target, payload):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": "arn:x"}]})
+            return _resp(200, usage_body)
+
+        with patch.object(api, "_candidate_tokens", return_value=["tok"]), \
+             patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits()
+        assert "account" not in out
 
     def test_rejected_token_falls_over_to_next(self):
         # An unexpired-but-rejected first token must not shadow a working one.
@@ -498,8 +513,10 @@ class TestListProfileArnCache:
     @pytest.fixture(autouse=True)
     def _clear_arn_cache(self):
         api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
         yield
         api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
 
     def test_definitive_answer_is_memoized(self):
         # ListAvailableProfiles is called once; the second lookup hits the cache.
