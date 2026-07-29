@@ -55,6 +55,7 @@ from kiro_crew.dashboard.state import (
     _mark_permission_resolved,
 )
 from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
     is_sensitive_path,
@@ -1557,8 +1558,127 @@ def _model_rejected_reason(model_name: str) -> str | None:
     return None
 
 
+def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
+    """Translate a canonical model key into the id THIS backend accepts.
+
+    ``slot.model`` holds a canonical/wire value while ``session/set_model`` only
+    accepts the backend's own ids — two namespaces. Mirrors the normalisation the
+    warm-pool post-claim switch does in ``SessionManager``: kiro wants the bare
+    dotted id via ``to_acp_id`` (which translates canonical keys and passes
+    kiro's own ids through unchanged), the claude backend wants the
+    ``global.anthropic.*`` id.
+
+    Returns "" when the change cannot be expressed as a ``set_model`` on this
+    backend, which tells the caller to fall back to a session reset.
+    """
+    # The dashboard sends "" for Auto, but the literal "auto" also passes the
+    # guard (stale clients / direct API calls), so both mean "provider default".
+    is_default = model_name in ("", "auto")
+    if provider.is_claude_backend:
+        # The claude backend has no id meaning "let the server choose", so
+        # returning to default needs a reset.
+        return "" if is_default else model_registry.to_provider_id(model_name, "claude_code")
+    if is_default:
+        # kiro DOES express Auto as a real model id — but only switch to it when
+        # this session's backend actually advertised it.
+        advertised = {m.get("modelId", "") for m in provider.available_models()}
+        return "auto" if "auto" in advertised else ""
+    return model_registry.to_acp_id(model_name)
+
+
+async def _reapply_effort_after_live_switch(
+    name: str, slot: _ChatSlot, provider: AcpProvider
+) -> bool:
+    """Re-apply the slot's reasoning effort to the model we just switched to.
+
+    The kiro effort overlay is written before every (re)spawn, so a cold start
+    picks the level up for free. An in-place switch never respawns, so without
+    this the new model would run at its own default while the UI still reports
+    the slot's level. Pushes it live through the same provider calls
+    ``api_chat_slot_reasoning_effort`` uses.
+
+    Returns False to ask the caller for a reset, which re-applies effort through
+    the provider factory instead.
+    """
+    if not provider.supports_effort():
+        # The new model has no effort selector. slot.reasoning_effort stays
+        # persisted for when the user switches back to a capable model — same
+        # "persisted no-op" the effort endpoint applies.
+        return True
+    try:
+        if slot.reasoning_effort:
+            return bool(await provider.change_effort(slot.reasoning_effort))
+        # No slot override: re-resolve so a workspace default reaches the new
+        # model, matching what a respawn's overlay would have written. A False
+        # return is benign HERE, unlike in the effort endpoint: it means there
+        # was no default to push, and since the user never set a level for THIS
+        # model there is nothing stale on the session to undo either.
+        await provider.clear_effort()
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Effort re-apply after live model switch failed for slot %s: %s: %s"
+            " — falling back to reset",
+            name,
+            type(exc).__name__,
+            exc,
+        )
+        return False
+
+
+async def _try_live_model_switch(
+    name: str, slot: _ChatSlot, provider: LLMProvider | None, model_name: str
+) -> bool:
+    """Apply a model change to the LIVE session instead of tearing it down.
+
+    ``session/set_model`` switches the model on a running kiro-cli session.
+    Verified against kiro-cli 2.15.1: acked synchronously, carries the existing
+    conversation across the switch (including across vendors), sticks over
+    subsequent turns, and switches back. That makes the historical reset
+    unnecessary for an idle slot — and the reset is expensive twice over, since
+    it kills the whole process tree now AND forces the next message to
+    cold-start and replay a compressed transcript.
+
+    Returns True when the live session owns *model_name*. False means the caller
+    must fall back to a reset — including when there is no live session at all,
+    where the reset is an O(1) no-op teardown but still routes through
+    ``_reset_slot_session``'s pending-wait cleanup.
+    """
+    if not isinstance(provider, AcpProvider):
+        return False
+    if provider.has_active_turn():
+        # Same hazard api_chat_slot_reasoning_effort documents: awaiting a
+        # response mid-turn races the streaming prompt loop on stdout for the
+        # non-multiplexed client. The UI disables the model button while a turn
+        # runs, so this is defensive — take the old reset path.
+        return False
+    wire = _wire_model_id(provider, model_name)
+    if not wire:
+        return False
+    try:
+        await provider.client.set_model(wire)
+    except Exception as exc:
+        logger.warning(
+            "Live set_model(%s) failed for slot %s: %s: %s — falling back to reset",
+            wire,
+            name,
+            type(exc).__name__,
+            exc,
+        )
+        return False
+    if not await _reapply_effort_after_live_switch(name, slot, provider):
+        return False
+    logger.info("Slot %s model switched live to %r (session preserved)", name, wire)
+    return True
+
+
 async def api_chat_slot_model(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/model — set model for a chat slot."""
+    """POST /api/chat/slots/{slot}/model — set model for a chat slot.
+
+    Prefers an in-place ``session/set_model`` on the running session and only
+    resets when that is impossible (no ACP provider, a turn in flight, an
+    unrepresentable target, or the live call failing).
+    """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -1576,8 +1696,11 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     if slot.model == model_name:
         return web.json_response({"ok": True, "model": model_name})
     slot.model = model_name
-    logger.info("Slot %s model switched to %r, resetting session", name, model_name or "auto")
-    await _reset_slot_session(state, slot, _history_key_for(name))
+    session_key = _history_key_for(name)
+    provider = state.sessions.get_provider(session_key)
+    if not await _try_live_model_switch(name, slot, provider, model_name):
+        logger.info("Slot %s model switched to %r, resetting session", name, model_name or "auto")
+        await _reset_slot_session(state, slot, session_key)
     state.push_slots_update()
     return web.json_response({"ok": True, "model": model_name})
 

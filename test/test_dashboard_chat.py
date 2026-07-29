@@ -10783,6 +10783,354 @@ class TestSlotModelGuard:
         state.sessions.reset.assert_awaited_once()
 
 
+class TestSlotModelLiveSwitch:
+    """POST /api/chat/slots/{slot}/model — prefer an in-place session/set_model
+    over tearing the session down.
+
+    A reset costs a full process-tree teardown now plus a cold start and
+    transcript replay on the next message. kiro-cli's ``session/set_model``
+    switches a live session instead (verified against 2.15.1: acked
+    synchronously, conversation carried across the switch, sticky over later
+    turns), so the reset is only a fallback.
+    """
+
+    @staticmethod
+    def _app(state: DashboardState) -> web.Application:
+        from kiro_crew.dashboard.chat import api_chat_slot_model
+
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/chat/slots/{slot}/model", api_chat_slot_model)
+        return app
+
+    @staticmethod
+    def _provider(
+        *,
+        claude: bool = False,
+        active_turn: bool = False,
+        models=("auto",),
+        supports_effort: bool = False,
+        change_effort: bool = True,
+    ):
+        """A live AcpProvider double. ``spec=`` keeps isinstance() working."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.is_claude_backend = claude
+        provider.has_active_turn.return_value = active_turn
+        provider.available_models.return_value = [{"modelId": m} for m in models]
+        provider.supports_effort.return_value = supports_effort
+        provider.change_effort = AsyncMock(return_value=change_effort)
+        provider.clear_effort = AsyncMock(return_value=False)
+        provider.client = MagicMock()
+        provider.client.set_model = AsyncMock()
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_idle_switch_goes_live_without_reset(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"}
+            )
+
+        assert resp.status == 200
+        assert state._slots["a"].model == "gpt-5.6-sol"
+        provider.client.set_model.assert_awaited_once_with("gpt-5.6-sol")
+        # The whole point: the session survives.
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_canonical_key_is_translated_to_the_acp_id(self, tmp_path):
+        # slot.model is a canonical/wire value; set_model only accepts kiro ids.
+        from kiro_crew import model_registry
+
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.6")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+            )
+
+        assert resp.status == 200
+        sent = provider.client.set_model.await_args.args[0]
+        assert sent == model_registry.to_acp_id("claude-opus-4.8")
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_active_turn_falls_back_to_reset(self, tmp_path):
+        # Awaiting a response mid-turn would race the streaming prompt loop on
+        # stdout for the non-multiplexed client (same hazard the effort handler
+        # documents), so a turn in flight takes the old reset path.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(active_turn=True)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"}
+            )
+
+        assert resp.status == 200
+        provider.client.set_model.assert_not_awaited()
+        state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_live_switch_failure_falls_back_to_reset(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider()
+        provider.client.set_model = AsyncMock(side_effect=RuntimeError("boom"))
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"}
+            )
+
+        # The slot still lands on the new model, via the reset path.
+        assert resp.status == 200
+        assert state._slots["a"].model == "gpt-5.6-sol"
+        state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_auto_uses_the_advertised_auto_id(self, tmp_path):
+        # Back-to-default is the most common click; kiro expresses it as a real
+        # model id, so it should not cost a teardown either.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(models=("auto", "claude-opus-4.8"))
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": ""})
+
+        assert resp.status == 200
+        assert state._slots["a"].model == ""
+        provider.client.set_model.assert_awaited_once_with("auto")
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auto_without_advertised_auto_falls_back_to_reset(self, tmp_path):
+        # Never invent an id the backend did not advertise.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(models=("claude-opus-4.8",))
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": ""})
+
+        assert resp.status == 200
+        provider.client.set_model.assert_not_awaited()
+        state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_claude_backend_default_falls_back_to_reset(self, tmp_path):
+        # The claude backend has no "let the server choose" id.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(claude=True)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": ""})
+
+        assert resp.status == 200
+        provider.client.set_model.assert_not_awaited()
+        state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_claude_backend_switch_uses_provider_id(self, tmp_path):
+        from kiro_crew import model_registry
+
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(claude=True)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.6")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+            )
+
+        assert resp.status == 200
+        sent = provider.client.set_model.await_args.args[0]
+        assert sent == model_registry.to_provider_id("claude-opus-4.8", "claude_code")
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_live_session_still_routes_through_reset(self, tmp_path):
+        # No session to update: the reset is an O(1) no-op teardown, but it also
+        # carries _reset_slot_session's pending-wait cleanup, so keep taking it.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.sessions.get_provider = MagicMock(return_value=None)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"}
+            )
+
+        assert resp.status == 200
+        assert state._slots["a"].model == "gpt-5.6-sol"
+        state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unchanged_model_touches_nothing(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="gpt-5.6-sol")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"}
+            )
+
+        assert resp.status == 200
+        provider.client.set_model.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+
+    # ── reasoning effort ─────────────────────────────────────────────
+    # The kiro effort overlay is written at (re)spawn, so a cold start applies
+    # the slot's level for free. An in-place switch never respawns, so it must
+    # push the level itself or the new model silently runs at its own default
+    # while the UI still reports the slot's level.
+
+    @pytest.mark.asyncio
+    async def test_persisted_effort_is_pushed_to_the_new_model(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(supports_effort=True)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-haiku-4.5")
+        slot.reasoning_effort = "high"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+            )
+
+        assert resp.status == 200
+        provider.change_effort.assert_awaited_once_with("high")
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_effort_push_rejected_falls_back_to_reset(self, tmp_path):
+        # change_effort returning False means the level never reached the
+        # session — reset so the cold start applies it via the overlay.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(supports_effort=True, change_effort=False)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-haiku-4.5")
+        slot.reasoning_effort = "high"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+            )
+
+        assert resp.status == 200
+        state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_effort_push_raising_falls_back_to_reset(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(supports_effort=True)
+        provider.change_effort = AsyncMock(side_effect=RuntimeError("rejected"))
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-haiku-4.5")
+        slot.reasoning_effort = "high"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+            )
+
+        assert resp.status == 200
+        state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_effort_incapable_target_keeps_the_live_switch(self, tmp_path):
+        # Switching to a model with no effort selector is a persisted no-op for
+        # effort — it must not cost a teardown.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(supports_effort=False)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "high"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "claude-haiku-4.5"}
+            )
+
+        assert resp.status == 200
+        provider.change_effort.assert_not_awaited()
+        # The level stays persisted for a later switch back to a capable model.
+        assert state._slots["a"].reasoning_effort == "high"
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_effort_override_re_resolves_without_resetting(self, tmp_path):
+        # With no slot override, clear_effort re-resolves any workspace default.
+        # Its False return is benign here (nothing to push, nothing stale for a
+        # model the user never set a level on), so it must not force a reset.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(supports_effort=True)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-haiku-4.5")
+        slot.reasoning_effort = ""
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+            )
+
+        assert resp.status == 200
+        provider.clear_effort.assert_awaited_once()
+        provider.change_effort.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+
+
 def _make_tail_fork_slot(state):
     slot = state.get_or_create_slot("src")
     slot.title = "My Chat"
