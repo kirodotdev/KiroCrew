@@ -2201,10 +2201,10 @@ function ChatInput({
                     {onBrowseToggle && (
                       <div className="flex items-start justify-between gap-2 mt-2 pt-2.5 border-t border-border">
                         <div className="min-w-0">
-                          <div className="text-[12px] font-medium text-text flex items-center gap-1.5"><Globe size={13} className="text-muted shrink-0" />{i18nT('components.chatInput.browser_use')}</div>
-                          <div className="text-[11px] text-muted mt-0.5 leading-snug">{i18nT('components.chatInput.let_the_agent_open_a_real_browser_to_load_web_pa')}</div>
+                          <div className="text-[12px] font-medium text-text flex items-center gap-1.5"><Globe size={13} className="text-muted shrink-0" />{i18nT('components.chatInput.let_the_agent_use_the_browser')}</div>
+                          <div className="text-[11px] text-muted mt-0.5 leading-snug">{i18nT('components.chatInput.it_can_click_type_and_navigate_pages_not_just_re')}</div>
                         </div>
-                        <div className="pt-0.5"><Toggle checked={browseMode} onChange={() => onBrowseToggle()} label={i18nT('components.chatInput.browser_use')} /></div>
+                        <div className="pt-0.5"><Toggle checked={browseMode} onChange={() => onBrowseToggle()} label={i18nT('components.chatInput.let_the_agent_use_the_browser')} /></div>
                       </div>
                     )}
                   </div>,

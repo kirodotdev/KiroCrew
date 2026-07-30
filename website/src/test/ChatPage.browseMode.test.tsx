@@ -9,7 +9,7 @@
  * session keeps its own toggle and new sessions default to off.
  *
  * Browse mode is a per-session Toggle (role="switch", aria-checked) inside the
- * ChatInput "+" drop-up menu ("Browser use"), which is what this test observes.
+ * ChatInput "+" drop-up menu ("Let the agent use the browser"), which is what this test observes.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
@@ -103,11 +103,11 @@ async function renderChat(activeSlot: string) {
   return store
 }
 
-/** Browse mode lives in the ChatInput "+" drop-up as a Toggle ("Browser use").
+/** Browse mode lives in the ChatInput "+" drop-up as a Toggle ("Let the agent use the browser").
  *  Open the menu once per test; it stays open across slot switches (ChatInput
  *  doesn't remount), so the switch keeps reflecting the active slot's state. */
 const openMenu = () => fireEvent.click(screen.getByTitle('Add files & options'))
-const browseToggle = () => screen.getByRole('switch', { name: 'Browser use' })
+const browseToggle = () => screen.getByRole('switch', { name: 'Let the agent use the browser' })
 const isOn = () => browseToggle().getAttribute('aria-checked') === 'true'
 
 async function switchSlot(store: ReturnType<typeof makeStore>, slot: string) {

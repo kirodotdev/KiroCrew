@@ -52,14 +52,14 @@ export const PREVIEW_FOCUS_EVENT = 'kirocrew-preview-focus'
  */
 export const PREVIEW_SNIP_EVENT = 'kirocrew-web-preview-snip'
 /**
- * Window event: the panel requests enabling "Browser use" (operate mode) so the
+ * Window event: the panel requests enabling "Let the agent use the browser" (operate mode) so the
  * agent may actively drive the browser. ChatPage listens and turns browse mode
- * on for the active slot. Fired by the live mirror's "Enable interaction" button.
+ * on for the active slot. Fired by the live mirror's "Let the agent act" button.
  */
 export const PREVIEW_ENABLE_BROWSE_EVENT = 'kirocrew-enable-browse'
 /**
  * Window event: ChatPage broadcasts the current per-slot browse-mode state so
- * the panel can reflect it — the "Enable interaction" button shows only while
+ * the panel can reflect it — the "Let the agent act" button shows only while
  * browse mode is OFF.
  */
 export const BROWSE_MODE_EVENT = 'kirocrew-browse-mode'
@@ -274,8 +274,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // they go stale (LIVE_FRAME_TTL_MS) we fall back to the preview body.
   const { frame, lastTs, sessionKey: frameSessionKey, sessionName } = useBrowserFrame()
   const [nowTick, setNowTick] = useState(() => Date.now())
-  // Whether "Browser use" (operate) is currently on — broadcast by ChatPage so
-  // the mirror can show "Enable interaction" only while it's off.
+  // Whether "Let the agent use the browser" (operate) is currently on — broadcast by ChatPage so
+  // the mirror can show "Let the agent act" only while it's off.
   const [browseOn, setBrowseOn] = useState(false)
   useEffect(() => {
     const onMode = (e: Event) => setBrowseOn(!!(e as CustomEvent<{ on?: boolean }>).detail?.on)
@@ -300,7 +300,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // Session-scoped: only surface the mirror when the streaming frame belongs to
   // THIS panel's session. useBrowserFrame is global (latest frame from ANY
   // session); without this check a background session's browse would render in —
-  // and, via "Enable interaction" below, authorize [BROWSE] on — the wrong
+  // and, via "Let the agent act" below, authorize [BROWSE] on — the wrong
   // session's panel. `sessionKey` must be present and equal the frame's key.
   const isLive = !!frame && !!lastTs && !!sessionKey && frameSessionKey === sessionKey
     && nowTick - lastTs < LIVE_FRAME_TTL_MS
@@ -500,17 +500,17 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             <div className="flex-1" />
           )}
           {browseOn ? (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium" title={i18nT('components.webPreviewPanel.browser_use_is_on_the_agent_can_operate_this_pag')}>
-              <MousePointerClick size={12} /> {i18nT('components.webPreviewPanel.interactive')}
+            <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium" title={i18nT('components.webPreviewPanel.the_agent_can_click_type_and_navigate_this_page')}>
+              <MousePointerClick size={12} /> {i18nT('components.webPreviewPanel.agent_can_act')}
             </span>
           ) : (
             <button
               type="button"
               onClick={requestInteraction}
               className="shrink-0 inline-flex items-center gap-1 text-[12px] px-2.5 py-1 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
-              title={i18nT('components.webPreviewPanel.turn_on_browser_use_so_the_agent_can_click_type')}
+              title={i18nT('components.webPreviewPanel.lets_the_agent_click_type_and_navigate_this_page')}
             >
-              <MousePointerClick size={13} /> {i18nT('components.webPreviewPanel.enable_interaction')}
+              <MousePointerClick size={13} /> {i18nT('components.webPreviewPanel.let_the_agent_act')}
             </button>
           )}
         </div>
@@ -525,7 +525,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           )}
         </div>
         <div className="px-3 py-1.5 border-t border-border text-[11px] text-muted flex items-center justify-between gap-2">
-          <span className="truncate">{i18nT('components.webPreviewPanel.read_only_mirror_of_the_browse_session')}</span>
+          <span className="truncate">{i18nT('components.webPreviewPanel.view_only_clicks_here_don_t_reach_the_page')}</span>
           {lastTs && <span className="shrink-0">{i18nT('components.webPreviewPanel.updated')} {new Date(lastTs).toLocaleTimeString()}</span>}
         </div>
       </div>

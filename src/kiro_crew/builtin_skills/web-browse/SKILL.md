@@ -1,6 +1,6 @@
 ---
 name: web-browse
-description: Render a REAL external web page in KiroCrew's built-in Browser panel (the right-side panel), by opening it with the Playwright browser and screenshotting it so the live view streams into the panel. Use when the user wants to VIEW / verify / "show me" an actual website or public URL (not a local dev server — that's the web-preview skill). View-only: operating the page (clicking, typing, multi-step) requires the "Browser use" (Globe) toggle.
+description: Render a REAL external web page in KiroCrew's built-in Browser panel (the right-side panel), by opening it with the Playwright browser and screenshotting it so the live view streams into the panel. Use when the user wants to VIEW / verify / "show me" an actual website or public URL (not a local dev server — that's the web-preview skill). View-only: operating the page (clicking, typing, multi-step) requires the Globe toggle ("Let the agent use the browser").
 triggers: open this page, show me this site, show me the page, view this url, render this page, look at this website, open in the browser, see what this page looks like, pull up this site, visit this url
 ---
 
@@ -13,7 +13,7 @@ Playwright browser and take one screenshot — the frame streams into the panel
 automatically (via the screencast), so the page appears next to the chat.
 
 This is the **view** path. It is deliberately narrow: open the URL and show it,
-nothing more. It does NOT require the user to turn on the "Browser use" (Globe)
+nothing more. It does NOT require the user to turn on the Globe
 toggle — this one screenshot is self-authorizing.
 
 ## How the panel works (so you set expectations correctly)
@@ -53,10 +53,10 @@ come from the external `@playwright/mcp` package, which may not be installed.
 
 - **View** (this skill): open a URL and show it. No Globe toggle needed.
 - **Operate** (click, type, fill forms, multi-step navigation): that's the
-  "Browser use" (Globe) toggle / `[BROWSE]` mode — it authorizes you to actively
+  Globe toggle ("Let the agent use the browser") / `[BROWSE]` mode — it authorizes you to actively
   drive the browser across turns. If the user asks you to *interact* with a page
   that's only being viewed (Globe off), don't silently start operating: tell
-  them to flip **Browser use** on (the panel also has an "Enable interaction"
+  them to flip the **Globe** on (the panel also has a "Let the agent act"
   button that turns it on), then drive it.
 
 ## Not this skill

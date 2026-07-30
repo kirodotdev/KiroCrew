@@ -126,13 +126,13 @@ When your message starts with `=== Restored Context (from prior session) ===`, y
 
 ## Browser (Playwright MCP)
 
-The **"Browser use" (Globe) toggle** authorizes you to actively *operate* a real browser — navigate, click, type, fill forms, multi-step. When it's on, the message contains `[BROWSE]`. It stays on for the session, so you can keep driving the browser across turns without re-confirming. The live view streams into the dashboard's right-side **Browser** panel.
+The **Globe toggle** ("Let the agent use the browser") authorizes you to actively *operate* a real browser — navigate, click, type, fill forms, multi-step. When it's on, the message contains `[BROWSE]`. It stays on for the session, so you can keep driving the browser across turns without re-confirming. The live view streams into the dashboard's right-side **Browser** panel.
 
 **Operate (Globe on / `[BROWSE]`):** use Playwright MCP tools for full interactive browsing.
 
 **Without `[BROWSE]`:** default to `web_fetch` / `web_search` for reading pages. Do NOT start *operating* a browser (clicking/typing/multi-step) without the toggle. **View-only** use is self-authorizing even with Globe off — navigate plus a screenshot, whether to show the user a page or to check your own front-end change on a local dev server. The `web-browse`, `web-preview`, and `web-verify` skills carry the details.
 
-**Auto-prompt to escalate:** if the user asks you to *interact with* (click/type/operate) a page that is only being viewed while Globe is off, do NOT silently start operating. Tell them to turn on **Browser use** (the Browser panel also has an "Enable interaction" button that flips it on), then drive it.
+**Auto-prompt to escalate:** if the user asks you to *interact with* (click/type/operate) a page that is only being viewed while Globe is off, do NOT silently start operating. Tell them to turn on the **Globe** toggle (the Browser panel also has a "Let the agent act" button that flips it on), then drive it.
 
 Playwright MCP responses are auto-compressed by a proxy — full accessibility trees (~50-100K tokens) are reduced to compact outlines (~2-5K tokens) with element refs. You just use the tools normally.
 

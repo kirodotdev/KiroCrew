@@ -750,14 +750,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     if (!slot) return
     setBrowseModeBySlot(prev => ({ ...prev, [slot]: !(prev[slot] ?? false) }))
   }
-  // Broadcast the active slot's browse-mode ("Browser use") so the Browser
-  // panel's live mirror can show "Enable interaction" only while it's OFF.
+  // Broadcast the active slot's browse-mode ("Let the agent use the browser") so the Browser
+  // panel's live mirror can show "Let the agent act" only while it's OFF.
   // (browseModeRef, kept in sync with browseMode below, is reused by the
   // browse-frame effect to replay state to a late-mounting panel.)
   useEffect(() => {
     window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: browseMode } }))
   }, [browseMode])
-  // The Browser panel's "Enable interaction" button requests turning Browser use
+  // The Browser panel's "Let the agent act" button requests turning browse mode
   // ON for the active slot (idempotent — never toggles it back off).
   useEffect(() => {
     const onEnable = (e: Event) => {
@@ -2774,7 +2774,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       // Only auto-open the Browser tab when the browsing session IS the one on
       // screen (the active slot). A background session's frames must not open —
       // or, with the panel's own session gate, display in — another session's
-      // panel; that would misattribute the "Enable interaction" grant.
+      // panel; that would misattribute the "Let the agent act" grant.
       if (!key || key !== activeSlotRef.current) return
       const prev = browseFrameOpenedRef.current
       if (prev.key !== key || now - prev.ts > 90_000) {

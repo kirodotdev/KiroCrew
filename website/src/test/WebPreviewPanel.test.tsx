@@ -263,14 +263,14 @@ describe('WebPreviewPanel — live agent-browse mirror', () => {
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
   })
 
-  it('offers "Enable interaction" while Browser use is off and requests it for THIS session on click', () => {
+  it('offers "Let the agent act" while the toggle is off and requests it for THIS session on click', () => {
     const seen: (string | undefined)[] = []
     const handler = (e: Event) => seen.push((e as CustomEvent<{ slot?: string }>).detail?.slot)
     window.addEventListener(PREVIEW_ENABLE_BROWSE_EVENT, handler)
     try {
       renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
       emitFrame('sess-1')
-      fireEvent.click(screen.getByText('Enable interaction'))
+      fireEvent.click(screen.getByText('Let the agent act'))
       // Grant must be attributed to the panel's own (browsing) session, not a
       // global/active-slot fallback.
       expect(seen).toEqual(['sess-1'])
@@ -283,19 +283,19 @@ describe('WebPreviewPanel — live agent-browse mirror', () => {
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     emitFrame('sess-2') // a background session's browse frame
     // This panel is scoped to sess-1, so a sess-2 frame must not flip it live —
-    // otherwise "Enable interaction" would authorize the wrong session.
+    // otherwise "Let the agent act" would authorize the wrong session.
     expect(screen.queryByText('Browser — live')).toBeNull()
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
   })
 
-  it('reflects Browser use ON: shows "Interactive", hides the enable button', () => {
+  it('reflects the toggle ON: shows "Agent can act", hides the enable button', () => {
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     emitFrame('sess-1')
-    expect(screen.getByText('Enable interaction')).toBeInTheDocument()
+    expect(screen.getByText('Let the agent act')).toBeInTheDocument()
     act(() => {
       window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: true } }))
     })
-    expect(screen.getByText('Interactive')).toBeInTheDocument()
-    expect(screen.queryByText('Enable interaction')).toBeNull()
+    expect(screen.getByText('Agent can act')).toBeInTheDocument()
+    expect(screen.queryByText('Let the agent act')).toBeNull()
   })
 })
