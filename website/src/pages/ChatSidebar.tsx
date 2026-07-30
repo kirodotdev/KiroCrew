@@ -1000,12 +1000,14 @@ function ChatSidebar({
   // (the backend leaves already-on-target slots as `unchanged`), minus running
   // slots when skipping. Keeps the "Switch N" label + disable guard honest.
   const bulkAffectedCount = useMemo(() => {
-    const target = bulkModel === 'auto' ? '' : bulkModel
-    return slots.filter(s => (s.model ?? '') !== target && (!bulkSkipRunning || !s.running)).length
+    return slots.filter(s => (s.model ?? '') !== bulkModel && (!bulkSkipRunning || !s.running)).length
   }, [slots, bulkModel, bulkSkipRunning])
   const bulkModelMutation = useMutation({
+    // 'auto' goes on the wire verbatim (not collapsed to ''): '' doubles as the
+    // "never chosen" state that every reader re-resolves to the agent template's
+    // model, so it cannot express an explicit Auto pick.
     mutationFn: ({ model, skipRunning }: { model: string; skipRunning: boolean }) =>
-      api.chatSlotsModel(model === 'auto' ? '' : model, skipRunning),
+      api.chatSlotsModel(model, skipRunning),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['chat-slots'] })
       // Partial failure: the endpoint returns 200 with a non-empty `failed`

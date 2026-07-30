@@ -2561,9 +2561,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // satisfies the linter without re-creating this callback.
   }, [activeSlot, installedAgents, provider, queryClient, setAgentDropdown, setPendingAgent, setPendingModel])
   const switchModel = useCallback(async (modelName: string) => {
-    const val = modelName === 'auto' ? '' : modelName
-    if (!activeSlot) { setPendingModel(val); return }
-    await api.chatSlotModel(activeSlot, val)
+    // 'auto' is stored VERBATIM, not collapsed to ''. Both resolve to the same
+    // provider behaviour server-side, but '' is also the "never chosen" state,
+    // and every reader of an empty model re-resolves it to the agent template's
+    // model (the `resolvedModel` / `_initResolvedModel` queries below, and the
+    // backend's slot.model backfill). Writing '' therefore made an explicit Auto
+    // pick snap straight back to e.g. claude-opus-5 — Auto was unselectable.
+    // kiro-cli advertises `auto` as a real model id (and its default_model), and
+    // the ChatPane + Alt+Shift model-cycle paths already send it verbatim.
+    if (!activeSlot) { setPendingModel(modelName); return }
+    await api.chatSlotModel(activeSlot, modelName)
     // Keep the dropdown open after selecting — the user may switch models again
     // or drill into the reasoning-effort panel. Dismiss is via outside-click/Escape.
     // setPendingModel is a stable useState setter.
