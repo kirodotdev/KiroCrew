@@ -43,6 +43,14 @@ const SCENES: Record<string, Record<string, unknown>> = {
     pubDate: '2026-07-30T06:12:00Z',
     notes: NOTES,
   },
+  'downloading-start': {
+    // No percent: the pre-first-progress-event state the field bug report was
+    // about ("progress bar starts from 50"). Must render a sweep, not a fill.
+    state: 'downloading',
+    version: VERSION,
+    channel: 'nightly',
+    notes: NOTES,
+  },
   downloading: {
     state: 'downloading',
     version: VERSION,

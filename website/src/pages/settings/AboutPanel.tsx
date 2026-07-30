@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Scale, CheckCircle2, AlertCircle, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Package, X, Download } from 'lucide-react'
+import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
 import { useBranding } from '../../hooks/useBranding'
 import { useAppSelector } from '../../store'
@@ -241,26 +242,18 @@ export function AboutPanel() {
                 ? (<><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.downloading')}</>)
                 : cardFailed
                   ? (<><RefreshCw size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.retry')}</>)
-                  : (<><ArrowUp size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.download_install')}</>)}
+                  : (<><Download size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.download_install')}</>)}
             </Btn>
           )}
         </div>
       </div>
       {cardState === 'downloading' && (
         <>
-          <div
-            className="h-1 bg-border rounded-full overflow-hidden"
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            {...(cardPercent === null ? {} : { 'aria-valuenow': Math.round(cardPercent) })}
-            data-testid="update-progress"
-          >
-            <div
-              className={`h-full bg-accent ${cardPercent === null ? 'w-1/3 animate-pulse' : ''}`}
-              style={cardPercent === null ? undefined : { width: `${cardPercent}%` }}
-            />
-          </div>
+          {/* value={null} = indeterminate (before the first download-progress
+              event): Radix drops aria-valuenow and the indicator sweeps instead
+              of filling -- a filled bar with no real value reads as progress
+              and then jumps when the true percent arrives. */}
+          <Progress value={cardPercent} data-testid="update-progress" />
           <span className="text-[12px] text-muted" data-testid="update-progress-label">
             {cardPercent === null
               ? i18nT('pages.settings.aboutPanel.downloading')

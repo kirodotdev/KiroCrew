@@ -1086,6 +1086,11 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 .pulse-bar-sm{display:block;padding:2px 0}
 .pulse-bar-sm::before{content:'';display:block;height:8px;border-radius:3px;background:var(--accent-subtle);width:70%;animation:skel-pulse 1.5s ease-in-out infinite}
 @keyframes skel-pulse{0%,100%{opacity:.4}50%{opacity:.8}}
+/* Update card: indeterminate download segment sweeps across the track.
+   translateX is relative to the segment's own width (w-1/4 of the track), so
+   -100%..400% covers off-left to off-right for a 25% segment. */
+@keyframes progress-indeterminate{0%{transform:translateX(-100%)}100%{transform:translateX(400%)}}
+.progress-indeterminate{animation:progress-indeterminate 1.2s ease-in-out infinite}
 
 /* ── Chat footer icon carousel (cascade-swap-bounce) ── */
 .csb4{display:flex;gap:5px;padding:2px 0}

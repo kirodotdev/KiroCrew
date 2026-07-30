@@ -31,6 +31,11 @@ const SCENES = [
     note: 'discovered -- consent gate holds, nothing downloaded',
   },
   {
+    scene: 'downloading-start',
+    marker: '[data-testid="update-progress"]',
+    note: 'indeterminate sweep before the first progress event (no fake 33% fill)',
+  },
+  {
     scene: 'downloading',
     marker: '[data-testid="update-progress"]',
     note: 'determinate bar + percent/rate (#737)',
