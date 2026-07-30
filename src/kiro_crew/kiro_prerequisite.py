@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -39,6 +40,7 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 
 from kiro_crew import platform_compat
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.kiro_cli import (
@@ -106,12 +108,37 @@ FAKE_ACP_TEST_MODE_ENV = "KIROCREW_FAKE_ACP_TEST_MODE"
 _MAX_AUTH_EXECUTABLE_BYTES = 512 * 1024 * 1024
 _MAX_AUTH_STORE_FILE_BYTES = 64 * 1024 * 1024
 _AUTH_STORE_READ_ERROR = "Kiro identity file could not be read safely"
-_AUTH_SQLITE_FILES = (
-    "data.sqlite3",
-    "data.sqlite3-wal",
-    "data.sqlite3-shm",
-    "data.sqlite3-journal",
-)
+# The Kiro CLI identity database is PROJECTED, never byte-copied. It is the CLI's
+# main store: identity lives in two small tables, while `history` /
+# `conversations*` hold chat transcripts and grow without bound (a real user
+# report had it at ~429 MB). A byte copy therefore (a) blew past
+# _MAX_AUTH_STORE_FILE_BYTES and aborted sign-in with a message that names
+# neither size nor the real cause, and (b) read the whole file into memory to
+# write it straight back out. Projection copies the full SCHEMA plus rows from
+# _AUTH_IDENTITY_TABLES only, so the staged database is small and bounded by the
+# identity data alone, no matter how large the source grows.
+#
+# Full schema, not just the identity tables: `migrations` is projected WITH its
+# rows, so the CLI sees its schema version as already-applied and runs no
+# migration. A database holding only the identity tables would then fail with
+# "no such table: history" on first use. Copying every table's DDL (and indexes)
+# while withholding non-identity ROWS keeps the CLI's queries valid and still
+# hands the sandboxed process no transcript content.
+_AUTH_SQLITE_DB = "data.sqlite3"
+_AUTH_IDENTITY_TABLES = ("auth_kv", "migrations")
+# `state` is a mixed key/value table: a few rows describe WHICH identity is signed
+# in (Identity Center region + start URL, CodeWhisperer profile) and the rest is
+# unrelated local state — telemetry ids, onboarding flags, prompt counters. Copy
+# the table's rows SELECTIVELY by key prefix so the staged store can render a
+# complete `whoami` (profile/ARN block) without also handing the sandboxed CLI
+# the user's telemetry identifiers. Prefix-matched, not an exact list, so a new
+# `auth.idc.*` key is carried automatically rather than silently dropped.
+_AUTH_STATE_TABLE = "state"
+_AUTH_STATE_KEY_PREFIXES = ("auth.", "api.codewhisperer.")
+_AUTH_SQLITE_FILES = (_AUTH_SQLITE_DB,)
+# Short: the projection is a handful of small reads against a local file, and a
+# stuck open must not hold up sign-in.
+_AUTH_SQLITE_TIMEOUT_SECS = 5.0
 # Process-lifetime pins for explicit operator overrides. The prerequisite
 # service records the canonical path + digest before any agent session starts;
 # ACP spawn consumes the same pin so a later agent write cannot turn a stale
@@ -512,6 +539,118 @@ def _read_bounded_regular_file(path: Path) -> bytes | None:
         os.close(fd)
 
 
+def _open_identity_db_readonly(path: Path) -> Any | None:
+    """Open a Kiro identity database read-only, with the same path defenses.
+
+    Mirrors :func:`_read_bounded_regular_file`'s gates — reject a symlink, and
+    require a regular file — then hands SQLite a read-only URI. Deliberately NOT
+    size-gated: only the identity tables are read out, so the source file's size
+    does not bound what is staged. Returns ``None`` when the path fails a gate or
+    SQLite cannot read it (missing, corrupt, or not a database).
+    """
+
+    if path.is_symlink():
+        return None
+    try:
+        if not stat.S_ISREG(os.lstat(str(path)).st_mode):
+            return None
+    except OSError:
+        return None
+    # mode=ro WITHOUT immutable=1. `immutable=1` would promise never to touch a
+    # sidecar, but it also tells SQLite the file cannot change, so the WAL is
+    # IGNORED: against a store in WAL mode whose newest commits are still in
+    # `data.sqlite3-wal`, the token row reads as missing and the CLI is handed a
+    # store it reports as signed-out — a worse failure than the size abort this
+    # projection replaces. Plain `mode=ro` applies the WAL, so the staged
+    # identity always matches what the CLI itself would read. The cost is that
+    # SQLite may create/refresh the `-shm` index beside the live database exactly
+    # as any other reader does; `-shm` is a shared-memory index holding no
+    # identity data, and no identity bytes are ever written back.
+    uri = f"file:{urllib.request.pathname2url(str(path))}?mode=ro"
+    try:
+        return sqlite3.connect(uri, uri=True, timeout=_AUTH_SQLITE_TIMEOUT_SECS)
+    except sqlite3.Error:
+        return None
+
+
+def _project_identity_database(source: Path, destination: Path) -> bool:
+    """Stage ONLY Kiro's identity tables into a fresh owner-only database.
+
+    Copies every table/index DDL (so the CLI never hits "no such table" on a
+    store whose ``migrations`` rows say the schema is current) but only the ROWS
+    of :data:`_AUTH_IDENTITY_TABLES`. Transcript tables arrive empty, so the
+    staged file stays small however large the source grows.
+
+    Returns ``False`` when the source cannot be read or lacks an identity table,
+    so the caller aborts staging instead of running against a store that looks
+    signed-out.
+    """
+
+    connection = _open_identity_db_readonly(source)
+    if connection is None:
+        return False
+    try:
+        with contextlib.closing(connection):
+            schema = connection.execute(
+                "SELECT sql FROM sqlite_master "  # wokeignore:rule=master
+                "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            present = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"  # wokeignore:rule=master
+                ).fetchall()
+            }
+            # EVERY identity table must exist. `all`, not `any`: a future kiro-cli
+            # that renames one of them (say `auth_kv`) while keeping the other
+            # would pass an `any` gate and stage a store with the schema present
+            # but ZERO identity rows — silently producing exactly the "signed out"
+            # outcome this gate exists to prevent. Requiring all of them turns a
+            # schema change into the loud _AUTH_STORE_READ_ERROR abort instead.
+            if not all(table in present for table in _AUTH_IDENTITY_TABLES):
+                return False
+            rows = {
+                table: connection.execute(f'SELECT * FROM "{table}"').fetchall()
+                for table in _AUTH_IDENTITY_TABLES
+            }
+            # `state`: carry only the identity-describing keys (see
+            # _AUTH_STATE_KEY_PREFIXES). Absent on an older schema — optional by
+            # design, so a store without it still stages.
+            if _AUTH_STATE_TABLE in present:
+                predicate = " OR ".join(["key LIKE ?"] * len(_AUTH_STATE_KEY_PREFIXES))
+                rows[_AUTH_STATE_TABLE] = connection.execute(
+                    f'SELECT * FROM "{_AUTH_STATE_TABLE}" WHERE {predicate}',
+                    tuple(f"{prefix}%" for prefix in _AUTH_STATE_KEY_PREFIXES),
+                ).fetchall()
+    except sqlite3.Error:
+        return False
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Create the file before writing, so the identity rows are never briefly
+    # world-readable between SQLite's create and the chmod.
+    fd = os.open(str(destination), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+    platform_compat.restrict_to_owner(str(destination))
+    try:
+        staged = sqlite3.connect(str(destination), timeout=_AUTH_SQLITE_TIMEOUT_SECS)
+        with contextlib.closing(staged):
+            with staged:
+                for (statement,) in schema:
+                    staged.execute(str(statement))
+                for table, table_rows in rows.items():
+                    if not table_rows:
+                        continue
+                    placeholders = ",".join("?" * len(table_rows[0]))
+                    staged.executemany(
+                        f'INSERT INTO "{table}" VALUES ({placeholders})', table_rows
+                    )
+    except sqlite3.Error:
+        with contextlib.suppress(OSError):
+            os.unlink(str(destination))
+        return False
+    return True
+
+
 def _atomic_write_secret_bytes(path: Path, content: bytes) -> None:
     """Atomically stage one bounded Kiro identity file with owner-only mode."""
 
@@ -613,13 +752,19 @@ def _prepare_auth_workspace(
         for mapping in _auth_store_mappings(platform_name, home, environ):
             for pattern in mapping.filenames:
                 for source in mapping.source.glob(pattern):
+                    staged_path = root / mapping.staged_relative / source.name
+                    # The identity DATABASE is projected (identity tables only);
+                    # every other identity file is a small JSON token copied
+                    # under the bounded byte rules. Both abort staging on
+                    # failure — never omit a matched store as though absent.
+                    if source.name == _AUTH_SQLITE_DB:
+                        if not _project_identity_database(source, staged_path):
+                            raise OSError(_AUTH_STORE_READ_ERROR)
+                        continue
                     content = _read_bounded_regular_file(source)
                     if content is None:
                         raise OSError(_AUTH_STORE_READ_ERROR)
-                    _atomic_write_secret_bytes(
-                        root / mapping.staged_relative / source.name,
-                        content,
-                    )
+                    _atomic_write_secret_bytes(staged_path, content)
 
         env = dict(base_env)
         env.update(
