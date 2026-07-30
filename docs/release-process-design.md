@@ -487,7 +487,7 @@ by PR number. The release system (channels, versioning, distribution,
 URL design, update flow, and their implementation) is authored by Zezhen
 Xu (GitHub: CrysisDeu).
 
-Pre-migration era (commit hashes from the KiroClaw history):
+Pre-migration era (commit hashes from the pre-rename history):
 
 | Date | Ref | Milestone |
 |---|---|---|

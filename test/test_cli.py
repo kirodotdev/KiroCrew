@@ -4570,3 +4570,67 @@ class TestTokenCommand:
         for line in lines:
             assert line.lstrip().startswith("http"), f"non-URL text on stdout: {line!r}"
         assert "token=eyJa.b" in captured.out
+
+
+class TestBannerBranding:
+    """The ASCII banners must spell the product's real name.
+
+    All three were figlet-`small` renderings of "KiroClaw"/"KiroClaw Cloud" — a
+    pre-rename name that reached users on `kirocrew` with no args, in the chat
+    REPL, and at the top of every `kirocrew cloud` run.
+    """
+
+    def _letters(self, banner: str) -> str:
+        """Collapse the ASCII art to comparable letter-ish content."""
+        return "".join(banner.split())
+
+    def test_main_banner_is_kiro_crew(self):
+        from kiro_crew.cli import BANNER
+
+        # figlet 'small' renders "Crew" with the distinctive `-_)` in the 'e' row
+        # and `_ _` in the 'r'/'C' row; "Claw" instead carries `/ _` + `\ V  V /`.
+        assert "-_)" in BANNER, "banner does not render 'Crew'"
+        assert "|__ ___" not in BANNER, "banner still renders 'Claw'"
+
+    def test_banner_is_single_sourced(self):
+        """One definition, not two pinned copies — the duplication WAS the bug.
+
+        cli.py and cli_chat.py each held a hand-copied banner, so a rename left
+        both stale. They now re-export the one in constants.py; identity (`is`)
+        proves there is no second literal to drift.
+        """
+        from kiro_crew.cli import BANNER as MAIN
+        from kiro_crew.cli_chat import BANNER as CHAT
+        from kiro_crew.constants import BANNER as CANON
+
+        assert MAIN is CANON
+        assert CHAT is CANON
+
+    def test_no_reinlined_banner_literal(self):
+        """Guard the fix: neither module may re-inline the art."""
+        from pathlib import Path
+
+        import kiro_crew.cli as cli_mod
+        import kiro_crew.cli_chat as chat_mod
+
+        for mod in (cli_mod, chat_mod):
+            src = Path(mod.__file__).read_text(encoding="utf-8")
+            assert "BANNER = r" not in src, f"{mod.__name__} re-inlined the banner literal"
+
+    def test_cloud_banner_is_kiro_crew_cloud(self):
+        from kiro_crew.cloud.ui import BANNER
+
+        assert "-_)" in BANNER, "cloud banner does not render 'Crew'"
+        assert "|__ ___" not in BANNER, "cloud banner still renders 'Claw'"
+        # The 'Cloud' half must survive the edit.
+        assert "\\___/\\_,_\\__,_|" in BANNER
+
+    def test_no_kiroclaw_spelling_anywhere_in_banners(self):
+        from kiro_crew.cloud.ui import BANNER as CLOUD
+        from kiro_crew.constants import BANNER as MAIN
+
+        CHAT = MAIN
+
+        # The 'Cl' of Claw is `/ __| |` + `(__| / _`; Crew is `/ __|_ _` + `(__| '_/`.
+        for name, b in (("cli", MAIN), ("cli_chat", CHAT), ("cloud", CLOUD)):
+            assert "(__| / _`" not in b, f"{name} banner still spells Claw"

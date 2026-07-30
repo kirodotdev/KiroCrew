@@ -62,6 +62,69 @@ from kiro_crew.sel import sel
 from kiro_crew.validation import _AGENT_NAME_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN, WORKSPACE_NAME_RE
 from kiro_crew.vector_memory import VectorMemoryStore
 
+# Workspace dirs are confined to the data home: a workspace is agent-writable
+# working state, so letting --dir escape would let it be pointed at ~/.ssh or the
+# keystone policy files. The refusal is deliberate — say so, and say what to pass
+# instead, rather than the bare "invalid directory path" this used to print.
+_WS_DIR_OUTSIDE_HOME = (
+    "Error: --dir must resolve inside the KiroCrew data home ({home}); got {given!r}. "
+    "Pass a relative directory name (e.g. 'workspace-myproject')."
+)
+
+
+def _ws_dir_error(given: str) -> str:
+    return _WS_DIR_OUTSIDE_HOME.format(home=config_dir(), given=given)
+
+
+def _ws_dir_resolves_inside_home(ws_dir: str) -> bool:
+    """True when *ws_dir* resolves to a STRICT descendant of the data home.
+
+    ``expanduser()`` FIRST is what makes this honest: ``config_dir() / "~/x"``
+    silently yields ``<home>/~/x`` — contained, but it creates a literal ``~``
+    directory the user never asked for and quietly ignores the tilde they wrote.
+    Expanding first means a tilde path is judged as the absolute path the user
+    meant, so it is refused with the same clear message as ``/tmp/x`` (matching
+    how the dashboard handler reads the same field).
+
+    The test is CONTAINMENT, not "is it absolute": an absolute path that lands
+    inside the data home is accepted (it resolves to the same place the relative
+    form would, so there is nothing to refuse). What is rejected is anything
+    resolving OUTSIDE — which is the property the boundary actually protects.
+
+    STRICT descendant, so the root itself is refused HERE. The separate
+    "cannot use config root" checks at each call site compare
+    ``config_dir() / ws_dir`` WITHOUT expanding ``~``, so ``~/.kiro/crew`` used to
+    become ``<home>/~/.kiro/crew`` there — unequal to the root, hence accepted —
+    while the plain absolute form was refused. Deciding it in this one expanded
+    place removes that split: a workspace pointed at the data-home root would put
+    agent-writable memory/lessons on top of ``config.json`` / ``.env``.
+
+    Inside the home is NOT automatically safe: the keystone paths live there too
+    (``profiles/``, ``security_policy.json``, ``admission_policy.json``,
+    ``denied_commands.json``, ``.env``, ``sel_hmac.key``…). ``--copy-from`` runs
+    ``copytree(..., dirs_exist_ok=True)``, so a workspace dir of ``profiles``
+    would OVERWRITE the governance ceiling the agent is specifically forbidden to
+    write — the one mechanism that makes that ceiling un-disableable. So the
+    resolved target must also clear ``is_sensitive_path()``, the shared gate used
+    everywhere else for exactly this question.
+
+    Fails CLOSED on any path we cannot resolve. ``expanduser()`` raises
+    ``RuntimeError`` for a ``~unknownuser/...`` prefix (no such user, so no home
+    to expand), and ``resolve()`` can raise ``OSError`` on a pathological path —
+    both must return False and route into the normal refusal, never escape as a
+    traceback. That is the whole point of this PR, so the guard cannot be the one
+    thing that crashes.
+    """
+    try:
+        expanded = Path(ws_dir).expanduser()
+        candidate = (expanded if expanded.is_absolute() else config_dir() / expanded).resolve()
+        root = config_dir().resolve()
+        if candidate == root or not candidate.is_relative_to(root):
+            return False
+        return not is_sensitive_path(str(candidate))
+    except (RuntimeError, OSError, ValueError):
+        return False
+
 
 def _format_schedule(schedule: object) -> str:
     """Human-readable schedule description (CLI shows full date for 'at' jobs)."""
@@ -221,7 +284,7 @@ def _handle_workspace(args: argparse.Namespace) -> None:
             ws_dir = args.dir if args.dir is not None else f"workspace-{args.name}"
             src_path = config_dir() / cfg.workspaces[copy_from].dir
             dst_path = config_dir() / ws_dir
-            if not dst_path.resolve().is_relative_to(config_dir().resolve()):
+            if not _ws_dir_resolves_inside_home(ws_dir):
                 sel().log_api_access(
                     caller="cli",
                     operation="workspace.create",
@@ -229,7 +292,7 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                     source="cli",
                     resources=args.name,
                 )
-                print("Error: invalid directory path", file=sys.stderr)
+                print(_ws_dir_error(ws_dir), file=sys.stderr)
                 sys.exit(1)
             if not src_path.resolve().is_relative_to(config_dir().resolve()):
                 sel().log_api_access(
@@ -281,7 +344,7 @@ def _handle_workspace(args: argparse.Namespace) -> None:
         else:
             ws_dir = args.dir if args.dir is not None else f"workspace-{args.name}"
 
-            if not (config_dir() / ws_dir).resolve().is_relative_to(config_dir().resolve()):
+            if not _ws_dir_resolves_inside_home(ws_dir):
                 sel().log_api_access(
                     caller="cli",
                     operation="workspace.create",
@@ -289,7 +352,7 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                     source="cli",
                     resources=args.name,
                 )
-                print("Error: invalid directory path", file=sys.stderr)
+                print(_ws_dir_error(ws_dir), file=sys.stderr)
                 sys.exit(1)
             if (config_dir() / ws_dir).resolve() == config_dir().resolve():
                 sel().log_api_access(
@@ -326,7 +389,7 @@ def _handle_workspace(args: argparse.Namespace) -> None:
             sys.exit(1)
         if args.dir is not None:
             resolved = (config_dir() / args.dir).resolve()
-            if not resolved.is_relative_to(config_dir().resolve()):
+            if not _ws_dir_resolves_inside_home(args.dir):
                 sel().log_api_access(
                     caller="cli",
                     operation="workspace.update",
@@ -334,7 +397,7 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                     source="cli",
                     resources=args.name,
                 )
-                print("Error: invalid directory path", file=sys.stderr)
+                print(_ws_dir_error(args.dir), file=sys.stderr)
                 sys.exit(1)
             if resolved == config_dir().resolve():
                 sel().log_api_access(

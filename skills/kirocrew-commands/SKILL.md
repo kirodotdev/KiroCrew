@@ -68,6 +68,11 @@ gateway or shared data. Linux `systemd --user` only. `<wt>` is a worktree name
 | `kirocrew pod url <wt>` | Print the pod's base URL |
 | `kirocrew pod logs <wt> -n N` | Tail the pod's journal |
 | `kirocrew pod down <wt>` | Evict the pod and delete its isolated HOME |
+| `kirocrew pod exec <wt> -- <args>` | Run a kirocrew command against a pod, using the pod's own binary and data |
+
+**Platform:** Linux only. On macOS/Windows every systemd-touching verb refuses
+with a one-line message pointing at `./dev-backend.sh` — it does not crash, and
+`pod install` writes no unit file. `pod url` works anywhere (pure computation).
 
 Port derivation: `base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`).
 Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
@@ -152,6 +157,8 @@ Browsing uses **Playwright MCP tools**, not kirocrew CLI. The `kirocrew browse` 
 | `kirocrew cron pause JOB_ID` | Pause a cron job |
 | `kirocrew cron resume JOB_ID` | Resume a paused job |
 | `kirocrew cron trigger JOB_ID` | Trigger a job immediately |
+| `kirocrew cron preview SCRIPT` | Run a script cron locally with real MCP tools; notifications are printed, not delivered |
+| `kirocrew cron preview SCRIPT -m "msg" -e K=V` | Preview with an input message / extra env vars |
 
 ## Learning & Memory
 
@@ -170,6 +177,8 @@ Browsing uses **Playwright MCP tools**, not kirocrew CLI. The `kirocrew browse` 
 | `kirocrew memory export -o file.json` | Export to file |
 | `kirocrew memory import file.json` | Import memory from JSON |
 | `kirocrew memory migrate` | Migrate legacy markdown memory to vector store |
+| `kirocrew knowledge dedup` | Preview cross-source duplicate knowledge documents (dry-run) |
+| `kirocrew knowledge dedup --apply` | Actually collapse the duplicates |
 | `kirocrew consolidate` | List sessions with unconsolidated messages |
 | `kirocrew consolidate SESSION_KEY` | Force consolidate a session (triggers auto-skill extraction) |
 | `kirocrew consolidate --all` | Consolidate all pending sessions |
@@ -203,10 +212,23 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 | `kirocrew agent update NAME --kiro-agent new-agent` | Update agent settings |
 | `kirocrew agent delete NAME` | Delete an agent |
 | `kirocrew workspace list` | List workspaces |
-| `kirocrew workspace create --name NAME --dir /path/to/dir` | Create workspace |
+| `kirocrew workspace create --name NAME --dir DIRNAME` | Create workspace (`--dir` is a **name under the data home**, not an absolute path) |
 | `kirocrew workspace create --name NAME --copy-from existing` | Copy from existing |
-| `kirocrew workspace update NAME --dir /new/path` | Update workspace dir |
+| `kirocrew workspace update NAME --dir DIRNAME` | Update workspace dir (same containment rule) |
 | `kirocrew workspace delete NAME` | Delete workspace |
+
+**On the CLI**, `--dir` must resolve to a **strict descendant** of
+`$KIROCREW_HOME` (default `~/.kiro/crew`): anything landing outside — `/tmp/x`,
+`../x`, `~/x` — is refused with a SEL `denied` audit event, and so is the data
+home **root itself** (in any spelling: absolute, `~/.kiro/crew`, `.`, or empty),
+since a workspace there would put agent-writable memory on top of `config.json`
+and `.env`. The test is containment, not "is it absolute": an absolute path
+landing *under* the home is accepted, since it resolves where the relative form
+would. Pass `workspace-myproject`, not `/path/to/dir`.
+
+Note the surface difference: the **dashboard** `POST /api/workspaces` DOES accept
+an absolute `dir` (screened by `is_sensitive_path`, so `~/.ssh` / `~/.aws` /
+keystone paths are still refused). The CLI is the stricter of the two.
 
 ## Apps
 
@@ -221,6 +243,8 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 | `kirocrew app info NAME` | Show app details |
 | `kirocrew app init NAME` | Scaffold a new app (kebab-case name) |
 | `kirocrew app init NAME --backend --ui --cron` | Scaffold with backend, UI, and sample cron |
+| `kirocrew app dev NAME` | Toggle an app into dev mode (no-store UI serving + live reload on file change) |
+| `kirocrew app dev NAME --off` | Leave dev mode |
 
 ## Configuration
 
@@ -245,6 +269,62 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 | `kirocrew eval memory_recall_basic` | Run specific scenario by name |
 | `kirocrew eval --all` | Run all scenarios (slow) |
 | `kirocrew eval --judge` | Enable LLM judge scoring |
+
+## Governance Policy (read-only)
+
+Inspects the two-level security model (`effective = POLICY ∩ PROFILE`,
+tightest-wins). All four verbs are read-only — the enterprise ceiling is never
+edited through the CLI (its files are keystone-fenced so the agent cannot read or
+write them).
+
+| Command | Description |
+|---------|-------------|
+| `kirocrew policy show` | Show the effective enterprise security policy |
+| `kirocrew policy validate` | Load-check the policy + all profiles |
+| `kirocrew policy explain SCOPE ITEM` | Explain one tool/scope decision for a surface |
+| `kirocrew policy explain SCOPE ITEM --session-key K --agent A --app APP` | Scope the explanation to a surface |
+| `kirocrew policy profile NAME` | Show a profile by name |
+
+## Cloud (Bring-Your-Own AWS)
+
+Runs KiroCrew on an EC2 instance in **your own** AWS account; credentials are
+resolved by the `aws` CLI and never stored by KiroCrew. All verbs accept
+`--profile` / `--region`; the single-instance verbs also accept `--tag`
+(defaults to the last launched instance).
+
+| Command | Description |
+|---------|-------------|
+| `kirocrew cloud doctor` | Check cloud prerequisites + AWS reachability |
+| `kirocrew cloud launch` | Provision + configure an instance (interactive) |
+| `kirocrew cloud launch --size TIER -y` | Non-interactive launch at a size tier |
+| `kirocrew cloud launch --new` | Create a separate new instance instead of resuming the saved one |
+| `kirocrew cloud launch --keep-on-failure` | On bootstrap failure keep the instance for inspection |
+| `kirocrew cloud list` | List your KiroCrew cloud instances |
+| `kirocrew cloud status` | Show one instance's state |
+| `kirocrew cloud connect` | Open the dashboard over an SSM tunnel |
+| `kirocrew cloud tunnel` | Open the dashboard SSM tunnel (standalone alias of connect) |
+| `kirocrew cloud connect --local-port N --no-browser` | Forward to a specific local port, no browser |
+| `kirocrew cloud login` | Sign kiro-cli in on the instance (fixes "not logged in" chat errors) |
+| `kirocrew cloud stop` | Stop the instance (pause billing) |
+| `kirocrew cloud start` | Start a stopped instance |
+| `kirocrew cloud destroy` | Remove the instance and ALL its AWS resources |
+| `kirocrew cloud destroy --dry-run` | Show the delete command without running it |
+| `kirocrew cloud iam-policy` | Print the least-privilege IAM policy to apply |
+| `kirocrew cloud iam-boundary` | Pre-create the immutable permissions boundary (admin, one-time) |
+
+## Computer Use (Desktop Automation)
+
+Default-OFF behind a keystone enable (`~/.kiro/crew/computer_use.json`, **not**
+`config.json`). macOS only. These are human debug/diagnostic twins of the
+`computer_*` MCP tools — the agent uses the MCP tools, not these.
+
+| Command | Description |
+|---------|-------------|
+| `kirocrew computer doctor` | Report platform support, keystone enable state, and the advisory Accessibility / Screen Recording probe |
+| `kirocrew computer doctor --json` | Same as JSON |
+| `kirocrew computer apps` | List on-screen applications the accessibility layer can address |
+| `kirocrew computer call TOOL k=v …` | Run ONE computer-use tool through the same gated chokepoint the agent uses |
+| `kirocrew computer call --calls '[…]'` | Run a JSON array of calls in a SINGLE process, so `element_index` values stay resolvable |
 
 ## Snapshot & Restore
 

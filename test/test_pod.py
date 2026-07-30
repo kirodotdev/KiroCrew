@@ -715,6 +715,9 @@ class TestCliVerbs:
 
     def test_install_writes_unit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))
+        # This test asserts the LINUX path, so satisfy the platform gate — the
+        # suite must exercise it on macOS/Windows runners too.
+        monkeypatch.setattr(rt, "require_systemd", lambda: None)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=0))
         recorded: list[tuple] = []
         monkeypatch.setattr(
@@ -729,6 +732,7 @@ class TestCliVerbs:
 
     def test_install_dies_on_reload_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(rt, "require_systemd", lambda: None)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=1))
         recorded: list[tuple] = []
         monkeypatch.setattr(
@@ -963,3 +967,76 @@ class TestUnitExecSelfHeal:
             "ExecStart=python3 -m kiro_crew pod _run %i",
         )
         assert unit_mod.unit_exec_ok(cfg) is True
+
+
+class TestPlatformGuard:
+    """Pods are Linux `systemd --user` only (pod/README.md → Platform).
+
+    Off-Linux the verbs must report the refusal, NOT dump a bare
+    ``FileNotFoundError`` traceback from the first ``subprocess.run(["systemctl",
+    ...])``. The gate lives in ``require_systemd()``, which every systemd/
+    journalctl call funnels through.
+    """
+
+    def test_require_systemd_refuses_off_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rt, "IS_LINUX", False)
+        monkeypatch.setattr(rt.sys, "platform", "darwin")
+        with pytest.raises(rt.PodError) as exc:
+            rt.require_systemd()
+        # Names the platform AND the supported alternative, so the message is actionable.
+        assert "darwin" in str(exc.value)
+        assert "dev-backend.sh" in str(exc.value)
+
+    def test_require_systemd_refuses_when_systemctl_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt.shutil, "which", lambda _n: None)
+        with pytest.raises(rt.PodError, match="systemctl"):
+            rt.require_systemd()
+
+    def test_require_systemd_passes_on_linux_with_systemctl(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        rt.require_systemd()  # must not raise
+
+    def test_systemctl_gated_before_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The guard runs BEFORE the subprocess, so no spawn is attempted."""
+        monkeypatch.setattr(rt, "IS_LINUX", False)
+        spawned: list[list[str]] = []
+        monkeypatch.setattr(rt, "_run", lambda cmd, **k: spawned.append(cmd))
+        with pytest.raises(rt.PodError):
+            rt.systemctl("list-units")
+        assert spawned == []
+
+    def test_recent_journal_gated(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+        """journalctl is a sibling of systemctl, not routed through it — gate it too."""
+        monkeypatch.setattr(rt, "IS_LINUX", False)
+        with pytest.raises(rt.PodError):
+            rt.recent_journal(cfg, "alpha")
+
+    def test_ls_reports_cleanly_off_linux(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`pod ls` exits 1 with a one-liner — the dispatch layer converts PodError."""
+        monkeypatch.setattr(rt, "IS_LINUX", False)
+        args = argparse.Namespace(pod_action="ls", json=False)
+        with pytest.raises(SystemExit) as exc:
+            pod_cli.dispatch(args)
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "pod:" in err and "Linux" in err
+        assert "Traceback" not in err
+
+    def test_install_writes_no_unit_off_linux(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gate precedes install_unit(), so no unit file is left behind."""
+        monkeypatch.setattr(rt, "IS_LINUX", False)
+        wrote: list[object] = []
+        monkeypatch.setattr(unit_mod, "install_unit", lambda c: wrote.append(c))
+        with pytest.raises(rt.PodError):
+            pod_cli._install(cfg, argparse.Namespace())
+        assert wrote == []
