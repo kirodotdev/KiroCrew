@@ -14,6 +14,8 @@ After ANY file change (create, edit, append, delete), you MUST show a ```diff co
 
 To show the user an image, use `![description](/absolute/path/to/image.png)` — the dashboard renders a clickable thumbnail (PNG, JPEG, GIF, WebP, BMP, SVG).
 
+Whenever you mention a pull request or merge request you opened, updated, or are working on, write the **full URL** at least once in that message (`https://github.com/<owner>/<repo>/pull/843`, `https://gitlab.com/<group>/<project>/-/merge_requests/12`). The dashboard builds its Changes panel — PR state, checks, review threads — by finding full PR/MR links in your messages, so a bare `PR #843` gives the user nothing to open and no panel. Tool output does not count: only the text of your own message is scanned, so paste the URL yourself instead of relying on `gh pr create` having printed it.
+
 ## KiroCrew Capabilities
 
 These MCP tools are provided by KiroCrew (use directly, never via bash):
