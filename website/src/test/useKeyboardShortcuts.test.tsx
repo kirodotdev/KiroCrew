@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, act } from '@testing-library/react'
-import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
+import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts, sessionCycleStep, wrapIndex } from '../hooks/useKeyboardShortcuts'
 import { renderHookWithProviders, createTestStore, renderWithProviders } from './helpers'
 import ShortcutsModal from '../components/ShortcutsModal'
 import type { RootState } from '../store'
@@ -223,6 +223,167 @@ describe('ShortcutsModal', () => {
     renderWithProviders(<ShortcutsModal onClose={onClose} />)
     fireEvent.click(screen.getByRole('dialog'))
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('sessionCycleStep', () => {
+  const ev = (o: Partial<Record<'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey', unknown>>) =>
+    ({ code: 'BracketRight', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...o }) as Parameters<typeof sessionCycleStep>[0]
+
+  it('maps ⌘[ / ⌘] to -1 / +1 on macOS', () => {
+    expect(sessionCycleStep(ev({ code: 'BracketLeft', metaKey: true }), true)).toBe(-1)
+    expect(sessionCycleStep(ev({ code: 'BracketRight', metaKey: true }), true)).toBe(1)
+  })
+
+  it('maps Ctrl+[ / Ctrl+] to -1 / +1 on Windows/Linux', () => {
+    expect(sessionCycleStep(ev({ code: 'BracketLeft', ctrlKey: true }), false)).toBe(-1)
+    expect(sessionCycleStep(ev({ code: 'BracketRight', ctrlKey: true }), false)).toBe(1)
+  })
+
+  it('requires the platform primary modifier, not the other one', () => {
+    expect(sessionCycleStep(ev({ ctrlKey: true }), true)).toBe(0)   // Ctrl+] on Mac
+    expect(sessionCycleStep(ev({ metaKey: true }), false)).toBe(0)  // ⌘] on Win/Linux
+  })
+
+  it('rejects extra modifiers so it cannot fire from a near-miss chord', () => {
+    expect(sessionCycleStep(ev({ metaKey: true, altKey: true }), true)).toBe(0)
+    expect(sessionCycleStep(ev({ metaKey: true, shiftKey: true }), true)).toBe(0)
+    expect(sessionCycleStep(ev({ metaKey: true, ctrlKey: true }), true)).toBe(0)
+  })
+
+  it('returns 0 for any other key', () => {
+    expect(sessionCycleStep(ev({ code: 'KeyP', metaKey: true }), true)).toBe(0)
+    expect(sessionCycleStep(ev({ code: 'Backslash', metaKey: true }), true)).toBe(0)
+  })
+})
+
+describe('wrapIndex', () => {
+  it('steps and wraps at both ends', () => {
+    expect(wrapIndex(3, 1, 1)).toBe(2)
+    expect(wrapIndex(3, 2, 1)).toBe(0)
+    expect(wrapIndex(3, 1, -1)).toBe(0)
+    expect(wrapIndex(3, 0, -1)).toBe(2)
+  })
+  it('lands on an end when nothing is selected', () => {
+    expect(wrapIndex(3, -1, 1)).toBe(0)
+    expect(wrapIndex(3, -1, -1)).toBe(2)
+  })
+  it('reports -1 for an empty list', () => {
+    expect(wrapIndex(0, -1, 1)).toBe(-1)
+  })
+})
+
+describe('⌘/Ctrl+[ and ⌘/Ctrl+] session cycling', () => {
+  // The switchSlot thunk's pending reducer touches most of the chat slice, so
+  // preload from the slice's real initial state rather than a partial cast.
+  const chatState = (activeSlot: string | null) =>
+    ({ ...createTestStore().getState().chat, activeSlot, slotHistory: [] }) as RootState['chat']
+
+  const threeSlots = (active: string) => createTestStore({
+    dashboard: { slots: [
+      { key: 'slot-1', title: 'Chat 1', messages: 0, running: false },
+      { key: 'slot-2', title: 'Chat 2', messages: 0, running: false },
+      { key: 'slot-3', title: 'Chat 3', messages: 0, running: false },
+    ] } as unknown as RootState['dashboard'],
+    chat: chatState(active),
+  })
+
+  // jsdom reports a non-Mac platform, so the handler's primary modifier is Ctrl.
+  function mount(store: ReturnType<typeof createTestStore>, disabled?: boolean) {
+    renderHookWithProviders(
+      () => useKeyboardShortcuts({ onToggleShortcutsModal: vi.fn(), onNewChat: vi.fn(), disabled }),
+      { store },
+    )
+  }
+
+  const press = (code: string, target: EventTarget = document) => {
+    const event = new KeyboardEvent('keydown', { code, ctrlKey: true, cancelable: true, bubbles: true })
+    return !target.dispatchEvent(event) // true when preventDefault was called
+  }
+
+  it('] advances to the next session', () => {
+    const store = threeSlots('slot-2')
+    mount(store)
+    expect(press('BracketRight')).toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('slot-3')
+  })
+
+  it('[ goes back to the previous session', () => {
+    const store = threeSlots('slot-2')
+    mount(store)
+    expect(press('BracketLeft')).toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('wraps forward past the last session', () => {
+    const store = threeSlots('slot-3')
+    mount(store)
+    press('BracketRight')
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('wraps backward past the first session', () => {
+    const store = threeSlots('slot-1')
+    mount(store)
+    press('BracketLeft')
+    expect(store.getState().chat.activeSlot).toBe('slot-3')
+  })
+
+  it('works from inside a text field (the chord has no editing meaning)', () => {
+    const store = threeSlots('slot-1')
+    mount(store)
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    expect(press('BracketRight', textarea)).toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('slot-2')
+    textarea.remove()
+  })
+
+  it('leaves the keystroke to the PTY when it comes from a terminal', () => {
+    const store = threeSlots('slot-1')
+    mount(store)
+    const term = document.createElement('div')
+    term.className = 'xterm'
+    const inner = document.createElement('textarea')
+    term.appendChild(inner)
+    document.body.appendChild(term)
+    expect(press('BracketLeft', inner)).toBe(false) // not claimed → ESC reaches the PTY
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+    term.remove()
+  })
+
+  it('does not claim the keystroke when shortcuts are globally disabled', () => {
+    localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const store = threeSlots('slot-1')
+    mount(store)
+    expect(press('BracketRight')).toBe(false) // browser Forward still works
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('is suppressed while another surface owns the keyboard (disabled)', () => {
+    const store = threeSlots('slot-1')
+    mount(store, true)
+    press('BracketRight')
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('does nothing with no sessions open', () => {
+    const store = createTestStore({
+      dashboard: { slots: [] } as unknown as RootState['dashboard'],
+      chat: chatState(null),
+    })
+    mount(store)
+    expect(press('BracketRight')).toBe(true) // still claimed, just nowhere to go
+    expect(store.getState().chat.activeSlot).toBe(null)
+  })
+
+  it('is advertised in the shortcuts registry as a ⌘/Ctrl chord', () => {
+    const prev = DEFAULT_SHORTCUTS.find(s => s.id === 'chat-prev-bracket')
+    const next = DEFAULT_SHORTCUTS.find(s => s.id === 'chat-next-bracket')
+    expect(prev).toMatchObject({ key: '[', meta: true, group: 'Chat Navigation' })
+    expect(next).toMatchObject({ key: ']', meta: true, group: 'Chat Navigation' })
+    expect(prev?.alt).toBeUndefined()
+    expect(next?.ctrl).toBeUndefined()
   })
 })
 
