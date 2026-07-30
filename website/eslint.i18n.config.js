@@ -141,6 +141,11 @@ export default [
       // user-visible copy ever added to THIS path will not be reported — keep the
       // module parser-facing only.
       'src/apps/pptx-maker/lib.ts',
+      // Emits runnable shell text, not copy: the output is pasted into a terminal
+      // and executed, so translating a `curl` invocation, an `openssl` flag or a
+      // header name would produce a snippet that fails. Exempted by exact path;
+      // the Webhooks page itself remains fully gated.
+      'src/pages/webhooks/requestExamples.ts',
       // Model-facing, not user-facing: `planningInstructionForMode` returns the
       // behaviour instruction embedded in the pet's planning PROMPT. Translating it
       // would send the agent a localized instruction while the rest of its prompt
@@ -579,6 +584,10 @@ export default [
               // Icon component factory: the string argument is a React DevTools
               // displayName, not user-visible copy.
               '^makePanelIcon$',
+              // Built-in surface fallback labels and group buckets are registry
+              // machine values. The helper is deliberately explicit and narrow;
+              // rendered badgeLabel/activityLabel strings never pass through it.
+              '^surfaceMachineValue$',
               // A per-app `request` wrapper takes an ENDPOINT PATH — the same class as
               // the `fetch` exclusion above, and the only thing standing between a
               // route string and the fetch it performs. Anchored, so it cannot match a

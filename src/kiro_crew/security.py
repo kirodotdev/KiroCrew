@@ -4197,6 +4197,22 @@ _CREW_SECRET_LEAVES: list[str] = [
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",
+    # Inbound-webhook credential store directory. It holds the bearer HASHES and
+    # the recoverable HMAC signing secrets for /api/hooks/agent, which is on the
+    # dashboard-auth bypass list because it authenticates itself. An agent that
+    # could WRITE this store could append a token hash it chose and then drive
+    # arbitrary agent turns through that route from outside; one that could READ
+    # it could sign requests as an existing integration. The store's own
+    # reader/writer (webhooks.WebhookTokenStore) opens it directly, not through
+    # this gate, so the feature is unaffected.
+    #
+    # The DIRECTORY is named, not the file, because the store is published with
+    # mkstemp + os.replace: gating only ``tokens.json`` left the not-yet-renamed
+    # ``*.tmp`` inode writable by a same-UID agent (0600 does not stop the same
+    # user), and the rename would then publish agent-chosen content as the live
+    # credential store. One directory rule covers the store, its lock file and
+    # every temp file — the same treatment ``profiles`` and ``run`` already get.
+    "webhooks",
     # Pinned installer provenance authorizes an executable to receive staged
     # Kiro identity credentials. Agent reads/writes must not be able to replace
     # this trust decision.

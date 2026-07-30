@@ -4407,8 +4407,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"External systems should POST to this URL with:\n"
             f'  {{"message": "<results>", "sessionKey": "{session_key_safe}", '
             f'"name": "{hook_id_safe}"}}\n'
-            f"Include Authorization: Bearer <webhook_token> header.\n"
-            f"Context summary saved for session resume."
+            f"Auth: Authorization: Bearer <webhook token>. Tokens are created in the\n"
+            f"dashboard under Webhooks (each one is shown once, then stored hashed);\n"
+            f"with no token configured the endpoint refuses every call with 401.\n"
+            f"The call returns 200 immediately and the agent's answer arrives via\n"
+            f"notifications, not in the HTTP response.\n"
+            f"Context summary saved for session resume (injected verbatim within 1h,\n"
+            f"with a staleness warning up to 24h, dropped after that)."
         )
 
     if name == "send_message":

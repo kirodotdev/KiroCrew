@@ -260,7 +260,14 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/computer-use/frame",
         "/api/session-keepalive",
         "/api/session-tool-policy",
-        "/api/hooks/agent",
+        # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
+        # webhook for EXTERNAL callers (CI runners, review bots) that hold no
+        # dashboard cookie and no gateway IPC secret, so a strict-internal entry
+        # denied every real caller with 403 before the handler's own bearer check
+        # ever ran — the webhook token layer was unreachable. It now lives in
+        # token_auth._BYPASS_EXACT alongside /api/messaging/teams: a
+        # self-authenticating external webhook whose handler
+        # (api_hooks_agent -> _verify_hook_token) is the sole auth gate.
         "/api/outbox/notify",
         "/api/notifications/agent",  # MCP-only (send_notification tool); no browser caller
         "/api/slack/upload-file",
@@ -2018,6 +2025,15 @@ async def start_dashboard(
     app.router.add_delete("/api/hooks/{hook_id}", handlers.api_hook_detail)
     app.router.add_post("/api/hooks/{hook_id}/toggle", handlers.api_hook_toggle)
     app.router.add_post("/api/hooks/{hook_id}/test", handlers.api_hook_test)
+
+    # Inbound webhook management (dashboard-authed — the webhook token itself
+    # only ever authenticates POST /api/hooks/agent, never these).
+    app.router.add_get("/api/webhooks", handlers.api_webhooks)
+    app.router.add_post("/api/webhooks/tokens", handlers.api_webhook_token_create)
+    app.router.add_delete("/api/webhooks/tokens/{token_id}", handlers.api_webhook_token_delete)
+    app.router.add_delete("/api/webhooks/contexts/{hook_id}", handlers.api_webhook_context_delete)
+    app.router.add_post("/api/webhooks/test", handlers.api_webhook_test)
+    app.router.add_post("/api/webhooks/switch", handlers.api_webhooks_switch)
 
     # Prompts (Agent SOPs)
     app.router.add_get("/api/prompts", handlers.api_prompts)

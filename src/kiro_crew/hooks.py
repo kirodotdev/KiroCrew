@@ -7,19 +7,22 @@ Supports declarative rules and executable script hooks with timeout/sandboxing.
 from __future__ import annotations
 
 import asyncio
+import copy
 import errno
 import fnmatch
 import json
 import logging
 import os
 import stat as _stat
+import threading
 import time
 import uuid
 from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from kiro_crew import platform_compat, security
+from kiro_crew import platform_compat, security, webhooks
 from kiro_crew.platform import current_context
 from kiro_crew.platform.governance import (
     CU_CLASS_OBSERVE,
@@ -2516,6 +2519,14 @@ class ScriptHookStore:
         self._dir = config_dir or _cfg_dir()
         self._path = self._dir / _HOOKS_FILE
         self._hooks: dict[str, ScriptHook] = {}
+        # Mutations used to be implicitly serialised by running on the single
+        # event-loop thread. They are now offloaded with asyncio.to_thread (the
+        # persistence takes a file lock and fsyncs, which must not block the
+        # loop), so two of them can genuinely interleave: A mutates, B mutates,
+        # B persists, then A persists a snapshot taken BEFORE B's change and
+        # drops it. Re-entrant because the persist path is called from inside
+        # the same held section.
+        self._mutex = threading.RLock()
         self._load()
 
     def _load(self) -> None:
@@ -2530,9 +2541,51 @@ class ScriptHookStore:
             logger.warning("Failed to load hooks: %s", exc)
 
     def _save(self) -> None:
+        self._write_hooks_file([h.to_dict() for h in self._hooks.values()])
+
+    def _write_hooks_file(self, hooks_data: list[dict]) -> None:
+        """Write the ``hooks`` list while PRESERVING every other top-level key.
+
+        ``hooks.json`` is shared: this store owns the ``hooks`` key, but the
+        ``register_hook`` MCP tool stores webhook resume contexts as top-level
+        keys (one per hook id) in the same file. Writing ``{"hooks": [...]}``
+        wholesale used to erase all of them, so any script-hook create / update /
+        toggle / delete silently dropped every pending webhook context. Merge
+        instead of replace.
+
+        An unreadable file ABORTS the write rather than proceeding with "no
+        foreign keys". Continuing was the earlier choice, on the reasoning that
+        the script hooks were still recoverable — but the foreign keys are not:
+        a corrupt read means their contents are unknown, and writing the merged
+        result would replace the file with only what this store happens to hold,
+        permanently erasing every registered webhook context. Refusing leaves
+        both sets on disk for an operator to repair. The caller sees
+        :class:`webhooks.WebhookStoreUnreadable`.
+
+        The read-merge-write runs under the SAME ``hooks.json.lock`` the other
+        writers take, and lands via atomic replace. Merging without the lock
+        still loses data, just through a narrower window: a ``register_hook``
+        call that commits between this read and this write is erased by the
+        stale snapshot.
+        """
         self._dir.mkdir(parents=True, exist_ok=True)
-        data = {"hooks": [h.to_dict() for h in self._hooks.values()]}
-        self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        with webhooks.locked(self._path):
+            data: dict = {}
+            if self._path.exists():
+                try:
+                    loaded = json.loads(self._path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data = {k: v for k, v in loaded.items() if k != "hooks"}
+                except (json.JSONDecodeError, OSError) as exc:
+                    logger.warning(
+                        "hooks.json unreadable, refusing to overwrite it: %s", exc
+                    )
+                    raise webhooks.WebhookStoreUnreadable(
+                        f"{self._path.name} is unreadable; refusing to overwrite it "
+                        "and erase the registered webhook contexts"
+                    ) from exc
+            data["hooks"] = hooks_data
+            webhooks.write_json_atomic(self._path, data)
 
     def list_all(self) -> list[ScriptHook]:
         return list(self._hooks.values())
@@ -2540,43 +2593,70 @@ class ScriptHookStore:
     def get(self, hook_id: str) -> ScriptHook | None:
         return self._hooks.get(hook_id)
 
+    @contextmanager
+    def _atomic_mutation(self):
+        """Undo the in-memory change if persistence fails.
+
+        ``_save`` refuses to overwrite an unreadable ``hooks.json`` rather than
+        erasing the webhook contexts kept in the same file, and the write itself
+        can fail on a full or read-only disk. Every mutation below edits
+        ``self._hooks`` first, so without this the process would keep serving a
+        change that never reached disk — a hook toggled on would keep firing, a
+        deleted one would keep existing — while the API reported 503.
+
+        A deep copy is used because ``update`` and ``toggle`` mutate the stored
+        ``ScriptHook`` in place; a shallow dict copy would share those objects and
+        restore nothing. The set is small (tens of hooks), so the copy is cheap
+        next to the fsync it guards.
+        """
+        snapshot = copy.deepcopy(self._hooks)
+        try:
+            yield
+        except BaseException:
+            self._hooks = snapshot
+            raise
+
     def create(self, data: dict) -> ScriptHook:
         hook = ScriptHook.from_dict(data)
         if not hook.id:
             hook.id = str(uuid.uuid4())[:8]
-        self._hooks[hook.id] = hook
-        self._save()
+        with self._mutex, self._atomic_mutation():
+            self._hooks[hook.id] = hook
+            self._save()
         return hook
 
     def update(self, hook_id: str, data: dict) -> ScriptHook | None:
-        hook = self._hooks.get(hook_id)
-        if not hook:
-            return None
-        if "event" in data and data["event"] not in HOOK_EVENTS:
-            raise ValueError(f"invalid event: {data['event']}")
-        if "timeout" in data:
-            t = data["timeout"]
-            if not isinstance(t, int) or not (1 <= t <= 300):
-                raise ValueError("timeout must be an integer between 1 and 300")
-        for k in ("name", "event", "matcher", "command", "timeout", "enabled"):
-            if k in data:
-                setattr(hook, k, data[k])
-        self._save()
+        with self._mutex, self._atomic_mutation():
+            hook = self._hooks.get(hook_id)
+            if not hook:
+                return None
+            if "event" in data and data["event"] not in HOOK_EVENTS:
+                raise ValueError(f"invalid event: {data['event']}")
+            if "timeout" in data:
+                t = data["timeout"]
+                if not isinstance(t, int) or not (1 <= t <= 300):
+                    raise ValueError("timeout must be an integer between 1 and 300")
+            for k in ("name", "event", "matcher", "command", "timeout", "enabled"):
+                if k in data:
+                    setattr(hook, k, data[k])
+            self._save()
         return hook
 
     def delete(self, hook_id: str) -> bool:
-        if hook_id in self._hooks:
-            del self._hooks[hook_id]
-            self._save()
-            return True
+        with self._mutex, self._atomic_mutation():
+            if hook_id in self._hooks:
+                del self._hooks[hook_id]
+                self._save()
+                return True
         return False
 
     def toggle(self, hook_id: str) -> ScriptHook | None:
-        hook = self._hooks.get(hook_id)
-        if not hook:
-            return None
-        hook.enabled = not hook.enabled
-        self._save()
+        with self._mutex, self._atomic_mutation():
+            hook = self._hooks.get(hook_id)
+            if not hook:
+                return None
+            hook.enabled = not hook.enabled
+            self._save()
         return hook
 
     async def fire(
@@ -2653,15 +2733,40 @@ class ScriptHookStore:
                 result.duration_ms,
                 result.exit_code,
             )
-        hooks_snapshot = [h.to_dict() for h in self._hooks.values()]
-        await asyncio.to_thread(self._save_snapshot, hooks_snapshot)
+        # Snapshot INSIDE the worker under the mutex, not here: capturing on the
+        # loop and persisting later leaves the same interleaving window a
+        # concurrent CRUD mutation could fall into.
+        await asyncio.to_thread(self._persist_current)
         return results
+
+    def _persist_current(self) -> None:
+        """Persist the live hook set, serialised against CRUD mutations.
+
+        This path only records status bookkeeping after a fire; the hook set
+        itself is unchanged. `_save` refuses to write over an unreadable
+        `hooks.json` so it cannot destroy the webhook contexts sharing that
+        file, but that refusal must not propagate here: `fire()` is awaited
+        from the PRE_TOOL_USE path, which turns an exception into a rejected
+        tool call, so a corrupt file would block every tool call in dashboard
+        chat until an operator repaired it. Log and continue instead. The CRUD
+        paths keep failing loud, where losing the write does change the hook set.
+        """
+        with self._mutex:
+            try:
+                self._save()
+            except (webhooks.WebhookStoreUnreadable, OSError) as exc:
+                logger.warning(
+                    "Could not persist hook status bookkeeping: %s. "
+                    "Hook execution continues; %s needs repair before "
+                    "hook edits can be saved.",
+                    exc,
+                    self._path,
+                )
 
     def _save_snapshot(self, hooks_data: list[dict]) -> None:
         """Thread-safe save using pre-captured hook snapshot."""
-        self._dir.mkdir(parents=True, exist_ok=True)
-        data = {"hooks": hooks_data}
-        self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        with self._mutex:
+            self._write_hooks_file(hooks_data)
 
 
 # -- Global script hook store accessor --

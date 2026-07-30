@@ -89,6 +89,8 @@
   "pages.telemetryPanel.startups_recorded",
   "pages.telemetryPanel.turn_faults",
   "pages.telemetryPanel.turns_measured",
+  "pages.webhooksPage.enabled_credentials",
+  "pages.webhooksPage.switched_off_credentials_kept",
   "pages.worldsPage.agent",
   "pages.worldsPage.slot"
 ]

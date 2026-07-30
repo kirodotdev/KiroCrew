@@ -157,6 +157,12 @@ from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
     api_hooks_agent,
     api_hooks_create,
     api_kiro_hooks,
+    api_webhook_context_delete,
+    api_webhook_test,
+    api_webhook_token_create,
+    api_webhook_token_delete,
+    api_webhooks,
+    api_webhooks_switch,
 )
 from kiro_crew.dashboard.handlers.kiro_prerequisite import (  # noqa: E402, F401
     api_kiro_prerequisite_repair_specs,
