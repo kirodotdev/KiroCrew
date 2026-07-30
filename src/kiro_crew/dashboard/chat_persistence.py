@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 from collections import deque
+from collections.abc import Iterator
 
 from kiro_crew import model_registry
 from kiro_crew.agent import KIRO_AGENTS_DIR
@@ -174,39 +175,57 @@ def save_all_slots_to_history(state: DashboardState) -> None:
         logger.debug("Shutdown: open_slots snapshot failed", exc_info=True)
 
 
-def restore_open_slots(state: DashboardState) -> int:
-    """Restore the tabs the user had open at the previous shutdown.
+def _build_kiro_model_map() -> dict[str, str]:
+    """Map kiro-agent name/stem -> configured model, for legacy sessions.
 
-    Reads ``<config_dir>/open_slots.json`` (written by
-    ``DashboardState._persist_open_slots`` on every flush) and rehydrates
-    each listed key from on-disk session metadata so it shows up in the
-    Sessions sidebar exactly as it did before the restart — independent of
-    the ``restore_window_minutes`` mtime cutoff used by
-    ``restore_recent_sessions``.
+    Sessions persisted before ``model`` was written into their metadata resolve
+    their model by agent name instead, so both restore paths need this map.
+    Factored out of ``_rehydrate_slot_from_history`` and
+    ``restore_recent_sessions`` because the former rebuilt it *per restored
+    slot* — re-globbing and re-parsing every agent JSON on each of N tabs to
+    produce a byte-identical dict. Callers restoring many slots should build it
+    once and pass it down (see ``kiro_model_map`` params below).
+    """
+    out: dict[str, str] = {}
+    try:
+        for f in KIRO_AGENTS_DIR.glob("*.json"):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                model = data.get("model", "")
+                if data.get("name"):
+                    out[data["name"]] = model
+                out[f.stem] = model
+            except (json.JSONDecodeError, OSError):
+                continue
+    except Exception:
+        logger.debug("Failed to build kiro model map", exc_info=True)
+    return out
 
-    Path resolves through ``config_dir()`` (honors ``KIROCREW_HOME``) so
-    dev/test instances with non-default homes don't read the production
-    ``~/.kiro/crew`` snapshot.
 
-    Returns the number of slots restored. Missing / malformed file is a
-    no-op (returns 0). Sessions that have been explicitly closed
-    (``meta.closed``) are skipped via _rehydrate_slot_from_history's own
-    guard, so closing a tab and then restarting still loses the tab.
+def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
+    """Drive the open-tab restore one tab at a time, yielding the running count.
+
+    Exposed as a generator so the same logic serves both a plain synchronous
+    caller (:func:`restore_open_slots`) and an event-loop-friendly one
+    (:func:`restore_open_slots_async`) that awaits between tabs. See
+    :func:`restore_open_slots` for the behavioural contract.
     """
     if not state.conversation_log:
-        return 0
+        return
     path = config_dir() / "open_slots.json"
     if not path.exists():
-        return 0
+        return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         logger.debug("open_slots.json unreadable; skipping", exc_info=True)
-        return 0
+        return
     keys = data.get("keys") if isinstance(data, dict) else None
     if not isinstance(keys, list):
-        return 0
+        return
     restored = 0
+    # Built once and shared across every tab — it is identical per slot.
+    kiro_model_map = _build_kiro_model_map()
     for raw in keys:
         if not isinstance(raw, str) or not raw:
             continue
@@ -231,7 +250,7 @@ def restore_open_slots(state: DashboardState) -> int:
         if raw in state._slots:
             continue
         try:
-            slot = _rehydrate_slot_from_history(state, raw)
+            slot = _rehydrate_slot_from_history(state, raw, kiro_model_map=kiro_model_map)
         except Exception:
             logger.debug("restore_open_slots: rehydrate failed for %s", raw, exc_info=True)
             # Roll back any partial slot leaked by _rehydrate_slot_from_history.
@@ -253,8 +272,72 @@ def restore_open_slots(state: DashboardState) -> int:
             continue
         if slot is not None:
             restored += 1
+        # One yield point per tab. The async driver turns this into a real event-loop
+        # yield; the sync driver just spins through it.
+        yield restored
     if restored:
         logger.info("Restored %d open tab(s) from open_slots.json", restored)
+
+
+def restore_open_slots(state: DashboardState) -> int:
+    """Restore the tabs the user had open at the previous shutdown.
+
+    Reads ``<config_dir>/open_slots.json`` (written by
+    ``DashboardState._persist_open_slots`` on every flush) and rehydrates
+    each listed key from on-disk session metadata so it shows up in the
+    Sessions sidebar exactly as it did before the restart — independent of
+    the ``restore_window_minutes`` mtime cutoff used by
+    ``restore_recent_sessions``.
+
+    Path resolves through ``config_dir()`` (honors ``KIROCREW_HOME``) so
+    dev/test instances with non-default homes don't read the production
+    ``~/.kiro/crew`` snapshot.
+
+    Returns the number of slots restored. Missing / malformed file is a
+    no-op (returns 0). Sessions that have been explicitly closed
+    (``meta.closed``) are skipped via _rehydrate_slot_from_history's own
+    guard, so closing a tab and then restarting still loses the tab.
+
+    Blocking: restores every tab without yielding. Startup on the event loop must
+    use :func:`restore_open_slots_async` instead — see the note there.
+    """
+    restored = 0
+    for restored in _restore_open_slots_steps(state):
+        pass
+    return restored
+
+
+async def restore_open_slots_async(state: DashboardState) -> int:
+    """:func:`restore_open_slots`, yielding to the event loop between tabs.
+
+    Restoring a tab reads and redacts a transcript, so a user with many large
+    tabs can spend tens of seconds in here. Doing that synchronously monopolizes
+    the event loop — and because ``_loop_heartbeat`` pets the
+    ``LoopStallWatchdog`` *from a coroutine*, a blocked loop cannot pet it. The
+    watchdog's 25s ``exit_after`` timer then fires, dumps thread stacks and
+    ``_exit``s the gateway, which is exactly the observed startup crash-loop: the
+    app never finished booting. Yielding per tab lets the heartbeat run, so a slow
+    restore degrades into "the sidebar fills in progressively" rather than "the
+    gateway dies".
+
+    Stays ON the loop rather than moving to a worker thread because creating a
+    slot broadcasts via ``asyncio.Queue.put_nowait`` / ``asyncio.Event.set``,
+    neither of which is thread-safe.
+
+    Because we now yield, the 5s periodic flush (already running by this point)
+    can interleave — so ``restoring_open_slots`` is held for the duration to stop
+    it snapshotting a half-restored slot set over open_slots.json.
+    """
+    restored = 0
+    state.restoring_open_slots = True
+    try:
+        for restored in _restore_open_slots_steps(state):
+            # sleep(0) yields to the ready queue without adding wall-clock delay.
+            await asyncio.sleep(0)
+    finally:
+        # Always clear, even if a rehydrate raises — a stuck flag would silently
+        # disable open-tab persistence for the rest of the process's life.
+        state.restoring_open_slots = False
     return restored
 
 
@@ -272,8 +355,17 @@ def _attach_variants(slot: _ChatSlot, m: dict) -> None:
         slot.messages[-1]["variant_idx"] = m.get("variant_idx", 0)
 
 
-def _rehydrate_slot_from_history(state: DashboardState, slot_name: str) -> _ChatSlot | None:
+def _rehydrate_slot_from_history(
+    state: DashboardState,
+    slot_name: str,
+    *,
+    kiro_model_map: dict[str, str] | None = None,
+) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
+
+    *kiro_model_map* lets a bulk caller build the agent→model map once and share
+    it across every slot instead of paying a fresh directory glob + JSON parse
+    per tab; omit it and one is built on demand for single-slot callers.
 
     Unlike ``state.get_or_create_slot`` (which creates a fresh, empty slot with
     default ``memory_mode='persistent'``), this helper reads the session's
@@ -306,39 +398,38 @@ def _rehydrate_slot_from_history(state: DashboardState, slot_name: str) -> _Chat
         _restore_cfg = KiroCrewConfig.load()
     except Exception:
         _restore_cfg = None
-    # Build the same kiro-agent model map as restore_recent_sessions so
-    # legacy sessions without persisted `model` still resolve correctly.
-    kiro_model_map: dict[str, str] = {}
-    try:
-        for f in KIRO_AGENTS_DIR.glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                model = data.get("model", "")
-                if data.get("name"):
-                    kiro_model_map[data["name"]] = model
-                kiro_model_map[f.stem] = model
-            except (json.JSONDecodeError, OSError):
-                continue
-    except Exception:
-        logger.debug("Failed to build kiro model map", exc_info=True)
+    # Same kiro-agent model map as restore_recent_sessions so legacy sessions
+    # without a persisted `model` still resolve correctly. Reuse the caller's
+    # when bulk-restoring — it is identical for every slot.
+    if kiro_model_map is None:
+        kiro_model_map = _build_kiro_model_map()
     slot = state.get_or_create_slot(slot_name, app=meta.get("app", ""))
-    # Pull display fields from session listing for title parity with bulk restore.
-    sessions = state.conversation_log.list_sessions()
-    session_info = next(
-        (s for s in sessions if s.get("key") == history_key),
-        {},
-    )
+    # Title comes from the metadata line we already read above. We deliberately
+    # do NOT consult ``list_sessions()`` here: that call globbed + stat'd + read
+    # the first line of EVERY session file in the history dir (O(all sessions))
+    # to look up one title, and it ran once per restored slot — so a boot with N
+    # open tabs did N full directory scans. With 77 tabs over 455 session files
+    # that measured ~13s of pure event-loop block, which alone can trip the
+    # 25s LoopStallWatchdog and crash-loop the gateway before it ever serves.
+    #
+    # It was also dead code: ``list_sessions()`` keys are FILENAME STEMS
+    # (``dashboard_chat-1-...``, because history's ``_safe_key()`` folds ``:``
+    # to ``_``), while ``history_key`` here is the canonical colon form
+    # (``dashboard:chat-1-...``). The two never compared equal, so the lookup
+    # always yielded ``{}`` and the title always fell through to ``meta``.
+    # Dropping it is therefore behaviour-identical as well as O(N) cheaper.
+    #
     # Titles may have been auto-generated by an LLM (_generate_title_via_kiro)
     # and are surfaced on the dashboard, so apply the same redaction passes
     # used on assistant content before setting. Defence-in-depth — the title
     # author is trusted-ish (our own kiro process), but the generation input
     # is user content, so a prompt injection could craft a title with an
     # exfiltration URL or leaked credential.
-    raw_title = session_info.get("title") or meta.get("title") or slot_name
+    raw_title = meta.get("title") or slot_name
     raw_title, _ = redact_exfiltration_urls(raw_title)
     raw_title, _ = redact_credentials(raw_title)
     slot.title = raw_title
-    slot._titled = bool(session_info.get("title") or meta.get("title"))
+    slot._titled = bool(meta.get("title"))
     if meta.get("created_at"):
         slot.created_at = meta["created_at"]
     if meta.get("agent"):
@@ -446,29 +537,22 @@ def _rehydrate_slot_from_history(state: DashboardState, slot_name: str) -> _Chat
     return slot
 
 
-def restore_recent_sessions(
+def _restore_recent_sessions_steps(
     state: DashboardState, window_minutes: int = 30, *, folders_only: bool = False
-) -> int:
-    """Restore sessions as chat slots."""
+) -> "Iterator[int]":
+    """Drive :func:`restore_recent_sessions` one session at a time.
+
+    Generator for the same reason as :func:`_restore_open_slots_steps`: it lets
+    the startup path yield to the event loop between sessions. This path restores
+    every folder'd/pinned session regardless of the mtime window, so it can be
+    just as slow as the open-tab restore — measured at 13.6s for 76 sessions.
+    """
     if not state.conversation_log:
-        return 0
+        return
     cutoff = time.time() - (window_minutes * 60) if window_minutes > 0 else None
     restored = 0
 
-    kiro_model_map: dict[str, str] = {}
-    try:
-
-        for f in KIRO_AGENTS_DIR.glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                model = data.get("model", "")
-                if data.get("name"):
-                    kiro_model_map[data["name"]] = model
-                kiro_model_map[f.stem] = model
-            except (json.JSONDecodeError, OSError):
-                continue
-    except Exception:
-        logger.debug("Failed to build kiro model map", exc_info=True)
+    kiro_model_map = _build_kiro_model_map()
     try:
         _restore_cfg = KiroCrewConfig.load()
     except Exception:
@@ -595,7 +679,45 @@ def restore_recent_sessions(
         slot._dirty = False
         restored += 1
         logger.info("Restored session %s (%s)", slot_name, slot.title)
+        # One yield point per restored session (see _restore_open_slots_steps).
+        yield restored
     _sync_dashboard_slots(state)
+
+
+def restore_recent_sessions(
+    state: DashboardState, window_minutes: int = 30, *, folders_only: bool = False
+) -> int:
+    """Restore sessions as chat slots.
+
+    Blocking: see :func:`restore_recent_sessions_async` for the startup path.
+    """
+    restored = 0
+    for restored in _restore_recent_sessions_steps(
+        state, window_minutes, folders_only=folders_only
+    ):
+        pass
+    return restored
+
+
+async def restore_recent_sessions_async(
+    state: DashboardState, window_minutes: int = 30, *, folders_only: bool = False
+) -> int:
+    """:func:`restore_recent_sessions`, yielding to the event loop per session.
+
+    Same rationale as :func:`restore_open_slots_async` — keeps the stall-watchdog
+    heartbeat alive while a large restore proceeds, and holds
+    ``restoring_open_slots`` so an interleaved flush cannot snapshot a partial
+    slot set (this path adds slots to the same sidebar).
+    """
+    restored = 0
+    state.restoring_open_slots = True
+    try:
+        for restored in _restore_recent_sessions_steps(
+            state, window_minutes, folders_only=folders_only
+        ):
+            await asyncio.sleep(0)
+    finally:
+        state.restoring_open_slots = False
     return restored
 
 

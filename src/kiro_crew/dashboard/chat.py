@@ -88,7 +88,9 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _rehydrate_slot_from_history,
     _save_slot_to_history,
     restore_open_slots,
+    restore_open_slots_async,
     restore_recent_sessions,
+    restore_recent_sessions_async,
     save_all_slots_to_history,
 )
 from kiro_crew.dashboard.chat_regenerate import (  # noqa: F401

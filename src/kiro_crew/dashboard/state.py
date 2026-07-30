@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import json
 import logging
 import math
@@ -13,7 +14,7 @@ import tempfile
 import time
 import traceback
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -1575,6 +1576,17 @@ class _ChatSlot:
 class DashboardState:
     """Shared state injected into all handlers via ``app["state"]``."""
 
+    # Class-level defaults, NOT just __init__ assignments. push_slots_update and
+    # _persist_open_slots read these on every call, and a partially-constructed
+    # state built with DashboardState.__new__(DashboardState) — the pattern used
+    # by several endpoint test suites, which set only the attributes the handler
+    # under test touches — never runs __init__. Without a class default those
+    # reads raise AttributeError. __init__ still assigns per-instance values
+    # below; these only supply the "nothing suspended, not restoring" baseline.
+    _slots_push_suspend: int = 0
+    _slots_push_pending: bool = False
+    restoring_open_slots: bool = False
+
     def __init__(
         self,
         sessions: SessionManager,
@@ -1693,6 +1705,14 @@ class DashboardState:
         # Broadcast: each SSE client gets its own queue; _notify_event wakes all
         self._sse_queues: list[asyncio.Queue[dict[str, Any]]] = []
         self._notify_event = asyncio.Event()
+        # Depth + pending flag for suspend_slots_push(); see that method.
+        self._slots_push_suspend = 0
+        self._slots_push_pending = False
+        # True while the startup open-tab restore is in flight. Suppresses the
+        # open_slots.json snapshot so a periodic flush cannot overwrite the file
+        # being restored from with a half-populated slot set — see
+        # _persist_open_slots.
+        self.restoring_open_slots = False
         self._notification_log: list[dict[str, Any]] = _load_notifications()
         self._unread_count: int = 0
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
@@ -2265,7 +2285,18 @@ class DashboardState:
         Failures are logged at debug level — losing the snapshot only
         degrades restore behaviour back to the legacy 30-min mtime window,
         it never breaks the gateway.
+
+        NO-OP while ``restoring_open_slots`` is set. The startup restore yields to
+        the event loop between tabs, and ``start_flush_loop()`` is already running
+        by then (every 5s), so without this guard a flush lands mid-restore and
+        snapshots a PARTIAL slot set over the very file being restored from —
+        measured 77 tabs collapsing to 70. A kill in that window would drop the
+        un-restored tabs from the sidebar permanently. Whatever is on disk is
+        already the authoritative set we are loading, so skipping is always safe.
         """
+        if self.restoring_open_slots:
+            logger.debug("open_slots snapshot skipped: restore in progress")
+            return
         try:
             path = config_dir() / "open_slots.json"
             # Only snapshot persistent-memory slots. Incognito/temporary tabs
@@ -3088,11 +3119,39 @@ class DashboardState:
             out.append(d)
         return out
 
+    @contextlib.contextmanager
+    def suspend_slots_push(self) -> "Iterator[None]":
+        """Coalesce every ``push_slots_update()`` inside the block into one at exit.
+
+        ``get_or_create_slot`` broadcasts the FULL slot list on each call, so a bulk
+        restore of N tabs serializes 1+2+…+N slots — O(N²) ``to_dict``/redaction
+        work for intermediate states no client will ever render (measured ~1.3s at
+        N=77, and it grows quadratically). Wrap the restore, emit one broadcast.
+
+        Depth-counted so nested use is safe (an inner block must not flush early),
+        and ``@contextmanager``'s try/finally unwinds the depth even if the body
+        raises. Only flushes if something actually asked to push.
+        """
+        self._slots_push_suspend += 1
+        try:
+            yield
+        finally:
+            self._slots_push_suspend -= 1
+            if self._slots_push_suspend == 0 and self._slots_push_pending:
+                self._slots_push_pending = False
+                self.push_slots_update()
+
     def push_slots_update(self) -> None:
         """Push slots, keeping provider status confined to owner websockets."""
         from kiro_crew.dashboard.handlers.source_providers import (
             gitlab_hosts_generation,
         )
+
+        if self._slots_push_suspend:
+            # Inside suspend_slots_push(); remember that a push is owed and let the
+            # outermost block emit a single coalesced broadcast on exit.
+            self._slots_push_pending = True
+            return
 
         yolo_active = self.is_yolo_active()  # expire first if needed
         slots_data = self.serialize_slots()

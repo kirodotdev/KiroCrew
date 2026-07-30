@@ -2615,20 +2615,32 @@ async def start_dashboard(
     # fall off into History on every gateway restart. Closed tabs (meta.closed)
     # are still excluded by the rehydrate guard. restore_open_slots() logs
     # its own info line on success, so no caller-side log here.
-    chat.restore_open_slots(state)
-    restored = chat.restore_recent_sessions(
-        state,
-        cfg.dashboard.restore_window_minutes if cfg.dashboard.restore_sessions else 0,
-        folders_only=not cfg.dashboard.restore_sessions,
-    )
-    if restored:
-        logger.info("Restored %d session(s)", restored)
+    # Awaited (not called bare) so the restore yields to the loop between tabs and
+    # the stall watchdog keeps getting its heartbeat — a user with many large tabs
+    # used to block here long enough to trip the 25s watchdog and crash-loop the
+    # gateway before it finished starting.
+    #
+    # Both restores run inside suspend_slots_push() so the per-slot broadcasts
+    # coalesce into one at the end: get_or_create_slot() pushes the whole slot list
+    # on every call, which made bulk restore O(N²) in serialization work for
+    # intermediate states no client renders. Reseeding happens inside the block too
+    # — it must complete before the single broadcast so clients never see slots
+    # under a counter that could still re-mint a colliding index.
+    with state.suspend_slots_push():
+        await chat.restore_open_slots_async(state)
+        restored = await chat.restore_recent_sessions_async(
+            state,
+            cfg.dashboard.restore_window_minutes if cfg.dashboard.restore_sessions else 0,
+            folders_only=not cfg.dashboard.restore_sessions,
+        )
+        if restored:
+            logger.info("Restored %d session(s)", restored)
 
-    # Both restore paths above rehydrate tabs under their original
-    # "chat-<N>-<ts>" keys but leave _slot_counter at its boot value of 0.
-    # Reseed it past the highest restored index so the next new chat can't
-    # re-mint a colliding low index (which scrambles the tab -> session map).
-    state.reseed_slot_counter()
+        # Both restore paths above rehydrate tabs under their original
+        # "chat-<N>-<ts>" keys but leave _slot_counter at its boot value of 0.
+        # Reseed it past the highest restored index so the next new chat can't
+        # re-mint a colliding low index (which scrambles the tab -> session map).
+        state.reseed_slot_counter()
 
     # Surface conversations started on Slack/Discord/Teams (etc.) in the chat
     # list. These persist under channel-namespaced keys (``slack:<ts>``), which
