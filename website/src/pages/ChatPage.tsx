@@ -148,6 +148,7 @@ import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
 import StopEventCard from './chat/StopEventCard'
 import NudgeCard, { nudgeMatchesLoop } from './chat/NudgeCard'
+import RecoveryCard, { parseRecoveryMessage } from './chat/RecoveryCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
@@ -3549,6 +3550,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       return <NudgeCard key={key} message={m} onOpenLoop={ownLoop ? () => setAutoNudgeOpen(true) : undefined} />
     }
     if (m.kind === 'stop_event' || m.meta?.kind === 'stop_event') return <StopEventCard key={m.meta?.id as string ?? key} message={m} />
+    // A synthetic turn-recovery continuation (tool refusal / stalled turn /
+    // stalled tool) is machine-facing instruction text. It stays in the
+    // transcript for auditability, but as a one-line card that names the event
+    // and the deny pattern rather than a full-width bubble of prompt prose.
+    if (m.role === 'inject') {
+      const recovery = parseRecoveryMessage(m.content)
+      if (recovery) return <RecoveryCard key={key} parsed={recovery} />
+    }
     if (m.role === 'error') return <div key={key} className="bg-danger-subtle text-danger text-[13px] px-3 py-2 rounded-md border border-danger/15 self-center animate-scale-in">{m.content}</div>
     if (m.role === 'notice') return <div key={key} className="bg-card text-muted text-[13px] px-3 py-2 rounded-md border border-border self-center animate-scale-in">{m.content}</div>
     if (m.role === 'permission') return null

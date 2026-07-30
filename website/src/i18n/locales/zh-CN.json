@@ -2632,6 +2632,16 @@
       "nudgeCard": {
         "loop": "循环"
       },
+      "recoveryCard": {
+        "tool_call_blocked": "工具调用被阻止",
+        "n_tool_calls_blocked": "{{count}} 个工具调用被阻止",
+        "safety_policy_continuing": "安全策略 · 正在自动继续",
+        "n_patterns": "{{count}} 条规则",
+        "turn_stalled": "回合停滞",
+        "recovered_continuing": "已恢复 · 继续中",
+        "tool_stopped_responding": "工具停止响应",
+        "cancelled_continuing": "已取消 · 继续中"
+      },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "在“显示”设置中更改你的配色方案",
         "no_color": "无颜色",

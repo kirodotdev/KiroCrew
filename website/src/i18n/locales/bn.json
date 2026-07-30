@@ -2665,6 +2665,16 @@
       "nudgeCard": {
         "loop": "লুপ"
       },
+      "recoveryCard": {
+        "tool_call_blocked": "টুল কল ব্লক করা হয়েছে",
+        "n_tool_calls_blocked": "{{count}}টি টুল কল ব্লক করা হয়েছে",
+        "safety_policy_continuing": "নিরাপত্তা নীতি · স্বয়ংক্রিয়ভাবে চলছে",
+        "n_patterns": "{{count}}টি প্যাটার্ন",
+        "turn_stalled": "টার্ন থেমে গেছে",
+        "recovered_continuing": "পুনরুদ্ধার হয়েছে · চলছে",
+        "tool_stopped_responding": "টুল সাড়া দেওয়া বন্ধ করেছে",
+        "cancelled_continuing": "বাতিল · চলছে"
+      },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "ডিসপ্লে সেটিংসে আপনার রঙের প্যালেট পরিবর্তন করুন",
         "no_color": "কোনো রঙ নেই",

@@ -2641,6 +2641,16 @@
       "nudgeCard": {
         "loop": "Loop"
       },
+      "recoveryCard": {
+        "tool_call_blocked": "Tool call blocked",
+        "n_tool_calls_blocked": "{{count}} tool calls blocked",
+        "safety_policy_continuing": "safety policy · continuing automatically",
+        "n_patterns": "{{count}} patterns",
+        "turn_stalled": "Turn stalled",
+        "recovered_continuing": "recovered · continuing",
+        "tool_stopped_responding": "Tool stopped responding",
+        "cancelled_continuing": "cancelled · continuing"
+      },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Change your color palette in Display settings",
         "no_color": "No color",

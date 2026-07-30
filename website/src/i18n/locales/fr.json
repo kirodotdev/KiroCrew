@@ -2698,6 +2698,16 @@
       "nudgeCard": {
         "loop": "Boucle"
       },
+      "recoveryCard": {
+        "tool_call_blocked": "Appel d'outil bloqué",
+        "n_tool_calls_blocked": "{{count}} appels d'outil bloqués",
+        "safety_policy_continuing": "politique de sécurité · poursuite automatique",
+        "n_patterns": "{{count}} motifs",
+        "turn_stalled": "Tour bloqué",
+        "recovered_continuing": "récupéré · poursuite",
+        "tool_stopped_responding": "L'outil ne répond plus",
+        "cancelled_continuing": "annulé · poursuite"
+      },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Modifiez votre palette de couleurs dans les paramètres d'affichage",
         "no_color": "Aucune couleur",

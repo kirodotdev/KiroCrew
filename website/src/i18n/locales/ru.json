@@ -2731,6 +2731,16 @@
       "nudgeCard": {
         "loop": "Цикл"
       },
+      "recoveryCard": {
+        "tool_call_blocked": "Вызов инструмента заблокирован",
+        "n_tool_calls_blocked": "Заблокировано вызовов инструментов: {{count}}",
+        "safety_policy_continuing": "политика безопасности · продолжение автоматически",
+        "n_patterns": "шаблонов: {{count}}",
+        "turn_stalled": "Ход застопорился",
+        "recovered_continuing": "восстановлено · продолжение",
+        "tool_stopped_responding": "Инструмент перестал отвечать",
+        "cancelled_continuing": "отменено · продолжение"
+      },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Измените цветовую палитру в настройках отображения",
         "no_color": "Без цвета",
