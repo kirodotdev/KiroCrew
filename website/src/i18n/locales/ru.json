@@ -5666,6 +5666,26 @@
         "generate_now": "Создать сейчас",
         "generating": "Создание..."
       },
+      "exclusionsDisclosure": {
+        "any_folder_whose_name_starts_with_a_dot_is_skipp": "Любая папка, имя которой начинается с точки, полностью пропускается на любом уровне вложенности.",
+        "anything_else_in_the_folder_is_ignored_including": "Всё остальное в папке игнорируется, включая изображения, архивы и двоичные файлы.",
+        "credential_paths": "Пути к учётным данным",
+        "dependency_build_and_version_control_directories": "Каталоги зависимостей, сборки и системы контроля версий. Пересборка перезаписывает тысячи файлов сразу, что заблокировало бы индексацию.",
+        "file_limit": "Ограничение по файлам",
+        "files": "файлов",
+        "files_resolving_inside_protected_locations_such": "Файлы, ведущие в защищённые расположения, такие как каталоги учётных данных SSH или облака, отклоняются.",
+        "files_with_no_extension_at_all_are_also_read_as": "Файлы вообще без расширения также читаются как обычный текст.",
+        "hidden_folders": "Скрытые папки",
+        "matched_against_the_filename_case_insensitively": "Сопоставляются с именем файла без учёта регистра.",
+        "never_scanned_folders": "Никогда не сканируемые папки",
+        "only_these_file_types_are_read": "Читаются только эти типы файлов",
+        "skipped_for_specific_source_types_only": "Пропускаются только для определённых типов источников.",
+        "system_and_temporary_files": "Системные и временные файлы",
+        "the_newest_files_up_to_this_limit_are_indexed_ol": "Индексируются самые новые файлы в пределах этого ограничения; более старые сверх него пропускаются.",
+        "these_rules_always_apply_and_are_not_configurabl": "Эти правила действуют всегда и не настраиваются. Используйте поле шаблонов исключения, чтобы пропустить больше.",
+        "vault_metadata": "Метаданные хранилища",
+        "what_gets_skipped_automatically": "Что пропускается автоматически"
+      },
       "index": {
         "all_namespaces": "Все пространства имён",
         "all_statuses": "Все статусы",

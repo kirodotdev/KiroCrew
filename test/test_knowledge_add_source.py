@@ -15,6 +15,7 @@ from kiro_crew.dashboard.handlers.knowledge import (
     _run_folder_dialog,
     add_source,
     get_config,
+    get_exclusions,
     pick_folder,
 )
 from kiro_crew.knowledge.store import KnowledgeStore
@@ -198,6 +199,7 @@ def _make_pick_app(store, local_only=True):
     app["local_only"] = local_only
     app.router.add_post("/api/knowledge/pick-folder", pick_folder)
     app.router.add_get("/api/knowledge/config", get_config)
+    app.router.add_get("/api/knowledge/exclusions", get_exclusions)
     return app
 
 
@@ -303,3 +305,88 @@ class TestConfigFolderPickerFlag:
         async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
             resp = await client.get("/api/knowledge/config")
             assert (await resp.json())["folder_picker"] is False
+
+
+class TestExclusionsEndpoint:
+    """GET /api/knowledge/exclusions -- the read-only "what gets skipped" report.
+
+    The point of these tests is drift: the endpoint exists so users can SEE what
+    the scanner silently drops, which is only useful if it reflects the constants
+    ``_walk`` actually consults. Each test therefore compares the response against
+    the live constant rather than a hardcoded copy.
+    """
+
+    @staticmethod
+    def _rule(payload, rule_id):
+        return next(r for r in payload["rules"] if r["id"] == rule_id)
+
+    @pytest.mark.asyncio
+    async def test_reports_every_rule_group(self, store):
+        async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
+            resp = await client.get("/api/knowledge/exclusions")
+            assert resp.status == 200
+            ids = [r["id"] for r in (await resp.json())["rules"]]
+        assert ids == [
+            "hidden_dirs", "hard_skip_dirs", "source_type_dirs", "junk_files",
+            "extension_allowlist", "sensitive_paths", "file_cap",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_entries_track_the_live_constants(self, store):
+        from kiro_crew.knowledge.folder_watcher import (
+            DEFAULT_IGNORE_GLOBS,
+            DEFAULT_MAX_FILES,
+            HARD_SKIP_DIRS,
+            SOURCE_TYPE_SKIP_DIRS,
+        )
+        from kiro_crew.knowledge.readers import FileReader
+
+        async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
+            payload = await (await client.get("/api/knowledge/exclusions")).json()
+
+        assert self._rule(payload, "hard_skip_dirs")["entries"] == sorted(HARD_SKIP_DIRS)
+        assert self._rule(payload, "junk_files")["entries"] == list(DEFAULT_IGNORE_GLOBS)
+        assert self._rule(payload, "file_cap")["value"] == DEFAULT_MAX_FILES
+        assert self._rule(payload, "source_type_dirs")["entries_by_source_type"] == {
+            stype: sorted(dirs) for stype, dirs in sorted(SOURCE_TYPE_SKIP_DIRS.items())
+        }
+        allowlist = self._rule(payload, "extension_allowlist")
+        assert allowlist["entries"] == sorted(FileReader.SUPPORTED - {''})
+        assert allowlist["accepts_no_extension"] == ('' in FileReader.SUPPORTED)
+
+    @pytest.mark.asyncio
+    async def test_extension_allowlist_omits_the_empty_suffix(self, store):
+        """'' is a real allowlist member (Makefile, LICENSE) but not an extension.
+
+        It is surfaced as the ``accepts_no_extension`` boolean instead, mirroring
+        ``get_config``; leaking a bare '' into the chip list would render blank.
+        """
+        async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
+            payload = await (await client.get("/api/knowledge/exclusions")).json()
+        allowlist = self._rule(payload, "extension_allowlist")
+        assert '' not in allowlist["entries"]
+        assert allowlist["accepts_no_extension"] is True
+
+    @pytest.mark.asyncio
+    async def test_every_rule_carries_an_entries_list(self, store):
+        """The frontend maps over ``entries`` unconditionally, so it is never absent."""
+        async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
+            payload = await (await client.get("/api/knowledge/exclusions")).json()
+        for rule in payload["rules"]:
+            assert isinstance(rule["entries"], list), rule["id"]
+            assert rule["kind"]
+
+    @pytest.mark.asyncio
+    async def test_does_not_claim_dotfiles_are_excluded(self, store):
+        """Regression guard for an honesty bug.
+
+        The hidden-directory prune applies to ``dirnames`` only, and '' is in the
+        extension allowlist, so a project-local ``.env`` IS currently discovered
+        and ingested. This endpoint must not imply otherwise -- if ``.env`` ever
+        appears here, the scanner must actually skip it first.
+        """
+        async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
+            resp = await client.get("/api/knowledge/exclusions")
+            assert resp.status == 200, "assert below is vacuous on a non-200"
+            body = await resp.text()
+        assert ".env" not in body

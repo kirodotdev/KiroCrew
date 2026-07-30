@@ -5526,6 +5526,26 @@
         "generate_now": "Jetzt generieren",
         "generating": "Wird generiert…"
       },
+      "exclusionsDisclosure": {
+        "any_folder_whose_name_starts_with_a_dot_is_skipp": "Jeder Ordner, dessen Name mit einem Punkt beginnt, wird in jeder Ebene vollständig übersprungen.",
+        "anything_else_in_the_folder_is_ignored_including": "Alles andere im Ordner wird ignoriert, einschließlich Bilder, Archive und Binärdateien.",
+        "credential_paths": "Anmeldedaten-Pfade",
+        "dependency_build_and_version_control_directories": "Abhängigkeits-, Build- und Versionskontroll-Verzeichnisse. Ein Rebuild schreibt Tausende Dateien gleichzeitig neu, was die Indizierung blockieren würde.",
+        "file_limit": "Dateilimit",
+        "files": "Dateien",
+        "files_resolving_inside_protected_locations_such": "Dateien, die in geschützten Verzeichnissen wie SSH- oder Cloud-Anmeldedaten liegen, werden abgelehnt.",
+        "files_with_no_extension_at_all_are_also_read_as": "Dateien ganz ohne Erweiterung werden ebenfalls als Klartext gelesen.",
+        "hidden_folders": "Versteckte Ordner",
+        "matched_against_the_filename_case_insensitively": "Abgleich mit dem Dateinamen, ohne Beachtung der Groß-/Kleinschreibung.",
+        "never_scanned_folders": "Nie gescannte Ordner",
+        "only_these_file_types_are_read": "Nur diese Dateitypen werden gelesen",
+        "skipped_for_specific_source_types_only": "Nur für bestimmte Quelltypen übersprungen.",
+        "system_and_temporary_files": "System- und temporäre Dateien",
+        "the_newest_files_up_to_this_limit_are_indexed_ol": "Die neuesten Dateien bis zu diesem Limit werden indiziert; ältere darüber hinaus werden übersprungen.",
+        "these_rules_always_apply_and_are_not_configurabl": "Diese Regeln gelten immer und sind nicht konfigurierbar. Nutze das Feld für Ignoriermuster, um mehr auszuschließen.",
+        "vault_metadata": "Vault-Metadaten",
+        "what_gets_skipped_automatically": "Was automatisch übersprungen wird"
+      },
       "index": {
         "all_namespaces": "Alle Namespaces",
         "all_statuses": "Alle Status",

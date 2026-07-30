@@ -5526,6 +5526,26 @@
         "generate_now": "अभी बनाएँ",
         "generating": "बनाया जा रहा है…"
       },
+      "exclusionsDisclosure": {
+        "any_folder_whose_name_starts_with_a_dot_is_skipp": "जिस भी फ़ोल्डर का नाम डॉट से शुरू होता है, उसे किसी भी गहराई पर पूरी तरह छोड़ दिया जाता है।",
+        "anything_else_in_the_folder_is_ignored_including": "फ़ोल्डर में बाकी सब कुछ अनदेखा किया जाता है, जिसमें चित्र, आर्काइव और बाइनरी शामिल हैं।",
+        "credential_paths": "क्रेडेंशियल पथ",
+        "dependency_build_and_version_control_directories": "डिपेंडेंसी, बिल्ड और वर्शन-कंट्रोल डायरेक्टरी। रीबिल्ड एक बार में हज़ारों फ़ाइलें दोबारा लिखता है, जिससे इंडेक्सिंग रुक जाएगी।",
+        "file_limit": "फ़ाइल सीमा",
+        "files": "फ़ाइलें",
+        "files_resolving_inside_protected_locations_such": "SSH या क्लाउड क्रेडेंशियल डायरेक्टरी जैसी सुरक्षित जगहों में हल होने वाली फ़ाइलें अस्वीकार कर दी जाती हैं।",
+        "files_with_no_extension_at_all_are_also_read_as": "बिना किसी एक्सटेंशन वाली फ़ाइलें भी सादे टेक्स्ट के रूप में पढ़ी जाती हैं।",
+        "hidden_folders": "छिपे हुए फ़ोल्डर",
+        "matched_against_the_filename_case_insensitively": "फ़ाइल नाम से मिलान किया जाता है, बड़े-छोटे अक्षरों का भेद किए बिना।",
+        "never_scanned_folders": "कभी स्कैन न होने वाले फ़ोल्डर",
+        "only_these_file_types_are_read": "केवल ये फ़ाइल प्रकार पढ़े जाते हैं",
+        "skipped_for_specific_source_types_only": "केवल विशिष्ट स्रोत प्रकारों के लिए छोड़े जाते हैं।",
+        "system_and_temporary_files": "सिस्टम और अस्थायी फ़ाइलें",
+        "the_newest_files_up_to_this_limit_are_indexed_ol": "इस सीमा तक की नवीनतम फ़ाइलें इंडेक्स होती हैं; इससे अधिक पुरानी फ़ाइलें छोड़ दी जाती हैं।",
+        "these_rules_always_apply_and_are_not_configurabl": "ये नियम सदैव लागू होते हैं और कॉन्फ़िगर नहीं किए जा सकते। अधिक छोड़ने के लिए इग्नोर पैटर्न फ़ील्ड का उपयोग करें।",
+        "vault_metadata": "वॉल्ट मेटाडेटा",
+        "what_gets_skipped_automatically": "स्वचालित रूप से क्या छोड़ा जाता है"
+      },
       "index": {
         "all_namespaces": "सभी नेमस्पेस",
         "all_statuses": "सभी स्थितियां",

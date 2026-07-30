@@ -3742,6 +3742,26 @@
         "smart_search_active": "Smart Search active",
         "smart_search_unavailable_embedding_model_is_down": "Smart Search unavailable — embedding model is downloading in the background."
       },
+      "exclusionsDisclosure": {
+        "any_folder_whose_name_starts_with_a_dot_is_skipp": "Any folder whose name starts with a dot is skipped entirely, at any depth.",
+        "anything_else_in_the_folder_is_ignored_including": "Anything else in the folder is ignored, including images, archives and binaries.",
+        "credential_paths": "Credential paths",
+        "dependency_build_and_version_control_directories": "Dependency, build and version-control directories. A rebuild rewrites thousands of files at once, which would stall indexing.",
+        "file_limit": "File limit",
+        "files": "files",
+        "files_resolving_inside_protected_locations_such": "Files resolving inside protected locations such as SSH or cloud credential directories are refused.",
+        "files_with_no_extension_at_all_are_also_read_as": "Files with no extension at all are also read as plain text.",
+        "hidden_folders": "Hidden folders",
+        "matched_against_the_filename_case_insensitively": "Matched against the filename, case-insensitively.",
+        "never_scanned_folders": "Never-scanned folders",
+        "only_these_file_types_are_read": "Only these file types are read",
+        "skipped_for_specific_source_types_only": "Skipped for specific source types only.",
+        "system_and_temporary_files": "System and temporary files",
+        "the_newest_files_up_to_this_limit_are_indexed_ol": "The newest files up to this limit are indexed; older ones beyond it are skipped.",
+        "these_rules_always_apply_and_are_not_configurabl": "These rules always apply and are not configurable. Use the ignore patterns field to skip more.",
+        "vault_metadata": "Vault metadata",
+        "what_gets_skipped_automatically": "What gets skipped automatically"
+      },
       "index": {
         "all_namespaces": "All namespaces",
         "all_statuses": "All statuses",
