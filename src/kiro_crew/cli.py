@@ -49,6 +49,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import _default_home, _legacy_home
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.crash_guard import install as _install_crash_guard
+from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.dashboard.state import set_build_info
 from kiro_crew.env import git_build_info
 from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
@@ -539,6 +540,29 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
         "approval_mode": approval,
         "test_mode": test_mode,
     }
+
+
+def _diagnostic_port(gw_kwargs: dict) -> int | None:
+    """The port a refused gateway would have bound, for lock-refusal diagnosis.
+
+    Mirrors the gateway's own resolution (``parse_dashboard_url`` on
+    ``dashboard.url``, with ``KIROCREW_PORT`` and then ``--port`` overriding it)
+    so the message can only ever name the port this process was about to bind.
+
+    ``None`` when there is no single answer -- ``--port auto`` picks an ephemeral
+    port and ``--slack-only`` binds nothing -- in which case the refusal message
+    omits every port claim rather than asserting one it cannot support.
+    """
+    if gw_kwargs.get("no_dashboard"):
+        return None
+    override = gw_kwargs.get("port_override")
+    if override is not None:
+        return None if str(override).lower() == "auto" else int(override)
+    try:
+        return parse_dashboard_url(KiroCrewConfig.load().dashboard.url)[1]
+    except Exception:
+        # Diagnosis only — never let it break the refusal path it decorates.
+        return None
 
 
 def _knowledge(args) -> None:
@@ -1841,9 +1865,12 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _install_child_watcher()
         # Single-writer guard: refuse a second gateway bound to this
         # KIROCREW_HOME so two ConversationLog writers can never clobber the same
-        # session file. Held for the process lifetime; auto-released on death.
+        # session file. Held for the process lifetime; released by the kernel on
+        # death (POSIX record lock — see kiro_crew.gateway_lock). The port is
+        # passed for diagnosis only: on refusal it lets the error say whether the
+        # holder is answering on that port or is a wedged orphan squatting on it.
         try:
-            _gw_lock = GatewayLock(config_dir()).acquire()
+            _gw_lock = GatewayLock(config_dir(), port=_diagnostic_port(gw_kwargs)).acquire()
         except GatewayLockError as exc:
             print(f"👻 {exc}", file=sys.stderr)
             sys.exit(1)

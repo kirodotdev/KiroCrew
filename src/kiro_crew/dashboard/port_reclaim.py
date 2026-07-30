@@ -206,6 +206,28 @@ async def _terminate_pids(
     return await _wait_all_exited(pids, kill_wait, poll, _pid_exited)
 
 
+def _describe_holders(pids: list[int]) -> str:
+    """Render *pids* with their thread counts, for an actionable log line.
+
+    Thread count is what separates a running gateway (dozens of threads) from a
+    **wedged fork** of one -- a child forked before ``exec`` carries exactly the
+    one thread that called ``fork()``. By the time we get here the caller already
+    holds this home's ``gateway.lock``, so a single-threaded holder of the port
+    is provably an orphan of a dead gateway, and naming it is the whole
+    difference between a message a user can act on and one they cannot.
+    """
+    parts: list[str] = []
+    for pid in pids:
+        threads = platform_compat.process_thread_count(pid)
+        if threads is None:
+            parts.append(str(pid))
+        elif threads == 1:
+            parts.append(f"{pid} (1 thread — a wedged fork, not a gateway)")
+        else:
+            parts.append(f"{pid} ({threads} threads)")
+    return ", ".join(parts)
+
+
 async def reclaim_stale_gateway_port(
     port: int,
     *,
@@ -281,10 +303,10 @@ async def reclaim_stale_gateway_port(
 
     if not kiro_pids:
         log.error(
-            "Port %d is held by a non-KiroCrew process (pids %s) — refusing to "
+            "Port %d is held by a non-KiroCrew process (pid %s) — refusing to "
             "terminate it. Free the port or choose another with --port.",
             port,
-            listeners,
+            _describe_holders(listeners),
         )
         return FOREIGN_HOLDER
 
@@ -322,7 +344,7 @@ async def reclaim_stale_gateway_port(
         "Port %d is held by an unresponsive KiroCrew gateway (pid %s) left by an "
         "unclean exit — terminating it to reclaim the port.",
         port,
-        kiro_pids,
+        _describe_holders(kiro_pids),
     )
     ok = await terminate(kiro_pids)
     if ok:
@@ -330,8 +352,9 @@ async def reclaim_stale_gateway_port(
         return RECLAIMED
     log.error(
         "Failed to terminate stale gateway (pid %s) on port %d — you may need to "
-        "kill it manually (e.g. `sudo kirocrew stop`).",
-        kiro_pids,
+        "kill it manually: kill -9 %s",
+        _describe_holders(kiro_pids),
         port,
+        " ".join(str(p) for p in kiro_pids),
     )
     return RECLAIM_FAILED

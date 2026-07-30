@@ -1203,6 +1203,156 @@ def pid_exists(pid: int) -> bool:
         return False
 
 
+def process_thread_count(pid: int) -> int | None:
+    """Thread count of *pid*, or ``None`` when it cannot be determined.
+
+    Used to tell a *running* gateway (dozens of threads: the event loop, the
+    executor pool, watchdogs, MCP stdio readers) apart from a **wedged fork** of
+    one -- a child forked before ``exec`` inherits exactly one thread, the one
+    that called ``fork()``, and never gains another. That single-thread signature
+    is the decidable half of "this holder is an orphan, not a gateway".
+
+    Linux: ``Threads:`` in ``/proc/<pid>/status``. Everywhere else: ``None``, so
+    every caller must already handle "unknown" and degrade to a claim it can
+    support. Deliberately no ``ps`` fallback for macOS -- shelling out from this
+    low-level module would add an unrouted subprocess spawn (see
+    ``test_spawn_audit``) to a purely diagnostic path.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        for ln in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if ln.startswith("Threads:"):
+                return int(ln.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def flock_owner_pid(path: str | os.PathLike) -> int | None:
+    """PID recorded against an ``flock`` on *path*, via ``/proc/locks``.
+
+    This is the pid that ACQUIRED the lock, which is not always a live process:
+    an ``flock`` belongs to the open file description, so when the acquirer dies
+    and a forked child still holds the inherited fd, the kernel keeps reporting
+    the DEAD acquirer here. Verified on Linux 5.x -- an orphaned lock listed
+    ``FLOCK ADVISORY WRITE <dead parent pid>`` while the surviving child held the
+    fd. So a returned pid that is dead is positive evidence of an inherited fd,
+    and no ``/proc`` surface names the inheritor: use
+    :func:`pids_holding_file` for candidates and do not present them as owners.
+
+    Returns ``None`` on non-Linux, when ``/proc/locks`` is unreadable, or when no
+    ``FLOCK`` entry matches the file. Blocked waiters (``->`` rows) are skipped.
+
+    Matching is on the full ``major:minor:inode`` triple that ``/proc/locks``
+    prints, because inode numbers are only unique WITHIN a filesystem -- an
+    unrelated flock on another device can share this inode's number, and
+    accepting it would name a completely unrelated process. The device halves are
+    hex (``%02x``), the inode decimal (``%lu``). On filesystems whose ``s_dev``
+    differs from the ``st_dev`` that ``stat`` reports (btrfs subvolumes and
+    overlayfs use anonymous devices) the triple will not match and this returns
+    ``None``. That is the safe direction to fail: the caller degrades to its
+    "holder could not be identified" wording instead of naming a wrong process.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    want = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+    try:
+        # Streamed, not slurped: /proc/locks is unbounded (one row per lock
+        # system-wide) and this runs on a startup failure path.
+        with open("/proc/locks", encoding="utf-8") as handle:
+            for row in handle:
+                fields = row.split()
+                # "23: FLOCK ADVISORY WRITE 39542 103:01:146872 0 EOF"; a blocked
+                # waiter is "23: -> FLOCK ..." and owns nothing.
+                if len(fields) < 6 or "->" in fields[:2] or fields[1] != "FLOCK":
+                    continue
+                try:
+                    pid = int(fields[4])
+                    major, minor, ino = fields[5].split(":")
+                    found = (int(major, 16), int(minor, 16), int(ino))
+                except (ValueError, IndexError):
+                    continue
+                if found == want:
+                    return pid
+    except OSError:
+        return None
+    return None
+
+
+def parent_pid(pid: int) -> int | None:
+    """PPID of *pid* from ``/proc/<pid>/stat``, or ``None`` if unknowable.
+
+    Used to corroborate that a candidate process really is orphaned: a child
+    reparented to init after its parent died reports ``1``. ``None`` means
+    "unknown", which callers must not read as either answer.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        stat_data = Path(f"/proc/{pid}/stat").read_text()
+        # comm (field 2) may contain spaces/parens -- parse after the LAST ')'
+        close_paren = stat_data.rfind(")")
+        if close_paren < 0:
+            return None
+        return int(stat_data[close_paren + 2 :].split()[1])
+    except Exception:
+        return None
+
+
+def pids_holding_file(path: str | os.PathLike) -> list[int] | None:
+    """PIDs with an open fd on *path*, matched by inode via ``/proc/*/fd``.
+
+    These are CANDIDATE OPENERS, not lock owners. Any process may open the file
+    without locking it, and an inherited ``flock`` has no live owner to identify
+    (see :func:`flock_owner_pid`), so callers must not present a pid from here as
+    the holder. Answering "who has this file open" is still the only way to reach
+    the process that inherited a dead acquirer's descriptor.
+
+    Matching is by ``(st_dev, st_ino)`` rather than by link target so a bind
+    mount (a jailed gateway sees a different path for the same inode) still
+    resolves. PIDs whose ``/proc`` entry we cannot read are skipped: the result
+    is a best-effort lower bound.
+
+    Returns ``None`` on non-Linux, where there is no ``/proc`` to walk.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        target = os.stat(path)
+    except OSError:
+        return None
+    key = (target.st_dev, target.st_ino)
+    holders: list[int] = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        fd_dir = f"/proc/{entry}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            # Dead between listdir and here, or another user's process.
+            continue
+        for fd_name in fds:
+            try:
+                st = os.stat(f"{fd_dir}/{fd_name}")
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) == key:
+                holders.append(pid)
+                break
+    return holders
+
+
 def _raise_taskkill_error(pid: int, rc: int, stderr: bytes) -> None:
     """Translate a Windows taskkill non-zero rc into ProcessLookupError /
     PermissionError / OSError so callers' POSIX-style ``except`` guards
