@@ -41,6 +41,7 @@
   "pages.overview.skillsTab.agent",
   "pages.schedulePage.scheduled_job",
   "pages.schedulePage.this_permanently_removes_the_selected_job",
+  "pages.telemetryPanel.turns_measured",
   "pages.worldsPage.agent",
   "pages.worldsPage.slot"
 ]

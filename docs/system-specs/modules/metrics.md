@@ -140,8 +140,8 @@ when extra missing), `test/metrics/test_schema.py` (redaction / namespace).
 
 | Metric | Type | Attrs | Site |
 |--------|------|-------|------|
-| `kirocrew.session.startup.duration` | histogram (ms) | `outcome` (`ready` / `auth_required` / `error`), `spawned` (bool) | `acp/client.py::AcpClient.ensure_ready()` — times cold-start (spawn + session init) and emits in a `finally` so every exit path is measured. The warm fast-path is NOT measured. `outcome` defaults to `"error"` so an unexpected exception is never mislabeled `"ready"`. |
-| `kirocrew.turn.duration` | histogram (ms) | `outcome` (`ok` / `timeout` / `error`), `session_source` (via `validation.infer_use_case`) | `dashboard/chat_runner.py::_emit_turn_metric`, called at EVENT_COMPLETE after `persist_token_record_async`. `_turn_outcome` maps stop_reason (`""`/`end_turn`/`stop`/`completed` → ok). One histogram powers turn latency p50/p90 AND fault rate. |
+| `kirocrew.session.startup.duration` | histogram (ms) | `outcome` (`ready` / `auth_required` / `error`), `spawned` (bool), `backend` (`kiro`) + `phase` (`total` / `spawn_init` / `session_new` / `set_model`) on the kiro path | Two sites. **claude**: `acp/client.py::AcpClient.ensure_ready()` — times cold-start (spawn + session init) and emits in a `finally` so every exit path is measured, with no `phase` attr. **kiro** (default): `providers/acp.py::_emit_kiro_startup_metric` — one `phase=total` point PLUS one point per internal phase; `spawned` is unconditionally `True` because `_start_kiro_runtime_impl` always spawns a fresh runtime (the warm fast-path returns before reaching either site and is NOT measured). `outcome` defaults to `"error"` so an unexpected exception is never mislabeled `"ready"`. Consumers MUST treat only the end-to-end point (`phase` absent or `total`) as a startup — the phase points are components of one startup. |
+| `kirocrew.turn.duration` | histogram (ms) | `outcome` (`ok` / `timeout` / `error`), `session_source` (via `validation.infer_use_case`) | `dashboard/chat_runner.py::_emit_turn_metric`, called at EVENT_COMPLETE after `persist_token_record_async`. `_turn_outcome` maps stop_reason (`""`/`end_turn`/`stop`/`completed` → ok). One histogram powers turn latency p50/p90 AND fault rate. The value is `duration_ms or elapsed_ms`: the acp provider always reports `TurnUsage.duration_ms == 0` (only claude_code fills it), so the caller must pass the locally measured wall clock as `elapsed_ms` or nothing is ever emitted. A still-zero value skips the emit deliberately — absence renders as "no data", whereas a recorded 0 would render as a plausible 0ms p50. **What it measures:** the wall clock starts at turn start, so a turn parked on an interactive tool-approval prompt counts operator thinking time. No finer-grained source exists on the acp path, so this is "turn wall-clock", not pure model latency — a high p90 can mean slow approvals rather than a slow model. |
 | `kirocrew.mcp.backend.acquire.duration` | histogram (ms) | `warm` (bool — `not was_spawned`) | `mcp_gateway/gatewayd.py::_emit_backend_acquire_metric` — ensure_backend pre-flight + lazy-spawn paths; acquire-only duration captured before attach_stub/create_task overhead. |
 | `kirocrew.mcp.lazy_load.count` / `.duration` | counter + histogram (ms) | `transport` (`stdio`) | `mcp_gateway/gatewayd.py::_emit_lazy_load_metrics` — legacy lazy-spawn path (also emits backend.acquire). |
 | `kirocrew.mcp.warm_pool.acquire` | counter | `result` (`hit` / `miss`) | `mcp_gateway/prewarm.py::HotKeyStore.record_outcome` (emitted outside the lock). |
@@ -189,6 +189,26 @@ user-configurable `telemetry.local_dir` and each shard pass `validate_file_path`
 (sensitive-path check) before any read. Cross-process: metrics are emitted by
 the ACP/gateway processes, so reading the durable shards is the only correct
 path (an in-memory reservoir in the dashboard process would never see them).
+
+**Startup phase gating.** Only the end-to-end startup point (`phase` absent, as
+on the claude path, or `phase=total` from the kiro path) feeds the startup
+totals — count, cold/warm split, outcome, daily series, and the bucket
+distribution. Per-phase points are aggregated separately into
+`startup.phases[]` (`{name, count, p50_ms, p90_ms, …}`). Counting them as
+startups multiplies the startup count by the number of phases and sums several
+unrelated latency distributions into one set of buckets, which renders as a
+spurious multi-modal "distribution".
+
+**`context` block.** The response also carries per-turn context-window
+occupancy — `{turns, p50_pct, p90_pct, max_pct, sessions[]}` — sourced from the
+per-turn token row store below, NOT from the OTEL shards: occupancy is a
+per-session ratio and slot keys are unbounded-cardinality, which must not become
+a metric label. `sessions[]` is the top 8 by peak occupancy, each reporting peak
+plus the LATEST turn's identity (agent/model/surface) and absolute
+used/window. Rows whose window is missing or zero are skipped rather than
+defaulted. The block is `null` when no row carries the fields, and is served
+independently of the `telemetry.enabled` switch because those rows are always
+written (the panel therefore renders it even with OTEL export off).
 
 ## Per-turn token usage row store
 
@@ -238,8 +258,18 @@ task_runner/workflow) attribute their spend; zero-token surfaces (cron
 `script=`/`command=` modes, heartbeat maintenance ticks) never call a model and
 must not write a row.
 
+**Read side.** `usage.context_occupancy(days)` aggregates these rows into
+per-turn occupancy percentiles plus a per-session peak ranking (own
+shard-fingerprint + 30s-TTL cache, same contract as `_parse_token_history`), and
+`handlers/telemetry.py` serves it as the `context` block of
+`GET /api/telemetry/startup` (a plain module-scope import — `handlers.usage`
+imports nothing from `dashboard.handlers`, so there is no cycle to dodge).
+Without it the two fields were
+write-only: recorded on every turn since #647, read by nothing.
+
 Tests: `test/test_usage.py` (`TestReadContextTokens`,
-`TestBuildTokenRecordContextFields`, `TestPersistTokenRecord*`).
+`TestBuildTokenRecordContextFields`, `TestPersistTokenRecord*`),
+`test/metrics/test_context_occupancy.py` (aggregation, skips, latest-turn wins).
 
 ## Circular-import rule
 

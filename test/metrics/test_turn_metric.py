@@ -21,14 +21,16 @@ class _CapturingRecorder:
         )
 
 
-def _run(duration_ms, stop_reason, slot_key="dashboard:abc123"):
+def _run(duration_ms, stop_reason, slot_key="dashboard:abc123", elapsed_ms=None):
     """Invoke the production emit helper with a patched recorder; return it."""
     from kiro_crew.dashboard import chat_runner
 
     rec = _CapturingRecorder()
     # chat_runner imports get_recorder at module top-level → patch the consumer.
     with patch("kiro_crew.dashboard.chat_runner.get_recorder", return_value=rec):
-        chat_runner._emit_turn_metric(duration_ms, stop_reason, slot_key)
+        chat_runner._emit_turn_metric(
+            duration_ms, stop_reason, slot_key, elapsed_ms=elapsed_ms
+        )
     return rec
 
 
@@ -82,6 +84,36 @@ class TestTurnMetricOutcomeMapping:
 
     def test_none_duration_skips_emit(self):
         assert _run(None, "end_turn").calls == []
+
+
+class TestTurnMetricElapsedFallback:
+    """The acp backend always reports duration_ms=0 — the wall clock must win.
+
+    This is the regression guard for the bug where the histogram was never
+    emitted for the default backend, leaving the Telemetry page's turn latency,
+    fault rate, and throughput cards showing a flat 0 with no data behind them.
+    """
+
+    def test_zero_provider_duration_uses_elapsed(self):
+        c = _turn_call(_run(0, "end_turn", elapsed_ms=1500))
+        assert c["value"] == 1500
+        assert c["attrs"]["outcome"] == "ok"
+
+    def test_none_provider_duration_uses_elapsed(self):
+        assert _turn_call(_run(None, "end_turn", elapsed_ms=42))["value"] == 42
+
+    def test_provider_duration_wins_when_present(self):
+        # claude_code reports a real API duration; prefer it over the local clock.
+        assert _turn_call(_run(900, "end_turn", elapsed_ms=1500))["value"] == 900
+
+    def test_outcome_still_applies_on_the_fallback_path(self):
+        c = _turn_call(_run(0, "timeout", elapsed_ms=120000))
+        assert c["attrs"]["outcome"] == "timeout"
+
+    def test_both_zero_skips_emit(self):
+        # Absence reads as "no data"; a recorded 0 would render as a plausible
+        # 0ms p50, which is the failure mode this whole guard exists to avoid.
+        assert _run(0, "end_turn", elapsed_ms=0).calls == []
 
 
 class TestTurnMetricSessionSource:

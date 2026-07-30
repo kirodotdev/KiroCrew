@@ -234,7 +234,11 @@ def _turn_outcome(stop_reason: str | None) -> str:
 
 
 def _emit_turn_metric(
-    duration_ms: int | float | None, stop_reason: str | None, slot_key: str
+    duration_ms: int | float | None,
+    stop_reason: str | None,
+    slot_key: str,
+    *,
+    elapsed_ms: int | float | None = None,
 ) -> None:
     """Emit kirocrew.turn.duration (best-effort).
 
@@ -242,8 +246,28 @@ def _emit_turn_metric(
     its unit test, so the metric name, attrs, and outcome mapping live in
     production and any drift fails the test (tests must drive real
     production code). One histogram powers both turn latency and fault rate.
+
+    ``duration_ms`` is the provider-reported duration and ``elapsed_ms`` the
+    locally measured wall clock; the first non-zero wins. Both are needed
+    because the acp provider ALWAYS reports ``TurnUsage.duration_ms == 0``
+    (nothing in the codebase assigns it — only claude_code fills it in), so a
+    provider-only value silently skipped the emit for effectively all traffic
+    and left turn latency / fault rate / throughput reading a flat 0.
+
+    A still-zero duration skips the emit deliberately: an absent sample reads
+    as "no data" on the Telemetry page, whereas a recorded 0 would render as a
+    plausible-looking 0ms p50 — the very symptom this guard's misuse caused.
+
+    Caveat on what the wall clock measures: ``elapsed_ms`` runs from the start
+    of the turn, so a turn parked on an interactive tool-approval prompt counts
+    the operator's thinking time as turn duration. There is no finer-grained
+    source on the acp path (the provider reports nothing at all), so this is
+    the honest maximum available — but it means the histogram is "turn
+    wall-clock", not pure model latency, and a high p90 can mean slow approvals
+    rather than a slow model.
     """
-    if not duration_ms:
+    value = duration_ms or elapsed_ms
+    if not value:
         return
     attrs: dict = {"outcome": _turn_outcome(stop_reason)}
     try:
@@ -253,7 +277,7 @@ def _emit_turn_metric(
     except Exception:
         pass
     try:
-        get_recorder().histogram("kirocrew.turn.duration", duration_ms, unit="ms", attrs=attrs)
+        get_recorder().histogram("kirocrew.turn.duration", value, unit="ms", attrs=attrs)
     except Exception:
         logger.debug("turn metric emit failed", exc_info=True)
 
@@ -4167,7 +4191,15 @@ async def _run_chat(
                     )
                 # ── Turn-completion histogram (OTel M2) ──
                 # kirocrew.turn.duration → turn latency p50/p90 + fault rate.
-                _emit_turn_metric(event.usage.duration_ms, event.stop_reason, slot.key)
+                # elapsed_ms carries the wall clock computed above because acp
+                # leaves usage.duration_ms at 0 — without it this histogram is
+                # never emitted for the default backend.
+                _emit_turn_metric(
+                    event.usage.duration_ms,
+                    event.stop_reason,
+                    slot.key,
+                    elapsed_ms=_turn_elapsed_ms,
+                )
                 _stop_reason = event.stop_reason
                 if _stop_reason == STOP_REASON_TOOL_STALL:
                     _stall_tool_title = event.title
