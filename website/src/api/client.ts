@@ -1474,9 +1474,11 @@ export const api = {
   registerApp: (body: object) => post('/api/apps/register', body).then(j),
 
   // Artifacts
-  /** List artifacts. `session` scopes to one chat session's output (the
-   *  in-session Artifacts tab); `pinned` filters on the star. */
-  artifacts: (filters?: { tag?: string; kind?: string; q?: string; source_path?: string; snippet?: boolean; contentMatch?: boolean; session?: string; pinned?: boolean }) => {
+  /** List artifacts. `session` scopes to the artifacts one chat session
+   *  ORIGINATED; `touchedBy` widens that to every artifact the session was
+   *  involved with — created, read, edited, iterated on or reverted — which is
+   *  what the in-session Artifacts tab lists. `pinned` filters on the star. */
+  artifacts: (filters?: { tag?: string; kind?: string; q?: string; source_path?: string; snippet?: boolean; contentMatch?: boolean; session?: string; touchedBy?: string; pinned?: boolean }) => {
     const params = new URLSearchParams()
     if (filters?.tag) params.set('tag', filters.tag)
     if (filters?.kind) params.set('kind', filters.kind)
@@ -1485,6 +1487,7 @@ export const api = {
     if (filters?.snippet) params.set('snippet', '1')
     if (filters?.contentMatch) params.set('content', '1')
     if (filters?.session) params.set('session', filters.session)
+    if (filters?.touchedBy) params.set('touched_by', filters.touchedBy)
     if (filters?.pinned !== undefined) params.set('pinned', filters.pinned ? '1' : '0')
     const s = params.toString()
     return get(`/api/artifacts${s ? `?${s}` : ''}`).then(j)

@@ -4003,6 +4003,18 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         for k in ("slug", "kind", "source", "description", "tags", "folder", "webapp_metadata"):
             if k in args and args[k] is not None:
                 save_body[k] = args[k]
+        # Attribute the save to the calling chat session. Without this the store
+        # persists ``session_key=""`` for every agent-authored artifact, so the
+        # in-session Artifacts tab — which scopes by session — could never show
+        # the very artifacts the agent just created in that session. The header
+        # this call already carries only feeds the ``source`` bucket, not the
+        # session field, so it has to travel in the body. The handler
+        # re-validates it against the session-key grammar, and an unresolvable
+        # session (no caller context, no env, no pid file) sends nothing and
+        # keeps today's unattributed behavior.
+        _origin_sk = _resolve_session_key()
+        if _origin_sk:
+            save_body["origin_session_key"] = _origin_sk
         # Pre-save dedup probe: when saving a chat-source widget, check for
         # an existing widget artifact with the same NFC-normalized name.
         # If one exists we still allow the save (the agent may have a real

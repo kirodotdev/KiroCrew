@@ -557,6 +557,60 @@ def _validate_source(source: str) -> str:
     return source
 
 
+def _strip_session_scope(key: str) -> str:
+    """Drop a leading ``dashboard:`` scope so slot identities compare equal.
+
+    The store's two provenance fields disagree by construction, and neither is
+    wrong on its own:
+
+    * ``Artifact.session_key`` is written from the dashboard's BARE slot key
+      (``chat-7-1785396512``) on the browser create path.
+    * an event's ``session_id`` comes from the caller's FULL session key
+      (``dashboard:chat-7-1785396512``), because MCP callers resolve identity
+      through ``KIROCREW_SESSION_KEY`` / the signed pid sidecar, which are
+      scope-qualified.
+
+    A literal comparison therefore matches the origin case and *never* the
+    event case — the involvement scope would silently degrade to the plain
+    origin filter it exists to widen. Only ``dashboard:`` is stripped: a
+    ``slack:``/``discord:``/``cron:`` key has no bare chat-slot twin, so
+    collapsing those would merge genuinely different sessions.
+    """
+    prefix = "dashboard:"
+    return key[len(prefix):] if key.startswith(prefix) else key
+
+
+def _session_touched(art: "Artifact", session_key: str) -> bool:
+    """True when ``session_key`` originated OR left any event on ``art``.
+
+    "Touched" is the union of the two provenance records the store keeps:
+    the create-time ``session_key`` field, and the ``session_id`` stamped on
+    each lifecycle event (``created`` / ``edited`` / ``iterated`` /
+    ``referenced`` / ``reverted``). That union is what makes the in-session
+    Artifacts tab able to list what a session *consumed*, not only what it
+    authored — a read records a ``referenced`` event and an agent edit records
+    an ``iterated`` one, so both surface here without a second index.
+
+    Both sides are compared scope-normalized (see ``_strip_session_scope``)
+    because the two fields are persisted in different formats.
+
+    Note the event log is FIFO-capped at ``MAX_EVENTS_PER_ARTIFACT``, so a
+    very old association on a heavily-edited artifact can age out. That is
+    acceptable for a recency-ordered panel and is why this is a best-effort
+    "did this session touch it" predicate, not an audit-grade join.
+    """
+    if not session_key:
+        return False
+    want = _strip_session_scope(session_key)
+    if art.session_key and _strip_session_scope(art.session_key) == want:
+        return True
+    return any(
+        _strip_session_scope(str(e.get("session_id") or "")) == want
+        for e in art.events
+        if e.get("session_id")
+    )
+
+
 def _validate_tags(tags: list[str] | None) -> _List[str]:
     if tags is None:
         return []
@@ -1349,6 +1403,7 @@ class ArtifactStore:
         source_path: str | None = None,
         folder: str | None = None,
         session_key: str | None = None,
+        touched_by_session: str | None = None,
         pinned: bool | None = None,
     ) -> _List[Artifact]:
         """List all artifacts matching the given filters (sorted newest first).
@@ -1364,6 +1419,15 @@ class ArtifactStore:
         artifact panel's query). Like ``folder``, it distinguishes absent from
         empty: ``None`` doesn't scope, while ``""`` matches only artifacts with
         no originating session. ``pinned`` filters on the star flag.
+
+        ``touched_by_session`` is the broader *involvement* scope the in-session
+        Artifacts tab needs: it matches an artifact when the session either
+        ORIGINATED it (``session_key``) or appears in any lifecycle event's
+        ``session_id`` — i.e. the session created, read (``referenced``),
+        edited, iterated on, or reverted it. Unlike ``session_key`` this is a
+        pure match filter with no empty-bucket semantics: ``None`` and ``""``
+        both mean "don't scope", because "artifacts no session ever touched"
+        is not a view any caller wants and would otherwise be one typo away.
         """
         with self._lock:
             meta_paths = list(self._iter_meta_paths())
@@ -1405,6 +1469,10 @@ class ArtifactStore:
             # Same present-vs-empty distinction as ``folder``: ``None`` = don't
             # scope; ``""`` = only artifacts with NO originating session.
             if session_key is not None and art.session_key != session_key:
+                continue
+            # Involvement scope: origin OR any event this session left behind.
+            # Empty/None is a no-op (see docstring) rather than an empty bucket.
+            if touched_by_session and not _session_touched(art, touched_by_session):
                 continue
             if pinned is not None and bool(art.pinned) is not pinned:
                 continue

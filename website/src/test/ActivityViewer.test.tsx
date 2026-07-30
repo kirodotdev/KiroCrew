@@ -16,6 +16,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import chatReducer from '../store/chatSlice'
 import { openActivityToTab, sseSubagentQueued } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
+import { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
 vi.mock('../api/client', () => ({
@@ -541,10 +542,17 @@ describe('ActivityViewer — Artifacts tab', () => {
     vi.mocked(api.artifactSessionDocs).mockResolvedValue({ docs: [] })
   })
 
-  it('scopes the artifact query to this session', async () => {
+  it('scopes one artifact query to this session and fetches the library too', async () => {
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
     await waitFor(() => {
-      expect(api.artifacts).toHaveBeenCalledWith({ session: 'test-slot' })
+      // Session section uses the INVOLVEMENT scope (created + read + iterated),
+      // not the narrower origin-only `session` filter — that is what lets an
+      // artifact the agent merely consumed appear under "This session".
+      expect(api.artifacts).toHaveBeenCalledWith({ touchedBy: 'test-slot' })
+    })
+    // The library section is a second, unscoped query.
+    await waitFor(() => {
+      expect(api.artifacts).toHaveBeenCalledWith({})
     })
   })
 
@@ -632,9 +640,146 @@ describe('ActivityViewer — Artifacts tab', () => {
     expect(screen.getByText('/p/notes.md')).toBeInTheDocument()
   })
 
-  it('shows the empty state when the session produced nothing', async () => {
+  it('shows the empty state when the session produced nothing and the library is empty', async () => {
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    expect(await screen.findByText('Nothing produced in this session yet')).toBeInTheDocument()
+    expect(await screen.findByText(/No artifacts yet/)).toBeInTheDocument()
+  })
+
+  it('keeps a file-backed artifact this session only READ in the session section', async () => {
+    // The doc-twin exclusion must join on the session's own doc paths, not on
+    // "has a source_path at all". A file-backed artifact the agent merely read
+    // is not one of this session's documents, so a blanket exclusion would
+    // banish it to "Other artifacts" — dropping the consumed-artifact case the
+    // touched_by scan exists to surface.
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{ slug: 'spec-md', name: 'spec.md', kind: 'markdown', pinned: false, source_path: '/p/spec.md' }],
+    } as never)
+    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
+      docs: [{ path: '/p/other.md', name: 'other.md', slug: '', saved: false, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    // Renders once, under the session header — not duplicated into the library.
+    await waitFor(() => { expect(screen.getAllByText('spec.md')).toHaveLength(1) })
+    expect(screen.queryByText(/Other artifacts/)).not.toBeInTheDocument()
+  })
+
+  /* ── Library section (section B) ──────────────────────────────────────────
+   * The tab is both a session view and a library browser. These lock in that
+   * the library renders, and that an artifact is never listed in both places.
+   */
+
+  /** Route the two queries independently: the session section asks with
+   *  `touchedBy`, the library section with `{}`. The default mock answers both
+   *  with the same value, which is what would mask a de-dup regression. */
+  function mockArtifactQueries(session: unknown[], library: unknown[]) {
+    vi.mocked(api.artifacts).mockImplementation((filters?: { touchedBy?: string }) =>
+      Promise.resolve({ artifacts: filters?.touchedBy ? session : library }) as never,
+    )
+  }
+
+  it('lists the whole library in its own section below the session', async () => {
+    mockArtifactQueries(
+      [{ slug: 'mine', name: 'Made Here', kind: 'widget', pinned: false }],
+      [
+        { slug: 'mine', name: 'Made Here', kind: 'widget', pinned: false },
+        { slug: 'older', name: 'From Last Week', kind: 'markdown', pinned: true },
+      ],
+    )
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    expect(await screen.findByText('This session (1)')).toBeInTheDocument()
+    // The library section excludes the session's own artifact, so it counts 1,
+    // not 2 — the de-dup is visible in the header count, not just the rows.
+    expect(await screen.findByText('Other artifacts (1)')).toBeInTheDocument()
+    expect(screen.getByText('From Last Week')).toBeInTheDocument()
+    // 'Made Here' appears exactly once, in the session section.
+    expect(screen.getAllByText('Made Here')).toHaveLength(1)
+  })
+
+  it('hides the session header entirely when the session touched nothing', async () => {
+    mockArtifactQueries([], [{ slug: 'older', name: 'From Last Week', kind: 'markdown', pinned: true }])
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    expect(await screen.findByText('Other artifacts (1)')).toBeInTheDocument()
+    // A fresh session shows the library alone, not an empty "This session" heading.
+    expect(screen.queryByText(/^This session/)).not.toBeInTheDocument()
+  })
+
+  it('does not list a library twin of an unstarred materialized doc', async () => {
+    // Same slug:'' state the section-A test covers, but from the library side:
+    // the doc row claims no slug, so only a source_path join keeps its library
+    // twin from rendering as a second copy of the same document.
+    mockArtifactQueries(
+      [],
+      [{ slug: 'notes-md', name: 'notes.md', kind: 'markdown', pinned: false, source_path: '/p/notes.md' }],
+    )
+    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
+      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: '', saved: false, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    await waitFor(() => { expect(screen.getAllByText('notes.md')).toHaveLength(1) })
+    expect(screen.getByText('/p/notes.md')).toBeInTheDocument()
+  })
+
+  it('caps the library list and reveals the rest on Show all', async () => {
+    const many = Array.from({ length: 55 }, (_, i) => ({
+      slug: `a${i}`, name: `Artifact ${i}`, kind: 'widget', pinned: false,
+    }))
+    mockArtifactQueries([], many)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    expect(await screen.findByText('Other artifacts (55)')).toBeInTheDocument()
+    // 50 rendered, 5 held back — the panel is ~460px wide, so the DOM is capped.
+    expect(screen.queryByText('Artifact 54')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText(/Show all \(5\)/))
+    expect(await screen.findByText('Artifact 54')).toBeInTheDocument()
+  })
+
+  /* ── Companion binding (requirement: the association must persist) ─────── */
+
+  /** Provider tree with a store the test keeps, so slots can be seeded. The
+   *  shared routerWrapper builds its store inline and hands back no handle. */
+  function renderWithSlots(slots: unknown[]) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    store.dispatch(sseSlots(slots as never))
+    return render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter><ActivityViewer {...artifactProps} /></MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
+    )
+  }
+
+  it('lists the bound companion artifact under This session, untouched', async () => {
+    // A session started from an artifact's detail page carries slot.artifact
+    // (persisted in the history meta line). The binding alone is the
+    // association, so the artifact belongs in the session section even though
+    // the agent never read or edited it — touched_by returns nothing here.
+    mockArtifactQueries([], [{ slug: 'cr-queue', name: 'CR Queue', kind: 'widget', pinned: true }])
+    renderWithSlots([{ key: 'test-slot', title: 'Artifact: CR Queue', messages: 2, running: false, artifact: 'cr-queue' }])
+    expect(await screen.findByText('This session (1)')).toBeInTheDocument()
+    expect(screen.getAllByText('CR Queue')).toHaveLength(1)
+    // Pulled up into the session section, so the library section is now empty.
+    expect(screen.queryByText(/^Other artifacts/)).not.toBeInTheDocument()
+  })
+
+  it('does not double-list a bound artifact the session also touched', async () => {
+    mockArtifactQueries(
+      [{ slug: 'cr-queue', name: 'CR Queue', kind: 'widget', pinned: true }],
+      [{ slug: 'cr-queue', name: 'CR Queue', kind: 'widget', pinned: true }],
+    )
+    renderWithSlots([{ key: 'test-slot', title: 'Artifact: CR Queue', messages: 2, running: false, artifact: 'cr-queue' }])
+    expect(await screen.findByText('This session (1)')).toBeInTheDocument()
+    expect(screen.getAllByText('CR Queue')).toHaveLength(1)
+  })
+
+  it('ignores a binding whose artifact no longer exists', async () => {
+    // The slot keeps its binding after the artifact is deleted; there is no
+    // metadata to render, so the row is skipped rather than faked.
+    mockArtifactQueries([], [])
+    renderWithSlots([{ key: 'test-slot', title: 'Artifact: Gone', messages: 1, running: false, artifact: 'deleted-slug' }])
+    expect(await screen.findByText(/No artifacts yet/)).toBeInTheDocument()
   })
 
   // Layout regression: in the narrow activity rail every header item used to be

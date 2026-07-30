@@ -1011,6 +1011,18 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
         else None
     )
     pinned = _clean_pinned_filter(request.query.get("pinned"))
+    # ``touched_by`` is the involvement scope (origin OR any event this session
+    # left): what the in-session Artifacts tab lists as "this session", so an
+    # artifact the agent merely READ or ITERATED ON shows up, not just ones it
+    # authored. Same raw-on-miss handling as ``session`` above and for the same
+    # reason — but with no empty-bucket case, since an empty value here means
+    # "don't scope" in the store rather than "no session ever touched it".
+    _raw_touched = request.query.get("touched_by")
+    touched_by = (
+        (_clean_origin_session_key(_raw_touched) or _raw_touched)
+        if _raw_touched
+        else None
+    )
     try:
         store = get_default_store()
         items = store.list(
@@ -1023,6 +1035,7 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
             source_path=source_path,
             folder=folder,
             session_key=session,
+            touched_by_session=touched_by,
             pinned=pinned,
         )
     except (ArtifactError, OSError) as exc:
@@ -1256,12 +1269,71 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
 async def api_artifact_detail(request: web.Request) -> web.Response:
     slug = request.match_info.get("slug", "")
     try:
-        art = get_default_store().get(slug)
+        store = get_default_store()
+        art = store.get(slug)
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
-    return _json_response(_serialize(art, include_content=True, state=request.app.get("state")))
+    state = request.app.get("state")
+    # Agent reads leave a ``referenced`` breadcrumb so the in-session Artifacts
+    # tab can list what a session CONSUMED, not only what it authored (the
+    # ``touched_by`` filter reads these events). Deliberately narrow:
+    #
+    #  * MCP only (``X-Internal-Secret``). A browser GET carries the literal
+    #    ``dashboard:ui`` key, which ``_event_session_id`` drops anyway — but
+    #    gating on the secret keeps a plain page view from ever mutating state.
+    #  * Never for a restricted (incognito / temporary) session — leaving a
+    #    durable trace is exactly what those sessions exist to avoid. Reads are
+    #    otherwise ungated here, so this check is local rather than a 403.
+    #  * Best-effort. ``record_impression`` dedupes to one breadcrumb per
+    #    session and suppresses entirely when that session already has a
+    #    lifecycle event, so a read after an edit is a no-op. A failure must
+    #    never turn a successful read into an error.
+    session_id = _event_session_id(request)
+    if session_id and request.headers.get("X-Internal-Secret") is not None:
+        # Deny by default: a falsy ``state`` must withhold the breadcrumb, not
+        # skip the check. Written as its own positive gate (rather than folded
+        # into the condition above) so no falsy value can short-circuit past it.
+        if state is None or _is_restricted_session(state, request):
+            _audit(
+                tool="artifact_reference",
+                request=request,
+                outcome="denied",
+                error="restricted session" if state is not None else "missing dashboard state",
+                extra={"slug": slug, "via": "detail_read"},
+            )
+        else:
+            try:
+                # NB: ``record_impression`` returns a meta loaded via ``_load_meta``,
+                # which does NOT carry ``content`` — assigning it over ``art`` would
+                # silently strip the body out of every agent read. Take only the
+                # refreshed event log so the response stays self-consistent.
+                #
+                # Off-thread because it rewrites ``meta.json``: an artifact at the
+                # 500-event cap makes that a non-trivial synchronous write, and
+                # this runs on every agent read. Blocking here would stall chat
+                # and heartbeat processing for the whole gateway.
+                fresh, appended = await asyncio.to_thread(
+                    store.record_impression, slug, by="agent", session_id=session_id
+                )
+                art.events = fresh.events
+                _audit(
+                    tool="artifact_reference",
+                    request=request,
+                    outcome="ok",
+                    extra={"slug": slug, "suppressed": not appended, "via": "detail_read"},
+                )
+            except (ArtifactError, OSError) as exc:
+                logger.warning("artifact impression not recorded for %s: %s", slug, exc)
+                _audit(
+                    tool="artifact_reference",
+                    request=request,
+                    outcome="error",
+                    error=str(exc),
+                    extra={"slug": slug, "via": "detail_read"},
+                )
+    return _json_response(_serialize(art, include_content=True, state=state))
 
 
 async def api_artifact_update(request: web.Request) -> web.Response:

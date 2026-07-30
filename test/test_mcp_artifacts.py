@@ -23,6 +23,43 @@ from kiro_crew.mcp_core import _call_tool_inner
 ARTIFACT_ROUTE_PREFIX = "/artifacts/"
 
 
+class TestArtifactSaveSessionAttribution:
+    """``artifact_save`` must attribute the save to its calling chat session.
+
+    Without ``origin_session_key`` in the body the store persists
+    ``session_key=""`` for every agent-authored artifact, so the in-session
+    Artifacts tab — which scopes by session — cannot show the artifacts the
+    agent just created in that session. The ``X-Session-Key`` header this call
+    already carries only feeds the ``source`` bucket, so the value has to
+    travel in the body.
+    """
+
+    def test_save_forwards_the_calling_session_key(self) -> None:
+        saved: dict = {}
+
+        def _capture(path, body, **kwargs):
+            saved.update(body)
+            return {"slug": "s", "version": 1, "name": "N", "kind": "widget"}
+
+        with patch("kiro_crew.mcp_core._resolve_session_key", return_value="chat-5-123"):
+            with patch("kiro_crew.mcp_core._post", side_effect=_capture):
+                _call_tool_inner("artifact_save", {"name": "N", "content": "<div/>"})
+        assert saved["origin_session_key"] == "chat-5-123"
+
+    def test_save_omits_the_key_when_no_session_resolves(self) -> None:
+        """A CLI/standalone caller has no slot — send nothing rather than junk."""
+        saved: dict = {}
+
+        def _capture(path, body, **kwargs):
+            saved.update(body)
+            return {"slug": "s", "version": 1, "name": "N", "kind": "widget"}
+
+        with patch("kiro_crew.mcp_core._resolve_session_key", return_value=""):
+            with patch("kiro_crew.mcp_core._post", side_effect=_capture):
+                _call_tool_inner("artifact_save", {"name": "N", "content": "<div/>"})
+        assert "origin_session_key" not in saved
+
+
 class TestArtifactReferenceLink:
     """The MCP layer surfaces a clickable ``[<name>](/artifacts/<slug>)``
     markdown link for non-widget artifacts (markdown/html/text) so they can

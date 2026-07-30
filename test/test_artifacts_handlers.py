@@ -283,6 +283,82 @@ class TestList:
         slugs = {a["slug"] for a in _json_body(resp)["artifacts"]}
         assert "unattributed" not in slugs, "must not fall back to the no-origin bucket"
 
+    # ── ?touched_by= (involvement scope: created OR read OR iterated) ───────
+
+    @pytest.mark.asyncio
+    async def test_touched_by_matches_originating_session(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="mine", content="x", session_key="chat-1")
+        isolated_store.create(name="theirs", content="x", session_key="chat-2")
+        resp = await api_artifacts_list(_request(query={"touched_by": "chat-1"}))
+        assert {a["slug"] for a in _json_body(resp)["artifacts"]} == {"mine"}
+
+    @pytest.mark.asyncio
+    async def test_touched_by_matches_a_session_that_only_read_it(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """The point of the filter: consumption counts, not just authorship.
+
+        ``?session=`` cannot answer this — the artifact was authored by nobody
+        and chat-1 only left a ``referenced`` breadcrumb on it.
+        """
+        isolated_store.create(name="read-only", content="x", slug="read-only")
+        isolated_store.record_impression("read-only", by="agent", session_id="chat-1")
+        resp = await api_artifacts_list(_request(query={"touched_by": "chat-1"}))
+        assert {a["slug"] for a in _json_body(resp)["artifacts"]} == {"read-only"}
+        # The origin-only filter still reports nothing, which is why both exist.
+        resp2 = await api_artifacts_list(_request(query={"session": "chat-1"}))
+        assert _json_body(resp2)["artifacts"] == []
+
+    @pytest.mark.asyncio
+    async def test_touched_by_matches_a_session_that_iterated_on_it(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="edited", content="v1", slug="edited")
+        isolated_store.update(
+            "edited", content="v2", session_id="chat-9", actor="agent", snapshot=True
+        )
+        resp = await api_artifacts_list(_request(query={"touched_by": "chat-9"}))
+        assert {a["slug"] for a in _json_body(resp)["artifacts"]} == {"edited"}
+
+    @pytest.mark.asyncio
+    async def test_touched_by_excludes_untouched_artifacts(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="mine", content="x", session_key="chat-1")
+        isolated_store.create(name="stranger", content="x", session_key="chat-2")
+        isolated_store.create(name="orphan", content="x")
+        resp = await api_artifacts_list(_request(query={"touched_by": "chat-1"}))
+        assert {a["slug"] for a in _json_body(resp)["artifacts"]} == {"mine"}
+
+    @pytest.mark.asyncio
+    async def test_empty_touched_by_does_not_scope(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """``?touched_by=`` is a no-op, NOT the no-origin bucket.
+
+        Unlike ``?session=`` there is no useful "nobody touched it" view, so an
+        empty value must not silently filter the list down to unattributed rows.
+        """
+        isolated_store.create(name="mine", content="x", session_key="chat-1")
+        isolated_store.create(name="orphan", content="x")
+        resp = await api_artifacts_list(_request(query={"touched_by": ""}))
+        assert len(_json_body(resp)["artifacts"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_malformed_touched_by_returns_nothing(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """A grammar miss must match zero rows, never fall back to everything.
+
+        The unattributed fixture is present so a collapse-to-"" bug can't pass.
+        """
+        isolated_store.create(name="mine", content="x", session_key="chat-1")
+        isolated_store.create(name="orphan", content="x")
+        resp = await api_artifacts_list(_request(query={"touched_by": "../../etc/passwd"}))
+        assert _json_body(resp)["artifacts"] == []
+
     # ── ?pinned= ────────────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
@@ -513,6 +589,181 @@ class TestDetail:
     async def test_missing_returns_404(self, isolated_store, patch_restricted) -> None:
         resp = await api_artifact_detail(_request(match={"slug": "nope"}))
         assert resp.status == 404
+
+    # ── agent-read breadcrumbs (feeds ?touched_by=) ──────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_agent_read_records_referenced_event(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """An MCP read leaves a breadcrumb so the session can list what it consumed."""
+        isolated_store.create(name="x", content="<x/>", slug="x")
+        resp = await api_artifact_detail(
+            _request(
+                match={"slug": "x"},
+                session_key="chat-7",
+                extra_headers={"X-Internal-Secret": "s"},
+            )
+        )
+        assert resp.status == 200
+        events = [e for e in isolated_store.get("x").events if e.get("type") == "referenced"]
+        assert len(events) == 1
+        assert events[0]["session_id"] == "chat-7"
+        assert events[0]["by"] == "agent"
+
+    @pytest.mark.asyncio
+    async def test_agent_read_still_returns_content(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """Regression guard: recording must not strip the body off the response.
+
+        ``record_impression`` returns a meta loaded WITHOUT content, so assigning
+        it over the artifact would make every agent read come back empty — the
+        artifact would look blank to the agent that just asked for it.
+        """
+        isolated_store.create(name="x", content="<x/>", slug="x")
+        resp = await api_artifact_detail(
+            _request(
+                match={"slug": "x"},
+                session_key="chat-7",
+                extra_headers={"X-Internal-Secret": "s"},
+            )
+        )
+        assert _json_body(resp)["content"] == "<x/>"
+
+    @pytest.mark.asyncio
+    async def test_browser_read_records_nothing(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """A dashboard page view is not session activity and must not mutate."""
+        isolated_store.create(name="x", content="<x/>", slug="x")
+        resp = await api_artifact_detail(_request(match={"slug": "x"}))
+        assert resp.status == 200
+        assert [e for e in isolated_store.get("x").events if e.get("type") == "referenced"] == []
+
+    @pytest.mark.asyncio
+    async def test_agent_read_without_internal_secret_records_nothing(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="x", content="<x/>", slug="x")
+        await api_artifact_detail(_request(match={"slug": "x"}, session_key="chat-7"))
+        assert [e for e in isolated_store.get("x").events if e.get("type") == "referenced"] == []
+
+    @pytest.mark.asyncio
+    async def test_restricted_session_read_records_nothing(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """Incognito/temporary sessions exist to leave no durable trace.
+
+        The read itself is still served (reads are not gated here) — only the
+        breadcrumb is withheld.
+        """
+        isolated_store.create(name="x", content="<x/>", slug="x")
+        resp = await api_artifact_detail(
+            _request(
+                match={"slug": "x"},
+                session_key="chat-7",
+                restricted=True,
+                extra_headers={"X-Internal-Secret": "s"},
+            )
+        )
+        assert resp.status == 200
+        assert _json_body(resp)["content"] == "<x/>"
+        assert [e for e in isolated_store.get("x").events if e.get("type") == "referenced"] == []
+
+    @pytest.mark.asyncio
+    async def test_repeated_agent_reads_record_one_breadcrumb(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="x", content="<x/>", slug="x")
+        req = dict(
+            match={"slug": "x"},
+            session_key="chat-7",
+            extra_headers={"X-Internal-Secret": "s"},
+        )
+        await api_artifact_detail(_request(**req))
+        await api_artifact_detail(_request(**req))
+        events = [e for e in isolated_store.get("x").events if e.get("type") == "referenced"]
+        assert len(events) == 1
+
+    @pytest.mark.asyncio
+    async def test_missing_state_records_nothing(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """Deny by default: no dashboard state means the breadcrumb is withheld.
+
+        Guards the fail-open shape ``not (state is not None and restricted(...))``,
+        which evaluates to True when ``state`` is falsy and would let an
+        unclassifiable session — including an incognito one — write.
+        """
+        isolated_store.create(name="x", content="<x/>", slug="x")
+        req = _request(
+            match={"slug": "x"},
+            session_key="chat-7",
+            extra_headers={"X-Internal-Secret": "s"},
+        )
+        req.app = {"state": None, "_restricted_session": False}
+        resp = await api_artifact_detail(req)
+        assert resp.status == 200
+        assert _json_body(resp)["content"] == "<x/>"
+        assert [e for e in isolated_store.get("x").events if e.get("type") == "referenced"] == []
+
+    @pytest.mark.asyncio
+    async def test_agent_read_is_audited(
+        self, isolated_store, patch_restricted, monkeypatch
+    ) -> None:
+        """The write is a permission decision, so it belongs in the SEL trail."""
+        from kiro_crew.dashboard.handlers import artifacts as art_handlers
+
+        sel_stub = MagicMock()
+        monkeypatch.setattr(art_handlers, "sel", lambda: sel_stub)
+        isolated_store.create(name="x", content="<x/>", slug="x")
+        await api_artifact_detail(
+            _request(
+                match={"slug": "x"},
+                session_key="chat-7",
+                extra_headers={"X-Internal-Secret": "s"},
+            )
+        )
+        kwargs = sel_stub.log_tool_invocation.call_args.kwargs
+        assert kwargs["tool_name"] == "artifact_reference"
+        assert kwargs["outcome"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_withheld_breadcrumb_is_audited(
+        self, isolated_store, patch_restricted, monkeypatch
+    ) -> None:
+        """A withheld breadcrumb is still a decision — record it, mirroring
+        the POST /events sibling, which audits its restricted-session denial."""
+        from kiro_crew.dashboard.handlers import artifacts as art_handlers
+
+        sel_stub = MagicMock()
+        monkeypatch.setattr(art_handlers, "sel", lambda: sel_stub)
+        isolated_store.create(name="x", content="<x/>", slug="x")
+        await api_artifact_detail(
+            _request(
+                match={"slug": "x"},
+                session_key="chat-7",
+                restricted=True,
+                extra_headers={"X-Internal-Secret": "s"},
+            )
+        )
+        kwargs = sel_stub.log_tool_invocation.call_args.kwargs
+        assert kwargs["tool_name"] == "artifact_reference"
+        assert kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_browser_read_is_not_audited_as_a_reference(
+        self, isolated_store, patch_restricted, monkeypatch
+    ) -> None:
+        """A plain page view makes no decision, so it must not add SEL noise."""
+        from kiro_crew.dashboard.handlers import artifacts as art_handlers
+
+        sel_stub = MagicMock()
+        monkeypatch.setattr(art_handlers, "sel", lambda: sel_stub)
+        isolated_store.create(name="x", content="<x/>", slug="x")
+        await api_artifact_detail(_request(match={"slug": "x"}))
+        sel_stub.log_tool_invocation.assert_not_called()
 
 
 class TestUpdate:
