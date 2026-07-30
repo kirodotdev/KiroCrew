@@ -9,7 +9,6 @@ import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyb
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { modelListRefetchInterval } from '../providers/modelListHealth'
-import { useKiroSessionReady } from '../providers/KiroReadinessContext'
 import { useAppDispatch, useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
@@ -539,7 +538,6 @@ function ChatSidebar({
   const queryClient = useQueryClient()
   const ime = useImeGuard()
   const isMobile = useIsMobile()
-  const kiroSessionReady = useKiroSessionReady()
 
   // Sidebar width (self-managed, reported to parent)
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -1692,9 +1690,6 @@ function ChatSidebar({
   }, [folders, updateFolderMutation])
   const createChatInFolderMutation = useMutation({
     mutationFn: ({ folderId }: { folderId: string; columnId?: string }) => {
-      if (!kiroSessionReady) {
-        throw new Error('Kiro sign-in is required before starting a session.')
-      }
       const agent = resolveFolderAgent(folders, folderId, defaultAgent)
       const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
       // Folder linked to a project directory (directly or via an ancestor):
@@ -1724,9 +1719,6 @@ function ChatSidebar({
   // Create autopilot session mutation (consistent with useMutation pattern)
   const createAutopilotMutation = useMutation({
     mutationFn: () => {
-      if (!kiroSessionReady) {
-        throw new Error('Kiro sign-in is required before starting a session.')
-      }
       return dispatch(createSlot({ agent: defaultAgent || undefined, mode: 'orchestrator' })).unwrap()
     },
     onSuccess: () => { requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) },
@@ -1735,9 +1727,6 @@ function ChatSidebar({
   // Create default chat session mutation
   const createChatMutation = useMutation({
     mutationFn: () => {
-      if (!kiroSessionReady) {
-        throw new Error('Kiro sign-in is required before starting a session.')
-      }
       const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
       return dispatch(createSlot({ agent: defaultAgent || undefined, mode: effectiveMode })).unwrap()
     },
@@ -1906,7 +1895,7 @@ function ChatSidebar({
                 <DropdownMenuItem className="text-danger focus:text-danger" onClick={() => { if (confirm(`Delete "${folder.name}"? Sessions will be ungrouped.`)) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} disabled={!kiroSessionReady} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px] disabled:opacity-50 disabled:cursor-not-allowed" title={kiroSessionReady ? 'New chat in folder' : 'Sign in to Kiro before starting a session'} aria-label={`New chat in folder ${folder.name}`} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, columnId) }} onMouseDown={e => { e.stopPropagation() }} onKeyDown={e => { e.stopPropagation() }}>
+            <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title="New chat in folder" aria-label={`New chat in folder ${folder.name}`} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, columnId) }} onMouseDown={e => { e.stopPropagation() }} onKeyDown={e => { e.stopPropagation() }}>
               <MessageSquarePlus size={11} />
             </button>
           </span>
@@ -1918,10 +1907,10 @@ function ChatSidebar({
             {/* Inline "New chat" affordance at the top of the column folder's
              *  body, mirroring the list-view folder body. */}
             <button key={`col-${columnId}-newchat-${folder.id}`} type="button"
-              disabled={!kiroSessionReady}
+              
               onClick={() => createChatInFolder(folder.id, columnId)}
-              title={kiroSessionReady ? 'New chat in folder' : 'Sign in to Kiro before starting a session'} aria-label={`New chat in ${folder.name}`}
-              className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[11px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left disabled:opacity-50 disabled:cursor-not-allowed">
+              title="New chat in folder" aria-label={`New chat in ${folder.name}`}
+              className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[11px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
               {/* Trailing glyph — list-view parity (see renderFolderBlock). */}
               <span>{i18nT('pages.chatSidebar.new_chat_in_folder')}</span><MessageSquarePlus size={11} className="shrink-0 ml-auto" />
             </button>
@@ -2428,7 +2417,7 @@ function ChatSidebar({
               <DropdownMenuItem className="text-danger focus:text-danger" data-testid={`folder-delete-${folder.id}`} onClick={() => { if (confirm(`Delete "${folder.name}"? Sessions will be ungrouped.`)) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <button type="button" disabled={!kiroSessionReady} className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none disabled:opacity-50 disabled:cursor-not-allowed" title={kiroSessionReady ? 'New chat in folder' : 'Sign in to Kiro before starting a session'} aria-label={i18nT('pages.chatSidebar.new_chat_in_folder')} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id) }}><MessageSquarePlus size={12} /></button>
+          <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title="New chat in folder" aria-label={i18nT('pages.chatSidebar.new_chat_in_folder')} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id) }}><MessageSquarePlus size={12} /></button>
         </div>
         )}
         {linking?.folderId === folder.id && linking.scope === 'list' && <ProjectPicker open={true} onOpenChange={open => { if (!open) setLinking(null) }} anchorRef={linkAnchorRef} onSelect={path => { updateFolderMutation.mutate({ id: folder.id, body: { project_dir: path } }); setLinking(null) }} />}
@@ -2534,10 +2523,10 @@ function ChatSidebar({
     const showInlineNewChat = !(slotFilter || activeFilters.size > 0)
     const inlineNewChatBtn = (
       <button key={`folder-newchat-${folder.id}`} type="button"
-        disabled={!kiroSessionReady}
+        
         onClick={() => createChatInFolder(folder.id)}
-        title={kiroSessionReady ? 'New chat in folder' : 'Sign in to Kiro before starting a session'} aria-label={`New chat in ${folder.name}`}
-        className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left disabled:opacity-50 disabled:cursor-not-allowed">
+        title="New chat in folder" aria-label={`New chat in ${folder.name}`}
+        className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
         {/* Label first, glyph trailing: a leading icon pushed this row's text
          *  ~23px right of the session titles below it, breaking the single left
          *  text guide the folder-header padding establishes. The ⊕ lands in the
@@ -2652,10 +2641,10 @@ function ChatSidebar({
            *  folder flyout escapes the sidebar's overflow clip. */}
           <div className="relative flex items-center rounded-md bg-accent text-accent-fg overflow-hidden shrink-0" data-create-menu>
             <button
-              disabled={creatingSlot || !kiroSessionReady}
+              disabled={creatingSlot}
               className={`flex items-center h-7 cursor-pointer bg-transparent border-none text-accent-fg hover:bg-accent-hover active:scale-95 transition-all disabled:opacity-70 disabled:cursor-wait disabled:active:scale-100 ${compactHeader ? 'justify-center w-7' : 'gap-1.5 pl-2 pr-2.5 text-[12px] font-semibold'}`}
               onClick={() => { createChatMutation.mutate() }}
-              title={kiroSessionReady ? 'New chat' : 'Sign in to Kiro before starting a session'}
+              title="New chat"
               aria-label={i18nT('pages.chatSidebar.new_chat_session')}
               aria-busy={creatingSlot}
             >{creatingSlot ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}{!compactHeader && <span className="whitespace-nowrap">{creatingSlot ? 'Creating…' : 'New'}</span>}</button>
@@ -2667,7 +2656,7 @@ function ChatSidebar({
                   title={i18nT('pages.chatSidebar.create')} aria-label={i18nT('pages.chatSidebar.more_create_options')}><ChevronDown size={13} /></button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-[200px]" onCloseAutoFocus={onMenuCloseAutoFocus}>
-                <DropdownMenuItem disabled={!kiroSessionReady} onClick={() => { createAutopilotMutation.mutate() }}>
+                <DropdownMenuItem onClick={() => { createAutopilotMutation.mutate() }}>
                   <Zap size={14} className="text-accent" /> {i18nT('pages.chatSidebar.new_autopilot_chat')}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
@@ -2676,7 +2665,7 @@ function ChatSidebar({
                 </DropdownMenuItem>
                 {folders.length > 0 && (
                   <DropdownMenuSub>
-                    <DropdownMenuSubTrigger disabled={!kiroSessionReady} className="data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
+                    <DropdownMenuSubTrigger className="data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
                       <Folder size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat_in_folder')}
                       <ChevronRight size={13} className="ml-auto text-muted" />
                     </DropdownMenuSubTrigger>
@@ -2688,7 +2677,7 @@ function ChatSidebar({
                         const walk = (list: ChatFolder[], depth: number) => { for (const f of list) { items.push({ f, depth }); walk(childrenOf(f.id), depth + 1) } }
                         walk(roots, 0)
                         return items.map(({ f, depth }) => (
-                          <DropdownMenuItem key={f.id} disabled={!kiroSessionReady} style={{ paddingLeft: `${12 + depth * 16}px` }} onClick={() => { createChatInFolder(f.id); requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) }}>
+                          <DropdownMenuItem key={f.id} style={{ paddingLeft: `${12 + depth * 16}px` }} onClick={() => { createChatInFolder(f.id); requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) }}>
                             <Folder size={14} className={depth === 0 ? 'text-muted' : 'text-muted/60'} /> {f.name}
                           </DropdownMenuItem>
                         ))

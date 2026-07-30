@@ -16,6 +16,11 @@ class _ReadyKiroPrerequisiteService(KiroPrerequisiteService):
     async def session_ready(self) -> bool:
         return True
 
+    # This endpoint fails closed on a FRESH probe, not the latch.
+    async def verified_ready(self, *, max_age_secs: float) -> bool:
+        del max_age_secs
+        return True
+
 
 _READY_KIRO_PREREQUISITE = object.__new__(_ReadyKiroPrerequisiteService)
 
@@ -137,6 +142,14 @@ def _make_request(body: dict, state, app: str = ""):
 @pytest.mark.asyncio
 class TestApiCompletionsBlocking:
     async def test_prerequisite_error_uses_openai_schema(self, tmp_path):
+        """This endpoint fails closed, in OpenAI error shape.
+
+        Unlike the dashboard, there is no transcript the caller reads: the
+        collectors pick up only `chunk`/`assistant` roles, so an AcpAuthRequired
+        turn's `error` card would be invisible and the request would return 200
+        with empty content — indistinguishable from a model that said nothing.
+        """
+
         slot = _make_slot()
         state = _make_state(slot)
         request = _make_request(
@@ -150,6 +163,7 @@ class TestApiCompletionsBlocking:
             audit_writer=AsyncMock(),
         )
         service._has_probed = True
+        assert await service.session_ready() is False
         request.app["kiro_prerequisite_service"] = service
 
         response = await api_completions(request)

@@ -1175,16 +1175,17 @@ class TestPrepareMessages:
 
 class TestKiroReadinessQueueHandoff:
     @pytest.mark.asyncio
-    async def test_dequeued_turn_reuses_successful_readiness_check(
+    async def test_dequeued_turn_runs_without_a_readiness_probe(
         self,
         tmp_path,
-        monkeypatch,
     ):
-        """A queued item must not be lost to a second readiness probe.
+        """A queued item is never lost to a readiness check.
 
-        The outer turn probes once on entry and again before dequeueing.  A
-        third false result would previously make the nested turn return after
-        the queue item had already been removed.
+        Readiness used to be probed on turn entry AND again before dequeueing,
+        so a third false answer could drop an item already popped off the queue.
+        Both probes are gone — readiness is latched at boot and the ACP attempt
+        reports auth failures — so the successor turn simply runs. This pins the
+        no-loss invariant that outlives the probes.
         """
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
@@ -1196,20 +1197,12 @@ class TestKiroReadinessQueueHandoff:
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"response to {stream_message}")
             yield LLMEvent(kind=EVENT_COMPLETE)
 
-        readiness_answers = (True, True, False)
-        readiness_calls = 0
-
-        async def session_ready(_service: object) -> bool:
-            nonlocal readiness_calls
-            answer = readiness_answers[readiness_calls]
-            readiness_calls += 1
-            return answer
-
         client = MagicMock()
         client.stream = stream
         client.stream_command = stream
         client.context_usage_pct = MagicMock(return_value=1.0)
         state = _make_state(tmp_path)
+        # A service whose latch would answer "not ready" if anything asked it.
         state.kiro_prerequisite_service = object()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
@@ -1221,16 +1214,11 @@ class TestKiroReadinessQueueHandoff:
         slot = state.get_or_create_slot("queued-readiness")
         slot._titled = True
         queue_id = slot.queue_append("keep this queued")
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.kiro_readiness.kiro_session_ready",
-            session_ready,
-        )
 
         await _run_chat(state, slot, "first message")
         assert slot.task is not None
         await slot.task
 
-        assert readiness_calls == 2
         assert delivered[0] == "first message"
         assert delivered[1].endswith("keep this queued")
         assert slot._queue == []

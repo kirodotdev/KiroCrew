@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import copy
 import hashlib
+import json
 import os
 import sqlite3
 import subprocess
@@ -22,7 +23,7 @@ from chat_test_helpers import _make_state
 from kiro_crew import _process_group_supervisor as supervisor
 from kiro_crew import kiro_prerequisite as prerequisite_module
 from kiro_crew import platform_compat
-from kiro_crew.dashboard.chat_handlers import api_chat, api_chat_slot_create
+from kiro_crew.dashboard.chat_handlers import api_chat_slot_create
 from kiro_crew.dashboard.chat_regenerate import (
     api_chat_slot_edit_resend,
     api_chat_slot_regenerate,
@@ -827,16 +828,24 @@ class TestKiroPrerequisiteWorkflow:
 
     @pytest.mark.asyncio
     async def test_missing_route_prerequisite_wiring_fails_closed(self) -> None:
+        """An unwired service must still fail closed on the BLOCKING gate.
+
+        Turn-starting routes are advisory now, so the invariant is pinned on the
+        poll-driven spawn gate — the one that still refuses to run ``kiro-cli``
+        without a verified readiness latch.
+        """
+
+        from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+
         app = web.Application()
         app["state"] = SimpleNamespace()
-        app.router.add_post("/api/chat/slots", api_chat_slot_create)
+        request = SimpleNamespace(app=app)
 
-        async with TestClient(TestServer(app)) as client:
-            response = await client.post("/api/chat/slots", json={})
-            body = await response.json()
+        blocked = await reject_if_kiro_unverified(request)  # type: ignore[arg-type]
 
-        assert response.status == 503
-        assert body["code"] == "kiro_prerequisite_required"
+        assert blocked is not None
+        assert blocked.status == 503
+        assert json.loads(blocked.body)["code"] == "kiro_prerequisite_required"
 
     @pytest.mark.asyncio
     async def test_explicit_test_harness_mode_assumes_ready(self, tmp_path: Path) -> None:
@@ -1553,10 +1562,16 @@ class TestKiroPrerequisiteWorkflow:
         assert len(runtime.calls) == calls_after_probe
 
     @pytest.mark.asyncio
-    async def test_paused_session_gate_reprobes_after_manual_login(
+    async def test_session_gate_never_probes(
         self,
         tmp_path: Path,
     ) -> None:
+        """The session gate spawns NO subprocess — it reads latched state only.
+
+        Probing is boot-and-explicit-action only, so no amount of elapsed time or
+        repeated session checks may spawn a ``kiro-cli``.
+        """
+
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
         runtime = _FakeRuntime(executable)
@@ -1570,27 +1585,281 @@ class TestKiroPrerequisiteWorkflow:
             clock=lambda: now[0],
         )
 
+        # Nothing probed yet: the gate reports not-ready without spawning.
         assert await service.session_ready() is False
-        runtime.authenticated = True
-        now[0] += prerequisite_module._SESSION_GUARD_REPROBE_SECS + 0.1
+        assert runtime.calls == []
 
-        # A stale not-ready value starts one background refresh without
-        # blocking the session-start path on CLI subprocesses.
+        # Time passing does not license a re-probe.
+        now[0] += 10_000.0
         assert await service.session_ready() is False
-        assert service._session_probe_task is not None
-        await service._session_probe_task
-
-        assert await service.session_ready() is True
-        # A runnable CLI is probed for identity every time (trust is "runs +
-        # valid login"), so both probes run version then whoami.
-        assert runtime.calls.count((str(executable), ["--version"])) == 2
-        assert runtime.calls.count((str(executable), ["whoami"])) == 2
+        assert runtime.calls == []
 
     @pytest.mark.asyncio
-    async def test_close_cancels_background_session_probe(
+    async def test_session_gate_reads_boot_probe_result_without_reprobing(
         self,
         tmp_path: Path,
     ) -> None:
+        """After the boot probe, the gate serves its result forever, unprobed."""
+
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.authenticated = True
+        now = [100.0]
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+            clock=lambda: now[0],
+        )
+
+        # The boot probe (warm_up) resolves readiness once.
+        await service._probe()
+        calls_after_boot = len(runtime.calls)
+        assert calls_after_boot
+
+        # A later sign-out is NOT discovered by the gate; that is the ACP
+        # attempt's job now. The latched value stands.
+        runtime.authenticated = False
+        now[0] += 10_000.0
+        assert await service.session_ready() is True
+        assert len(runtime.calls) == calls_after_boot
+
+    @pytest.mark.asyncio
+    async def test_verified_ready_reprobes_a_stale_ready_latch(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A stale ready=True must NOT authorize a destructive or spawning call.
+
+        Boot authenticated, then the user logs out externally and never sends a
+        chat turn — so `mark_signed_out()` never fires and the latch still says
+        ready. `session_ready()` (the send path) keeps trusting it; the
+        authorization gate must re-probe and deny.
+        """
+
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.authenticated = True
+        now = [100.0]
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+            clock=lambda: now[0],
+        )
+
+        await service._probe()
+        assert await service.session_ready() is True
+
+        # External logout, no chat turn in between.
+        runtime.authenticated = False
+        now[0] += 10_000.0
+
+        # The send path still trusts the latch (that is deliberate).
+        assert await service.session_ready() is True
+        # The authorization gate does not.
+        assert await service.verified_ready(max_age_secs=30.0) is False
+
+    @pytest.mark.asyncio
+    async def test_verified_ready_reprobes_a_stale_not_ready_latch(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A stale ready=False must not permanently 503 these endpoints either.
+
+        This is the recovery direction: the user signed in from a terminal, so a
+        re-probe must pick it up without a gateway restart.
+        """
+
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        now = [100.0]
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+            clock=lambda: now[0],
+        )
+
+        await service._probe()
+        assert await service.verified_ready(max_age_secs=30.0) is False
+
+        runtime.authenticated = True
+        now[0] += 31.0
+
+        assert await service.verified_ready(max_age_secs=30.0) is True
+
+    @pytest.mark.asyncio
+    async def test_verified_ready_serves_a_fresh_latch_without_reprobing(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Within the freshness window a burst of callers collapses to one probe."""
+
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.authenticated = True
+        now = [100.0]
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+            clock=lambda: now[0],
+        )
+
+        await service._probe()
+        calls_after_boot = len(runtime.calls)
+
+        for _ in range(5):
+            assert await service.verified_ready(max_age_secs=30.0) is True
+        assert len(runtime.calls) == calls_after_boot
+
+    @pytest.mark.asyncio
+    async def test_verified_ready_fails_closed_when_the_probe_cannot_run(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A probe that raises is not evidence of readiness."""
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            audit_writer=_no_audit,
+        )
+        service._has_probed = True
+        service._status.ready = True
+
+        async def exploding_probe(*_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("probe exploded")
+
+        service._probe = exploding_probe  # type: ignore[method-assign]
+
+        assert await service.verified_ready(max_age_secs=0.0) is False
+
+    @pytest.mark.asyncio
+    async def test_mark_signed_out_latches_without_probing(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """An observed ACP auth failure narrows readiness with no subprocess."""
+
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.authenticated = True
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+        )
+
+        await service._probe()
+        assert await service.session_ready() is True
+        calls_after_boot = len(runtime.calls)
+
+        service.mark_signed_out()
+
+        assert await service.session_ready() is False
+        snapshot = await service.snapshot()
+        assert snapshot["authenticated"] is False
+        assert snapshot["ready"] is False
+        # Latching is pure bookkeeping — it must not spawn anything.
+        assert len(runtime.calls) == calls_after_boot
+
+    @pytest.mark.asyncio
+    async def test_mark_signed_out_preserves_returning_user_state(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Latching signed-out must not demote a returning user to first-run."""
+
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.authenticated = True
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+        )
+
+        await service._probe()
+        assert service.initial_setup_complete is True
+
+        service.mark_signed_out()
+
+        snapshot = await service.snapshot()
+        assert snapshot["ready"] is False
+        # Never demote a returning user to the full-screen first-run setup shell.
+        assert snapshot["initial_setup_complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_mark_signed_out_defers_to_a_running_operation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A live install/login owns the status; latching must not race it."""
+
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.authenticated = True
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+        )
+        await service._probe()
+
+        never_finishes: asyncio.Future[None] = asyncio.Future()
+
+        async def _hold() -> None:
+            await never_finishes
+
+        service._task = asyncio.create_task(_hold())
+        try:
+            assert service.operation_running is True
+            service.mark_signed_out()
+            # The operation's own probe decides the outcome, not this latch.
+            assert await service.session_ready() is True
+        finally:
+            service._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await service._task
+
+    @pytest.mark.asyncio
+    async def test_close_cancels_the_boot_warm_up_probe(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A gateway shutdown mid-boot-probe must not leak the subprocess wait."""
+
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
         probe_started = asyncio.Event()
@@ -1609,27 +1878,18 @@ class TestKiroPrerequisiteWorkflow:
                 probe_cancelled.set()
                 raise
 
-        now = [100.0]
         service = KiroPrerequisiteService(
             platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
             home=tmp_path,
             process_runner=blocking_runtime,
             audit_writer=_no_audit,
-            clock=lambda: now[0],
+            warm_up_delay=0,
         )
-        # Simulate a completed, VERIFIED probe: this test exercises the
-        # background-refresh path, which is only reached once the session gate's
-        # one-time real verification has already happened.
-        service._has_probed = True
-        service._has_verified = True
-        service._last_probe_at = now[0]
-        now[0] += prerequisite_module._SESSION_GUARD_REPROBE_SECS + 0.1
 
-        assert await service.session_ready() is False
-        await asyncio.wait_for(probe_started.wait(), timeout=1)
-        task = service._session_probe_task
+        task = service.warm_up()
         assert task is not None
+        await asyncio.wait_for(probe_started.wait(), timeout=1)
 
         await service.close()
 
@@ -1637,37 +1897,39 @@ class TestKiroPrerequisiteWorkflow:
         assert probe_cancelled.is_set()
 
     @pytest.mark.asyncio
-    async def test_ready_session_gate_detects_later_sign_out_after_ttl(
+    async def test_status_endpoint_probes_only_when_refresh_is_forced(
         self,
         tmp_path: Path,
     ) -> None:
+        """The polled snapshot reads latched state; ``force`` is the probe path."""
+
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
         runtime = _FakeRuntime(executable)
         runtime.authenticated = True
-        now = [100.0]
         service = KiroPrerequisiteService(
             platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
             home=tmp_path,
+            data_home=tmp_path / "data-home",
             process_runner=runtime.run,
             audit_writer=_no_audit,
-            clock=lambda: now[0],
         )
-        service._attest_candidate(str(executable))
 
-        assert await service.session_ready() is True
+        await service._probe()
+        calls_after_boot = len(runtime.calls)
         runtime.authenticated = False
-        now[0] += prerequisite_module._SESSION_GUARD_REPROBE_SECS + 0.1
 
-        # The stale ready value never makes the chat hot path wait on CLI
-        # subprocesses; the first guard starts one background refresh.
-        assert await service.session_ready() is True
-        assert service._session_probe_task is not None
-        await service._session_probe_task
+        # Background polls are free and keep serving the latched value.
+        for _ in range(5):
+            snapshot = await service.snapshot()
+            assert snapshot["ready"] is True
+        assert len(runtime.calls) == calls_after_boot
 
-        assert await service.session_ready() is False
-        assert runtime.calls.count((str(executable), ["whoami"])) == 2
+        # An explicit refresh re-probes and picks up the sign-out.
+        refreshed = await service.snapshot(force=True)
+        assert refreshed["ready"] is False
+        assert len(runtime.calls) > calls_after_boot
 
     @pytest.mark.asyncio
     async def test_successful_auth_persists_first_run_completion(
@@ -1828,7 +2090,7 @@ class TestKiroPrerequisiteWorkflow:
         self,
         tmp_path: Path,
     ) -> None:
-        """The session gate probes once, not per turn — the hot path stays fast."""
+        """The boot probe resolves readiness; the gate then never spawns again."""
 
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
@@ -1841,15 +2103,19 @@ class TestKiroPrerequisiteWorkflow:
             data_home=tmp_path / "data-home",
             process_runner=runtime.run,
             audit_writer=_no_audit,
+            warm_up_delay=0,
         )
 
-        assert await service.session_ready() is True
-        after_first = len(runtime.calls)
-        assert after_first, "the first session check must actually probe"
+        warm_up = service.warm_up()
+        assert warm_up is not None
+        await warm_up
+        after_boot = len(runtime.calls)
+        assert after_boot, "the boot warm-up must actually probe"
 
-        # Subsequent turns reuse the verified state (within the freshness window).
-        assert await service.session_ready() is True
-        assert len(runtime.calls) == after_first
+        # Every later turn reads the latch — no subprocess, ever.
+        for _ in range(5):
+            assert await service.session_ready() is True
+        assert len(runtime.calls) == after_boot
 
     @pytest.mark.asyncio
     async def test_warm_up_failure_is_contained(self, tmp_path: Path) -> None:
@@ -3306,7 +3572,8 @@ class TestKiroPrerequisiteHandlers:
         }
         calls: list[tuple[str, str]] = []
 
-        async def fake_snapshot() -> dict[str, Any]:
+        async def fake_snapshot(*, force: bool = False) -> dict[str, Any]:
+            del force
             return snapshot
 
         monkeypatch.setattr(service, "snapshot", fake_snapshot)
@@ -3359,11 +3626,19 @@ class TestKiroPrerequisiteHandlers:
         assert body["setup_allowed"] is True
 
     @pytest.mark.asyncio
-    async def test_session_create_and_send_are_rejected_before_enqueue_when_not_ready(
+    async def test_session_create_and_send_are_admitted_when_latch_is_stale(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """Turn-starting routes no longer 503 on a latched not-ready value.
+
+        Readiness is probed at boot and on explicit action only, so a stale latch
+        must not reject a request the CLI would have served — that was the stuck
+        case (sign in from a terminal, stay locked out). The ACP attempt reports
+        the real auth state as a chat error instead.
+        """
+
         service = KiroPrerequisiteService(
             platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": ""},
@@ -3376,70 +3651,36 @@ class TestKiroPrerequisiteHandlers:
             return {"ready": False}
 
         monkeypatch.setattr(service, "snapshot", not_ready_snapshot)
+        assert await service.session_ready() is False
         app = web.Application()
         app["state"] = SimpleNamespace()
         app["kiro_prerequisite_service"] = service
-        app.router.add_post("/api/chat", api_chat)
         app.router.add_post("/api/chat/slots", api_chat_slot_create)
 
         async with TestClient(TestServer(app)) as client:
             create_response = await client.post("/api/chat/slots", json={})
-            create_body = await create_response.json()
-            send_response = await client.post(
-                "/api/chat",
-                json={"message": "must not enqueue"},
-            )
-            send_body = await send_response.json()
+            create_text = await create_response.text()
 
-        assert create_response.status == 503
-        assert send_response.status == 503
-        assert create_body["code"] == "kiro_prerequisite_required"
-        assert send_body["code"] == "kiro_prerequisite_required"
+        # Admitted past the (now removed) prerequisite gate: the request reaches
+        # the handler body and only then fails on this bare SimpleNamespace state
+        # (500), rather than being turned away with the prerequisite 503.
+        assert create_response.status != 503
+        assert "kiro_prerequisite_required" not in create_text
 
     @pytest.mark.asyncio
-    async def test_central_chat_runner_blocks_non_http_turn_entry(self, tmp_path: Path) -> None:
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": ""},
-            home=tmp_path,
-            audit_writer=_no_audit,
-        )
-        service._has_probed = True
-        service._has_verified = True  # pre-verified: not exercising the gate's own probe
-        broadcasts: list[tuple[str, dict[str, Any]]] = []
-        refreshes: list[str] = []
-        state = SimpleNamespace(
-            kiro_prerequisite_service=service,
-            broadcast_ws=lambda event, payload: broadcasts.append((event, payload)),
-            push_slots_update=lambda: None,
-            push_refresh=lambda target: refreshes.append(target),
-        )
-        slot = SimpleNamespace(
-            key="taskrunner-slot",
-            append=lambda role, content, css: appended.append((role, content, css)),
-            task=object(),
-        )
-        appended: list[tuple[str, str, str]] = []
-
-        await _run_chat(state, slot, "workflow auto-turn")
-
-        assert appended == [
-            (
-                "error",
-                "Kiro CLI setup or sign-in is required before starting a session.",
-                "msg msg-err",
-            ),
-            ("done", "", "done"),
-        ]
-        assert slot.task is None
-        assert broadcasts == [("chat_done", {"slot": "taskrunner-slot"})]
-        assert refreshes == ["history"]
-
-    @pytest.mark.asyncio
-    async def test_central_chat_runner_posts_readiness_error_to_linked_slack(
+    async def test_central_chat_runner_posts_auth_error_to_linked_slack(
         self,
         tmp_path: Path,
     ) -> None:
+        """An ACP auth failure still reaches a linked Slack thread.
+
+        The pre-turn readiness gate used to own this delivery; the
+        ``AcpAuthRequired`` handler now does, so a user driving the session from
+        Slack is not left without a response when the CLI is signed out.
+        """
+
+        from kiro_crew.acp.client import AcpAuthRequired
+
         service = KiroPrerequisiteService(
             platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": ""},
@@ -3447,7 +3688,8 @@ class TestKiroPrerequisiteHandlers:
             audit_writer=_no_audit,
         )
         service._has_probed = True
-        service._has_verified = True  # pre-verified: not exercising the gate's own probe
+        service._status.ready = True
+        service._status.authenticated = True
         state = _make_state(tmp_path)
         state.kiro_prerequisite_service = service
         state.slack_client = MagicMock()
@@ -3455,7 +3697,27 @@ class TestKiroPrerequisiteHandlers:
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
         state.push_refresh = MagicMock()
+        state.context_builder = None
+        state.consolidator = None
+        state._hook_store = None
+        state._yolo = False
+
+        async def stream(_stream_message: str):
+            raise AcpAuthRequired("kiro-cli is not logged in.")
+            yield  # pragma: no cover — generator shape only
+
+        client = MagicMock()
+        client.stream = stream
+        client.stream_command = stream
+        client.context_usage_pct = MagicMock(return_value=1.0)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.record_failure = AsyncMock()
+        # No inbound mirror link: this test asserts the AUTH-error delivery, so
+        # the ordinary user-message mirror must stay out of post_message's calls.
+        state.sessions.get_slack_link = MagicMock(return_value=("", ""))
+
         slot = state.get_or_create_slot("linked-readiness")
+        slot._titled = True
         slot._slack_linked = True
         slot._slack_thread_ts = "1712345.6789"
         slot._slack_channel = "C123"
@@ -3464,16 +3726,28 @@ class TestKiroPrerequisiteHandlers:
 
         state.slack_client.post_message.assert_awaited_once_with(
             "C123",
-            "Kiro CLI setup or sign-in is required before starting a session.",
+            "kiro-cli is not logged in.",
             "1712345.6789",
         )
-        assert slot.task is None
+        # The observed failure latches readiness so the SPA banner appears
+        # without waiting for the user to hit Refresh.
+        assert service._status.ready is False
+        assert service._status.authenticated is False
 
     @pytest.mark.asyncio
-    async def test_paused_destructive_chat_routes_leave_slot_and_sessions_unchanged(
+    async def test_destructive_chat_routes_reject_before_mutating_history(
         self,
         tmp_path: Path,
     ) -> None:
+        """regenerate / edit-resend / rewind MUST fail closed on a stale latch.
+
+        These three truncate `slot.messages` and PERSIST the result before the
+        background turn runs, so "let the ACP attempt be the authority" does not
+        hold: by the time the turn raises AcpAuthRequired the history is already
+        rewritten, and no error card can undo it. They therefore keep the
+        blocking gate even though an ordinary send does not.
+        """
+
         service = KiroPrerequisiteService(
             platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": ""},
@@ -3482,8 +3756,8 @@ class TestKiroPrerequisiteHandlers:
             clock=lambda: 1.0,
         )
         service._has_probed = True
-        service._has_verified = True  # pre-verified: not exercising the gate's own probe
         service._last_probe_at = 1.0
+        assert await service.session_ready() is False
         messages = [
             {"role": "user", "content": "question", "ts": "u1"},
             {"role": "assistant", "content": "answer", "ts": "a1"},
@@ -3529,16 +3803,90 @@ class TestKiroPrerequisiteHandlers:
 
         assert [response.status for response in responses] == [503, 503, 503]
         assert [body["code"] for body in bodies] == ["kiro_prerequisite_required"] * 3
+        # The refusal happens BEFORE any mutation: history is untouched and no
+        # session/persistence call was made.
         assert messages == original_messages
         assert sessions.mock_calls == []
         assert persistence.mock_calls == []
 
     @pytest.mark.asyncio
-    async def test_readiness_loss_waits_then_resumes_queued_message_fifo(
+    async def test_auth_failure_holds_the_queue_instead_of_draining_it(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """An auth failure must not pop every queued prompt into the same wall.
+
+        Without this, teardown hands the queue to a successor turn that fails
+        identically, repeats, and drains the whole queue — leaving nothing to
+        resume after the user signs in. The queue is held intact instead (cards
+        stay visible and individually cancellable).
+        """
+
+        from kiro_crew.acp.client import AcpAuthRequired
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._has_probed = True
+        service._status.ready = True
+        service._status.authenticated = True
+
+        delivered: list[str] = []
+
+        async def stream(stream_message: str):
+            delivered.append(stream_message)
+            raise AcpAuthRequired("kiro-cli is not logged in.")
+            yield  # pragma: no cover — generator shape only
+
+        client = MagicMock()
+        client.stream = stream
+        client.stream_command = stream
+        client.context_usage_pct = MagicMock(return_value=1.0)
+        state = _make_state(tmp_path)
+        state.kiro_prerequisite_service = service
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.push_refresh = MagicMock()
+        state.context_builder = None
+        state.consolidator = None
+        state._hook_store = None
+        state._yolo = False
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.record_failure = AsyncMock()
+        state.sessions.get_slack_link = MagicMock(return_value=("", ""))
+
+        slot = state.get_or_create_slot("auth-queue")
+        slot._titled = True
+        slot.queue_append("first queued")
+        slot.queue_append("second queued")
+
+        await _run_chat(state, slot, "message that hits the auth wall")
+
+        # Only the original turn ran; neither queued prompt was consumed.
+        assert delivered == ["message that hits the auth wall"]
+        assert len(slot._queue) == 2
+        # And the actionable message reached the transcript.
+        assert any(
+            message.get("role") == "error"
+            and "not logged in" in message.get("content", "")
+            for message in slot.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_stale_not_ready_does_not_park_the_queue(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A latched not-ready value must never strand a queued message.
+
+        Readiness is only refreshed at boot and on explicit action, so parking
+        the queue on it would wait forever. The successor turn runs and the ACP
+        attempt reports the real auth state.
+        """
+
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 
         service = KiroPrerequisiteService(
@@ -3546,12 +3894,11 @@ class TestKiroPrerequisiteHandlers:
             environ={"HOME": str(tmp_path), "PATH": ""},
             home=tmp_path,
             audit_writer=_no_audit,
-            clock=lambda: 1.0,
         )
+        # Deliberately stale/not-ready: the boot probe found a signed-out CLI and
+        # the user has since signed in from a terminal.
         service._has_probed = True
-        service._has_verified = True  # pre-verified: not exercising the gate's own probe
-        service._last_probe_at = 1.0
-        service._status.ready = True
+        service._status.ready = False
 
         delivered: list[str] = []
 
@@ -3559,11 +3906,6 @@ class TestKiroPrerequisiteHandlers:
             delivered.append(stream_message)
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"response to {stream_message}")
             yield LLMEvent(kind=EVENT_COMPLETE)
-
-        readiness = iter((True, False, True, True))
-
-        async def session_ready(_service: object) -> bool:
-            return next(readiness)
 
         client = MagicMock()
         client.stream = stream
@@ -3581,22 +3923,13 @@ class TestKiroPrerequisiteHandlers:
         slot = state.get_or_create_slot("queued")
         slot._titled = True
         queue_id = slot.queue_append("keep this queued")
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.kiro_readiness.kiro_session_ready",
-            session_ready,
-        )
-        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
 
         await _run_chat(state, slot, "first message")
-        readiness_waiter = slot.task
-        assert readiness_waiter is not None
-        assert readiness_waiter in state._background_tasks
-        await readiness_waiter
         queued_turn = slot.task
         assert queued_turn is not None
-        assert queued_turn is not readiness_waiter
         await queued_turn
 
+        # Both turns ran despite the stale not-ready latch.
         assert delivered[0] == "first message"
         assert delivered[1].endswith("keep this queued")
         assert slot._queue == []
@@ -3605,19 +3938,30 @@ class TestKiroPrerequisiteHandlers:
             call.args[0] == "queue_pop" and call.args[1]["queue_id"] == queue_id
             for call in state.broadcast_ws.call_args_list
         )
-        assert any(
-            message.get("role") == "error" and "queued messages" in message.get("content", "")
+        # No "setup or sign-in is required" card — nothing was blocked.
+        assert not any(
+            message.get("role") == "error" and "sign-in is required" in message.get("content", "")
             for message in slot.messages
         )
 
     @pytest.mark.asyncio
-    async def test_readiness_loss_keeps_synthesis_armed_until_it_resumes(
+    async def test_stale_not_ready_does_not_park_synthesis(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """Post-fan-out synthesis runs rather than waiting on latched readiness."""
+
         from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._has_probed = True
+        service._status.ready = False
 
         delivered: list[str] = []
 
@@ -3626,19 +3970,12 @@ class TestKiroPrerequisiteHandlers:
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"response to {stream_message}")
             yield LLMEvent(kind=EVENT_COMPLETE)
 
-        readiness = iter((True, False, True))
-        pending_at_readiness_check: list[bool] = []
-
-        async def session_ready(_service: object) -> bool:
-            pending_at_readiness_check.append(slot._pending_synthesis)
-            return next(readiness)
-
         client = MagicMock()
         client.stream = stream
         client.stream_command = stream
         client.context_usage_pct = MagicMock(return_value=1.0)
         state = _make_state(tmp_path)
-        state.kiro_prerequisite_service = object()
+        state.kiro_prerequisite_service = service
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
         state.context_builder = None
@@ -3651,18 +3988,12 @@ class TestKiroPrerequisiteHandlers:
         slot = state.get_or_create_slot("synthesis-readiness")
         slot._titled = True
         slot._pending_synthesis = True
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.kiro_readiness.kiro_session_ready",
-            session_ready,
-        )
-        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
 
         await _run_chat(state, slot, "first message")
         synthesis_task = slot.task
         assert synthesis_task is not None
         await synthesis_task
 
-        assert pending_at_readiness_check == [True, True, True]
         assert delivered[0] == "first message"
         assert any(message.endswith(SUBAGENT_SYNTHESIS_PROMPT) for message in delivered[1:])
         assert slot._pending_synthesis is False
@@ -3708,7 +4039,8 @@ class TestKiroPrerequisiteHandlers:
             owner_id="configured-owner",
         )
 
-        async def ready_snapshot() -> dict[str, Any]:
+        async def ready_snapshot(*, force: bool = False) -> dict[str, Any]:
+            del force
             return {
                 "platform": "Linux",
                 "installed": True,
@@ -3774,7 +4106,8 @@ class TestKiroPrerequisiteHandlers:
             audit_writer=_no_audit,
         )
 
-        async def exploding_snapshot() -> dict[str, Any]:
+        async def exploding_snapshot(*, force: bool = False) -> dict[str, Any]:
+            del force
             raise RuntimeError("probe exploded")
 
         monkeypatch.setattr(service, "snapshot", exploding_snapshot)
@@ -3800,7 +4133,8 @@ class TestKiroPrerequisiteHandlers:
             audit_writer=_no_audit,
         )
 
-        async def empty_snapshot() -> dict[str, Any]:
+        async def empty_snapshot(*, force: bool = False) -> dict[str, Any]:
+            del force
             return {}
 
         monkeypatch.setattr(service, "snapshot", empty_snapshot)

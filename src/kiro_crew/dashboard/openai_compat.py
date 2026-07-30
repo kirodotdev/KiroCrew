@@ -22,7 +22,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_runner import _run_chat
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -93,7 +93,13 @@ def _redact(text: str) -> str:
 
 async def api_completions(request: web.Request) -> web.StreamResponse:
     """POST /v1/chat/completions — OpenAI-compatible chat endpoint."""
-    blocked = await reject_if_kiro_not_ready(request)
+    # Unlike the dashboard, this endpoint has no transcript the caller reads: the
+    # collectors below pick up only `chunk`/`assistant` roles, so the `error` card
+    # an AcpAuthRequired turn appends is invisible and the request would return
+    # HTTP 200 with empty content — an SDK client cannot tell that apart from a
+    # model that legitimately said nothing. Fail closed until this endpoint
+    # translates AcpAuthRequired into an OpenAI-shaped error.
+    blocked = await reject_if_kiro_unverified(request)
     if blocked is not None:
         return web.json_response(
             {

@@ -1,7 +1,9 @@
 # Subagent Module
 
-Last Updated: 2026-07-26 (post-fan-out synthesis survives temporary Kiro
-readiness loss)
+Last Updated: 2026-07-29 (post-fan-out synthesis no longer waits on Kiro
+readiness: readiness is latched at gateway boot, so the synthesis turn runs and a
+signed-out CLI surfaces as an `AcpAuthRequired` error card. Prior: synthesis
+survives temporary Kiro readiness loss)
 
 ## Overview
 
@@ -256,12 +258,13 @@ own stage synthesis).
   (`running_agents_for(parent_key) == []`), set `slot._pending_synthesis = True`.
 - **Fire** — in `chat_runner._run_chat`'s drain/idle branch, once the queue is
   empty, no agents are running, `_pending_synthesis` is set, **and**
-  `slot._subagent_deliveries_inflight == 0`, launch exactly one tracked
-  readiness waiter. `_synthesis_inflight` prevents duplicate waiters while
-  `_pending_synthesis` stays armed across temporary setup/sign-in loss. Once
-  readiness and the delivery guards all pass, the waiter clears the arm
-  immediately before starting one timeout-bounded `_run_chat` turn with
-  `SUBAGENT_SYNTHESIS_PROMPT`.
+  `slot._subagent_deliveries_inflight == 0`, launch exactly one tracked synthesis
+  task. `_synthesis_inflight` prevents duplicates. There is **no readiness wait**:
+  readiness is latched at gateway boot and refreshed only on explicit user action,
+  so parking the arm on it would strand the synthesis indefinitely. The task
+  clears the arm once the delivery guards pass, immediately before starting one
+  timeout-bounded `_run_chat` turn with `SUBAGENT_SYNTHESIS_PROMPT`; a signed-out
+  CLI surfaces as an `AcpAuthRequired` error card from that turn.
 - **Per-result turns kept** — each completion is still processed in its own turn
   (no raw buffering) to avoid a context-window blowup; the synthesis works over
   the already-condensed per-result turns.

@@ -1,6 +1,6 @@
 # Self-Learning, Cron & Dashboard Modules
 
-Last Updated: 2026-07-28 (foreign-agent import rescoped to the industry-consensus set: conversation-transcript import removed, `instructions` and `denied_commands` added, imported instruction/persona-directive text rewritten into the memory hierarchy, a hard dry-run contract, and user-selectable skip/rename/overwrite conflict strategies; the authoritative contract now lives in `docs/system-specs/modules/onboarding-import.md`. Prior — the Kiro prerequisite gate no longer flashes first-run setup at returning users: the dashboard mounts immediately with sessions paused instead of rendering setup chrome for an unresolved check, `initial_setup_complete` is readable before any probe (derived from the data home) and survives the probe-failure backstop. Gateway boot also no longer scales with installed-app count — app backends spawn concurrently with an ownership-confirmed early exit (~5.6s → ~2.9s on one real home). Prior — provider CLI resolution relaxed to a user-trust model: `gh`/`glab` are resolved from the well-known install dirs and then the ambient `PATH`, the user's own Homebrew/asdf install is accepted, and only foreign-owned, world-writable, or agent-writable-tree binaries are refused — `KIROCREW_PROVIDER_BIN_STRICT=1` restores the old root-owned rule. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP)
+Last Updated: 2026-07-29 (Kiro readiness is probed ONCE at gateway boot and thereafter only on explicit user action — no timer re-probe, no probe on the send path; a mid-session logout is discovered by the ACP attempt itself (`AcpAuthRequired`), which posts an actionable `kiro-cli login` error card and latches the service signed-out. Turn-starting paths no longer gate on readiness (only the poll-driven `/api/models` + `/api/sessions/usage` spawn sites still fail closed), and ALL sign-in guidance chrome is removed: reauthentication banner, could-not-check banner, terminal-command block, and the whole `KiroReadinessContext` paused-session seam are deleted. Prior — foreign-agent import rescoped to the industry-consensus set: conversation-transcript import removed, `instructions` and `denied_commands` added, imported instruction/persona-directive text rewritten into the memory hierarchy, a hard dry-run contract, and user-selectable skip/rename/overwrite conflict strategies; the authoritative contract now lives in `docs/system-specs/modules/onboarding-import.md`. Prior — the Kiro prerequisite gate no longer flashes first-run setup at returning users: the dashboard mounts immediately with sessions paused instead of rendering setup chrome for an unresolved check, `initial_setup_complete` is readable before any probe (derived from the data home) and survives the probe-failure backstop. Gateway boot also no longer scales with installed-app count — app backends spawn concurrently with an ownership-confirmed early exit (~5.6s → ~2.9s on one real home). Prior — provider CLI resolution relaxed to a user-trust model: `gh`/`glab` are resolved from the well-known install dirs and then the ambient `PATH`, the user's own Homebrew/asdf install is accepted, and only foreign-owned, world-writable, or agent-writable-tree binaries are refused — `KIROCREW_PROVIDER_BIN_STRICT=1` restores the old root-owned rule. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP. Prior — pull-request merge state resolves on first load: both providers compute mergeability lazily, so full fetches bound-re-read the merge fields until they settle, the chip-status cache carries the settled pair, and the panel folds a fresher poll answer into its pinned payload — the conflict banner no longer waits for a manual refresh. Prior — 2026-07-26 foreign-agent first-run scan/review/apply flow, authenticated API contract, disabled schedule import, and onboarding order — the import gate runs after the cross-platform Kiro CLI prerequisite gate and before the theme tour. Prior — 2026-07-26 cross-platform Kiro CLI prerequisite status/install/login service, first-run SPA gate, and readiness-resumable post-fan-out synthesis. Prior — 2026-07-23 source payloads gain normalized `mergeable`/`mergeStateStatus` merge-state fields for GitHub and GitLab; PullRequestPanel surfaces a merge-blocker banner for open PRs — conflicts/behind carry an agent chat handoff, branch-protection blocks do not. Prior: left-nav IA restructure: sidebar toggle moved into the rail's menu row; Sessions label; Apps header with accent Explore link; per-frame Apps scrolling; bottom-pinned Agent Capabilities/Settings/Contact Us; Agents + Capabilities merged into the /capabilities panel — /agents redirects there. Prior: independent source-tabs hardening: provider binaries must be canonical root-owned non-writable paths; command-specific output ceilings and task-lifetime retained-byte reservations bound provider memory; only durable messages contribute sources; backend/frontend/panel retain at most 64 first-seen sources per slot. Prior: pull-request source links, source/check/resolve APIs, bounded sidebar CI refresh, SidePanel Changes view; learn_add session-recovery resolver now probes cron JSONL names; artifact companion-chat updates; silent-cron failure-alert suppression; CHAT_TURN_TIMEOUT remains aligned with ACP)
 
 ## Overview
 
@@ -377,31 +377,77 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   content. Empty directories and zero-byte files created during gateway startup
   do not bypass first-run setup. App tokens remain denied. The two
   owner-only POST routes start one serialized background install or device-login
-  operation and return `202`. The React gate polls every second during an
-  operation, every three seconds for a waiting non-owner, and every 30 seconds
-  otherwise, including after readiness, so later sign-out or CLI removal
-  returns the dashboard to the repair state. Backend session-start guards share
-  the last known state without waiting on CLI subprocesses; after 30 seconds a
-  guard schedules one deduplicated background refresh, while the polled status
-  endpoint continues to await the short-cache probe directly.
-  If readiness disappears after a turn while that slot has queued messages,
-  the ending turn hands the FIFO queue to a separately tracked readiness-waiter
-  task. The waiter is not charged against the completed turn's timeout and does
-  not pop the queue until setup recovers, so later messages cannot leapfrog the
-  older entry. Once that pre-dequeue check succeeds, the spawned successor
-  inherits the successful check instead of probing again after the item has
-  already been removed from the queue. A readiness failure is also posted to a
-  linked Slack thread before the dashboard turn exits, so a user driving the
-  linked session remotely is not left without a response. Both the full
-  dashboard and the headless Slack/API server attach the service to application
-  and dashboard state and close it during runner cleanup. A missing or invalid
-  service fails closed; explicit offline test gateways use the service's
-  `assume_ready` mode.
-  Post-fan-out synthesis follows the same no-loss rule: one tracked waiter owns
-  the pending synthesis while readiness is false, leaving
-  `_pending_synthesis` armed and using `_synthesis_inflight` to prevent a
-  duplicate waiter. It consumes the arm only after readiness and sub-agent
-  delivery guards pass, immediately before the synthesis turn begins.
+  operation and return `202`.
+  **Probing is boot-and-explicit-action only.** The readiness probe (two
+  `kiro-cli` spawns) runs ONCE per gateway, in `warm_up()` shortly after start,
+  and thereafter only on an explicit user action: the gate's Refresh / Check
+  again button (`GET /api/kiro-prerequisite?refresh=1`, owner-only) or an
+  install/login operation. There is deliberately **no timer re-probe and no
+  probe on the send path** — `session_ready()` is a pure read of the latched
+  status, and the polled status endpoint serves that same latched value, so the
+  SPA's 30s poll costs no subprocess. The React gate still polls every second
+  during an operation, every three seconds for a waiting non-owner, and every
+  30 seconds otherwise; those polls are now free reads that render whatever the
+  latch says.
+  **A mid-session logout is discovered by the ACP attempt, not by a probe.**
+  Because the latch can be arbitrarily stale, turn-starting paths do **not**
+  gate on it: `reject_if_kiro_not_ready()` is advisory and always admits (its
+  call sites were removed from chat / regenerate / edit-resend / rewind / side /
+  optimizer / `POST /v1/chat/completions`). Blocking a send on a stale latch was
+  the stuck case — a user who signed in from a terminal stayed locked out until
+  something re-probed. Instead `chat_runner` handles `AcpAuthRequired`
+  explicitly (ahead of the generic `AcpError` branch, since it is a subclass):
+  it never re-queues (respawning hits the same wall), appends the actionable
+  "not logged in — run `kiro-cli login`" error card, mirrors that message to a
+  linked Slack thread (preserving the delivery the old pre-turn gate performed),
+  and calls `KiroPrerequisiteService.mark_signed_out()`. That latch narrows
+  `authenticated`/`ready` to false without spawning anything and never touches
+  `initial_setup_complete` (so a returning user is never demoted to first-run
+  setup). It only ever narrows readiness, and defers while an install/login
+  operation owns the status. Nothing in the dashboard renders off that latch —
+  the error card is the ONLY sign-out signal the user sees (see "The dashboard
+  does not guide the user to sign in" below).
+  Queued messages and post-fan-out synthesis therefore no longer park on
+  readiness: the readiness-waiter tasks are gone, the successor turn simply
+  runs, and a signed-out CLI surfaces as an error card from that turn.
+  **One exception preserves the no-loss rule:** when the finishing turn itself
+  caught `AcpAuthRequired`, the queue handoff is SKIPPED (`_auth_required`).
+  Every queued prompt would hit the same wall, so popping them one by one would
+  drain the whole queue into identical failures and leave nothing to resume after
+  the user signs in. The queue is held intact — cards stay visible and
+  individually cancellable — and resumes on the user's next send. This is the
+  no-loss guarantee the deleted readiness waiters used to provide, without a
+  waiter that a latched-stale value could strand.
+  Side turns get the same treatment at their own boundary: `_run_side_turn`
+  catches `AcpAuthRequired` ahead of its generic handler and broadcasts the
+  actionable `kiro-cli login` text instead of "(side conversation failed — see
+  server logs)", since the side panel has no other channel to tell the user what
+  to do. It latches the service signed-out too.
+  **Two classes still fail closed** via the blocking guard
+  `reject_if_kiro_unverified()`, because neither can use the ACP attempt as its
+  authority: the **poll-driven `kiro-cli` spawn sites** (`/api/models`,
+  `/api/sessions/usage`) have no turn to carry the failure and `kiro-cli`
+  auto-opens an interactive browser login when run unauthenticated (and
+  `kiro-cli chat` hangs), so an unverified spawn on a timer opens a window and
+  leaks a process every poll; and the **destructive reruns** (regenerate,
+  edit-resend, rewind) have already rewritten durable history by the time a turn
+  could fail; and `POST /v1/chat/completions` has no transcript, so an error card
+  would surface as a successful empty completion. A missing or invalid service
+  fails closed in all three.
+  **These callers authorize on a FRESH probe, not the latch**
+  (`kiro_verified_ready` → `KiroPrerequisiteService.verified_ready`, re-probing
+  when the latch is older than `_VERIFY_MAX_AGE_SECS` = 30s). The latch is
+  written at boot and narrowed only when a chat turn observes an auth failure, so
+  an external logout with no chat turn in between would leave it `ready=True`
+  indefinitely — and a stale `ready=True` here authorizes exactly the irreversible
+  act the gate exists to prevent (a history rewrite, or a browser-opening spawn).
+  "Probe at boot only" is right for the send path, which risks nothing; it is
+  wrong for authorization. The re-probe is bounded: only these paths call it,
+  never the message hot path, and `_PROBE_CACHE_SECS` collapses a burst onto one
+  probe. A probe that cannot run denies rather than admits. Both the full dashboard and the
+  headless Slack/API server attach the service to application and dashboard
+  state and close it during runner cleanup; explicit offline test gateways use
+  the service's `assume_ready` mode.
 - `handlers/source_providers.py` — validates GitHub PR and GitLab MR URLs, delegates authentication to `gh`/`glab`, normalizes metadata/files/comments/reviews/checks, recursively redacts provider strings, enforces subprocess and aggregate-payload limits, and maintains separate bounded caches for full source payloads and lightweight sidebar check state. Full source payloads carry a normalized merge-state pair shared by both providers: `mergeable` is `mergeable|conflicting|unknown` (`''` when the provider omitted it) and `mergeStateStatus` uses GitHub's lowercased merge-state vocabulary extended with a GitLab-specific value (`clean|dirty|behind|blocked|unstable|draft|need_rebase|unknown|''`). GitHub maps `mergeable`/`mergeStateStatus` from `gh pr view` directly; GitLab derives `mergeable` from `detailed_merge_status` (falling back to legacy `merge_status`) and maps `detailed_merge_status` onto the shared vocabulary (`conflict`→`dirty`, `need_rebase`→`need_rebase` (kept distinct: on fast-forward-only projects a merge commit cannot unblock the MR, so it must not be conflated with `behind`), approval/CI/discussion/policy/security gates (including `status_checks_must_pass`, `policies_denied`, `security_policy_violations`, `merge_request_blocked`)→`blocked`, `ci_still_running`→`unstable`, unrecognized non-empty values→`unknown`). Both providers compute mergeability **lazily**: the first read of a pull request they have not evaluated recently answers "not known yet" (GitHub `UNKNOWN`, GitLab `checking`/`unchecked`) *and* is what starts the computation, so a single read reports a conflicting pull request as having no merge blocker at all. Each full fetch therefore re-reads the merge fields alone — `gh pr view --json mergeable,mergeStateStatus` / the GitLab merge-request endpoint, which is the only place `detailed_merge_status` is exposed — at most `_MERGE_STATE_REREADS` (2) times spaced `_MERGE_STATE_REREAD_DELAY_SECS` (0.8s) apart, dispatched inside the existing secondary fanout so the wait overlaps calls the request was already making. A value that is empty rather than unknown is never re-read (the provider omitted the field; re-reading cannot settle it), and an unsettled, failed, or malformed re-read degrades to `unknown` rather than raising — an unknown merge state costs one banner, never the panel. Settledness is judged on the **pair**, not on `mergeable` alone: GitLab settles `need_rebase` and its branch-protection gates in the detail field while `mergeable` stays `unknown`, so keying on `mergeable` would re-read a state the provider had already answered and then discard it. Provider CLIs run through `sandboxed_spawn_argv(..., mode="standard")` using absolute paths only: an explicit absolute `KIROCREW_GH_BIN` / `KIROCREW_GLAB_BIN` override, else the fixed well-known install dirs, else the ambient `PATH` (`provider_executable_candidates()`). The default policy is *if the CLI works in the user's terminal, it works here*: the gateway user's OWN install is accepted — Homebrew/Linuxbrew/asdf symlink layouts included — and only provenance the user did not choose is refused, namely a binary (or ancestor) owned by another unprivileged account, anything world-writable (a world-writable *directory* is tolerated only when sticky — `/tmp`-style 1777, where only the owner may replace an entry, so the ownership check still decides), and anything inside the agent-writable project checkout or workspace root (`_agent_writable_roots()`, the one substitution vector the model controls; the same rule codex applies to its own sandbox helper). A gateway running as **root** is refused outright in BOTH modes, because every process it spawns — the agent's own shell included — would be root too, which makes the ownership and agent-tree checks vacuous. Requiring a root-owned copy instead made every stock `brew install gh` fail and pushed users into a `sudo cp` ritual for a CLI they had already installed and authenticated, so provenance was traded for containment: the provider child still gets only a minimal provider-scoped env, and every spawn is SEL-audited. `KIROCREW_PROVIDER_BIN_STRICT=1` restores the historical hardened rule for shared or multi-tenant hosts — canonical, symlink-free, root-owned and non-writable through every ancestor, `PATH` never consulted — and its setup error then names the privileged `/usr/local/libexec/kirocrew/` (or `/usr/libexec/kirocrew/`) copy to provision plus the override to point at it. The child receives a fixed system `PATH`, never the gateway/workspace `PATH`; `resource_limit_preexec()`, a minimal provider-specific environment, and host pinning remain enforced, and unrelated gateway/AWS/Slack credentials are not inherited. `github.com` and `gitlab.com` are always accepted; a self-managed GitLab instance is accepted only when the URL's exact `host[:port]` is a member of the operator's `dashboard.gitlab_hosts` allowlist (deny-by-default, config-only, never browser-supplied, no suffix or wildcard matching, `www.` not stripped, and a portless entry does not authorize an arbitrary port; an explicit `:443` is treated as absent on both sides so it matches the browser URL API, which drops the default HTTPS port). The allowlist is served from a process-cached snapshot refreshed at most once per 30s by `ensure_gitlab_hosts_loaded()`, which every async entry point awaits before validating a URL: the config read runs in a worker thread, never on the event loop, and the synchronous accessor that URL parsing and slot serialization use only reads the cached snapshot (empty before the first refresh, which fails closed). Refreshes are serialized behind a lock with a post-acquire freshness recheck, so a loader holding the pre-revocation config cannot install its snapshot after a newer one and re-admit a just-removed host for another interval. Each content change bumps `gitlab_hosts_generation()`, which `_ChatSlot._pr_source_links()` folds into its per-slot cache key alongside the message revision -- the synchronous scan can run before the first load, and without the generation that cold-snapshot rejection would stay memoized until the next message mutation, leaving a self-managed chip missing (or a revoked one present). A `glab` call to a self-managed host drops `GITLAB_TOKEN` from the child environment: that variable carries no host binding, so forwarding it would hand a gitlab.com credential to the self-managed server; such hosts authenticate from their per-host entry in glab's own config, still reachable via `GLAB_CONFIG_DIR`. gitlab.com keeps the ambient token. `host` is a REQUIRED argument for every `glab` invocation rather than a defaulted one: an omitted host raises instead of silently resolving to gitlab.com, so no future call site (including a mutation endpoint) can read or write an allowlisted self-managed MR on the public instance at the same project/IID. Because slot source-link extraction is synchronous and cannot load the snapshot itself, the owner WebSocket awaits `ensure_gitlab_hosts_loaded()` before its first `serialize_slots()` and again once per refresh round, pushing a slots update whenever the generation changes -- otherwise a newly authorized (or revoked) self-managed chip would wait for an unrelated message mutation. `GET /api/chat/slots` performs the same warm-up so a cold direct fetch is not missing those links either. A full payload's `url`/`number` identity always comes from the validated `SourceRef`, never from the provider's echoed `web_url`/`iid`/`url`: the browser submits that url back for refresh and thread resolution, so a hostile or compromised instance echoing a different merge request could otherwise steer an owner-authenticated call at an unrelated one. Each `glab` invocation pins `GITLAB_HOST` to the host `parse_source_url` authorized for that URL and re-checks it against the allowlist at spawn time, so a configured self-managed default in `glab` config cannot redirect bare API paths and a caller that skipped URL validation is denied rather than reaching an unauthorized instance. The dashboard-config GET exposes `gitlab_hosts` read-only (absent from the PUT allowlist) purely so the client knows which pasted links to surface as source tabs. Provider stdout is section-bounded at 1 MiB for metadata/checks, 2 MiB for discussions, and 4 MiB for diffs/changes; normalized full payloads are capped at 8 MiB. A global four-command semaphore covers full-source, direct-check, resolve, and sidebar work. Unique direct full/check tasks share a 16-task ceiling and a conservative 128 MiB retained-byte budget: full tasks reserve 64 MiB and checks tasks reserve 8 MiB until the underlying task terminates. Same-URL callers coalesce before admission, detached stale full fetches retain their leases, and a stale pre-mutation fetch plus its required fresh successor can coexist at the exact aggregate ceiling. Successful thread resolution advances that URL's cache generation and detaches older shared fetches so pre-mutation results cannot refill the cache or satisfy the post-resolution refresh. Secondary metadata endpoints degrade independently so core source details remain available, but every failed files, commits, discussion/thread, pipeline, or job request is named in `partialSections` before its data falls back to an empty section; provider page limits and overflow evidence use the same deduplicated markers. Native Windows returns a clear 503 without spawning because no supported OS-level provider sandbox exists. Every provider execution emits credential-free SEL `invoked` plus `completed`/`failed` lifecycle events; policy and provenance rejections emit `denied`. The critical `invoked` append is shielded and awaited on a worker thread before spawn, preserving audit-or-deny ordering without blocking the gateway event loop; cancellation waits for that worker, pairs a landed `invoked` event with `failed/request_cancelled`, and never spawns, while other terminal events are best effort. Events contain only the logical provider and coarse reason, never argv, URL, repository, output, environment, credentials, thread id, or exception text. Sidebar refreshes run outside slot serialization with inflight deduplication, a 16-task pending ceiling, one-TTL overflow backoff, and a 512-entry status cache. Scheduling requires an exact dashboard-owner request. Cached check state is otherwise only repopulated at WebSocket-connect and slots-GET time, so each owner WebSocket connection additionally runs a background refresh driver that re-schedules refreshes for its currently-rendered sidebar chip URLs (`DashboardState.source_link_urls()` — the first `_SERIALIZED_SOURCE_LINKS_PER_SLOT` links of every slot) once per cache TTL (`CHECK_STATUS_TTL_SECS`, sleeping exactly one TTL so each round finds the previous round's entries just expired — one provider fetch per URL per TTL, coalesced across tabs by the inflight dedup); without it a PR merged or a CI run completed after page load would keep its stale connect-time chip until a full reload. The driver is owner-gated (never created for non-owner connections), cancelled with the connection, and advances a per-round starting offset by the pending admission cap (`CHECK_STATUS_PENDING_MAX`) each round so that when the number of stale chips exceeds the cap the admitted window rotates across every chip within `ceil(len/cap)` rounds instead of the same slot-order prefix winning every TTL and starving newer slots' chips indefinitely. Each round's work is individually guarded so a transient failure is logged and the loop continues rather than the driver dying silently and reverting to frozen chips. Generic slot serialization and broadcasts omit cached `state`/`ci`; owner HTTP and WebSocket snapshots opt in, and changed statuses trigger a debounced generic update followed by an owner-WebSocket-only overlay. `_ChatSlot` retains only the first 64 unique durable source links and stops scanning at the cap; `to_dict()` exposes up to three sidebar chips as `{url, provider, number}` to all authenticated callers and adds the whole cached chip-status entry — `{state?, ci?, mergeable?, mergeStateStatus?}` — only at an owner-authorized serialization boundary. `state` is `open|draft|merged|closed` and `ci` is `running|passed|failed` when known; the merge pair uses the shared merge-state vocabulary above and is present only once settled. Both providers derive `state` with terminal states outranking draft (a GitLab MR keeps `draft` set after being closed as a draft, so draft is reported only while the MR is `opened`), and a provider state outside the known set (e.g. GitLab `locked`) yields no `state` rather than a mislabeled `open`. `ci` rolls a GitLab pipeline status up the same way GitHub's check conclusions roll up: any failure fails, anything still in flight runs, and a terminal non-failure -- including a wholly `skipped` pipeline -- passes, so a skipped pipeline settles instead of spinning. Pipeline-level `manual` is the one deliberate split from the job-level bucket: a pipeline in `manual` is blocked awaiting a required manual job, so it reports `running` rather than green, while a single `manual` job among finished ones still buckets as skipped -- unless it carries `allow_failure: false`, which makes it a required gate and therefore pending. GitLab's chip status reads `head_pipeline` from the merge-request payload and falls back to the MR pipelines list only when that field is absent, matching GitHub's one-call-per-refresh cost. Because the chip entry is spread whole, a refresh in which only the merge pair settles also counts as a status change and triggers the same debounced generic update plus owner overlay.
 - `server.py` — app factory, route registration, startup, SPA fallback middleware for React Router, `/api/ws` WebSocket route, token auth middleware, loopback-only binding (`127.0.0.1`). Fires background MCP probe at startup via `asyncio.create_task()`. Honors `agent.yolo=true` config at startup via `_apply_startup_yolo()` — attempts SEL audit first and only activates dashboard YOLO (6h TTL) if the audit succeeds (fail-closed).
 
@@ -546,16 +592,50 @@ CLI always offers an enabled **Sign in to Kiro** rather than a button-less
 "repair" dead end. The `.kiro_cli_binary_trust.json` the dashboard installer
 still writes is bookkeeping only and does not gate credential access.
 
-Ready dashboards continue prerequisite polling every 30 seconds so later
-sign-out or CLI damage is detected without a reload. Paused session-start
-attempts also re-probe behind the service's short cache, so a manual host login
-can recover without first opening the status screen. Main chat, regenerate,
-edit-resend, rewind, prompt optimization, and side-turn handlers all reject
-before acquiring or mutating an ACP session. Every sidebar session-creation
-control is disabled while readiness is false; folder-management controls remain
-available because they do not start an ACP session. If readiness is lost between
-a turn and its queued successor, the queued card remains intact and the current
-turn completes its normal `done`/idle lifecycle.
+Ready dashboards continue prerequisite polling every 30 seconds, but that poll
+is a **free read of the gateway's latched state** — it spawns no `kiro-cli`.
+Only `api.kiroPrerequisite(true)` (`?refresh=1`), wired to the gate's Refresh /
+Check again buttons via a one-shot `forceProbe` ref, asks the host to re-probe.
+A later sign-out is therefore surfaced by the failing *turn*, not by the poll:
+`chat_runner`'s `AcpAuthRequired` handler puts the actionable `kiro-cli login`
+message straight into the transcript.
+
+**The dashboard does not guide the user to sign in.** There is no
+reauthentication banner, no "Sessions paused" state, and no disabled composer or
+session-creation control. The `ReauthenticationBanner`, the
+`UnavailableStatusBanner`, the copyable-terminal-command block, and the whole
+`KiroReadinessContext` seam (`useKiroSessionReady`, consumed by `ChatInput`,
+`ChatSidebar`, `SideChat`) are **deleted**. Rationale: latched readiness is only
+refreshed at boot and on explicit request, so it is never fresh enough to
+disable UI on — a user who signed in from a terminal would sit behind a dead
+input box, and a persistent banner nagged every surface (including ones that
+never start a session) for a state the dashboard cannot keep current. The error
+card is in-context, appears only when the user actually tries to use the agent,
+and is self-explanatory, so it fully replaces that chrome.
+
+Ordinary send paths (main chat, prompt optimization, side turns) no longer reject
+on readiness — a stale latch must not
+block a send the CLI would serve, and they mutate nothing before the turn, so a
+failed turn costs only an error card. A queued successor turn runs rather than
+parking on readiness.
+
+**The destructive reruns are the exception and still fail closed.** `regenerate`,
+`edit-resend`, and `rewind` truncate `slot.messages` and **persist** the result
+(`_save_slot_to_history`, `_pending_rewrite`) *before* dispatching the background
+turn, so "let the ACP attempt be the authority" does not hold for them: by the
+time the turn raises `AcpAuthRequired` the history is already rewritten and no
+error card can undo it. All three therefore call `reject_if_kiro_unverified`
+BEFORE any mutation, returning the shared `kiro_prerequisite_required` 503.
+(`switch-variant` is exempt — it swaps an already-stored variant and starts no
+turn.)
+
+**`POST /v1/chat/completions` also fails closed**, for a different reason: it has
+no transcript the caller reads. Its collectors pick up only `chunk`/`assistant`
+roles, so the `error` card an `AcpAuthRequired` turn appends is invisible and the
+request would return **HTTP 200 with empty content** — an OpenAI SDK client
+cannot distinguish that from a model that legitimately said nothing. It returns
+the `kiro_prerequisite_required` 503 in OpenAI error shape until the endpoint
+learns to translate `AcpAuthRequired` itself.
 
 **An unresolved check is never rendered as "setup required."** The cold probe
 spawns two sandboxed `kiro-cli` subprocesses (`--version`, then `whoami`), which
@@ -563,12 +643,12 @@ takes long enough to read; rendering first-run setup chrome across that window
 flashed the full setup screen at returning users, who then watched it disappear.
 Two layers close that window:
 
-- **The dashboard never waits on the check.** Kiro readiness gates starting a
-  *turn*, not using Kiro Crew, so an unresolved check mounts the app immediately
-  with **sessions paused** (`statusQuery.isPending` → children under
-  `KiroReadinessProvider ready={false}`). Whichever way it resolves, the user is
-  already where they need to be: signed-out surfaces the reauthentication banner,
-  ready unpauses sessions, and only a *confirmed* first-run status shows setup.
+- **The dashboard never waits on the check.** Kiro readiness gates nothing in the
+  dashboard, so an unresolved check mounts the app immediately and **fully
+  usable** (`statusQuery.isPending` → children rendered directly). Whichever way
+  it resolves, the user is already where they need to be: only a *confirmed*
+  first-run status shows setup chrome; a signed-out established install shows
+  nothing at all.
   `/api/ready` likewise does **not** gate on Kiro state — that would only delay
   first paint (and would not do what it appears to: the desktop splash polls
   `/api/status` and accepts any status `< 500`). `warm_up()` stays
@@ -585,11 +665,13 @@ Two layers close that window:
   first run. That memory only ever suppresses first-run chrome — it never grants
   session readiness, which stays server-driven via `ready`.
 
-Accordingly, a status-check failure for a user who has completed setup keeps the
-dashboard mounted (sessions paused) behind a nonblocking "Could not check Kiro
-CLI" banner with a **Check again** control, instead of a full-screen setup error.
-A genuine first run — nothing remembered, no established home — still gets the
-full setup gate.
+Accordingly, a status-check failure for a user who has completed setup leaves the
+dashboard mounted and fully usable with **no banner at all** — an unreachable
+status check is not evidence the CLI is broken, and the turn reports the truth
+either way. A genuine first run — nothing remembered, no established home — still
+gets the full setup gate, and `initial_setup_complete` short-circuits ahead of the
+non-owner branch so an established non-owner is never shown the owner-restore
+screen either.
 
 **Boot latency: app backends start in parallel.** `start_enabled_app_backends`
 vets apps serially (cheap) but spawns the admitted set **concurrently**
@@ -632,10 +714,9 @@ affects the others or boot.
 The query fails open for a rolling deployment whose older gateway does not yet
 provide the endpoint, preserving dashboard access during frontend/backend
 version skew. Once first-run setup has completed, later sign-out or CLI damage
-leaves the dashboard mounted and shows a nonblocking reauthentication/repair
-banner instead of restoring the full-screen gate. The banner is pointer-transparent
-outside its own controls, so it cannot block established dashboard interactions.
-Non-owner browsers poll the
+leaves the dashboard mounted, fully usable, and shows **no chrome at all** — not
+the full-screen gate and not a banner; the turn's own `kiro-cli login` error card
+is the only signal. Non-owner browsers poll the
 redacted readiness endpoint every three seconds while waiting for the owner, so
 they observe completion without a reload; a manual **Check again** covers
 external changes immediately.

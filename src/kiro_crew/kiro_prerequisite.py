@@ -31,7 +31,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, MutableMapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -67,7 +67,6 @@ _PROBE_CACHE_SECS = 2.0
 # Yield before the boot-time readiness probe so its kiro-cli spawn does not
 # contend with the concurrent app-backend spawns on the boot-critical path.
 _WARM_UP_DELAY_SECS = 3.0
-_SESSION_GUARD_REPROBE_SECS = 30.0
 _TERMINATION_GRACE_SECS = 2.0
 _WINDOWS_DESCENDANT_POLL_SECS = 0.05
 _HTTPS_URL_RE = re.compile(r"https://[^\s<>\"']+")
@@ -1543,13 +1542,27 @@ class KiroPrerequisiteService:
         self._audit = audit_writer or _write_audit
         self._clock = clock or time.monotonic
         self._assume_ready = assume_ready
-        self._status = PrerequisiteStatus(
-            platform=_platform_label(self._platform),
-            initial_setup_complete=self._initial_setup_complete,
+        # `assume_ready` must hold from CONSTRUCTION, not from the first probe:
+        # readiness is now a latch that `session_ready()` reads without probing,
+        # so an offline/test gateway that never probes would otherwise report
+        # not-ready and its blocking gates (e.g. /api/models) would 503.
+        self._status = (
+            PrerequisiteStatus(
+                platform=_platform_label(self._platform),
+                installed=True,
+                authenticated=True,
+                ready=True,
+                can_login=True,
+                initial_setup_complete=True,
+            )
+            if assume_ready
+            else PrerequisiteStatus(
+                platform=_platform_label(self._platform),
+                initial_setup_complete=self._initial_setup_complete,
+            )
         )
         self._operation = OperationStatus()
         self._task: asyncio.Task[None] | None = None
-        self._session_probe_task: asyncio.Task[PrerequisiteStatus] | None = None
         self._warm_up_task: asyncio.Task[None] | None = None
         # Injectable so tests need not sleep out the real boot-contention delay.
         self._warm_up_delay = warm_up_delay
@@ -1593,8 +1606,8 @@ class KiroPrerequisiteService:
 
         Returns the task so callers (and tests) can await it; startup itself does
         NOT await it, and failures are contained. A warm-up is strictly an
-        optimization: the dashboard renders without waiting for it (a signed-out
-        user gets the reauthentication banner), so it must never delay boot.
+        optimization: the dashboard renders without waiting for it (readiness
+        gates nothing in the UI), so it must never delay boot.
         """
 
         if self._warm_up_task is not None:
@@ -1616,38 +1629,94 @@ class KiroPrerequisiteService:
         return self._warm_up_task
 
     async def snapshot(self, *, force: bool = False) -> dict[str, Any]:
-        if not self.operation_running:
-            await self._probe(force=force)
+        """Return the latched status, probing only on an explicit ``force``.
+
+        Probing is boot-and-explicit-action only (see :meth:`session_ready`), so
+        the polled status endpoint reads latched state and spawns nothing. The
+        dashboard's Refresh button and the install/login operations pass
+        ``force=True``; that is the supported way to re-probe on demand.
+        """
+
+        if force and not self.operation_running:
+            await self._probe(force=True)
+        elif not self._has_probed and not self.operation_running:
+            # Nothing has resolved yet (warm-up still pending or it failed).
+            # One probe here is the boot probe, just arriving late.
+            await self._probe()
         return self._snapshot_dict()
 
-    async def session_ready(self) -> bool:
-        """Return readiness without putting CLI probes on the chat hot path."""
+    def mark_signed_out(self) -> None:
+        """Latch readiness to signed-out after an observed ACP auth failure.
 
-        if self.operation_running:
+        The ACP attempt — not a probe — is what discovers a mid-session logout
+        now that probing is boot-and-explicit-action only. Recording it here is
+        what keeps the fail-closed gates (poll-driven spawn sites + destructive
+        reruns) honest with no timer re-probe and no subprocess.
+
+        Only ever *narrows* readiness (never grants it), and never touches
+        ``initial_setup_complete``, so a returning user is not demoted to
+        first-run setup. A running install/login operation owns the status, so
+        this defers to it rather than racing its outcome.
+        """
+
+        if self._assume_ready or self.operation_running:
+            return
+        if not self._status.ready and not self._status.authenticated:
+            return
+        self._status = replace(self._status, authenticated=False, ready=False)
+        # Force the next explicit probe (Refresh / login) to actually run rather
+        # than being served by the short cache off this synthetic transition.
+        self._last_probe_at = 0.0
+        logger.info("Kiro readiness latched to signed-out after an ACP auth failure")
+
+    async def verified_ready(self, *, max_age_secs: float) -> bool:
+        """Return readiness backed by a probe no older than *max_age_secs*.
+
+        For callers that act IRREVERSIBLY on the answer — the destructive reruns
+        (which rewrite persisted history) and the poll-driven ``kiro-cli`` spawn
+        sites (which would open an interactive browser login) — the latch is not
+        a sufficient authority in EITHER direction. It is written at boot and
+        narrowed only when a chat turn observes an auth failure, so an external
+        logout with no chat turn in between would leave it ``ready=True``
+        indefinitely.
+
+        Re-probing here is bounded: only these paths call it, never the message
+        hot path, and ``_PROBE_CACHE_SECS`` collapses a burst of callers onto one
+        probe. A running install/login operation owns the status, so defer to its
+        current value rather than racing it.
+        """
+
+        if self._assume_ready or self.operation_running:
             return bool(self._status.ready)
-        if not self._has_probed:
-            await self._probe()
-        elif self._clock() - self._last_probe_at >= _SESSION_GUARD_REPROBE_SECS and (
-            self._session_probe_task is None or self._session_probe_task.done()
-        ):
-            # Chat/session guards consume the last known state immediately and
-            # refresh it in the background. The dashboard status endpoint still
-            # awaits `_probe()` directly, so setup progress and sign-out repair
-            # remain prompt without making an ordinary send wait up to two
-            # subprocess timeouts.
-            self._session_probe_task = asyncio.create_task(self._probe())
-            self._session_probe_task.add_done_callback(self._session_probe_done)
+        if not self._has_probed or self._clock() - self._last_probe_at >= max_age_secs:
+            try:
+                await self._probe(force=True)
+            except Exception:
+                # A probe that cannot run is not evidence of readiness. Fail
+                # closed: these callers must never act on a guess.
+                logger.warning("Kiro verification probe failed; denying", exc_info=True)
+                return False
         return bool(self._status.ready)
 
-    def _session_probe_done(self, task: asyncio.Task[PrerequisiteStatus]) -> None:
-        if task is not self._session_probe_task:
-            return
-        if task.cancelled():
-            return
-        try:
-            task.result()
-        except Exception:
-            logger.warning("Background Kiro readiness probe failed", exc_info=True)
+    async def session_ready(self) -> bool:
+        """Return the latched readiness. Never probes; never blocks a turn.
+
+        Readiness is resolved ONCE at gateway start (:meth:`warm_up`) and then
+        refreshed only by an explicit user action — the dashboard's Refresh, or
+        an install/login operation. There is deliberately no timer re-probe and
+        no probe on the send path: a signed-out CLI is discovered by the ACP
+        attempt itself, which raises ``AcpAuthRequired`` and surfaces an
+        actionable sign-in error in the chat transcript.
+
+        Because this value can therefore be arbitrarily stale, turn-starting
+        callers treat it as ADVISORY and let the real ACP attempt be the
+        authority (see ``dashboard/kiro_readiness.py``). Poll-driven
+        ``kiro-cli`` spawn sites still gate on it — they have no turn to carry
+        the failure, and an unauthenticated spawn opens a browser window on
+        every poll.
+        """
+
+        return bool(self._status.ready)
 
     async def _probe(self, *, force: bool = False) -> PrerequisiteStatus:
         async with self._probe_lock:
@@ -2206,7 +2275,7 @@ class KiroPrerequisiteService:
 
     async def close(self) -> None:
         tasks: list[asyncio.Task[Any]] = []
-        for task in (self._task, self._session_probe_task, self._warm_up_task):
+        for task in (self._task, self._warm_up_task):
             if task is not None and not task.done() and task not in tasks:
                 task.cancel()
                 tasks.append(task)

@@ -6,7 +6,6 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { sideClose, sideOptimisticAppend, sideOptimisticRollback } from '../../store/chatSlice'
 import { copyToClipboard } from '../../utils/clipboard'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
-import { useKiroSessionReady } from '../../providers/KiroReadinessContext'
 import type { SideMessage } from '../../store/chatSlice'
 
 import { i18nT } from '../../i18n/t'
@@ -66,7 +65,6 @@ function relativeTime(iso: string): string | null {
 }
 
 export default function SideChat({ slot }: { slot: string }) {
-  const kiroSessionReady = useKiroSessionReady()
   const dispatch = useAppDispatch()
   const reduxSide = useAppSelector(s => s.chat.slotSide[slot])
   const parentTurnCount = useAppSelector(s =>
@@ -162,13 +160,13 @@ export default function SideChat({ slot }: { slot: string }) {
 
   const send = useCallback(() => {
     const q = draft.trim()
-    if (!kiroSessionReady || !q || sendMutation.isPending || !slot) return
+    if (!q || sendMutation.isPending || !slot) return
     if (new Blob([q]).size > MAX_QUESTION_BYTES) {
       setLocalError(`Question too long (max ${MAX_QUESTION_BYTES.toLocaleString()} bytes)`)
       return
     }
     sendMutation.mutate(q)
-  }, [draft, slot, sendMutation, kiroSessionReady])
+  }, [draft, slot, sendMutation])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -249,15 +247,15 @@ export default function SideChat({ slot }: { slot: string }) {
           onChange={e => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
           aria-label={i18nT('pages.chat.sideChat.ask_a_side_question')}
-          placeholder={kiroSessionReady ? 'Ask a side question…' : 'Finish Kiro CLI setup first'}
+          placeholder="Ask a side question…"
           rows={2}
-          disabled={sendMutation.isPending || !kiroSessionReady}
+          disabled={sendMutation.isPending}
           style={{ maxHeight: MAX_INPUT_H }}
           className="flex-1 resize-none overflow-y-auto min-h-[52px] rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-text focus:outline-none focus:border-accent disabled:opacity-60"
         />
         <button
           onClick={() => void send()}
-          disabled={sendMutation.isPending || !kiroSessionReady || !draft.trim()}
+          disabled={sendMutation.isPending || !draft.trim()}
           className="shrink-0 px-2.5 py-1.5 rounded-md bg-accent text-accent-fg text-[12px] font-medium cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed border-none"
           title={i18nT('pages.chat.sideChat.send')}
           aria-label={i18nT('pages.chat.sideChat.send')}

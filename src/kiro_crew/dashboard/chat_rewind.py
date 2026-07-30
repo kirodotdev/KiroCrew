@@ -28,7 +28,7 @@ from aiohttp import web
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import _history_key_for
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -64,7 +64,10 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     edited prompt against it. Slot key, title, folder, sidebar position, and
     color are unchanged.
     """
-    blocked = await reject_if_kiro_not_ready(request)
+    # Destructive: this truncates and PERSISTS history before the background
+    # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
+    # readiness latch must be honored BEFORE the mutation.
+    blocked = await reject_if_kiro_unverified(request)
     if blocked is not None:
         return blocked
     state: DashboardState = request.app["state"]

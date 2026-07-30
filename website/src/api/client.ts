@@ -806,8 +806,13 @@ export const api = {
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
   system: () => fetch('/api/system').then(j),
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
-  kiroPrerequisite: () =>
-    get('/api/kiro-prerequisite').then(j) as Promise<KiroPrerequisiteStatus>,
+  // Background polls read the gateway's latched state (no kiro-cli subprocess).
+  // `refresh` is the explicit user action (Refresh / Check again) that forces a
+  // real host probe.
+  kiroPrerequisite: (refresh = false) =>
+    get(`/api/kiro-prerequisite${refresh ? '?refresh=1' : ''}`).then(
+      j,
+    ) as Promise<KiroPrerequisiteStatus>,
   installKiroPrerequisite: () =>
     post('/api/kiro-prerequisite/install').then(j) as Promise<KiroPrerequisiteStatus>,
   loginKiroPrerequisite: () =>

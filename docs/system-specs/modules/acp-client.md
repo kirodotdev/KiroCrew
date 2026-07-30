@@ -344,13 +344,30 @@ Subprocess lifecycle:
   interactive browser login for any subcommand run unauthenticated
   (`--no-interactive` does not suppress it; there is no opt-out env var). Every
   dashboard endpoint that shells out to `kiro-cli` on a timer therefore calls
-  `reject_if_kiro_not_ready()` BEFORE resolving or spawning the binary:
+  `reject_if_kiro_unverified()` BEFORE resolving or spawning the binary:
   `/api/models` (polled every 8s while the model list is degraded) and
   `/api/sessions/usage` (polled every 30s by the credit pill). Both return the
   shared `kiro_prerequisite_required` 503 — the same degraded response their
   timeout branches already produce — so the client contract is unchanged and
   only the subprocess is skipped. Without this gate a signed-out gateway opened
-  a browser window every 8 seconds indefinitely.
+  a browser window every 8 seconds indefinitely. These are the **only** blocking
+  readiness gates: ordinary sends are ungated, because a failing ACP attempt
+  reports its own `AcpAuthRequired` (see the governance of latched readiness in
+  `modules/learn-cron-dashboard.md`), whereas a timer-driven spawn has no turn to
+  carry that error. These sites authorize on a **freshly verified** probe
+  (`verified_ready`, 30s ceiling), never the bare latch — a stale `ready=True`
+  would green-light exactly the signed-out spawn the gate exists to prevent.
+- **`AcpAuthRequired` is the authoritative logout signal.** Readiness is probed
+  at gateway start and on explicit user action only, so a mid-session sign-out is
+  discovered when the ACP attempt fails, not by a poll. `AcpRuntime`/`AcpClient`
+  translate the stderr `not logged in` banner into the non-retryable
+  `AcpAuthRequired`; the dashboard turn loop handles it ahead of the generic
+  `AcpError` branch (it is a subclass), never re-queues it, surfaces the
+  actionable `kiro-cli login` message in the transcript, and latches the
+  prerequisite service to signed-out. That error card is the **only** sign-out
+  signal the dashboard shows — there is no reauthentication banner and no paused
+  session state (see `modules/learn-cron-dashboard.md` § "The dashboard does not
+  guide the user to sign in").
 - **The readiness `whoami` runs against the real home, like an ACP session.**
   `kiro_prerequisite._run_auth_command(..., isolate_home=False)` runs the
   resolved CLI against the real environment/home under the standard OS sandbox

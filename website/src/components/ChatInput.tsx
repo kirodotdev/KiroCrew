@@ -9,7 +9,6 @@ import { useBranding } from '../hooks/useBranding'
 import { useAppSelector, useAppDispatch } from '../store'
 import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone } from '../store/chatSlice'
 import { useSlotId } from '../providers/SlotContext'
-import { useKiroSessionReady } from '../providers/KiroReadinessContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { api, ApiError } from '../api/client'
@@ -443,9 +442,7 @@ function ChatInput({
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
-  const kiroSessionReady = useKiroSessionReady()
-  const kiroSetupRequired = !kiroSessionReady
-  const disabled = disabledProp || kiroSetupRequired
+  const disabled = disabledProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
   const pendingApproval = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
@@ -1214,7 +1211,7 @@ function ChatInput({
     // Guard on the RAW lifecycle so a second optimize can't start while one is
     // in flight — even from a different session where scoped `optimizing` reads
     // false (a single mutation backs this instance).
-    if (!kiroSessionReady || !txt || optimizePendingRef.current) return
+    if (!txt || optimizePendingRef.current) return
     // Pin the slot that owns this optimize so the overlay and the completion
     // handler stay bound to it across session switches.
     optimizeSlotRef.current = slotId
@@ -1231,7 +1228,7 @@ function ChatInput({
     const referenced = pruneBlocks(txt, pasteBlocks)
     const pastes = referenced.map(b => ({ seq: b.seq, content: b.content }))
     runOptimize({ prompt: txt, context, pastes, slotId })
-  }, [runOptimize, chatMessages, pasteBlocks, slotId, kiroSessionReady])
+  }, [runOptimize, chatMessages, pasteBlocks, slotId])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Cmd/Ctrl+Shift+V → next paste inserts full text inline (no chip collapse).
@@ -1449,7 +1446,7 @@ function ChatInput({
     // the disabled-state on the Optimize button (line ~1734).
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
       e.preventDefault()
-      if (connected && kiroSessionReady) optimizePrompt()
+      if (connected) optimizePrompt()
       return
     }
     // Mode: enter-ctrl-newline — Ctrl/Cmd+Enter inserts newline, Enter sends
@@ -1538,7 +1535,7 @@ function ChatInput({
       }
       e.preventDefault()
     }
-  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, kiroSessionReady, ime, optimizePrompt])
+  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt])
 
   /** Intercept clipboard paste — files go to upload path, big text gets collapsed into a token. */
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -2058,7 +2055,7 @@ function ChatInput({
           aria-label={i18nT('components.chatInput.message_input')}
           className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? 'Gateway offline — message will not send' : kiroSetupRequired ? 'Finish Kiro CLI setup to start chatting' : disabledProp ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
+          placeholder={!connected ? 'Gateway offline — message will not send' : disabledProp ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
           readOnly={optimizing}
           rows={1}
           value={value}
@@ -2352,9 +2349,9 @@ function ChatInput({
                 // still in flight — matching the re-entrancy guard in
                 // optimizePrompt(). optimizing ⊂ optimizePending, so this stays
                 // disabled on the originating session too.
-                disabled={!value.trim() || optimizePending || !connected || kiroSetupRequired}
+                disabled={!value.trim() || optimizePending || !connected}
                 aria-label={optimizePending && !optimizing ? 'Optimize prompt — busy optimizing another chat' : 'Optimize prompt'}
-                title={kiroSetupRequired ? 'Finish Kiro CLI setup to optimize prompts' : optimizePending && !optimizing ? 'Optimizing another chat — please wait' : `Optimize prompt (${platformShortcut('Cmd+Shift+Enter')})`}
+                title={optimizePending && !optimizing ? 'Optimizing another chat — please wait' : `Optimize prompt (${platformShortcut('Cmd+Shift+Enter')})`}
                 {...offlineProps(connected, 'optimize', 'Optimize')}
               >
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}

@@ -214,10 +214,10 @@ An auto-created `config.json` alone does not mark first-run setup complete; a
 successful authenticated probe writes the setup marker, while existing
 session/history state preserves established-install migration behavior. Fresh
 installs receive the full-screen flow. Established dashboards remain navigable
-during reauthentication with session-starting controls paused. Readiness is
-latched at the central chat-turn entry point, covering HTTP, task-runner,
-workflow, queue, and automatic continuation paths without running subprocess
-probes on the message hot path. The SPA refreshes ready status every 30 seconds,
+and fully usable when signed out — no controls are paused. Readiness is probed
+once at gateway boot and thereafter only on explicit user action, so no path runs
+a subprocess probe on the message hot path; the authoritative logout signal is
+the ACP attempt's `AcpAuthRequired`. The SPA refreshes ready status every 30 seconds,
 retains cached readiness across transient refetch errors, and invalidates
 prerequisite state after access-cookie refresh.
 POSIX group membership ignores zombie records, which cannot retain pipes or
@@ -239,10 +239,13 @@ every platform — never a copy of its bytes. Setup discovery and ACP resolution
 Windows, so a winget/scoop install is never sent to a redundant reinstall.
 
 When a previously completed setup is no longer ready, the dashboard remains
-navigable but session creation and turn submission are paused. The shared
-frontend readiness context disables the primary composer and session affordance,
-and backend pre-enqueue guards return 503 before creating a slot or appending a
-turn, including regenerate, edit-resend, rewind, and OpenAI-compatible calls.
+fully navigable and fully usable — nothing is paused and no sign-in chrome is
+shown. A signed-out CLI is reported by the turn itself as an actionable
+`kiro-cli login` error card (see `modules/learn-cron-dashboard.md` § "The
+dashboard does not guide the user to sign in"). Only the endpoints that act
+BEFORE a turn still return 503: the poll-driven `kiro-cli` spawn sites
+(`/api/models`, `/api/sessions/usage`) and the destructive reruns (regenerate,
+edit-resend, rewind), which rewrite persisted history up front.
 
 ### Custom Domain
 
