@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { useAppDispatch } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
@@ -429,6 +430,47 @@ export function useWebSocket() {
           case 'slot_title':
             dispatch(sseSlotTitle(data as { key: string; title: string }))
             break
+          case 'artifact_update': {
+            // Live artifact refresh: the backend broadcasts from the artifact
+            // mutation funnel (create / content PATCH / revert / relocate /
+            // pull / delete). Invalidate the per-slug queries so any open view
+            // — detail page, popout, the companion panel's left pane —
+            // re-renders the new version immediately. Every window has its own
+            // WS, so no BroadcastChannel is needed. The library list is
+            // invalidated too (create/delete change it; content updates bump
+            // its updated_at ordering).
+            const slug = (data as { slug?: string }).slug
+            if (slug) {
+              if ((data as { deleted?: boolean }).deleted) {
+                // Notify, but deliberately do NOT evict ['artifact', slug].
+                // Evicting drops the detail page's query data, which re-renders it
+                // into a loading/404 state and unmounts the editor — taking an
+                // unsaved edit buffer with it. That would defeat the deletion
+                // listener's dirty-page guard, which exists precisely so the user
+                // can still copy their work out. A clean page navigates away, and a
+                // dirty one keeps its cached content; neither needs the eviction,
+                // and a genuine refetch 404s on its own because the artifact is
+                // gone server-side.
+                window.dispatchEvent(new CustomEvent('kirocrew:artifact-deleted', { detail: { slug } }))
+              } else if (isArtifactEditing(slug)) {
+                // A human has an unsaved buffer open on this artifact. Refetching
+                // would move the editor's baseline while the buffer keeps the older
+                // text, so the next Save would overwrite whatever just arrived.
+                // Leave the content cache alone; the page reloads it on save or
+                // cancel. Comments/events carry no edit buffer, so they still
+                // refresh — only content is withheld.
+                queryClient.invalidateQueries({ queryKey: ['artifact-events', slug] })
+                queryClient.invalidateQueries({ queryKey: ['artifact-comments', slug] })
+              } else {
+                queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
+                queryClient.invalidateQueries({ queryKey: ['artifact-versions', slug] })
+                queryClient.invalidateQueries({ queryKey: ['artifact-events', slug] })
+                queryClient.invalidateQueries({ queryKey: ['artifact-comments', slug] })
+              }
+              queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+            }
+            break
+          }
           case 'notification': {
             const n = data as Notification
             dispatch(addNotification(n))

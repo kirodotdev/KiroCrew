@@ -95,9 +95,10 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
     try { return DOMPurify.sanitize(hljs.highlight(content, { language: lang }).value) + '\n' }
     catch { return DOMPurify.sanitize(hljs.highlightAuto(content).value) + '\n' }
   }, [content, lang, isMarkdown, editing, isRichType])
-  // Comment overlay only for the rendered markdown view (text/code use <pre>
-  // without a previewRef; widgets use the iframe bridge).
-  const showOverlay = isMarkdown && !editing && !!onActivateComment && (comments?.length ?? 0) > 0
+  // Comment overlay for every natively-rendered body that has a previewRef —
+  // markdown (rendered DOM) AND the <pre> path (text/json/svg). Widgets/HTML use
+  // the iframe bridge instead.
+  const showOverlay = !editing && !!onActivateComment && (comments?.length ?? 0) > 0
   return (
     <div
       ref={scrollerRef}

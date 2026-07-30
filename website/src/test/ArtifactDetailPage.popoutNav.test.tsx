@@ -17,6 +17,12 @@ import { forwardToMain } from '../utils/artifactPopout'
 import type { Artifact } from '../types'
 
 vi.mock('../api/client')
+// Stub the embedded chat page — the companion toggle opens the embedded panel,
+// which would otherwise mount the full ChatPage and its whole hook graph.
+vi.mock('../pages/ChatPage', () => ({
+  default: () => <div data-testid="chat-page" />,
+  PREFILL_STORAGE_KEY: 'kirocrew_prefill',
+}))
 // Replace only the popout→main forwarding entry point; the rest of the module
 // (registerPopout, the coordination map, …) stays real.
 vi.mock('../utils/artifactPopout', async (importOriginal) => {
@@ -61,6 +67,12 @@ beforeEach(() => {
   vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact())
   vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
   vi.mocked(api).artifactEvents = vi.fn().mockResolvedValue(sessionEvents)
+  // The companion toggle creates a bound session, which dispatches fetchSlots()
+  // in the background. Without this mock the automock resolves undefined and the
+  // fetchSlots.fulfilled reducer throws on `payload.map` AFTER the test ends — an
+  // unhandled rejection that fails the run (`Errors: N errors`) while every test
+  // still reports as passing.
+  vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([])
 })
 
 describe('ArtifactDetailPage popout navigation containment', () => {
@@ -100,16 +112,26 @@ describe('ArtifactDetailPage popout navigation containment', () => {
     await waitFor(() => expect(screen.getByText('library page target')).toBeInTheDocument())
   })
 
-  it('main dashboard: the "Iterate" affordance is hidden pending redesign', async () => {
-    // The header "Iterate" button is gated behind SHOW_ARTIFACT_ITERATE (false),
-    // so it does not render even in the main dashboard (its `!popout` branch).
-    // When the redesign re-enables the flag, restore this to click the button
-    // and assert the local-nav prefill / sendNav path (fork analogue of
-    // upstream's "Ask agent to address").
+  it('popout: the companion chat toggle renders and stays in-window', async () => {
+    // The sparkle used to navigate away, which is why it was hidden in popouts.
+    // It is now a panel toggle and a popout has its own store + WS, so it works
+    // in place — and must NOT forward a nav intent to a main window.
     vi.mocked(api).createChatSlot = vi.fn().mockResolvedValue({ key: 'new-slot-1' })
+    vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
+    renderPage(true)
+    await waitFor(() => expect(screen.getByText(/Artifact: cr-queue/i)).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).createChatSlot).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(forwardToMain)).not.toHaveBeenCalled()
+  })
+
+  it('main dashboard: the companion chat toggle creates a bound session', async () => {
+    vi.mocked(api).createChatSlot = vi.fn().mockResolvedValue({ key: 'new-slot-1' })
+    vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
     renderPage(false)
     await waitFor(() => expect(screen.getByText(/Artifact: cr-queue/i)).toBeInTheDocument())
-    expect(screen.queryByRole('button', { name: /iterate/i })).toBeNull()
-    expect(vi.mocked(api).createChatSlot).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).createChatSlot).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api).createChatSlot.mock.calls[0][7]).toBe('cr-queue')
   })
 })

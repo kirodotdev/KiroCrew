@@ -530,7 +530,7 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
  *  equal value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_APP_ID_SET: ReadonlySet<string> = new Set()
 
-export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean } = {}) {
+export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const navigationType = useNavigationType()
@@ -1896,7 +1896,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   useEffect(() => () => { if (activeSlotRef.current && filteredSlotsRef.current.find(s => s.key === activeSlotRef.current)) safeSetItem(slotStorageKeyRef.current, activeSlotRef.current) }, [])
   // Handle ?sid= (or legacy ?slot=) query parameter — activate the given session
   // Capture initial ?sid= at mount time before any effect can overwrite it
-  const initialSidRef = useRef(searchParams.get('sid') || searchParams.get('slot'))
+  // noUrlSync also disables the sid-READ paths, not just the URL write. The host
+  // route (e.g. /artifacts/:slug) is not required to be sid-free: land on
+  // /artifacts/foo?sid=other and an ungated read effect would switchSlot() the
+  // embedded panel onto an unrelated session, so the composer would send into
+  // it. Zeroing the ref here neutralizes the mount-activation effect AND the 5s
+  // "session not found" timeout that keys off it; the POP effect reads
+  // searchParams live and is gated separately below.
+  const initialSidRef = useRef(noUrlSync ? null : (searchParams.get('sid') || searchParams.get('slot')))
   const initialMsgRef = useRef(searchParams.get('msg'))
   const initialNewRef = useRef(searchParams.get('new') === '1')
   // Deep-link mount activation in progress — stops the sync effect from stripping
@@ -1969,6 +1976,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // with empty messages — the WelcomeView fallback then renders. Defer
   // the switch until reconnect so cached state stays put.
   useEffect(() => {
+    // noUrlSync: the host page owns the URL and the panel's session is chosen by
+    // the host, never by a query param. This effect otherwise treats embedMode as
+    // "the host drives ?sid" and would switch the panel onto whatever session the
+    // host route happens to carry.
+    if (noUrlSync) return
     // Embed: host app drives the URL — react to any ?sid change.
     // Main dashboard: honor only a genuine Back/Forward POP. react-router reports
     // the initial render as 'POP' and stays 'POP' until our own switch navigates
@@ -1994,7 +2006,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       popInFlightRef.current = true
       dispatch(switchSlot(urlSid))
     }
-  }, [searchParams, filteredSlots, activeSlot, dispatch, embedMode, navigationType, location.key, connected])
+  }, [searchParams, filteredSlots, activeSlot, dispatch, embedMode, navigationType, location.key, connected, noUrlSync])
   // Timeout: if slot never appears after 5s, show error.
   // Gated on `connected` so the timer only runs while the gateway is reachable
   // — otherwise an offline tab would burn its 5s while the resolve effects
@@ -2022,6 +2034,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   searchParamsRef.current = searchParams
   useEffect(() => {
     if (embedded && !embedMode) return
+    // noUrlSync (artifact companion chat panel): the host page owns the URL
+    // entirely (e.g. /artifacts/:slug) and passes embedMode="chat" only for its
+    // single-session chrome (no sessions sidebar). Never write ?sid= or
+    // navigate to basePath — an in-place navigate would swap the host route out
+    // from under the panel. The sid-READ paths are gated for the same flag
+    // above (initialSidRef + the post-mount POP effect); do not assume a
+    // noUrlSync host route is sid-free.
+    if (noUrlSync) return
     // In sessions embed mode, the URL is `/embed/sessions` regardless of
     // activeSlot. Navigation away from sessions is driven by the explicit
     // onSelectSlot callback in ChatSidebar — never auto-navigate from here,
@@ -2066,7 +2086,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     const isSessionSwitch = !!current && current !== activeSlot
     navigate(`${basePath}${slug ? '/' + slug : ''}?${next}`, { replace: !isSessionSwitch })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, filteredSlots, navigate, basePath, location.pathname, embedded])
+  }, [activeSlot, filteredSlots, navigate, basePath, location.pathname, embedded, noUrlSync])
   // Re-fetch slot messages on mount (handles nav away + back).
   // Skip when newSession=1 — createSlot in send() will set the active slot;
   // dispatching switchSlot here would race and overwrite it.

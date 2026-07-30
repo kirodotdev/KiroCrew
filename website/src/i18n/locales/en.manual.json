@@ -87,6 +87,18 @@
     }
   },
   "components": {
+    "artifactChatPanel": {
+      "agent_chat": "Agent chat",
+      "artifact_companion_chat": "Artifact companion chat",
+      "close_chat_panel": "Close chat panel",
+      "close_panel_the_session_stays_active": "Close panel (the session stays active)",
+      "new_chat": "New chat",
+      "new_chat_archive_this_conversation_and_start_fresh": "New chat — archive this conversation and start fresh",
+      "no_active_session_for_this_artifact": "No active session for this artifact.",
+      "open_in_chat_page": "Open in chat page",
+      "start_chat": "Start chat",
+      "starting_session": "Starting session…"
+    },
     "linkedSurfacesSection": {
       "connected": "Connected: {{label}}",
       "mirror": "Mirror",
@@ -96,6 +108,12 @@
     }
   },
   "pages": {
+    "artifactDetailPage": {
+      "agent_chat": "Agent chat",
+      "chat_with_the_agent_about_this_artifact": "Chat with the agent about this artifact",
+      "this_artifact_was_deleted": "This artifact was deleted.",
+      "toggle_agent_chat": "Toggle agent chat"
+    },
     "chat": {
       "activityViewer": {
         "clear": "Clear",

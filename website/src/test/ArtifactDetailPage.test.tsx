@@ -7,6 +7,13 @@ import { api } from '../api/client'
 import type { Artifact } from '../types'
 
 vi.mock('../api/client')
+// Stub the embedded chat page (companion chat) — its rendering is covered by its
+// own suites; here it just needs to mount without ChatPage's full hook/provider
+// graph.
+vi.mock('../pages/ChatPage', () => ({
+  default: () => <div data-testid="chat-page" />,
+  PREFILL_STORAGE_KEY: 'kirocrew_prefill',
+}))
 
 const mkArtifact = (overrides: Partial<Artifact> = {}): Artifact => ({
   slug: 'cr-queue',
@@ -55,6 +62,12 @@ describe('ArtifactDetailPage', () => {
     vi.mocked(api).artifactComments = vi
       .fn()
       .mockResolvedValue({ comments: [] })
+    // The companion toggle creates a bound session, which dispatches fetchSlots()
+    // in the background. Without this mock the automock resolves undefined and
+    // the fetchSlots.fulfilled reducer throws on `payload.map` AFTER the test
+    // ends — an unhandled rejection that fails the run (`Errors: N errors`)
+    // while every test still reports as passing.
+    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([])
   })
 
   it('renders artifact metadata and iframe', async () => {
@@ -331,12 +344,13 @@ describe('ArtifactDetailPage', () => {
     await waitFor(() => expect(screen.getByTitle(/Revert to v1/)).toBeInTheDocument())
   })
 
-  // ── Phase 4: comments → chat ────────────────────────────────
-  // Inline commenting feeds the Iterate flow, which is hidden pending redesign
- // via SHOW_ARTIFACT_ITERATE. While hidden, the "select text to
-  // add inline comments" tip must NOT appear on any kind. Flip these back to
-  // assert presence when the Iterate redesign re-enables the flag.
-  it('does not show the "select text to comment" tip while Iterate is hidden (markdown)', async () => {
+  // ── comments → companion chat ───────────────────────────────
+  // Anchored (selection-driven) commenting is the mechanism for pinning an
+  // instruction to an exact span of the artifact for the agent to act on, so the
+  // "select text to anchor a comment" tip must appear on the kinds that support
+  // it (markdown/text render natively, so a DOM selection maps back to source
+  // coordinates) and stay absent on the kinds that do not.
+  it('shows the "select text to anchor a comment" tip on markdown', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown', content: '# Doc' }),
     )
@@ -345,17 +359,17 @@ describe('ArtifactDetailPage', () => {
       .mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    expect(screen.queryByText(/select text to add inline comments/i)).toBeNull()
+    expect(screen.getByText(/select text to anchor a comment/i)).toBeInTheDocument()
   })
 
-  it('does not show comment tip on non-commentable kinds (widget)', async () => {
+  it('does not show the anchored tip on non-commentable kinds (widget)', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'widget' }))
     vi.mocked(api).artifactVersions = vi
       .fn()
       .mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    expect(screen.queryByText(/select text to add inline comments/i)).toBeNull()
+    expect(screen.queryByText(/select text to anchor a comment/i)).toBeNull()
   })
 
   // ── Phase 5: lifecycle event log + activity timeline ────────
@@ -405,28 +419,32 @@ describe('ArtifactDetailPage', () => {
     expect(screen.getByText(/no lifecycle events yet/i)).toBeInTheDocument()
   })
 
- // ── Iterate affordances hidden pending redesign ────────────
-  // The header "Iterate" button is gated behind SHOW_ARTIFACT_ITERATE (false).
-  // These assert it is ABSENT for every kind; flip back to assert presence when
-  // the redesign re-enables the flag.
-  it('Iterate button is hidden for editable kinds (markdown)', async () => {
+ // ── companion chat toggle ──────────────────────────────────
+  // The header sparkle is a PANEL TOGGLE (not a navigate-away action), so it is
+  // available for every kind — including widgets, where asking the agent is the
+  // only way to change the artifact at all.
+  it('renders the companion chat toggle, unpressed, for editable kinds (markdown)', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'markdown' }))
     vi.mocked(api).artifactVersions = vi
       .fn()
       .mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    expect(screen.queryByTitle(/Discuss this artifact with the agent/i)).toBeNull()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    expect(toggle).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
   })
 
-  it('Iterate button is hidden for widget artifacts', async () => {
+  it('renders the companion chat toggle for widget artifacts too', async () => {
+    // Widgets cannot be edited inline, so asking the agent is the ONLY way to
+    // change them — the toggle must never be kind-gated.
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'widget' }))
     vi.mocked(api).artifactVersions = vi
       .fn()
       .mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    expect(screen.queryByTitle(/Discuss this artifact with the agent/i)).toBeNull()
+    expect(screen.getByLabelText('Toggle agent chat')).toBeInTheDocument()
   })
 
   it('reverted events render with from_version and no broken session link', async () => {
@@ -655,9 +673,9 @@ describe('ArtifactDetailPage', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
   })
 
-  it('no Iterate button means no chat-slot creation entry point (hidden pending redesign)', async () => {
- // With SHOW_ARTIFACT_ITERATE off the header button is gone,
-    // so there is no UI path to createChatSlot from the artifact page.
+  it('creates no chat slot until the companion toggle is clicked', async () => {
+    // Merely viewing an artifact must never spawn a session — the bound session
+    // is created lazily on the first explicit toggle click.
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown', content: '# v1' }),
     )
@@ -666,10 +684,14 @@ describe('ArtifactDetailPage', () => {
       .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
     const createSlotSpy = vi.fn().mockResolvedValue({ key: 'slot-new' })
     vi.mocked(api).createChatSlot = createSlotSpy
+    vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    expect(screen.queryByTitle(/Discuss this artifact with the agent/i)).toBeNull()
     expect(createSlotSpy).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(createSlotSpy).toHaveBeenCalledTimes(1))
+    // The 8th positional argument is the artifact binding the backend persists.
+    expect(createSlotSpy.mock.calls[0][7]).toBe('cr-queue')
   })
 
   it('description renders when artifact has one', async () => {

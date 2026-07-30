@@ -6,8 +6,9 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { ArrowLeft, AlertTriangle, ArrowUp, Camera, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Folder as FolderIcon } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
-import { useAppDispatch } from '../store'
+import { useAppDispatch, useAppSelector } from '../store'
 import { switchSlot } from '../store/chatSlice'
+import { fetchSlots, addSlotOptimistic, removeSlotOptimistic } from '../store/dashboardSlice'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
@@ -21,6 +22,7 @@ import { FolderPickerItems } from '../components/FolderMoveSubmenu'
 import { folderBreadcrumb } from '../utils/artifactFolderTree'
 import { CommentPopover } from '../components/CommentOverlay'
 import { CommentsSidebar } from '../components/CommentsSidebar'
+import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 import { findCoords, resolveSourcePos } from '../components/MarkdownPanel'
 // Artifact body renderers, extracted here so the chat side panel shares them.
@@ -29,23 +31,23 @@ import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
 import { forwardToMain, type NavIntent } from '../utils/artifactPopout'
 import { writePrefill } from '../utils/navIntent'
 import { announceCommentsChanged, onCommentsChanged } from '../utils/artifactCommentsSync'
+import { setArtifactEditing } from '../utils/artifactEditGuard'
 import { PublishHub } from '../components/PublishHub'
-import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor } from '../types'
+import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor, ChatSlot } from '../types'
 
 import { i18nT } from '../i18n/t'
-// Artifact "Iterate" affordances are hidden pending an artifact redesign.
-// This gates every user-facing entry point into the
-// iterate flow — the header Sparkles button, the anchored-comment creation
-// path (`commentable`), the CommentsSidebar "Ask agent" action, and the
-// "click Iterate" tips — while leaving iterateWithAgent / buildPromptForChat
-// and the agent-driven `iterated` lifecycle event fully intact. The durable
-// comment stack (view / doc-level add / reply / resolve / review) stays fully
-// available; only the iterate round-trip and the anchored-selection creation
-// (which existed only to feed iterate in the fork) are hidden. Flip to `true`
-// (or delete the gate) when the redesign lands.
-// NOTE: the upstream project keeps these visible — this is a deliberate
-// fork-initiated UX divergence, so do NOT let an upstream sync re-show them.
-const SHOW_ARTIFACT_ITERATE = false
+/**
+ * The artifact's active companion session: the bound slot for `slug`, or the most
+ * recently active one if a race or a History-page resume left more than one.
+ * Module-level so `openCompanionChat` can apply the identical rule to a freshly
+ * fetched slots payload, not just the Redux snapshot.
+ */
+function pickBoundSlot(slots: ChatSlot[] | undefined, slug: string): ChatSlot | null {
+  const matches = (slots ?? []).filter((x) => x.artifact === slug)
+  if (matches.length <= 1) return matches[0] ?? null
+  return [...matches].sort((a, b) =>
+    (b.last_activity_ts || '').localeCompare(a.last_activity_ts || ''))[0]
+}
 
 function readThemeVars(): Record<string, string> {
   if (typeof window === 'undefined' || typeof document === 'undefined') return {}
@@ -293,36 +295,44 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const durableComments = commentsQuery.data?.comments ?? []
   const commentCount = durableComments.length
   const remoteSyncError = commentsQuery.data?.remote_sync_error ?? null
-  // Comments live in a collapsible right-hand sidebar. It stays collapsed by
-  // default — an empty comment panel is just wasted space on a dashboard or
-  // infographic — and auto-reveals only once the artifact has at least one
-  // comment (see the effect below). A manual show/hide applies to the current
-  // view only; we intentionally do NOT persist it, so every artifact
-  // independently does the right thing instead of a global pin re-opening
-  // empty panels everywhere.
-  const [sidebarOpen, setSidebarOpen] = useState(false)
+  // Right-hand panel state machine: the comments sidebar and the companion
+  // chat panel share the same flex space, icon-toggled and mutually exclusive.
+  // 'none' keeps the artifact full-width — an empty comment panel is just
+  // wasted space on a dashboard or infographic — and comments auto-reveal only
+  // once the artifact has at least one comment (see the effect below). A manual
+  // show/hide applies to the current view only; we intentionally do NOT persist
+  // it, so every artifact independently does the right thing instead of a
+  // global pin re-opening empty panels everywhere.
+  const [panel, setPanel] = useState<'none' | 'comments' | 'chat'>('none')
   // Flipped once the user manually toggles, so the comment-driven auto-reveal
   // below stops overriding an explicit choice — but only for the current
   // artifact (cleared on navigation; see the effect).
   const sidebarUserToggledRef = useRef(false)
   const toggleSidebar = useCallback(() => {
     sidebarUserToggledRef.current = true
-    setSidebarOpen(v => !v)
+    setPanel(p => (p === 'comments' ? 'none' : 'comments'))
   }, [])
-  // Auto-reveal the sidebar when the artifact has comments; collapse it when it
-  // has none. Reacts to commentCount so adding the first comment reveals the
-  // panel and removing the last collapses it — unless the user has taken manual
-  // control via the toggle. React Router reuses this component across the
-  // parameterized route, so navigating to a different artifact clears the
-  // manual-toggle override, giving every artifact the comment-driven default.
+  // Auto-reveal the comments panel when the artifact has comments; collapse it
+  // when it has none. Reacts to commentCount so adding the first comment reveals
+  // the panel and removing the last collapses it — unless the user has taken
+  // manual control via a toggle, and NEVER by auto-switching away from an open
+  // chat panel (the chat panel only opens on explicit action, so yanking it for
+  // a comment default would discard user intent). React Router reuses this
+  // component across the parameterized route, so navigating to a different
+  // artifact clears the manual-toggle override and resets the panel, giving
+  // every artifact the comment-driven default.
   const sidebarNavRef = useRef(slug)
   useEffect(() => {
-    if (sidebarNavRef.current !== slug) {
+    const navigated = sidebarNavRef.current !== slug
+    if (navigated) {
       sidebarNavRef.current = slug
       sidebarUserToggledRef.current = false
     }
     if (sidebarUserToggledRef.current) return
-    setSidebarOpen(commentCount > 0)
+    setPanel(p => {
+      if (p === 'chat' && !navigated) return p
+      return commentCount > 0 ? 'comments' : 'none'
+    })
   }, [slug, commentCount])
   const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; line?: number; column?: number; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
   // Bidirectional anchor↔comment linking (item #5): flash a sidebar row when
@@ -554,6 +564,29 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     return () => document.removeEventListener('keydown', h)
   }, [editing, dirty, cancelEditing])
 
+  // Tell the WS transport this artifact is being edited, so a live
+  // `artifact_update` does not refetch the content out from under the editor and
+  // leave Save poised to overwrite it.
+  //
+  // Keyed on `editing`, NOT `dirty`: the exposure window opens when the editor
+  // OPENS, not when the buffer first diverges. With a dirty-only guard an update
+  // arriving while the editor sat open-and-clean would move the baseline, and the
+  // very next keystroke would make the (now stale) buffer dirty and Save would
+  // overwrite the update.
+  //
+  // When editing ends, refetch what was withheld so the page is not left showing
+  // pre-update content.
+  const wasEditingRef = useRef(false)
+  useEffect(() => {
+    setArtifactEditing(slug, editing)
+    if (wasEditingRef.current && !editing) {
+      queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
+      queryClient.invalidateQueries({ queryKey: ['artifact-versions', slug] })
+    }
+    wasEditingRef.current = editing
+    return () => setArtifactEditing(slug, false)
+  }, [slug, editing, queryClient])
+
   // Warn the browser about unsaved edits on close / reload / nav-away.
   useEffect(() => {
     if (!dirty) return
@@ -567,11 +600,18 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // cleanly: markdown (via data-sourcepos) and text (rendered === source).
   // JSON / SVG selection produces noisy anchors; revisit when there's a real
   // user demand.
-  // Anchored (selection-driven) comment creation existed in the fork solely to
-  // feed the Iterate flow, so it is gated behind SHOW_ARTIFACT_ITERATE with the
-  // rest of the iterate affordances. Doc-level comments via the CommentsSidebar
-  // remain available for all kinds regardless of this flag.
-  const commentable = SHOW_ARTIFACT_ITERATE && !!artifact && !editing && isCurrent && (
+  // Anchored (selection-driven) comment creation: select text in the rendered
+  // body to pin a comment to that exact span. The anchor (quote + prefix/suffix
+  // + rendered-text offsets + version) is persisted server-side and surfaced to
+  // the agent via artifact_get_comments, so a comment is a durable, located
+  // instruction rather than a free-floating note. Doc-level comments via the
+  // CommentsSidebar remain available for all kinds.
+  // markdown AND text: both now render behind a `previewRef` (ContentRenderer
+  // attaches it to the markdown DOM and to the <pre> used for text), so a
+  // selection has a root to map back to source in either. Do not add a kind here
+  // without confirming its renderer attaches the ref, or the popover silently
+  // never opens.
+  const commentable = !!artifact && !editing && isCurrent && (
     artifact.kind === 'markdown' || artifact.kind === 'text'
   )
   const isMarkdown = artifact?.kind === 'markdown'
@@ -674,8 +714,14 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     // Adding a comment hands control back to the comment-driven default: reveal
     // the panel now, and clear the manual override so the auto effect can
     // collapse it again if every comment is later removed.
+    //
+    // EXCEPT when the chat panel is open. An anchored add is reachable while
+    // chatting (the body stays visible in the left column), and switching panels
+    // would yank the conversation out from under the user. The toolbar's comment
+    // badge already increments, so the add is still visibly acknowledged. Same
+    // rationale as the auto-reveal guard in the panel effect above.
     sidebarUserToggledRef.current = false
-    setSidebarOpen(true)
+    setPanel(p => (p === 'chat' ? p : 'comments'))
     setPopover(null)
     window.getSelection()?.removeAllRanges()
   }, [popover, postCommentMut])
@@ -699,20 +745,6 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const removeComment = useCallback((id: string) => { removeCommentMut.mutate(id) }, [removeCommentMut])
   const editComment = useCallback((id: string, text: string) => { editCommentMut.mutate({ id, text }) }, [editCommentMut])
 
-  // Build the chat-injection prompt. Comments are durable and the agent reads
-  // them itself via `artifact_get_comments`, so we NEVER dump comment text into
-  // the prompt anymore — `addressComments` just nudges the agent to read+act on
-  // the open ones. The plain header is the generic "discuss this" entry point
-  // for ALL kinds (including widgets that can't be edited inline).
-  const buildPromptForChat = useCallback((addressComments = false): string => {
-    if (!artifact) return ''
-    const header = `Iterate on artifact \`${artifact.slug}\` (${artifact.name})`
-    if (addressComments && commentCount > 0) {
-      return header + `: please review and address the ${commentCount} open comment${commentCount === 1 ? '' : 's'} on this artifact (use the artifact_get_comments tool to read them).`
-    }
-    return header + ': '
-  }, [artifact, commentCount])
-
   /**
    * Single navigation dispatcher for every affordance that leaves the artifact
    * view. In the main dashboard it navigates locally (seeding the composer
@@ -728,27 +760,229 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     navigate(intent.path)
   }, [popout, dispatch, navigate])
 
-  /** Open a fresh chat slot pre-loaded with this artifact in the input.
-   * Always creates a NEW session so historical context from unrelated
-   * conversations doesn't contaminate the iterate loop. The user reviews
-   * the prefill and clicks Send — we never auto-send because comment
-   * dumps can be long and may need editing.
+  // ── Companion chat ─────────────────────────────────────────────────────────
+  // The active bound session is resolved from the Redux slots snapshot (the WS
+  // `slots` event carries each slot's `artifact` binding) — zero extra
+  // endpoints. The frontend flow keeps it to <=1 active bound session per slug
+  // (archive-then-create); the resolver tolerates more by picking the most
+  // recently active, so races and history resumes degrade gracefully.
+  // `?? []` mirrors TaskProgressBar: the slots array is typed non-optional but
+  // the store hydrates from localStorage, so a stale persisted shape can hand
+  // back undefined and a bare .filter() would crash the whole artifact page.
+  const slots = useAppSelector((s) => s.dashboard.slots)
+  // `slots` is `[]` BOTH before the first fetch and when nothing is bound, so the
+  // empty array alone cannot be read as "no bound session" — see openCompanionChat.
+  const slotsLoaded = useAppSelector((s) => s.dashboard.slotsLoaded)
+  // The winner drives the panel; the full set matters when archiving, because a
+  // two-window creation race can leave more than one slot bound to this slug and
+  // archiving only the winner lets pickBoundSlot reopen the leftover.
+  const boundSlots = useMemo(
+    () => (slots ?? []).filter((x) => x.artifact === slug),
+    [slots, slug],
+  )
+  const boundSlot = useMemo(() => pickBoundSlot(slots, slug), [slots, slug])
+  const [chatCreating, setChatCreating] = useState(false)
+  // Serializes the two session-lifecycle entry points. `chatCreating` cannot do
+  // this job: it is React state (so a second handler in the same tick still sees
+  // the old value) and it is only set INSIDE createBoundSession, which runs
+  // AFTER newCompanionChat's `await` on the archive — leaving a window where a
+  // rapid double-click starts two flows, both resolve the same boundSlot, both
+  // archive it (the second 404s and proceeds by design), and both create a
+  // replacement. That yields two active bound sessions for one artifact, the
+  // exact invariant the archive-then-create ordering exists to protect.
+  const sessionOpBusyRef = useRef(false)
+  // Versions already announced to a session via context injection, so repeated
+  // panel opens don't stack duplicate freshness nudges.
+  const injectedVersionRef = useRef<Map<string, number>>(new Map())
+
+  /** Structured context entry naming the artifact — injected ephemeral (consumed
+   *  on the next user message) so the user's first message can be natural
+   *  ("summarize this") with no slug boilerplate in the composer. */
+  const buildCompanionContext = useCallback((): string => {
+    if (!artifact) return ''
+    return (
+      `Companion chat for artifact \`${artifact.slug}\` ("${artifact.name}", kind=${artifact.kind}, ` +
+      `v${artifact.version}, source_path=${artifact.source_path || 'none'}, ` +
+      `${commentCount} open comment${commentCount === 1 ? '' : 's'}).\n` +
+      `Use artifact_get / artifact_update / artifact_get_comments with this slug. ` +
+      `Anchored comments carry the exact quoted span they refer to — treat each as ` +
+      `an instruction about that span, and triage every one you act on.`
+    )
+  }, [artifact, commentCount])
+
+  /** Create a fresh bound session with a ONE-round-trip critical path: the
+   *  create response — which carries the `artifact` binding — is dispatched
+   *  straight into the Redux slots list (addSlotOptimistic), so `boundSlot`
+   *  resolves and the panel becomes interactive immediately. The silent context
+   *  entry and the server-truth refresh run in the background: the context POST
+   *  completes long before a human can type and send (it is consumed on the NEXT
+   *  user message), and fetchSlots/WS snapshots reconcile the optimistic row
+   *  with full slot metadata moments later.
    *
-   * Works regardless of pending comment state: the comment-less path
-   * (just `Iterate on artifact <slug>: `) is the primary "discuss this"
-   * entry point and is available for ALL artifact kinds (including
-   * widgets that can't be edited inline).
-   */
-  const iterateWithAgent = useCallback(async (addressComments = false) => {
-    if (!artifact) return
-    const prompt = buildPromptForChat(addressComments)
+   *  `prefillText` is staged via writePrefill BEFORE the optimistic bind so
+   *  ChatPage's slot-activation effect deterministically finds it on mount. */
+  const createBoundSession = useCallback(async (prefillText?: string): Promise<string | null> => {
+    if (!artifact) return null
+    setChatCreating(true)
     try {
-      const res = await api.createChatSlot(`Artifact: ${artifact.name}`)
-      sendNav({ path: '/chat', slotKey: res.key, prefill: { slotKey: res.key, prompt } })
+      // No `name`: the backend generates a unique slot key (reusing a
+      // name-derived key would append onto an archived session's history file).
+      // The pinned title keeps the sidebar readable.
+      const res = await api.createChatSlot(
+        undefined, undefined, undefined, undefined, undefined,
+        `Artifact: ${artifact.name}`, undefined, artifact.slug,
+      )
+      if (prefillText) writePrefill(res.key, prefillText)
+      dispatch(addSlotOptimistic({
+        key: res.key,
+        title: res.title || `Artifact: ${artifact.name}`,
+        messages: 0,
+        running: false,
+        artifact: artifact.slug,
+      } as ChatSlot))
+      api.chatSlotContext(res.key, buildCompanionContext(), {
+        source: 'artifact-companion', ephemeral: true,
+      }).catch(() => undefined)
+      injectedVersionRef.current.set(res.key, artifact.version)
+      dispatch(fetchSlots())
+      return res.key as string
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err))
+      return null
+    } finally {
+      setChatCreating(false)
     }
-  }, [artifact, buildPromptForChat, sendNav])
+  }, [artifact, buildCompanionContext, dispatch])
+
+  /** Sparkle flow: resume the active bound session if one exists, else create a
+   *  new one. With `address`, stage (never auto-send) the address-comments
+   *  message via the writePrefill sessionStorage channel — the embedded ChatPage
+   *  consumes it when the slot activates. (The panels are mutually exclusive, so
+   *  an "Ask agent to address" click always mounts the chat panel fresh — the
+   *  prefill is always picked up.) */
+  const openCompanionChat = useCallback(async (opts?: { address?: boolean }) => {
+    if (!artifact) return
+    if (sessionOpBusyRef.current) return
+    const address = opts?.address ?? false
+    if (!address && panel === 'chat') { sidebarUserToggledRef.current = true; setPanel('none'); return }
+    sidebarUserToggledRef.current = true
+    const addressMsg = address && commentCount > 0
+      ? `Please review and address the ${commentCount} open comment${commentCount === 1 ? '' : 's'} on this artifact.`
+      : ''
+    let bound = boundSlot
+    if (!bound && !slotsLoaded) {
+      // Cold load: the slots snapshot is still `[]` because the first fetch has
+      // not landed, NOT because this artifact has no session. Creating here would
+      // add a second active bound session for the slug the moment the real one
+      // arrives. Resolve authoritatively first, applying the same tie-break rule.
+      setPanel('chat')
+      sessionOpBusyRef.current = true
+      try {
+        bound = pickBoundSlot(await dispatch(fetchSlots()).unwrap(), slug)
+      } catch {
+        bound = null   // fetch failed — fall through and create
+      } finally {
+        sessionOpBusyRef.current = false
+      }
+    }
+    if (!bound) {
+      setPanel('chat')
+      sessionOpBusyRef.current = true
+      try {
+        await createBoundSession(addressMsg || undefined)
+      } finally {
+        sessionOpBusyRef.current = false
+      }
+      return
+    }
+    const boundSlotResolved = bound
+    if (addressMsg) writePrefill(boundSlotResolved.key, addressMsg)
+    setPanel('chat')
+    // Resume freshness nudge: if the artifact moved past the session's last
+    // activity, inject a fresh ephemeral context entry so the agent doesn't act
+    // on stale-version assumptions. Best-effort — ISO timestamps compare
+    // lexicographically; a miss just means the agent re-reads via artifact_get.
+    const injected = injectedVersionRef.current.get(boundSlotResolved.key)
+    if (
+      injected !== artifact.version &&
+      boundSlotResolved.last_activity_ts && artifact.updated_at &&
+      artifact.updated_at > boundSlotResolved.last_activity_ts
+    ) {
+      injectedVersionRef.current.set(boundSlotResolved.key, artifact.version)
+      api.chatSlotContext(boundSlotResolved.key, buildCompanionContext(), {
+        source: 'artifact-companion', ephemeral: true,
+      }).catch(() => undefined)
+    }
+  }, [artifact, panel, commentCount, boundSlot, slotsLoaded, slug, dispatch,
+      createBoundSession, buildCompanionContext])
+
+  /** "New chat": archive the current bound session FIRST (the existing red-X
+   *  delete path — history preserved, resumable from the History page), then
+   *  create fresh — so the <=1-active invariant never observably breaks. The
+   *  optimistic remove mirrors the optimistic add: without it the resolver would
+   *  keep picking the archived slot (it has a last_activity_ts, the new one
+   *  doesn't) until the next WS snapshot prunes it. */
+  const newCompanionChat = useCallback(async () => {
+    // Reject a re-entrant click rather than queue it: the second click's intent
+    // ("give me a fresh session") is already satisfied by the first.
+    if (sessionOpBusyRef.current) return
+    sessionOpBusyRef.current = true
+    try {
+      // Archive every slot bound to this slug, not just the resolved winner.
+      for (const slot of boundSlots) {
+        try {
+          await api.deleteChatSlot(slot.key)
+        } catch (err) {
+          // ONLY a 404 means "already archived, nothing to do". Any other
+          // failure means the old session is still live server-side, so creating
+          // anyway would leave TWO bound sessions for this slug — and since the
+          // resolver breaks ties on last_activity_ts, the OLD one keeps winning
+          // and "New chat" silently appears to do nothing. Abort and say why.
+          //
+          // Read `status` structurally rather than via `instanceof ApiError`:
+          // this fails closed on anything not provably a 404 (including an error
+          // re-thrown or wrapped across a module boundary, where instanceof
+          // silently stops matching), and it is verifiable in a test.
+          const status = (err as { status?: unknown } | null | undefined)?.status
+          if (status !== 404) {
+            setSaveError(err instanceof Error ? err.message : String(err))
+            return
+          }
+        }
+        dispatch(removeSlotOptimistic(slot.key))
+      }
+      await createBoundSession()
+    } finally {
+      sessionOpBusyRef.current = false
+    }
+  }, [boundSlots, createBoundSession, dispatch])
+
+  /** Full-page escape hatch — routes through sendNav so a popout forwards the
+   *  intent to a main window instead of remounting the dashboard in-frame. */
+  const openChatFull = useCallback(() => {
+    if (!boundSlot) return
+    sendNav({ path: '/chat', slotKey: boundSlot.key })
+  }, [boundSlot, sendNav])
+
+  // Deleted-artifact handling (consumes the `artifact_update {deleted}` WS event
+  // relayed by useWebSocket as a window event): leave the page in the main
+  // dashboard; a popout has no router so it surfaces an error instead.
+  useEffect(() => {
+    const onDeleted = (e: Event) => {
+      const detail = (e as CustomEvent<{ slug: string }>).detail
+      if (detail?.slug !== slug) return
+      // Navigating away destroys the edit buffer, so a dirty page keeps its
+      // content and surfaces the deletion instead — the user can still copy their
+      // work out. A popout has no router and always surfaces the error.
+      if (popout || dirty) {
+        setSaveError(i18nT('pages.artifactDetailPage.this_artifact_was_deleted'))
+      } else {
+        navigate('/artifacts')
+      }
+    }
+    window.addEventListener('kirocrew:artifact-deleted', onDeleted)
+    return () => window.removeEventListener('kirocrew:artifact-deleted', onDeleted)
+  }, [slug, popout, navigate, dirty])
 
   // Drop popover when the user switches to edit mode or pages between
   // versions — those interactions kill the underlying selection anyway.
@@ -1050,24 +1284,23 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     <Pencil size={13} />
                   </button>
                 )}
-                {/* Iterate — primary "discuss with agent" action for all kinds;
-                    for widgets it is the only way to ask the agent to change the
-                    artifact. Comments are durable and read by the agent via
-                    artifact_get_comments, so this no longer bundles them. Hidden
-                    in a popout window since it navigates away to a new chat — you
-                    iterate from the main dashboard, alongside the popped-out view.
-                    Also hidden while the fork keeps Iterate off (SHOW_ARTIFACT_ITERATE). */}
-                {SHOW_ARTIFACT_ITERATE && !popout && (
-                  <button
-                    type="button"
-                    onClick={() => iterateWithAgent()}
-                    className="px-2 py-1 rounded-md text-[12px] font-medium border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)] transition-all"
-                    title={i18nT('pages.artifactDetailPage.iterate_discuss_this_artifact_with_the_agent')}
-                    aria-label={i18nT('pages.artifactDetailPage.iterate')}
-                  >
-                    <Sparkles size={13} />
-                  </button>
-                )}
+                {/* Companion chat — toggles the embedded chat panel. Primary
+                    "discuss with agent" action for all kinds; for widgets it is
+                    the only way to ask the agent to change the artifact.
+                    Comments are durable and read by the agent via
+                    artifact_get_comments. Works in popout windows too — the
+                    popout has its own store + WS, and the old hide-in-popout
+                    reason (this button used to navigate away) is gone. */}
+                <button
+                  type="button"
+                  onClick={() => { void openCompanionChat() }}
+                  className={`p-1.5 rounded-md border cursor-pointer transition-all ${panel === 'chat' ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
+                  title={i18nT('pages.artifactDetailPage.chat_with_the_agent_about_this_artifact')}
+                  aria-label={i18nT('pages.artifactDetailPage.toggle_agent_chat')}
+                  aria-pressed={panel === 'chat'}
+                >
+                  <Sparkles size={13} />
+                </button>
               </>
             )}
 
@@ -1079,10 +1312,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             <button
               type="button"
               onClick={toggleSidebar}
-              className={`p-1.5 rounded-md border cursor-pointer transition-all ${sidebarOpen ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-              title={sidebarOpen ? 'Hide comments' : 'Show comments'}
+              className={`p-1.5 rounded-md border cursor-pointer transition-all ${panel === 'comments' ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
+              title={panel === 'comments' ? 'Hide comments' : 'Show comments'}
               aria-label={i18nT('pages.artifactDetailPage.toggle_comments')}
-              aria-pressed={sidebarOpen}
+              aria-pressed={panel === 'comments'}
             >
               <span className="inline-flex items-center gap-1">
                 <MessageSquare size={13} />
@@ -1175,12 +1408,16 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           </div>
         )}
 
-        {artifact.kind === 'webapp' ? (
-          <WebAppArtifactCard artifact={artifact} />
-        ) : (
+        {/* One flex row for EVERY kind, so the right-hand panels are siblings of
+            whatever body is rendered. Previously the row (and both panels) lived
+            only in the non-webapp branch while the toolbar's chat and comments
+            toggles rendered unconditionally — so on a webapp artifact a click
+            created/activated a session that had nowhere to display. */}
         <div className="flex gap-4 items-start">
           <div className="flex-1 min-w-0">
-            {usesIframe ? (
+            {artifact.kind === 'webapp' ? (
+              <WebAppArtifactCard artifact={artifact} />
+            ) : usesIframe ? (
               <>
                 <ArtifactBodyIframe
                   artifact={artifact}
@@ -1235,10 +1472,12 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             )}
           </div>
 
-          {/* Collapsible right-hand comment sidebar. Durable, threaded, works
-              for ALL kinds (doc-level add for HTML/widget; anchored add for
-              markdown/text via the inline popover above). */}
-          {sidebarOpen && (
+          {/* Shared right-hand panel space: comments sidebar and companion chat
+              panel are mutually exclusive flex siblings of the artifact body —
+              icon-toggled, never overlays. The comment stack is durable,
+              threaded, and works for ALL kinds (doc-level add for HTML/widget;
+              anchored add for markdown/text via the inline popover above). */}
+          {panel === 'comments' && (
             <CommentsSidebar
               comments={durableComments}
               loading={commentsQuery.isFetching}
@@ -1250,15 +1489,23 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               onReopen={reopenComment}
               onDelete={removeComment}
               onRefresh={invalidateComments}
-              onAskAgent={SHOW_ARTIFACT_ITERATE && commentCount > 0 ? () => iterateWithAgent(true) : undefined}
+              onAskAgent={commentCount > 0 ? () => { void openCompanionChat({ address: true }) } : undefined}
               onClose={toggleSidebar}
               onCommentClick={activateFromSidebar}
               onEditComment={editComment}
               activeCommentId={activeCommentId}
             />
           )}
+          {panel === 'chat' && (
+            <ArtifactChatPanel
+              slotKey={boundSlot?.key ?? null}
+              creating={chatCreating}
+              onNewChat={() => { void newCompanionChat() }}
+              onOpenFull={openChatFull}
+              onClose={() => { sidebarUserToggledRef.current = true; setPanel('none') }}
+            />
+          )}
         </div>
-        )}
 
         <div className="mt-3 text-[12px] text-muted">
           {i18nT('pages.artifactDetailPage.created')} {artifact.created_at} {i18nT('pages.artifactDetailPage.updated')} {artifact.updated_at} {"\u00b7"}{' '}
@@ -1269,15 +1516,13 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             ? `Showing Live (v${detailQuery.data?.version ?? '?'})`
             : `Showing v${effectiveVersion} (historical)`}
           {dirty && <span className="ml-2 text-warn">{i18nT('pages.artifactDetailPage.unsaved_changes')}</span>}
-          {/* `commentable` already implies SHOW_ARTIFACT_ITERATE (see its definition). */}
           {commentable && commentCount === 0 && (
             <span className="ml-2 text-muted/80">{i18nT('pages.artifactDetailPage.tip_select_text_to_anchor_a_comment_or_use_the')} <strong>{i18nT('pages.artifactDetailPage.comments')}</strong> {i18nT('pages.artifactDetailPage.panel_to_add_one')}</span>
           )}
-          {/* The Comments panel is always available; the Iterate mention is gated. */}
           {!commentable && !editing && isCurrent && (
             <span className="ml-2 text-muted/80">
               {i18nT('pages.artifactDetailPage.tip_use_the')} <strong>{i18nT('pages.artifactDetailPage.comments')}</strong> {i18nT('pages.artifactDetailPage.panel_to_comment')}
-              {SHOW_ARTIFACT_ITERATE ? <>{i18nT('pages.artifactDetailPage.or')} <strong>{i18nT('pages.artifactDetailPage.iterate')}</strong> {i18nT('pages.artifactDetailPage.to_chat_with_the_agent')}</> : null}.
+              {i18nT('pages.artifactDetailPage.or')} <strong>{i18nT('pages.artifactDetailPage.agent_chat')}</strong> {i18nT('pages.artifactDetailPage.to_chat_with_the_agent')}.
             </span>
           )}
         </div>

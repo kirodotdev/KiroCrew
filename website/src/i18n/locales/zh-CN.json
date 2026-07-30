@@ -902,6 +902,18 @@
     "artifactBody": {
       "rendering": "渲染中…"
     },
+    "artifactChatPanel": {
+      "agent_chat": "智能体对话",
+      "artifact_companion_chat": "工件伴随对话",
+      "close_chat_panel": "关闭对话面板",
+      "close_panel_the_session_stays_active": "关闭面板（会话仍保持活动）",
+      "new_chat": "新建对话",
+      "new_chat_archive_this_conversation_and_start_fresh": "新建对话 — 归档当前对话并重新开始",
+      "no_active_session_for_this_artifact": "此工件没有活动会话。",
+      "open_in_chat_page": "在对话页面中打开",
+      "start_chat": "开始对话",
+      "starting_session": "正在启动会话…"
+    },
     "artifactFolderDeleteDialog": {
       "cancel": "取消",
       "contents_move_up_to": "内容将上移至",
@@ -2302,6 +2314,7 @@
       "activity": "动态",
       "add_a_tag": "添加标签",
       "add_a_tag_comma_separated_tags_supported": "添加标签（支持逗号分隔）",
+      "agent_chat": "智能体对话",
       "artifact": "工件",
       "back": "返回",
       "back_to_library": "← 返回库",
@@ -2310,6 +2323,7 @@
       "by": "由",
       "cancel": "取消",
       "cancel_esc": "取消 (Esc)",
+      "chat_with_the_agent_about_this_artifact": "就此工件与智能体对话",
       "comments": "评论",
       "content_copied_from_v": "内容复制自 v",
       "created": "创建于",
@@ -2353,9 +2367,11 @@
       "tag": "标签…",
       "tag_2": "标签",
       "this_artifact_is_regenerated_by_a_cron_job_your": "此工件由定时任务重新生成。你的修改会保留在版本历史中，但下次定时任务运行会创建更新的版本，覆盖你在此保存的内容。",
+      "this_artifact_was_deleted": "此工件已被删除。",
       "tip_select_text_to_anchor_a_comment_or_use_the": "提示：选中文本以锚定评论，或使用",
       "tip_use_the": "提示：使用",
       "to_chat_with_the_agent": "与代理聊天",
+      "toggle_agent_chat": "切换智能体对话",
       "toggle_comments": "切换评论",
       "unsaved_changes": "• 未保存的更改",
       "updated": "· 更新于",

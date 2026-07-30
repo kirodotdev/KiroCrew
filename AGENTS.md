@@ -64,10 +64,14 @@ at the `hooks.py` PreToolUse gate; default-ON but user-configurable from Setting
 force-pin. See `docs/system-specs/modules/security.md`.
 
 **Fork-initiated UX divergences (do not let an upstream sync re-introduce):** the
-artifact **Iterate** button is hidden (`SHOW_ARTIFACT_ITERATE` in
-`ArtifactDetailPage.tsx`), the **Channels** app is hidden from the App Store, the
-**Board** app is removed, and the Voice panel adds a local **Piper** TTS provider.
-These are launch product choices tracked out-of-tree with the upstream sync tooling.
+**Channels** app is hidden from the App Store, the **Board** app is removed, and
+the Voice panel adds a local **Piper** TTS provider. These are launch product
+choices tracked out-of-tree with the upstream sync tooling.
+
+The artifact **Iterate** divergence is retired: `SHOW_ARTIFACT_ITERATE` gated the
+old navigate-away flow "pending an artifact redesign", and the embedded companion
+chat panel IS that redesign — so the flag is deleted and the affordance ships. Do
+NOT re-add the gate. See `docs/system-specs/modules/artifacts.md` § Companion Chat.
 
 ## Platform layer: CPP seam + Governance (read before touching `platform/`)
 
