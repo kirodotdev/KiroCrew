@@ -342,6 +342,112 @@ class TestLlamaCppEmbedder:
         # The model loaded exactly once despite the concurrent first calls.
         assert len(fake_cls.instances) == 1
 
+    def test_inference_runs_on_one_owned_thread(self, tmp_path: Path, monkeypatch) -> None:
+        """Inference never runs on the caller's thread, and always on the same one.
+
+        llama.cpp builds a compute thread pool (n_threads_batch, = CPU count)
+        the first time a given thread runs inference, and that pool lives as
+        long as its calling thread. Embeds arrive on long-lived executor
+        threads, so running inference inline leaked one pool per caller.
+        """
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        emb = self._embedder(tmp_path)
+        assert emb.wait_ready(timeout=5)
+        llm = fake_cls.instances[0]
+        inference_threads: list[threading.Thread] = []
+        caller_threads: list[threading.Thread] = []
+        worker_results: list[list[float] | None] = []
+        real_create = llm.create_embedding
+
+        def _recording(texts):
+            inference_threads.append(threading.current_thread())
+            return real_create(texts)
+
+        llm.create_embedding = _recording
+
+        def _work(i: int) -> None:
+            caller_threads.append(threading.current_thread())
+            worker_results.append(emb.embed(f"text {i}"))
+
+        threads = [threading.Thread(target=_work, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        # Assert on THIS thread: an assert inside _work would be swallowed by
+        # threading and could not fail the test.
+        assert all(r is not None and len(r) == _DIM for r in worker_results)
+        assert emb.embed("from the test thread") is not None  # main thread too
+
+        assert len(inference_threads) == 5
+        assert len(set(inference_threads)) == 1, "inference must not follow the caller"
+        worker = inference_threads[0]
+        assert worker is not threading.current_thread()
+        assert worker not in caller_threads
+        assert worker.daemon
+
+    def test_close_stops_the_inference_thread(self, tmp_path: Path, monkeypatch) -> None:
+        """close() releases the compute pool, which means ending its owner thread."""
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        emb = self._embedder(tmp_path)
+        assert emb.wait_ready(timeout=5)
+        assert emb.embed("hello") is not None
+        worker = emb._infer_thread
+        assert worker is not None and worker.is_alive()
+
+        emb.close()
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert emb._infer_thread is None
+
+        # A later embed brings up a fresh worker rather than wedging.
+        assert emb.wait_ready(timeout=5)
+        assert emb.embed("hello again") is not None
+        assert emb._infer_thread is not None and emb._infer_thread is not worker
+
+    def test_worker_is_bound_to_its_own_queue(self, tmp_path: Path, monkeypatch) -> None:
+        """A straggler from a timed-out close() cannot serve or starve the next worker.
+
+        With the stop timeout at zero the join always "times out", so close()
+        leaves the previous worker alive. Each worker owns the queue it was
+        started with, so the straggler drains only its own — it can neither
+        consume the next worker's jobs nor eat that worker's future sentinel.
+        """
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        monkeypatch.setattr("kiro_crew.embeddings._INFER_STOP_TIMEOUT_SECS", 0.0)
+        emb = self._embedder(tmp_path)
+        assert emb.wait_ready(timeout=5)
+        assert emb.embed("first") is not None
+        first_worker, first_queue = emb._infer_thread, emb._jobs
+        assert first_worker is not None
+
+        emb.close()  # join(0.0) — may or may not have reaped the worker yet
+        assert emb._infer_thread is None
+
+        assert emb.wait_ready(timeout=5)
+        assert emb.embed("after close") is not None, "job was orphaned"
+        assert emb._infer_thread is not None and emb._infer_thread is not first_worker
+        assert emb._jobs is not first_queue
+        # The old worker exits on the sentinel left on its own queue.
+        first_worker.join(timeout=5)
+        assert not first_worker.is_alive()
+
+    def test_inference_error_propagates_from_the_worker(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A failure raised on the worker thread still degrades to None, not a hang."""
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        emb = self._embedder(tmp_path)
+        assert emb.wait_ready(timeout=5)
+        fake_cls.embed_error = RuntimeError("ggml exploded")
+        assert emb.embed("boom") is None
+        fake_cls.embed_error = None
+        assert emb.embed("recovered") is not None
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ModelDownloadManager
