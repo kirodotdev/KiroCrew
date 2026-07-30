@@ -607,3 +607,36 @@ class TestRoundTrip:
         conn.close()
         assert len(rows) == 1
         assert "deployment" in rows[0][1]
+
+
+def _make_min_import_zip(path, extra_files=1):
+    """Minimal valid import archive: one top-level dir + MANIFEST.json."""
+    with zipfile.ZipFile(str(path), "w") as zf:
+        zf.writestr("snap/MANIFEST.json", json.dumps({"version": 2}))
+        for i in range(extra_files):
+            zf.writestr(f"snap/f{i}.txt", "x")
+    return path
+
+
+def test_import_zip_bomb_member_cap(tmp_path, monkeypatch):
+    # SEC-7F44A198: too many entries is rejected before extraction.
+    import kiro_crew.portability as port
+
+    z = _make_min_import_zip(tmp_path / "imp.zip", extra_files=3)
+    monkeypatch.setattr(port, "_MAX_IMPORT_MEMBERS", 1)
+    ok, msg, _ = port.validate_import_zip(z)
+    assert ok is False and "too many entries" in msg
+    with pytest.raises(ValueError, match="too many entries"):
+        port.apply_import_zip(z)
+
+
+def test_import_zip_bomb_size_cap(tmp_path, monkeypatch):
+    # SEC-7F44A198: excessive declared uncompressed size is rejected (zip bomb).
+    import kiro_crew.portability as port
+
+    z = _make_min_import_zip(tmp_path / "imp2.zip", extra_files=1)
+    monkeypatch.setattr(port, "_MAX_IMPORT_UNCOMPRESSED", 1)
+    ok, msg, _ = port.validate_import_zip(z)
+    assert ok is False and "zip bomb" in msg
+    with pytest.raises(ValueError, match="zip bomb"):
+        port.apply_import_zip(z)

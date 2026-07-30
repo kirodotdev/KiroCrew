@@ -55,9 +55,20 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("cat /tmp/foo.txt") is True
         assert is_read_only_bash("head -20 file.py") is True
         assert is_read_only_bash("tail -f log.txt") is True
-        assert is_read_only_bash("find . -name '*.py'") is True
         assert is_read_only_bash("grep -r 'pattern' src/") is True
         assert is_read_only_bash("wc -l file.txt") is True
+
+    def test_find_not_auto_approved(self):
+        # `find` is NOT on the read-only allowlist (SEC-005 / SEC-FC0A8D32):
+        # it resolves destructive behaviour through sub-options (-delete/-exec),
+        # so removing it from the allowlist (the finding's remediation option 1)
+        # means it is never auto-approved.
+        assert is_read_only_bash("find . -delete") is False
+        assert is_read_only_bash("find . '-delete'") is False
+        assert is_read_only_bash("find . -exec rm {} +") is False
+        assert is_read_only_bash("find . -name '*.py'") is False
+        assert is_read_only_bash("find src -type f") is False
+        assert "not on the read-only allowlist" in unsafe_bash_reason("find . -delete")
         assert is_read_only_bash("diff file1 file2") is True
 
     def test_git_read_commands(self):
@@ -93,14 +104,14 @@ class TestIsReadOnlyBash:
 
     def test_devnull_redirects_allowed(self):
         """Discard-only redirect idioms are read-only despite '>'/'&'."""
-        assert is_read_only_bash("find . -name '*.py' 2>/dev/null") is True
+        assert is_read_only_bash("head -5 file.txt 2>/dev/null") is True
         assert is_read_only_bash("grep -r 'pattern' src/ 2>/dev/null") is True
         assert is_read_only_bash("ls /nonexistent >/dev/null") is True
         assert is_read_only_bash("cat file &>/dev/null") is True
-        assert is_read_only_bash("find / -name x 2>>/dev/null") is True
+        assert is_read_only_bash("wc -l /tmp/x 2>>/dev/null") is True
         assert is_read_only_bash("ls -la 2>&1") is True
         # Compound + pipe chains with a /dev/null sink stay read-only.
-        assert is_read_only_bash("find . -type f 2>/dev/null | head -20") is True
+        assert is_read_only_bash("grep -r foo . 2>/dev/null | head -20") is True
         assert (
             is_read_only_bash("ls /a 2>/dev/null; grep -r foo /b 2>/dev/null") is True
         )
@@ -186,7 +197,7 @@ class TestUnsafeBashReason:
         # Invariant: empty reason IFF the command is read-only.
         for cmd in (
             "ls -la",
-            "find . -name '*.py' 2>/dev/null",
+            "head -5 file.txt 2>/dev/null",
             "grep -r foo src/ | head -20",
             "git status && git log --oneline -3",
         ):
@@ -217,7 +228,7 @@ class TestUnsafeBashReason:
         """unsafe_bash_reason is non-empty exactly when is_read_only_bash is False."""
         samples = [
             "ls -la",
-            "find . -name x 2>/dev/null",
+            "wc -l /tmp/x 2>/dev/null",
             "grep -r foo src/ | head",
             "echo payload > /etc/file",
             "echo $(rm -rf /)",

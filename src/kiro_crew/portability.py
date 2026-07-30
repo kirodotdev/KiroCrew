@@ -170,6 +170,14 @@ def create_export_zip() -> tuple[bytes, dict]:
     return buf.getvalue(), manifest
 
 
+# Zip-bomb guards for import archives (CWE-409). A real personal snapshot is far
+# below these ceilings; a decompression bomb (huge declared uncompressed size, or
+# millions of entries) is rejected before extraction rather than filling the
+# host disk.
+_MAX_IMPORT_MEMBERS = 50_000
+_MAX_IMPORT_UNCOMPRESSED = 2 * 1024 ** 3  # 2 GiB
+
+
 def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
     """Validate a zip file for import.
 
@@ -184,6 +192,17 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
                 parts = PurePosixPath(name).parts
                 if ".." in parts or name.startswith("/"):
                     return False, f"Rejected path traversal: {name}", {}
+
+            # Zip-bomb guard: bound entry count and total uncompressed size.
+            infos = zf.infolist()
+            if len(infos) > _MAX_IMPORT_MEMBERS:
+                return False, f"Rejected: archive has too many entries ({len(infos)} > {_MAX_IMPORT_MEMBERS})", {}
+            total_uncompressed = sum(i.file_size for i in infos)
+            if total_uncompressed > _MAX_IMPORT_UNCOMPRESSED:
+                return False, (
+                    f"Rejected: uncompressed size {total_uncompressed} exceeds cap "
+                    f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
+                ), {}
 
             # Find manifest
             manifest_entries = [n for n in names if n.endswith("MANIFEST.json")]
@@ -218,7 +237,19 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
         work = Path(work_str)
 
         with zipfile.ZipFile(str(zip_path), "r") as zf:
-            for info in zf.infolist():
+            infos = zf.infolist()
+            # Zip-bomb guard (defense-in-depth; validate_import_zip also checks).
+            if len(infos) > _MAX_IMPORT_MEMBERS:
+                raise ValueError(
+                    f"Import archive has too many entries ({len(infos)} > {_MAX_IMPORT_MEMBERS})"
+                )
+            total_uncompressed = sum(i.file_size for i in infos)
+            if total_uncompressed > _MAX_IMPORT_UNCOMPRESSED:
+                raise ValueError(
+                    f"Import archive uncompressed size {total_uncompressed} exceeds cap "
+                    f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
+                )
+            for info in infos:
                 parts = PurePosixPath(info.filename).parts
                 if ".." in parts or info.filename.startswith("/"):
                     continue

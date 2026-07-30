@@ -147,6 +147,25 @@ def boundary_policy_document() -> dict[str, Any]:
                 ],
             },
             {
+                # CWE-778: the API access-log groups created by the fullstack
+                # templates must be deletable when the reaper cascades a
+                # backend-stack teardown, or delete-stack lands in DELETE_FAILED.
+                "Sid": "ReaperLogsCap",
+                "Effect": "Allow",
+                "Action": ["logs:DeleteLogGroup"],
+                "Resource": [
+                    "arn:aws:logs:*:*:log-group:/kirocrew-deploy-app/*",
+                    "arn:aws:logs:*:*:log-group:/kirocrew-deploy-app/*:*",
+                ],
+            },
+            {
+                # logs:DescribeLogGroups is not resource-scopable (Resource "*").
+                "Sid": "ReaperLogsDescribe",
+                "Effect": "Allow",
+                "Action": ["logs:DescribeLogGroups"],
+                "Resource": "*",
+            },
+            {
                 "Sid": "ReaperCascadeIamCap",
                 "Effect": "Allow",
                 "Action": [
@@ -323,6 +342,36 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                     "lambda:RemovePermission", "lambda:TagResource",
                 ],
                 "Resource": "arn:aws:lambda:*:*:function:kirocrew-deploy-app-*",
+            },
+            {
+                # CWE-778 access logging: the app-apigw*.yaml stages create an
+                # AWS::Logs::LogGroup (/kirocrew-deploy-app/<slug>/apigw*) and
+                # attach AccessLogSettings. deploy-backend.sh runs
+                # `cloudformation deploy` with the deploy principal's own
+                # creds (no --role-arn), so that principal needs scoped
+                # log-group lifecycle perms or the stack rolls back. Scoped to
+                # the managed prefix; HTTP API v2 needs no account CloudWatch role.
+                "Sid": "LogsFullstack",
+                "Effect": "Allow",
+                "Action": [
+                    "logs:CreateLogGroup", "logs:DeleteLogGroup",
+                    "logs:PutRetentionPolicy",
+                    "logs:TagResource", "logs:ListTagsForResource",
+                ],
+                "Resource": [
+                    "arn:aws:logs:*:*:log-group:/kirocrew-deploy-app/*",
+                    "arn:aws:logs:*:*:log-group:/kirocrew-deploy-app/*:*",
+                ],
+            },
+            {
+                # logs:DescribeLogGroups has NO resource-level authorization —
+                # it must be Resource "*" or IAM denies it. CloudFormation's
+                # AWS::Logs::LogGroup handler calls it during create/stabilize.
+                # Read-only metadata listing, so "*" is the least it can be.
+                "Sid": "LogsDescribe",
+                "Effect": "Allow",
+                "Action": ["logs:DescribeLogGroups"],
+                "Resource": "*",
             },
             {
                 # R35 F1 + R39 F1: reads are unconditioned; unconditioned POST

@@ -31,6 +31,7 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import RefMarkdown from './RefMarkdown'
 import { parseRepoRef } from '../lib/refLinks'
+import { safeHttpUrl } from '../../../lib/safeUrl'
 import { CommentCardSkeleton, HeaderSkeleton, TimelineSkeleton } from './DetailSkeleton'
 import AiSummaryCard from './AiSummaryCard'
 import Clickable from '../../../components/Clickable'
@@ -362,7 +363,7 @@ function eventVisual(
         body: (
           <>
             {who} {i18nT('apps.issueRadar.components.issueDetail.referenced_this_in')}{' '}
-            <a href={ev.source?.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+            <a href={safeHttpUrl(ev.source?.url ?? '') ?? undefined} target="_blank" rel="noreferrer" className="text-accent hover:underline">
               {ev.source?.is_pr ? providerTerms(repoRef).changeRequestShort : 'issue'}
               {providerTerms(repoRef).sigil}{ev.source?.number}
             </a>{' '}
@@ -428,7 +429,7 @@ function RelatedLinks({ items }: { items: RelatedRef[] }) {
           return (
             <a
               key={r.url}
-              href={r.url}
+              href={safeHttpUrl(r.url) ?? undefined}
               target="_blank"
               rel="noreferrer"
               title={target
@@ -731,7 +732,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                   {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
                 </button>
                 <a
-                  href={detail?.url ?? issue.url}
+                  href={safeHttpUrl(detail?.url ?? issue.url ?? '') ?? undefined}
                   target="_blank"
                   rel="noreferrer"
                   title={`Open on ${terms.providerName}`}
