@@ -49,13 +49,17 @@ logger = logging.getLogger(__name__)
 
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 
-# iLink renders Markdown natively; DM-only; no threads. Files flagged True so
-# the renderer keeps attachments once media support lands.
+# iLink renders Markdown natively; DM-only; no threads. ``files`` is False
+# because this transport has NO media path: send_message carries text only, and
+# inbound media (image/voice/file/video) is not decrypted or cached (see the
+# module docstring). Flip it to True in the same change that lands the media
+# support -- declaring a capability the transport cannot perform makes the
+# contract lie to every future capability-aware caller.
 WEIXIN_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=False,
     reactions=False,
-    files=True,
+    files=False,
     rich_blocks=False,
     threads=False,
     max_message_chars=WEIXIN_CHUNK_LIMIT,

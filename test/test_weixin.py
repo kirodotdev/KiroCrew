@@ -38,6 +38,20 @@ from kiro_crew.weixin.transport import WeixinTransport
 
 
 # ── protocol headers ──────────────────────────────────────────────────────────
+def test_declared_capabilities_do_not_promise_files_without_a_media_path():
+    """``files`` must stay False while the transport has no media path.
+
+    The flag is a contract read by capability-aware callers (and, per the
+    channel-plugin RFC, eventually by the agent's own tool surface). iLink's
+    send path carries text only and inbound media is never decrypted or cached,
+    so declaring files=True advertises a capability the transport cannot
+    perform. Flip this together with the media implementation, not before.
+    """
+    from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
+
+    assert WEIXIN_CAPABILITIES.files is False
+
+
 def test_headers_carry_required_ilink_fields():
     h = _headers("abc123", '{"k":1}')
     assert h["AuthorizationType"] == "ilink_bot_token"
