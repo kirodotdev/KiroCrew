@@ -119,6 +119,17 @@
       "this_artifact_was_deleted": "This artifact was deleted.",
       "toggle_agent_chat": "Toggle agent chat"
     },
+    "artifactsPage": {
+      "add_a_file_from_your_computer_to_the_library": "Add a file from your computer to the library",
+      "add_artifact": "Add Artifact",
+      "add_artifact_error_empty": "That file is empty, so there is nothing to add.",
+      "add_artifact_error_not_text": "That file isn't UTF-8 text, so the library can't render it.",
+      "add_artifact_error_redacted": "That file contains credentials, so it was not added — the library redacts them and the text would be corrupted. Remove the secret and try again.",
+      "add_artifact_error_too_large": "That file is too large to add — the limit is {{limit}} MB.",
+      "add_artifact_error_unfiled": "Added, but it couldn't be filed into this folder — you'll find it at the library root.",
+      "add_artifact_error_unreadable": "That file couldn't be read — it may have been moved, deleted, or on a drive that is no longer connected.",
+      "add_artifact_error_unsupported_type": "That file type can't be added. Supported types:"
+    },
     "chat": {
       "activityViewer": {
         "clear": "Clear",

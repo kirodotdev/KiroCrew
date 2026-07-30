@@ -1496,7 +1496,7 @@ export const api = {
     get(`/api/artifacts/${encodeURIComponent(slug)}/versions`).then(j),
   artifactEvents: (slug: string) =>
     get(`/api/artifacts/${encodeURIComponent(slug)}/events`).then(j),
-  createArtifact: (body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string }) =>
+  createArtifact: (body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string; folder?: string }) =>
     post('/api/artifacts', body).then(j),
   updateArtifact: (slug: string, body: { content?: string; name?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}`, body).then(j),
