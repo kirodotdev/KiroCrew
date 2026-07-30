@@ -181,6 +181,17 @@
     ];
     var BASE_ROT = { top: 180, left: 90, right: -90, bottom: 0, free: 0 };
 
+    // The GH sizes above were tuned against the default window (see main.js:994).
+    // Scaling the whole composition by the viewport-vs-baseline ratio keeps ghosts
+    // proportioned at any window size — so edge ghosts stay clipped by the same
+    // fraction instead of drifting when a fixed-size ghost meets a bigger viewport.
+    var REF_W = 1280, REF_H = 860;
+    function viewScale() {
+      // Uniform (min-ratio) scale preserves the layout's proportions; clamp keeps
+      // it sane on extreme window shapes.
+      return Math.max(0.55, Math.min(Math.min(W / REF_W, H / REF_H), 2.4));
+    }
+
     var MIN_FLOOR_MS = 1600;   // never hand off before this (no sub-second flash)
     var MIN_GHOSTS   = 5;
     var STAGGER_MS   = 210;
@@ -201,13 +212,22 @@
 
     function rnd(a, b) { return a + Math.random() * (b - a); }
 
+    // Lay out a ghost against the CURRENT viewport: both its size (scaled to the
+    // window) and its position (ax/ay are viewport fractions). Must re-run on any
+    // W/H change (resize / maximise) — otherwise ghosts keep the initial
+    // small-window size + coordinates, clustering in a corner with clipped edges.
+    function layoutGhost(g) {
+      var cfg = g.cfg, s = viewScale();
+      var w = cfg.size * s, h = w * 1.31;
+      g.el.style.width  = w + "px";
+      g.el.style.height = h + "px";
+      g.el.style.left = (cfg.ax * W - w / 2) + "px";
+      g.el.style.top  = (cfg.ay * H - h / 2) + "px";
+    }
+
     function makeGhost(cfg) {
       var el = document.createElement("div");
       el.className = "ghost";
-      el.style.width = cfg.size + "px";
-      el.style.height = (cfg.size * 1.31) + "px";
-      el.style.left = (cfg.ax * W - cfg.size / 2) + "px";
-      el.style.top  = (cfg.ay * H - cfg.size * 1.31 / 2) + "px";
       el.style.filter = cfg.depth >= .9
         ? "drop-shadow(0 7px 14px rgba(20,8,50,0.32))"
         : "drop-shadow(0 5px 10px rgba(20,8,50,0.26)) blur(" + (1 - cfg.depth) * 2.6 + "px)";
@@ -221,12 +241,25 @@
         eyes: el.querySelector(".g-eyes"),
         visible: false
       };
+      layoutGhost(g);
       var rot = BASE_ROT[cfg.edge] + rnd(-9, 9);
       g.tilt.style.transform = "rotate(" + rot + "deg)" + (cfg.flip ? " scaleX(-1)" : "");
       g.floatEl.style.animationDuration = rnd(2.4, 4.3).toFixed(2) + "s";
       g.floatEl.style.animationDelay = (-rnd(0, 3)).toFixed(2) + "s";
       return g;
     }
+
+    // Keep the composition anchored + proportioned to the viewport as it resizes.
+    // rAF-coalesced so a burst of resize events costs at most one relayout/frame.
+    var resizeRAF = 0;
+    window.addEventListener("resize", function () {
+      if (resizeRAF) return;
+      resizeRAF = requestAnimationFrame(function () {
+        resizeRAF = 0;
+        W = window.innerWidth; H = window.innerHeight;
+        for (var i = 0; i < ghosts.length; i++) layoutGhost(ghosts[i]);
+      });
+    });
 
     function popIn(g) { g.pop.classList.remove("popIn", "popOut"); void g.pop.offsetWidth; g.pop.classList.add("popIn"); }
     function showGhost(g) { g.el.style.opacity = String(g.cfg.depth); g.visible = true; popIn(g); }
