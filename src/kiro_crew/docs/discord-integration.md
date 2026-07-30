@@ -158,9 +158,53 @@ answers split across messages.
 |---------|--------|
 | `!new` | Start a fresh conversation (shared for the current thread) |
 | `!compact` | Compress the current conversation context |
+| `!sessions` | Pick a recent dashboard session and continue it here (owner only) |
 | `!link` / `!unlink` | Mirror this conversation's dashboard tab here |
 | `!stop` | Stop the current reply and clear its queue |
 | `!help` | Show commands |
+
+### Continuing a dashboard session from Discord
+
+`!sessions` lists your 10 most recent dashboard conversations as buttons. Tap
+one and that session continues in this Discord conversation: the last five
+messages are replayed for context, and everything you send afterwards goes to
+that session instead of your own Discord conversation. `!unlink` releases it and
+returns you to your Discord conversation; `!new` releases it and starts a fresh
+Discord conversation.
+
+While a session is resumed, `!compact` compresses **that** session's context and
+`!stop` cancels **its** running turn. Replies from the dashboard for a resumed
+session also appear in Discord, so you can hand work back and forth.
+
+`!session` (singular) is accepted as a typo-safe alias, including with a trailing
+phrase — without it the message reaches the agent as ordinary chat text, which
+reads as "the feature isn't installed" rather than "you typed it wrong".
+
+#### Seeing and releasing it from the dashboard
+
+A resumed session is **two-way**: what you type in the dashboard is also
+delivered to Discord, and Discord messages arrive in that session. Because that
+is otherwise invisible from the dashboard side, the resumed session shows a chip
+in its chat header — `Driven from Discord DM` — with a **Release** action, and its
+session menu lists `Connected: Discord DM` with a **Two-way** badge.
+
+Release is the dashboard-side equivalent of `!unlink`, which used to be the only
+way out of a resumed session. It confirms first, and re-attaching is done with
+`!sessions` from the channel. A one-way `!link` mirror is labelled **Mirror** and
+offers **Stop mirroring** instead, so the two are not confused.
+
+The binding is stored per session and survives a gateway restart. A session can
+only be active in one place at a time — if it is already attached to Slack or
+another channel, Kiro Crew refuses and tells you where it lives, rather than
+moving it silently.
+
+`!sessions` is **owner-only and requires exactly one entry in
+`discord.allowed_user_ids`**. Session listing and resume are global operations —
+they can reach any dashboard conversation, not just Discord ones — so with two
+or more allowed users Kiro Crew cannot tell which one owns the workspace and
+refuses the command instead of guessing. Incognito and temporary sessions are
+never listed, and session titles plus replayed messages are scrubbed of
+credentials and suspicious URLs before they reach Discord.
 
 While a reply is running, prefix a message with `!steer` to fold it into the
 running turn or `!queue` to answer it afterward. `[OPTIONS:]` choices render as

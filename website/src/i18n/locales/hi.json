@@ -1314,12 +1314,30 @@
       "we_could_not_check_kiro_cli": "हम Kiro CLI की जाँच नहीं कर सके।",
       "your_crew_is_almost_ready": "आपका क्रू लगभग तैयार है।"
     },
+    "inboundLinkChip": {
+      "confirm_release": "इस सेशन को {{label}} से अलग करें?\n\nवहाँ भेजे गए संदेश अब यहाँ नहीं आएँगे, और जवाब वहाँ नहीं पहुँचेंगे। आप उस चैनल से !sessions का उपयोग करके इसे फिर से जोड़ सकते हैं।",
+      "driven_from": "{{label}} से संचालित",
+      "release": "अलग करें",
+      "release_aria": "इस सेशन को {{label}} से अलग करें",
+      "release_failed": "सेशन को अलग नहीं किया जा सका: {{reason}}",
+      "released": "{{label}} से अलग किया गया",
+      "tooltip": "यह सेशन {{label}} के साथ दो-तरफ़ा जुड़ा है: जवाब वहाँ पहुँचते हैं और वहाँ भेजे गए संदेश यहाँ आते हैं।"
+    },
     "linkedSurfacesSection": {
+      "confirm_release": "इस सेशन को {{label}} से अलग करें?\n\nवहाँ भेजे गए संदेश अब यहाँ नहीं आएँगे, और जवाब वहाँ नहीं पहुँचेंगे। आप उस चैनल से !sessions का उपयोग करके इसे फिर से जोड़ सकते हैं।",
+      "confirm_stop_mirroring": "इस सेशन को {{label}} पर मिरर करना रोकें?\n\nजवाब अब वहाँ नहीं पहुँचेंगे। गैर-Slack चैनल के लिए आप केवल उसी चैनल से फिर से लिंक कर सकते हैं, डैशबोर्ड से नहीं।",
       "connected": "कनेक्टेड: {{label}}",
       "mirror": "मिरर",
+      "mirror_stopped": "{{label}} पर मिरर करना बंद किया गया",
+      "offline": "ऑफ़लाइन",
       "origin": "मूल",
       "post_reminder": "{{label}} में रिमाइंडर पोस्ट करें",
-      "stop_mirroring": "{{label}} पर मिरर करना रोकें"
+      "release": "{{label}} से अलग करें",
+      "reminder_failed": "रिमाइंडर पोस्ट नहीं किया जा सका: {{reason}}",
+      "reminder_sent": "{{label}} में रिमाइंडर पोस्ट किया गया",
+      "stop_failed": "मिरर करना बंद नहीं किया जा सका: {{reason}}",
+      "stop_mirroring": "{{label}} पर मिरर करना रोकें",
+      "two_way": "दो-तरफ़ा"
     },
     "logEntry": {
       "cancelled": "रद्द किया गया",

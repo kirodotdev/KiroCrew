@@ -1314,12 +1314,30 @@
       "we_could_not_check_kiro_cli": "Wir konnten Kiro CLI nicht prüfen.",
       "your_crew_is_almost_ready": "Ihre Crew ist fast bereit."
     },
+    "inboundLinkChip": {
+      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Sie können sie mit !sessions aus diesem Kanal erneut verbinden.",
+      "driven_from": "Gesteuert von {{label}}",
+      "release": "Lösen",
+      "release_aria": "Diese Sitzung von {{label}} lösen",
+      "release_failed": "Sitzung konnte nicht gelöst werden: {{reason}}",
+      "released": "Von {{label}} gelöst",
+      "tooltip": "Diese Sitzung ist bidirektional mit {{label}} verbunden: Antworten werden dorthin geliefert, und dort gesendete Nachrichten kommen hier an."
+    },
     "linkedSurfacesSection": {
+      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Sie können sie mit !sessions aus diesem Kanal erneut verbinden.",
+      "confirm_stop_mirroring": "Spiegelung dieser Sitzung nach {{label}} beenden?\n\nAntworten werden dort nicht mehr geliefert. Bei einem Kanal außerhalb von Slack können Sie die Verbindung nur aus diesem Kanal wiederherstellen, nicht über das Dashboard.",
       "connected": "Verbunden: {{label}}",
       "mirror": "Spiegeln",
+      "mirror_stopped": "Spiegelung nach {{label}} beendet",
+      "offline": "Offline",
       "origin": "Ursprung",
       "post_reminder": "Erinnerung in {{label}} posten",
-      "stop_mirroring": "Spiegelung nach {{label}} beenden"
+      "release": "{{label}} lösen",
+      "reminder_failed": "Erinnerung konnte nicht gepostet werden: {{reason}}",
+      "reminder_sent": "Erinnerung in {{label}} gepostet",
+      "stop_failed": "Spiegelung konnte nicht beendet werden: {{reason}}",
+      "stop_mirroring": "Spiegelung nach {{label}} beenden",
+      "two_way": "Bidirektional"
     },
     "logEntry": {
       "cancelled": "Abgebrochen",

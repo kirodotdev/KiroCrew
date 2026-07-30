@@ -101,6 +101,10 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
         if orch.dashboard_state is not None:
             orch.dashboard_state.register_channel_transport(transport)
             state = orch.dashboard_state
+            # Let a session-resume bind/release refresh the dashboard at once,
+            # so the "driven from Discord" chip is never missing while the
+            # two-way delivery is already active.
+            dispatcher._session_resume.dashboard_state = state
 
             # Keep the status badge truthful across the channel's lifetime:
             # READY/RESUMED mark connected; a non-recoverable close (bad token

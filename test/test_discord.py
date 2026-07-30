@@ -191,6 +191,7 @@ class FakeSessions:
         self.queued: list = []
         self._gp = FakeProvider()
         self.mirror_links: dict[str, Any] = {}
+        self.inbound_mirror_keys: set[str] = set()
 
     async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None) -> Any:
         self.last_agent = agent
@@ -222,10 +223,31 @@ class FakeSessions:
     def max_generation(self, bucket: str) -> int:
         return -1
 
-    def set_mirror_link(self, key: str, link: Any) -> None:
+    def set_mirror_link(
+        self,
+        key: str,
+        link: Any,
+        *,
+        accepts_inbound: bool = False,
+    ) -> None:
         self.mirror_links[key] = link
+        if accepts_inbound:
+            self.inbound_mirror_keys.add(key)
+        else:
+            self.inbound_mirror_keys.discard(key)
+
+    def get_mirror_link(self, key: str) -> Any:
+        return self.mirror_links.get(key)
+
+    def find_mirror_sessions(self, link: Any, *, inbound_only: bool = False) -> list[str]:
+        return [
+            key
+            for key, candidate in self.mirror_links.items()
+            if candidate == link and (not inbound_only or key in self.inbound_mirror_keys)
+        ]
 
     def clear_mirror_link(self, key: str) -> bool:
+        self.inbound_mirror_keys.discard(key)
         return self.mirror_links.pop(key, None) is not None
 
     def enqueue(self, key: str, ts: str, text: str, *, force: bool = False, **kw: Any) -> bool:

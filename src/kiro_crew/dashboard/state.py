@@ -3082,7 +3082,22 @@ class DashboardState:
                         "out",
                     )
             else:
-                append_link(mirror, "out")
+                # A resume binding (set by an in-channel `!sessions` pick) routes
+                # BOTH ways: this session's replies go to that channel AND
+                # messages from it are delivered back here. That is a materially
+                # different thing for the user to see and release than an
+                # outbound-only `!link` mirror, so it gets its own direction
+                # rather than being flattened into "out". Slack is excluded by
+                # the branch above — it carries inbound on its own thread index
+                # and never sets the marker.
+                inbound = False
+                try:
+                    inbound = bool(self.sessions.mirror_accepts_inbound(session_key))
+                except Exception:
+                    # Older/stubbed SessionManagers may not expose the accessor;
+                    # degrade to the outbound reading rather than dropping the link.
+                    inbound = False
+                append_link(mirror, "both" if inbound else "out")
         elif genuine_slack:
             # Defensive fallback for SessionManager test doubles or older
             # implementations that expose get_slack_link but not get_mirror_link.

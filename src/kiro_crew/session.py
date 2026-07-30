@@ -3290,17 +3290,45 @@ class SessionManager:
 
     # ── Channel-neutral outbound mirror (generalizes Slack linking) ──
 
-    def set_mirror_link(self, key: str, link: ChannelLink | None) -> None:
-        """Bind (or clear, when *link* is None) a session's channel-neutral
-        outbound mirror target. Slack routes through the dedicated slack-link
-        fields; other channels store a ``ChannelLink``. Persists via SessionMap.
+    def set_mirror_link(
+        self,
+        key: str,
+        link: ChannelLink | None,
+        *,
+        accepts_inbound: bool = False,
+    ) -> None:
+        """Bind (or clear) a session's channel-neutral mirror target.
+
+        ``accepts_inbound`` upgrades a non-Slack outbound mirror into a
+        persisted session-resume binding. Slack owns its dedicated reverse
+        index; other channels use :meth:`find_mirror_sessions`.
         """
-        self._session_map.set_mirror_link(key, link)
+        self._session_map.set_mirror_link(
+            key,
+            link,
+            accepts_inbound=accepts_inbound,
+        )
 
     def get_mirror_link(self, key: str) -> ChannelLink | None:
         """Return a session's outbound mirror target as a channel-neutral link,
         or None. Legacy Slack sessions surface as a Slack ``ChannelLink``."""
         return self._session_map.get_mirror_link(key)
+
+    def mirror_accepts_inbound(self, key: str) -> bool:
+        """True iff this session's mirror is a session-resume (two-way) binding."""
+        return self._session_map.mirror_accepts_inbound(key)
+
+    def find_mirror_sessions(
+        self,
+        link: ChannelLink,
+        *,
+        inbound_only: bool = False,
+    ) -> list[str]:
+        """Return sessions bound to an exact non-Slack mirror location."""
+        return self._session_map.find_mirror_sessions(
+            link,
+            inbound_only=inbound_only,
+        )
 
     def clear_mirror_link(self, key: str) -> bool:
         """Remove a session's outbound mirror binding. Returns True iff present."""

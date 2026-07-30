@@ -879,7 +879,7 @@
         "min_version": "最低版本：",
         "open": "打开",
         "origin": "安装来源：",
-        "page": "页面",
+        "page_other": "{{count}} 个页面",
         "registry": "注册表",
         "remote_environment_detected": "检测到远程环境",
         "resources": "| 资源：",
@@ -1061,7 +1061,6 @@
     },
     "commentThreadPopover": {
       "close": "关闭",
-      "comment": "评论",
       "comment_thread": "评论话题",
       "comment_other": "{{count}} 条评论",
       "reply": "回复…",
@@ -1119,7 +1118,6 @@
       "clear_search": "清除搜索",
       "found_for": "匹配“",
       "no": "否",
-      "result": "个结果",
       "searching": "搜索中…",
       "result_other": "{{count}} 个结果",
       "type_at_least_2_characters_to_search": "至少输入 2 个字符以搜索"
@@ -1268,6 +1266,15 @@
       "prev": "← 上一页",
       "s_elapsed": "秒已过"
     },
+    "inboundLinkChip": {
+      "confirm_release": "解除此会话与 {{label}} 的关联？\n\n那里发送的消息将不再到达此处，回复也将不再发送到那里。你可以在该频道使用 !sessions 重新关联。",
+      "driven_from": "由 {{label}} 驱动",
+      "release": "解除",
+      "release_aria": "解除此会话与 {{label}} 的关联",
+      "release_failed": "无法解除会话关联：{{reason}}",
+      "released": "已解除与 {{label}} 的关联",
+      "tooltip": "此会话与 {{label}} 双向连接：回复会发送到那里，那里发送的消息也会到达此处。"
+    },
     "kiroPrerequisiteGate": {
       "ask_the_kiro_crew_owner_to_install_kiro_cli_and": "请让 Kiro Crew 的所有者在此网关上安装 Kiro CLI 并登录。网关就绪后，\n          此仪表板会立即为你打开。",
       "automatic_installation_is_unavailable_here_insta": "此处无法自动安装。请在网关主机上按照官方指南安装\n                Kiro CLI，然后选择“重新检查”。",
@@ -1305,11 +1312,20 @@
       "your_crew_is_almost_ready": "你的 crew 即将就绪。"
     },
     "linkedSurfacesSection": {
+      "confirm_release": "解除此会话与 {{label}} 的关联？\n\n那里发送的消息将不再到达此处，回复也将不再发送到那里。你可以在该频道使用 !sessions 重新关联。",
+      "confirm_stop_mirroring": "停止将此会话镜像到 {{label}}？\n\n回复将不再发送到那里。对于非 Slack 频道，你只能从该频道重新关联，无法从仪表板重新关联。",
       "connected": "已连接：{{label}}",
       "mirror": "镜像",
+      "mirror_stopped": "已停止镜像到 {{label}}",
+      "offline": "离线",
       "origin": "来源",
       "post_reminder": "在 {{label}} 中发布提醒",
-      "stop_mirroring": "停止镜像到 {{label}}"
+      "release": "解除 {{label}}",
+      "reminder_failed": "无法发布提醒：{{reason}}",
+      "reminder_sent": "已在 {{label}} 中发布提醒",
+      "stop_failed": "无法停止镜像：{{reason}}",
+      "stop_mirroring": "停止镜像到 {{label}}",
+      "two_way": "双向"
     },
     "logEntry": {
       "cancelled": "已取消",
@@ -1547,7 +1563,6 @@
       "confirm_publish": "确认并发布",
       "credential_security_findings_cannot_be_overridde": "凭据/安全类问题无法忽略。发布前请从工件中\n                移除检测到的密钥。",
       "done": "已完成",
-      "finding": "个问题",
       "finding_other": "{{count}} 个问题",
       "kb": "KB",
       "no_publish_providers_available_for_this_artifact": "此类工件没有可用的发布渠道。",
@@ -2674,7 +2689,7 @@
         "n_tool_calls_blocked": "{{count}} 个工具调用被阻止",
         "safety_policy_continuing": "安全策略 · 正在自动继续",
         "n_patterns": "{{count}} 条规则",
-        "turn_stalled": "回合停滞",
+        "turn_stalled": "轮次停滞",
         "recovered_continuing": "已恢复 · 继续中",
         "tool_stopped_responding": "工具停止响应",
         "cancelled_continuing": "已取消 · 继续中"
@@ -3839,11 +3854,12 @@
       "start_from_a_pre_made_schedule": "从预设计划开始",
       "status": "状态",
       "strict": "严格",
-      "this_permanently_removes_the_selected_job": "会永久删除所选任务",
+      "this_permanently_removes_the_selected_job_other": "会永久删除所选任务",
       "this_will_permanently_remove_the_scheduled_job_t": "将永久删除此定时任务，操作无法撤销。此操作无法撤销。",
       "to_confirm": "以确认",
       "try_remind_me_to_check_my_pipeline_every_morning": "— 试试“提醒我每天早上检查流水线”",
-      "type": "输入",
+      "type": "类型",
+      "type_verb_to_confirm": "输入",
       "you_can_also_create_schedules_by_chatting_try": "你也可以通过聊天创建计划 — 试试"
     },
     "sessionArchive": {
@@ -4479,7 +4495,7 @@
       "local_only_no_egress": "· 仅本地，无外发",
       "mcp_backend_acquire": "MCP 后端获取",
       "mcp_cold_load_first_use": "MCP 冷加载（首次使用）",
-      "measured_from_token_records": "基于最近 {{days}} 天的本地每回合用量记录统计 · 与遥测开关无关，始终记录",
+      "measured_from_token_records": "基于最近 {{days}} 天的本地每轮次用量记录统计 · 与遥测开关无关，始终记录",
       "metrics_stay_local": "。指标仅保留在本地（",
       "n": "· n=",
       "no_acquisitions_yet": "尚无获取记录",
@@ -4501,7 +4517,7 @@
       "throughput": "吞吐量",
       "timeout": "超时",
       "turn_latency_p50": "轮次延迟（p50）",
-      "turns_measured_other": "已统计 {{count}} 个回合",
+      "turns_measured_other": "已统计 {{count}} 个轮次",
       "typ_p90": "典型 · p90",
       "warm_pool_efficiency": "预热池效率",
       "warm_start_p50": "热启动（p50）",

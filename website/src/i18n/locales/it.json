@@ -1331,12 +1331,30 @@
       "we_could_not_check_kiro_cli": "Non è stato possibile controllare Kiro CLI.",
       "your_crew_is_almost_ready": "La tua crew è quasi pronta."
     },
+    "inboundLinkChip": {
+      "confirm_release": "Scollegare questa sessione da {{label}}?\n\nI messaggi inviati lì non arriveranno più qui e le risposte non verranno più recapitate lì. Puoi ricollegarla con !sessions da quel canale.",
+      "driven_from": "Pilotata da {{label}}",
+      "release": "Scollega",
+      "release_aria": "Scollega questa sessione da {{label}}",
+      "release_failed": "Impossibile scollegare la sessione: {{reason}}",
+      "released": "Scollegata da {{label}}",
+      "tooltip": "Questa sessione è bidirezionale con {{label}}: le risposte vengono recapitate lì e i messaggi inviati lì arrivano qui."
+    },
     "linkedSurfacesSection": {
+      "confirm_release": "Scollegare questa sessione da {{label}}?\n\nI messaggi inviati lì non arriveranno più qui e le risposte non verranno più recapitate lì. Puoi ricollegarla con !sessions da quel canale.",
+      "confirm_stop_mirroring": "Interrompere il rispecchiamento di questa sessione su {{label}}?\n\nLe risposte non verranno più recapitate lì. Per un canale diverso da Slack puoi ricollegarla solo da quel canale, non dalla dashboard.",
       "connected": "Connesso: {{label}}",
       "mirror": "Rispecchia",
+      "mirror_stopped": "Rispecchiamento su {{label}} interrotto",
+      "offline": "Offline",
       "origin": "Origine",
       "post_reminder": "Pubblica un promemoria in {{label}}",
-      "stop_mirroring": "Interrompi il rispecchiamento su {{label}}"
+      "release": "Scollega {{label}}",
+      "reminder_failed": "Impossibile pubblicare il promemoria: {{reason}}",
+      "reminder_sent": "Promemoria pubblicato in {{label}}",
+      "stop_failed": "Impossibile interrompere il rispecchiamento: {{reason}}",
+      "stop_mirroring": "Interrompi il rispecchiamento su {{label}}",
+      "two_way": "Bidirezionale"
     },
     "logEntry": {
       "cancelled": "Annullato",

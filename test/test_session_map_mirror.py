@@ -110,6 +110,49 @@ class TestGetMirrorLinkNone:
         assert session_map.get_mirror_link("dashboard:chat-1") is None
 
 
+class TestMirrorReverseLookup:
+    def test_outbound_only_mirror_is_not_an_inbound_route(self, session_map):
+        link = ChannelLink(channel_type="discord", channel_id="dm-1")
+        session_map.set_mirror_link("dashboard:chat-1", link)
+
+        assert session_map.find_mirror_sessions(link) == ["dashboard:chat-1"]
+        assert session_map.find_mirror_sessions(link, inbound_only=True) == []
+
+    def test_resume_binding_is_found_by_exact_location(self, session_map):
+        link = ChannelLink(channel_type="discord", channel_id="dm-1")
+        session_map.set_mirror_link(
+            "dashboard:chat-1",
+            link,
+            accepts_inbound=True,
+        )
+
+        assert session_map.find_mirror_sessions(link, inbound_only=True) == [
+            "dashboard:chat-1"
+        ]
+        assert session_map.find_mirror_sessions(
+            ChannelLink(channel_type="discord", channel_id="dm-2"),
+            inbound_only=True,
+        ) == []
+
+    def test_duplicate_locations_are_explicit_not_arbitrarily_resolved(self, session_map):
+        link = ChannelLink(channel_type="discord", channel_id="dm-1")
+        session_map.set_mirror_link("dashboard:chat-1", link, accepts_inbound=True)
+        session_map.set_mirror_link("dashboard:chat-2", link, accepts_inbound=True)
+
+        assert session_map.find_mirror_sessions(link, inbound_only=True) == [
+            "dashboard:chat-1",
+            "dashboard:chat-2",
+        ]
+
+    def test_outbound_overwrite_removes_inbound_marker(self, session_map):
+        link = ChannelLink(channel_type="discord", channel_id="dm-1")
+        session_map.set_mirror_link("dashboard:chat-1", link, accepts_inbound=True)
+        session_map.set_mirror_link("dashboard:chat-1", link)
+
+        assert session_map.find_mirror_sessions(link, inbound_only=True) == []
+        assert "mirror_accepts_inbound" not in session_map._data["dashboard:chat-1"]
+
+
 class TestClearMirrorLink:
     def test_clear_non_slack(self, session_map):
         session_map.set_mirror_link(
@@ -158,6 +201,17 @@ class TestPrunePreservesMirror:
 
 
 class TestPersistence:
+    def test_inbound_resume_marker_round_trips_to_disk(self, tmp_path):
+        link = ChannelLink(channel_type="discord", channel_id="dm-1")
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            sm = SessionMap()
+            sm.set_mirror_link("dashboard:chat-1", link, accepts_inbound=True)
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            sm2 = SessionMap()
+            assert sm2.find_mirror_sessions(link, inbound_only=True) == [
+                "dashboard:chat-1"
+            ]
+
     def test_mirror_round_trips_to_disk(self, tmp_path):
         with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
             sm = SessionMap()

@@ -16,6 +16,9 @@ def _make_state(tmp_path, **kwargs):
     sessions.remove = MagicMock()
     sessions.get_slack_link = MagicMock(return_value=(None, None))
     sessions.get_mirror_link = MagicMock(return_value=None)
+    # Explicit default: a bare MagicMock attribute returns a truthy Mock, which
+    # would make every mirror read as an inbound (two-way) resume binding.
+    sessions.mirror_accepts_inbound = MagicMock(return_value=False)
     return DashboardState(
         sessions=sessions,
         crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),
@@ -186,6 +189,56 @@ class TestChannelNeutralSlotLinks:
                 "live": True,
             }
         ]
+
+    def test_resume_binding_emits_two_way_direction(self, tmp_path, monkeypatch):
+        """An inbound-accepting mirror is `both`, not `out`.
+
+        A `!sessions` pick makes the binding two-way — messages from that channel
+        land in this session — which is a different thing to see and release than
+        a one-way `!link` mirror, so the payload must distinguish them.
+        """
+        self._permit_channels(monkeypatch)
+        state = _make_state(tmp_path)
+        state.sessions.get_mirror_link.return_value = ChannelLink(
+            "discord",
+            channel_id="356163505868767244",
+        )
+        state.sessions.mirror_accepts_inbound = MagicMock(return_value=True)
+        state.register_channel_transport(_fake_transport("discord"))
+
+        payload = state.serialize_slot(state.get_or_create_slot("s1"))
+
+        assert [link["direction"] for link in payload["links"]] == ["both"]
+        assert payload["slack_linked"] is False
+
+    def test_outbound_only_mirror_stays_out(self, tmp_path, monkeypatch):
+        self._permit_channels(monkeypatch)
+        state = _make_state(tmp_path)
+        state.sessions.get_mirror_link.return_value = ChannelLink(
+            "discord",
+            channel_id="356163505868767244",
+        )
+        state.sessions.mirror_accepts_inbound = MagicMock(return_value=False)
+        state.register_channel_transport(_fake_transport("discord"))
+
+        payload = state.serialize_slot(state.get_or_create_slot("s1"))
+
+        assert [link["direction"] for link in payload["links"]] == ["out"]
+
+    def test_missing_inbound_accessor_degrades_to_out(self, tmp_path, monkeypatch):
+        """A SessionManager without the accessor must not drop the link."""
+        self._permit_channels(monkeypatch)
+        state = _make_state(tmp_path)
+        state.sessions.get_mirror_link.return_value = ChannelLink(
+            "discord",
+            channel_id="356163505868767244",
+        )
+        state.sessions.mirror_accepts_inbound = MagicMock(side_effect=AttributeError)
+        state.register_channel_transport(_fake_transport("discord"))
+
+        payload = state.serialize_slot(state.get_or_create_slot("s1"))
+
+        assert [link["direction"] for link in payload["links"]] == ["out"]
 
     def test_real_slack_link_remains_slack_linked(self, tmp_path):
         state = _make_state(tmp_path)

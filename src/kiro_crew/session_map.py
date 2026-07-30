@@ -72,6 +72,25 @@ class SessionMap:
                 # reverse index + challenge-redirect resume path are unaffected,
                 # and populate the Layer-3 own-channel link.
                 canon = canonical_key(key)
+                # An early Discord session-resume build ran new-session
+                # bookkeeping on a cold resumed dashboard session. That called
+                # the legacy Slack-only ``set_channel`` path and persisted the
+                # impossible pair ``slack_thread_ts=""`` +
+                # ``slack_channel_id="discord:<id>"``. ``!unlink`` correctly
+                # removed the Discord mirror but could not remove these separate
+                # legacy fields, so later resume attempts saw a phantom Slack
+                # binding. A genuine Slack link always has a thread timestamp;
+                # scrub only this exact pre-release corruption signature.
+                legacy_channel = entry.get("slack_channel_id")
+                if (
+                    canon.startswith("dashboard:")
+                    and not entry.get("slack_thread_ts")
+                    and isinstance(legacy_channel, str)
+                    and legacy_channel.startswith("discord:")
+                ):
+                    entry.pop("slack_thread_ts", None)
+                    entry.pop("slack_channel_id", None)
+                    migrated = True
                 if canon != key:
                     migrated = True
                     if not entry.get("slack_thread_ts"):
@@ -314,12 +333,19 @@ class SessionMap:
     # special-casing Slack. Slack routes back through the dedicated fields;
     # every other channel stores a ``ChannelLink`` under ``mirror``.
 
-    def set_mirror_link(self, key: str, link: ChannelLink | None) -> None:
-        """Bind (or clear, when *link* is None) a session's outbound mirror target.
+    def set_mirror_link(
+        self,
+        key: str,
+        link: ChannelLink | None,
+        *,
+        accepts_inbound: bool = False,
+    ) -> None:
+        """Bind (or clear, when *link* is None) a session's mirror target.
 
-        Slack (``channel_type == "slack"``) routes to ``set_slack_link`` so its
-        reverse index stays intact; every other channel stores *link* under
-        ``mirror``. Creates the entry if absent.
+        ``accepts_inbound`` marks a non-Slack mirror as a session-resume binding:
+        messages arriving from that exact channel location may be routed back to
+        *key*. Ordinary dashboard mirrors remain outbound-only. Slack keeps its
+        dedicated reverse index and therefore ignores this flag.
         """
         if link is None:
             self.clear_mirror_link(key)
@@ -330,6 +356,10 @@ class SessionMap:
         key = canonical_key(key)
         entry = self._ensure_entry(key)
         entry["mirror"] = link.to_dict()
+        if accepts_inbound:
+            entry["mirror_accepts_inbound"] = True
+        else:
+            entry.pop("mirror_accepts_inbound", None)
         self._save()
 
     def get_mirror_link(self, key: str) -> ChannelLink | None:
@@ -352,6 +382,48 @@ class SessionMap:
             return ChannelLink(channel_type=SLACK_NAMESPACE, channel_id=ch, thread_id=ts)
         return None
 
+    def mirror_accepts_inbound(self, key: str) -> bool:
+        """True iff this session's mirror is a session-RESUME binding.
+
+        The read counterpart of ``set_mirror_link(accepts_inbound=True)``.
+        ``get_mirror_link`` deliberately returns a plain ``ChannelLink``, which
+        cannot carry the flag, so a caller that needs to tell a two-way resume
+        from an outbound-only mirror (e.g. the dashboard's link projection, which
+        must not offer a one-way mirror the affordances of a resumed session)
+        asks here. Slack is excluded: it routes inbound through its own
+        ``_thread_to_session`` index and never sets this marker.
+        """
+        entry = self._data.get(canonical_key(key))
+        return bool(entry and entry.get("mirror_accepts_inbound"))
+
+    def find_mirror_sessions(
+        self,
+        link: ChannelLink,
+        *,
+        inbound_only: bool = False,
+    ) -> list[str]:
+        """Return sessions bound to an exact non-Slack mirror location.
+
+        The list form makes duplicate/corrupt bindings explicit so callers can
+        fail closed rather than routing an inbound message to an arbitrary
+        session. With ``inbound_only=True``, ordinary outbound-only dashboard
+        mirrors are excluded.
+        """
+        matches: list[str] = []
+        for key, entry in self._data.items():
+            raw = entry.get("mirror")
+            if not isinstance(raw, dict):
+                continue
+            if inbound_only and not entry.get("mirror_accepts_inbound"):
+                continue
+            try:
+                candidate = ChannelLink.from_dict(raw)
+            except (TypeError, ValueError):
+                continue
+            if candidate == link:
+                matches.append(key)
+        return matches
+
     def clear_mirror_link(self, key: str) -> bool:
         """Remove a session's outbound mirror binding; return True iff one existed.
 
@@ -363,6 +435,7 @@ class SessionMap:
             return False
         if entry.get("mirror") is not None:
             entry.pop("mirror", None)
+            entry.pop("mirror_accepts_inbound", None)
             self._save()
             return True
         if entry.get("slack_thread_ts") or entry.get("slack_channel_id"):

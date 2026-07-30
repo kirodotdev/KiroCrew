@@ -1331,12 +1331,30 @@
       "we_could_not_check_kiro_cli": "Não foi possível verificar o Kiro CLI.",
       "your_crew_is_almost_ready": "Sua crew está quase pronta."
     },
+    "inboundLinkChip": {
+      "confirm_release": "Desvincular esta sessão de {{label}}?\n\nAs mensagens enviadas lá deixarão de chegar aqui, e as respostas deixarão de ser entregues lá. Você pode vincular novamente com !sessions a partir desse canal.",
+      "driven_from": "Controlada por {{label}}",
+      "release": "Desvincular",
+      "release_aria": "Desvincular esta sessão de {{label}}",
+      "release_failed": "Não foi possível desvincular a sessão: {{reason}}",
+      "released": "Desvinculada de {{label}}",
+      "tooltip": "Esta sessão tem conexão bidirecional com {{label}}: as respostas são entregues lá, e as mensagens enviadas lá chegam aqui."
+    },
     "linkedSurfacesSection": {
+      "confirm_release": "Desvincular esta sessão de {{label}}?\n\nAs mensagens enviadas lá deixarão de chegar aqui, e as respostas deixarão de ser entregues lá. Você pode vincular novamente com !sessions a partir desse canal.",
+      "confirm_stop_mirroring": "Parar de espelhar esta sessão em {{label}}?\n\nAs respostas não serão mais entregues lá. Em um canal que não seja do Slack, você só pode vincular novamente a partir desse canal, não pelo painel.",
       "connected": "Conectado: {{label}}",
       "mirror": "Espelho",
+      "mirror_stopped": "Espelhamento em {{label}} interrompido",
+      "offline": "Offline",
       "origin": "Origem",
       "post_reminder": "Publicar lembrete em {{label}}",
-      "stop_mirroring": "Parar de espelhar em {{label}}"
+      "release": "Desvincular de {{label}}",
+      "reminder_failed": "Não foi possível publicar o lembrete: {{reason}}",
+      "reminder_sent": "Lembrete publicado em {{label}}",
+      "stop_failed": "Não foi possível parar o espelhamento: {{reason}}",
+      "stop_mirroring": "Parar de espelhar em {{label}}",
+      "two_way": "Bidirecional"
     },
     "logEntry": {
       "cancelled": "Cancelado",

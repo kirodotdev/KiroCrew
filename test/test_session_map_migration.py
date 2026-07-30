@@ -85,6 +85,29 @@ class TestBareKeyMigration:
         assert ts == "111.222" and ch == "C9"
         assert sm.get_link("dashboard:chat-1-x") is None
 
+    def test_early_discord_resume_slack_stamp_is_scrubbed(self, patched):
+        tmp_path, _ = patched
+        key = "dashboard:chat-1-x"
+        _write_map(
+            tmp_path,
+            {
+                key: {
+                    "sid": "sid-d",
+                    "slack_thread_ts": "",
+                    "slack_channel_id": "discord:356163505868767244",
+                }
+            },
+        )
+
+        sm = SessionMap()
+
+        assert sm.get_slack_link(key) == (None, None)
+        assert sm.get_mirror_link(key) is None
+        persisted = json.loads((tmp_path / "session_map.json").read_text(encoding="utf-8"))
+        assert "slack_thread_ts" not in persisted[key]
+        assert "slack_channel_id" not in persisted[key]
+        assert persisted[key]["sid"] == "sid-d"
+
     def test_collision_prefers_sid(self, patched):
         tmp_path, kiro = patched
         _make_kiro_session(kiro, "keep")

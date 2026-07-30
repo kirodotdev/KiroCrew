@@ -289,7 +289,13 @@ export interface SessionLink {
   channel: string
   label: string
   target: string
-  direction: 'origin' | 'out'
+  /**
+   * `origin` — the conversation started on that channel (read-only).
+   * `out`    — dashboard replies are mirrored there (one-way, from `!link`).
+   * `both`   — a session-RESUME binding from an in-channel `!sessions` pick:
+   *            replies go there AND messages from there land in this session.
+   */
+  direction: 'origin' | 'out' | 'both'
   live: boolean
 }
 

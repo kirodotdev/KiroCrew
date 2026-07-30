@@ -99,12 +99,30 @@
       "start_chat": "Start chat",
       "starting_session": "Starting session…"
     },
+    "inboundLinkChip": {
+      "confirm_release": "Release this session from {{label}}?\n\nMessages sent there will stop arriving here, and replies will stop being delivered there. You can re-attach with !sessions from that channel.",
+      "driven_from": "Driven from {{label}}",
+      "release": "Release",
+      "release_aria": "Release this session from {{label}}",
+      "release_failed": "Could not release the session: {{reason}}",
+      "released": "Released from {{label}}",
+      "tooltip": "This session is two-way with {{label}}: replies are delivered there, and messages sent there arrive here."
+    },
     "linkedSurfacesSection": {
+      "confirm_release": "Release this session from {{label}}?\n\nMessages sent there will stop arriving here, and replies will stop being delivered there. You can re-attach with !sessions from that channel.",
+      "confirm_stop_mirroring": "Stop mirroring this session to {{label}}?\n\nReplies will no longer be delivered there. For a non-Slack channel you can only re-link from that channel, not from the dashboard.",
       "connected": "Connected: {{label}}",
       "mirror": "Mirror",
+      "mirror_stopped": "Stopped mirroring to {{label}}",
+      "offline": "Offline",
       "origin": "Origin",
       "post_reminder": "Post reminder in {{label}}",
-      "stop_mirroring": "Stop mirroring to {{label}}"
+      "release": "Release {{label}}",
+      "reminder_failed": "Could not post reminder: {{reason}}",
+      "reminder_sent": "Reminder posted in {{label}}",
+      "stop_failed": "Could not stop mirroring: {{reason}}",
+      "stop_mirroring": "Stop mirroring to {{label}}",
+      "two_way": "Two-way"
     },
     "markdownRenderer": {
       "reset_zoom": "Reset zoom (0)",

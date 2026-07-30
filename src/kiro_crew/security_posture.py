@@ -221,6 +221,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "The direct-send path that bypasses TurnDriver, redacted independently.",
     ),
     (
+        "Discord session-resume replay",
+        "discord/session_resume.py",
+        "Session titles in the `!sessions` picker and the transcript replayed when a "
+        "dashboard session is resumed — content authored in one surface is re-scanned "
+        "before it crosses into Discord, which is a separate egress boundary. Also "
+        "neutralizes `@` mentions so replayed text cannot ping a server.",
+    ),
+    (
         "Outbound channel messages",
         "dashboard/handlers/messaging.py",
         "Recursively redacts outbound message payloads before they leave the gateway.",

@@ -70,6 +70,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
 import AgentDropdownList from '../components/AgentDropdownList'
 import ProjectPicker from '../components/ProjectPicker'
+import InboundLinkChip from '../components/InboundLinkChip'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
@@ -3977,6 +3978,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               )}
                 </div>
               {effectiveMode === 'orchestrator' && <span className="pointer-events-auto"><InfoTip text="Autopilot plans before executing. Each stage needs your approval (or select 'Go All' to run autonomously). Sub-agents are delegated automatically. Plan lessons persist across sessions." /></span>}
+              <InboundLinkChip slotKey={activeSlot} />
               {/* Trailing controls grouped under a single ml-auto so multiple
                   right-aligned items don't each absorb free space (two ml-auto
                   siblings split the gap, parking the split icon mid-header). */}

@@ -33,12 +33,19 @@ _HELP_ALIASES = frozenset(("!help", "/help"))
 _LINK_ALIASES = frozenset(("!link", "/link"))
 _UNLINK_ALIASES = frozenset(("!unlink", "/unlink"))
 _STOP_ALIASES = frozenset(("!stop", "!cancel", "/stop", "/cancel"))
+# ``!session`` (singular) is a typo-safe alias, not a separate command. Without
+# it the message falls through to the LLM as ordinary chat text, which reads as
+# "the feature isn't installed" rather than "you typed it wrong" — and because
+# parse_command matches only the FIRST token, a trailing phrase (e.g.
+# "!session link to a certain session") resolves here too instead of being sent
+# to the model.
+_SESSIONS_ALIASES = frozenset(("!sessions", "/sessions", "!session", "/session"))
 
 _PREFIXES = ("!", "/")
 
 
 def parse_command(text: str) -> str | None:
-    """Return 'new', 'compact', 'link', 'unlink', 'help', 'stop', or None."""
+    """Return 'new', 'compact', 'link', 'unlink', 'help', 'stop', 'sessions', or None."""
     stripped = text.strip()
     cmd = stripped.split()[0].lower() if stripped.startswith(_PREFIXES) and stripped.split() else ""
     if cmd in _NEW_ALIASES:
@@ -49,6 +56,8 @@ def parse_command(text: str) -> str | None:
         return "link"
     if cmd in _UNLINK_ALIASES:
         return "unlink"
+    if cmd in _SESSIONS_ALIASES:
+        return "sessions"
     if cmd in _HELP_ALIASES:
         return "help"
     if cmd in _STOP_ALIASES:

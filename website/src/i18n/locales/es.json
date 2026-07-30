@@ -1331,12 +1331,30 @@
       "we_could_not_check_kiro_cli": "No pudimos comprobar Kiro CLI.",
       "your_crew_is_almost_ready": "Tu crew está casi listo."
     },
+    "inboundLinkChip": {
+      "confirm_release": "¿Desvincular esta sesión de {{label}}?\n\nLos mensajes enviados allí dejarán de llegar aquí y las respuestas dejarán de entregarse allí. Puedes volver a vincularla con !sessions desde ese canal.",
+      "driven_from": "Controlada desde {{label}}",
+      "release": "Desvincular",
+      "release_aria": "Desvincular esta sesión de {{label}}",
+      "release_failed": "No se pudo desvincular la sesión: {{reason}}",
+      "released": "Desvinculada de {{label}}",
+      "tooltip": "Esta sesión tiene conexión bidireccional con {{label}}: las respuestas se entregan allí y los mensajes enviados allí llegan aquí."
+    },
     "linkedSurfacesSection": {
+      "confirm_release": "¿Desvincular esta sesión de {{label}}?\n\nLos mensajes enviados allí dejarán de llegar aquí y las respuestas dejarán de entregarse allí. Puedes volver a vincularla con !sessions desde ese canal.",
+      "confirm_stop_mirroring": "¿Dejar de copiar esta sesión en {{label}}?\n\nLas respuestas dejarán de entregarse allí. En un canal que no sea de Slack solo puedes volver a vincularla desde ese canal, no desde el panel.",
       "connected": "Conectado: {{label}}",
       "mirror": "Copia",
+      "mirror_stopped": "Se dejó de copiar en {{label}}",
+      "offline": "Sin conexión",
       "origin": "Origen",
       "post_reminder": "Publicar recordatorio en {{label}}",
-      "stop_mirroring": "Dejar de copiar en {{label}}"
+      "release": "Desvincular de {{label}}",
+      "reminder_failed": "No se pudo publicar el recordatorio: {{reason}}",
+      "reminder_sent": "Recordatorio publicado en {{label}}",
+      "stop_failed": "No se pudo dejar de copiar: {{reason}}",
+      "stop_mirroring": "Dejar de copiar en {{label}}",
+      "two_way": "Bidireccional"
     },
     "logEntry": {
       "cancelled": "Cancelado",

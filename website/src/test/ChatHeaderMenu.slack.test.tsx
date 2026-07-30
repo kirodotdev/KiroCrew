@@ -157,7 +157,61 @@ describe('Session menu — outbound mirror actions', () => {
     const stop = screen.getByText('Stop mirroring to Discord DM')
     expect(screen.queryByText(/Slack/)).not.toBeInTheDocument()
 
-    fireEvent.click(stop)
-    await waitFor(() => expect(api.unlinkMirror).toHaveBeenCalledWith('mirrored-session'))
+    // Stopping is destructive and now confirms first; accept the prompt.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    try {
+      fireEvent.click(stop)
+      await waitFor(() => expect(api.unlinkMirror).toHaveBeenCalledWith('mirrored-session'))
+      expect(confirmSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Stop mirroring this session to Discord DM?'),
+      )
+    } finally {
+      confirmSpy.mockRestore()
+    }
+  })
+
+  it('does not stop mirroring when the confirm is dismissed', async () => {
+    renderMenu({
+      key: 'mirrored-session',
+      slack_linked: false,
+      links: [{
+        channel: 'discord',
+        label: 'Discord DM',
+        target: '…767244',
+        direction: 'out',
+        live: true,
+      }],
+    })
+
+    const stop = await screen.findByText('Stop mirroring to Discord DM')
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      fireEvent.click(stop)
+      await waitFor(() => expect(confirmSpy).toHaveBeenCalled())
+      // The binding survives a dismissed confirm — this is the misclick guard.
+      expect(api.unlinkMirror).not.toHaveBeenCalled()
+    } finally {
+      confirmSpy.mockRestore()
+    }
+  })
+
+  it('marks a mirror whose transport cannot send as offline and hides the reminder', async () => {
+    renderMenu({
+      key: 'dead-mirror-session',
+      slack_linked: false,
+      links: [{
+        channel: 'discord',
+        label: 'Discord DM',
+        target: '…767244',
+        direction: 'out',
+        live: false,
+      }],
+    })
+
+    expect(await screen.findByText('Connected: Discord DM')).toBeInTheDocument()
+    expect(screen.getByText('Mirror · Offline')).toBeInTheDocument()
+    expect(screen.queryByText(/^Mirror$/)).not.toBeInTheDocument()
+    // No live transport -> no reminder action to click.
+    expect(screen.queryByText('Post reminder in Discord DM')).not.toBeInTheDocument()
   })
 })

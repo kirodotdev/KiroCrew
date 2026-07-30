@@ -1331,12 +1331,30 @@
       "we_could_not_check_kiro_cli": "Nous n'avons pas pu vérifier Kiro CLI.",
       "your_crew_is_almost_ready": "Votre équipe est presque prête."
     },
+    "inboundLinkChip": {
+      "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Vous pouvez la rattacher avec !sessions depuis ce canal.",
+      "driven_from": "Pilotée depuis {{label}}",
+      "release": "Dissocier",
+      "release_aria": "Dissocier cette session de {{label}}",
+      "release_failed": "Impossible de dissocier la session : {{reason}}",
+      "released": "Dissociée de {{label}}",
+      "tooltip": "Cette session est liée à {{label}} dans les deux sens : les réponses y sont transmises et les messages envoyés là-bas arrivent ici."
+    },
     "linkedSurfacesSection": {
+      "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Vous pouvez la rattacher avec !sessions depuis ce canal.",
+      "confirm_stop_mirroring": "Arrêter la mise en miroir de cette session vers {{label}} ?\n\nLes réponses n'y seront plus transmises. Pour un canal autre que Slack, vous ne pouvez la relier que depuis ce canal, pas depuis le tableau de bord.",
       "connected": "Connecté : {{label}}",
       "mirror": "Miroir",
+      "mirror_stopped": "Mise en miroir vers {{label}} arrêtée",
+      "offline": "Hors ligne",
       "origin": "Origine",
       "post_reminder": "Publier un rappel dans {{label}}",
-      "stop_mirroring": "Arrêter la mise en miroir vers {{label}}"
+      "release": "Dissocier de {{label}}",
+      "reminder_failed": "Impossible de publier le rappel : {{reason}}",
+      "reminder_sent": "Rappel publié dans {{label}}",
+      "stop_failed": "Impossible d'arrêter la mise en miroir : {{reason}}",
+      "stop_mirroring": "Arrêter la mise en miroir vers {{label}}",
+      "two_way": "Bidirectionnel"
     },
     "logEntry": {
       "cancelled": "Annulé",
