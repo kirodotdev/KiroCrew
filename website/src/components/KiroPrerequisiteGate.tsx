@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { motion, useReducedMotion } from 'framer-motion'
 import {
   AlertTriangle,
   ArrowRight,
@@ -20,8 +19,13 @@ import {
   type KiroPrerequisiteStatus,
 } from '../api/client'
 import { KiroReadinessProvider } from '../providers/KiroReadinessContext'
+import {
+  PANEL_CLASS,
+  SCRIM_CLASS,
+  SECTION_CLASS,
+  ShellAside,
+} from './OnboardingChapterShell'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
-import { KiroGhost } from './KiroGhost'
 import { Badge, Btn, Card, SendBtn } from './ui'
 
 import { i18nT } from '../i18n/t'
@@ -72,119 +76,44 @@ export function asSentence(message: string): string {
   return /[.!?:;…]$/.test(trimmed) ? trimmed : `${trimmed}.`
 }
 
-function FloatingGhost({
-  className,
-  delay,
-  rotate = 0,
-}: {
-  className: string
-  delay: number
-  rotate?: number
-}) {
-  const reduceMotion = useReducedMotion()
-  return (
-    <motion.div
-      aria-hidden="true"
-      className={`pointer-events-none absolute z-0 text-white drop-shadow-[0_12px_20px_rgba(24,20,38,0.26)] ${className}`}
-      initial={reduceMotion ? false : { opacity: 0, scale: 0.72 }}
-      animate={{
-        opacity: 1,
-        scale: 1,
-        y: reduceMotion ? 0 : [-5, 5, -5],
-        rotate,
-      }}
-      transition={{
-        opacity: { delay, duration: 0.35 },
-        scale: { delay, duration: 0.45, type: 'spring', bounce: 0.45 },
-        y: { delay, duration: 3.8, ease: 'easeInOut', repeat: Infinity },
-      }}
-    >
-      <KiroGhost size={160} className="h-full w-full" />
-    </motion.div>
-  )
-}
-
-function SetupStage() {
-  const reduceMotion = useReducedMotion()
-  return (
-    <section className="relative min-h-[250px] overflow-hidden bg-[radial-gradient(circle_at_50%_42%,color-mix(in_srgb,var(--accent)_78%,white_22%),var(--accent)_76%)] px-8 py-9 text-white lg:min-h-[680px] lg:px-10 lg:py-12">
-      <div
-        aria-hidden="true"
-        className="absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(255,255,255,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.08)_1px,transparent_1px)] [background-size:34px_34px] [mask-image:linear-gradient(to_bottom,black,transparent_88%)]"
-      />
-      <FloatingGhost className="-left-8 top-[24%] h-24 w-20 rotate-90 lg:h-28 lg:w-24" delay={0.15} rotate={90} />
-      <FloatingGhost className="-right-5 top-5 h-28 w-20 -rotate-12 lg:h-36 lg:w-28" delay={0.35} rotate={-12} />
-      <FloatingGhost className="bottom-[-5.5rem] right-[-12%] hidden h-64 w-48 lg:block" delay={0.55} />
-      <FloatingGhost className="-top-20 left-[40%] hidden h-48 w-36 rotate-180 lg:block" delay={0.75} rotate={180} />
-
-      <motion.div
-        className="relative z-20 flex h-full flex-col"
-        initial={reduceMotion ? false : { opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.15, duration: 0.55 }}
-      >
-        <div className="flex items-center gap-2.5 text-sm font-semibold tracking-wide">
-          <span aria-hidden="true">
-            <KiroGhost size={28} className="h-8 w-7" />
-          </span>
-          {i18nT('components.kiroPrerequisiteGate.kiro_crew')}
-        </div>
-        <div className="mt-12 max-w-sm lg:my-auto">
-          <p className="text-[12px] font-bold uppercase tracking-[0.18em] text-white/75">
-            {i18nT('components.kiroPrerequisiteGate.one_quick_setup')}
-          </p>
-          <h2 className="mt-3 text-4xl font-semibold leading-[1.05] tracking-tight lg:text-5xl">
-            {i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready')}
-          </h2>
-          <p className="mt-5 max-w-xs text-sm leading-relaxed text-white/80">
-            {i18nT('components.kiroPrerequisiteGate.install_kiro_cli_sign_in_once_and_kiro_crew_will')}
-          </p>
-        </div>
-        <div className="mt-8 flex items-center gap-2 text-[12px] font-semibold text-white/75">
-          <span className="h-1.5 w-1.5 rounded-full bg-white shadow-[0_0_12px_rgba(255,255,255,.9)]" />
-          {i18nT('components.kiroPrerequisiteGate.secure_setup_on_your_gateway_host')}
-        </div>
-      </motion.div>
-    </section>
-  )
-}
-
-// Shared full-screen chrome for every gate state: the ambient-blur backdrop,
-// the centered card, and the branded SetupStage panel. Only the right-hand
-// content differs between states. `scroll` switches the tall two-step setup to
-// vertical overflow (and adds a second blur); `cardLabel` sets the card's
-// aria-label for the loading state.
+// Shared full-screen chrome for every gate state. This is the SAME container the
+// first-run onboarding chapters use (Import setup / Customize): the identical
+// scrim, panel geometry, and accent aside with the identical mascot positions,
+// imported from OnboardingChapterShell rather than re-declared here. Only the
+// copy in the aside and the right-column content differ. `cardLabel` names the
+// region for assistive tech.
 function SetupShell({
   children,
-  scroll = false,
   cardLabel,
 }: {
   children: ReactNode
-  scroll?: boolean
   cardLabel?: string
 }) {
+  const label = cardLabel || i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready')
   return (
-    <main
-      className={`relative flex min-h-screen items-center justify-center ${
-        scroll ? 'overflow-y-auto' : 'overflow-hidden'
-      } bg-bg px-4 py-8 sm:px-8`}
-    >
-      <div
-        aria-hidden="true"
-        className="absolute left-[-12rem] top-[-12rem] h-[32rem] w-[32rem] rounded-full bg-accent/10 blur-[100px]"
-      />
-      {scroll && (
-        <div
-          aria-hidden="true"
-          className="absolute bottom-[-15rem] right-[-10rem] h-[34rem] w-[34rem] rounded-full bg-accent/5 blur-[120px]"
+    <main className={SCRIM_CLASS} aria-label={label}>
+      <div className={PANEL_CLASS}>
+        <ShellAside
+          copy={{
+            ariaLabel: label,
+            panelHeadline: i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready'),
+            panelBody: i18nT(
+              'components.kiroPrerequisiteGate.install_kiro_cli_sign_in_once_and_kiro_crew_will',
+            ),
+            panelFootnote: i18nT(
+              'components.kiroPrerequisiteGate.secure_setup_on_your_gateway_host',
+            ),
+          }}
         />
-      )}
-      <div
-        className="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-border bg-card shadow-[0_30px_90px_rgba(0,0,0,.2)] lg:grid-cols-[.82fr_1.18fr]"
-        aria-label={cardLabel}
-      >
-        <SetupStage />
-        {children}
+        {/* Same scroll structure as the chapters: the panel height is fixed and
+            the right column scrolls internally. `my-auto` keeps the short states
+            (status error / non-owner) optically centered without breaking the
+            scroll on the tall two-step setup. */}
+        <section className={SECTION_CLASS}>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <div className="my-auto w-full px-6 py-8 sm:px-10 sm:py-10">{children}</div>
+          </div>
+        </section>
       </div>
     </main>
   )
@@ -429,7 +358,7 @@ function OwnerSetupRequired({
 }) {
   return (
     <SetupShell>
-      <section className="flex flex-col justify-center p-7 sm:p-10 lg:p-12">
+      <>
         <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
           <ShieldCheck className="lucide-inline" />
         </div>
@@ -448,7 +377,7 @@ function OwnerSetupRequired({
             {i18nT('components.kiroPrerequisiteGate.check_again')}
           </Btn>
         </div>
-      </section>
+      </>
     </SetupShell>
   )
 }
@@ -476,7 +405,7 @@ function SetupStatusError({
 }) {
   return (
     <SetupShell>
-      <section className="flex flex-col justify-center p-7 sm:p-10 lg:p-12">
+      <>
         <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-danger/10 text-danger">
           <AlertTriangle className="lucide-inline" />
         </div>
@@ -495,7 +424,7 @@ function SetupStatusError({
             {i18nT('components.kiroPrerequisiteGate.try_again')}
           </SendBtn>
         </div>
-      </section>
+      </>
     </SetupShell>
   )
 }
@@ -616,8 +545,8 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   }
 
   return (
-    <SetupShell scroll>
-        <section className="p-7 sm:p-10 lg:p-12">
+    <SetupShell>
+        <>
           <div className="mb-7">
             <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold tracking-[0.14em] text-accent">
               <span className="uppercase">{i18nT('components.kiroPrerequisiteGate.setup')}</span>
@@ -738,7 +667,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
               {i18nT('components.kiroPrerequisiteGate.check_again')}
             </Btn>
           </div>
-        </section>
+        </>
     </SetupShell>
   )
 }

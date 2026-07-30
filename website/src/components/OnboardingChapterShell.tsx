@@ -57,7 +57,10 @@ function FloatingGhost({
 // Factored out so the persistent HOST and the standalone shell render the exact
 // same aside; when it lives in the host it is mounted ONCE and only its copy
 // text changes between flows, so the mascots never re-run their entrance.
-function ShellAside({ copy }: { copy: ShellAsideCopy }) {
+// Exported so the Kiro CLI setup gate (KiroPrerequisiteGate) renders the SAME
+// panel — identical size, identical mascot positions — instead of a look-alike
+// copy that drifts.
+export function ShellAside({ copy }: { copy: ShellAsideCopy }) {
   return (
     <aside className="relative flex min-h-[248px] w-full shrink-0 overflow-hidden bg-accent text-accent-fg sm:min-h-0 sm:w-[36%]">
       <FloatingGhost className="-left-8 top-[24%] h-24 w-20 rotate-90 lg:h-28 lg:w-24" delay={0.15} rotate={90} />
@@ -85,14 +88,16 @@ function ShellAside({ copy }: { copy: ShellAsideCopy }) {
 
 // Shared class strings so the host-owned <section> slot and the standalone
 // shell's <section> are byte-identical (same flex layout / min-heights).
-const SECTION_CLASS =
+// Exported for the Kiro CLI setup gate, which composes the same three pieces
+// (scrim + panel + section) around its own non-chapter content.
+export const SECTION_CLASS =
   'flex min-h-[calc(100vh-248px)] min-w-0 flex-1 flex-col bg-card sm:min-h-0'
-const SCRIM_CLASS =
+export const SCRIM_CLASS =
   'fixed inset-0 z-[120] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-sm p-0 text-text sm:items-center sm:justify-center sm:p-6'
-const PANEL_CLASS =
+export const PANEL_CLASS =
   'relative flex min-h-screen w-full flex-col overflow-hidden bg-card shadow-xl sm:h-[min(760px,calc(100vh-48px))] sm:min-h-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border'
 
-interface ShellAsideCopy {
+export interface ShellAsideCopy {
   ariaLabel: string
   panelHeadline: string
   panelBody: string
