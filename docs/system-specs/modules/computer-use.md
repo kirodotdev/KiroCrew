@@ -1256,6 +1256,81 @@ re-signing anything in the chain can void a grant — the same mechanism that
 permanently broke the reference bundle's Accessibility 3/3 times — so
 `packaging/resign-macos-libs.sh` is a known hazard for this feature.
 
+### The grant shortcuts MUST use `window.open`, not `location.href`
+
+Each non-granted permission row offers an **Open System Settings** button that
+targets a macOS System Settings deep link (`SETTINGS_URL_*` in `permissions.py`;
+the frontend mirrors the two constants). It must be handed off with
+`window.open(pane, '_blank', 'noopener,noreferrer')` —
+`openSystemSettings()` in `ComputerUsePanel.tsx` — never by assigning
+`window.location.href`.
+
+The reason is CSP, and it is invisible in a browser tab: the dashboard renders
+inside an **instance `<iframe>`** (`InstancesViewport`), and a *frame* navigation
+is governed by the `frame-src` directive — declared explicitly in `_BASE_CSP`
+(`dashboard/server.py`) as `frame-src 'self' blob: https://*.cloudfront.net …`,
+a loopback/cloudfront allowlist that names no custom scheme.
+Assigning `location.href` to an
+`x-apple.systempreferences:` URL is therefore refused with
+`ERR_BLOCKED_BY_CSP` before it ever reaches LaunchServices, so the button is a
+**dead click in the packaged desktop app** while working fine from a top-level
+page. `window.open` is a new top-level request instead, which is not subject to
+`frame-src`.
+
+In Electron that `window.open` arrives at the main process's
+`setWindowOpenHandler`. That handler used to allow any **same-origin** URL in-app,
+forward cross-origin `http:`/`https:` to the browser, and silently deny
+everything else — so the deep link died there too.
+`electron/external-scheme.js` owns that decision now:
+`classifyNavigation()` returns `allow` (same-origin, in-app), `external`
+(cross-origin web + an **allowlisted** non-web URL → `shell.openExternal`), or
+`block`.
+
+The non-web allowlist (`EXTERNAL_URLS`) matches **whole URLs, exactly** — the two
+`SETTINGS_URL_*` panes — not the `x-apple.systempreferences:` scheme. A
+scheme-granular rule would admit unbounded attacker-chosen payloads into
+LaunchServices, and that is reachable rather than theoretical: LLM-authored widget
+and artifact content renders in iframes carrying
+`sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"`, no CSP
+directive constrains a `window.open` target's scheme, and remote-instance frames
+share this same handler — so model-generated JS could otherwise pop *any* pane
+(Sharing → Remote Login, Configuration Profiles) beside agent-authored text
+telling the user to enable it. Exact matching also removes a parser-differential
+class: the verdict is computed from `new URL(...)` (WHATWG lowercases the scheme,
+strips tabs/newlines inside it, resolves `..`) while the **raw** string is what
+`shell.openExternal` re-parses with NSURL/CFURL; requiring raw equality means the
+validated and forwarded values cannot diverge. Because it is exact-match, the
+constant must stay byte-identical to `permissions.py` and the panel's `PANE_*`
+mirrors — `external-scheme.test.js` reads both real files and asserts agreement,
+since a drift is a silent dead button.
+
+`file:` is excluded by construction (handing an arbitrary local path to the OS is
+a disclosure/execution vector, not a navigation), an unparseable URL fails closed
+to `block`, and an unusable app origin never *promotes* a cross-origin URL to
+same-origin — including an **opaque** one, where `new URL()` succeeds and reports
+the literal origin `"null"` that would otherwise compare equal to a foreign
+opaque origin. `shell.openExternal` returns a **rejecting** Promise when the OS
+has no handler, so the hand-off swallows the throw, the rejection, *and* a
+throwing log sink; the handler body is guarded end-to-end and fails closed to
+`deny`, because a dead grant shortcut must never take the main process down.
+
+That handler is the single gate for **every** `window.open` in the dashboard, not
+just this button, so it checks **same-origin before protocol** — the ordering the
+inline handler it replaced used. This matters for `blob:`, which *inherits* the
+creating page's origin: `WidgetFrame`'s "Open in new tab" opens a
+`URL.createObjectURL` wrapper document and needs a real window object, so a
+same-origin blob must classify as `allow`. A protocol-first ordering demoted it to
+`block` and turned that button into a dead click — the same silent-failure shape
+as the bug above. Origin-inheriting schemes are checked for same-origin ONLY and
+never appear in the external allowlist, so `blob:` can never reach
+`shell.openExternal`. `external-scheme.test.js` pins this with a parity table
+asserting that every pre-existing URL shape keeps its old verdict and that the
+System Settings deep link is the *only* changed one.
+
+Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
+`electron/test/external-scheme.test.js`) because the failure mode is a silent
+dead button that only reproduces in a packaged build.
+
 ---
 
 ## The CLI (`kirocrew computer`) — and what is deliberately not ported

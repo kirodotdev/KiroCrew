@@ -92,6 +92,29 @@ const RESTARTED = 'Your chat sessions were restarted so this takes effect right 
  *  warning here would leave the operator unsure whether the feature is safe to use. */
 const POLICY_UNREADABLE = 'The app lists in computer_use.json could not be read, so they are shown empty here. The agent still refuses every action that depends on them until the file is valid JSON.'
 
+/** Hand a System Settings deep link to the OS.
+ *
+ *  MUST be `window.open`, not `window.location.href`. The dashboard renders
+ *  inside an instance <iframe> (InstancesViewport), and a FRAME navigation is
+ *  governed by the CSP `frame-src` directive, which the dashboard declares as a
+ *  loopback/cloudfront allowlist naming no custom scheme — so assigning
+ *  `location.href` to an
+ *  `x-apple.systempreferences:` URL is refused with ERR_BLOCKED_BY_CSP and the
+ *  button is a dead click in the desktop app. `window.open` is a new top-level
+ *  request instead: the browser hands it to the OS, and in Electron it reaches
+ *  the main process's `setWindowOpenHandler` (see electron/external-scheme.js),
+ *  which forwards the allowlisted scheme to `shell.openExternal`.
+ *
+ *  Exported so the delivery mechanism is asserted directly — a regression back
+ *  to `location.href` would otherwise only show up as a dead button in a
+ *  packaged build, which is exactly how this shipped broken.
+ */
+export function openSystemSettings(pane: string): void {
+  // `noopener` keeps the opened context from retaining a handle on the
+  // dashboard window; nothing needs the returned reference.
+  window.open(pane, '_blank', 'noopener,noreferrer')
+}
+
 /** One advisory permission row: name, state badge, and a grant shortcut.
  *  Local to this panel rather than shared with SecurityPanel's StatusRow — the
  *  two carry different semantics (a permission hint is never a security state)
@@ -104,7 +127,7 @@ function PermRow({ label, state, pane }: { label: string; state: string; pane: s
       <span className="flex items-center gap-2">
         <Badge variant={variant}>{PERM_LABELS[state] ?? state}</Badge>
         {state !== GRANTED && (
-          <Btn onClick={() => { window.location.href = pane }} aria-label={`Open System Settings for ${label}`}>
+          <Btn onClick={() => openSystemSettings(pane)} aria-label={`Open System Settings for ${label}`}>
             Open System Settings <ExternalLink className="lucide-inline" />
           </Btn>
         )}

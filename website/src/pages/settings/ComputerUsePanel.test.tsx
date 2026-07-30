@@ -15,7 +15,12 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { api } from '../../api/client'
-import { ComputerUsePanel, commitNumericDraft, permissionPollInterval } from './ComputerUsePanel'
+import {
+  ComputerUsePanel,
+  commitNumericDraft,
+  openSystemSettings,
+  permissionPollInterval,
+} from './ComputerUsePanel'
 
 const ENABLE_LABEL = /enable computer use/i
 
@@ -108,6 +113,67 @@ describe('ComputerUsePanel', () => {
       screen.getByRole('button', { name: /open system settings for accessibility/i }),
     ).toBeInTheDocument()
     expect(screen.getByText('Grant them to Terminal')).toBeInTheDocument()
+  })
+
+  /* ── the grant shortcut's delivery mechanism ──────────────────────────────
+   * Pinned deliberately, because the failure is invisible in a browser tab: the
+   * dashboard renders inside an instance <iframe>, where a FRAME navigation is
+   * governed by CSP `frame-src` (a loopback/cloudfront allowlist that names no
+   * custom scheme), so
+   * `window.location.href = 'x-apple.systempreferences:…'` is refused with
+   * ERR_BLOCKED_BY_CSP and the button does nothing in the packaged desktop app.
+   * `window.open` is a new top-level request, which the OS/Electron main process
+   * handles. A regression back to `location.href` must fail here rather than
+   * ship as a dead button. */
+  it('hands the grant shortcut to the OS via window.open, never a frame navigation', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    try {
+      await renderPanel(
+        snapshot({
+          permissions: {
+            accessibility: 'missing',
+            screen_recording: 'missing',
+            responsible_hint: '',
+          },
+        }),
+      )
+      fireEvent.click(
+        await screen.findByRole('button', { name: /open system settings for accessibility/i }),
+      )
+      expect(open).toHaveBeenCalledWith(
+        'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+        '_blank',
+        expect.stringContaining('noopener'),
+      )
+
+      fireEvent.click(
+        screen.getByRole('button', { name: /open system settings for screen recording/i }),
+      )
+      expect(open).toHaveBeenLastCalledWith(
+        'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+        '_blank',
+        expect.stringContaining('noopener'),
+      )
+
+    } finally {
+      open.mockRestore()
+    }
+  })
+
+  describe('openSystemSettings', () => {
+    it('opens the pane in a new top-level context with noopener', () => {
+      const open = vi.spyOn(window, 'open').mockReturnValue(null)
+      try {
+        openSystemSettings('x-apple.systempreferences:com.apple.preference.sound')
+        expect(open).toHaveBeenCalledWith(
+          'x-apple.systempreferences:com.apple.preference.sound',
+          '_blank',
+          'noopener,noreferrer',
+        )
+      } finally {
+        open.mockRestore()
+      }
+    })
   })
 
   it('renders only the reason and no toggle when the platform is unsupported', async () => {
