@@ -38,6 +38,82 @@ def _fake_transport(channel_type: str = "telegram", proactive: bool = True):
     )
 
 
+class TestGovernanceDegradationFailsClosed:
+    """A degraded governance evaluation must DENY the mirror egress, not permit it.
+
+    ``governance_permits`` catches its own internal errors and, by default,
+    returns a permissive "no opinion" Decision — its own docstring notes that a
+    caller wrapping it in ``except`` can never observe the failure, so the DENY
+    has to be produced at the call site via ``fail_closed=True``. Without that,
+    a governance outage silently becomes permission to send to an external
+    channel. These tests pin both halves of the gate.
+    """
+
+    @pytest.mark.asyncio
+    async def test_degraded_evaluation_blocks_delivery(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.resolve_active_scope",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("profile store down")),
+        )
+        state = _make_state(tmp_path)
+        tp = _fake_transport("telegram")
+        state.register_channel_transport(tp)
+        state.sessions.get_mirror_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="123", thread_id=None)
+        )
+
+        await _deliver_cross_surface_reply(state, "dashboard:chat-1", "hi there")
+
+        tp.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_decision_without_permitted_attr_blocks_delivery(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_permits",
+            lambda *a, **k: SimpleNamespace(),
+        )
+        state = _make_state(tmp_path)
+        tp = _fake_transport("telegram")
+        state.register_channel_transport(tp)
+        state.sessions.get_mirror_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="123", thread_id=None)
+        )
+
+        await _deliver_cross_surface_reply(state, "dashboard:chat-1", "hi there")
+
+        tp.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_composition_error_propagates(self, tmp_path, monkeypatch):
+        """A broken governance ceiling must NOT read as an ordinary skip.
+
+        ``governance_permits`` deliberately re-raises PlatformCompositionError
+        instead of degrading, so the resolver's generic fail-closed handler must
+        let it through rather than swallowing it into a silent no-mirror.
+        """
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        def _boom(*a, **k):
+            raise PlatformCompositionError("ceiling weakened")
+
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_permits", _boom
+        )
+        state = _make_state(tmp_path)
+        tp = _fake_transport("telegram")
+        state.register_channel_transport(tp)
+        state.sessions.get_mirror_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="123", thread_id=None)
+        )
+
+        with pytest.raises(PlatformCompositionError):
+            await _deliver_cross_surface_reply(state, "dashboard:chat-1", "hi there")
+
+        tp.send_message.assert_not_awaited()
+
+
 class TestRegistrySeam:
     def test_register_and_get(self, tmp_path):
         state = _make_state(tmp_path)

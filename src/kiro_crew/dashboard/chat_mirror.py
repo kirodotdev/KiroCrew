@@ -17,10 +17,12 @@ back to normal dashboard-token + CSRF auth. They must NOT be added to the strict
 
 from __future__ import annotations
 
+import json
 import logging
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
 from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
@@ -44,10 +46,70 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
 
-    body = await request.json() if request.content_length else {}
+    # Read the ACTUAL payload rather than branching on Content-Length: a chunked
+    # request carries a body with ``content_length is None``, so a Content-Length
+    # test treats it as empty and falls into reminder mode below — turning a
+    # malformed link attempt into an unsolicited send to the persisted channel.
+    raw_body = ""
+    try:
+        raw_body = (await request.text()).strip()
+    except (UnicodeDecodeError, LookupError):
+        # Invalid UTF-8, or an unknown charset in Content-Type. That is a
+        # malformed request, not a server fault — answer 400 rather than
+        # letting the decode error surface as a 500 traceback.
+        return web.json_response({"error": "body must be valid UTF-8"}, status=400)
+    if raw_body:
+        try:
+            body = json.loads(raw_body)
+        except ValueError:
+            return web.json_response({"error": "body must be valid JSON"}, status=400)
+    else:
+        body = {}
+    # Reminder mode keys off an EMPTY body, so a non-dict payload must be
+    # rejected here rather than reaching the truthiness test below.
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body must be a JSON object"}, status=400)
     channel_type = str(body.get("channel_type", "") or "").strip()
     conversation_id = str(body.get("conversation_id", "") or "").strip()
     thread_id = str(body.get("thread_id", "") or "").strip() or None
+
+    # An EMPTY body on an existing mirror mirrors Slack's "Post reminder"
+    # behavior. Gate on the body being empty, NOT on channel_type/conversation_id
+    # being absent: a partial payload (e.g. {"thread_id": "x"}) has neither field
+    # but is a malformed link attempt, and must still hit the required-field
+    # validation below instead of silently posting to the persisted channel.
+    # The menu only exposes this action when the link reads live, but resolve
+    # again here — through the governed async send ladder — so a disconnect or
+    # governance change between render and click fails closed at the side-effect
+    # boundary.
+    if not body:
+        session_key = _history_key_for(name)
+        target = _resolve_mirror_target(state, session_key)
+        if target is None:
+            existing = state.sessions.get_mirror_link(session_key)
+            if existing is None:
+                return web.json_response({"error": "channel_type required"}, status=400)
+            return web.json_response({"error": "mirror channel is not live"}, status=503)
+        link, transport = target
+        try:
+            await transport.send_message(
+                link.channel_id,
+                "🔗 Session linked from dashboard — continuing here.",
+                thread_id=link.thread_id,
+            )
+        except Exception:
+            logger.debug("mirror-link reminder delivery failed", exc_info=True)
+            return web.json_response({"error": "failed to post reminder"}, status=502)
+        sel().log_api_access(
+            caller="dashboard",
+            operation="chat.mirror_reminder",
+            outcome="success",
+            source="dashboard",
+            resources=f"{slot.key} -> {link.channel_type}",
+        )
+        return web.json_response(
+            {"ok": True, "already_linked": True, "channel_type": link.channel_type}
+        )
 
     if not channel_type:
         return web.json_response({"error": "channel_type required"}, status=400)
@@ -72,6 +134,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         session_key,
         ChannelLink(channel_type=channel_type, channel_id=conversation_id, thread_id=thread_id),
     )
+    state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",
         operation="chat.mirror_link",
@@ -104,6 +167,7 @@ async def api_chat_slot_mirror_unlink(request: web.Request) -> web.Response:
 
     session_key = _history_key_for(name)
     cleared = state.sessions.clear_mirror_link(session_key)
+    state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",
         operation="chat.mirror_unlink",

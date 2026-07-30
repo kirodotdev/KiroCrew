@@ -1,10 +1,12 @@
 """Tests for Live Slack thread sync (bidirectional mirroring)."""
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
+from kiro_crew.messaging.link import ChannelLink
 
 # -- Helpers --
 
@@ -13,6 +15,7 @@ def _make_state(tmp_path, **kwargs):
     sessions = MagicMock(count=0)
     sessions.remove = MagicMock()
     sessions.get_slack_link = MagicMock(return_value=(None, None))
+    sessions.get_mirror_link = MagicMock(return_value=None)
     return DashboardState(
         sessions=sessions,
         crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),
@@ -117,3 +120,85 @@ class TestSlotRestoreSlackLink:
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
         assert slot._slack_linked is False
+
+
+def _fake_transport(channel_type: str):
+    return SimpleNamespace(
+        channel_type=channel_type,
+        capabilities=SimpleNamespace(supports_proactive_send=True),
+    )
+
+
+class TestChannelNeutralSlotLinks:
+    def _permit_channels(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_permits",
+            lambda *args, **kwargs: SimpleNamespace(permitted=True),
+        )
+
+    def test_discord_legacy_fields_emit_origin_not_slack(self, tmp_path, monkeypatch):
+        self._permit_channels(monkeypatch)
+        state = _make_state(tmp_path)
+        state.sessions.get_slack_link.return_value = (
+            "",
+            "discord:356163505868767244",
+        )
+        state.sessions.get_mirror_link.return_value = ChannelLink(
+            "slack",
+            channel_id="discord:356163505868767244",
+            thread_id="",
+        )
+        state.register_channel_transport(_fake_transport("discord"))
+
+        payload = state.serialize_slot(state.get_or_create_slot("s1"))
+
+        assert payload["slack_linked"] is False
+        assert payload["slack_channel"] == ""
+        assert payload["slack_thread_ts"] == ""
+        assert payload["links"] == [
+            {
+                "channel": "discord",
+                "label": "Discord DM",
+                "target": "…767244",
+                "direction": "origin",
+                "live": True,
+            }
+        ]
+
+    def test_discord_mirror_emits_out_link_not_slack(self, tmp_path, monkeypatch):
+        self._permit_channels(monkeypatch)
+        state = _make_state(tmp_path)
+        state.sessions.get_mirror_link.return_value = ChannelLink(
+            "discord",
+            channel_id="356163505868767244",
+        )
+        state.register_channel_transport(_fake_transport("discord"))
+
+        payload = state.serialize_slot(state.get_or_create_slot("s1"))
+
+        assert payload["slack_linked"] is False
+        assert payload["links"] == [
+            {
+                "channel": "discord",
+                "label": "Discord DM",
+                "target": "…767244",
+                "direction": "out",
+                "live": True,
+            }
+        ]
+
+    def test_real_slack_link_remains_slack_linked(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.get_slack_link.return_value = ("1712793600.123456", "C123")
+        state.sessions.get_mirror_link.return_value = ChannelLink(
+            "slack",
+            channel_id="C123",
+            thread_id="1712793600.123456",
+        )
+
+        payload = state.serialize_slot(state.get_or_create_slot("s1"))
+
+        assert payload["slack_linked"] is True
+        assert payload["slack_channel"] == "C123"
+        assert payload["slack_thread_ts"] == "1712793600.123456"
+        assert payload["links"][0]["channel"] == "slack"

@@ -1,15 +1,11 @@
 /**
- * Tests for the Slack link/unlink actions surfaced by the session menu
- *. Slack is now a *connected* sub-section (SlackLinkSection, keyed
- * on slotKey) rendered by SessionActionsMenu, so this exercises it through the
- * header (ChatHeaderMenu) with the slot seeded in the store and the shared
- * ['slack-channels'] query mocked — no slack props are passed anymore.
+ * Tests for connected-surface actions in the shared session menu.
+ * LinkedSurfacesSection is keyed on slotKey and rendered by
+ * SessionActionsMenu, so this exercises it through ChatHeaderMenu with the
+ * slot seeded in the store and the shared channel queries mocked.
  *
- * Verifies the symmetric contract:
- *  - linked   -> "Unlink from Slack" + "Post reminder in Slack", hides "Send to Slack"
- *  - unlinked -> "Send to Slack" (once channels load), hides Unlink/Post reminder
- *  - clicking Unlink calls api.unlinkSlack and clears the link in the store
- *  - after unlink the menu live-swaps back to "Send to Slack" on the same tree
+ * Verifies the symmetric Slack contract remains unchanged and that a Discord
+ * origin is labelled Discord without inheriting any Slack action.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -23,7 +19,9 @@ vi.mock('../api/client', () => ({
   api: {
     unlinkSlack: vi.fn().mockResolvedValue({ ok: true, was_linked: true }),
     slackLink: vi.fn().mockResolvedValue({ ok: true }),
-    // SlackLinkSection fetches the workspace channel list internally now.
+    unlinkMirror: vi.fn().mockResolvedValue({ ok: true, was_linked: true }),
+    remindMirror: vi.fn().mockResolvedValue({ ok: true, already_linked: true }),
+    // LinkedSurfacesSection fetches the workspace channel list internally now.
     slackChannels: vi.fn().mockResolvedValue([]),
     mcpActive: vi.fn().mockResolvedValue([]),
     setSlotColor: vi.fn().mockResolvedValue({}),
@@ -44,8 +42,8 @@ const dashboardState = {
 } as RootState['dashboard']
 
 /**
- * Seed the slot into the store's slots[] (the connected SlackLinkSection reads
- * `slack_linked` from there, and updateSlot only mutates an existing slot), then
+ * Seed the slot into the store's slots[] (LinkedSurfacesSection reads live link
+ * state there, and updateSlot only mutates an existing slot), then render the
  * render the header menu and open it. No slack props — the section is connected.
  */
 function renderMenu(slot: Partial<ChatSlot> & { key: string }) {
@@ -115,5 +113,51 @@ describe('Session menu — Slack link/unlink (connected)', () => {
       expect(screen.getByText('Send to Slack')).toBeInTheDocument()
       expect(screen.queryByText('Unlink from Slack')).not.toBeInTheDocument()
     })
+  })
+})
+
+describe('Session menu — channel-neutral connected surfaces', () => {
+  it('shows a Discord origin badge without Slack or disconnect actions', async () => {
+    renderMenu({
+      key: 'discord-session',
+      slack_linked: false,
+      links: [{
+        channel: 'discord',
+        label: 'Discord DM',
+        target: '…767244',
+        direction: 'origin',
+        live: true,
+      }],
+    })
+
+    expect(await screen.findByText('Connected: Discord DM')).toBeInTheDocument()
+    expect(screen.getByText('Origin')).toBeInTheDocument()
+    expect(screen.queryByText(/Slack/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Stop mirroring/)).not.toBeInTheDocument()
+    expect(api.unlinkMirror).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('Session menu — outbound mirror actions', () => {
+  it('offers channel-scoped reminder and stop actions for a live Discord mirror', async () => {
+    renderMenu({
+      key: 'mirrored-session',
+      slack_linked: false,
+      links: [{
+        channel: 'discord',
+        label: 'Discord DM',
+        target: '…767244',
+        direction: 'out',
+        live: true,
+      }],
+    })
+
+    expect(await screen.findByText('Post reminder in Discord DM')).toBeInTheDocument()
+    const stop = screen.getByText('Stop mirroring to Discord DM')
+    expect(screen.queryByText(/Slack/)).not.toBeInTheDocument()
+
+    fireEvent.click(stop)
+    await waitFor(() => expect(api.unlinkMirror).toHaveBeenCalledWith('mirrored-session'))
   })
 })

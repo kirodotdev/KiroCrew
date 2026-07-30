@@ -1249,6 +1249,13 @@
       "prev": "← 上一页",
       "s_elapsed": "秒已过"
     },
+    "linkedSurfacesSection": {
+      "connected": "已连接：{{label}}",
+      "mirror": "镜像",
+      "origin": "来源",
+      "post_reminder": "在 {{label}} 中发布提醒",
+      "stop_mirroring": "停止镜像到 {{label}}"
+    },
     "kiroPrerequisiteGate": {
       "ask_the_kiro_crew_owner_to_install_kiro_cli_and": "请让 Kiro Crew 的所有者在此网关上安装 Kiro CLI 并登录。网关就绪后，\n          此仪表板会立即为你打开。",
       "automatic_installation_is_unavailable_here_insta": "此处无法自动安装。请在网关主机上按照官方指南安装\n                Kiro CLI，然后选择“重新检查”。",
@@ -2761,6 +2768,7 @@
     },
     "chatSidebar": {
       "add_column_after_this_one": "在此列之后添加列",
+      "mirroring_to": "正在镜像到 {{label}}",
       "agent_finished_your_turn": "代理已完成 — 轮到你了",
       "also_show_sessions_that_have_no_tags_at_all": "同时显示完全没有标签的会话",
       "also_shows_untagged_sessions": "同时显示无标签的会话",

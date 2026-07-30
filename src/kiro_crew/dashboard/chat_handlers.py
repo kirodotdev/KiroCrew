@@ -747,7 +747,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             cfg_proj = ""
         slot.project = cfg_proj or default_project_dir(workspace)
     _sync_dashboard_slots(state)
-    return web.json_response(slot.to_dict())
+    return web.json_response(state.serialize_slot(slot))
 
 
 def _reject_pending_approvals(slot: _ChatSlot) -> None:

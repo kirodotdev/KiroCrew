@@ -26,6 +26,7 @@ from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
 from kiro_crew.notifications.bus import (
     NotificationBus,
     NotificationValidationError,
@@ -54,6 +55,56 @@ if TYPE_CHECKING:
     from kiro_crew.messaging.transport import MessagingTransport  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+_CHANNEL_ID_PREFIX_RE = re.compile(r"^([a-z][a-z0-9_-]*):(.*)$", re.IGNORECASE)
+_CHANNEL_LABELS = {
+    "slack": "Slack",
+    "discord": "Discord DM",
+    "telegram": "Telegram",
+    "teams": "Microsoft Teams",
+    "webex": "Webex",
+    "wecom": "WeCom",
+    "weixin": "WeChat",
+}
+
+
+def _split_namespaced_channel_id(channel_id: str | None) -> tuple[str, str] | None:
+    """Return ``(channel_type, target)`` for a ``<type>:<target>`` id."""
+    if not channel_id:
+        return None
+    match = _CHANNEL_ID_PREFIX_RE.match(channel_id)
+    if not match:
+        return None
+    return match.group(1).lower(), match.group(2)
+
+
+def _is_genuine_slack_link(thread_ts: str | None, channel_id: str | None) -> bool:
+    """True only for a complete Slack link, never another channel's legacy id."""
+    namespaced = _split_namespaced_channel_id(channel_id)
+    return bool(
+        thread_ts
+        and channel_id
+        and (namespaced is None or namespaced[0] == SLACK_NAMESPACE)
+    )
+
+
+def _link_label(channel_type: str) -> str:
+    """Human label for a known channel; preserve unknown types verbatim."""
+    return _CHANNEL_LABELS.get(channel_type, channel_type)
+
+
+def _redacted_link_target(target: str | None) -> str:
+    """Return a non-sensitive tail hint, never a raw conversation id."""
+    if not target:
+        return "…"
+    safe, _ = redact_exfiltration_urls(target)
+    safe, _ = redact_credentials(safe)
+    if safe != target:
+        return "…redacted"
+    if len(safe) <= 6:
+        return f"…{safe[-2:]}" if len(safe) > 2 else "…"
+    return f"…{safe[-6:]}"
+
 
 # Native kiro-cli subagent reconnect policy. The slot state, writer, and replay
 # path all import these bounds so retention cannot drift between modules.
@@ -2605,16 +2656,20 @@ class DashboardState:
             self._restricted_keys.add(f"dashboard:{name}")
         if ephemeral:
             self._ephemeral_keys.add(f"dashboard:{name}")
-        # Check if this session is already linked to a Slack thread
+        # Hydrate only a complete, genuine Slack link. Other transports still
+        # write their namespaced origin id through the legacy channel field;
+        # those are projected separately via ``links`` and must never make the
+        # destructive Slack actions appear.
         try:
             if self.sessions:
                 from kiro_crew.dashboard.chat import _history_key_for
 
                 _ts, _ch = self.sessions.get_slack_link(_history_key_for(name))
-                slot._slack_linked = _ts is not None
-                if _ts and _ch:
-                    slot._slack_channel = _ch
-                    slot._slack_thread_ts = _ts
+                slot._slack_linked = _is_genuine_slack_link(_ts, _ch)
+                if slot._slack_linked:
+                    namespaced = _split_namespaced_channel_id(_ch)
+                    slot._slack_channel = namespaced[1] if namespaced else (_ch or "")
+                    slot._slack_thread_ts = _ts or ""
         except Exception:
             pass
         self._slots[name] = slot
@@ -2885,6 +2940,139 @@ class DashboardState:
         except Exception:
             logger.debug("turn-boundary source status refresh failed", exc_info=True)
 
+    def _channel_link_is_live(self, link: ChannelLink) -> bool:
+        """Is a proactive-capable transport registered for this channel?
+
+        Deliberately an IN-MEMORY check only. This runs per linked slot inside
+        ``serialize_slots``, which sits on the ``push_slots_update`` websocket
+        broadcast path, so it must not touch the filesystem: the full governed
+        ladder (``chat_runner._resolve_channel_target``) calls
+        ``governance_permits``, which walks the profile directory (``iterdir`` +
+        ``stat``, with a possible reload) — a slow filesystem there would block
+        the event loop on every push and can drive watchdog restarts.
+
+        Governance stays enforced at the async SEND boundary (
+        ``_resolve_mirror_target`` in the turn path and in the mirror-link
+        reminder handler). A link may therefore read ``live: true`` here and
+        still be refused at send time; that asymmetry is deliberate and safe —
+        the menu affordance is optimistic, the side effect is gated.
+        """
+        if link.channel_type == SLACK_NAMESPACE or not link.channel_id:
+            return False
+        transport = self.get_channel_transport(link.channel_type)
+        if transport is None:
+            return False
+        return bool(
+            getattr(
+                getattr(transport, "capabilities", None),
+                "supports_proactive_send",
+                False,
+            )
+        )
+
+    def _slot_links(self, slot: _ChatSlot) -> tuple[list[dict[str, Any]], bool, str, str]:
+        """Build the redacted channel-neutral link projection for one slot."""
+        # circular import: chat imports state at module scope.
+        from kiro_crew.dashboard.chat import _history_key_for
+
+        session_key = _history_key_for(slot.key)
+        mirror: ChannelLink | None = None
+        persisted_ts: str | None = None
+        persisted_channel: str | None = None
+        try:
+            candidate = self.sessions.get_mirror_link(session_key)
+            if isinstance(candidate, ChannelLink):
+                mirror = candidate
+        except Exception:
+            pass
+        try:
+            raw_ts, raw_channel = self.sessions.get_slack_link(session_key)
+            persisted_ts = raw_ts if isinstance(raw_ts, str) else None
+            persisted_channel = raw_channel if isinstance(raw_channel, str) else None
+        except Exception:
+            pass
+
+        # Prefer persisted values, but retain explicit in-memory Slack links in
+        # tests and during the short interval before persistence is observable.
+        slack_ts = persisted_ts or slot._slack_thread_ts
+        slack_channel = persisted_channel or slot._slack_channel
+        namespaced_origin = _split_namespaced_channel_id(persisted_channel)
+        genuine_slack = _is_genuine_slack_link(slack_ts, slack_channel)
+        links: list[dict[str, Any]] = []
+
+        def append_link(link: ChannelLink, direction: str) -> None:
+            channel_type = (link.channel_type or "").lower()
+            if not channel_type:
+                return
+            channel_id = link.channel_id or ""
+            nested = _split_namespaced_channel_id(channel_id)
+            if nested and nested[0] == channel_type:
+                channel_id = nested[1]
+            normalized = ChannelLink(channel_type, channel_id, link.thread_id)
+            links.append(
+                {
+                    "channel": channel_type,
+                    "label": _link_label(channel_type),
+                    "target": _redacted_link_target(channel_id),
+                    "direction": direction,
+                    "live": self._channel_link_is_live(normalized),
+                }
+            )
+
+        # Non-Slack transports currently leak their home conversation through
+        # slack_channel_id. Surface that as a read-only origin, never a Slack
+        # mirror. This prefix sniff is intentionally defensive for unknown
+        # future channel types too.
+        if namespaced_origin and namespaced_origin[0] != SLACK_NAMESPACE:
+            append_link(
+                ChannelLink(namespaced_origin[0], namespaced_origin[1]),
+                "origin",
+            )
+
+        if mirror is not None:
+            if mirror.channel_type == SLACK_NAMESPACE:
+                # get_mirror_link synthesizes Slack for the legacy fields. If
+                # those fields actually hold a namespaced non-Slack origin, the
+                # origin above is the only truthful representation.
+                if not namespaced_origin and genuine_slack:
+                    append_link(
+                        ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
+                        "out",
+                    )
+            else:
+                append_link(mirror, "out")
+        elif genuine_slack:
+            # Defensive fallback for SessionManager test doubles or older
+            # implementations that expose get_slack_link but not get_mirror_link.
+            append_link(
+                ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
+                "out",
+            )
+
+        if genuine_slack:
+            slack_namespace = _split_namespaced_channel_id(slack_channel)
+            visible_slack_channel = (
+                slack_namespace[1] if slack_namespace else (slack_channel or "")
+            )
+            return links, True, visible_slack_channel, slack_ts or ""
+        return links, False, "", ""
+
+    def serialize_slot(
+        self, slot: _ChatSlot, *, include_check_status: bool = False
+    ) -> dict[str, Any]:
+        """Serialize one slot with state-backed channel-link metadata."""
+        payload = slot.to_dict(include_check_status=include_check_status)
+        links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
+        payload.update(
+            {
+                "links": links,
+                "slack_linked": slack_linked,
+                "slack_channel": slack_channel,
+                "slack_thread_ts": slack_thread_ts,
+            }
+        )
+        return payload
+
     def serialize_slots(self, *, include_check_status: bool = False) -> list:
         """Serialize slots, optionally including owner-only provider status.
 
@@ -2895,7 +3083,7 @@ class DashboardState:
         out = []
         subs = getattr(self, "subagents", None)
         for s in self._slots.values():
-            d = s.to_dict(include_check_status=include_check_status)
+            d = self.serialize_slot(s, include_check_status=include_check_status)
             d["subagents_running"] = bool(subs and subs.running_agents_for(f"dashboard:{s.key}"))
             out.append(d)
         return out

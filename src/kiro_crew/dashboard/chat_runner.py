@@ -1196,34 +1196,47 @@ def _extract_full_command(tool_title: str) -> str:
     return _normalize_tool_name(tool_title)
 
 
-def _resolve_mirror_target(state: Any, session_key: str) -> Any:
-    """Resolve ``(link, transport)`` for a session's outbound cross-surface
-    mirror, or ``None`` when the mirror should be skipped.
+def _resolve_channel_target(state: Any, session_key: str, link: Any) -> Any:
+    """Resolve ``(link, transport)`` through the cross-surface send ladder.
 
-    Shared preamble for both ``_deliver_cross_surface_*`` helpers so the skip
-    ladder stays in lockstep: read the session's mirror link; skip Slack (its
-    dedicated streaming mirror runs inline in the turn loop); require a
-    ``channel_id``; enforce the ``channels`` governance ceiling so an operator
-    policy restricting outbound messaging per transport is honored on this
-    egress surface too (the Slack path gates the same scope — see
-    ``slack/enterprise.py``); resolve the registered transport; and require
-    proactive-send capability (WeCom replies are bound to an inbound token).
-    Fails closed: any governance evaluation error skips the mirror rather than
-    silently emitting to a channel the operator's posture might restrict.
+    This is the shared capability/governance seam for both actual mirror
+    delivery and the dashboard's read-only ``links[].live`` projection.  It
+    intentionally skips Slack, whose dedicated client and streaming path are
+    not registered in ``channel_transports``.
     """
-    link = state.sessions.get_mirror_link(session_key)
     if link is None or link.channel_type == SLACK_NAMESPACE or not link.channel_id:
         return None
     try:
+        from kiro_crew.platform.context import PlatformCompositionError
         from kiro_crew.platform.governance_profiles import governance_permits
 
-        decision = governance_permits("channels", link.channel_type, session_key=session_key)
-        if not getattr(decision, "permitted", True):
+        decision = governance_permits(
+            "channels",
+            link.channel_type,
+            session_key=session_key,
+            # fail_closed=True: this is an EGRESS chokepoint on a network
+            # surface, so a degraded governance evaluation must DENY rather than
+            # degrade-to-permit. governance_permits swallows its own internal
+            # errors and returns a permissive Decision by default, which the
+            # outer except below can never observe. Matches the other
+            # "channels"-scope gates: messaging/identity.py, slack/gateway.py,
+            # dashboard/handlers_system.py.
+            fail_closed=True,
+        )
+        # Default False, not True: a Decision without ``permitted`` is an
+        # unusable answer from a gate, and must not read as permission.
+        if not getattr(decision, "permitted", False):
             logger.info(
                 "cross-surface: outbound to %s denied by governance policy; " "skipping mirror",
                 link.channel_type,
             )
             return None
+    except PlatformCompositionError:
+        # A composition error means the governance ceiling itself is invalid.
+        # governance_permits deliberately re-raises it rather than degrading;
+        # swallowing it here would defeat that contract and let a broken
+        # ceiling read as an ordinary skip.
+        raise
     except Exception:
         logger.debug(
             "cross-surface: governance check failed for %s; skipping mirror " "(fail-closed)",
@@ -1245,6 +1258,15 @@ def _resolve_mirror_target(state: Any, session_key: str) -> Any:
         )
         return None
     return link, transport
+
+
+def _resolve_mirror_target(state: Any, session_key: str) -> Any:
+    """Resolve a session's outbound mirror through the shared send ladder."""
+    return _resolve_channel_target(
+        state,
+        session_key,
+        state.sessions.get_mirror_link(session_key),
+    )
 
 
 async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_text: str) -> None:

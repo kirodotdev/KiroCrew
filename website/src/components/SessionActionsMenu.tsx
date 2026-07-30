@@ -4,7 +4,7 @@ import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLin
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SessionColorSwatches from './SessionColorSwatches'
-import SlackLinkSection from './SlackLinkSection'
+import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { useAppSelector } from '../store'
@@ -64,16 +64,16 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * It connects to the store itself (useSessionActions + selectors keyed on
  * `slotKey`) and renders the colour row inline, so callers bubble in only the
  * surface-specific residue (rename/reveal + the MCP node slot + the
- * colour-pick close hook). Slack link/unlink is itself a connected sub-section
- * (keyed on `slotKey`), so it renders on every surface, not just the header.
- * The generic actions read their live state at call time, so the displayed
+ * colour-pick close hook). Connected surfaces are themselves a connected
+ * sub-section (keyed on `slotKey`), so they render on every surface, not just
+ * the header. The generic actions read their live state at call time, so the
  * labels never drift from what the handlers do.
  *
  * Canonical order, five groups (each renders only if it has surviving items,
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Switch to Autopilot/Chat · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Copy link · Send to Slack
+ *   [nav / access]   Reveal in sidebar (header only) · Copy link · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
@@ -175,10 +175,10 @@ export default function SessionActionsMenu({
       <Item key="copy" onSelect={() => copyLink(slotKey)}>
         <Link2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_link')}
       </Item>,
-      // Slack link/unlink — a connected sub-section keyed on slotKey, so it
-      // renders on every surface (not just the header). It returns null until
-      // the channel list loads (or when Slack is unavailable), just like colour.
-      <SlackLinkSection key="slack" slotKey={slotKey} variant={variant} />,
+      // Channel-neutral link state and actions — connected origins are read-only,
+      // explicit mirrors can be reminded/stopped, and an otherwise-unlinked
+      // dashboard session retains the existing Slack channel picker.
+      <LinkedSurfacesSection key="links" slotKey={slotKey} variant={variant} />,
     ],
     // Colour — its own section
     [

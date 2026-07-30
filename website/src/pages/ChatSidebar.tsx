@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
@@ -40,12 +40,13 @@ import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgen
 import ProjectPicker from '../components/ProjectPicker'
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import SessionActionsMenu from '../components/SessionActionsMenu'
+import { ChannelBrandIcon } from '../components/ChannelBrandIcon'
 import TagManagerList from '../components/TagManagerList'
 import { DndDraggable, DndDroppable } from '../components/dnd'
 import { collectFolderSubtreeIds } from '../utils/folderTree'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../utils/sanitize'
-import type { ChatFolder, ChatTag, TagColumn, TagColumnMode, SubagentActivity } from '../types'
+import type { ChatFolder, ChatTag, TagColumn, TagColumnMode, SubagentActivity, SessionLink } from '../types'
 import { decideUnreadDrain } from './unreadDrain'
 import {
   type RecentUnit,
@@ -227,6 +228,7 @@ interface Slot {
   last_ts?: string
   last_message?: string
   slack_linked?: boolean
+  links?: SessionLink[]
   color_index?: number | null
   memory_mode?: 'persistent' | 'incognito' | 'temporary'
   clean_mode?: boolean
@@ -2099,7 +2101,23 @@ function ChatSidebar({
                   : i18nT('pages.chatSidebar.copied_from_channel', { channel: slotChannelLabel(s.key) })
                 return <span className="text-muted shrink-0" title={label} aria-label={label}><MessageSquare size={10} /></span>
               })()}
-              {s.slack_linked && <span className="text-[10px]" title={i18nT('pages.chatSidebar.linked_to_slack')}><Link size={10} /></span>}
+              {/* Live mirroring, per channel. The origin glyph above is derived
+               *  from the slot KEY (channelOrigin.ts) and already says where the
+               *  conversation STARTED, so this renders only `out` links — a real
+               *  mirror target — and never double-badges an origin. It replaces a
+               *  `linked_to_slack` Link glyph that fired for ANY channel, because
+               *  every non-Slack transport writes its id into slack_channel_id. */}
+              {(s.links ?? [])
+                .filter(link => link.direction === 'out')
+                .map((link, index) => (
+                  <span
+                    key={`${link.channel}:${link.direction}:${index}`}
+                    className="inline-flex text-[10px]"
+                    title={i18nT('pages.chatSidebar.mirroring_to', { label: link.label })}
+                  >
+                    <ChannelBrandIcon channel={link.channel} size={10} />
+                  </span>
+                ))}
               {s.clean_mode
                 ? <span className="text-accent" title={i18nT('pages.chatSidebar.clean_agent_only_no_kirocrew_context_or_mcp')}><Droplet size={10} /></span>
                 : <>
