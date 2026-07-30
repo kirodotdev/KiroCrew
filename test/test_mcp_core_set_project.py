@@ -3,18 +3,25 @@
 Two layers are under test:
 
 1. ``_resolve_session_key_strict`` — refuses PID-walked identities so a
-   subagent cannot silently mutate its parent slot's project.
-2. ``_call_tool_inner("set_project", ...)`` — validates input, gates on
-   strict identity, posts to the gateway endpoint, and maps responses.
+   subagent cannot silently mutate its parent slot's project. This resolver
+   still exists (other call sites use it) and its guarantees are unchanged.
+2. The stateless ``set_project`` path (#755). ``_call_tool_inner`` no longer
+   resolves session identity or POSTs to the gateway: it VALIDATES its input
+   and returns a session directive (see ``kiro_crew.session_directive``). The
+   session-aware consumer applies it via
+   ``kiro_crew.dashboard.session_directive_apply.apply_session_directive``,
+   which is exercised directly here against a fake slot + state.
 """
 
 from __future__ import annotations
 
+import os
 from unittest.mock import patch
 
 import pytest
 
-from kiro_crew import mcp_core
+from kiro_crew import mcp_core, session_directive
+from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 
 # ───────────────────────────── _resolve_session_key_strict ─────────────────
 
@@ -182,97 +189,38 @@ class TestResolveSessionKeyStrict:
 
 
 class TestSetProjectTool:
-    """End-to-end behavior of the ``set_project`` dispatch branch in
-    ``_call_tool_inner``. _post is mocked so the gateway HTTP layer is
-    out of scope; tests focus on identity gating, error mapping, and the
-    URL/body construction the wrapper produces."""
+    """The stateless ``set_project`` dispatch branch in ``_call_tool_inner``.
 
-    def _invoke(self, args: dict, *, session_key: str = "dashboard:test-slot") -> str:
-        """Invoke the tool with a mocked strict resolver and _post.
+    The tool validates its input and returns a session DIRECTIVE — it no longer
+    resolves session identity, no longer refuses non-dashboard sessions, and no
+    longer POSTs to the gateway. Validation still runs at the boundary, so
+    malformed input is rejected before a directive is ever produced."""
 
-        Returns the tool's return string. ``_post_calls`` attribute on the
-        result wrapper exposes what _post saw (so tests can assert the URL
-        + body the tool constructed).
-        """
-        captured: dict = {"calls": []}
+    def test_returns_directive_with_validated_payload(self):
+        result = mcp_core._call_tool_inner("set_project", {"path": "/tmp/foo"})
+        assert session_directive.decode(result, "set_project") == {
+            "project": "/tmp/foo",
+            "clear": False,
+        }
 
-        def fake_post(path: str, body: dict | None = None) -> dict:
-            captured["calls"].append((path, body))
-            return captured.get("response", {"ok": True, "project": (body or {}).get("project", "")})
-
-        with patch.object(mcp_core, "_resolve_session_key_strict", return_value=session_key), \
-             patch.object(mcp_core, "_post", side_effect=fake_post):
-            captured["response"] = getattr(self, "_post_response", None) or {
-                "ok": True,
-                "project": args.get("path", ""),
-            }
-            result = mcp_core._call_tool_inner("set_project", args)
-        self._captured = captured
-        return result
-
-    def test_dashboard_session_posts_to_correct_url(self):
-        result = self._invoke({"path": "/tmp/foo"})
-        assert "Project set to /tmp/foo" in result
-        assert len(self._captured["calls"]) == 1
-        url, body = self._captured["calls"][0]
-        assert url == "/api/chat/slots/test-slot/project"
-        assert body == {"project": "/tmp/foo"}
-
-    def test_clear_flag_clears_project(self):
-        self._post_response = {"ok": True, "project": ""}
-        result = self._invoke({"path": "", "clear": True})
-        assert "Project cleared" in result
-        url, body = self._captured["calls"][0]
-        assert body == {"project": ""}
+    def test_clear_flag_encoded_in_directive(self):
+        result = mcp_core._call_tool_inner("set_project", {"path": "", "clear": True})
+        assert session_directive.decode(result, "set_project") == {
+            "project": "",
+            "clear": True,
+        }
 
     def test_empty_path_without_clear_rejected(self):
         from kiro_crew.validation import ValidationError
-        with patch.object(mcp_core, "_post") as mock_post, \
-             patch.object(mcp_core, "_resolve_session_key_strict", return_value="dashboard:test"):
-            with pytest.raises(ValidationError, match="required.*clear=true"):
-                mcp_core._call_tool_inner("set_project", {"path": ""})
-        mock_post.assert_not_called()
 
-    def test_non_string_path_raises_validation_error_without_calling_post(self):
+        with pytest.raises(ValidationError, match="required.*clear=true"):
+            mcp_core._call_tool_inner("set_project", {"path": ""})
+
+    def test_non_string_path_raises_validation_error(self):
         from kiro_crew.validation import ValidationError
-        with patch.object(mcp_core, "_post") as mock_post, \
-             patch.object(mcp_core, "_resolve_session_key_strict", return_value="dashboard:test"):
-            with pytest.raises(ValidationError):
-                mcp_core._call_tool_inner("set_project", {"path": 123})
-        mock_post.assert_not_called()
 
-    def test_unresolved_session_is_rejected(self):
-        with patch.object(mcp_core, "_post") as mock_post, \
-             patch.object(mcp_core, "_resolve_session_key_strict", return_value=""):
-            result = mcp_core._call_tool_inner("set_project", {"path": "/tmp"})
-        # Load-bearing: no slot was mutated.
-        mock_post.assert_not_called()
-        # An unresolved identity reports the host gap, not the session type.
-        assert result.startswith("Error:")
-        assert "could not resolve a verified session identity" in result.lower()
-
-    def test_slack_session_is_rejected(self):
-        with patch.object(mcp_core, "_post") as mock_post, patch.object(
-            mcp_core, "_resolve_session_key_strict", return_value="slack:T1:U1:C1:1.0"
-        ):
-            result = mcp_core._call_tool_inner("set_project", {"path": "/tmp"})
-        assert "Error: set_project only works in dashboard sessions" in result
-        mock_post.assert_not_called()
-
-    def test_cron_session_is_rejected(self):
-        with patch.object(mcp_core, "_post") as mock_post, patch.object(
-            mcp_core, "_resolve_session_key_strict", return_value="cron:job-abc"
-        ):
-            result = mcp_core._call_tool_inner("set_project", {"path": "/tmp"})
-        assert "Error: set_project only works in dashboard sessions" in result
-        mock_post.assert_not_called()
-
-    def test_endpoint_error_passes_through(self):
-        """Endpoint may return 403 (sensitive path) / 400 (not a directory) /
-        404 (slot not found). The wrapper surfaces the message verbatim."""
-        self._post_response = {"error": "Access denied"}
-        result = self._invoke({"path": "/some/path"})
-        assert result == "Error: Access denied"
+        with pytest.raises(ValidationError):
+            mcp_core._call_tool_inner("set_project", {"path": 123})
 
     def test_set_project_listed_in_tools(self):
         names = [t["name"] for t in mcp_core._list_tools()]
@@ -283,3 +231,266 @@ class TestSetProjectTool:
         assert "path" in schema["properties"]
         assert schema["properties"]["path"]["type"] == "string"
         assert schema["required"] == ["path"]
+
+
+# ─────────────────────────── set_project applier ────────────────────────────
+
+
+class _FakeSlot:
+    """Minimal slot: the applier only touches ``key``, ``project`` and
+    ``_pending_reset_history_key``."""
+
+    def __init__(self, key: str = "dashboard:test-slot", project: str = ""):
+        self.key = key
+        self.project = project
+        self._pending_reset_history_key = None
+
+
+class _FakeState:
+    """Minimal state: the applier only calls ``push_slots_update``."""
+
+    def __init__(self):
+        self.pushes = 0
+
+    def push_slots_update(self) -> None:
+        self.pushes += 1
+
+
+class TestSetProjectApplier:
+    """The session-aware consumer applies the directive to ITS OWN slot via
+    ``apply_session_directive`` — no HTTP, no identity resolution."""
+
+    @pytest.mark.asyncio
+    async def test_sets_project_realpath_and_flags_history_reset(self, tmp_path):
+        slot = _FakeSlot(project="")
+        state = _FakeState()
+        target = str(tmp_path)
+        result = await apply_session_directive(
+            state, slot, slot.key, "set_project", {"project": target, "clear": False}
+        )
+        assert slot.project == os.path.realpath(target)
+        assert slot._pending_reset_history_key is not None
+        assert state.pushes == 1
+        assert "Project set to" in result
+
+    @pytest.mark.asyncio
+    async def test_sensitive_path_denied_without_mutating_slot(self, tmp_path, monkeypatch):
+        slot = _FakeSlot(project="/existing/project")
+        state = _FakeState()
+        # _set_project imports is_sensitive_path lazily from kiro_crew.security,
+        # so patch it on the source module.
+        monkeypatch.setattr(
+            "kiro_crew.security.is_sensitive_path", lambda *a, **k: True
+        )
+        result = await apply_session_directive(
+            state, slot, slot.key, "set_project", {"project": str(tmp_path), "clear": False}
+        )
+        assert "access denied" in result.lower()
+        # Load-bearing: the slot was NOT repointed to the sensitive path.
+        assert slot.project == "/existing/project"
+
+    @pytest.mark.asyncio
+    async def test_clear_empties_project(self, tmp_path):
+        slot = _FakeSlot(project=str(tmp_path))
+        state = _FakeState()
+        result = await apply_session_directive(
+            state, slot, slot.key, "set_project", {"project": "", "clear": True}
+        )
+        assert slot.project == ""
+        assert "cleared" in result.lower()
+
+
+# ────────────────── applier SEL audit + fail-soft (#755) ─────────────────────
+
+
+class _SelSpy:
+    """Captures every ``log_tool_invocation`` the applier's ``_audit`` emits."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def log_tool_invocation(self, **kw: object) -> None:
+        self.calls.append(kw)
+
+
+@pytest.fixture()
+def sel_spy(monkeypatch):
+    """Replace the SEL singleton so directive audits are captured, not written.
+
+    ``_audit`` does ``from kiro_crew.sel import sel; sel().log_tool_invocation``,
+    so patching the factory on the source module intercepts every path."""
+    spy = _SelSpy()
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: spy)
+    return spy
+
+
+class TestApplierAuditAndFailSoft:
+    """Every ``apply_session_directive`` path emits exactly one SEL event and
+    NEVER raises into the turn loop (#755 backend-security-controls)."""
+
+    @pytest.mark.asyncio
+    async def test_success_emits_one_mcp_directive_event(self, tmp_path, monkeypatch, sel_spy):
+        """A valid set_project audits source='mcp-directive', the tool name, and
+        outcome='success' — and the recent-projects offload actually fires."""
+        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        saved: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._save_recent_project",
+            lambda rp: saved.append(rp),
+        )
+        slot = _FakeSlot(project="")
+        state = _FakeState()
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "set_project",
+            {"project": str(tmp_path), "clear": False},
+        )
+        assert "Project set to" in result
+        assert len(sel_spy.calls) == 1
+        call = sel_spy.calls[0]
+        assert call["session_key"] == "dashboard:chat-1"
+        assert call["source"] == "mcp-directive"
+        assert call["tool_name"] == "set_project"
+        assert call["outcome"] == "success"
+        # The to_thread offload of the recent-projects write happened.
+        assert saved == [os.path.realpath(str(tmp_path))]
+
+    @pytest.mark.asyncio
+    async def test_denied_path_audits_denied_and_returns_error(self, tmp_path, monkeypatch, sel_spy):
+        """A sensitive-path block raises ``_DirectiveDenied`` internally; the
+        wrapper audits outcome='denied' and returns the fixed error string."""
+        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: True)
+        slot = _FakeSlot(project="/existing")
+        state = _FakeState()
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "set_project",
+            {"project": str(tmp_path), "clear": False},
+        )
+        assert result == "Error: access denied (sensitive path)."
+        assert [c["outcome"] for c in sel_spy.calls] == ["denied"]
+        assert sel_spy.calls[0]["tool_name"] == "set_project"
+        # The slot was not repointed to the sensitive path.
+        assert slot.project == "/existing"
+
+    @pytest.mark.asyncio
+    async def test_unknown_kind_audits_error(self, sel_spy):
+        """An unrecognized directive kind returns a readable error and audits
+        outcome='error' (never raises)."""
+        slot = _FakeSlot()
+        state = _FakeState()
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "not_a_real_directive", {}
+        )
+        assert "unknown session directive" in result
+        assert [c["outcome"] for c in sel_spy.calls] == ["error"]
+        assert sel_spy.calls[0]["tool_name"] == "not_a_real_directive"
+
+    @pytest.mark.asyncio
+    async def test_internal_exception_is_caught_and_audited(self, monkeypatch, sel_spy):
+        """An applier that raises internally is caught: returns a string starting
+        'Error applying', audits outcome='error', and does NOT propagate."""
+        def _boom() -> object:
+            raise RuntimeError("autonudge exploded")
+
+        # _monitor_start does `from kiro_crew.autonudge import get_instance`
+        # then calls it first — patch the source symbol so it raises.
+        monkeypatch.setattr("kiro_crew.autonudge.get_instance", _boom)
+        slot = _FakeSlot()
+        state = _FakeState()
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "monitor_start", {"message": "x"}
+        )
+        assert result.startswith("Error applying monitor_start")
+        assert [c["outcome"] for c in sel_spy.calls] == ["error"]
+        assert sel_spy.calls[0]["tool_name"] == "monitor_start"
+
+    @pytest.mark.asyncio
+    async def test_sensitive_path_denied_without_filesystem_probe(self, monkeypatch, sel_spy):
+        """A sensitive path is refused BEFORE it is resolved/stat'ed, so a
+        nonexistent sensitive path cannot be probed via the not-a-directory
+        error. Still audited denied, and never leaks the isdir outcome."""
+        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: True)
+        probed: list[str] = []
+
+        def _no_stat(p):
+            probed.append(p)
+            return False
+
+        monkeypatch.setattr("os.path.isdir", _no_stat)
+        slot = _FakeSlot(project="/existing")
+        state = _FakeState()
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "set_project",
+            {"project": "~/.aws/definitely-not-there", "clear": False},
+        )
+        assert result == "Error: access denied (sensitive path)."
+        assert probed == [], f"sensitive path was stat'ed before the deny gate: {probed!r}"
+        assert [c["outcome"] for c in sel_spy.calls] == ["denied"]
+        assert slot.project == "/existing"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["set_project", "suggest_followup", "ask_question"])
+    @pytest.mark.parametrize("session_key", ["cron:job-abc", "slack:C123.456", "sub:agent-1", ""])
+    async def test_slot_targeting_directives_are_dashboard_only(
+        self, kind, session_key, tmp_path, monkeypatch, sel_spy
+    ):
+        """These three act on a dashboard SLOT, and the endpoints they replaced
+        rejected cron / Slack / sub-agent callers. A cron-linked slot flowing
+        through _run_chat must not have its project retargeted or get a card."""
+        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        slot = _FakeSlot(project="/original")
+        state = _FakeState()
+        args = {
+            "set_project": {"project": str(tmp_path), "clear": False},
+            "suggest_followup": {"items": [{"title": "t", "prompt": "p"}]},
+            "ask_question": {"questions": [{"question": "q", "options": [{"label": "a"}]}]},
+        }[kind]
+        result = await apply_session_directive(state, slot, session_key, kind, args)
+        assert "only works from a dashboard chat session" in result
+        assert [c["outcome"] for c in sel_spy.calls] == ["denied"]
+        # No effect landed on the slot.
+        assert slot.project == "/original"
+
+    @pytest.mark.asyncio
+    async def test_returned_failure_is_audited_as_error_not_success(
+        self, tmp_path, monkeypatch, sel_spy
+    ):
+        """Some appliers RETURN a readable failure instead of raising (invalid
+        project dir). The audit must reflect that, not blanket 'success'."""
+        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        slot = _FakeSlot(project="/original")
+        state = _FakeState()
+        missing = str(tmp_path / "definitely-not-a-directory")
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "set_project",
+            {"project": missing, "clear": False},
+        )
+        assert result.startswith("Error: not a directory")
+        assert [c["outcome"] for c in sel_spy.calls] == ["error"]
+        assert slot.project == "/original"
+
+    @pytest.mark.asyncio
+    async def test_refused_monitor_update_audits_denied(self, monkeypatch, sel_spy):
+        """A monitor_update whose new cap is at/below the delivered cycle count
+        is a REFUSED unattended-loop mutation — audited outcome='denied' (not
+        'success'), returns its guidance message verbatim, and never raises."""
+
+        class _Loop:
+            id = "L1"
+            cycle_count = 5
+            max_cycles = 5
+            active = True
+
+        class _Svc:
+            def get_by_slot(self, _b):
+                return _Loop()
+
+        monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: _Svc())
+        monkeypatch.setattr("kiro_crew.autonudge.binding_key_for", lambda sk: "bind-1")
+        slot = _FakeSlot()
+        state = _FakeState()
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "monitor_update", {"patch": {"max_cycles": 3}}
+        )
+        assert "at or below" in result  # verbatim guidance, no "Error:" prefix
+        assert [c["outcome"] for c in sel_spy.calls] == ["denied"]
+        assert sel_spy.calls[0]["tool_name"] == "monitor_update"

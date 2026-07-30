@@ -2076,6 +2076,61 @@ class DashboardState:
                 return True
         return False
 
+    def _redact_questions(self, questions: list[dict]) -> list[dict]:
+        """Redact model-authored question/option text (URLs, credentials) and
+        reject any pair that collapses to identical text after redaction — the
+        answer map is keyed by the rendered text, so an indistinguishable
+        question or option is unanswerable. Shared by request_question (the
+        blocking HTTP round-trip) and post_question_card (the stateless card)."""
+        safe_questions: list[dict] = []
+        seen_redacted: set[str] = set()
+        for q in questions:
+            sq = dict(q)
+            for field in ("question", "header"):
+                val, _ = redact_exfiltration_urls(str(sq.get(field) or ""))
+                val, _ = redact_credentials(val)
+                sq[field] = val
+            norm = " ".join(str(sq.get("question") or "").split()).casefold()
+            if norm in seen_redacted:
+                raise ValueError(
+                    "questions collapse to identical text after redaction; "
+                    "rephrase so each question is distinguishable"
+                )
+            seen_redacted.add(norm)
+            safe_opts: list[dict] = []
+            seen_redacted_labels: set[str] = set()
+            for o in sq.get("options") or []:
+                so = dict(o)
+                for field in ("label", "description"):
+                    val, _ = redact_exfiltration_urls(str(so.get(field) or ""))
+                    val, _ = redact_credentials(val)
+                    so[field] = val
+                norm_label = " ".join(str(so.get("label") or "").split()).casefold()
+                if norm_label in seen_redacted_labels:
+                    raise ValueError(
+                        "option labels collapse to identical text after redaction; "
+                        "rephrase so every option is distinguishable"
+                    )
+                seen_redacted_labels.add(norm_label)
+                safe_opts.append(so)
+            sq["options"] = safe_opts
+            safe_questions.append(sq)
+        return safe_questions
+
+    async def post_question_card(self, slot_key: str, questions: list[dict]) -> int:
+        """Broadcast a NON-BLOCKING question card (no ``ask_id``) to *slot_key*'s
+        owner clients; return the number delivered.
+
+        Unlike :meth:`request_question`, this registers no future and awaits no
+        answer: the frontend renders a legacy (ask_id-less) card whose submit
+        sends the answers as an ordinary chat message, so the agent resumes in a
+        fresh turn (#755 stateless ``ask_question``) rather than blocking. Shares
+        :meth:`_redact_questions` (may raise ``ValueError`` on a post-redaction
+        collapse). Owner-only, same grounds as request_question's broadcast."""
+        safe_questions = self._redact_questions(questions)
+        payload = {"slot": slot_key, "questions": safe_questions, "ts": time.time()}
+        return int(await self.deliver_ws_owners("question_card", payload))
+
     async def request_question(
         self,
         ask_id: str,
@@ -2097,53 +2152,9 @@ class DashboardState:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[dict[str, str] | None] = loop.create_future()
 
-        # The question text is model-authored and rendered in the dashboard, so
-        # it gets the same redaction pass as the approval payload.
-        safe_questions: list[dict] = []
-        seen_redacted: set[str] = set()
-        for q in questions:
-            sq = dict(q)
-            for field in ("question", "header"):
-                val, _ = redact_exfiltration_urls(str(sq.get(field) or ""))
-                val, _ = redact_credentials(val)
-                sq[field] = val
-            # The answer map is keyed by the REDACTED question text (that is what
-            # the frontend renders and echoes back), and redaction is lossy: two
-            # questions that differ only inside a credential or URL collapse to
-            # the same key here even though validate_ask_user_question saw them
-            # as distinct. One answer would then silently overwrite the other and
-            # the agent would resume on incomplete input. Reject instead: a
-            # question the user cannot tell apart on screen is not answerable.
-            norm = " ".join(str(sq.get("question") or "").split()).casefold()
-            if norm in seen_redacted:
-                raise ValueError(
-                    "questions collapse to identical text after redaction; "
-                    "rephrase so each question is distinguishable"
-                )
-            seen_redacted.add(norm)
-            safe_opts: list[dict] = []
-            seen_redacted_labels: set[str] = set()
-            for o in sq.get("options") or []:
-                so = dict(o)
-                for field in ("label", "description"):
-                    val, _ = redact_exfiltration_urls(str(so.get(field) or ""))
-                    val, _ = redact_credentials(val)
-                    so[field] = val
-                # Redaction is lossy. Distinct validated labels can collapse to
-                # the same rendered/returned value, just as question text can.
-                # Reject before registering the future or broadcasting a card:
-                # descriptions cannot disambiguate an answer that contains only
-                # the selected label.
-                norm_label = " ".join(str(so.get("label") or "").split()).casefold()
-                if norm_label in seen_redacted_labels:
-                    raise ValueError(
-                        "option labels collapse to identical text after redaction; "
-                        "rephrase so every option is distinguishable"
-                    )
-                seen_redacted_labels.add(norm_label)
-                safe_opts.append(so)
-            sq["options"] = safe_opts
-            safe_questions.append(sq)
+        # Redact model-authored text (URLs/credentials) before it is rendered,
+        # rejecting post-redaction collapses. Shared with post_question_card.
+        safe_questions = self._redact_questions(questions)
 
         payload = {
             "ask_id": ask_id,

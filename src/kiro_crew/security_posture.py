@@ -313,6 +313,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_title.py",
         "dashboard/chat_utils.py",
         "dashboard/chat_voice.py",
+        # Pre-redacts follow-up items before handing to state.py's WS egress
+        # (the registered sink); its own return string is re-redacted by
+        # chat_runner before broadcast. Not itself an egress boundary.
+        "dashboard/session_directive_apply.py",
         "dashboard/cron_inject.py",
         "dashboard/ws.py",
         "dashboard/server.py",

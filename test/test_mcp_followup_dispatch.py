@@ -1,20 +1,23 @@
-"""Direct coverage for the ``suggest_followup`` MCP dispatch branch.
+"""Direct coverage for the stateless ``suggest_followup`` MCP path (#755).
 
-The endpoint, the arg schema and the frontend reducers each have their own
-suites, but nothing exercised the dispatch adapter in
-``_call_tool_inner`` — the layer that gates on strict dashboard identity,
-derives the slot path, and turns the gateway's ``delivered`` count into the
-sentence the model reads (GPT review, PR #461 round 10). ``_post`` is mocked, so
-the HTTP layer is out of scope here.
+The dispatch branch in ``_call_tool_inner`` no longer resolves session
+identity, no longer refuses non-dashboard sessions, and no longer POSTs to the
+gateway. It VALIDATES its items and returns a session DIRECTIVE (see
+``kiro_crew.session_directive``). The session-aware consumer renders the card
+against ITS OWN slot via
+``kiro_crew.dashboard.session_directive_apply.apply_session_directive`` — that
+applier is exercised directly here against a fake state whose
+``deliver_ws_owners`` returns a delivered-client count.
 """
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew import mcp_core
+from kiro_crew import mcp_core, session_directive
+from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 
 
 def _item(**over: object) -> dict:
@@ -28,73 +31,58 @@ def _item(**over: object) -> dict:
 
 
 class TestSuggestFollowupDispatch:
-    def _invoke(
-        self,
-        args: dict,
-        *,
-        session_key: str = "dashboard:test-slot",
-        response: dict | None = None,
-    ) -> str:
-        captured: dict = {"calls": []}
-        self._captured = captured
+    """The tool validates and returns a directive; nothing is posted here."""
 
-        def fake_post(path: str, body: dict | None = None) -> dict:
-            captured["calls"].append((path, body))
-            return response if response is not None else {"ok": True, "delivered": 1, "count": 1}
-
-        with patch.object(
-            mcp_core, "_resolve_session_key_strict", return_value=session_key
-        ), patch.object(mcp_core, "_post", side_effect=fake_post):
-            result = mcp_core._call_tool_inner("suggest_followup", args)
-        self._captured = captured
-        return result
-
-    def test_posts_to_the_slot_derived_from_the_session_key(self):
-        result = self._invoke({"items": [_item()]})
-        assert len(self._captured["calls"]) == 1
-        url, body = self._captured["calls"][0]
-        assert url == "/api/chat/slots/test-slot/followup"
-        assert body is not None and body["items"][0]["title"] == "Add rate limiting"
-        assert "error" not in result.lower()
-
-    @pytest.mark.parametrize(
-        "session_key",
-        ["slack:C123", "cron:nightly", "subagent:ag-1", ""],
-    )
-    def test_non_dashboard_sessions_are_refused_without_posting(self, session_key):
-        """Slack/cron/subagent contexts have no card surface, and an unresolved
-        identity must not be allowed to guess a slot."""
-        result = self._invoke({"items": [_item()]}, session_key=session_key)
-        # Load-bearing for every case: no card was posted.
-        assert self._captured["calls"] == []
-        assert result.startswith("Error:")
-        if session_key:
-            # A resolved but unsupported surface: the session type IS the cause.
-            assert "dashboard sessions" in result
-        else:
-            # An UNRESOLVED identity is a host configuration gap, not a wrong
-            # session type, and must say so.
-            assert "could not resolve a verified session identity" in result.lower()
+    def test_returns_directive_with_items(self):
+        items = [_item()]
+        result = mcp_core._call_tool_inner("suggest_followup", {"items": items})
+        # Validation sanitizes items in place, so the encoded payload equals the
+        # (possibly-cleaned) items list we passed in.
+        assert session_directive.decode(result, "suggest_followup") == {"items": items}
 
     def test_schema_violation_is_refused_at_the_dispatch_layer(self):
-        """The tool re-validates before posting — the endpoint is not the only gate.
-
-        ``_call_tool_inner`` RAISES ``ValidationError`` (the outer ``_call_tool``
-        wrapper renders it for the model); what matters here is that nothing was
-        posted.
-        """
+        """The tool re-validates before producing a directive — a bad branch is
+        rejected with ``ValidationError`` and no directive is returned."""
         from kiro_crew.validation import ValidationError
 
         with pytest.raises(ValidationError):
-            self._invoke({"items": [_item(branch="-rf")]})
-        assert self._captured["calls"] == []
+            mcp_core._call_tool_inner("suggest_followup", {"items": [_item(branch="-rf")]})
 
-    def test_endpoint_error_is_surfaced_to_the_model(self):
-        result = self._invoke({"items": [_item()]}, response={"error": "not found"})
-        assert result == "Error: not found"
 
-    def test_zero_delivered_is_reported_rather_than_a_bare_success(self):
-        """With no listening client the card was dropped; the model must be told so
-        it restates the follow-ups in its reply instead of assuming they showed."""
-        result = self._invoke({"items": [_item()]}, response={"ok": True, "delivered": 0})
-        assert "0" in result or "no" in result.lower()
+class TestSuggestFollowupApplier:
+    """The consumer delivers the card to its own owner channel."""
+
+    @pytest.mark.asyncio
+    async def test_delivers_followup_card_to_owner_channel(self):
+        calls: list = []
+
+        async def deliver_ws_owners(event, payload):
+            calls.append((event, payload))
+            return 1
+
+        state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
+        slot = SimpleNamespace(key="dashboard:chat-1")
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "suggest_followup", {"items": [_item()]}
+        )
+        assert len(calls) == 1
+        event, payload = calls[0]
+        assert event == "followup_card"
+        assert payload["slot"] == "dashboard:chat-1"
+        assert payload["items"] and payload["items"][0]["title"] == "Add rate limiting"
+        assert "error" not in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_zero_delivered_tells_model_to_restate(self):
+        """With no listening client the card was dropped; the confirmation must
+        tell the model to restate the follow-ups in its reply."""
+
+        async def deliver_ws_owners(event, payload):
+            return 0
+
+        state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
+        slot = SimpleNamespace(key="dashboard:chat-1")
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "suggest_followup", {"items": [_item()]}
+        )
+        assert "restate" in result.lower()

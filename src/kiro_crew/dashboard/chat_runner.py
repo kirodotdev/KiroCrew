@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlparse
 
-from kiro_crew import mcp_apps_render, model_registry
+from kiro_crew import mcp_apps_render, model_registry, session_directive
 from kiro_crew.acp.client import AcpAuthRequired, AcpError, AcpProcessDied, _is_safe_oauth_url
 from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
@@ -80,6 +80,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_context_tokens,
     read_effective_agent,
 )
+from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
@@ -2197,7 +2198,21 @@ async def _run_chat(
     # this reset is a no-op for them and a later real turn can still recover.
     if message not in _SYNTHETIC_RECOVERY_MSGS:
         slot._posttoken_retry_used = False
-    _pending_tools: dict[str, str] = {}  # tool_call_id -> tool_name
+    # tool_call_id -> DISPLAY TITLE (LLM-authored prose for shell tools; used
+    # only for PostToolUse hook name-matching — NOT trustworthy for security).
+    _pending_tools: dict[str, str] = {}
+    # tool_call_id -> canonical directive-tool name (#755 forgery gate). Written
+    # ONLY at EVENT_TOOL_CALL, ONLY from the out-of-band _meta.kiro identity
+    # (event.tool_name + event.mcp_server_name), never from the title. This is
+    # the ONLY map the session-directive gate below trusts.
+    _pending_dir_tool: dict[str, str] = {}
+    # tool_call_id -> the output we already produced for a CONSUMED directive
+    # (applied confirmation, or the native-sub-agent not-applied note). A tool
+    # call can surface more than one result frame; once the mapping above is
+    # consumed a later frame would otherwise fall through with the RAW marker
+    # text and overwrite the applied outcome in the transcript. Replaying the
+    # stored output keeps every frame consistent and marker-free.
+    _dir_consumed_out: dict[str, str] = {}
     # session_id -> {started, done, agent, task} for native kiro-cli subagents,
     # reconciled from `_kiro.dev/subagent/list_update` (one card per sub-agent).
     # The slot holds the same live dict so reconnect snapshots can restore cards.
@@ -3016,6 +3031,18 @@ async def _run_chat(
                     _raw = _raw[9:]
                 if event.tool_call_id:
                     _pending_tools[event.tool_call_id] = _raw
+                    # Forgery gate (#755): record the directive-tool name ONLY
+                    # from the trusted _meta.kiro identity and ONLY for a genuine
+                    # call served by KiroCrew's OWN core MCP server — never the
+                    # title, and never another (possibly third-party) MCP server
+                    # that merely exposes a tool named e.g. "monitor_start". A
+                    # shell tool has no mcp_server_name and canonical tool_name
+                    # "execute_bash", so it can never register here. Recorded at
+                    # EVENT_TOOL_CALL only (the UPDATE refinement rewrites titles).
+                    if event.mcp_server_name == session_directive.CORE_MCP_SERVER:
+                        _cannon = session_directive.match_tool(event.tool_name)
+                        if _cannon:
+                            _pending_dir_tool[event.tool_call_id] = _cannon
                 # If this tool call belongs to a native sub-agent (mapped via
                 # _kiro.dev/session/update), stream it onto that sub-agent's card.
                 _nat_card = _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
@@ -3189,6 +3216,82 @@ async def _run_chat(
                     # bare-vs-prefixed mismatch (silent no-render).
                     producing_session_key=slot.linked_session_key or _history_key_for(slot.key),
                 )
+                # Session directive (#755): a stateless session-bound tool
+                # (monitor_start / monitor_update / autonudge_stop / set_project
+                # / suggest_followup / ask_question) returns a directive marker
+                # instead of resolving its own session identity. Apply it HERE,
+                # where slot.key + session_key are the AUTHORITATIVE session for
+                # this turn, then record the applier's real outcome on KiroCrew's
+                # OWN surfaces (transcript / WS / hooks) and drop the marker.
+                # NOTE: gateway-off (the default), the MODEL already received the
+                # tool's own return over the MCP pipe — this does NOT rewrite the
+                # model's tool result, which is why the tool's own message is
+                # written to not over-claim the (consumer-applied) effect.
+                # Gated on _pending_dir_tool — the CANONICAL _meta.kiro tool name
+                # for a genuine MCP call, NOT model-authored result/title text —
+                # so a forged marker under a shell/non-directive tool is ignored.
+                # A native sub-agent's tool calls DO surface here (flat events
+                # tagged in _native_tc_card) but have no independently bindable
+                # slot, so they are refused rather than applied to the parent —
+                # combined with spawn_run sub-agents running their own loop, no
+                # sub-agent can ever arm/mutate its parent (isolation).
+                _dir_tool = _pending_dir_tool.get(event.tool_call_id, "")
+                if not _dir_tool and event.tool_call_id in _dir_consumed_out:
+                    # A LATER frame for a directive we already consumed: replay
+                    # the output we produced instead of letting the raw marker
+                    # text overwrite the applied outcome in the transcript.
+                    _out = _dir_consumed_out[event.tool_call_id]
+                elif _dir_tool:
+                    if event.tool_call_id in _native_tc_card:
+                        # SINGLE-CONSUME: one tool call can surface MORE THAN ONE
+                        # result frame (a mid-stream content frame and the final
+                        # status=completed rawOutput frame — the same reason the
+                        # native-card path below keeps _native_result_seen).
+                        # Without this pop, a directive would be applied twice:
+                        # two armed loops, two cards, or a repeated mutation.
+                        _pending_dir_tool.pop(event.tool_call_id, None)
+                        # Isolation denial — audit it (the one place the gate
+                        # actively refuses) so it is not a silent drop.
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            source="mcp-directive",
+                            tool_name=_dir_tool,
+                            outcome="denied",
+                        )
+                        # Re-redact: the applier's string interpolates
+                        # LLM-derived text (autonudge_stop reason, a bad path in
+                        # set_project's error, exception args), and it OVERWRITES
+                        # the entry-point _redact_tool_field(_out) above — so it
+                        # must pass exfil-URL + credential scrubbing before it
+                        # reaches broadcast_ws / the persisted transcript.
+                        _out = _redact_tool_field(
+                            session_directive.strip_marker(_out)
+                            + (
+                                "\n\n[Not applied: a session-bound tool called "
+                                "from a sub-agent has no session to act on.]"
+                            )
+                        )
+                        _dir_consumed_out[event.tool_call_id] = _out
+                    else:
+                        _dir_args = session_directive.decode(_out, _dir_tool)
+                        if _dir_args is not None:
+                            # SINGLE-CONSUME (see the native branch above): drop
+                            # the mapping BEFORE applying, so a second result
+                            # frame for this same tool call cannot re-apply the
+                            # effect. Left in place when no marker decoded yet —
+                            # a mid-stream partial frame must not burn the
+                            # mapping the final frame still needs.
+                            _pending_dir_tool.pop(event.tool_call_id, None)
+                            _out = _redact_tool_field(
+                                await apply_session_directive(
+                                    state, slot, session_key, _dir_tool, _dir_args
+                                )
+                            )
+                            _dir_consumed_out[event.tool_call_id] = _out
+                        else:
+                            # Recorded directive tool but no valid marker in the
+                            # result — strip any stray sentinel from the transcript.
+                            _out = session_directive.strip_marker(_out)
                 state.broadcast_ws(
                     "tool_result",
                     {
@@ -3210,7 +3313,7 @@ async def _run_chat(
                     and event.tool_call_id not in _native_result_seen
                 ):
                     _native_result_seen.add(event.tool_call_id)
-                    _nout, _ = redact_exfiltration_urls(event.tool_output)
+                    _nout, _ = redact_exfiltration_urls(_out)
                     _nout, _ = redact_credentials(_nout)
                     _native_card_output_len[_nat_card_r] = _append_native_output(
                         _native_card_output.setdefault(_nat_card_r, []),

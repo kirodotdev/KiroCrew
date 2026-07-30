@@ -34,9 +34,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import urlencode, urlparse
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, session_directive
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.artifacts import _infer_kind
 from kiro_crew.autonudge import binding_key_for
@@ -115,6 +115,7 @@ from kiro_crew.validation import (
     WORKFLOW_RERUN_SCHEMA,
     WORKFLOW_RUN_ID_SCHEMA,
     WORKFLOW_RUN_SCHEMA,
+    validate_ask_user_question,
     validate_tool_args,
 )
 
@@ -1915,75 +1916,6 @@ def _internal_secret() -> str:
         return ""
 
 
-# Cached user-scoped token for routes that reject ``X-Internal-Secret`` and
-# require a real session token (e.g. ``/api/autonudge*``). Bootstrapped on
-# demand from ``/api/token/local`` using the same local secret we already hold,
-# and refreshed once it nears expiry. ``(token, expires_at_monotonic)``.
-_USER_TOKEN_CACHE: tuple[str, float] = ("", 0.0)
-
-
-def _local_user_token() -> str:
-    """Exchange the local secret for a short-lived user-scoped token.
-
-    Thin wrapper over :func:`_local_user_token_with_reason` for callers that
-    only care whether a token exists. Returns ``""`` on failure.
-    """
-    return _local_user_token_with_reason()[0]
-
-
-def _local_user_token_with_reason() -> tuple[str, str]:
-    """Mint a user-scoped token, returning ``(token, failure_reason)``.
-
-    A few routes (notably ``/api/autonudge*``) deliberately reject the
-    machine-to-machine ``X-Internal-Secret`` handshake and require a
-    user-scoped token instead. ``GET /api/token/local`` mints one for any
-    loopback caller that presents the local secret via the ``X-Local-Secret``
-    header. We cache the token in-process and refresh it shortly before
-    expiry so a self-halting loop doesn't pay the round-trip every call.
-
-    On success returns ``(token, "")``. On failure returns ``("", reason)``
-    where *reason* NAMES the failing step. This matters operationally: the
-    original code collapsed every failure into a bare ``""``, so
-    ``monitor_start`` could only report an undifferentiated "Failed to start
-    monitor loop", which is indistinguishable from a transient MCP reconnect —
-    and in practice arm failures were repeatedly written off as exactly that
-    while the loop silently never existed. Callers surface *reason* verbatim.
-    """
-    global _USER_TOKEN_CACHE
-    cached, expires_at = _USER_TOKEN_CACHE
-    # 30s safety margin so a token doesn't expire mid-request.
-    if cached and time.monotonic() < expires_at - 30:
-        return cached, ""
-    secret = _internal_secret()
-    if not secret:
-        return "", (
-            "no local gateway secret is readable from this process, so no "
-            "user-scoped token could be minted"
-        )
-    req = urllib.request.Request(
-        f"{_API}/api/token/local?ttl=15m",
-        headers={"X-Local-Secret": secret},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        # 429 / 5xx are retryable server-side conditions, not a definite
-        # refusal, so mark them transient for the arm-failure message.
-        kind = "transiently failed" if e.code == 429 or e.code >= 500 else "returned"
-        if kind == "transiently failed":
-            return "", f"{_TRANSIENT_TOKEN_MARKER} HTTP {e.code}"
-        return "", f"GET /api/token/local returned HTTP {e.code}"
-    except Exception as e:
-        return "", f"{_TRANSIENT_TOKEN_MARKER} {type(e).__name__}: {e}"
-    token = str(data.get("token", ""))
-    if not token:
-        return "", "GET /api/token/local returned no token"
-    ttl = float(data.get("expires_in", 900) or 900)
-    _USER_TOKEN_CACHE = (token, time.monotonic() + ttl)
-    return token, ""
-
-
 def _ppid_via_libproc(pid: int) -> int:
     """macOS parent-PID lookup via libproc's ``proc_pidinfo`` (stdlib ctypes).
 
@@ -2658,165 +2590,6 @@ def _delete(path: str, body: dict | None = None) -> dict:
         return {"error": str(e)}
 
 
-def _with_token(path: str, token: str) -> str:
-    """Append ``?token=`` (or ``&token=``) to *path* for user-token routes."""
-    sep = "&" if "?" in path else "?"
-    return f"{path}{sep}{urlencode({'token': token})}"
-
-
-def _get_user(path: str) -> dict:
-    """GET a user-token-gated route (e.g. ``/api/autonudge*``).
-
-    These routes reject ``X-Internal-Secret``; authenticate with a
-    bootstrapped user token passed as the ``?token=`` query param instead.
-    """
-    token, why = _local_user_token_with_reason()
-    if not token:
-        return {"error": f"could not obtain local user token — {why}"}
-    req = urllib.request.Request(f"{_API}{_with_token(path, token)}")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        return _http_error_body(e)
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def _delete_user(path: str) -> dict:
-    """DELETE a user-token-gated route (e.g. ``/api/autonudge/{id}``)."""
-    token, why = _local_user_token_with_reason()
-    if not token:
-        return {"error": f"could not obtain local user token — {why}"}
-    req = urllib.request.Request(
-        f"{_API}{_with_token(path, token)}",
-        method="DELETE",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        return _http_error_body(e)
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def _post_user(path: str, body: dict, timeout: int = 10) -> dict:
-    """POST JSON to a user-token-gated route (e.g. ``POST /api/autonudge``).
-
-    ``timeout`` is the socket timeout in seconds. It is a parameter because
-    ``ask_question`` deliberately blocks server-side until the dashboard user
-    answers, so it needs a window longer than the 10s default used by the
-    fire-and-forget callers.
-    """
-    return _write_user(path, body, method="POST", timeout=timeout)
-
-
-def _patch_user(path: str, body: dict) -> dict:
-    """PATCH JSON to a user-token-gated route (e.g. ``PATCH /api/autonudge/{id}``)."""
-    return _write_user(path, body, method="PATCH")
-
-
-def _write_user(path: str, body: dict, *, method: str, timeout: int = 10) -> dict:
-    """Send a JSON body to a user-token-gated route via *method*."""
-    token, why = _local_user_token_with_reason()
-    if not token:
-        return {"error": f"could not obtain local user token — {why}"}
-    req = urllib.request.Request(
-        f"{_API}{_with_token(path, token)}",
-        method=method,
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- _API is the loopback dashboard base resolved from local config and path is code-constructed; no user-controlled URL reaches urlopen (same trust profile as _get_user/_delete_user)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        return _http_error_body(e)
-    except Exception as e:
-        # A write whose RESPONSE never arrived is INDETERMINATE: the server-side
-        # mutation is shielded, so it may well have landed. Flag it structurally
-        # rather than leaving callers to string-match exception text (which does
-        # not work — http.client.RemoteDisconnected stringifies to "Remote end
-        # closed connection without response", not its class name).
-        # A refusal or DNS failure happens BEFORE the request is sent, so
-        # nothing could have been applied — that is a definite failure. Only a
-        # connection lost mid-exchange leaves the outcome unknown.
-        reason = getattr(e, "reason", None)
-        pre_connect = isinstance(
-            reason, (ConnectionRefusedError, socket.gaierror)
-        ) or isinstance(e, (ConnectionRefusedError, socket.gaierror))
-        out: dict[str, Any] = {"error": f"{type(e).__name__}: {e}"}
-        if not pre_connect:
-            out["indeterminate"] = True
-        return out
-
-
-def _strict_identity_diagnosis(tool: str) -> str:
-    """Explain WHY strict session identity could not be resolved, and the remedy.
-
-    ``_resolve_session_key_strict`` returning ``""`` used to surface as
-    "<tool> only works from within a dashboard, Slack, or Discord session
-    (current session_key='')" — actively misleading when the caller IS a
-    dashboard session and the resolver simply had no accepted source. That
-    message sent every reader looking for a wrong session type instead of the
-    real cause, and made a total, every-session outage look like a niche
-    context restriction.
-
-    The three accepted sources and why each can be legitimately absent:
-
-    1. **Per-call caller context** — injected only by the pooled MCP gateway
-       (``gatewayd``). Absent whenever ``mcp_gateway.enabled`` is false, which
-       is the DEFAULT (pooling is opt-in).
-    2. **``KIROCREW_SESSION_KEY``** — never set on the kiro-cli backend: MCP
-       servers are loaded from ``--agent`` (``acp/runtime.py`` passes
-       ``mcpServers: []``), so one MCP process serves the whole runtime and
-       cannot carry a single session's key in its env.
-    3. **``KIROCREW_HOST_PID``** + signed sidecar — exported only by the
-       sandbox launcher, so absent on unsandboxed hosts.
-
-    With all three absent the only remaining signal is the ``/proc`` ancestor
-    walk, which strict mode refuses on purpose: a session-sharing subagent runs
-    on the parent's runtime and through the SAME MCP process, so a walked
-    identity cannot distinguish subagent from parent and would let a subagent
-    mint an unattended loop in its parent's session.
-
-    Returns a diagnosis naming the absent sources so the reader can act rather
-    than retry a call that will never succeed.
-
-    Only ``KIROCREW_HOST_PID`` is reported as "present but unusable": the strict
-    resolver returns ``KIROCREW_SESSION_KEY`` verbatim whenever it is non-empty,
-    so an empty resolution already implies that variable is unset. A host pid,
-    by contrast, can be present and still rejected (missing or invalid HMAC
-    sidecar), which is a genuinely different remedy.
-    """
-    host_pid_present = os.environ.get("KIROCREW_HOST_PID", "").isdigit()
-    detail = (
-        f"{tool} could not resolve a verified session identity, so it refused "
-        "to act rather than guess which session to bind. This is a host "
-        "configuration gap, NOT a transient MCP disconnect — retrying will not "
-        "help."
-    )
-    if host_pid_present:
-        detail += (
-            " KIROCREW_HOST_PID is set but its signed session_pid sidecar did "
-            "not verify, so the identity it names was refused."
-        )
-    else:
-        detail += (
-            " None of the accepted identity sources is available in this "
-            "process: no gateway-injected caller context (the pooled MCP "
-            "gateway is off — `mcp_gateway.enabled` is opt-in and defaults to "
-            "false), no KIROCREW_SESSION_KEY (the kiro-cli backend loads MCP "
-            "servers via --agent, so one MCP process serves the whole runtime), "
-            "and no KIROCREW_HOST_PID (exported only when sandboxed). Enabling "
-            "the MCP gateway (Settings → MCP, or `mcp_gateway.enabled: true`) "
-            "restores per-call caller identity and with it this tool."
-        )
-    return detail
-
-
 # Default cycle cap for monitor_start when the caller omits max_cycles. An
 # unbounded loop only ever stops when the model volunteers autonudge_stop, and
 # real loop stores show that is unreliable — observed babysit loops ran to 24/24
@@ -2824,55 +2597,6 @@ def _strict_identity_diagnosis(tool: str) -> str:
 # is ~2h at the default 300s idle gap: long enough for a CI/review cycle, short
 # enough that a forgotten loop dies on its own.
 _MONITOR_DEFAULT_MAX_CYCLES = 24
-
-# Marker embedded in the token-mint reason when the request itself RAISED
-# (timeout / connection reset / DNS) rather than returning a definite refusal.
-# Those failures can be transient, so the arm-failure message must not claim a
-# retry is futile — see _monitor_arm_failure.
-_TRANSIENT_TOKEN_MARKER = "GET /api/token/local failed:"
-
-
-def _monitor_arm_failure(tool: str, binding_key: str, resp: dict) -> str:
-    """Render an arming failure so it cannot be mistaken for a flaky connection.
-
-    ``POST /api/autonudge`` failures used to collapse into a bare "Failed to
-    start monitor loop: <error>", which reads exactly like the transient MCP
-    reconnects agents are told to retry through — so genuine arm failures got
-    written off as flakiness while the loop silently did not exist. Name the
-    failing step and state plainly that no loop is running.
-    """
-    err = str(resp.get("error") or "unknown error")
-    # A write that never got an answer (timeout / reset mid-POST) is
-    # INDETERMINATE, not a clean failure: the server-side arm is shielded, so it
-    # may well have landed. Saying "NO monitoring is active" there would be a
-    # false negative that leads to a duplicate arm.
-    if resp.get("indeterminate"):
-        return (
-            f"{tool} did NOT get a confirmed answer from the gateway on "
-            f"{binding_key}: {err}. The arm MAY have landed — check whether a "
-            "loop exists before arming another one, and do not assume "
-            "monitoring is either running or absent."
-        )
-    detail = f"{tool} could NOT arm a loop on {binding_key}: {err}."
-    if _TRANSIENT_TOKEN_MARKER in err:
-        # The token endpoint raised (timeout, connection reset, DNS): this one
-        # CAN be transient, so don't claim a retry is futile — only that nothing
-        # is armed right now.
-        detail += (
-            " The gateway's own loopback token endpoint could not be reached, "
-            "which may be transient — one retry is reasonable."
-        )
-    elif "local user token" in err:
-        detail += (
-            " This is a token-minting failure on the gateway's own loopback API, "
-            "not a transient MCP disconnect — retrying the tool will not fix it."
-        )
-    elif "audit log unavailable" in err:
-        detail += (
-            " The gateway refused to arm an unaudited loop (audit-or-deny policy);"
-            " the SEL audit log is unwritable."
-        )
-    return detail + " NO monitoring is active — fall back to an in-turn wait+poll loop."
 
 
 def _autonudge_binding_key(sk: str) -> str | None:
@@ -4900,115 +4624,50 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # the parent slot's process tree — a PID-walk would let it silently
         # stop the PARENT session's loop (matches set_project's rule).
         sk = _resolve_session_key_strict()
-        # AutoNudge binds to dashboard chat slots and slack:/discord: channel
-        # sessions — never to "cron:<id>", "hook:<id>", "subagent:<id>", etc.
-        slot_key = _autonudge_binding_key(sk)
-        if slot_key is None:
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="autonudge_stop", outcome="noop"
-            )
-            if not sk:
-                return _strict_identity_diagnosis("autonudge_stop")
+        # Stateless (#755): emit a directive; the session-aware consumer
+        # (chat_runner) resolves the loop by ITS OWN session and stops it. The
+        # tool carries no session identity — sk is used only to short-circuit a
+        # context where a directive can never be applied (cron/hook/subagent).
+        if _autonudge_binding_key(sk) is None and sk:
             return (
                 "No auto-nudge loop to stop: this tool only works from within "
                 "a dashboard, Slack, or Discord session "
                 f"(current session_key={sk!r})."
             )
-        reason = args.get("reason", "").strip()
-        # /api/autonudge* rejects X-Internal-Secret and requires a user-scoped
-        # token, so use the token-aware helpers (bootstrapped via
-        # /api/token/local) rather than the plain internal-secret _get/_delete.
-        lookup = _get_user(f"/api/autonudge/slot/{quote(slot_key, safe='')}")
-        if lookup.get("error"):
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="autonudge_stop", outcome="error"
-            )
-            return f"Failed to look up loop: {lookup['error']}"
-        loop = lookup.get("loop")
-        if not loop:
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="autonudge_stop", outcome="noop"
-            )
-            return "No active auto-nudge loop on this session — nothing to stop."
-        loop_id = loop.get("id", "")
-        resp = _delete_user(f"/api/autonudge/{loop_id}")
-        if resp.get("error"):
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="autonudge_stop", outcome="error"
-            )
-            return f"Failed to stop loop {loop_id}: {resp['error']}"
-        sel().log_tool_invocation(
-            session_key=sk,
-            source="mcp",
-            tool_name="autonudge_stop",
-            outcome="success",
-            metadata={"slot_key": slot_key, "loop_id": loop_id, "reason": reason},
-        )
-        return (
-            f"Auto-nudge loop {loop_id} stopped on session {slot_key}"
-            + (f" (reason: {reason})" if reason else "")
-            + ". No further nudges will fire."
+        return session_directive.encode(
+            "autonudge_stop",
+            {"reason": args.get("reason", "").strip()},
+            "Stopping the auto-nudge loop on this session (if one is active).",
         )
 
     if name == "ask_question":
         args = validate_tool_args(args, ASK_QUESTION_SCHEMA)
-        # STRICT resolution (env-var only, no PID walk): the card renders in the
-        # resolved slot's chat and blocks that caller. A subagent must not be
-        # able to PID-walk into its parent's identity and post a question card
-        # into the parent's conversation.
+        # Stateless (#755): return a directive. The session-aware consumer
+        # (chat_runner) broadcasts a NON-BLOCKING question card (no ask_id) to
+        # ITS OWN slot and the agent ends its turn; the user's answer arrives as
+        # an ordinary next message that resumes the session with full context.
+        # No server-side block, no identity resolved for the effect. Non-dashboard
+        # surfaces still get the [OPTIONS:] hint (a card needs a chat window);
+        # an empty (default-install) key falls through to the directive.
         sk = _resolve_session_key_strict()
-        if not sk.startswith("dashboard:"):
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="ask_question", outcome="noop"
-            )
-            if not sk:
-                return _strict_identity_diagnosis("ask_question")
+        if sk and not sk.startswith("dashboard:"):
             return (
                 "ask_question only works from a dashboard chat session "
                 f"(current session_key={sk!r}). From other surfaces, end your "
                 "turn with an [OPTIONS: a | b | c] tag instead — it renders "
                 "clickable buttons on every channel that supports them."
             )
-        timeout_secs = int(args.get("timeout_secs") or 300)
-        # Give the HTTP read a margin over the server-side wait so the socket
-        # does not trip first and strand a question the user is still answering.
-        resp = _post_user(
-            "/api/ask-question",
-            {
-                "session_key": sk,
-                "questions": args["questions"],
-                "timeout_secs": timeout_secs,
-            },
-            timeout=timeout_secs + 30,
-        )
-        if resp.get("error"):
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="ask_question", outcome="error"
-            )
-            return f"Failed to ask the question: {resp['error']}"
-        if resp.get("status") != "answered":
-            sel().log_tool_invocation(
-                session_key=sk,
-                source="mcp",
-                tool_name="ask_question",
-                outcome="timeout",
-            )
-            return (
-                f"No answer within {timeout_secs}s (the user did not respond or "
-                "dismissed the card). Do NOT re-ask automatically — proceed with "
-                "your best judgment and say which assumption you made, or ask in "
-                "plain text and end your turn."
-            )
-        answers = resp.get("answers") or {}
-        sel().log_tool_invocation(
-            session_key=sk,
-            source="mcp",
-            tool_name="ask_question",
-            outcome="success",
-            metadata={"question_count": len(answers)},
-        )
-        return "The user answered:\n" + "\n".join(
-            f"- {q}: {a}" for q, a in answers.items()
+        return session_directive.encode(
+            "ask_question",
+            # Encode the AUTHORITATIVELY-validated + normalized questions (deep
+            # per-question/option checks), not the shallow-schema args: a
+            # malformed nested question must be rejected HERE, not surface as a
+            # card-post failure after the model was told it posted.
+            {"questions": validate_ask_user_question(args)},
+            "Question card requested for this session. End your turn now — if it "
+            "renders, the user's answer arrives as your next message (do NOT "
+            "re-ask or guess in the meantime). If no dashboard client is "
+            "attached the card is dropped, so ask in plain text instead.",
         )
 
     if name == "monitor_start":
@@ -5019,13 +4678,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # to PID-walk into the parent's identity and mint a loop the parent
         # user never asked for (crosses the session authorization boundary).
         sk = _resolve_session_key_strict()
-        binding_key = _autonudge_binding_key(sk)
-        if binding_key is None:
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="monitor_start", outcome="noop"
-            )
-            if not sk:
-                return _strict_identity_diagnosis("monitor_start")
+        # Stateless (#755): only short-circuit contexts where a directive can
+        # never be applied (cron/hook/subagent). The session-aware consumer
+        # (chat_runner) supplies the binding key and arms the loop.
+        if _autonudge_binding_key(sk) is None and sk:
             return (
                 "monitor_start only works from within a dashboard, Slack, or "
                 f"Discord session (current session_key={sk!r}). For other "
@@ -5042,47 +4698,24 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # (explicit unlimited) is still honoured for callers that mean it.
         raw_max = args.get("max_cycles")
         max_cycles = _MONITOR_DEFAULT_MAX_CYCLES if raw_max is None else int(raw_max)
-        resp = _post_user(
-            "/api/autonudge",
-            {
-                "session_key": binding_key,
-                "message": message,
-                "idle_secs": interval_secs,
-                "max_cycles": max_cycles,
-            },
-        )
-        if resp.get("error"):
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="monitor_start", outcome="error"
-            )
-            return _monitor_arm_failure("monitor_start", binding_key, resp)
-        loop = resp.get("loop") or {}
-        sel().log_tool_invocation(
-            session_key=sk,
-            source="mcp",
-            tool_name="monitor_start",
-            outcome="success",
-            metadata={
-                "binding_key": binding_key,
-                "loop_id": loop.get("id", ""),
-                "interval_secs": interval_secs,
-                "max_cycles": max_cycles,
-            },
-        )
-        return (
-            f"Monitor loop {loop.get('id', '?')} started on session {binding_key}: "
-            f"the message will be re-injected {interval_secs}s after each of your "
-            f"turns ENDS (idle gap, not a fixed period — real cadence is "
-            f"{interval_secs}s plus however long each turn takes)"
-            + (
-                f", stopping after {max_cycles} cycles"
-                if max_cycles
-                else ", with NO cycle cap"
-            )
-            + ". End your turn now — the loop wakes you. Call autonudge_stop "
-            "when the exit condition is met; hitting the cap is a runaway "
-            "backstop, not a finish. Use monitor_update if the instruction "
-            "goes stale."
+        return session_directive.encode(
+            "monitor_start",
+            {"message": message, "idle_secs": interval_secs, "max_cycles": max_cycles},
+            (
+                "Monitor loop requested on this session: the message will "
+                f"re-inject {interval_secs}s after each turn ENDS (idle gap)"
+                + (
+                    f", stopping after {max_cycles} cycles"
+                    if max_cycles
+                    else ", with NO cycle cap"
+                )
+                + ". End your turn now; once the loop is armed it wakes you on "
+                "that idle gap — but arming happens when this turn's result is "
+                "processed, and only a live dashboard/Slack/Discord session can "
+                "host a loop, so do NOT assume it armed. Call autonudge_stop when "
+                "the exit condition is met; hitting the cap is a runaway backstop, "
+                "not a finish. Use monitor_update if the instruction goes stale."
+            ),
         )
 
     if name == "monitor_update":
@@ -5092,13 +4725,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # subagent must not PID-walk into the parent's identity and rewrite the
         # parent session's instruction.
         sk = _resolve_session_key_strict()
-        binding_key = _autonudge_binding_key(sk)
-        if binding_key is None:
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
-            )
-            if not sk:
-                return _strict_identity_diagnosis("monitor_update")
+        # Stateless (#755): short-circuit only un-appliable contexts; the
+        # consumer resolves the loop by its own session and patches it.
+        if _autonudge_binding_key(sk) is None and sk:
             return (
                 "monitor_update only works from within a dashboard, Slack, or "
                 f"Discord session (current session_key={sk!r})."
@@ -5121,159 +4750,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "monitor_update: nothing to change — pass at least one of "
                 "message, interval_secs, max_cycles."
             )
-        # OWNERSHIP: resolve the loop id from THIS session's binding key rather
-        # than accepting one from the caller. PATCH /api/autonudge/{loop_id}
-        # takes an opaque id and cannot tell whose loop it is, so letting the
-        # model name the id would let one session rewrite another session's
-        # instruction. Looking it up by binding key makes cross-session updates
-        # unrepresentable.
-        lookup = _get_user(f"/api/autonudge/slot/{quote(binding_key, safe='')}")
-        if lookup.get("error"):
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="monitor_update", outcome="error"
-            )
-            return f"Failed to look up loop: {lookup['error']}"
-        loop = lookup.get("loop")
-        if not loop:
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
-            )
-            return (
-                "No monitor loop on this session to update — start one with "
-                "monitor_start."
-            )
-        loop_id = loop.get("id", "")
-        # A loop that hit max_cycles has active=False. update() mutates fields
-        # but only re-arms when the loop is active, so raising the cap on a
-        # capped loop would report "the loop wakes you" while nothing is armed —
-        # exactly the false-success class this PR exists to remove. Decide from
-        # the POST-patch cap whether another cycle is even possible.
-        cycle_count = int(loop.get("cycle_count") or 0)
-        current_cap = int(loop.get("max_cycles") or 0)
-        new_cap = patch.get("max_cycles", current_cap)
-        can_fire_again = new_cap == 0 or new_cap > cycle_count
-        if not can_fire_again:
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="monitor_update", outcome="denied"
-            )
-            return (
-                f"monitor_update: max_cycles={new_cap} is at or below this loop's "
-                f"delivered cycle count ({cycle_count}), so the loop would "
-                "deactivate without ever firing again. Pass a larger cap, or 0 "
-                "for unlimited."
-            )
-        # ``cycle_count`` only increments once a fire is DELIVERED, so a cycle
-        # running right now is not yet counted. A cap of exactly count+1 may
-        # therefore be consumed by that in-flight cycle, leaving no further
-        # wake — say so instead of promising one.
-        tight_cap = new_cap != 0 and new_cap == cycle_count + 1
-        revived = False
-        # Revive ONLY a loop that stopped because it hit its cap, and only when
-        # the caller is actually raising that cap. An explicitly PAUSED loop
-        # (active=False set by the user or the stop control) must stay paused —
-        # silently resuming unattended tool execution as a side effect of a
-        # metadata edit is not something the caller asked for.
-        stopped_at_cap = current_cap > 0 and cycle_count >= current_cap
-        raising_cap = "max_cycles" in patch and (new_cap == 0 or new_cap > current_cap)
-        if not loop.get("active", True):
-            if stopped_at_cap and raising_cap:
-                patch["active"] = True
-                revived = True
-            else:
-                sel().log_tool_invocation(
-                    session_key=sk, source="mcp", tool_name="monitor_update", outcome="denied"
-                )
-                return (
-                    f"Monitor loop {loop_id} on {binding_key} is PAUSED "
-                    f"(cycle {cycle_count}"
-                    + (f" of {current_cap}" if current_cap else ", no cap")
-                    + "). monitor_update will not resume a paused loop as a side "
-                    "effect: raise max_cycles above the cap to revive a "
-                    "cap-stopped loop, or use monitor_start to begin a new one."
-                )
-        resp = _patch_user(f"/api/autonudge/{quote(str(loop_id), safe='')}", patch)
-        if resp.get("error"):
-            sel().log_tool_invocation(
-                session_key=sk, source="mcp", tool_name="monitor_update", outcome="error"
-            )
-            if resp.get("indeterminate"):
-                # The PATCH got no response, but the server-side update is
-                # shielded, so it may have applied. Re-read the loop so the
-                # report reflects reality instead of guessing.
-                recheck = _get_user(f"/api/autonudge/slot/{quote(binding_key, safe='')}")
-                latest = recheck.get("loop") or {}
-                # EVERY patched field must match, not just the message: a patch
-                # that raised max_cycles while leaving the message unchanged
-                # would "verify" on the message alone and report success while
-                # the stale cap keeps the loop stopped.
-                field_map = {"message": "message", "idle_secs": "idle_secs",
-                             "max_cycles": "max_cycles", "active": "active"}
-                # Pin the IDENTITY too: a loop replaced concurrently (a fresh
-                # monitor_start on the same slot) can carry matching fields and
-                # would otherwise be reported as this update having applied.
-                applied = (
-                    bool(latest)
-                    and str(latest.get("id") or "") == str(loop_id)
-                    and all(
-                        latest.get(field_map[k]) == v
-                        for k, v in patch.items()
-                        if k in field_map
-                    )
-                )
-                if applied:
-                    return (
-                        f"Monitor loop {loop_id} was updated on {binding_key}, but the "
-                        f"gateway response was lost ({resp['error']}). Verified applied "
-                        f"by re-reading the loop ({', '.join(sorted(patch))})."
-                    )
-                return (
-                    f"monitor_update on {binding_key} got NO confirmed answer "
-                    f"({resp['error']}). The change MAY have applied — re-read the "
-                    "loop before retrying so you do not double-apply."
-                )
-            return f"Failed to update monitor loop {loop_id}: {resp['error']}"
-        updated = resp.get("loop") or {}
-        sel().log_tool_invocation(
-            session_key=sk,
-            source="mcp",
-            tool_name="monitor_update",
-            outcome="success",
-            metadata={
-                "binding_key": binding_key,
-                "loop_id": loop_id,
-                "fields": sorted(patch),
-            },
-        )
-        return (
-            f"Monitor loop {loop_id} updated on session {binding_key} "
-            f"({', '.join(sorted(patch))}). Now at cycle "
-            f"{updated.get('cycle_count', '?')}"
-            + (
-                f" of {updated.get('max_cycles')}"
-                if updated.get("max_cycles")
-                else " with no cap"
-            )
-            + f", {updated.get('idle_secs', '?')}s idle gap"
-            + (
-                " — the loop had stopped at its cap and has been re-armed"
-                if revived
-                else ""
-            )
-            + (
-                # Authoritative: the loop's state AFTER the patch. The pre-PATCH
-                # GET can be stale (the cap may have deactivated the loop in
-                # between), so never promise a wake the response contradicts.
-                ". The loop is currently INACTIVE, so it will NOT wake — start a "
-                "new one with monitor_start if you still need monitoring"
-                if not updated.get("active", True)
-                else ". NOTE: the new cap allows only one more delivered cycle, "
-                "which a currently-running cycle may already consume — do not "
-                "count on another wake"
-                if tight_cap
-                else ". End your turn — the loop wakes you with the revised "
-                "instruction"
-            )
-            + "."
+        return session_directive.encode(
+            "monitor_update",
+            {"patch": patch},
+            f"Monitor-loop update requested for this session "
+            f"({', '.join(sorted(patch))}); it applies only if a loop is active "
+            "here, so do not assume the change landed.",
         )
 
     if name == "search_chat_history":
@@ -5715,110 +5197,32 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return result
 
     if name == "set_project":
-        # Defense-in-depth: _call_tool() already validates, but the explicit
-        # call here keeps the schema gate visible at the extraction site.
         args = validate_tool_args(args, SET_PROJECT_SCHEMA)
-        path = args.get("path", "")
-        sk = _resolve_session_key_strict()
-        if not sk.startswith("dashboard:"):
-            sel().log_tool_invocation(
-                session_key=sk or "<unresolved>",
-                source="mcp",
-                tool_name="set_project",
-                outcome="rejected",
-                error="non-dashboard or unresolved session",
-            )
-            if not sk:
-                return "Error: " + _strict_identity_diagnosis("set_project")
-            return (
-                "Error: set_project only works in dashboard sessions with explicit "
-                "identity. Slack, cron, and subagent contexts are rejected to avoid "
-                "cross-context state mutation."
-            )
-        slot_name = sk[len("dashboard:") :]
-        d = _post(f"/api/chat/slots/{slot_name}/project", {"project": path})
-        err_val = d.get("error")
-        if err_val:
-            sel().log_tool_invocation(
-                session_key=sk,
-                source="mcp",
-                tool_name="set_project",
-                outcome="error",
-                error=str(err_val),
-            )
-            return f"Error: {err_val}"
-        sel().log_tool_invocation(
-            session_key=sk,
-            source="mcp",
-            tool_name="set_project",
-            outcome="success",
-        )
-        new_project = d.get("project") or ""
-        if not new_project:
-            return "Project cleared. The next message will cold-start with no project scope."
-        return (
-            f"Project set to {new_project}. The session will cold-start with the new "
-            "CWD and project-level .kiro/steering on the next message."
+        # Stateless (#755): the session-aware consumer (chat_runner) applies the
+        # project change to ITS OWN slot — no session identity resolved here.
+        return session_directive.encode(
+            "set_project",
+            {"project": args.get("path", ""), "clear": bool(args.get("clear"))},
+            "Project change requested for this session; if the path is valid "
+            "and permitted it takes effect on the next message (cold-start with "
+            "the new CWD and project steering). An invalid or sensitive path is "
+            "rejected when this turn's result is processed.",
         )
 
     if name == "suggest_followup":
         args = validate_tool_args(args, SUGGEST_FOLLOWUP_SCHEMA)
         items = args.get("items") or []
-        sk = _resolve_session_key_strict()
-        if not sk.startswith("dashboard:"):
-            sel().log_tool_invocation(
-                session_key=sk or "<unresolved>",
-                source="mcp",
-                tool_name="suggest_followup",
-                outcome="rejected",
-                error="non-dashboard or unresolved session",
-            )
-            if not sk:
-                return "Error: " + _strict_identity_diagnosis("suggest_followup")
-            return (
-                "Error: suggest_followup only works in dashboard sessions with explicit "
-                "identity. Slack, cron, and subagent contexts have no follow-up card "
-                "surface. Write the follow-ups into your reply text instead."
-            )
-        slot_name = sk[len("dashboard:") :]
-        d = _post(f"/api/chat/slots/{slot_name}/followup", {"items": items})
-        err_val = d.get("error")
-        if err_val:
-            sel().log_tool_invocation(
-                session_key=sk,
-                source="mcp",
-                tool_name="suggest_followup",
-                outcome="error",
-                error=str(err_val),
-            )
-            return f"Error: {err_val}"
-        sel().log_tool_invocation(
-            session_key=sk,
-            source="mcp",
-            tool_name="suggest_followup",
-            outcome="success",
-        )
-        count = int(d.get("count") or len(items))
-        # The card is broadcast-only. With no dashboard client attached it is
-        # dropped, so do NOT tell the model it was shown — the handoff prompts are
-        # the payload of this tool, and steering the model into silence would lose
-        # them (Design review, PR #461).
-        try:
-            delivered = int(d.get("delivered") or 0)
-        except (TypeError, ValueError):
-            delivered = 0
-        if delivered <= 0:
-            return (
-                f"WARNING: the {count} follow-up suggestion(s) were NOT delivered — no "
-                "dashboard client is currently connected, and the card is not stored "
-                "server-side. Restate the follow-ups in your reply text now, including "
-                "the full prompt for each, or they are lost."
-            )
-        return (
-            f"Showed {count} follow-up suggestion(s) in this session. The user can start "
-            "each one in a new worktree, add it to this session, or skip it — both "
-            "non-skip actions pre-fill the composer, so do not assume any of them ran. "
-            "End your turn now instead of acting on the follow-ups yourself."
+        # Stateless (#755): the session-aware consumer (chat_runner) broadcasts
+        # the card to ITS OWN slot; no session identity resolved here. The card
+        # is broadcast-only (dropped if no client attached), so the confirmation
+        # stays cautious — restate the follow-ups in reply text if they matter.
+        return session_directive.encode(
+            "suggest_followup",
+            {"items": items},
+            "Follow-up card requested for this session. It is delivered to a "
+            "connected dashboard client only; if none is attached the card is "
+            "dropped, so restate the follow-ups in your reply text if they "
+            "must not be lost. End your turn now.",
         )
 
     def _redact_obj(obj: Any) -> Any:

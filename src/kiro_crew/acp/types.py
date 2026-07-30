@@ -280,6 +280,16 @@ class AcpEvent:
     # provider-specific tool_kind literals (which silently re-break on every
     # engine migration / tool rename).
     is_shell: bool = False
+    # Canonical, NON-model-authored tool identity from ``_meta.kiro`` (see
+    # ``_dispatch._kiro_tool_name``). ``title`` is LLM-authored prose — for shell
+    # tools ``select_tool_title`` even prefers the model's ``description`` — so a
+    # security gate MUST key on these, never on ``title``. ``mcp_server_name`` is
+    # populated ONLY for MCP-served tools (empty for built-ins/shell), so a
+    # non-empty value is the trusted signal "a real MCP tool call" rather than a
+    # forged shell result. Empty when the backend does not emit ``_meta.kiro``
+    # (fail-closed: callers that gate on these get no match).
+    tool_name: str = ""
+    mcp_server_name: str = ""
 
     @property
     def shell_command(self) -> str | None:

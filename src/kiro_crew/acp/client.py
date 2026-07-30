@@ -35,7 +35,11 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterator
 
 from kiro_crew import model_registry, platform_compat
-from kiro_crew.acp._dispatch import parse_usage_update
+from kiro_crew.acp._dispatch import (
+    _kiro_mcp_server_name,
+    _kiro_tool_name,
+    parse_usage_update,
+)
 from kiro_crew.acp.liveness import VERDICT_UNKNOWN, VERDICT_WORKING, LivenessOracle
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
@@ -4089,6 +4093,8 @@ class AcpClient:
                 kind, _ = redact_exfiltration_urls(kind)
                 kind, _ = redact_credentials(kind)
             self.last_prompt_stats.tool_calls.append((kind, title))
+            # Trusted identity from _meta.kiro (NOT the LLM-authored title) —
+            # shared with the _dispatch builder so both event paths carry it.
             return AcpEvent(
                 kind=EVENT_TOOL_CALL,
                 title=title,
@@ -4098,6 +4104,8 @@ class AcpClient:
                 tool_call_id=tool_call_id,
                 raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
                 is_shell=is_shell,
+                tool_name=_kiro_tool_name(update),
+                mcp_server_name=_kiro_mcp_server_name(update),
             )
         return None
 

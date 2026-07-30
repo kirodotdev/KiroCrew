@@ -66,9 +66,9 @@ def _deny_app_token(request: web.Request, operation: str) -> web.Response | None
     the sole party that can answer is the single dashboard owner — the actor the
     card is addressed to.
 
-    Callers are the ``ask_question`` MCP tool (via ``_post_user``, a
-    dashboard-user token) and the dashboard UI itself, so no legitimate caller
-    is an app.
+    Callers are the ``ask_question`` flow (the session directive posts a
+    non-blocking question card to the owner's own slot) and the dashboard UI
+    itself, so no legitimate caller is an app.
     """
     app_name = request.get("app", "")
     if not app_name:

@@ -929,6 +929,12 @@ class AcpProvider(LLMProvider):
             subagents=e.subagents,
             sub_session_id=e.sub_session_id,
             is_shell=e.is_shell,
+            # Canonical, non-model-authored tool identity (_meta.kiro). The
+            # session-directive forgery gate in chat_runner keys on THESE, so
+            # dropping them here silently discards every session-bound tool's
+            # effect (the gate sees an empty server name and never records).
+            tool_name=e.tool_name,
+            mcp_server_name=e.mcp_server_name,
         )
 
     async def stream(self, message: str) -> AsyncIterator[LLMEvent]:

@@ -510,6 +510,9 @@ def _build_tool_call_event(
         tool_call_id=tool_call_id,
         raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
         is_shell=is_shell,
+        # Trusted identity from _meta.kiro (NOT the LLM-authored title).
+        tool_name=_kiro_tool_name(update),
+        mcp_server_name=_kiro_mcp_server_name(update),
     )
 
 
@@ -579,6 +582,26 @@ def _kiro_tool_name(update: dict[str, Any]) -> str:
     if not isinstance(kiro, dict):
         return ""
     name = kiro.get("toolName")
+    return name if isinstance(name, str) else ""
+
+
+def _kiro_mcp_server_name(update: dict[str, Any]) -> str:
+    """The MCP server name from ``_meta.kiro.mcpServerName``, or "" for
+    built-in/shell tools.
+
+    kiro-cli sets this ONLY for MCP-served tool calls (see
+    ``kiro_tool_identity_meta`` in the engine), so a non-empty value is the
+    trusted discriminator "this tool call was served by an MCP server" — the
+    signal a security gate needs to tell a genuine MCP directive tool from a
+    shell command whose stdout the model authored.
+    """
+    meta = update.get("_meta")
+    if not isinstance(meta, dict):
+        return ""
+    kiro = meta.get("kiro")
+    if not isinstance(kiro, dict):
+        return ""
+    name = kiro.get("mcpServerName")
     return name if isinstance(name, str) else ""
 
 
