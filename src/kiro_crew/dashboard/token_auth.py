@@ -406,8 +406,10 @@ _APPS_UI_BYPASS_RE = re.compile(r"^/apps/[a-z0-9][a-z0-9_-]*/ui/")
 #
 # NOTE: /apps/ is intentionally NOT in this tuple. /apps/ path handling is
 # governed solely by _APPS_SPA_EXCLUDED_RE in _is_spa_shell_request:
-#   - bare /apps/{name}           → SPA shell (browser refresh must work)
-#   - /apps/{name}/<sub-path>     → real server handler (proxy / static)
+#   - bare /apps/{name}              → SPA shell (browser refresh must work)
+#   - /apps/{name}/api|ui/...        → real server handler (proxy / static)
+#   - any other /apps/ path          → SPA shell (React Router owns it, e.g.
+#                                      /apps/detail/{name}, /apps/migrate/{name})
 # test_no_get_route_outside_shell_exclusions validates /apps/ routes against
 # _APPS_SPA_EXCLUDED_RE directly, not this tuple.
 SPA_FALLBACK_EXCLUDED_PREFIXES = (
@@ -422,11 +424,29 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     "/artifact-app/",
 )
 
-# Regex that matches /apps/{name} sub-namespace paths that have real server-side
-# handlers and must NOT be shadowed by the SPA shell. Bare /apps/{name} (no
-# further slash) is excluded from this pattern so those paths *do* get the SPA
-# shell on a browser refresh.
-_APPS_SPA_EXCLUDED_RE = re.compile(r"^/apps/[a-z0-9][a-z0-9_-]*/")
+# Regex that matches /apps/ paths with real server-side handlers, which must NOT
+# be shadowed by the SPA shell. apps/routes.py registers exactly two
+# sub-namespaces under /apps/{name}: /ui/ (the app's static bundle) and /api/
+# (the gateway-authenticated reverse proxy to the app backend). Every other
+# /apps/ path is a client-side React Router entry and needs the shell.
+#
+# Naming those two sub-namespaces is load-bearing. Matching any sub-path (the
+# earlier `^/apps/[a-z0-9][a-z0-9_-]*/`) read the FIRST segment as the app name,
+# so the router's own /apps/detail/{name} and /apps/migrate/{name} entries were
+# treated as server routes and returned 404 on direct navigation or refresh.
+# test_apps_router_subpaths_are_spa_shell locks that in, and
+# test_apps_server_routes_are_excluded_from_shell guards the other direction by
+# reading the live route literals out of apps/routes.py.
+#
+# The trailing slash is also load-bearing. Both handlers are registered with a
+# path segment after the sub-namespace (`/apps/{name}/ui/{path:.*}` and
+# `/apps/{name}/api/{path:.*}`), and no bare `/apps/{name}/ui` or
+# `/apps/{name}/api` route exists. An earlier `(?:/|$)` therefore excluded two
+# paths that no handler serves, and since the app name occupies the same segment
+# position as the router's `detail`/`migrate` verbs, an app named literally
+# "api" or "ui" got a 404 on /apps/detail/api. Requiring the slash costs no
+# real server route and resolves that collision toward the client route.
+_APPS_SPA_EXCLUDED_RE = re.compile(r"^/apps/[a-z0-9][a-z0-9_-]*/(?:api|ui)/")
 
 
 def _is_spa_shell_request(request: web.Request) -> bool:
@@ -437,10 +457,11 @@ def _is_spa_shell_request(request: web.Request) -> bool:
     dead-end 403 whose recovery JS never loads. Safe because the shell is
     static and secret-free and every data namespace is excluded.
 
-    Special case for ``/apps/``: bare ``/apps/{name}`` paths (no sub-path) are
-    React Router navigation entries that have no server-side route, so they must
-    fall through to the SPA shell.  Only ``/apps/{name}/<sub-path>`` URLs with
-    real handlers (``/api/``, ``/ui/``) are excluded.
+    Special case for ``/apps/``: only ``/apps/{name}/api/...`` and
+    ``/apps/{name}/ui/...`` have server-side handlers. Every other ``/apps/``
+    path is a React Router navigation entry with no server route -- bare
+    ``/apps/{name}``, plus ``/apps/detail/{name}`` and ``/apps/migrate/{name}``
+    -- so those must fall through to the SPA shell.
     """
     if request.method not in ("GET", "HEAD"):
         return False
@@ -448,9 +469,10 @@ def _is_spa_shell_request(request: web.Request) -> bool:
     # Fast-path: most paths don't start with /apps/
     if not path.startswith("/apps/"):
         return not path.startswith(SPA_FALLBACK_EXCLUDED_PREFIXES)
-    # /apps/ sub-namespace: only exclude paths that have real server-side
-    # handlers (i.e. the path has a sub-component after {name}/).
-    # Bare /apps/{name} with no trailing slash → SPA navigation → serve shell.
+    # /apps/ sub-namespace: exclude only the paths apps/routes.py actually
+    # serves (/apps/{name}/api/... and /apps/{name}/ui/...). Everything else
+    # under /apps/ belongs to React Router — bare /apps/{name} as well as
+    # /apps/detail/{name} and /apps/migrate/{name} — and gets the shell.
     return not _APPS_SPA_EXCLUDED_RE.match(path)
 
 
