@@ -3081,7 +3081,7 @@ function ChatSidebar({
           // tree, no DnD. Takes precedence over the tag-columns layout.
           // Inactive without folders (the toggle is hidden then too), so a
           // persisted flat preference can never strand the user.
-          <motion.div layoutScroll className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col" data-testid="flat-view-lane">
+          <motion.div layoutScroll className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
             {(() => {
               // Date segments (Today / Yesterday / Last 7 Days / …) between
               // rows — resurrects the 9bb0f71 active-list pattern: only for
@@ -3129,7 +3129,14 @@ function ChatSidebar({
           </motion.div>
         ) : orderedColumns.length === 0 ? (
           // Legacy single-lane layout (identical to pre-columns behavior)
-          <motion.div layoutScroll className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col">
+          // Scrollbar hidden (scrollbar-none + inline scrollbarWidth covers
+          // Firefox, modern WebKit, and Safari <16) to match the app rail in
+          // App.tsx: on macOS with "always show scrollbars" this lane is
+          // permanently scrollable, so the 6px track was a fixed stripe down
+          // the sidebar rather than a transient hint. Scrolling itself is
+          // untouched — wheel, trackpad, keyboard, and drag-autoscroll all
+          // still work, and the list's own overflow is still the affordance.
+          <motion.div layoutScroll className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }}>
             {/* One DndContext owns folder reorder (sortable) + session drag-to-
              *  assign (draggable rows + droppable folder/root targets). */}
             <DndContext sensors={dndSensors} collisionDetection={sidebarCollision}
@@ -3358,7 +3365,7 @@ function ChatSidebar({
                     </div>,
                     document.body
                   )}
-                  <div className="flex-1 overflow-y-auto p-1.5 flex flex-col">
+                  <div className="flex-1 overflow-y-auto scrollbar-none p-1.5 flex flex-col" style={{ scrollbarWidth: 'none' }}>
                     {/* No onDrop here: folder assignment only changes via folder-header drop.
                         Cross-column drops are handled by the OUTER column onDrop
                         (which only mutates status tags, keeping folder_id intact). */}
@@ -3489,7 +3496,9 @@ function ChatSidebar({
                 )}
               </div>
             </div>
-            <div className="overflow-y-auto p-2 scroll-shadow" style={{ height: `${historyHeight}px` }}>
+            {/* scroll-shadow already fades the top/bottom edge as its
+             *  scrollability cue, so the bar itself is redundant here. */}
+            <div className="overflow-y-auto scrollbar-none p-2 scroll-shadow" style={{ height: `${historyHeight}px`, scrollbarWidth: 'none' }}>
               {(() => {
                 const filteredHistory = (historySearchResults ?? history).filter(s => {
                   if (!historyFilter) return true

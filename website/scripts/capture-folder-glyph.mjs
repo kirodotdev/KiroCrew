@@ -16,15 +16,12 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
+import { logPageProblems, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/folder-glyph'
 const PREFIX = process.argv[3] || 'after'
 
 mkdirSync(OUT, { recursive: true })
-
-const json = (route, body, status = 200) => route.fulfill({
-  status, contentType: 'application/json', body: JSON.stringify(body),
-})
 
 // f1 carries a nested subtree (depth 2 and 3) so the "New chat in folder"
 // alignment can be judged at every indent level, not just the root folder.
@@ -66,43 +63,10 @@ async function main() {
   })
   const page = await context.newPage()
 
-  await page.routeWebSocket(/\/api\/ws/, () => {})
-
-  await page.route('**/api/**', async route => {
-    const path = new URL(route.request().url()).pathname
-    if (path === '/api/kiro-prerequisite') {
-      return json(route, {
-        platform: 'darwin', installed: true, authenticated: true, ready: true,
-        initial_setup_complete: true, can_auto_install: false, can_login: false,
-        repair_required: false, docs_url: '', setup_allowed: false,
-        operation: { kind: '', status: 'idle', message: '', detail: '', url: '', error: '' },
-      })
-    }
-    if (path === '/api/chat/folders') return json(route, folders)
-    if (path === '/api/chat/slots') return json(route, slots)
-    if (path.startsWith('/api/instances')) return json(route, { instances: [], active: '' })
-    if (path === '/api/status') return json(route, { sessions: slots.length, crons: 0, lessons: 0, uptime: 120, version: '0.5.0' })
-    if (path === '/api/notifications') return json(route, { notifications: [], unread: 0 })
-    if (path === '/api/auth/me') return json(route, { user: 'owner', app: '' })
-    if (path === '/api/themes') return json(route, { themes: [], installed: [] })
-    if (path === '/api/theme/boot') return json(route, { mode: 'dark', theme: '' })
-    if (path === '/api/dashboard/branding') return json(route, { bot_name: 'Kiro', avatar: '' })
-    if (path === '/api/recent-projects') return json(route, { dirs: [] })
-    if (path === '/api/dashboard/config') return json(route, { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' })
-    if (path === '/api/agents' || path === '/api/chat/agents') return json(route, [{ name: 'kirocrew', source: 'builtin' }, { name: 'oncall', source: 'aim' }])
-    const objectish = /(config|tips|voice|autonudge|branding|status|usage-summary)/.test(path)
-    if (objectish) return json(route, {})
-    return json(route, [])
-  })
-
-  page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))
-  page.on('console', msg => { if (msg.type() === 'error') console.log('CONSOLE:', msg.text().slice(0, 300)) })
-
-  await page.addInitScript(() => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', 'dark')
-    localStorage.setItem('mc-onboarded', '1')
-  })
+  // Boot fixtures live in lib/stub-dashboard-api.mjs — shared by every
+  // harness so a new boot endpoint is one edit, not one per script.
+  await stubDashboardApi(page, { folders, slots })
+  logPageProblems(page)
 
   await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2600)
