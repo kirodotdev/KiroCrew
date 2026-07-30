@@ -125,7 +125,7 @@ export function CommentThreadPopover({
       aria-label={i18nT('components.commentThreadPopover.comment_thread')}
     >
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated shrink-0">
-        <span className="text-[13px] font-semibold text-text">{count} {i18nT('components.commentThreadPopover.comment')}{count === 1 ? '' : 's'}</span>
+        <span className="text-[13px] font-semibold text-text">{i18nT('components.commentThreadPopover.comment', { count: count })}</span>
         <button
           type="button"
           onClick={onClose}

@@ -2732,7 +2732,7 @@ function ChatSidebar({
               {[1, 3, 7].map(d => (
                 <button key={d} className={`px-2.5 py-1 rounded-md text-[12px] border transition-all cursor-pointer ${
                   cleanupDays === d ? 'bg-accent text-accent-fg border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'
-                }`} onClick={() => setCleanupDays(d)}>{d} {i18nT('pages.chatSidebar.day')}{d > 1 ? 's' : ''}</button>
+                }`} onClick={() => setCleanupDays(d)}>{i18nT('pages.chatSidebar.day', { count: d })}</button>
               ))}
             </div>
             <div className="text-[12px] text-muted mb-3">
@@ -2743,10 +2743,10 @@ function ChatSidebar({
                   : noStale
                     ? 'No inactive sessions to archive.'
                     : cleanupPreview != null && <>
-                      {archivable.length} {i18nT('pages.chatSidebar.session')}{archivable.length !== 1 ? 's' : ''} {i18nT('pages.chatSidebar.will_be_moved_to_older_sessions')}{activeIsStale ? ' (1 skipped — currently selected)' : ''} {i18nT('pages.chatSidebar.pinned_sessions_are_kept')}
+                      {i18nT('pages.chatSidebar.session', { count: archivable.length })} {i18nT('pages.chatSidebar.will_be_moved_to_older_sessions')}{activeIsStale ? ' (1 skipped — currently selected)' : ''} {i18nT('pages.chatSidebar.pinned_sessions_are_kept')}
                       {archivable.length > 0 && (
                         <button className="ml-1 text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => setCleanupExpanded(!cleanupExpanded)}>
-                          {cleanupExpanded ? 'Hide' : 'Show'} {archivable.length} {i18nT('pages.chatSidebar.session')}{archivable.length !== 1 ? 's' : ''} ▸
+                          {cleanupExpanded ? 'Hide' : 'Show'} {i18nT('pages.chatSidebar.session', { count: archivable.length })} ▸
                         </button>
                       )}
                       {cleanupExpanded && archivable.length > 0 && (
@@ -2787,7 +2787,7 @@ function ChatSidebar({
           {bulkRunningCount > 0 && (
             <label className="flex items-center gap-2 text-[12px] text-muted mb-2 cursor-pointer">
               <input type="checkbox" checked={bulkSkipRunning} onChange={e => setBulkSkipRunning(e.target.checked)} />
-              {i18nT('pages.chatSidebar.skip')} {bulkRunningCount} {i18nT('pages.chatSidebar.running_session')}{bulkRunningCount !== 1 ? 's' : ''}
+              {i18nT('pages.chatSidebar.skip')} {i18nT('pages.chatSidebar.running_session', { count: bulkRunningCount })}
             </label>
           )}
           <div className="flex items-center gap-2 justify-end">

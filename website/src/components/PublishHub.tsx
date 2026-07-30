@@ -244,7 +244,7 @@ export function PublishHub({
       {selected && scanBlocked && !result && (
         <div className="space-y-3">
           <div className="flex items-center gap-2 text-sm text-warn">
-            <AlertCircle size={14} /> {i18nT('components.publishHub.scan_blocked')}{scanBlocked.count} {i18nT('components.publishHub.finding')}{scanBlocked.count === 1 ? '' : 's'})
+            <AlertCircle size={14} /> {i18nT('components.publishHub.scan_blocked')}{i18nT('components.publishHub.finding', { count: scanBlocked.count })})
           </div>
           <div className="text-[12px] text-muted p-2 rounded border border-warn/30 bg-warn-subtle">
             {scanBlocked.findings}

@@ -66,7 +66,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
       ? (pendingPermCount && pendingPermCount > 1 ? <><AlertTriangle className="lucide-inline" /> {pendingPermCount} {i18nT('pages.chat.collapsibleToolGroup.approvals_pending')}</> : <><AlertTriangle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approval_needed')}</>)
       : isRunning
         ? <><Wrench className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.running_tools')}</>
-        : <><Wrench className="lucide-inline" /> {count} {i18nT('pages.chat.collapsibleToolGroup.tool_call')}{count === 1 ? '' : 's'}</>
+        : <><Wrench className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: count })}</>
   const labelText = localResolved
     ? (localResolved === 'approved' ? 'Approved' : localResolved === 'trust' ? 'Trusted' : 'Rejected')
     : needsAttention ? 'Approval needed' : isRunning ? 'running tools' : `${count} tool call${count === 1 ? '' : 's'}`

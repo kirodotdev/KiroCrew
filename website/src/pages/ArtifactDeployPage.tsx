@@ -565,7 +565,7 @@ export default function ArtifactDeployPage() {
                 return (
                   <tr key={`webapp-${a.slug}`} className="hover:bg-bg-hover transition-colors">
                     <td className="px-2.5 py-2 border-b border-border text-sm font-semibold">{a.slug}</td>
-                    <td className="px-2.5 py-2 border-b border-border text-sm"><span style={{ background: 'var(--accent-subtle)', color: 'var(--accent)', padding: '1px 6px', borderRadius: 9999, fontSize: 10, fontWeight: 500 }}>{i18nT('pages.artifactDeployPage.webapp')}</span></td>
+                    <td className="px-2.5 py-2 border-b border-border text-sm"><span style={{ background: 'var(--accent-subtle)', color: 'var(--accent)', padding: '1px 6px', borderRadius: 9999, fontSize: 10, fontWeight: 500 }}>{i18nT('pages.artifactDeployPage.webapp_kind_badge')}</span></td>
                     <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={m.lifecycle?.status === 'deployed' || m.lifecycle?.status === 'live' ? 'ok' : m.lifecycle?.status === 'error' ? 'err' : 'warn'}>{m.lifecycle?.status || 'unknown'}</Badge></td>
                     <td className="px-2.5 py-2 border-b border-border text-sm">{m.deploy_target?.profile ? <span style={chip}>{m.deploy_target.profile}</span> : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                     <td className="px-2.5 py-2 border-b border-border text-sm" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{url ? (safeHttpUrl(url) ? <a href={safeHttpUrl(url)!} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>{url}</a> : <span style={{ color: 'var(--muted)' }}>{url}</span>) : '—'}</td>
@@ -584,7 +584,7 @@ export default function ArtifactDeployPage() {
         {/* Account-level total */}
         {(sites.length + deployedWebapps.length > 0) && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 12, fontSize: 12.5, fontWeight: 600 }}>
-            <span>{i18nT('pages.artifactDeployPage.estimated_total')} {sites.length} {i18nT('pages.artifactDeployPage.static_site')}{sites.length === 1 ? '' : 's'} + {deployedWebapps.length} {i18nT('pages.artifactDeployPage.webapp')}{deployedWebapps.length === 1 ? '' : 's'}:</span>
+            <span>{i18nT('pages.artifactDeployPage.estimated_total')} {i18nT('pages.artifactDeployPage.static_site', { count: sites.length })} + {i18nT('pages.artifactDeployPage.webapp', { count: deployedWebapps.length })}:</span>
             <span style={{ color: 'var(--accent)' }}>~${totalWebappUsd.toFixed(4)}</span>
             <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: 11 }}>
               {i18nT('pages.artifactDeployPage.worst_case_tiers_over_each_ttl_window_estimate_n')}

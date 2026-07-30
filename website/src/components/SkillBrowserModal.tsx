@@ -414,7 +414,7 @@ function SkillDetailPanel({
         {preview?.license && <span>{i18nT('components.skillBrowserModal.license')} {preview.license}</span>}
         {(preview?.file_count ?? 0) > 0 && (
           <span className="flex items-center gap-1">
-            <FileText size={11} aria-hidden="true" /> {preview!.file_count} {i18nT('components.skillBrowserModal.file')}{preview!.file_count === 1 ? '' : 's'}
+            <FileText size={11} aria-hidden="true" /> {i18nT('components.skillBrowserModal.file', { count: preview!.file_count })}
           </span>
         )}
         {skill.repo_url && (

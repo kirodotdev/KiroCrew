@@ -128,7 +128,7 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
               )}
               <span className="truncate text-left flex-1">{title}</span>
               <span className="ml-auto text-[10px] text-muted tabular-nums shrink-0">
-                {phase.agents.length} {i18nT('apps.workflows.workflowRunTree.agent')}{phase.agents.length === 1 ? '' : 's'}
+                {i18nT('apps.workflows.workflowRunTree.agent', { count: phase.agents.length })}
               </span>
             </button>
             {!isCollapsed && phase.agents.length > 0 && (

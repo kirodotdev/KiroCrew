@@ -65,7 +65,7 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
         <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
           <span>{providers.length > 0 ? `Searching: ${providers.join(', ')}` : '\u00A0'}</span>
           {debouncedQuery.length >= 2 && !isLoading && (
-            <span>{resultCount} {i18nT('components.discoverySearchBar.result')}{resultCount === 1 ? '' : 's'}</span>
+            <span>{i18nT('components.discoverySearchBar.result', { count: resultCount })}</span>
           )}
         </div>
       </div>

@@ -16,6 +16,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 
 import { i18next } from './index'
+import { SUPPORTED_CODES } from './languages'
 import { surfaceLabel } from '../surfaces/registry'
 import '../surfaces/builtins'
 import { getBuiltinSurfaces } from '../surfaces/registry'
@@ -33,7 +34,9 @@ describe('nav surface labels', () => {
   })
 
   it('resolves each labelKey to a real string in both languages', async () => {
-    for (const lng of ['en', 'zh-CN']) {
+    // Derived from the registry, not a hardcoded pair: a newly-shipped language
+    // gains this coverage automatically instead of being silently untested.
+    for (const lng of SUPPORTED_CODES) {
       await i18next.changeLanguage(lng)
       for (const s of getBuiltinSurfaces()) {
         const label = surfaceLabel(s)
@@ -83,7 +86,9 @@ describe('Settings tab labels', () => {
       'overview', 'imports', 'chat', 'display', 'voice', 'notifications',
       'shortcuts', 'channels', 'browser', 'instances', 'security', 'developer', 'about',
     ]
-    for (const lng of ['en', 'zh-CN']) {
+    // Derived from the registry, not a hardcoded pair: a newly-shipped language
+    // gains this coverage automatically instead of being silently untested.
+    for (const lng of SUPPORTED_CODES) {
       await i18next.changeLanguage(lng)
       for (const k of keys) {
         for (const field of ['label', 'description']) {

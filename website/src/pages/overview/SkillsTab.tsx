@@ -155,7 +155,7 @@ export default function SkillsTab() {
         <div className="text-[11px] text-muted font-mono truncate">{s.key}</div>
         {s.loaded_by_agents && s.loaded_by_agents.length > 0 && (
           <div className="text-[10px] text-muted/70 truncate" title={`Loaded by: ${s.loaded_by_agents.join(', ')}`}>
-            {i18nT('pages.overview.skillsTab.loaded_by')} {s.loaded_by_agents.length} {i18nT('pages.overview.skillsTab.agent')}{s.loaded_by_agents.length === 1 ? '' : 's'}
+            {i18nT('pages.overview.skillsTab.loaded_by')} {i18nT('pages.overview.skillsTab.agent', { count: s.loaded_by_agents.length })}
           </div>
         )}
       </div>

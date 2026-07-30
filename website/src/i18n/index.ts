@@ -32,6 +32,12 @@ import { initReactI18next } from 'react-i18next'
 import enGenerated from './locales/en.json'
 import enManual from './locales/en.manual.json'
 import zhCN from './locales/zh-CN.json'
+import hi from './locales/hi.json'
+import es from './locales/es.json'
+import fr from './locales/fr.json'
+import bn from './locales/bn.json'
+import pt from './locales/pt.json'
+import ru from './locales/ru.json'
 import { DEFAULT_LANGUAGE, SUPPORTED_CODES } from './languages'
 import { readStoredLanguage, resolveLanguage } from './detect'
 
@@ -77,6 +83,12 @@ function mergeCatalogs(
 export const CATALOGS = {
   en: { translation: mergeCatalogs(enGenerated, enManual) },
   'zh-CN': { translation: zhCN },
+  hi: { translation: hi },
+  es: { translation: es },
+  fr: { translation: fr },
+  bn: { translation: bn },
+  pt: { translation: pt },
+  ru: { translation: ru },
 } as const
 
 /**

@@ -100,10 +100,10 @@ export default function InstalledAppCard({
               <p className="text-sm text-muted mb-2 line-clamp-2">{m?.description}</p>
               <div className="flex items-center gap-3 text-[12px] text-muted flex-wrap">
                 {m?.author && <span className="flex items-center gap-1"><Users size={11} /> {m.author}</span>}
-                {agentCount > 0 && <span className="flex items-center gap-1"><Bot size={11} /> {agentCount} {i18nT('components.appstore.installedAppCard.agent')}{agentCount > 1 ? 's' : ''}</span>}
-                {skillCount > 0 && <span className="flex items-center gap-1"><Zap size={11} /> {skillCount} {i18nT('components.appstore.installedAppCard.skill')}{skillCount > 1 ? 's' : ''}</span>}
-                {cronCount > 0 && <span className="flex items-center gap-1"><Clock size={11} /> {cronCount} {i18nT('components.appstore.installedAppCard.cron')}{cronCount > 1 ? 's' : ''}</span>}
-                {hasUI && <span className="flex items-center gap-1"><Package size={11} /> {m.ui!.pages!.length} {i18nT('components.appstore.installedAppCard.page')}{m.ui!.pages!.length > 1 ? 's' : ''}</span>}
+                {agentCount > 0 && <span className="flex items-center gap-1"><Bot size={11} /> {i18nT('components.appstore.installedAppCard.agent', { count: agentCount })}</span>}
+                {skillCount > 0 && <span className="flex items-center gap-1"><Zap size={11} /> {i18nT('components.appstore.installedAppCard.skill', { count: skillCount })}</span>}
+                {cronCount > 0 && <span className="flex items-center gap-1"><Clock size={11} /> {i18nT('components.appstore.installedAppCard.cron', { count: cronCount })}</span>}
+                {hasUI && <span className="flex items-center gap-1"><Package size={11} /> {i18nT('components.appstore.installedAppCard.page', { count: m.ui!.pages!.length })}</span>}
               </div>
             </div>
           </div>
@@ -211,7 +211,7 @@ export default function InstalledAppCard({
           {sopCount > 0 && (
             <div>
               <span className="text-muted">{i18nT('components.appstore.installedAppCard.sops')} </span>
-              <span className="text-text">{sopCount} {i18nT('components.appstore.installedAppCard.standard_operating_procedure')}{sopCount > 1 ? 's' : ''}</span>
+              <span className="text-text">{i18nT('components.appstore.installedAppCard.standard_operating_procedure', { count: sopCount })}</span>
             </div>
           )}
           <div className="text-[11px] text-muted">

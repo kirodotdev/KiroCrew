@@ -594,6 +594,21 @@ languages exist" a pure frontend data change (`SUPPORTED_LANGUAGES` + one
 `locales/<tag>.json`) and never requires a backend edit to add one; a well-formed
 tag with no catalog falls back to detection client-side.
 
+Shipped catalogs (ordered by global speaker count, which is also the picker
+order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`. Right-to-left
+languages are deliberately **not** shipped yet: the catalogs would translate
+fine, but the dashboard's layout uses physical-direction utilities (`pl-*`,
+`left-*`, `text-left`) and unmirrored directional icons, so an RTL locale would
+render correct text in a visibly wrong shell. RTL requires `dir="rtl"` plus a
+logical-property conversion first.
+
+All catalogs are **statically bundled**, so `t()` stays synchronous (see the
+rationale in `website/src/i18n/index.ts`). The cost is that every user downloads
+every language (~70 KB gzip each). This is acceptable while the dashboard is
+served from a loopback gateway, but it does not scale indefinitely — the
+documented next step is to keep `en` static and lazily fetch the active
+non-English catalog.
+
 ### Foreign-agent import onboarding state
 
 `DashboardConfig.import_onboarded` is a separate workspace-persistent gate from

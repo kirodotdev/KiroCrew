@@ -93,7 +93,7 @@ function FollowUpCard({
       <div className="flex items-center gap-2 px-4 pt-3 pb-1">
         <Lightbulb size={13} className="text-accent" aria-hidden="true" />
         <span className="text-[11px] font-semibold uppercase tracking-wider text-accent">
-          {i18nT('components.followUpCard.suggested_follow_up')}{items.length > 1 ? 's' : ''}
+          {i18nT('components.followUpCard.suggested_follow_up', { count: items.length })}
         </span>
       </div>
       {items.map((item, index) => {

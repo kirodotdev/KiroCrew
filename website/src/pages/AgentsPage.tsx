@@ -395,7 +395,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       </>)}
                     </div>
                     <div className="flex justify-between mt-1 text-[12px] text-muted">
-                      <span>{s.prompts} {i18nT('pages.agentsPage.prompt')}{s.prompts !== 1 ? 's' : ''}</span>
+                      <span>{i18nT('pages.agentsPage.prompt', { count: s.prompts })}</span>
                       <span>{awaiting ? <><Hourglass className="lucide-inline" /> {i18nT('pages.agentsPage.idle')}</> : pct >= 90 ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--danger)]" /> {i18nT('pages.agentsPage.critical')}</> : pct >= 70 ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--warn)]" /> {i18nT('pages.agentsPage.high')}</> : <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {i18nT('pages.agentsPage.healthy')}</>}</span>
                     </div>
                   </div>

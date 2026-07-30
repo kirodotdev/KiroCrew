@@ -95,7 +95,10 @@ describe('DisplayPanel — language picker Auto row', () => {
 
   it('falls back to the default language when the browser matches nothing', () => {
     localStorage.setItem(LANG_STORAGE_KEY, 'zh-CN')
-    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['fr-FR'])
+    // `ja-JP` is deliberately a language we do NOT ship — a shippable tag makes
+    // this assert the opposite of its name once that language lands (it was
+    // `fr-FR`, which broke when French shipped).
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['ja-JP'])
 
     renderWithProviders(<DisplayPanel />)
 

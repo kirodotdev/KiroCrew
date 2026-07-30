@@ -178,7 +178,7 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
     <div className="border-t border-border bg-chrome px-3 py-2">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <span className="text-[13px] font-semibold text-text">{comments.length} {i18nT('components.commentOverlay.comment')}{comments.length > 1 ? 's' : ''} {i18nT('components.commentOverlay.pending')}</span>
+          <span className="text-[13px] font-semibold text-text">{i18nT('components.commentOverlay.comment', { count: comments.length })} {i18nT('components.commentOverlay.pending')}</span>
           {enableExtraPrompt && (
             <button
               type="button"

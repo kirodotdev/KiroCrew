@@ -55,7 +55,7 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
               : <Database size={14} className="text-muted shrink-0" />}
             <div className="min-w-0">
               <div className="text-text truncate">{s.label}</div>
-              <div className="text-muted text-[11px]">{s.count} {i18nT('components.appstore.categoryRail.app')}{s.count === 1 ? '' : 's'}</div>
+              <div className="text-muted text-[11px]">{i18nT('components.appstore.categoryRail.app', { count: s.count })}</div>
             </div>
           </div>
         ))}

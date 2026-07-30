@@ -69,7 +69,7 @@ function SubmitBar({ count, submitting, onSubmit, bleed = false }: {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[13px] text-text truncate">
-            {count} {i18nT('components.artifactPanel.comment')}{count === 1 ? '' : 's'} {i18nT('components.artifactPanel.to_send_to_this_chat')}
+            {i18nT('components.artifactPanel.comment', { count: count })} {i18nT('components.artifactPanel.to_send_to_this_chat')}
           </span>
           <button
             type="button"

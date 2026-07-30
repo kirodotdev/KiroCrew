@@ -201,7 +201,7 @@ export default function SideChat({ slot }: { slot: string }) {
       {showBanner && (
         <div className={`flex items-center justify-between px-3 py-1.5 text-[12px] border-b border-border shrink-0 ${isStale ? 'bg-warning/10 text-warning' : 'bg-bg-hover/50 text-muted'}`}>
           <span className="italic">
-            {i18nT('pages.chat.sideChat.context_from')} {turnsBehind} {i18nT('pages.chat.sideChat.turn')}{turnsBehind !== 1 ? 's' : ''} {i18nT('pages.chat.sideChat.ago')}{age ? ` · ${age}` : ''}
+            {i18nT('pages.chat.sideChat.context_from')} {i18nT('pages.chat.sideChat.turn', { count: turnsBehind })} {i18nT('pages.chat.sideChat.ago')}{age ? ` · ${age}` : ''}
           </span>
           <button
             onClick={() => void handleRefresh()}

@@ -251,7 +251,7 @@ export default function CodeReviewSagePage() {
           <div className="mt-3">
             <div className="flex items-center gap-2.5 text-xs mb-2 flex-wrap">
               <span className="text-muted">
-                {repoPrs.repo}: {repoPrs.count} {i18nT('apps.codeReviewSage.codeReviewSagePage.open_pr')}{repoPrs.count === 1 ? '' : 's'}, {unreviewedCount} {i18nT('apps.codeReviewSage.codeReviewSagePage.not_yet_reviewed')}
+                {repoPrs.repo}: {i18nT('apps.codeReviewSage.codeReviewSagePage.open_pr', { count: repoPrs.count })}, {unreviewedCount} {i18nT('apps.codeReviewSage.codeReviewSagePage.not_yet_reviewed')}
               </span>
               <div className="ml-auto flex items-center gap-2">
                 <SendBtn onClick={() => reviewRepo(false)} disabled={running || unreviewedCount === 0}>
@@ -430,7 +430,7 @@ export default function CodeReviewSagePage() {
                       ? <span className="text-accent text-[10px]">{i18nT('apps.codeReviewSage.codeReviewSagePage.active')}</span>
                       : <span className="text-muted text-[10px]">{i18nT('apps.codeReviewSage.codeReviewSagePage.inactive')}</span>}
                     <span className="ml-auto flex items-center gap-3 text-muted">
-                      <span title={i18nT('apps.codeReviewSage.codeReviewSagePage.consolidated_patterns_loaded_during_reviews')}>{ns.patterns} {i18nT('apps.codeReviewSage.codeReviewSagePage.pattern')}{ns.patterns === 1 ? '' : 's'}</span>
+                      <span title={i18nT('apps.codeReviewSage.codeReviewSagePage.consolidated_patterns_loaded_during_reviews')}>{i18nT('apps.codeReviewSage.codeReviewSagePage.pattern', { count: ns.patterns })}</span>
                       {ns.candidate > 0 && (
                         <span className="text-warn" title={i18nT('apps.codeReviewSage.codeReviewSagePage.pending_candidates_awaiting_consolidation')}>{ns.candidate} {i18nT('apps.codeReviewSage.codeReviewSagePage.pending')}</span>
                       )}
