@@ -3658,6 +3658,7 @@
         "url": "",
         "restore_sessions": false,
         "restore_window_minutes": 30,
+        "surface_channel_sessions": true,
         "bot_name": "",
         "avatar": "",
         "merge_queued_messages": false,
@@ -3727,10 +3728,24 @@
       "sensitive": false,
       "tags": [],
       "label": "Restore Window Minutes",
-      "help": "Time window (minutes) for session restoration (0-1440). 0 = restore all.",
+      "help": "Time window (minutes) for session restoration, and for surfacing channel conversations in the chat list (0-1440). 0 = no limit.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 30
+    },
+    {
+      "path": "dashboard.surface_channel_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Show Channel Conversations In Chat List",
+      "help": "Show recently active Slack/Discord/Teams (etc.) conversations in the dashboard's chat list instead of only under History. Uses the same recency window as session restoration.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.bot_name",

@@ -1410,7 +1410,17 @@ class DashboardConfig:
         default=30,
         metadata=_meta(
             "Restore Window Minutes",
-            "Time window (minutes) for session restoration (0-1440). 0 = restore all.",
+            "Time window (minutes) for session restoration, and for surfacing "
+            "channel conversations in the chat list (0-1440). 0 = no limit.",
+        ),
+    )
+    surface_channel_sessions: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Channel Conversations In Chat List",
+            "Show recently active Slack/Discord/Teams (etc.) conversations in the "
+            "dashboard's chat list instead of only under History. Uses the same "
+            "recency window as session restoration.",
         ),
     )
     bot_name: str = field(
@@ -4093,6 +4103,7 @@ class KiroCrewConfig:
                 url=dashboard_data.get("url", ""),
                 restore_sessions=dashboard_data.get("restore_sessions", False),
                 restore_window_minutes=dashboard_data.get("restore_window_minutes", 30),
+                surface_channel_sessions=dashboard_data.get("surface_channel_sessions", True),
                 bot_name=dashboard_data.get("bot_name", ""),
                 avatar=dashboard_data.get("avatar", ""),
                 merge_queued_messages=dashboard_data.get("merge_queued_messages", False),

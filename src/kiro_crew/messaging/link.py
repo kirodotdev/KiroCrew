@@ -20,6 +20,62 @@ _SLACK_TS_RE = re.compile(r"\d+\.\d+")
 
 SLACK_NAMESPACE = "slack"
 
+#: Session-key namespaces owned by a messaging channel, i.e. every prefix a
+#: conversation started OUTSIDE the dashboard can carry. Slack keys are
+#: ``slack:<thread_ts>``; every other transport uses
+#: ``{channel}:{agent}:{chatType}:{user}[:genN]`` (see
+#: :func:`build_dm_session_key`), plus the ``unified:`` bucket that
+#: ``dm_scope="unified"`` collapses direct DMs into.
+#:
+#: Deliberately excludes the non-channel namespaces that also contain a colon
+#: (``dashboard:``, ``cron:``, ``hook:``, ``subagent:``, ``channel:``) — those
+#: are surfaced by their own owners, not by the channel-session reconciler.
+#:
+#: NOTE: ``autonudge._CHANNEL_KEY_PREFIXES`` is a deliberately NARROWER set —
+#: only the transports that support unattended nudge fires. Do not merge them.
+CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
+    SLACK_NAMESPACE,
+    "discord",
+    "telegram",
+    "whatsapp",
+    "webex",
+    "wecom",
+    "teams",
+    "weixin",
+    "unified",
+)
+
+#: Both separators a namespace can be followed by. A live session key uses ``:``;
+#: ``ConversationLog.list_sessions()`` reports the persisted FILENAME STEM, where
+#: ``history._safe_key`` has folded ``:`` to ``_`` — so a caller reading the
+#: session index sees ``slack_1785370133.085469``. Callers must accept both, the
+#: same way the dashboard restore path accepts ``dashboard:`` and ``dashboard_``.
+_CHANNEL_SESSION_PREFIXES: tuple[str, ...] = tuple(
+    f"{ns}{sep}" for ns in CHANNEL_SESSION_NAMESPACES for sep in (":", "_")
+)
+
+
+def is_channel_session_key(key: str) -> bool:
+    """True when *key* is a session started on a messaging channel.
+
+    Accepts both the live ``slack:<ts>`` form and the persisted ``slack_<ts>``
+    filename stem (see :data:`_CHANNEL_SESSION_PREFIXES`).
+
+    Used by the dashboard to decide which persisted sessions deserve a chat slot
+    of their own. Unlike :func:`kiro_crew.autonudge.is_channel_key` (which
+    answers "can this session be nudged?"), this covers EVERY channel transport,
+    including the reply-token-bound ones.
+    """
+    return key.startswith(_CHANNEL_SESSION_PREFIXES)
+
+
+def channel_namespace_of(key: str) -> str:
+    """Return the channel namespace of *key*, or ``""`` if it is not a channel key."""
+    for ns in CHANNEL_SESSION_NAMESPACES:
+        if key.startswith((f"{ns}:", f"{ns}_")):
+            return ns
+    return ""
+
 
 @dataclass
 class ChannelLink:

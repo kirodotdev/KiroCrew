@@ -1676,6 +1676,9 @@ class DashboardState:
         self._terminal_sessions: dict[str, Any] = {}  # PTY sessions for CLI panel
         self._terminal_reaper: asyncio.Task | None = None  # type: ignore[type-arg]
         self._terminal_title_poller: asyncio.Task | None = None  # type: ignore[type-arg]
+        # Background reconciler that surfaces channel-originated sessions
+        # (slack:<ts>, discord:…) as chat slots. Held to prevent GC.
+        self._channel_slot_reconciler: asyncio.Task | None = None  # type: ignore[type-arg]
         self._loop_heartbeat: asyncio.Task | None = None  # type: ignore[type-arg]
         # Off-loop event-loop stall watchdog; armed under the real gateway
         # entrypoint (faulthandler enabled) and stopped on shutdown. Annotated

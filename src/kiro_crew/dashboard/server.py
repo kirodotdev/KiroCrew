@@ -31,6 +31,7 @@ from kiro_crew.config import config_dir
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import (
+    channel_slots,
     chat,
     handlers,
     handlers_channel,
@@ -2556,6 +2557,18 @@ async def start_dashboard(
     # Reseed it past the highest restored index so the next new chat can't
     # re-mint a colliding low index (which scrambles the tab -> session map).
     state.reseed_slot_counter()
+
+    # Surface conversations started on Slack/Discord/Teams (etc.) in the chat
+    # list. These persist under channel-namespaced keys (``slack:<ts>``), which
+    # neither restore path above builds slots for — without this they exist only
+    # in the sidebar's collapsed History pane. Runs immediately, then on a timer
+    # so a channel conversation started while the dashboard is open still shows
+    # up without a restart.
+    if cfg.dashboard.surface_channel_sessions:
+        _chan_reconciler = asyncio.create_task(
+            channel_slots.channel_slot_reconciler(state, cfg.dashboard.restore_window_minutes)
+        )
+        state._channel_slot_reconciler = _chan_reconciler  # prevent GC
 
     # Relaunch agents in non-archived channels
     from kiro_crew.channel import ChannelManager, run_channel_agent

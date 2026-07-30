@@ -22,6 +22,7 @@ import { computeReorderedFolders } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
+import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
 import { useProvider } from '../providers'
 import ModelDropdownList from '../components/ModelDropdownList'
@@ -1941,6 +1942,19 @@ function ChatSidebar({
                 <motion.span key={agentName || 'empty'} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="truncate">{agentName || '\u00A0'}</motion.span>
               </AnimatePresence>
               {isOut && <span className="text-accent" title={i18nT('pages.chatSidebar.popped_out_to_a_separate_window')}><ExternalLink size={10} /></span>}
+              {slotChannelNamespace(s.key) && (() => {
+                // Distinct from the `Link` glyph above (`linked_to_slack`), which
+                // means live two-way mirroring. This one is a one-time copy: the
+                // conversation started on that channel, replies stay here.
+                //
+                // `unified` gets its own key rather than an interpolated label:
+                // it has no proper noun, and an English article fragment inside
+                // a translated sentence is not something a locale can repair.
+                const label = slotChannelNamespace(s.key) === 'unified'
+                  ? i18nT('pages.chatSidebar.copied_from_direct_message')
+                  : i18nT('pages.chatSidebar.copied_from_channel', { channel: slotChannelLabel(s.key) })
+                return <span className="text-muted shrink-0" title={label} aria-label={label}><MessageSquare size={10} /></span>
+              })()}
               {s.slack_linked && <span className="text-[10px]" title={i18nT('pages.chatSidebar.linked_to_slack')}><Link size={10} /></span>}
               {s.clean_mode
                 ? <span className="text-accent" title={i18nT('pages.chatSidebar.clean_agent_only_no_kirocrew_context_or_mcp')}><Droplet size={10} /></span>

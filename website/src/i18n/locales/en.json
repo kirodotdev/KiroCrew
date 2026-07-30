@@ -2796,6 +2796,8 @@
       "include_untagged_sessions": "Include untagged sessions",
       "incognito_no_memory_writes": "Incognito — no memory writes",
       "linked_to_slack": "Linked to Slack",
+      "copied_from_channel": "Copied from {{channel}} — replies stay here",
+      "copied_from_direct_message": "Copied from a direct message — replies stay here",
       "load_more": "Load more…",
       "manage_tags": "Manage tags…",
       "manage_tags_2": "Manage Tags",

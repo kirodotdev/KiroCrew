@@ -2807,6 +2807,8 @@
       "include_untagged_sessions": "包含无标签的会话",
       "incognito_no_memory_writes": "隐身 — 不写入记忆",
       "linked_to_slack": "已关联 Slack",
+      "copied_from_channel": "已从 {{channel}} 复制 — 回复将保留在此处",
+      "copied_from_direct_message": "已从私信复制 — 回复将保留在此处",
       "load_more": "加载更多…",
       "manage_tags": "管理标签…",
       "manage_tags_2": "管理标签",

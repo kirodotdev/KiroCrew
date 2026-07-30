@@ -130,6 +130,13 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "to the browser.",
     ),
     (
+        "Channel session surfacing",
+        "dashboard/channel_slots.py",
+        "Titles and hydrated transcript of a Slack/Discord/Teams conversation as it is "
+        "surfaced into a dashboard chat slot — the channel transport is a separate "
+        "egress boundary, so its content is re-scanned before reaching the browser.",
+    ),
+    (
         "Session history (JSONL)",
         "history.py",
         "Redacted before persistence, so a leaked credential is not written to disk "
