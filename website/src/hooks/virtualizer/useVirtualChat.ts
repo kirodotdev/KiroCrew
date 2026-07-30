@@ -150,9 +150,16 @@ export function useVirtualChat<T>(
     bottomThreshold = DEFAULT_BOTTOM_THRESHOLD,
     isSticky,
     externalScrollerRef,
+    streamingIndex,
   } = opts
 
   const itemCount = items.length
+  // Live ref for the RO callback (a stable-identity effect — see its own
+  // deps) so a caller updating `streamingIndex` every render (typical: it
+  // tracks "index of the last item while it has role streaming") doesn't
+  // force the ResizeObserver to be torn down and reattached.
+  const streamingIndexRef = useRef(streamingIndex)
+  streamingIndexRef.current = streamingIndex
 
   // ---- DOM refs ----
   const internalScrollerRef = useRef<HTMLDivElement | null>(null)
@@ -373,22 +380,46 @@ export function useVirtualChat<T>(
   // reconciles the tree with the batch of measurements that landed, then reads
   // the new total in O(1) — no O(N) getTotalHeight walk ~8x/sec while
   // streaming (#2).
+  //
+  // `immediate` bypasses the debounce for the CALLER-DESIGNATED streaming row
+  // (see `streamingIndex` option). That row's height changes constantly while
+  // text reveals — debouncing it means the offset memos sit frozen at a stale
+  // value for as long as growth keeps arriving, then jump by the ENTIRE
+  // accumulated backlog in one commit the moment growth pauses. For a user
+  // scrolled up reading history, that spacer sits directly below their
+  // viewport, so the jump reads as a visible flash (see
+  // useVirtualChat.spacerLurch.test.tsx). Syncing immediately instead tracks
+  // growth every RO tick (already rAF-coalesced by the caller — see the RO
+  // callback below), trading nothing for the general oscillating-widget case:
+  // debounce still applies to every OTHER row, so a re-measuring widget
+  // elsewhere in the transcript still gets the render-storm protection this
+  // mechanism exists for.
   const lastSyncedTotalRef = useRef(-1)
   const heightSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const scheduleHeightSync = useCallback(() => {
-    if (heightSyncTimerRef.current) clearTimeout(heightSyncTimerRef.current)
+  const syncHeightsNow = useCallback(() => {
+    const idx = offsetIndexRef.current
+    if (!idx) return
+    idx.sync(itemsRef.current.length, getH)
+    const total = idx.totalHeight()
+    if (Math.abs(total - lastSyncedTotalRef.current) > 1) {
+      lastSyncedTotalRef.current = total
+      setHeightVersion((v) => v + 1)
+    }
+  }, [getH])
+  const scheduleHeightSync = useCallback((immediate = false) => {
+    if (heightSyncTimerRef.current) {
+      clearTimeout(heightSyncTimerRef.current)
+      heightSyncTimerRef.current = null
+    }
+    if (immediate) {
+      syncHeightsNow()
+      return
+    }
     heightSyncTimerRef.current = setTimeout(() => {
       heightSyncTimerRef.current = null
-      const idx = offsetIndexRef.current
-      if (!idx) return
-      idx.sync(itemsRef.current.length, getH)
-      const total = idx.totalHeight()
-      if (Math.abs(total - lastSyncedTotalRef.current) > 1) {
-        lastSyncedTotalRef.current = total
-        setHeightVersion((v) => v + 1)
-      }
+      syncHeightsNow()
     }, HEIGHT_SYNC_DEBOUNCE_MS)
-  }, [getH])
+  }, [syncHeightsNow])
 
   // NOTE: `heightVersion` is an intentional manual-invalidation key in the
   // three memos below — it is not referenced in the bodies, so eslint flags it
@@ -761,6 +792,9 @@ export function useVirtualChat<T>(
 
       let genuineResize = false
       let firstMount = false
+      // True when one of the resized entries is the caller-designated
+      // streaming row (see `streamingIndex` option / syncHeightsNow's doc).
+      let streamingRowResized = false
       for (const entry of entries) {
         const idx = elIndexRef.current.get(entry.target)
         if (idx === undefined) continue
@@ -775,8 +809,12 @@ export function useVirtualChat<T>(
           // expansion; re-pinning then would interrupt the user's scroll. Only
           // genuine resizes (streaming growth, widget load) drive the pin —
           // EXCEPT while actively following (see below).
-          if (prevH !== undefined) genuineResize = true
-          else firstMount = true
+          if (prevH !== undefined) {
+            genuineResize = true
+            if (idx === streamingIndexRef.current) streamingRowResized = true
+          } else {
+            firstMount = true
+          }
         }
       }
 
@@ -798,11 +836,13 @@ export function useVirtualChat<T>(
         pinAuto()
       }
 
-      // A measured height changed in place — schedule a debounced re-sync of
-      // the offset memos (see scheduleHeightSync). Debounced so a continuously
-      // oscillating widget can't drive a per-frame render storm.
+      // A measured height changed in place — schedule a re-sync of the offset
+      // memos (see scheduleHeightSync). Debounced by default so a continuously
+      // oscillating widget can't drive a per-frame render storm; the
+      // caller-designated streaming row bypasses that debounce (immediate)
+      // since ITS growth needs to track every tick, not settle-then-jump.
       if (genuineResize || firstMount) {
-        scheduleHeightSync()
+        scheduleHeightSync(streamingRowResized)
       }
 
       // Coalesce cascading resizes into one window recompute next frame.

@@ -3220,6 +3220,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // Memory benefit: only widgets in the active window are kept alive,
     // ~290MB baseline instead of 500MB+ with all-widgets-sticky.
     externalScrollerRef: scrollerRef,
+    // The currently-streaming message is always the LAST message and
+    // therefore always ends up in the LAST displayItems entry — whether
+    // that entry is itself the streaming `single`, or a `turn`/`group`
+    // that the streaming message got folded into (turns only close when a
+    // new user/nudge message opens the next one, by which point the prior
+    // streaming message has already finished). Passing its index lets the
+    // virtualizer track that one row's growth every RO tick instead of
+    // debouncing it into a stale-then-jump spacer (see the `streamingIndex`
+    // option's doc and useVirtualChat.spacerLurch.test.tsx).
+    streamingIndex: isStreaming && displayItems.length > 0 ? displayItems.length - 1 : undefined,
   })
 
   // Single scroll controller wiring: expose the virtualizer's follow API to

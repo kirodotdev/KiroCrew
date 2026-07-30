@@ -42,6 +42,29 @@ export interface UseVirtualChatOptions<T> {
    * `RefObject<HTMLDivElement | null>` (nullable) styles of useRef result.
    */
   externalScrollerRef?: React.RefObject<HTMLDivElement | null> | React.RefObject<HTMLDivElement>
+  /**
+   * Index of the item currently receiving live content growth (e.g. the
+   * streaming assistant message), if any. When set, ResizeObserver-driven
+   * height changes for THIS index bypass the debounced height→offset sync
+   * (see HEIGHT_SYNC_DEBOUNCE_MS) and apply immediately instead.
+   *
+   * Rationale: while a message streams, its element's height changes on
+   * nearly every animation frame. Debouncing (as every other row still does)
+   * means the offset memos (`totalHeight`/`offsetAfter`, which back the
+   * scroll content's total size and the bottom spacer) sit frozen at a stale
+   * value for as long as growth keeps arriving, then jump by the ENTIRE
+   * accumulated backlog in one commit the instant growth pauses long enough
+   * for the debounce to fire. For a user scrolled away from the bottom
+   * reading history, that spacer sits directly below their viewport, and the
+   * large discrete jump reads as a visible flash — unrelated to (and never
+   * fixed by) the separate text-reveal-edge flash fixes in MarkdownRenderer.
+   * Passing the live streaming index here makes that row's growth track the
+   * viewport every tick instead. Every OTHER row keeps the debounced path
+   * (still needed to avoid a render storm from an oscillating auto-height
+   * widget), so this is scoped narrowly to the one row that is guaranteed to
+   * keep resizing for the duration of the turn.
+   */
+  streamingIndex?: number
 }
 
 export interface VirtualItem<T> {
