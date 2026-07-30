@@ -139,27 +139,105 @@ KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew token
 
 ## Releasing New Versions
 
+### The model
+
+`main` is always the latest code, and deliberately not stable. Feature releases
+are cut as a **release branch** off `main` on 0.1 increments (`0.1.0` → `0.2.0`
+→ `0.3.0`).
+
+Once a branch is cut, **bug fixes for that release go on the release branch, not
+on `main`.** Each one produces a new release candidate — `0.2.0-rc.1`,
+`-rc.2`, … — published to the insider channel. **Stable is the last RC we judge
+stable enough, promoted by tagging that RC's commit — never rebuilt.** So
+`0.2.0-rc.5` becomes stable `0.2.0`: same commit, same bytes, a new tag.
+
+Hot patches bump the patch digit (`0.2.0` → `0.2.1`) and are also cut from the
+release branch.
+
+After each stable cut, do two things: **bump `main` by 0.1** (to `0.3.0`) so
+nightlies sort above what just shipped, and **merge the branch's fixes back into
+`main`** so they aren't stranded on the branch.
+
+### Channels
+
+| Channel | Built from | Who it's for |
+|---------|-----------|--------------|
+| nightly | `main` | us and contributors |
+| insider | release branch, RC tags | power users testing ahead |
+| stable | the promoted insider | everyone (client default) |
+
+Nightly installs **side by side** as its own app. Insider and stable are two
+update lanes of **one** production app, switchable in Settings.
+
+### Cutting a release
+
 ```bash
-# 1. Bump version
-#    src/kiro_crew/__init__.py  →  __version__ = "X.Y.Z"
+# 1. Branch off main
+git switch -c release/0.2.0 origin/main
+git push -u origin release/0.2.0
 
-# 2. Update CHANGELOG.md
+# 2. Tag RCs on the branch as fixes land → each publishes to insider
+git tag -a v0.2.0-rc.1 -m "0.2.0 rc1" && git push origin v0.2.0-rc.1
+#    ... fixes land on release/0.2.0 ... then v0.2.0-rc.2, -rc.3, …
 
-# 3. Build + test
-pytest
-cd website && npm run build && cd ..
+# 3. Promote: tag the good RC's COMMIT with a bare version → stable
+git tag -a v0.2.0 -m "release 0.2.0" <rc-commit-sha>
+git push origin v0.2.0
 
-# 4. Commit + tag + push
-git add -A
-git commit -m "chore: release X.Y.Z"
-git tag vX.Y.Z
-git push && git push --tags
+# 4. Bump main to 0.3.0 (PR), and merge the branch's fixes back into main
+
+# Hot patch: fix on the release branch, then
+git tag -a v0.2.1 -m "release 0.2.1" && git push origin v0.2.1
 ```
+
+Update `CHANGELOG.md` with a `## [X.Y.Z] — YYYY-MM-DD` section as part of the
+release (see AGENTS.md → "Release Changelog" for the format), and land the
+changelog and any version bump through a normal PR — never push to `main` or a
+release branch directly.
+
+### How builds are triggered
+
+**Nightly** runs on a schedule every night and can be kicked off on demand at any
+time. **Insider and stable are triggered by pushing a version tag** — an RC tag
+publishes to insider, a plain version tag publishes to stable.
+
+The release branch, the RC numbering, the promote decision, and the back-merge
+are all **human process**. The pipeline only reacts to the tag.
+
+Each build ships a signed and notarized macOS app, a Linux AppImage, a pip
+wheel, and a Docker image. A channel's update feed is repointed **last**, after
+its artifacts are verified downloadable, and clients only install with the
+user's consent. Windows builds but is not yet signed or published.
+
+**There is no rollback — we roll forward by cutting a new version.** Published
+CDN keys are immutable and are never overwritten.
+
+### Bumping the in-code version
+
+The in-code version governs **non-tag** builds — nightly and local/source
+installs. A tagged release overrides all three manifests at build time, so this
+is what makes nightlies read as previews of the *next* release:
 
 | File | Field |
 |------|-------|
-| `src/kiro_crew/__init__.py` | `__version__` (source of truth) |
-| `CHANGELOG.md` | New `## [X.Y.Z]` section |
+| `src/kiro_crew/__init__.py` | `__version__` — the source of truth |
+| `pyproject.toml` | `[project] version` — what the wheel carries |
+| `website/electron/package.json` | `version` — the updater's version compare |
+
+Keep it a bare `X.Y.Z`: `nightly.yml` builds both a semver and a PEP 440 stamp
+from it, and a suffixed base (`.dev0`) produces invalid versions.
+
+### One trap worth knowing
+
+Any two prerelease tags sharing a base and a trailing number collapse onto the
+same PEP 440 wheel version — `v0.2.0-rc.1` and `v0.2.0-insider.1` both map to
+`0.2.0rc1`. The second publish then fails as a republish of an immutable key, so
+**stick to one prerelease convention (`-rc.N`) per base version.**
+
+Full detail: [docs/release-automation.md](docs/release-automation.md) (as-built
+operational reference for the pipeline) and
+[docs/release-process-design.md](docs/release-process-design.md) (design +
+platform-lane contract).
 
 For the branch, channel, and RC model behind these steps — where the tag goes
 and how insider becomes stable — see

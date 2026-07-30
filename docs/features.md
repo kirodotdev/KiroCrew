@@ -52,7 +52,7 @@ Full-featured React SPA at `localhost:5476` with real-time updates via SSE.
 - **SSE live updates** — slot state, titles, cron/lesson/history changes pushed instantly
 - **Cross-session history** — new sessions see recent exchanges from prior ones
 - **CRUD panels** — manage skills, crons, lessons, and agent config from the browser
-- **14-theme color system** — dark/light variants with Color Theme picker
+- **18-theme color system** — dark/light variants with Color Theme picker
 - **Token-based auth** — optional URL token for remote access with OAuth-style refresh
 - **Memory Graph Explorer** — vis.js visualization of semantic memory relationships
 - **Context usage ring** — real-time token usage indicator in chat header
