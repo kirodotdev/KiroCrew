@@ -462,7 +462,33 @@ delegates to that same global. Wired sites:
   deny gate in `tunnel/setup.py` is evaluated BEFORE the manager is constructed or
   `start()` reached, so a companion tunnel cannot start without dashboard token
   auth; the connect/disconnect callbacks and `/api/tunnel/status` stay wrapped
-  AROUND the provider. Import direction: `tunnel/` imports
+  AROUND the provider. **Teardown is wired at
+  `dashboard/server.py::_wire_tunnel_shutdown`** — an `app.on_cleanup` hook that
+  reads `state.tunnel_manager` lazily (the manager is assigned later, by
+  `setup_tunnel`). It covers BOTH start paths, because a live tunnel does not
+  imply a manager: with a manager it calls `TunnelManager.stop()`; with
+  `state.tunnel_manager` still `None` — the on-demand link path
+  (`slack.use_tunnel_url` → `ensure_available()`) provisions and starts a tunnel
+  straight on the provider and never constructs a manager — it stops
+  `current_context().tunnel` directly. Exactly one path runs per shutdown (the
+  manager delegates to the same provider), so nothing is stopped twice, and both
+  are idempotent, so a shutdown path that runs twice is harmless. Both paths go
+  through one guard: bounded by `_TUNNEL_STOP_TIMEOUT_SECS`, every failure logged
+  and swallowed — including a fail-closed `current_context()` lookup, which is
+  evaluated INSIDE the guard — so a hanging or raising provider cannot block or
+  abort the remaining `on_cleanup` handlers. **Registration order is
+  load-bearing:** the hook is appended immediately after the `web.Application` is
+  created, ahead of every other cleanup registration and well before
+  `runner.setup()` freezes the signal lists. aiohttp dispatches `on_cleanup` in
+  registration order under a hard shutdown deadline, so a tunnel hook queued
+  behind the other subsystems can be starved (instances cleanup waiting on SSH
+  children that ignore SIGTERM eats the deadline, the gateway force-exits, and
+  the tunnel is never stopped); the lazy `state.tunnel_manager` read is what makes
+  the early registration safe. Because the manager is edition-neutral, one hook
+  tears down EVERY provider (the Default's `stop()` is a no-op).
+  `start_api_server` (the `--slack-only`/headless path) never calls
+  `setup_tunnel`, so it needs no hook.
+  Import direction: `tunnel/` imports
   `kiro_crew.platform.context`; `platform/` keeps zero imports of `kiro_crew.tunnel`.
 - `dashboard/server.py` — tunnel enable-gate
   ORs in `current_context().tunnel.enabled()`. **Dashboard contributor (wave 3):**
