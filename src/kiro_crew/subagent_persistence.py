@@ -16,7 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, kiro_sessions_dir
 from kiro_crew.providers.cleanup import _is_safe_path
 
 logger = logging.getLogger(__name__)
@@ -306,7 +306,7 @@ def _cleanup_session_files_sync(
         return
     try:
         if provider == "acp":
-            sessions_dir = Path.home() / ".kiro" / "sessions" / "cli"
+            sessions_dir = kiro_sessions_dir()
             for suffix in (".json", ".jsonl"):
                 target = sessions_dir / f"{session_id}{suffix}"
                 if not _is_safe_path(target, sessions_dir):

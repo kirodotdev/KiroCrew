@@ -22,7 +22,6 @@ import os
 import re
 import tempfile
 from collections import OrderedDict
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 import aiohttp
@@ -39,6 +38,7 @@ from kiro_crew.config.loader import (
     ACTIVATION_REVIEW,
     KiroCrewConfig,
 )
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import format_schedule
 from kiro_crew.dashboard.handlers import get_update_info
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
@@ -280,7 +280,7 @@ async def _handle_agent(
         await respond(f"❌ Unknown agent `{name}`. Pick one below:")
 
     # Show selector dropdown
-    agents_dir = Path.home() / ".kiro" / "agents"
+    agents_dir = kiro_agents_dir()
     jsons = sorted(agents_dir.glob("*.json")) if agents_dir.is_dir() else []
     agent_names = sorted(f.stem for f in jsons)
     current = _get_default_agent() or ""
@@ -494,7 +494,7 @@ def _get_agent_names() -> list[str]:
     When a read is blocked by ``is_sensitive_path()``, a SEL audit event
     (``sensitive_path_blocked``) is emitted so the attempt is observable.
     """
-    agents_dir = Path.home() / ".kiro" / "agents"
+    agents_dir = kiro_agents_dir()
     if not agents_dir.is_dir():
         return []
     names = []

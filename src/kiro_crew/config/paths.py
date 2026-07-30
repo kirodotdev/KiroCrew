@@ -375,6 +375,19 @@ def _finalize_fresh_home(new_home: Path, marker: Path) -> Path:
     return new_home
 
 
+def _is_unsafe_home(p: Path) -> bool:
+    """Whether *p* is too dangerous to use as a resolved home directory.
+
+    ``p == p.parent`` is the portable "is a root" test: a filesystem root or
+    Windows drive root is its own parent (``/`` -> ``/``, ``C:\\`` -> ``C:\\``),
+    so this refuses a bare "/" on every OS (not just POSIX).
+
+    Shared by :func:`_valid_override_home` (``KIROCREW_HOME``) and
+    :func:`kiro_home` (``KIRO_HOME``) so both overrides refuse the same targets.
+    """
+    return p == p.parent or p.parts[:2] in (("/", "usr"), ("/", "System"), ("/", "etc"))
+
+
 def _valid_override_home() -> Path | None:
     """Return the resolved ``KIROCREW_HOME`` override iff it is set AND valid.
 
@@ -390,10 +403,7 @@ def _valid_override_home() -> Path | None:
     if not override:
         return None
     p = Path(override).expanduser().resolve()
-    # ``p == p.parent`` is the portable "is a root" test: a filesystem root or
-    # Windows drive root is its own parent (``/`` → ``/``, ``C:\`` → ``C:\``),
-    # so this refuses a bare "/" on every OS (not just POSIX).
-    if p == p.parent or p.parts[:2] in (("/", "usr"), ("/", "System"), ("/", "etc")):
+    if _is_unsafe_home(p):
         return None
     return p
 
@@ -497,14 +507,111 @@ def config_package_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _in_linked_git_worktree(path: Path) -> bool:
+    """Whether *path* lives inside a git **linked worktree** (``git worktree add``).
+
+    A linked worktree's ``.git`` is a FILE holding
+    ``gitdir: <git-dir>/worktrees/<name>``; an ordinary clone's ``.git`` is a
+    DIRECTORY. Walks up from *path* and answers on the nearest repository marker,
+    so a linked worktree is distinguished from the main clone it belongs to.
+
+    The pointer is matched on the ``/worktrees/`` segment rather than
+    ``/.git/worktrees/``, because a **bare** repository's git dir *is* the repo
+    dir and carries no ``.git`` component — ``git -C myrepo.git worktree add``
+    writes ``gitdir: /…/myrepo.git/worktrees/<name>``, which a ``/.git/`` match
+    would miss, silently reopening the very bypass this guard exists to close.
+    ``/worktrees/`` stays precise: the only other producer of a ``gitdir:``
+    ``.git`` file is a submodule, which points into ``modules/`` instead.
+
+    Deliberately stdlib-only and subprocess-free: this runs on the gateway start
+    path, where shelling out to ``git`` would add latency and fail wherever git is
+    absent (notably the packaged desktop app).
+    """
+    for parent in (path, *path.parents):
+        marker = parent / ".git"
+        if marker.is_dir():
+            return False  # ordinary clone — nearest marker wins
+        if marker.is_file():
+            try:
+                head = marker.read_text(encoding="utf-8", errors="replace")[:4096]
+            except OSError:
+                return False
+            # Normalize separators so a Windows-style gitdir also matches.
+            return head.startswith("gitdir:") and "/worktrees/" in head.replace("\\", "/")
+    return False
+
+
+def kiro_home() -> Path:
+    """Return the kiro home (``~/.kiro``), honoring a ``KIRO_HOME`` override.
+
+    ``KIRO_HOME`` is kiro-cli's own documented override for its user-level
+    directory. Honoring it here is what lets the agents directory — the specs that
+    define which MCP servers exist — stop being unconditionally machine-wide, so a
+    non-default instance can be told to own its own copy instead of rewriting the
+    real install's (see ``agent._decline_shared_agent_home`` for what that
+    rewriting costs: managed MCP servers that read one credential while calling a
+    gateway that expects another, and 403 on every call).
+
+    SCOPE CAVEAT — read before setting this. ``KIRO_HOME`` redirects kiro-cli's
+    WHOLE user directory (agents, prompts, skills, steering, settings, sessions),
+    but KiroCrew currently resolves the host ``~/.kiro`` for most of those readers
+    (session transcripts in ``session_map.py`` / ``acp/*`` / ``providers/acp.py``
+    / ``dashboard/handlers/usage.py``, and the ``settings/mcp.json`` registry).
+    Setting ``KIRO_HOME`` therefore moves where kiro-cli WRITES sessions without
+    moving where KiroCrew READS them, which breaks session resume. Only the agents
+    directory follows it today, so this is not yet a supported way to isolate an
+    instance — ``build_pod_env()`` deliberately does not set it. Bringing the
+    remaining readers through this resolver is the prerequisite.
+
+    Rejects the same unsafe targets as :func:`_valid_override_home` (a
+    filesystem/drive root, or a known POSIX system directory) so a malformed
+    override degrades to the default rather than scattering agent JSON across
+    ``/`` or ``/usr``.
+    """
+    override = os.environ.get("KIRO_HOME")
+    if not override:
+        return Path.home() / ".kiro"
+    p = Path(override).expanduser().resolve()
+    if _is_unsafe_home(p):
+        logger.warning("KIRO_HOME=%s is a system directory, ignoring", override)
+        return Path.home() / ".kiro"
+    return p
+
+
+def kiro_sessions_dir() -> Path:
+    """Where kiro-cli stores its chat transcripts: ``<kiro home>/sessions/cli``.
+
+    Honors ``KIRO_HOME`` for the same reason :func:`kiro_agents_dir` does. This
+    matters because ``KIRO_HOME`` is directory-wide: it moves the transcripts too,
+    so an instance that redirects its agent specs and then has KiroCrew read
+    transcripts from the machine-wide path loses session resume and has its
+    mappings pruned. Routing both through the resolver keeps writer and reader in
+    agreement.
+    """
+    return kiro_home() / "sessions" / "cli"
+
+
+def isolated_agents_dir(data_home: Path) -> Path:
+    """The dedicated agents dir an ISOLATED instance may own: ``<data home>/kiro/agents``.
+
+    Single definition so the write guard's privacy test and the documented
+    ``KIRO_HOME=<data home>/kiro`` recipe cannot drift apart. Deliberately an
+    EXACT location rather than "anywhere beneath the data home": an ancestry test
+    treats the machine-wide ``~/.kiro/agents`` as private whenever the data home
+    happens to be an ancestor of it (``KIROCREW_HOME=$HOME`` is enough), which
+    hands an ephemeral instance the shared specs.
+    """
+    return data_home / "kiro" / "agents"
+
+
 def kiro_agents_dir() -> Path:
-    """Return the kiro agents directory (``~/.kiro/agents``).
+    """Return the kiro agents directory (``<kiro home>/agents``).
 
     Lives in this leaf module so :mod:`kiro_crew.config.loader` can locate
     installed agent JSONs without importing :mod:`kiro_crew.agent` — which
     imports ``config.loader`` at module load and would create an import cycle.
     """
-    return Path.home() / ".kiro" / "agents"
+    return kiro_home() / "agents"
 
 
 def _default_workspace_base() -> Path:

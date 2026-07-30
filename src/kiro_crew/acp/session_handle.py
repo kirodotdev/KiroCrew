@@ -24,7 +24,6 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Protocol
 
 from kiro_crew import model_registry
@@ -90,6 +89,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     TurnUsage,
 )
+from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -801,7 +801,7 @@ class AcpSessionHandle:
         sid = self._session_id
         if not sid:
             return
-        sessions_dir = (Path.home() / ".kiro" / "sessions" / "cli").resolve()
+        sessions_dir = kiro_sessions_dir().resolve()
         for suffix in (".json", ".jsonl"):
             target = (sessions_dir / f"{sid}{suffix}").resolve()
             # Guard against a crafted sessionId escaping the sessions dir.

@@ -18,12 +18,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel as _sel
 
 logger = logging.getLogger(__name__)
 
-_KIRO_AGENTS_DIR = Path.home() / ".kiro" / "agents"
+_KIRO_AGENTS_DIR = kiro_agents_dir()
 
 # ── list_agents() result cache ──
 # list_agents() reads and JSON-parses every ~/.kiro/agents/*.json on each call.

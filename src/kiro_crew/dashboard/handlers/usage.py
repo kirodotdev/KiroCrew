@@ -16,12 +16,12 @@ from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.acp.types import TurnUsage
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, kiro_sessions_dir
 from kiro_crew.hooks import validate_file_path
 
 logger = logging.getLogger(__name__)
 
-_SESSIONS_DIR = Path.home() / ".kiro" / "sessions" / "cli"
+_SESSIONS_DIR = kiro_sessions_dir()
 _CACHE: dict[str, Any] = {}
 _CACHE_TS: float = 0.0
 _CACHE_TTL = 120  # 2 min

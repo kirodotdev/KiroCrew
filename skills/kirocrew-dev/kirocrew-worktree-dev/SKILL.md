@@ -195,6 +195,32 @@ step with several paths; use whichever your environment supports:
 3. **No preview at all (also valid).** For many changes, the build gate + unit
    tests are enough confidence to cut the PR. Previewing live is optional.
 
+### Agent specs + MCP servers are a SEPARATE isolation axis from the data home
+
+`KIROCREW_HOME` isolates config, DB, sessions and workspace. It does **not**
+isolate `~/.kiro/agents/*.json` — the specs that define which MCP servers exist.
+That directory is machine-wide, and a gateway rewrites its specs on every start.
+
+A worktree gateway is therefore **prevented from clobbering them**: you will see
+
+```
+Refusing to rewrite the shared agent home /home/<you>/.kiro/agents from the
+git worktree at /workplace/<you>/kirocrew-wt-<name>: ...
+```
+
+That warning is the guard working, not a failure. Consequence to know about: the
+preview runs against the **real install's** agents and MCP servers, so it is safe
+but not self-contained — a change to KiroCrew's own managed MCP servers
+(`mcp-core`, `mcp-cron`, `mcp-computer`) is not exercised by a worktree preview.
+Verify those with unit tests, or temporarily point the real spec at the worktree
+and put it back afterwards.
+
+**Do not reach for `KIRO_HOME` to get around this yet.** It is kiro-cli's
+directory-wide override — it moves sessions, settings, skills and steering too,
+and KiroCrew still reads the host paths for most of those, so setting it breaks
+session resume. Making it a real isolation switch means routing the remaining
+~two dozen `~/.kiro/**` readers through `kiro_home()` first.
+
 ## Rule 6 — Hands off the live plane
 
 - Never edit the live/production checkout, and never start/stop the live gateway

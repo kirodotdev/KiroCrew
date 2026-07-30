@@ -62,6 +62,14 @@ except ImportError:  # pragma: no cover - standalone / test fallback
     STOP_REASON_STALE_RECOVER = "stale_recover"  # type: ignore[assignment]
     STOP_REASON_TOOL_STALL = "error: tool stall"  # type: ignore[assignment]
 
+try:  # agents dir resolver — honors KIRO_HOME so a pod reads its own specs
+    from kiro_crew.config.paths import kiro_agents_dir
+except Exception:  # pragma: no cover - standalone / test fallback
+    # Deliberately NOT a hard-coded ~/.kiro/agents fallback: a second spelling of
+    # that path is what this PR removes. Unavailable means "cannot look a spec
+    # up", and both call sites already degrade to their documented defaults.
+    kiro_agents_dir = None  # type: ignore[assignment]
+
 try:  # SEL audit — the runtime layer has no audit_source, so the pool emits its own
     from kiro_crew.sel import sel as _sel
 except Exception:  # pragma: no cover - standalone / test fallback
@@ -165,8 +173,10 @@ def _resolve_review_agent(preferred: str = REVIEW_AGENT) -> str:
     `kirocrew` agent. GitHub posting runs the `gh` CLI, so the chosen agent needs
     shell access; review reasoning still runs on the fallback so a missing
     reviewer agent degrades gracefully rather than failing."""
+    if kiro_agents_dir is None:  # pragma: no cover - standalone fallback
+        return _FALLBACK_AGENT
     try:
-        if (Path.home() / ".kiro" / "agents" / f"{preferred}.json").is_file():
+        if (kiro_agents_dir() / f"{preferred}.json").is_file():
             return preferred
     except Exception:
         pass
@@ -199,9 +209,11 @@ def _reviewer_model(agent: str) -> str:
     cfg_model = _get_review_settings().get("model")
     if isinstance(cfg_model, str) and cfg_model:
         return cfg_model
+    if kiro_agents_dir is None:  # pragma: no cover - standalone fallback
+        return _DEFAULT_REVIEW_MODEL
     try:
         cfg = json.loads(
-            (Path.home() / ".kiro" / "agents" / f"{agent}.json").read_text(encoding="utf-8"))
+            (kiro_agents_dir() / f"{agent}.json").read_text(encoding="utf-8"))
         model = cfg.get("model")
         if isinstance(model, str) and model:
             return model

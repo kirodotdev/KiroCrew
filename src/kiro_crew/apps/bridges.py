@@ -26,6 +26,7 @@ from kiro_crew.apps.manager import app_dir, get_app, get_app_manifest
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.sel import sel
@@ -33,7 +34,7 @@ from kiro_crew.sel import sel
 logger = logging.getLogger(__name__)
 
 # Where kiro-cli looks for agent definitions
-KIRO_AGENTS_DIR = Path.home() / ".kiro" / "agents"
+KIRO_AGENTS_DIR = kiro_agents_dir()
 
 # Where KiroCrew loads skills from
 SKILLS_DIR_NAME = "skills"

@@ -10,9 +10,8 @@ import json
 import logging
 import os
 import tempfile
-from pathlib import Path
 
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, kiro_sessions_dir
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, canonical_key
 
 logger = logging.getLogger(__name__)
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 _SESSION_MAP_FILE = "session_map.json"
 
 # kiro-cli session file directory
-_KIRO_SESSIONS_DIR = Path.home() / ".kiro" / "sessions" / "cli"
+_KIRO_SESSIONS_DIR = kiro_sessions_dir()
 
 
 class SessionMap:

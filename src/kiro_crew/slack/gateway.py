@@ -72,6 +72,7 @@ from kiro_crew.config.loader import (
     build_provider_factory,
     config_dir,
 )
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import CHAT_TURN_TIMEOUT, DATA_WARNING
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
@@ -4742,7 +4743,7 @@ class GatewayOrchestrator:
 
         overlay_dir = Path(cfg_gw.overlay_dir) if cfg_gw.overlay_dir else default_overlay_dir()
         socket_path = Path(cfg_gw.socket_path) if cfg_gw.socket_path else default_socket_path()
-        kiro_agents_dir = Path.home() / ".kiro" / "agents"
+        agents_source_dir = kiro_agents_dir()
         workspace_default = _session_work_dir(None)
 
         try:
@@ -4754,7 +4755,7 @@ class GatewayOrchestrator:
                 maintenance_executor(),
                 functools.partial(
                     rewrite_agents,
-                    source_dir=kiro_agents_dir,
+                    source_dir=agents_source_dir,
                     overlay_dir=overlay_dir,
                     socket_path=socket_path,
                     work_dir=workspace_default,

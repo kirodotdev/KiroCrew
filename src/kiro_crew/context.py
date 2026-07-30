@@ -18,6 +18,7 @@ from kiro_crew import model_registry
 from kiro_crew.agent import _prompt_path
 from kiro_crew.agent_discovery import agent_skill_globs
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import get_local_tz
 from kiro_crew.hooks import (
     HOOK_INJECT_CONTEXT,
@@ -689,7 +690,7 @@ def _load_steering_resources() -> str:
     Only loads ``file://`` resources matching ``*.md``.
     """
     try:
-        cfg_path = Path.home() / ".kiro" / "agents" / "kirocrew.json"
+        cfg_path = kiro_agents_dir() / "kirocrew.json"
         if not cfg_path.exists():
             return ""
         cfg = json.loads(safe_read_file(str(cfg_path)))
@@ -1216,7 +1217,7 @@ class ContextBuilder:
     @staticmethod
     def _load_agent_prompt(agent: str) -> str:
         """Read the prompt from a custom agent's config file."""
-        agents_dir = Path.home() / ".kiro" / "agents"
+        agents_dir = kiro_agents_dir()
         for f in agents_dir.glob("*.json"):
             # Skip macOS AppleDouble sidecars ("._foo.json"); not JSON.
             if f.name.startswith("._"):

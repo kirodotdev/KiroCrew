@@ -15,6 +15,7 @@ from kiro_crew.agent_discovery import (
     skill_resource_uris,
 )
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.skills import skills_dir
@@ -281,7 +282,7 @@ def list_kiro_skills(project_dir: Path | None = None) -> list[dict[str, Any]]:
 def _agent_dirs() -> list[Path]:
     """Return existing agent JSON directories (global + workspace)."""
     out: list[Path] = []
-    user = Path.home() / ".kiro" / "agents"
+    user = kiro_agents_dir()
     if user.is_dir():
         out.append(user)
     return out

@@ -48,7 +48,12 @@ from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FIL
 from kiro_crew.browser.setup import converge_playwright_servers
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
-from kiro_crew.config.paths import _valid_override_home
+from kiro_crew.config.paths import (
+    _in_linked_git_worktree,
+    _valid_override_home,
+    isolated_agents_dir,
+    kiro_agents_dir,
+)
 from kiro_crew.env import augmented_path
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.platform import current_context
@@ -94,7 +99,12 @@ def _atomic_json_write(path: Path, data: dict) -> None:
         raise
 
 
-KIRO_AGENTS_DIR = Path.home() / ".kiro" / "agents"
+# Resolved ONCE at import from ``kiro_agents_dir()``, which honors ``KIRO_HOME``.
+# Import-time resolution is deliberate and matches how kiro-cli itself reads the
+# variable: a non-default instance (a pod, a worktree gateway) exports KIRO_HOME
+# in the environment BEFORE the process starts, so there is nothing to re-read
+# later. Tests patch this attribute directly.
+KIRO_AGENTS_DIR = kiro_agents_dir()
 # AGENT_FILENAME imported from agent_files (single source of truth).
 _MAIN_AGENT_NAME = "kirocrew"
 # Cheap Claude Code model for KiroCrew's background agents (lite / heartbeat).
@@ -403,40 +413,6 @@ def _extra_mcp_scope_globals() -> list[Path]:
         log_message="extra_mcp_scopes lookup failed; rebuild using core scopes only",
     )
     return [s.global_json for s in scopes]
-
-
-def _in_linked_git_worktree(path: Path) -> bool:
-    """Whether *path* lives inside a git **linked worktree** (``git worktree add``).
-
-    A linked worktree's ``.git`` is a FILE holding
-    ``gitdir: <git-dir>/worktrees/<name>``; an ordinary clone's ``.git`` is a
-    DIRECTORY. Walks up from *path* and answers on the nearest repository marker,
-    so a linked worktree is distinguished from the main clone it belongs to.
-
-    The pointer is matched on the ``/worktrees/`` segment rather than
-    ``/.git/worktrees/``, because a **bare** repository's git dir *is* the repo
-    dir and carries no ``.git`` component — ``git -C myrepo.git worktree add``
-    writes ``gitdir: /…/myrepo.git/worktrees/<name>``, which a ``/.git/`` match
-    would miss, silently reopening the very bypass this guard exists to close.
-    ``/worktrees/`` stays precise: the only other producer of a ``gitdir:``
-    ``.git`` file is a submodule, which points into ``modules/`` instead.
-
-    Deliberately stdlib-only and subprocess-free: this runs on the gateway start
-    path, where shelling out to ``git`` would add latency and fail wherever git is
-    absent (notably the packaged desktop app).
-    """
-    for parent in (path, *path.parents):
-        marker = parent / ".git"
-        if marker.is_dir():
-            return False  # ordinary clone — nearest marker wins
-        if marker.is_file():
-            try:
-                head = marker.read_text(encoding="utf-8", errors="replace")[:4096]
-            except OSError:
-                return False
-            # Normalize separators so a Windows-style gitdir also matches.
-            return head.startswith("gitdir:") and "/worktrees/" in head.replace("\\", "/")
-    return False
 
 
 def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
@@ -1790,6 +1766,132 @@ def migrate_agent_specs() -> int:
     return cleaned
 
 
+def _decline_shared_agent_home() -> Path | None:
+    """Return the spec path to report, WITHOUT writing, when this instance must
+    not own the shared agent home; ``None`` when writing is safe.
+
+    An **ephemeral** KiroCrew instance — one booted from a linked git worktree, or
+    one running on its own isolated ``KIROCREW_HOME`` (a pod) — is throwaway by
+    construction, but the agent specs it writes are not. ``rebuild_agent_config``
+    stamps this instance's own ``.venv`` binary into every managed server's
+    ``command`` and its own data home into their ``env``. Written into a spec the
+    REAL install also reads, that makes the live gateway's MCP servers run this
+    tree's code and read this instance's ``.local_secret`` while still calling the
+    live gateway — every managed MCP request 403s (``learn_add``, ``spawn_run``,
+    ``cron_*`` all die) — and tearing the instance down leaves those shared specs
+    pointing at paths that no longer exist.
+
+    Declining mirrors ``ensure_kirocrew_on_path``'s worktree guard: leave whatever
+    already worked in place rather than repointing a shared resource at an
+    ephemeral one.
+
+    The predicate is deliberately **"is the target shared, and am I ephemeral"** —
+    NOT "am I in a worktree", and NOT "is the target the hard-coded
+    ``~/.kiro/agents``". Two bypasses of those narrower forms are closed here:
+
+    * A **pod running from the primary checkout** is not in a linked worktree at
+      all, yet ``pod down`` deletes its home and checkout venv, so it still leaves
+      the machine-wide specs dangling. Pods therefore declare themselves via
+      ``KIROCREW_POD`` (set in ``build_pod_env``) and that counts as ephemeral on
+      its own. Note what is deliberately NOT used as the signal: merely *having*
+      an isolated ``KIROCREW_HOME``. A CI test gateway (the offline E2E suite boots
+      on a tmp data home) and a user who permanently relocated their data home are
+      indistinguishable from a pod under that rule, and stopping either from
+      writing its specs is a regression, not protection.
+    * A globally exported ``KIRO_HOME`` moves the shared directory, so comparing
+      against a hard-coded default reads "not the shared one" and waves the write
+      straight through. The comparison is therefore against what the AMBIENT
+      environment resolves right now (``kiro_agents_dir()``), which is by
+      definition the directory every instance under this environment shares.
+
+    A target is exempt only when it is **provably private**: either a caller
+    redirected the write somewhere the ambient environment would never produce (a
+    test's ``tmp_path``), or it is EXACTLY ``isolated_agents_dir(own data home)``
+    — the dedicated ``<data home>/kiro/agents`` this instance's teardown owns.
+
+    That second case is the *mechanism* by which a genuinely isolated instance will
+    own its specs; it is NOT advice to set ``KIRO_HOME`` today. Nothing in this
+    repo sets it (``build_pod_env`` deliberately does not) because it also
+    relocates kiro-cli's session storage while KiroCrew still reads the host path
+    — see ``kiro_home()``'s scope caveat. The exemption is matched exactly rather
+    than by ancestry: "beneath the data home" reads the machine-wide
+    ``~/.kiro/agents`` as private the moment the data home is an ancestor of it
+    (``KIROCREW_HOME=$HOME`` is enough).
+    """
+    target = KIRO_AGENTS_DIR.resolve()
+    if target != kiro_agents_dir().resolve():
+        # A caller pointed the write somewhere of its own choosing; nothing is
+        # shared with the ambient install, so there is nothing to protect.
+        return None
+
+    own_home = _valid_override_home()
+    if own_home is not None and target == isolated_agents_dir(own_home).resolve():
+        # The one supported opt-in: the DEDICATED agents dir beneath this
+        # instance's own data home, which its teardown owns. Matched exactly, not
+        # by ancestry — "anywhere beneath the data home" reads the machine-wide
+        # ~/.kiro/agents as private whenever the data home is an ancestor of it
+        # (KIROCREW_HOME=$HOME suffices), handing an ephemeral instance the very
+        # specs this guard protects. A different KIRO_HOME layout is refused
+        # rather than guessed; the warning below names the supported path.
+        return None
+
+    # Ephemerality must be POSITIVE evidence that this instance is throwaway.
+    # "Has an isolated KIROCREW_HOME" is NOT that: a CI test gateway and a user
+    # who permanently relocated their data home both look identical under that
+    # rule, and neither should be stopped from writing its own specs (an earlier
+    # revision used it and broke the offline E2E gateway, which boots on a tmp data
+    # home and then found no agents). A pod needs no arm here: ``build_pod_env``
+    # gives it its own ``KIRO_HOME``, so its target is its own dedicated directory
+    # and the private-target exemption above already lets it through.
+    ephemeral = _in_linked_git_worktree(Path(__file__).resolve())
+    if not ephemeral:
+        # A GRANT over the shared resource, so it is audited like the denial
+        # below: every permission decision about the machine-wide agent home is
+        # traceable from the audit log alone, matching how ``api_lessons_create``
+        # records both its allow and deny branches. Only the shared-home decision
+        # is recorded -- the two private-target returns above are not decisions
+        # about a shared resource, so auditing them would add volume without
+        # adding traceability.
+        sel().log_api_access(
+            caller="system",
+            operation="agent_home_write",
+            outcome="allowed",
+            source="rebuild_agent_config",
+            resources=str(target),
+        )
+        return None  # an ordinary install writing its own shared home
+
+    logger.warning(
+        "Refusing to rewrite the shared agent home %s from an ephemeral instance "
+        "(checkout %s, data home %s): it would repoint the real install's MCP "
+        "servers at this instance's venv and data home, and break them outright "
+        "when it is torn down. This instance will use the existing specs instead. "
+        "Deliberately no remedy is suggested here: redirecting the agent home via "
+        "KIRO_HOME also relocates kiro-cli's session storage, which KiroCrew still "
+        "reads from the host path -- see kiro_home()'s scope caveat.",
+        target,
+        Path(__file__).resolve().parents[2],
+        own_home or "default",
+    )
+    # This is a permission decision on a shared, security-relevant resource (the
+    # specs carry every managed MCP server's command + env), so it belongs in the
+    # audit trail and not only in the log: a silent refusal is indistinguishable
+    # from a write that simply did not happen when reconstructing what an
+    # ephemeral instance did to the host.
+    sel().log_api_access(
+        caller="system",
+        operation="agent_home_write",
+        outcome="denied",
+        source="rebuild_agent_config",
+        resources=str(target),
+        error=(
+            f"ephemeral instance (checkout {Path(__file__).resolve().parents[2]}, "
+            f"data home {own_home or 'default'}) refused write to shared agent home"
+        ),
+    )
+    return KIRO_AGENTS_DIR / AGENT_FILENAME
+
+
 def rebuild_agent_config(*, clean: bool = False) -> Path:
     """Rebuild and write the merged kirocrew.json to ~/.kiro/agents/.
 
@@ -1814,6 +1916,10 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     Args:
         clean: If True, ignore existing config and regenerate from defaults.
     """
+    declined = _decline_shared_agent_home()
+    if declined is not None:
+        return declined
+
     KIRO_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
     path = KIRO_AGENTS_DIR / AGENT_FILENAME
 

@@ -397,6 +397,39 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
         "KIROCREW_HOME": str(home_dir),
         "KIROCREW_PORT": str(port),
         "KIROCREW_PROJECT_DIR": str(checkout),
+        # Declare pod identity. A pod is ephemeral by construction — `pod down`
+        # deletes this home and the checkout venv — so the agent-spec write guard
+        # keys on THIS marker rather than on "has an isolated KIROCREW_HOME",
+        # which would also catch a CI test gateway or a user who simply relocated
+        # their data home, and wrongly stop both from writing their own specs.
+        "KIROCREW_POD": "1",
+        # The pod's OWN kiro user home, so its agent specs, prompts, skills and
+        # chat transcripts all live under the pod instead of the machine-wide
+        # ``~/.kiro``. This is what stops a pod boot from rewriting the real
+        # install's specs -- and, just as importantly, stops a pod that was merely
+        # BLOCKED from rewriting them falling back to the shared spec, whose env
+        # pins the LIVE data home (so a pod's ``learn_add`` would have written the
+        # real lessons). Safe only because every KiroCrew reader of the transcripts
+        # dir now resolves through ``kiro_sessions_dir()``; without that the pod
+        # would write sessions somewhere KiroCrew never looks and lose resume.
+        # Inside the pod HOME so the zero-residue ``ExecStopPost`` teardown
+        # reclaims it.
+        "KIRO_HOME": str(home_dir / "kiro"),
+        # NOTE: deliberately NO ``KIRO_HOME`` here, though it is tempting — it
+        # would give the pod its own agent specs and stop pod boots rewriting the
+        # machine-wide ``~/.kiro/agents``. ``KIRO_HOME`` is a DIRECTORY-WIDE
+        # kiro-cli override (agents, prompts, skills, steering, settings AND
+        # sessions), while KiroCrew still resolves the host paths for roughly two
+        # dozen of those readers — ``session_map.py``, ``subagent_persistence.py``,
+        # ``acp/{client,session_handle,session_provider}.py``,
+        # ``providers/acp.py``, ``dashboard/handlers/usage.py`` and the
+        # ``settings/mcp.json`` sites. Exporting it here would move where kiro-cli
+        # WRITES session transcripts without moving where KiroCrew READS them, so a
+        # pod restart would lose session resume and ``SessionMap`` would prune
+        # mappings whose transcripts it can no longer see: a worse split brain than
+        # the one this change set fixes. The write guard in ``agent.py`` covers the
+        # shared-spec hazard for pods in the meantime. Setting it here is safe only
+        # once those readers resolve through ``kiro_home()`` too.
         # Give the pod its OWN workspace root. Without this, `workspace_root()`
         # finds no `KIROCREW_WORKSPACE` and no `config_dir()/workspace_dir` file in
         # a fresh pod home, so it falls through to the platform default under the
@@ -514,13 +547,12 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
 #
 # Deliberately EXCLUDED, with the reason each is host-scoped, not pod-scoped:
 #   setup, update  — rewrite the install and the ~/.local/bin launcher
-#   app            — `apps/bridges.py` symlinks app agent JSONs into
-#                    `Path.home()/".kiro"/"agents"` and edits
-#                    `~/.kiro/settings/mcp.json` — the HOST registry, not
-#                    KIROCREW_HOME. A pod install/uninstall would replace or
-#                    delete symlinks the live gateway depends on, and point them
-#                    into a checkout that is about to be deleted: the same
-#                    dangling-symlink failure this PR exists to fix.
+#   app            — `apps/bridges.py` edits `~/.kiro/settings/mcp.json`, the
+#                    HOST registry, which is NOT covered by KIROCREW_HOME or
+#                    KIRO_HOME. (The app agent JSONs it symlinks now follow
+#                    `kiro_agents_dir()`, so those land under the pod's own
+#                    KIRO_HOME — but the settings registry still does not, so a
+#                    pod install/uninstall would still mutate host state.)
 #   stop, restart  — service-aware: `cli_server._stop` short-circuits to
 #                    systemctl when no explicit --port is passed, so they hit the
 #                    LIVE gateway; and `restart` additionally makes systemd run

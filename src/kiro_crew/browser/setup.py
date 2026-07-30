@@ -22,7 +22,7 @@ from kiro_crew import platform_compat
 from kiro_crew.agent_files import OWNED_CC_AGENT_FILES, OWNED_KIRO_AGENT_FILES
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser.auth import parse_netscape_cookies
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.mcp_playwright_proxy import _resolve_playwright_cmd
 from kiro_crew.mcp_utils import mcp_server_alias
 
@@ -548,7 +548,7 @@ def _converge_playwright_agent_files() -> None:
     unreadable/non-dict/absent files.
     """
     agent_files: list[Path] = []
-    kiro_dir = Path.home() / ".kiro" / "agents"
+    kiro_dir = kiro_agents_dir()
     for name in _OWNED_KIRO_AGENT_FILES:
         p = kiro_dir / name
         if p.is_file():

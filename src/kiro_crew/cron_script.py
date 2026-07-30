@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir, read_local_secret
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     cgroup_scope_argv,
@@ -492,10 +493,10 @@ class McpToolClient:
 @lru_cache(maxsize=16)
 def _resolve_mcp_server(name: str) -> tuple[str, ...] | None:
     """Read MCP server command from agent config (cached per process)."""
-    cfg_path = Path.home() / ".kiro" / "agents" / "kirocrew.json"
+    cfg_path = kiro_agents_dir() / "kirocrew.json"
     if not cfg_path.exists():
-        # Fall back to any kirocrew-named agent spec under ~/.kiro/agents/
-        for p in Path.home().glob(".kiro/agents/*kirocrew*.json"):
+        # Fall back to any kirocrew-named agent spec in the same agents dir.
+        for p in kiro_agents_dir().glob("*kirocrew*.json"):
             cfg_path = p
             break
     if not cfg_path.exists():

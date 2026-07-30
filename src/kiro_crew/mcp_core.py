@@ -3465,6 +3465,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "learn_list":
         d = _get("/api/lessons")
+        # Surface transport/auth failures instead of rendering them as "no
+        # lessons". ``_get`` returns ``{"error": ...}`` on a non-2xx, which has
+        # no ``lessons`` key — reporting that as an empty list told the agent its
+        # memory was empty when the real cause was an HTTP 403 from a mismatched
+        # gateway credential, and sent a debugging session after the wrong bug.
+        err_val = d.get("error")
+        if err_val:
+            return f"Error: {err_val}"
         lessons = d.get("lessons", [])
         if not lessons:
             return "No lessons saved."

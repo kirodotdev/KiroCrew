@@ -30,6 +30,7 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import STOP_REASON_END_TURN
+from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 
@@ -187,7 +188,7 @@ class AcpSessionProvider(LLMProvider):
         sid = session_id or getattr(self._handle, "session_id", "") or ""
         if not sid:
             return
-        sessions_dir = (Path.home() / ".kiro" / "sessions" / "cli").resolve()
+        sessions_dir = kiro_sessions_dir().resolve()
         for suffix in (".json", ".jsonl"):
             target = (sessions_dir / f"{sid}{suffix}").resolve()
             # Guard against a crafted sessionId escaping the sessions dir.

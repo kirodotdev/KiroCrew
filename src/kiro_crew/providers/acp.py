@@ -26,6 +26,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
+from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.effort import (
     EFFORT_LEVELS,
     effort_settings_key,
@@ -541,7 +542,7 @@ class AcpProvider(LLMProvider):
             handle = None
             resumed = False
             if resume_sid:
-                session_file = Path.home() / ".kiro" / "sessions" / "cli" / f"{resume_sid}.json"
+                session_file = kiro_sessions_dir() / f"{resume_sid}.json"
                 if session_file.exists():
                     # F2 load-recovery: retry past a stale "active in another
                     # process" lock (Phase 1); on persistent failure fall through
@@ -1153,7 +1154,7 @@ class AcpProvider(LLMProvider):
         """
         if not session_id:
             return
-        sessions_dir = Path.home() / ".kiro" / "sessions" / "cli"
+        sessions_dir = kiro_sessions_dir()
         for suffix in (".json", ".jsonl"):
             target = sessions_dir / f"{session_id}{suffix}"
             if not _is_safe_path(target, sessions_dir):

@@ -95,6 +95,7 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
     TurnUsage,
 )
+from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
@@ -2191,7 +2192,7 @@ class AcpClient:
                 file_ok = True
             else:
                 session_file = str(
-                    Path.home() / ".kiro" / "sessions" / "cli" / f"{resume_sid}.json"
+                    kiro_sessions_dir() / f"{resume_sid}.json"
                 )
                 file_ok = Path(session_file).exists()
             if file_ok:
@@ -2278,7 +2279,7 @@ class AcpClient:
         # Seek to end of JSONL so we only read new tool results.
         # claude-agent-acp stores sessions via its own SDK, not ~/.kiro/ — skip.
         if self._session_id and not self._is_claude:
-            _jpath = Path.home() / ".kiro" / "sessions" / "cli" / f"{self._session_id}.jsonl"
+            _jpath = kiro_sessions_dir() / f"{self._session_id}.jsonl"
             try:
                 self._jsonl_pos = _jpath.stat().st_size if _jpath.exists() else 0
             except OSError:
@@ -4272,7 +4273,7 @@ class AcpClient:
         """Read new ToolResults entries from the kiro-cli session JSONL file."""
         if not self._session_id:
             return []
-        jsonl_path = Path.home() / ".kiro" / "sessions" / "cli" / f"{self._session_id}.jsonl"
+        jsonl_path = kiro_sessions_dir() / f"{self._session_id}.jsonl"
         if not jsonl_path.exists():
             return []
         results: list[AcpEvent] = []

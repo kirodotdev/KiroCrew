@@ -23,6 +23,7 @@ from aiohttp import web
 # keeps tests' monkeypatching of handlers.redact_* effective (late binding).
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
@@ -983,7 +984,7 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid agent name"}, status=400)
 
     # Read agent config from disk
-    agent_path = Path.home() / ".kiro" / "agents" / f"{agent_name}.json"
+    agent_path = kiro_agents_dir() / f"{agent_name}.json"
     if not agent_path.is_file():
         return web.json_response({})
 

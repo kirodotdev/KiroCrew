@@ -38,6 +38,7 @@ from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTim
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import ACTIVATION_REVIEW, KiroCrewConfig, config_path
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.context import (
     ContextBuilder,
     build_cancelled_turn_preamble,
@@ -926,7 +927,7 @@ def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None
             except (json.JSONDecodeError, UnicodeDecodeError):
                 return fallback
 
-    agents_dir = Path.home() / ".kiro" / "agents"
+    agents_dir = kiro_agents_dir()
     jsons = (
         sorted(agents_dir.glob("*.json"), key=lambda f: (len(f.stem), f.stem))
         if agents_dir.is_dir()
@@ -1008,7 +1009,7 @@ def _list_all_agent_names(cc_plugins_dir: Path | None = None) -> str:
     the provider to ``claude_code`` to run cc-plugins agents.
     """
     names: list[str] = []
-    agents_dir = Path.home() / ".kiro" / "agents"
+    agents_dir = kiro_agents_dir()
     if agents_dir.is_dir():
         # Hide the internal kirocrew-lite variant from BOTH sources — a
         # ~/.kiro/agents/kirocrew-lite.json would otherwise leak into the list.

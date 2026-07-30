@@ -25,7 +25,7 @@ from typing import Any
 import aiohttp
 
 from kiro_crew import platform_compat
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.env import augmented_path
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -322,7 +322,9 @@ def _load_agent_config(*, user_home: Path | None = None) -> dict[str, Any]:
     # Installed agent config (always check for mcpServers)
     from kiro_crew.agent import AGENT_FILENAME  # circular import: agent imports mcp_discovery
 
-    installed = (user_home or Path.home()) / ".kiro" / "agents" / AGENT_FILENAME
+    installed = (
+        (user_home / ".kiro" / "agents") if user_home else kiro_agents_dir()
+    ) / AGENT_FILENAME
     if installed.is_file():
         try:
             loaded = json.loads(installed.read_text(encoding="utf-8"))
@@ -1208,7 +1210,7 @@ def sync_to_agent_config(servers: list[McpServerInfo]) -> bool:
     """
     from kiro_crew.agent import AGENT_FILENAME, install_agent  # circular import
 
-    config_path = Path.home() / ".kiro" / "agents" / AGENT_FILENAME
+    config_path = kiro_agents_dir() / AGENT_FILENAME
     kiro_bin = shutil.which("kiro-cli")
 
     # Determine which servers are genuinely new (not yet in agent config)

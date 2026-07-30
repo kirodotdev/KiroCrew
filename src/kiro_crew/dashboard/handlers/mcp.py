@@ -13,7 +13,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import platform_compat
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -1009,7 +1009,7 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
     scope).
     """
     candidates = [
-        Path.home() / ".kiro" / "agents" / "kirocrew.json",
+        kiro_agents_dir() / "kirocrew.json",
         _KIROCREW_MCP_JSON,
         _GLOBAL_MCP_JSON,
         *[s.global_json for s in _extra_mcp_scopes()],
@@ -1186,7 +1186,7 @@ def _purge_server_config(name: str) -> dict[str, str]:
     # Also strip the entry directly from the rendered agent files so the next
     # rebuild doesn't resurrect it via the "start from existing agent config"
     # base. Without this the additive merge keeps the entry around.
-    _remove_from_agent_file(Path.home() / ".kiro" / "agents" / "kirocrew.json", name)
+    _remove_from_agent_file(kiro_agents_dir() / "kirocrew.json", name)
     for scope in _extra_mcp_scopes():
         if scope.agent_mcp_file is not None:
             _remove_from_agent_file(scope.agent_mcp_file, name)
