@@ -1,8 +1,13 @@
 import { test, expect } from '@playwright/test'
+import { MAX_RECENT_TINT_COUNT } from '../src/utils/recencyTint'
 
-// Mirrors MAX_RECENT_TINT_COUNT (website/src/utils/recencyTint.ts:13). Specs
-// cannot import from src/, so this is duplicated deliberately.
-const MAX_TINT = 50
+// The stepper's upper bound comes from the source of truth rather than a copy,
+// so raising or lowering it there cannot leave this spec asserting a stale
+// bound. Playwright transpiles specs with its own pipeline, so importing across
+// the playwright/ and src/ boundary resolves even though src/ is a separate
+// tsconfig project. recencyTint.ts is a dependency-free module of pure helpers,
+// so this pulls in no component or DOM code.
+const MAX_TINT = MAX_RECENT_TINT_COUNT
 
 /**
  * Settings page (/settings) — route-level Playwright coverage.
@@ -80,12 +85,13 @@ test.describe('Settings Page', () => {
     await expect(field).toBeVisible({ timeout: 10000 })
 
     // Step in whichever direction is actually available. clampTintCount
-    // (recencyTint.ts:21) floors the value into [0, MAX_RECENT_TINT_COUNT=50],
-    // and DisplayPanel passes no `disabled` prop, so at 50 the Increase button
-    // is still clickable but the persisted value stays 50 -- an assertion of
-    // originalCount + 1 would then poll for 51 until it times out. The harness
-    // always starts at the 0 default so increment is the normal path, but a
-    // developer running this against a live gateway may sit at either bound.
+    // (recencyTint.ts:21) floors the value into [0, MAX_RECENT_TINT_COUNT],
+    // and DisplayPanel passes no `disabled` prop, so at the maximum the
+    // Increase button is still clickable but the persisted value stays at the
+    // bound -- an assertion of originalCount + 1 would then poll for a value
+    // one past the bound until it times out. The harness always starts at the 0
+    // default so increment is the normal path, but a developer running this
+    // against a live gateway may sit at either bound.
     const atMax = originalCount >= MAX_TINT
     const delta = atMax ? -1 : 1
     const btn = field.getByRole('button', { name: atMax ? 'Decrease' : 'Increase' })
