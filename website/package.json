@@ -12,7 +12,7 @@
   "scripts": {
     "clean": "rm -rf dist && rm -rf node_modules",
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && node --max-old-space-size=6144 ./node_modules/vite/bin/vite.js build",
     "preview": "vite preview",
     "analyze": "vite build --mode analyze && node scripts/bundle-report.mjs",
     "test": "npm run test:website && npm run test:electron",
