@@ -204,11 +204,11 @@ _APP_SCOPED_TOOLS: frozenset[str] = frozenset(
 
 # Tools that address ONE element by index, and therefore have a resolved
 # ``ElementRec`` for ``policy.check_input_target`` to apply the secure-field
-# refusal to. ``computer_type_text`` and ``computer_click`` are both here even
-# though their index is OPTIONAL: when one is supplied the resolved element is
-# checked, and when it is not there is no element to check (the driver types into
-# whatever the app has focused, or clicks a raw coordinate). Indexless input is
-# allowed again — the ``targets`` ceiling that used to demand an index is gone.
+# refusal to. ``computer_click`` is here even though its index is OPTIONAL: when
+# one is supplied the resolved element is checked, and when it is not the target
+# is a raw coordinate instead (the one-of enforced by
+# ``policy.check_click_target``). Every OTHER member requires its index — see
+# ``_ELEMENT_REQUIRED_TOOLS`` below — so there is always an element to check.
 # ``computer_drag`` is NOT here — it has no element form at all.
 _ELEMENT_SCOPED_TOOLS: frozenset[str] = frozenset(
     {
@@ -401,8 +401,12 @@ def _dispatch(
                 # refuse. Authorization first, diagnostics second.
                 deferred = exc
         elif tool_name in _ELEMENT_REQUIRED_TOOLS:
-            # Unreachable through the MCP path (the schema marks it required), but
-            # this function is also the in-process entry point for an app backend.
+            # The LAST line of defence, and a reachable one — not merely a guard for
+            # the in-process entry point. ``MCP_COMPUTER_SCHEMAS`` is the enforcement
+            # layer for the MCP path, so this stays even where that schema already
+            # demands the field: a spec that relaxed one of these back to optional
+            # (as ``computer_type_text`` and ``computer_press_key`` once were) must
+            # still be refused here rather than typing into an uninspectable target.
             raise ValidationError(ARG_ELEMENT_INDEX, "required")
 
     # (3d) POINTER-REQUEST SHAPE — one-of(element_index | x+y), the method/target
@@ -587,7 +591,13 @@ def _run(
     # frame a policy might forbid — then discarding it — would be both slower and
     # a needless brush with the ceiling. A model that needs to see the result
     # calls ``computer_get_state``.
-    req = replace(service.snapshot_request(), want_image=False)
+    # Inherit the TREE BUDGET the cached snapshot was walked at, because a mutating
+    # tool takes no budget arguments of its own and the config default would silently
+    # shrink the tree: a model shown element 1400 under ``max_tree_nodes=2001`` would
+    # have its click refused by the drift check ("no element at that index") and would
+    # then be handed a 1200-node refresh, so re-snapshotting reproduced the same
+    # refusal forever. Only ``want_image`` is forced off (see below).
+    req = replace(_mutation_walk_budget(svc, target, session_key=session_key), want_image=False)
 
     if rec is not None:
         # Fingerprint drift against a FRESH walk. Unconditional on every mutating
@@ -980,7 +990,16 @@ def _render_snapshot(
 
 
 def _element_payload(elem: ElementRec) -> dict[str, Any]:
-    """Flatten one record into the ceiling's element shape."""
+    """Flatten one record into the ceiling's element shape.
+
+    EVERY field, not just the governable ones. ``frame``, ``traits`` and ``focused``
+    are not observation channels the ceiling narrows, but this dict is the ONLY thing
+    ``_element_from_payload`` gets to rebuild from, so a field omitted here is a field
+    silently deleted from every rendered tree — the lossy-rebuild bug
+    ``capture_macos`` was fixed for by switching to ``dataclasses.replace``. Keep this
+    in sync with ``ElementRec``; ``test_computer_use_snapshot.py`` asserts the
+    round-trip is total so a newly added field cannot be forgotten here.
+    """
     return {
         "index": elem.index,
         "role": elem.role,
@@ -991,6 +1010,9 @@ def _element_payload(elem: ElementRec) -> dict[str, Any]:
         "depth": elem.depth,
         "secure": elem.secure,
         "enabled": elem.enabled,
+        "frame": elem.frame,
+        "traits": elem.traits,
+        "focused": elem.focused,
     }
 
 
@@ -1002,6 +1024,7 @@ def _element_from_payload(entry: Mapping[str, Any]) -> ElementRec:
     channel, so a missing or retyped key must not raise inside a render path.
     """
     actions = entry.get("actions")
+    traits = entry.get("traits")
     return ElementRec(
         index=int(entry.get("index") or 0),
         role=str(entry.get("role") or ""),
@@ -1012,7 +1035,35 @@ def _element_from_payload(entry: Mapping[str, Any]) -> ElementRec:
         depth=int(entry.get("depth") or 0),
         secure=bool(entry.get("secure")),
         enabled=bool(entry.get("enabled", True)),
+        # A half-read frame is worse than none (see ``snapshot_macos``): only a
+        # complete 4-tuple of finite numbers becomes a rect, anything else is None.
+        frame=_frame_from_payload(entry.get("frame")),
+        traits=tuple(str(t) for t in traits) if isinstance(traits, (list, tuple)) else (),
+        focused=bool(entry.get("focused")),
     )
+
+
+def _frame_from_payload(raw: Any) -> "tuple[float, float, float, float] | None":
+    """Coerce a payload ``frame`` back to a rect, or ``None``.
+
+    Defensive for the same reason as the rest of ``_element_from_payload``: the
+    mapping has been through the ceiling and may have been re-typed. A partial or
+    non-numeric rect resolves to ``None`` rather than a plausible-looking rectangle
+    pointing somewhere else — ``bool`` is excluded explicitly because it is an ``int``
+    subclass, and a NaN/inf coordinate is refused because it would render as garbage
+    a model might pass to a coordinate click.
+    """
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        return None
+    out: list[float] = []
+    for part in raw:
+        if isinstance(part, bool) or not isinstance(part, (int, float)):
+            return None
+        value = float(part)
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        out.append(value)
+    return (out[0], out[1], out[2], out[3])
 
 
 def _with_notes(body: str, shaped: Mapping[str, Any]) -> str:
@@ -1053,6 +1104,29 @@ def _declared_observations(tool_name: str) -> tuple[str, ...]:
 
 
 # ── Helpers ──
+
+
+def _mutation_walk_budget(
+    svc: "service.ComputerUseService", target: AppRef, *, session_key: str
+) -> SnapshotRequest:
+    """The tree budget a mutating action's walks must use.
+
+    A mutating tool accepts no ``max_tree_nodes`` / ``max_tree_depth`` /
+    ``text_limit`` arguments — the model set those on the ``computer_get_state`` that
+    produced the indices it is now acting on. So the drift-verification walk and the
+    post-action refresh both have to reproduce THAT walk, not the config default:
+    with the default, an index above it resolves to "no element at that index", and
+    the refresh the model is handed next is truncated the same way, so calling
+    ``computer_get_state`` again cannot break the loop.
+
+    Falls back to the config default when the cache holds no stamped budget (a
+    snapshot a backend built directly, or an action on an app with no cached state —
+    which the freshness check refuses moments later anyway).
+    """
+    cached = svc.index.get(target.window_key, session_key=session_key)
+    if cached is not None and cached.walk_budget is not None:
+        return cached.walk_budget
+    return service.snapshot_request()
 
 
 def _opt_int(args: Mapping[str, Any], name: str) -> "int | None":

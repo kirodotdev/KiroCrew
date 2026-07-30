@@ -186,16 +186,6 @@ def apply_observation_ceiling(
     return dict(payload)
 
 
-def targets_axis_is_governed(*, session_key: str = "", agent: str = "", app: str = "") -> bool:
-    """Always ``False`` — there is no ``targets`` ceiling to evaluate.
-
-    ``tools`` reads this to decide whether to DEMAND an explicit ``element_index``
-    for keyboard input and coordinate gestures. With the axis gone, both forms are
-    allowed: typing into whatever the app has focused is a legitimate flow again.
-    """
-    return False
-
-
 def app_is_disclosable(
     *,
     bundle_id: str,
@@ -255,5 +245,4 @@ __all__ = [
     "permitted_observation_channels",
     "require_computer_use",
     "require_pointer_move",
-    "targets_axis_is_governed",
 ]

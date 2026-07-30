@@ -213,9 +213,24 @@ CG_BOUNDS_H = "Height"
 CG_WINDOW_LAYER_NORMAL = 0
 
 # ── CoreGraphics event ABI constants ──
-# kCGEventSourceStatePrivate. NEVER pass NULL: an event built from the default
-# (HID) source inherits the user's live modifier state.
-K_CG_EVENT_SOURCE_STATE_PRIVATE = 1
+# ``kCGEventSourceStatePrivate``. NEVER pass NULL: an event built from the default
+# (HID) source inherits the user's live modifier state, which is the measured
+# ``"a","b","c"`` -> ``' I Abc'`` bug this source exists to prevent.
+#
+# The value is **-1**, and it is NOT interchangeable with 1.
+# ``CGEventTypes.h`` declares ``CGEventSourceStateID`` as
+# ``{kCGEventSourceStatePrivate = -1, kCGEventSourceStateCombinedSessionState = 0,
+# kCGEventSourceStateHIDSystemState = 1}`` — so the previous ``1`` selected the
+# SHARED HID table by name while claiming to be private. Verified live on
+# darwin-arm64: ``CGEventSourceGetSourceStateID`` reports an opaque id for -1 and
+# literally ``1`` for 1. The symptom was masked only because every posting path
+# (``post_key`` / ``post_text`` / ``post_scroll`` / ``_mouse_event``) also calls
+# ``CGEventSetFlags(event, 0)``; a future path that omits that would reintroduce
+# the modifier-inheritance bug, and ``macos_skylight``'s deliberate "HID source
+# unlike every other path in this package" contrast was vacuous while these were
+# the same table. Signed because the enum is an ``int32_t``, so ``_FN_SPECS`` binds
+# ``CGEventSourceCreate`` with ``c_int32`` rather than a uint.
+K_CG_EVENT_SOURCE_STATE_PRIVATE = -1
 # kCGScrollEventUnitLine. The enum has exactly TWO members — ``Pixel`` (0) and
 # ``Line`` (1); there is no page unit, so a "page" of scrolling is expressed as a
 # line count in the delta, not by the unit. Named accurately here because the old
@@ -1538,11 +1553,28 @@ def post_text(pid: int, text: str) -> None:
 
     Encoded per character as UTF-16LE so an astral character is delivered as its
     full surrogate pair in one event rather than as two lone surrogates.
+
+    **The whole string is encoded BEFORE the first keystroke is posted.** Encoding
+    inside the loop meant an unencodable character — a lone surrogate, which
+    ``str`` permits and UTF-16 cannot represent — raised ``UnicodeEncodeError``
+    *after* every preceding character had already been typed into a live
+    application. The caller then saw a failure while the target held a partial
+    string, and a model told "typing failed" would retry and double the prefix.
+    Encoding up front makes the call all-or-nothing: it either types the whole
+    string or refuses having typed nothing, which is the contract the driver's
+    failed ``DriverResult`` claims. ``surrogatepass`` is deliberately NOT used —
+    delivering a lone surrogate to AppKit is not a meaningful keystroke.
     """
     libs = _frameworks()
+    try:
+        encoded = [(char, char.encode("utf-16-le")) for char in text]
+    except UnicodeEncodeError as exc:
+        raise ComputerUseUnsupported(
+            f"the text contains a character that cannot be typed ({exc.reason}); "
+            "nothing was sent"
+        ) from exc
     source = event_source()
-    for char in text:
-        units = char.encode("utf-16-le")
+    for _char, units in encoded:
         count = len(units) // 2
         if count <= 0:
             continue

@@ -173,13 +173,19 @@ class TestObservationsArePassedThrough:
         }
         assert gate.apply_observation_ceiling(payload, session_key="dashboard:main") == payload
 
-    def test_the_targets_axis_reports_ungoverned(self):
-        """``tools`` reads this to decide whether to DEMAND an element index.
+    def test_there_is_no_targets_axis_shim_to_read(self):
+        """The ``targets`` ceiling is gone, and so is the predicate for it.
 
-        False means indexless keyboard input and coordinate gestures are both
-        allowed again.
+        It used to return ``False`` with a docstring saying indexless keyboard input
+        was "a legitimate flow again" — the INVERSE of what ships. Keyboard input
+        requires an ``element_index`` (``tools._ELEMENT_REQUIRED_TOOLS``) precisely so
+        the always-on secure-field refusal has a role/subrole to inspect. Nothing in
+        the package called it, so a reader auditing the security posture would have
+        concluded a live control had been removed. Deleted rather than corrected: a
+        dead predicate that contradicts an enforced control is a trap, and the two
+        pass-throughs the renderers really do traverse are asserted above.
         """
-        assert gate.targets_axis_is_governed(session_key="dashboard:main") is False
+        assert not hasattr(gate, "targets_axis_is_governed")
 
 
 class TestAppDisclosure:

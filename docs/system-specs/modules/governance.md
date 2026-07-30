@@ -37,10 +37,14 @@ can reorder strictness or redefine matching):
 
 - `_ORDINAL_SCALES`: `approval = yolo < auto < interactive`;
   `sandbox = off < standard < cc < strict` (verified against `sandbox.py`).
-- `_MATCHERS`: `identifier` (case-insensitive), `command` (case-sensitive
-  `fnmatchcase`), `path`, `host`, `mcp` (a `@server` grant covers `@server/tool`),
-  `bundle_id` and `cu_action` (both added for computer use — see
-  [Governed capability: computer use](#governed-capability-computer-use-native-desktop-gui-automation)).
+- `_MATCHERS` — exactly **five**: `identifier` (case-insensitive), `command`
+  (case-sensitive `fnmatchcase`), `path`, `host`, and `mcp` (a `@server` grant covers
+  `@server/tool`). An earlier revision also listed `bundle_id` and `cu_action` "both
+  added for computer use"; they were removed with that governance model and naming
+  either in a `ScopedRuleset` raises `PlatformCompositionError: unknown matcher`,
+  which under `boot.fail_closed` aborts governance boot — so this list is
+  load-bearing, not descriptive. Extend it only through
+  `register_matcher`/`register_scope`, which validate the name.
   The `path` matcher normalizes **only the queried item** (`_norm_item`: expand
   `~`/`$VAR` → `os.path.abspath`, which anchors a relative path to the host CWD
   and collapses `.`/`..`) and matches it against the operator's pattern **expanded
@@ -353,12 +357,18 @@ canonical taxonomy parser — never re-implemented). Resolution is:
 **`identity_proven` is true for ANY non-empty session key**, so an unattended
 surface that *does* carry a key — `cron:<job>`, `subagent:<id>`, `taskrunner` —
 resolves to `None` (policy-ceiling-only), **not** `deny_all_profile`; only `_bg`
-and `_hb` fall to deny-all. That is correct for most scopes and wrong for
-computer use, which must not fall back to policy-only on a surface nobody is
-watching a mouse on. Hence the feature-local unattended refusal in
-`computer_use.gate` (a code rule that cannot be un-shipped by deleting a profile
-file) plus the shipped `cu-off` profiles bound to those surfaces as the visible,
-explainable form of the same decision.
+and `_hb` fall to deny-all. That is correct for every scope that remains.
+
+An earlier revision continued: "…and wrong for computer use", and described a
+feature-local unattended refusal in `computer_use.gate` plus shipped `cu-off`
+profiles bound to the unattended surfaces. **Neither exists.** Computer use is
+deliberately ungoverned — no `computer_use*` row in `SCOPE_CATALOG`, no
+unattended-surface rule, and no shipped profile of that name — so cron, subagent,
+taskrunner, webhook, workflow and channel sessions all drive the desktop once the
+operator has flipped the keystone. That is the product decision recorded in
+[computer-use.md](computer-use.md); the containment is the keystone the agent cannot
+write plus the SEL audit trail, not a surface ceiling. Do not re-document the refusal
+without re-implementing it.
 
 **`host` surface (in-process host actions).** A governance check that is not
 driven by a user-facing surface — app activation
@@ -603,7 +613,13 @@ read-your-writes should add it deliberately, with its own tests.
   user `auto_approve_tools` loop**. A governance deny wins over a user
   auto-approve, and the read-only auto-approve fast-path runs strictly AFTER
   both the deny-floor and `gate_decision`, so a read-only classification can
-  never re-admit a denied/governed call. The governance `commands` deny is
+  never re-admit a denied/governed call. **Inside** that fast-path the semantic
+  `tool_kind` is authoritative and is tested first, as an ALLOW-list: only
+  `read`/`fetch` auto-approve, and every other non-empty kind falls through to
+  interactive approval before any title-keyed branch (including the computer-use one)
+  is consulted — the title is the agent-authored `description`, and `tool_kind`
+  itself is a verbatim ACP string, so a denylist of mutating kinds cannot be
+  complete. See `security.md`, "Read-only auto-approve". The governance `commands` deny is
   evaluated in `gate_decision` **independently of** the user's keystone
   opt-out state, so a rule the operator disabled in `denied_commands.json` is
   STILL denied when the enterprise ceiling pins the equivalent pattern —
@@ -1102,7 +1118,8 @@ a product decision, not an oversight, and it is a reversal: an earlier revision
 shipped eight rows here (`capabilities.computer_use`, `computer_use.actions`,
 `.apps`, `.app_names`, `.observations`, `.targets`, `.approval`, and
 `capabilities.computer_use_pointer`) plus two custom matchers (`bundle_id`,
-`cu_action`). All of it was removed.
+`cu_action`). All of it was removed — neither matcher is registered, and naming
+either one now aborts governance boot (see the `_MATCHERS` note above).
 
 **What replaced it.** One operator opt-in on the keystone `computer_use.json`,
 which `security._SENSITIVE_HOME_DIRS` fences the agent away from. The agent cannot
@@ -1127,8 +1144,10 @@ Two things computer use still shares with this module, neither of them a decisio
 
 * `_CU_ACTION_CLASSES` — the code-owned `observe` / `mutate` / `pointer` /
   `keyboard` / `text_entry` / `control` labels. `hooks` reads them for the
-  read-only auto-approve, and `gate.is_mutating_action` reads them so "which verbs
-  synthesize input" has one definition;
+  read-only auto-approve — the one live consumer. `gate.is_mutating_action` reads
+  them too so "which verbs synthesize input" has one definition, but it currently has
+  no caller in the package: it is retained as the accessor an edition would use
+  rather than re-deriving the classes, not as a control on the dispatch path;
 * `CU_MCP_SERVER` / `is_computer_use_title` — the server key and title prefix, used
   by `classify_tool_title` to route a computer-use title to the ordinary `mcp` pair.
 

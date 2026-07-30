@@ -1221,6 +1221,92 @@ class _InlineThread:
             self._target(*self._args)
 
 
+def _app_token_middleware(app_name: str):
+    """Stand in for ``token_auth_middleware``'s app-token grant.
+
+    The real middleware sets BOTH ``request["user"]`` and ``request["app"]`` for an
+    app-scoped token — which is the trap: ``request["user"]`` is truthy, so a handler
+    that only checks it treats an app exactly like the dashboard operator.
+    """
+
+    @web.middleware
+    async def _mw(request: web.Request, handler):
+        request["user"] = "dashboard"
+        request["app"] = app_name
+        request["internal_auth"] = True
+        return await handler(request)
+
+    return _mw
+
+
+def _app_client(app_name: str = "pwn") -> TestClient:
+    app = web.Application(middlewares=[_app_token_middleware(app_name)])
+    app.router.add_get("/api/computer-use/config", cu_api.api_computer_use_config_get)
+    app.router.add_put("/api/computer-use/config", cu_api.api_computer_use_config_save)
+    return TestClient(TestServer(app))
+
+
+class TestAnAppTokenCannotWriteTheKeystone:
+    """The one write the keystone design exists to prevent (reviewer finding).
+
+    ``enable_state.save_state`` deliberately bypasses ``is_sensitive_path`` — that is
+    what lets the operator's own Settings panel write a file the agent cannot read or
+    write with a tool. So this handler is the only thing standing between an
+    App-Kit-scoped token and ``enabled: true``. It used to check nothing at all:
+    ``request["user"]`` is truthy for an app token too, and an app whose manifest
+    declares ``permissions.api: ["/api/computer-use"]`` passes
+    ``app_token_path_allowed`` (verified: a bare ``/api/computer-use`` pattern matches
+    ``/api/computer-use/config`` on the path boundary). An agent that can author an app
+    manifest could therefore mint a token and turn on its own desktop automation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_put_is_refused_and_the_keystone_is_untouched(
+        self, home, state_file, mock_sel
+    ):
+        async with _app_client() as client:
+            resp = await client.put("/api/computer-use/config", json={"enabled": True})
+        assert resp.status == 403
+        # THE assertion: refused BEFORE any write — the keystone never appears.
+        assert (
+            not state_file.exists()
+            or json.loads(state_file.read_text()).get(STATE_KEY_ENABLED) is not True
+        )
+        # A security-boundary denial is audited (backend-security-controls).
+        assert mock_sel.log_api_access.called
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_cannot_edit_the_target_lists_either(self, home, state_file):
+        """``allowed_apps`` widening is the same boundary as the enable."""
+        async with _app_client() as client:
+            resp = await client.put(
+                "/api/computer-use/config", json={"allowed_apps": ["com.apple.Terminal"]}
+            )
+        assert resp.status == 403
+        assert not state_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_cannot_shrink_a_budget_either(self, home, config_file):
+        """Refused at the door, before the widen/narrow distinction is reached.
+
+        The 409 ceiling logic distinguishes widening from narrowing; this gate does
+        not, deliberately — an app token has no business writing ANY of the
+        operator's computer-use configuration, and a narrow-only exception would be a
+        second code path to keep correct for no user benefit.
+        """
+        async with _app_client() as client:
+            resp = await client.put("/api/computer-use/config", json={"max_tree_nodes": 200})
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_the_dashboard_user_is_still_allowed(self, home, state_file):
+        """The gate must key on ``app``, not break the operator's own panel."""
+        async with _client() as client:
+            resp = await client.put("/api/computer-use/config", json={"enabled": True})
+        assert resp.status == 200
+        assert json.loads(state_file.read_text(encoding="utf-8"))[STATE_KEY_ENABLED] is True
+
+
 class TestMixedSaveIsAllOrNothing:
     """A mixed state+limits PUT must not half-apply (reviewer finding).
 
@@ -1456,9 +1542,7 @@ class TestAMalformedKeystoneStillRendersSettings:
     async def test_a_LIST_of_malformed_entries_is_handled_too(self, state_file: Path):
         """``[{"name": "Preview"}]`` is a list, so the container check passes and every
         item is dropped — the same widening bug one level down, and the same 500."""
-        state_file.write_text(
-            json.dumps({"enabled": True, "allowed_apps": [{"name": "Preview"}]})
-        )
+        state_file.write_text(json.dumps({"enabled": True, "allowed_apps": [{"name": "Preview"}]}))
         async with _client() as client:
             resp = await client.get("/api/computer-use/config")
         assert resp.status == 200
@@ -1467,9 +1551,7 @@ class TestAMalformedKeystoneStillRendersSettings:
     async def test_a_HEALTHY_policy_reports_no_error(self, state_file: Path):
         """Inverse guard: the fallback must not fire on a well-formed file, or every
         real allow-list would render as unreadable."""
-        state_file.write_text(
-            json.dumps({"enabled": True, "allowed_apps": ["Preview", "Notes"]})
-        )
+        state_file.write_text(json.dumps({"enabled": True, "allowed_apps": ["Preview", "Notes"]}))
         async with _client() as client:
             body = await (await client.get("/api/computer-use/config")).json()
         assert body["allowed_apps"] == ["preview", "notes"]

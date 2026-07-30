@@ -30,10 +30,11 @@ discipline structurally rather than waiting for a crash:
 
   Note: the module DOES call ``CGEventPost`` now. The shipped
   ``click_method: "global"`` path deliberately moves the operator's real cursor,
-  inverting the original "the pointer never moves" guarantee, and it is reachable
-  only after both the keystone ``allow_pointer_move`` opt-in and the
-  ``capabilities.computer_use_pointer`` governance permit clear at the dispatch
-  chokepoint. What is pinned here is the CALL-SITE SET, not the symbol's absence.
+  inverting the original "the pointer never moves" guarantee. It needs no second
+  opt-in — there is no ``allow_pointer_move`` keystone flag and no
+  ``computer_use.*`` governance scope — but the model must NAME the method
+  (``auto`` never resolves onto it) and every use is SEL-audited under its own
+  ``tool_kind``. What is pinned here is the CALL-SITE SET, not the symbol's absence.
 
 Runs on every platform: it reads the module's declarative table and its source
 text, and never loads a framework or calls a symbol.
@@ -288,9 +289,12 @@ def test_global_event_tap_is_confined_to_the_pointer_moving_functions():
     default for every keyboard, scroll and app-scoped mouse path — it delivers to
     the app the model addressed rather than to whatever the operator is actually
     working in — and the system-wide HID tap is reachable from exactly two
-    functions, both of which are only entered once BOTH the keystone
-    ``allow_pointer_move`` opt-in and the ``capabilities.computer_use_pointer``
-    governance permit have cleared at the dispatch chokepoint.
+    functions, both of which are only entered for a request whose ``click_method``
+    the model NAMED as ``global`` (``auto`` never resolves onto it, an invariant with
+    its own test) and whose ``moves_pointer`` the chokepoint therefore set. There is
+    no second opt-in gating them: no ``allow_pointer_move`` keystone flag and no
+    ``computer_use.*`` governance scope — accountability (a dedicated SEL
+    ``tool_kind``) replaced authorization here.
 
     So this pins the CALL SITES rather than forbidding the name: the two
     pointer-moving functions may call it, nothing else may, and any new caller is a

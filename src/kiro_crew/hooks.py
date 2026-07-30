@@ -597,30 +597,49 @@ class HookManager:
             from kiro_crew.slack.gateway import _is_read_only_tool
 
             kind = (tool_kind or "").strip().lower()
-            # Computer-use observation tools ("reads don't nag" for this feature
-            # too). Deliberately an EXPLICIT allowlist keyed on the code-owned
-            # action-class table rather than the `_is_read_only_tool` title
-            # heuristic: that heuristic keys on a leading verb, so it would
-            # auto-approve every `computer_*` tool or none of them depending on
-            # the name, and an agent-supplied title must never decide whether a
-            # keystroke is synthesized into somebody's window.
-            #
-            # Gated on the keystone primary enable so the auto-approval cannot
-            # exist while the feature is off — a disabled feature's tools should
-            # fall through to interactive approval (where they will be refused by
-            # the dispatcher anyway), not be silently pre-approved. Reached only
-            # AFTER the deny floor, _governance_denial and the approval-floor
-            # clamp above, so a governed fleet's read-only ceiling and its
-            # `interactive` approval floor both still win.
-            if _cu_read_only_auto_approve(tool_name):
-                return ToolHookResult.auto_approve()
-            # Trust the SEMANTIC kind first. The (agent-supplied, spoofable)
-            # title heuristic is only a fallback for when the kind is
-            # absent/unknown and NOT a known mutating/executing kind, so a write
-            # tool with a read-sounding title can't auto-approve.
+            # Trust the SEMANTIC kind, as an ALLOW-list. `tool_kind` is passed
+            # through verbatim from the ACP `kind` field (``acp/_dispatch.py``), so it
+            # is an arbitrary agent-influenced string and a DENYLIST of mutating kinds
+            # can never be complete — `kind="other"` is a real ACP value. Only these
+            # two spellings mean "this cannot change anything".
             if kind in _READ_ONLY_TOOL_KINDS:
                 return ToolHookResult.auto_approve()
-            if kind not in _WRITE_TOOL_KINDS and not kind and _is_read_only_tool(tool_name):
+            # Computer-use observation tools ("reads don't nag" for this feature too),
+            # and they require an EXPLICIT read-only kind — reached only under the
+            # branch above. Two agent-controlled inputs meet here and neither may
+            # decide alone:
+            #
+            #   * `tool_name` comes from `select_tool_title`, which prefers the
+            #     LLM-authored `description`, so a mutating call can title itself
+            #     `…__computer_get_state`;
+            #   * an omitted `kind` is indistinguishable from an honest one.
+            #
+            # Keying the class lookup on the title alone therefore let a `computer_click`
+            # forge an observation title, omit its kind, and skip the approval prompt
+            # entirely once the operator enabled computer use — the prompt that is the
+            # last thing between an injected agent and a real click on the operator's
+            # desktop. Demanding the kind means the two inputs must AGREE.
+            #
+            # The class table is still consulted (never `_is_read_only_tool`, whose
+            # leading-verb heuristic would auto-approve every `computer_*` tool or none
+            # depending on the name), and it is still gated on the keystone primary
+            # enable so no auto-approval can exist while the feature is off. Reached
+            # only AFTER the deny floor and `_governance_denial`, so a governance deny
+            # still wins. There is deliberately no approval-floor clamp to mention: the
+            # `computer_use.approval` ordinal was removed with the rest of that model.
+            if kind in _READ_ONLY_TOOL_KINDS and _cu_read_only_auto_approve(tool_name):
+                return ToolHookResult.auto_approve()
+            # Any other non-empty kind falls through to interactive approval, whatever
+            # the call titles itself. Over-blocking costs one prompt; under-blocking
+            # costs the prompt.
+            if kind:
+                return ToolHookResult.allow()
+            # Kind ABSENT: the pre-existing generic fallback, unchanged. It is safe for
+            # computer use specifically because `_is_read_only_tool` matches on a
+            # leading read-ish verb and rejects EVERY `mcp__kirocrew-computer__*` title
+            # (verified) — so a forged computer-use title cannot reach an auto-approve
+            # through this path either.
+            if _is_read_only_tool(tool_name):
                 return ToolHookResult.auto_approve()
 
         return ToolHookResult.allow()
@@ -653,10 +672,16 @@ class HookManager:
 # "move"; add conservatively (auto-approving trusts an agent-supplied field).
 _READ_ONLY_TOOL_KINDS: frozenset[str] = frozenset({"read", "fetch"})
 
-# Semantic kinds that mutate/execute — a title heuristic must NEVER auto-approve
-# these, even if the agent-supplied title reads like a read (e.g. a write tool
-# labelled "Read project status"). The title fallback only applies when the kind
-# is absent/unknown.
+# Semantic kinds known to mutate/execute. DOCUMENTATION ONLY — the gate no longer
+# branches on this set, and must not start again: `tool_kind` arrives verbatim from
+# the ACP `kind` field, so any denylist of mutating kinds is incomplete by
+# construction (`kind="other"` is a real value that a denylist auto-approved). The
+# auto-approve decision is an ALLOW-list on `_READ_ONLY_TOOL_KINDS` instead, and
+# every other non-empty kind falls through to interactive approval.
+#
+# Kept because it records which kinds we have actually seen mutate — useful when
+# judging whether a new kind belongs in the read-only set — and because deleting a
+# named constant is how the next reader loses that context.
 _WRITE_TOOL_KINDS: frozenset[str] = frozenset(
     {"edit", "execute", "delete", "move", "write", "create"}
 )

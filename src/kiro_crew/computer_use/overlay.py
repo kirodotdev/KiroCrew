@@ -39,6 +39,7 @@ import asyncio
 import json
 import logging
 import sys
+import threading
 from typing import Any, Sequence
 
 from kiro_crew import platform_compat
@@ -435,19 +436,36 @@ def points_payload(points: Sequence[tuple[float, float]]) -> "list[list[float]]"
 # cursors would fight over the same screen.
 
 _shared_overlay: "CursorOverlay | None" = None
+_shared_overlay_lock = threading.Lock()
 
 
 def get_shared_overlay() -> CursorOverlay:
     """Process-wide :class:`CursorOverlay` singleton.
 
-    No lock: construction is a handful of attribute assignments with no I/O, and
-    the gateway's callers all live on the one event loop. The ``asyncio.Lock``
-    that actually matters is created inside the instance, in the running loop.
+    A ``threading.Lock``, like every sibling singleton in this package
+    (``backend``, ``index``, ``macos_ffi``, ``apps_macos``) — an earlier revision
+    skipped it on the premise that "the gateway's callers all live on the one event
+    loop", and they do not. The only caller is :func:`show_pointer_motion`, which is
+    SYNC and is invoked from ``tools._perform`` inside ``dispatch_tool``, offloaded
+    onto ``subprocess_executor()`` — an 8-worker pool. Nothing upstream serializes
+    the pointer path, so two concurrent ``click_method: "global"`` clicks both saw
+    ``None`` here, each constructed a ``CursorOverlay``, and one was handed out while
+    the other was orphaned. The orphan is unreachable afterwards (``stop`` and
+    ``reset_shared_overlay`` both go through this global) so its ``overlay_proc``
+    child leaks for the gateway's lifetime — and each instance's own
+    ``asyncio.Lock`` cannot serialize across instances, so the two fake cursors
+    fight over the same screen, which is precisely what this singleton exists to
+    prevent.
+
+    Construction stays cheap and I/O-free (the ``asyncio.Lock`` that matters is
+    created lazily inside the instance, in the running loop), so holding this lock
+    cannot block meaningfully.
     """
     global _shared_overlay
-    if _shared_overlay is None:
-        _shared_overlay = CursorOverlay()
-    return _shared_overlay
+    with _shared_overlay_lock:
+        if _shared_overlay is None:
+            _shared_overlay = CursorOverlay()
+        return _shared_overlay
 
 
 def reset_shared_overlay() -> None:

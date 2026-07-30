@@ -83,9 +83,10 @@ export interface ComputerUsePermissions {
 /** Computer-use config as returned by GET /api/computer-use/config.
  *
  * `enabled` comes from the keystone `computer_use.json`, not `config.json`; the
- * numeric fields are the config.json budgets. `read_only` is derived from
- * governance (never from the platform — an unsupported platform is the separate
- * `supported: false` branch). */
+ * numeric fields are the config.json budgets. There is deliberately no
+ * `read_only`/governance-lock field — computer use is one operator opt-in with no
+ * `computer_use*` governance scope, so nothing can forbid it and there is nothing to
+ * grey out. An unsupported platform is the separate `supported: false` branch. */
 export interface ComputerUseConfigData {
   enabled: boolean
   supported: boolean

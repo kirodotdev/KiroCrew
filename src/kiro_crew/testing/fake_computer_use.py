@@ -345,10 +345,19 @@ class FakeComputerUseBackend(ComputerUseBackend):
             )
         elements, truncated, depth_truncated = _walk(root, req.max_nodes, req.max_depth)
         has_secure = any(rec.secure for rec in elements)
-        # Mirror the production rule: a window holding ANY secure element gets no
-        # pixels at all, because a password field's rendered glyphs are a
-        # credential even after the tree redacted its value.
-        want_image = req.want_image and not has_secure
+        # Mirror BOTH production capture refusals (``capture_macos``), not just the
+        # obvious one:
+        #  * a window holding ANY secure element gets no pixels at all, because a
+        #    password field's rendered glyphs are a credential even after the tree
+        #    redacted its value;
+        #  * a TRUNCATED walk also gets none, because it cannot prove the window is
+        #    free of a secure field — "unknown" has to behave like "present" at the
+        #    one gate that decides whether pixels leave the process.
+        # The second was missing here, so ``snapshot(max_nodes=1, want_image=True)``
+        # returned ``truncated=True`` WITH an image attached and deleting the
+        # production branch left the whole suite green. A downstream consumer driving
+        # this fake would also have seen a capture the real driver refuses.
+        want_image = req.want_image and not has_secure and not (truncated or depth_truncated)
         snap = Snapshot(
             app=app,
             elements=elements,

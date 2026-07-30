@@ -2485,8 +2485,8 @@ class ComputerUseConfig:
             "Cursor Motion",
             "Draw a visible cursor gliding to each target before a real-pointer "
             "click, so the operator can see what the agent is doing. macOS only; "
-            "purely visual and never a permit — the pointer opt-in and the "
-            "governance permit are what allow the click itself.",
+            "purely visual and never a permit — the drawn cursor is not the pointer, "
+            "and turning this on grants no new capability.",
         ),
     )
 
@@ -3452,7 +3452,9 @@ class KiroCrewConfig:
     )
     weixin: WeixinConfig = field(
         default_factory=WeixinConfig,
-        metadata=_meta("WeChat", "Weixin (iLink personal WeChat) integration settings.", tags=["weixin"]),
+        metadata=_meta(
+            "WeChat", "Weixin (iLink personal WeChat) integration settings.", tags=["weixin"]
+        ),
     )
     discord: DiscordConfig = field(
         default_factory=DiscordConfig,

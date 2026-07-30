@@ -139,7 +139,7 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 - **App admission trust root (keystone invariant)** — `~/.kiro/crew/app_admission.json` (the sole fleet-controlled App Kit admission ceiling loaded by `apps/admission.py`) is on the sensitive floor, read- and write-blocked through the shared file gate. Because an **absent** policy falls open (admit), a governed agent that could `fs_write`/`tee`/`rm` this file could delete or neuter its own admission ceiling and re-admit a banned/unsigned app. Adding it to `_SENSITIVE_HOME_DIRS` also arms the bash write/extract matcher (`tee`/`rm`/redirect). The gateway's own loader (`apps.admission.load_app_admission_policy`) opens it directly via `path.read_text()` and does **not** route through `is_sensitive_path()`, so legitimate policy loading is unaffected.
 - **Runtime exec dir trust root (run-marker sandbox-escape)** — the `run/` dir under the crew home is on the sensitive floor (under every `_CREW_HOME_PREFIXES` entry) because the gateway executes its contents **outside** the agent sandbox: the sandbox launcher scripts (`sandbox.py` execs `python <home>/run/kirocrew_sandbox_*.py`) and the remote-instance run-marker `gateway-<port>.bin` (`instances/run_marker.py`), whose recorded launcher path the SSH token-mint **and** the `restart_remote` action read and `exec` on the remote host. Without this floor entry a prompt-injected / sandboxed agent that could `fs_write` (or `tee`/redirect) a marker — or a launcher — into `run/` could point it at an attacker-controlled binary that the next routine token refresh or restart execs unsandboxed (owner + `-x` checks don't help; agent writes run as the same user) — a reachable sandbox escape. Classifying the whole dir also arms the bash write/extract matcher. The gateway's own writers (`instances/run_marker.write_marker` via `atomic_write`, and the sandbox launcher writer) open these paths directly and do **not** route through `is_sensitive_path()`, so gateway startup/spawn is unaffected.
 
-- **Computer-use primary enable (keystone leaf `computer_use.json`)** — the on/off switch for native desktop GUI automation (see [computer-use.md](computer-use.md)) is `~/.kiro/crew/computer_use.json`, added to `_CREW_SECRET_LEAVES` so it is read+write-blocked under every `_CREW_HOME_PREFIXES` entry, on both the tool path (`is_sensitive_path`) and every shell form (`is_sensitive_bash_command` — `cat`, `>`, `tee`, `rm`, plus `tar -C` / `unzip -d` extraction into the trust root via `_EXTRACT_INTO_TRUST_ROOT_RE`). **It is deliberately NOT in `config.json`**, and the precedent is the denied-command opt-out immediately below: `is_sensitive_write_path("~/.kiro/crew/config.json")` is `True`, but `is_sensitive_bash_command("echo x > ~/.kiro/crew/config.json")` is `None` and `is_denied(...)` is `None` (`_WRITE_PROTECTED_BASH_LEAVES` is `('.data-home-ready',)` only), so a `config.json` toggle would be flippable by a prompt-injected agent through any redirect. A primary enable for full desktop observation plus input synthesis is a **security ceiling**, the same class as the deny opt-out, so it lives on the keystone. Reads fail soft to `{}` → **disabled**, and `is_enabled()` is a strict identity test against `True` (a hand-edited `"enabled": "false"` or `1` does not enable desktop control). The only writer is the dashboard PUT handler, which does not route through the agent tool gate; `enable_state.load_state()` opens the file directly, so legitimate reads are unaffected. The same file also carries `allow_pointer_move` — the opt-in for the one click path that warps the operator's REAL mouse pointer (`click_method: "global"`) — so that flag inherits the identical protection with no new leaf: it is read with the same strict `is True` identity test, and it is only half the gate (the `capabilities.computer_use_pointer` governance row is the other half, and neither substitutes for the other).
+- **Computer-use primary enable (keystone leaf `computer_use.json`)** — the on/off switch for native desktop GUI automation (see [computer-use.md](computer-use.md)) is `~/.kiro/crew/computer_use.json`, added to `_CREW_SECRET_LEAVES` so it is read+write-blocked under every `_CREW_HOME_PREFIXES` entry, on both the tool path (`is_sensitive_path`) and every shell form (`is_sensitive_bash_command` — `cat`, `>`, `tee`, `rm`, plus `tar -C` / `unzip -d` extraction into the trust root via `_EXTRACT_INTO_TRUST_ROOT_RE`). **It is deliberately NOT in `config.json`**, and the precedent is the denied-command opt-out immediately below: `is_sensitive_write_path("~/.kiro/crew/config.json")` is `True`, but `is_sensitive_bash_command("echo x > ~/.kiro/crew/config.json")` is `None` and `is_denied(...)` is `None` (`_WRITE_PROTECTED_BASH_LEAVES` is `('.data-home-ready',)` only), so a `config.json` toggle would be flippable by a prompt-injected agent through any redirect. A primary enable for full desktop observation plus input synthesis is a **security ceiling**, the same class as the deny opt-out, so it lives on the keystone. Reads fail soft to `{}` → **disabled**, and `is_enabled()` is a strict identity test against `True` (a hand-edited `"enabled": "false"` or `1` does not enable desktop control). The only writer is the dashboard PUT handler, which does not route through the agent tool gate; `enable_state.load_state()` opens the file directly, so legitimate reads are unaffected. The file carries no separate pointer opt-in: an earlier revision documented an `allow_pointer_move` flag (plus a `capabilities.computer_use_pointer` governance row) as a second consent gate for the one click path that warps the operator's REAL mouse pointer (`click_method: "global"`), and both were removed by product decision — `PolicyConfig.from_state` reads only `allowed_apps` / `extra_denied_apps`, so writing the flag has no effect and must not be re-documented without being re-implemented. That path is instead contained by requiring the model to NAME the method (`auto` never resolves onto it) and by a dedicated SEL `tool_kind` on every use.
 
 **Write-only config protection** (`is_sensitive_write_path` in `security.py` + `hooks.py`) — runtime config files are protected against *modification* by agent tools while staying *readable*:
 - `~/.kiro/crew/config.json` and `~/.kiro/crew/config.local.json` are in a write-only tier (`_WRITE_PROTECTED_HOME_PATHS`, expanded under every `_CREW_HOME_PREFIXES` entry so the pre-move legacy copy is covered too), deliberately NOT in the read+write `_SENSITIVE_HOME_DIRS` list above — the dashboard file viewer, `cat`, and knowledge indexing legitimately read config.
@@ -520,10 +520,50 @@ branch (`_cu_read_only_auto_approve`), keyed on the code-owned
 `_is_read_only_tool` title heuristic — that heuristic keys on a leading verb, and
 an agent-supplied title must never decide whether a keystroke is synthesized into
 somebody's window. It is additionally gated on the keystone primary enable, so no
-auto-approval can exist while the feature is off. Immediately above it,
-`_cu_approval_floor_forces_prompt` implements the `computer_use.approval` ordinal
-clamp by suppressing BOTH auto-approve branches when a policy sets the floor to
-`interactive`; see [governance.md](governance.md).
+auto-approval can exist while the feature is off. There is **no**
+`computer_use.approval` ordinal and no approval-floor clamp helper: that row was
+removed with the rest of the computer-use governance model, so nothing makes the
+feature observation-only; see [governance.md](governance.md).
+
+**The semantic `tool_kind` is an ALLOW-list, evaluated before ANY title-keyed
+fast-path.** Only `tool_kind in _READ_ONLY_TOOL_KINDS` (`read`/`fetch`) auto-approves
+outright; **every other non-empty kind returns `allow`** — i.e. falls through to
+interactive approval — before the computer-use check or `_is_read_only_tool` is
+consulted. A title-keyed branch is reachable only when the kind is **absent**.
+
+**The computer-use auto-approve additionally requires an EXPLICIT read-only kind** —
+it is reached only *under* that allow-list branch, never on an absent kind. Two
+agent-controlled inputs meet there and neither may decide alone: the title, and the
+absence of a kind (indistinguishable from an honest omission). They must agree.
+
+Three findings shaped this, and all are worth keeping in view:
+
+1. `tool_name` is the display title, and `select_tool_title` (`acp/_dispatch.py`)
+   prefers the LLM-authored `description`, so it is **agent-controlled** — as
+   `on_tool_call`'s own docstring states. The computer-use branch originally sat
+   *above* any kind test, so once the operator enabled computer use, a mutating call
+   titled `mcp__kirocrew-computer__computer_get_state` skipped the prompt entirely
+   (verified for all six mutating kinds).
+2. The first fix was a **denylist** (`kind in _WRITE_TOOL_KINDS` → `allow`), and it
+   was still fail-open: `tool_kind` is passed through verbatim from the ACP `kind`
+   field, so it is an arbitrary agent-influenced string and no enumeration of
+   mutating kinds can be complete. `kind="other"` is a real ACP value and sailed
+   past it. Hence the inversion — deny-by-default on the kind.
+3. The allow-list still let an **omitted** kind through to the computer-use branch,
+   so a `computer_click` could forge an observation title, send no kind, and
+   auto-approve. Fixed by demanding the explicit kind. Deliberately *not* fixed by
+   blocking absent kinds outright: the generic `_is_read_only_tool` fallback rejects
+   every `mcp__kirocrew-computer__*` title anyway (asserted by a test, so it cannot
+   quietly start matching), so a blanket block would have regressed every ordinary
+   tool's "reads don't nag" behaviour for no security gain.
+
+`_WRITE_TOOL_KINDS` survives as documentation of which kinds have been observed to
+mutate; **the gate must not branch on it again**. Over-blocking here costs one
+approval prompt, under-blocking costs the prompt that is the last thing between an
+injected agent and a click. Pinned by
+`test_hooks.py::TestMutatingKindBeatsTheTitle`, which asserts the unknown-kind cases
+behaviourally AND asserts over the AST that `on_tool_call` references no
+mutating-kind denylist.
 
 ### Computer use: a pixel/AX surface the path matchers cannot see
 
@@ -554,8 +594,10 @@ Three controls carry the weight instead:
    feature's primary enable and the denied-command opt-out — controls that are
    out-of-band precisely so the agent cannot reach them. The list is
    operator-EXTENSIBLE (`extra_denied_apps` can only ADD) and never
-   operator-shrinkable; the governance `computer_use.apps` ruleset is the
-   enterprise force-pin on top.
+   operator-shrinkable. There is no enterprise force-pin on top: the
+   `computer_use.apps` ruleset was removed with the rest of that model, so
+   `PolicyConfig.from_state` reads only `allowed_apps` / `extra_denied_apps` and the
+   shipped entry plus the operator's own additions are the whole list.
 2. **The secure-SUBROLE check**, and it must be the subrole. A real macOS password
    box reports `AXRole = "AXTextField"` (innocuous) with
    `AXSubrole = "AXSecureTextField"` and a **readable** `AXValue` — live-verified.

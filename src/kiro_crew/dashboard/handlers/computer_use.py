@@ -395,19 +395,16 @@ def _snapshot() -> dict[str, Any]:
         # operator set no restriction — and the panel must be able to tell the two
         # apart rather than presenting a confidently empty allow-list.
         "policy_error": policy_error,
-        # ``read_only`` is what the panel keys every control's ``disabled`` on, and
-        # it is deliberately ``forbidden``-only rather than ``locked``. A NARROWED
-        # ceiling still PERMITS the capability — it just bounds what the automation
-        # may do — so the user must still be able to opt in; the PUT would succeed
-        # and locking the toggle would take the choice away for no reason. Only a
-        # ceiling that forbids the capability outright (or one we could not
-        # evaluate, which the summary reports as ``forbidden``) disables the
-        # controls, and then the PUT's own 409 is the authoritative refusal.
-        #
-        # Derived from GOVERNANCE, never from the platform: an unsupported platform
-        # renders a reason instead of controls, which is a separate branch. Keeping
-        # the two apart means a governed macOS host and an ungoverned Linux host can
-        # never be confused for one another.
+        # There is deliberately NO ``read_only`` / governance-lock field here, and no
+        # ``409`` on the PUT. Computer use is one operator opt-in on the keystone:
+        # ``SCOPE_CATALOG`` carries no ``computer_use*`` row, so there is no ceiling
+        # to report and nothing for the panel to grey out. An earlier revision of
+        # this handler documented both (a ``forbidden``-only ``read_only`` the panel
+        # would key ``disabled`` on, and a 409 when a ceiling forbade a widening
+        # request) — the governance model they belonged to was removed by product
+        # decision, and the prose outlived it, promising a refusal that never fires.
+        # The write boundary that DOES hold is the app-token gate on the PUT (an app
+        # token can never write the keystone); see ``api_computer_use_config_save``.
         # Ceilings, so the panel's number inputs bound themselves from the server
         # rather than re-spelling the limits in TypeScript.
         "limits": {key: [low, high] for key, (low, high) in _INT_LIMITS.items()},
@@ -537,14 +534,47 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
     refreshed GET payload so the panel re-renders from server truth rather than
     from its own optimistic guess.
 
-    Refuses with **409** when the governance ceiling forbids computer use and the
-    request would WIDEN the surface — matching ``api_denied_command_builtin_toggle``'s
-    precedent: the request conflicts with immutable server state (the ceiling), it
-    is not an auth failure of the caller. Turning the feature OFF, and shrinking a
-    budget, are always allowed: narrowing can never conflict with a ceiling, and a
-    user must never be locked out of switching this off.
+    **Dashboard-browser callers only.** An App-Kit-scoped token is refused with 403
+    before the body is even read: ``request["user"]`` is truthy for an app token too,
+    so the cookie check alone does not separate the two, and an app that declares
+    ``permissions.api: ["/api/computer-use"]`` in its manifest passes
+    ``app_token_path_allowed``. This is the ONE write the keystone design exists to
+    prevent — ``enable_state.save_state`` deliberately bypasses ``is_sensitive_path``
+    (that is what lets the operator's own Settings panel write a file the agent
+    cannot), so without this gate an agent that can author an app manifest could read
+    its own ``.app_secret``, mint an app token and flip ``enabled: true`` on its own
+    desktop automation. Same guard as ``handlers/kiro_prerequisite.py`` and
+    ``handlers/messaging.py``'s notification push.
+
+    **There is no governance ceiling on this route, and therefore no 409.** Computer
+    use is one operator opt-in: ``SCOPE_CATALOG`` carries no ``computer_use*`` row, so
+    there is nothing that can forbid a widening request. An earlier revision of this
+    docstring promised a 409 "when the governance ceiling forbids computer use"; the
+    model it referred to was removed by product decision and the sentence outlived it,
+    describing a refusal no code path can produce (there is no ``status=409`` in this
+    module). Do not re-document it without re-implementing it — see
+    ``docs/system-specs/modules/governance.md`` for why computer use is deliberately
+    ungoverned. Other outcomes: ``400`` for a malformed body or an out-of-range value,
+    ``403`` for an app token (above), and ``500`` for a corrupt keystone or
+    ``config.json``, which is left byte-identical rather than clobbered
+    (``StateCorruptError``, the ``ConfigCorruptError`` precedent).
     """
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
+
+    if request.get("app"):
+        # Audited as a security-boundary denial before responding
+        # (backend-security-controls: every denial emits SEL).
+        _audit(
+            request,
+            operation=OP_CONFIG_SAVE,
+            outcome="denied",
+            resources=request.path,
+            error="app tokens may not write the computer-use keystone",
+        )
+        return web.json_response(
+            {"error": "dashboard user required"},
+            status=403,
+        )
 
     try:
         body = await request.json()
@@ -609,9 +639,12 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
         _audit(request, operation=OP_CONFIG_SAVE, outcome="denied", resources="empty_patch")
         return web.json_response({"error": "no known computer-use fields in body"}, status=400)
 
-    # ── Governance ──
-    # Only a request that could WIDEN the surface is gated: enabling the feature,
-    # or editing the operator's own target lists (which a ceiling may pin).
+    # No governance step here, deliberately. This block used to be a `# ──
+    # Governance ──` header over an explanation of widen-gating with no code beneath
+    # it: the ceiling it described (and the 409 it would have returned) was removed
+    # with the rest of the computer-use governance model, and only the prose
+    # survived. The write boundary that DOES hold is the app-token gate at the top of
+    # this handler.
 
     # ── Write ──
     # Read the CURRENT enable before mutating, so the session reset below fires only

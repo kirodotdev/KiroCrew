@@ -84,10 +84,16 @@ _EXIT_PROBLEM = 1
 
 # The surface identity ``call`` presents to the gate. ``cli_chat`` is the repo's
 # existing key for "a human at a terminal" — ``sel._infer_source`` maps it to the
-# ``cli`` surface, which is deliberately NOT in ``gate.UNATTENDED_SURFACES`` and
-# matches none of ``gate.UNATTENDED_KEY_PREFIXES``, so the unattended-surface
-# refusal does not fire. Reusing it (rather than minting a private key) is what
-# makes an operator profile bound to the CLI surface govern this command too.
+# ``cli`` surface, so the SEL audit record attributes the call correctly. Reusing it
+# (rather than minting a private key) is what keeps the audit trail readable and lets
+# an operator profile bound to the CLI surface govern this command too.
+#
+# It is NOT an authorization input: there is no unattended-surface refusal left to
+# avoid. ``gate.UNATTENDED_SURFACES`` / ``UNATTENDED_KEY_PREFIXES`` (which an earlier
+# revision of this comment cited) never existed in ``computer_use.gate`` after the
+# governance model was removed — the only ``_UNATTENDED_SURFACES`` in the tree is
+# ``platform/governance_profiles.py``'s, which selects a PROFILE and carries no
+# computer-use rule.
 _CLI_SESSION_KEY = "cli_chat"
 
 

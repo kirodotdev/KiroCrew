@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import json
+import threading
 
 import pytest
 
@@ -694,18 +695,57 @@ class TestShowPointerMotion:
         await asyncio.sleep(0)
         await asyncio.sleep(0)
 
-    def test_a_closed_loop_is_not_scheduled_onto(self, enabled):
-        """A gateway restart must not leave a stale reference we write into."""
+    def test_a_closed_loop_is_not_scheduled_onto(self, enabled, monkeypatch):
+        """A gateway restart must not leave a stale reference we write into.
+
+        ``monkeypatch``, not a bare assignment + ``del``: ``del
+        overlay_mod.get_shared_overlay`` removed the REAL module function rather
+        than a shadow of it (an attribute assignment rebinds the module global, so
+        deleting it deletes the function), leaving every later test in the same
+        process to exercise a module missing its own singleton accessor — and to pass
+        vacuously. ``monkeypatch.setattr`` restores the original on teardown.
+        """
         loop = asyncio.new_event_loop()
         overlay_mod.bind_gateway_loop(loop)
         loop.close()
         calls: list = []
-        overlay_mod.get_shared_overlay = lambda: calls.append(1)  # noqa: E731
-        try:
-            overlay_mod.show_pointer_motion(1.0, 2.0)
-        finally:
-            del overlay_mod.get_shared_overlay
+        monkeypatch.setattr(overlay_mod, "get_shared_overlay", lambda: calls.append(1))
+        overlay_mod.show_pointer_motion(1.0, 2.0)
         assert calls == []
+
+    def test_the_shared_overlay_is_one_instance_under_thread_contention(self):
+        """The singleton must hold on the pool the pointer path actually runs on.
+
+        ``show_pointer_motion`` is SYNC and is called from ``tools._perform`` inside
+        ``dispatch_tool``, which the gateway offloads onto ``subprocess_executor()``
+        — an 8-worker pool — so ``get_shared_overlay`` is reached concurrently from
+        real threads. Without a lock two callers both saw ``None``, built two
+        ``CursorOverlay`` objects and orphaned one: unreachable afterwards (``stop``
+        and ``reset_shared_overlay`` both go through the global), so its
+        ``overlay_proc`` child leaks for the gateway's life, and the two fake cursors
+        fight over the screen — the exact thing the singleton exists to prevent.
+        """
+        overlay_mod.reset_shared_overlay()
+        try:
+            barrier = threading.Barrier(8)
+            got: list = []
+
+            def _race() -> None:
+                barrier.wait()
+                got.append(overlay_mod.get_shared_overlay())
+
+            threads = [threading.Thread(target=_race) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            assert len(got) == 8
+            assert len({id(instance) for instance in got}) == 1, (
+                "concurrent callers built more than one CursorOverlay — the orphan's "
+                "child process leaks and two fake cursors fight over the screen"
+            )
+        finally:
+            overlay_mod.reset_shared_overlay()
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1230,8 +1270,10 @@ class TestStructuralGuarantees:
 
         It must not import ``macos_ffi`` (the gateway's audited AX/CG surface) or
         any observation module: a purely cosmetic process with the ability to read
-        windows or capture pixels would be a second, unaudited plane for exactly
-        the data the ``computer_use.observations`` ceiling governs.
+        windows or capture pixels would be a second, unaudited plane for exactly the
+        data the tool path discloses under audit. (There is no
+        ``computer_use.observations`` ceiling any more — which makes the single
+        audited plane matter more, not less.)
         """
         import ast
         import inspect

@@ -83,8 +83,9 @@ cell. Then, in order:
   field looks identical to a writable one otherwise, and typing into it
   succeeds while the text goes nowhere. If a text field has no `(editable)`,
   it will not accept input — find the one that does instead of retrying.
-- **`<focused>`** — the caret is here. "Type this in" means this element, and
-  `computer_type_text` without an `element_index` goes here.
+- **`<focused>`** — the caret is here. "Type this in" usually means this element,
+  so pass ITS index — there is no indexless form (see the note under the action
+  table).
 - **`@ x=…,y=… WxH`** — position and size, **relative to the window**, in
   pixels. Absent when the element exposes no geometry (ordinary) or the window
   rect could not be read.
@@ -282,6 +283,7 @@ These are **answers**, not failures. Relay them and adapt; do not loop.
 |---|---|---|
 | a value ending in `…` | the text was cut at `text_limit`, not truncated by the app | re-snapshot with a larger `text_limit`; do NOT read the screenshot to recover it, and do not tell the user the content is missing |
 | `[tree truncated at N nodes]` | the window has more controls than the budget | raise `max_tree_nodes`, or scroll to bring your target into range — the rest of the window is real, you just have not been shown it |
+| `Screenshot suppressed: the accessibility tree was truncated …` | a cut-off walk cannot prove the window holds no password field, so no pixels were captured. Routine for a browser or an Electron app at the default budget | if you actually need the image, re-snapshot with a higher `max_tree_nodes` / `max_tree_depth`; otherwise work from the tree and do not re-request the screenshot |
 | `no state for 'X'. Call computer_get_state first.` | you acted without a snapshot | snapshot, then act |
 | `state for 'X' is 214s old. Call computer_get_state again.` | the snapshot expired (90s) | snapshot again |
 | `element_index 7 changed since the last computer_get_state (was 'AXButton "Save"', now 'AXButton "Delete"')` | the UI moved under you — this refusal is what stopped you clicking the wrong thing | snapshot again and re-locate the element by its label, not its old number |
@@ -351,11 +353,11 @@ computer_get_state(app="Finder", screenshot=True)    # screenshot=True opens the
       12 row "draft.md"
       ...
 computer_click(app="Finder", element_index=12)       # select the row
-computer_press_key(app="Finder", key="return")        # Finder's rename shortcut
+computer_press_key(app="Finder", element_index=12, key="return")   # rename shortcut
 computer_get_state(app="Finder", screenshot=True)     # rename mode = a visible change
   → 13 textfield "draft.md"
 computer_set_value(app="Finder", element_index=13, value="notes-2026.md")
-computer_press_key(app="Finder", key="return")        # commit
+computer_press_key(app="Finder", element_index=13, key="return")   # commit
 computer_get_state(app="Finder", screenshot=True)     # show the user the renamed file
 computer_end_turn()
 ```

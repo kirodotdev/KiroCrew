@@ -536,13 +536,24 @@ def _suspicious_pattern_items() -> list[PostureItem]:
     return [PostureItem(label=pattern) for pattern in security.SUSPICIOUS_BASH_PATTERNS]
 
 
+#: Every MCP tool-schema dispatch registry in ``validation``, by attribute name. A
+#: tool is only validated if it is IN one of these, so this list defines what the
+#: posture view can see. Keep it complete — ``test_security_posture`` reads the same
+#: names, so an omission fails there rather than quietly shrinking the report.
+_SCHEMA_REGISTRY_NAMES: tuple[str, ...] = (
+    "MCP_CORE_SCHEMAS",
+    "MCP_CRON_SCHEMAS",
+    "MCP_COMPUTER_SCHEMAS",
+)
+
+
 def _tool_schema_items() -> list[PostureItem]:
     """Validated tool schemas, keyed by the tool name they gate.
 
-    Derived from the DISPATCH REGISTRIES (``MCP_CORE_SCHEMAS`` /
-    ``MCP_CRON_SCHEMAS``) — the dicts ``mcp_core``/``mcp_cron`` actually look a
-    tool up in — plus the module-level ``*_SCHEMA`` objects that gate dashboard
-    handlers rather than MCP tools.
+    Derived from EVERY dispatch registry in ``validation`` — the dicts
+    ``mcp_core``/``mcp_cron``/``computer_use.tools`` actually look a tool up in —
+    plus the module-level ``*_SCHEMA`` objects that gate dashboard handlers rather
+    than MCP tools.
 
     An earlier version walked only ``dir(validation)`` for the ``*_SCHEMA``
     naming convention. That made the *convention*, not the registry, the source
@@ -551,9 +562,16 @@ def _tool_schema_items() -> list[PostureItem]:
     objects with no module-level name of their own, so they were validated but
     invisible here — a new tool registered that way would have added zero to the
     count.
+
+    ``_SCHEMA_REGISTRY_NAMES`` is enumerated rather than discovered, but the drift
+    test derives its expectation from the same module attributes, so a NEW registry
+    that is not listed here fails that test instead of silently under-reporting: the
+    ten ``MCP_COMPUTER_SCHEMAS`` entries were missing from this view for exactly that
+    reason, and the drift test could not catch it because it hardcoded the same two
+    registry names this function did.
     """
     seen: dict[str, str] = {}
-    for registry_name in ("MCP_CORE_SCHEMAS", "MCP_CRON_SCHEMAS"):
+    for registry_name in _SCHEMA_REGISTRY_NAMES:
         registry = getattr(_validation, registry_name, None) or {}
         for tool_name in registry:
             seen.setdefault(tool_name, registry_name)

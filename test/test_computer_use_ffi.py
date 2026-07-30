@@ -231,9 +231,7 @@ class _FakeCF:
         # mints a fresh handle for an element that already has one, so comparing
         # addresses would answer "different" for the very case ``CFEqual`` exists
         # to resolve.
-        self.CFEqual = _FakeFn(
-            lambda a, b: bool(_addr(a)) and heap.identity(a) == heap.identity(b)
-        )
+        self.CFEqual = _FakeFn(lambda a, b: bool(_addr(a)) and heap.identity(a) == heap.identity(b))
         self.CFStringCreateWithCString = _FakeFn(self._string_create)
         self.CFStringGetLength = _FakeFn(self._string_length)
         self.CFStringGetCString = _FakeFn(self._string_get)
@@ -1407,6 +1405,23 @@ def test_executable_path_reads_proc_pidpath(fakes: _Fakes):
 # ── key posting: the three load-bearing rules ──
 
 
+def test_the_private_event_source_constant_is_the_value_apple_declares():
+    """``kCGEventSourceStatePrivate`` is **-1**, asserted as a LITERAL.
+
+    ``CGEventTypes.h``: ``{kCGEventSourceStatePrivate = -1,
+    kCGEventSourceStateCombinedSessionState = 0,
+    kCGEventSourceStateHIDSystemState = 1}``.
+
+    Deliberately a literal and not ``macos_ffi.K_CG_EVENT_SOURCE_STATE_PRIVATE``:
+    the sibling test below compares the recorded call against that same symbol, so
+    it pins the constant against itself and passed happily while the value was
+    ``1`` — i.e. ``kCGEventSourceStateHIDSystemState``, the shared table whose live
+    modifier state produced the measured ``abc`` -> ``' I Abc'`` bug. Only an
+    independent literal can catch that class of error.
+    """
+    assert macos_ffi.K_CG_EVENT_SOURCE_STATE_PRIVATE == -1
+
+
 def test_post_key_uses_a_private_event_source(fakes: _Fakes):
     """``kCGEventSourceStatePrivate``, never NULL.
 
@@ -1515,6 +1530,35 @@ def test_post_text_delivers_an_astral_character_as_one_event(fakes: _Fakes):
         for (_e, count, _text) in fakes.calls_named(fakes.cg, "CGEventKeyboardSetUnicodeString")
     ]
     assert counts == [2, 2]
+
+
+def test_post_text_types_NOTHING_when_a_character_cannot_be_encoded(fakes: _Fakes):
+    """All-or-nothing: an unencodable character must not leave a partial string.
+
+    ``str`` permits a lone surrogate and UTF-16 cannot represent one, so encoding
+    inside the posting loop raised ``UnicodeEncodeError`` *after* the preceding
+    characters had already been typed into a LIVE application. The caller saw a
+    failure while the target held ``"ok"``, and a model told "typing failed" would
+    retry and double the prefix. The whole string is now encoded before the first
+    event is posted.
+    """
+    with pytest.raises(ComputerUseUnsupported):
+        macos_ffi.post_text(637, "ok\ud800bad")
+    assert fakes.calls_named(fakes.cg, "CGEventPostToPid") == [], (
+        "characters were typed into the application before the encode failed — "
+        "the caller is told nothing was sent while the target holds a partial string"
+    )
+    assert fakes.calls_named(fakes.cg, "CGEventKeyboardSetUnicodeString") == []
+
+
+def test_post_text_still_types_the_whole_string_when_every_char_encodes(fakes: _Fakes):
+    """The guard must not reject legitimate text (astral + accented + ASCII)."""
+    macos_ffi.post_text(637, "a\U0001F600é")
+    typed = [
+        text
+        for (_e, _count, text) in fakes.calls_named(fakes.cg, "CGEventKeyboardSetUnicodeString")
+    ]
+    assert typed == ["a", "a", "\U0001F600", "\U0001F600", "é", "é"]
 
 
 # ── scroll: the variadic hazard and the AX fallback ──

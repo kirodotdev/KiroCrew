@@ -573,6 +573,137 @@ class TestShouldAutoApproveSpawn:
         ctx.hooks = HookManager(HooksConfig.from_dict({"auto_approve_subagent_spawn": True}))
         assert _should_auto_approve_spawn(ctx, "spawn_run_privileged") is False
 
+
+class TestMutatingKindBeatsTheTitle:
+    """Only an explicitly READ-ONLY ``tool_kind`` may auto-approve on a title.
+
+    ``tool_name`` is the display title, and ``select_tool_title``
+    (``acp/_dispatch.py``) prefers the LLM-authored ``description`` — so it is
+    agent-controlled, which ``on_tool_call``'s own docstring states outright. The
+    computer-use read-only auto-approve used to be tested BEFORE any kind guard, so
+    once the operator enabled computer use, an ``edit``/``execute``/``write``/
+    ``delete`` call titled ``mcp__kirocrew-computer__computer_get_state`` skipped
+    interactive approval entirely.
+
+    The first fix for that was a DENYLIST (``kind in _WRITE_TOOL_KINDS`` → allow),
+    and GPT 5.6 correctly rejected it as still fail-open: ``tool_kind`` arrives
+    verbatim from the ACP ``kind`` field, so an unlisted-but-real value like
+    ``"other"`` sailed past it and auto-approved. The decision is now an ALLOW-list —
+    only ``_READ_ONLY_TOOL_KINDS`` and an ABSENT kind can reach a title-keyed
+    branch — so a kind nobody has enumerated fails closed.
+    """
+
+    _CU_OBSERVE_TITLE = "mcp__kirocrew-computer__computer_get_state"
+
+    #: Known mutators, plus the ACP values and shapes a denylist would miss. The
+    #: second group is the point: those are what made the denylist fail open.
+    _NON_READ_KINDS = [
+        "edit",
+        "execute",
+        "delete",
+        "move",
+        "write",
+        "create",
+        "other",
+        "unknown",
+        "switch_mode",
+        "search",
+        "think",
+        "EDIT",
+    ]
+
+    @pytest.mark.parametrize("kind", _NON_READ_KINDS)
+    def test_a_non_read_kind_is_not_auto_approved_despite_a_cu_read_title(self, kind, monkeypatch):
+        # Force the CU predicate True so the test pins the DECISION, not the
+        # keystone read (which is off in CI and would mask a regression).
+        monkeypatch.setattr("kiro_crew.hooks._cu_read_only_auto_approve", lambda _name: True)
+        mgr = HookManager()
+        result = mgr.on_tool_call(self._CU_OBSERVE_TITLE, tool_kind=kind)
+        assert result.action == TOOL_ALLOW, (
+            f"tool_kind={kind!r} auto-approved on the strength of an agent-supplied "
+            "computer-use title — interactive approval was skipped"
+        )
+
+    def test_the_read_only_kinds_are_an_allowlist_not_a_denylist(self):
+        """Pinned structurally: the gate must not reintroduce a mutating-kind list.
+
+        A behavioural test alone would keep passing if someone widened the accepted
+        set back out, so this asserts the SHAPE — the read-only vocabulary is small
+        and explicit, and ``_WRITE_TOOL_KINDS`` is documentation rather than a branch.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from kiro_crew import hooks as hooks_mod
+
+        assert hooks_mod._READ_ONLY_TOOL_KINDS == frozenset({"read", "fetch"})
+        # Over the AST, not the source text: the explanatory comment names the
+        # constant deliberately, and a substring check would flag that prose.
+        tree = ast.parse(textwrap.dedent(inspect.getsource(hooks_mod.HookManager.on_tool_call)))
+        referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
+            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+        }
+        assert "_WRITE_TOOL_KINDS" not in referenced, (
+            "the gate branches on a denylist of mutating kinds again — `tool_kind` is "
+            "an arbitrary ACP string, so such a list is incomplete by construction"
+        )
+        assert "_READ_ONLY_TOOL_KINDS" in referenced, "the allow-list branch is gone"
+
+    @pytest.mark.parametrize("kind", ["read", "fetch"])
+    def test_a_genuine_cu_observation_still_auto_approves(self, kind, monkeypatch):
+        """The feature the fix must not break: a PROVEN read still doesn't nag."""
+        monkeypatch.setattr("kiro_crew.hooks._cu_read_only_auto_approve", lambda _name: True)
+        mgr = HookManager()
+        assert mgr.on_tool_call(self._CU_OBSERVE_TITLE, tool_kind=kind).action == (
+            TOOL_AUTO_APPROVE
+        ), f"a computer-use observation tool with tool_kind={kind!r} should auto-approve"
+
+    def test_computer_use_needs_an_EXPLICIT_read_kind_not_merely_an_absent_one(self, monkeypatch):
+        """An OMITTED kind must not reach the computer-use auto-approve either.
+
+        Second GPT 5.6 finding on this PR, and correct. Two agent-controlled inputs meet
+        in this branch: the title (from `select_tool_title`, which prefers the LLM-authored
+        `description`) and the kind (whose absence is indistinguishable from an honest
+        omission). While the class lookup keyed on the title alone, a `computer_click`
+        could forge `…__computer_get_state`, omit its kind, and skip the approval prompt.
+        The two inputs must AGREE.
+
+        Narrower than GPT's prescription — the generic `_is_read_only_tool` fallback for
+        absent kinds is deliberately left intact, because it rejects every
+        `mcp__kirocrew-computer__*` title anyway (asserted below), so blocking absent
+        kinds outright would have regressed every ordinary tool for no security gain.
+        """
+        monkeypatch.setattr("kiro_crew.hooks._cu_read_only_auto_approve", lambda _name: True)
+        mgr = HookManager()
+        assert mgr.on_tool_call(self._CU_OBSERVE_TITLE).action == TOOL_ALLOW, (
+            "a computer-use title with NO kind auto-approved — a mutating call can "
+            "forge the title and omit the kind, so the two must agree"
+        )
+
+    def test_the_generic_fallback_never_matches_a_computer_use_title(self):
+        """Why leaving the absent-kind fallback in place is safe.
+
+        If `_is_read_only_tool` ever started matching a `computer_*` title, the branch
+        above would stop being the only way in and this PR's guarantee would quietly
+        weaken — so it is asserted rather than assumed.
+        """
+        from kiro_crew.slack.gateway import _is_read_only_tool
+
+        for tool in ("computer_get_state", "computer_list_apps", "computer_click"):
+            title = f"mcp__kirocrew-computer__{tool}"
+            assert not _is_read_only_tool(title), title
+
+    def test_a_read_sounding_title_cannot_rescue_a_non_read_kind(self, monkeypatch):
+        """The same invariant for the generic title heuristic, not just the CU one."""
+        monkeypatch.setattr("kiro_crew.hooks._cu_read_only_auto_approve", lambda _name: False)
+        mgr = HookManager()
+        for kind in ("execute", "other"):
+            assert mgr.on_tool_call("read_the_docs", tool_kind=kind).action == TOOL_ALLOW, kind
+        # ...and with no kind at all the title heuristic is still allowed to work for
+        # ORDINARY tools — unchanged from base, and the reason the fix stayed narrow.
+        assert mgr.on_tool_call("read_the_docs").action == TOOL_AUTO_APPROVE
+
     def test_rejects_none_context(self):
         from kiro_crew.slack.handler import _should_auto_approve_spawn
 
