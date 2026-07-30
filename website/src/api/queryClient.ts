@@ -44,6 +44,15 @@ export const queryClient = new QueryClient({
       retry: retryPolicy,
       retryDelay: retryDelayPolicy,
       staleTime: 30_000,
+      // Live data reaches the dashboard by WebSocket push, so refetching every
+      // stale query whenever the window regains focus is mostly redundant
+      // churn — and it is felt as lag when the dashboard is reached over a
+      // tunnel, where each refetch costs a full round-trip. The heavy queries
+      // already opted out individually (auth-me, pull-request-source,
+      // pull-request-checks); this makes that the default instead of the
+      // exception. A surface that genuinely needs focus-refresh can still set
+      // `refetchOnWindowFocus: true` on its own query.
+      refetchOnWindowFocus: false,
     },
   },
 })

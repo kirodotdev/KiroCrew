@@ -36,6 +36,29 @@ interface KirocrewAgentConfig {
 const MODELS_CACHE_KEY = 'kc.acp.models.v1'
 const MODELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24h — bound stale-model exposure
 
+/**
+ * In-flight dedupe for `GET /api/agents/detail/<name>`.
+ *
+ * Model resolution runs per slot, so a dashboard with several slots on the same
+ * agent template issued one identical request each at boot. Concurrent calls now
+ * share a single request; the entry is dropped as soon as it settles, so this
+ * caches nothing across time — a later lookup (e.g. after the template's model
+ * is edited) still hits the network and cannot go stale.
+ */
+const agentDetailInFlight = new Map<string, Promise<string>>()
+
+function agentDetailModel(templateName: string): Promise<string> {
+  const key = templateName || ''
+  const existing = agentDetailInFlight.get(key)
+  if (existing) return existing
+  const p = api.agentDetail(templateName)
+    .then(d => d?.model || '')
+    .catch(() => '')
+    .finally(() => { agentDetailInFlight.delete(key) })
+  agentDetailInFlight.set(key, p)
+  return p
+}
+
 interface CachedModels {
   ts: number
   models: ModelInfo[]
@@ -164,7 +187,7 @@ export class AcpAdapter implements ProviderAdapter {
     // backfilled slot.model from the live session.
     const isBuiltin = !templateName || templateName === 'kirocrew'
     const [tmpl, cfgModel] = await Promise.all([
-      api.agentDetail(templateName).then(d => d?.model || '').catch(() => ''),
+      agentDetailModel(templateName),
       isBuiltin ? this.resolveDefaultModel() : Promise.resolve(''),
     ])
     return isBuiltin ? (cfgModel || tmpl) : tmpl

@@ -23,7 +23,6 @@ function spliceChildren(parent: HastParent, index: number, nodes: Array<HastElem
   if (parent.type === 'root') parent.children.splice(index, 1, ...nodes)
   else parent.children.splice(index, 1, ...nodes)
 }
-import mermaid from 'mermaid'
 import '../utils/hljs'
 import { api } from '../api/client'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
@@ -71,11 +70,24 @@ function isDarkTheme(): boolean {
   return (document.documentElement.getAttribute('data-theme') || '').includes('dark')
 }
 
-function initMermaid(): void {
+/**
+ * mermaid, loaded on first use.
+ *
+ * mermaid ships its diagram renderers as dynamic imports (dozens of chunks),
+ * but a top-level `import mermaid from 'mermaid'` re-anchors the core into
+ * whatever chunk imports this module — which is the first-paint bundle, since
+ * chat messages render through here. Almost no session renders a diagram, so
+ * that cost was paid by everyone for the benefit of a few. Importing on demand
+ * lets mermaid's own splitting work as intended.
+ */
+type MermaidModule = typeof import('mermaid')['default']
+let mermaidPromise: Promise<MermaidModule> | null = null
+
+function mermaidConfig() {
   const dark = isDarkTheme()
-  mermaid.initialize({
+  return {
     startOnLoad: false,
-    theme: dark ? 'dark' : 'default',
+    theme: (dark ? 'dark' : 'default') as 'dark' | 'default',
     themeVariables: dark ? {
       primaryColor: '#f59e32',
       primaryTextColor: '#e8e6e3',
@@ -91,7 +103,7 @@ function initMermaid(): void {
       secondaryColor: '#fff3e0',
       tertiaryColor: '#f5f5f5',
     },
-    securityLevel: 'strict',
+    securityLevel: 'strict' as const,
     fontFamily: 'inherit',
     // Throw on parse errors instead of injecting mermaid's error diagram into
     // a temp <div id="dmermaid-*"> on document.body. That temp node is leaked
@@ -99,10 +111,21 @@ function initMermaid(): void {
     // accumulated orphaned 512px error SVGs in the DOM. With this on, the
     // MermaidBlock .catch() shows a clean inline <pre> and nothing leaks.
     suppressErrorRendering: true,
-  })
+  }
 }
 
-initMermaid()
+/**
+ * Resolve mermaid, importing it the first time. `initialize` is re-applied on
+ * every call (it is cheap and idempotent) so a theme switch between diagrams
+ * still takes effect — the same reason the old code re-initialized before each
+ * render.
+ */
+async function loadMermaid(): Promise<MermaidModule> {
+  mermaidPromise ??= import('mermaid').then(m => m.default)
+  const mermaid = await mermaidPromise
+  mermaid.initialize(mermaidConfig())
+  return mermaid
+}
 
 import { CodeBlock } from './CodeBlock'
 
@@ -123,21 +146,25 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   useEffect(() => {
     if (!ref.current || renderedRef.current === code) return
     renderedRef.current = code
-    initMermaid()
-    mermaid.render(`mermaid-${id}`, code).then(({ svg }) => {
-      if (!ref.current) return
-      const range = document.createRange()
-      range.selectNodeContents(ref.current)
-      range.deleteContents()
-      ref.current.appendChild(range.createContextualFragment(svg))
-    }).catch(() => {
-      if (!ref.current) return
-      const pre = document.createElement('pre')
-      pre.className = 'text-danger text-[13px]'
-      pre.textContent = code
-      ref.current.textContent = ''
-      ref.current.appendChild(pre)
-    })
+    loadMermaid()
+      .then(mermaid => mermaid.render(`mermaid-${id}`, code))
+      .then(({ svg }) => {
+        if (!ref.current) return
+        const range = document.createRange()
+        range.selectNodeContents(ref.current)
+        range.deleteContents()
+        ref.current.appendChild(range.createContextualFragment(svg))
+      }).catch(() => {
+        // Covers a parse error AND a failed dynamic import (offline, chunk 404):
+        // either way the user gets the diagram source as plain text rather than
+        // an empty box.
+        if (!ref.current) return
+        const pre = document.createElement('pre')
+        pre.className = 'text-danger text-[13px]'
+        pre.textContent = code
+        ref.current.textContent = ''
+        ref.current.appendChild(pre)
+      })
   }, [code, id])
 
   return <div ref={ref} className="my-3 flex justify-center overflow-x-auto min-h-[60px]" />
