@@ -426,6 +426,42 @@ handshake: it issues `session/load` directly under the original sessionId and
 registers the session queue **after** the load response so replayed transcript
 frames are dropped rather than counted against the current turn.
 
+**Unroutable frames are counted, not logged per frame.** The reader drops any
+frame it cannot route; the drop itself is correct and unchanged, but logging one
+`DEBUG` line per dropped frame is a log-retention hazard on a multiplexed
+backend. Every frame for a torn-down or not-yet-registered sessionId takes that
+branch — including the entire transcript replay of a `session/load` (the queue is
+registered after the response, above) — and a backend that keeps streaming after
+teardown makes it an unbounded **steady state**, not a burst. Measured on an
+operator host: ~60 lines/second sustained for 6+ hours from one gateway PID,
+33–59% of every `gateway.log` rotation, which at
+`RotatingFileHandler(maxBytes=2MB, backupCount=3)` (`cli.py`) rolled the
+diagnostics an incident needed out of the retained 8MB window before they could
+be read. So `_reader_loop` funnels the two **frame-rate** drop paths — a frame
+whose `sessionId` is not registered, and a no-`sessionId` global notification
+arriving while zero sessions are registered (sentinel `_DROP_NO_SESSION`) —
+through `_note_dropped_frame()`, which tallies `(sessionId, method)` and emits
+one `DEBUG` summary carrying the accumulated count at most every
+`_DROP_SUMMARY_INTERVAL_SECS` (60s). The key stays **per session** deliberately:
+the decisive signal in the incident was that two *different* session UUIDs were
+flooding at once, which a single global tally would hide. The level stays `DEBUG`
+— the goal is far fewer lines, not louder ones.
+
+Three properties make the counter safe on the demux hot path: it never awaits
+(no timer task to leak — the flush rides the next drop), the map is bounded
+(`_DROP_SUMMARY_MAX_KEYS` = 64 distinct keys forces an early flush instead of
+growth, and both backend-controlled key halves are truncated to
+`_DROP_SUMMARY_KEY_MAX_CHARS` = 80), and the residual count is flushed in the
+loop's `finally` on **every** exit (EOF, stdout overrun, cancel, crash) so a
+low-rate trickle is reported late rather than swallowed. No lock is needed:
+`_reader_loop` is the sole writer (`spawn()` creates exactly one reader task).
+The two response-shaped drop branches (non-numeric id, unmatched id) stay
+per-frame on purpose — the id is their whole diagnostic value and is distinct per
+frame, so aggregating by it would give the counter an unbounded key space while
+aggregating without it would discard the only identifying datum; both are also
+bounded by the requests this runtime issued, so neither has the after-teardown
+steady state.
+
 Every kiro session runs on `AcpRuntime` + `AcpSessionHandle`:
 `AcpProvider.start()` (`providers/acp.py`) unconditionally calls
 `_start_kiro_runtime()` for the kiro backend, wrapping an `AcpSessionHandle` in
