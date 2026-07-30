@@ -65,7 +65,7 @@ describe('LanguageProvider', () => {
   it('reports what Auto would give independently of the explicit choice', async () => {
     // The Settings picker annotates its Auto row with this. It must describe the
     // BROWSER, so an explicit English choice on a zh-CN browser still reads
-    // "Auto (follow browser) — 简体中文" rather than echoing "— English".
+    // "Auto — 简体中文" rather than echoing "— English".
     localStorage.setItem(LANG_STORAGE_KEY, 'en')
     vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['zh-CN'])
     wrap(<Probe />)

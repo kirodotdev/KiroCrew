@@ -62,7 +62,7 @@ vi.mock('../hooks/useSessionPalette', () => ({
 import { DisplayPanel } from '../pages/settings/DisplayPanel'
 
 /** Open the Language dropdown and return the Auto row's text,
- *  e.g. "Auto (follow browser) — 简体中文". */
+ *  e.g. "Auto — 简体中文". */
 function autoOptionText(): string {
   fireEvent.click(screen.getByRole('combobox', { name: 'Language' }))
   const texts = screen.getAllByRole('option').map(o => o.textContent ?? '')

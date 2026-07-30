@@ -4495,7 +4495,7 @@
   "settings": {
     "display": {
       "language": {
-        "auto": "自动（跟随浏览器）",
+        "auto": "自动",
         "description": "仪表板界面的显示语言。",
         "label": "语言",
         "sync_failed": "无法保存到 KiroCrew 配置 — 该语言仅在此浏览器生效，重新加载后可能重置。"

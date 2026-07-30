@@ -89,7 +89,7 @@ export interface LanguageContextValue {
    * choice (never `''`).
    *
    * Deliberately independent of `resolved`: the picker annotates its Auto entry
-   * with this ("Auto (follow browser) — 简体中文") to answer "what do I get if I
+   * with this ("Auto — 简体中文") to answer "what do I get if I
    * pick Auto?". Using `resolved` there made the annotation echo the current
    * selection instead — pick English and it read "— English", pick 简体中文 and
    * it read "— 简体中文", on the same browser — so it conveyed nothing and

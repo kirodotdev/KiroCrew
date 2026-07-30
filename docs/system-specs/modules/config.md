@@ -593,6 +593,12 @@ Auto option writes `""` to clear a previous explicit choice. An explicit choice
 always outranks detection, so a user who selects English on a zh-CN machine is
 not re-detected back to Chinese on the next load.
 
+The picker's Auto row is labelled plain **"Auto"**, not "Auto (follow browser)".
+The desktop app has no browser preference to follow — its locale comes from the
+OS — so naming the browser was wrong on that surface. The row annotates itself
+with the language Auto actually resolves to ("Auto — Deutsch"), which answers the
+question accurately on every surface.
+
 The backend validates **shape only** (`_LANGUAGE_TAG_RE`, a conservative BCP-47
 subset), not membership in the set of shipped catalogs. That keeps "which
 languages exist" a pure frontend data change (`SUPPORTED_LANGUAGES` + one
@@ -600,7 +606,7 @@ languages exist" a pure frontend data change (`SUPPORTED_LANGUAGES` + one
 tag with no catalog falls back to detection client-side.
 
 Shipped catalogs (ordered by global speaker count, which is also the picker
-order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`. Right-to-left
+order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `it`. Right-to-left
 languages are deliberately **not** shipped yet: the catalogs would translate
 fine, but the dashboard's layout uses physical-direction utilities (`pl-*`,
 `left-*`, `text-left`) and unmirrored directional icons, so an RTL locale would
@@ -609,10 +615,12 @@ logical-property conversion first.
 
 All catalogs are **statically bundled**, so `t()` stays synchronous (see the
 rationale in `website/src/i18n/index.ts`). The cost is that every user downloads
-every language (~70 KB gzip each). This is acceptable while the dashboard is
-served from a loopback gateway, but it does not scale indefinitely — the
-documented next step is to keep `en` static and lazily fetch the active
-non-English catalog.
+every language (~70–80 KB gzip each; ~615 KB gzip for the ten shipped catalogs
+combined). This is acceptable while the dashboard is served from a loopback
+gateway, but it does not scale indefinitely — the documented next step is to keep
+`en` static and lazily fetch the active non-English catalog. That seam is already
+isolated to `website/src/i18n/index.ts` plus a `<Suspense>` boundary in
+`main.tsx`; no call site changes.
 
 ### Foreign-agent import onboarding state
 

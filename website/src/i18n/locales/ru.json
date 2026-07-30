@@ -935,6 +935,18 @@
     "artifactBody": {
       "rendering": "Отрисовка…"
     },
+    "artifactChatPanel": {
+      "agent_chat": "Чат агента",
+      "artifact_companion_chat": "Вспомогательный чат артефакта",
+      "close_chat_panel": "Закрыть панель чата",
+      "close_panel_the_session_stays_active": "Закрыть панель (сеанс останется активным)",
+      "new_chat": "Новый чат",
+      "new_chat_archive_this_conversation_and_start_fresh": "Новый чат — архивировать этот разговор и начать заново",
+      "no_active_session_for_this_artifact": "Для этого артефакта нет активного сеанса.",
+      "open_in_chat_page": "Открыть на странице чата",
+      "start_chat": "Начать чат",
+      "starting_session": "Запуск сеанса…"
+    },
     "artifactFolderDeleteDialog": {
       "cancel": "Отмена",
       "contents_move_up_to": "Содержимое перемещается в",
@@ -2402,6 +2414,7 @@
       "activity": "Активность",
       "add_a_tag": "Добавить тег",
       "add_a_tag_comma_separated_tags_supported": "Добавить тег (поддерживаются теги через запятую)",
+      "agent_chat": "Чат агента",
       "artifact": "Артефакт",
       "back": "Назад",
       "back_to_library": "← Назад в библиотеку",
@@ -2410,6 +2423,7 @@
       "by": "автор",
       "cancel": "Отмена",
       "cancel_esc": "Отмена (Esc)",
+      "chat_with_the_agent_about_this_artifact": "Обсудить этот артефакт с агентом",
       "comments": "Комментарии",
       "content_copied_from_v": "содержимое скопировано из v",
       "created": "Создано",
@@ -2453,9 +2467,11 @@
       "tag": "тег…",
       "tag_2": "тег",
       "this_artifact_is_regenerated_by_a_cron_job_your": "этот артефакт создаётся заново заданием cron. Ваши правки сохранятся в истории версий, но следующий запуск cron создаст более новую версию, которая перекроет сохранённое здесь.",
+      "this_artifact_was_deleted": "Этот артефакт был удалён.",
       "tip_select_text_to_anchor_a_comment_or_use_the": "Совет: выделите текст, чтобы привязать комментарий, или используйте",
       "tip_use_the": "Совет: используйте",
       "to_chat_with_the_agent": "чтобы общаться с агентом",
+      "toggle_agent_chat": "Показать или скрыть чат агента",
       "toggle_comments": "Показать или скрыть комментарии",
       "unsaved_changes": "• несохранённые изменения",
       "updated": "· Обновлено",
@@ -2741,14 +2757,14 @@
         "loop": "Цикл"
       },
       "recoveryCard": {
-        "tool_call_blocked": "Вызов инструмента заблокирован",
-        "n_tool_calls_blocked": "Заблокировано вызовов инструментов: {{count}}",
-        "safety_policy_continuing": "политика безопасности · продолжение автоматически",
+        "cancelled_continuing": "отменено · продолжение",
         "n_patterns": "шаблонов: {{count}}",
-        "turn_stalled": "Ход застопорился",
+        "n_tool_calls_blocked": "Заблокировано вызовов инструментов: {{count}}",
         "recovered_continuing": "восстановлено · продолжение",
+        "safety_policy_continuing": "политика безопасности · продолжение автоматически",
+        "tool_call_blocked": "Вызов инструмента заблокирован",
         "tool_stopped_responding": "Инструмент перестал отвечать",
-        "cancelled_continuing": "отменено · продолжение"
+        "turn_stalled": "Ход застопорился"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Измените цветовую палитру в настройках отображения",
@@ -4611,7 +4627,7 @@
   "settings": {
     "display": {
       "language": {
-        "auto": "Авто (как в браузере)",
+        "auto": "Авто",
         "description": "Язык интерфейса панели управления.",
         "label": "Язык",
         "sync_failed": "Не удалось сохранить это в конфигурацию KiroCrew — язык применяется только в этом браузере и может сброситься при перезагрузке."

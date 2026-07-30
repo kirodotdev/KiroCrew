@@ -137,6 +137,9 @@ rm_rf_resilient() {
 # --- 1. Frontend ------------------------------------------------------------
 if [ "${SKIP_FRONTEND:-0}" != "1" ]; then
   log "Building dashboard (npm)…"
+  # The V8 heap ceiling this build needs is pinned in website/.npmrc
+  # (`node-options`), so every caller of `npm run build` gets it — not just this
+  # script. See that file for why it cannot be an inline env prefix here.
   ( cd "$ROOT/website"
     if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
     npm run build )

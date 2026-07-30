@@ -13,7 +13,7 @@
   "settings": {
     "display": {
       "language": {
-        "auto": "Auto (follow browser)",
+        "auto": "Auto",
         "description": "Language for the dashboard interface.",
         "label": "Language",
         "sync_failed": "Couldn't save this to your KiroCrew config — the language applies in this browser only and may reset on reload."

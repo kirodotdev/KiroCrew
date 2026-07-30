@@ -19,30 +19,47 @@
  *   <code>-bulk-delete.png   bulk-delete confirmation: count plural + the
  *                            "Type `delete` to confirm" instruction this PR fixes
  *   <code>-display.png       Settings > Display, incl. the language picker
+ *   <code>-picker.png        the open language dropdown (Auto row asserted, not
+ *                            merely photographed — see the check below)
  *
  * Usage:
  *   ./dev-backend.sh &                       # real gateway on :6777
- *   node scripts/capture-i18n-languages.mjs <outDir> <baseUrl> <token>
+ *   TOKEN=$(curl -s -H "X-Local-Secret: $(cat .kirocrew-dev/.local_secret)" \
+ *     http://127.0.0.1:6777/api/token/local | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+ *   node scripts/capture-i18n-languages.mjs <outDir> <baseUrl> "$TOKEN"
+ *
+ * Mint the token FRESH for each run. A stale/expired one still returns HTTP 200
+ * for `/` (the SPA shell loads) but leaves every authenticated surface empty, so
+ * the failure looks like "no job checkboxes found" for every language rather than
+ * "auth expired". That is the harness working — it refuses to call unverified
+ * frames evidence — but the message points at the wrong cause.
  */
 import { chromium } from 'playwright'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 
 const OUT = process.argv[2] || '/tmp/i18n-shots'
 const BASE = (process.argv[3] || 'http://127.0.0.1:6777').replace(/\/$/, '')
 const TOKEN = process.argv[4] || ''
 mkdirSync(OUT, { recursive: true })
 
-/** Languages to capture, with the endonym the picker must show. */
-const LANGUAGES = [
-  { code: 'en', label: 'English' },
-  { code: 'zh-CN', label: '简体中文' },
-  { code: 'hi', label: 'हिन्दी' },
-  { code: 'es', label: 'Español' },
-  { code: 'fr', label: 'Français' },
-  { code: 'bn', label: 'বাংলা' },
-  { code: 'pt', label: 'Português' },
-  { code: 'ru', label: 'Русский' },
-]
+/**
+ * Languages to capture, with the endonym the picker must show — read from the
+ * SAME source of truth the app ships (`src/i18n/languages.ts`) rather than a
+ * hand-kept copy, so a newly shipped language is captured automatically instead
+ * of being silently skipped by a stale list. Parsed rather than imported because
+ * this script is plain node with no TS loader.
+ */
+const LANGUAGES = [...readFileSync(
+  new URL('../src/i18n/languages.ts', import.meta.url), 'utf-8',
+).matchAll(/\{\s*code:\s*'([^']+)',\s*label:\s*'([^']+)'\s*\}/g)]
+  .map(([, code, label]) => ({ code, label }))
+
+if (!LANGUAGES.length) {
+  console.error('Could not parse SUPPORTED_LANGUAGES from src/i18n/languages.ts — '
+    + 'fix the parse rather than hard-coding a list, or the next language ships uncaptured.')
+  process.exit(2)
+}
+console.log(`capturing ${LANGUAGES.length} languages: ${LANGUAGES.map(l => l.code).join(', ')}`)
 
 const browser = await chromium.launch()
 const failures = []
@@ -126,6 +143,33 @@ for (const lang of LANGUAGES) {
   await page.goto(`${BASE}/settings?tab=display`, { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2200)
   await page.screenshot({ path: `${OUT}/${lang.code}-display.png` })
+
+  // --- Language dropdown, and ASSERT the Auto row rather than only picturing it.
+  // The dropdown auto-scrolls to the current selection, so the Auto row is often
+  // out of frame — a screenshot alone cannot verify it. Reading the option text
+  // is what caught the row rendering from the wrong catalog ("自动 — Deutsch")
+  // when the harness seeded localStorage but not the server value.
+  const combo = page.getByRole('combobox').first()
+  if (await combo.count()) {
+    await combo.click().catch(() => {})
+    await page.waitForTimeout(800)
+    const options = await page.getByRole('option').allInnerTexts()
+    const auto = options[0] ?? ''
+    // Auto must name THIS language's resolved endonym, and must not have
+    // regressed to the old "(follow browser)" parenthetical (wrong in the app,
+    // which follows the OS rather than a browser).
+    if (!auto.includes('—')) failures.push(`${lang.code}: Auto row missing its resolved language: ${JSON.stringify(auto)}`)
+    if (/\(/.test(auto)) failures.push(`${lang.code}: Auto row regained a parenthetical: ${JSON.stringify(auto)}`)
+    const missing = LANGUAGES.filter(l => !options.some(o => o.includes(l.label)))
+    if (missing.length) failures.push(`${lang.code}: picker is missing ${missing.map(m => m.label).join(', ')}`)
+    await page.evaluate(() => document.querySelector('[role="option"]')?.scrollIntoView({ block: 'center' }))
+    await page.waitForTimeout(400)
+    await page.screenshot({ path: `${OUT}/${lang.code}-picker.png` })
+    await page.keyboard.press('Escape').catch(() => {})
+    console.log(`  ${lang.code} Auto row: ${JSON.stringify(auto)}`)
+  } else {
+    failures.push(`${lang.code}: no language combobox found`)
+  }
 
   if (errors.length) failures.push(`${lang.code}: ${errors[0]}`)
   await context.close()

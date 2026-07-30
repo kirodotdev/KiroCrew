@@ -108,7 +108,7 @@ Catalogs live in `src/i18n/locales/`:
 | `en.manual.json` | hand-authored English with no source literal to extract (e.g. the language picker's own labels). |
 | `<tag>.json` | one per translation, key set must match `en.json` exactly. |
 
-Shipped: `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru` — ordered by global
+Shipped: `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `it` — ordered by global
 speaker count, which is also the picker order. **Right-to-left languages
 (Arabic, Urdu) are intentionally not shipped**: the layout is built from
 physical-direction utilities (`pl-*`, `left-*`, `text-left`) and unmirrored
@@ -131,9 +131,10 @@ shipping disguised as a translation. Keep shard dirs OUTSIDE the worktree (Rule
 
 **Don't pin a test fixture to a language you might later ship.** Assertions like
 "`fr` is unsupported, so it falls back" silently invert the moment French ships.
-Use a language the project has no plans for (`ja`, `de`) for negative cases, and
-derive positive cases from `SUPPORTED_CODES` so a new language is covered
-automatically.
+This has now bitten twice — `fr` when French shipped, then `de-DE` in
+`detect.test.ts` when German shipped. Use a language the project has no plans for
+(`ja`, `ko`) for negative cases, and derive positive cases from
+`SUPPORTED_CODES` so a new language is covered automatically.
 
 ### Counts: never concatenate a plural suffix
 
@@ -183,6 +184,17 @@ If a value's part of speech isn't obvious from the key, **put it in the key**.
 **A literal token the user must type must never be a catalog value** — keep it a
 code constant (see `BULK_DELETE_TOKEN`), or translating it makes the action
 impossible to complete. `destructiveConfirm.test.ts` pins this.
+
+**Never dedupe translation work by English value alone.** The corpus has ~3.9k
+keys but only ~3.2k distinct English strings, so translating each unique string
+once is tempting — and it silently merges keys whose shared English word carries
+two different meanings. Adding de/it this way collapsed `Open` (verb "Apri" vs.
+issue status "Aperta"), `Review` (verb vs. noun), `Plan`/`Schedule` (button vs.
+label), and `Type` — the last caught by `destructiveConfirm.test.ts`, the rest
+only by auditing. If you dedupe, afterwards **diff each duplicate group against
+the already-shipped catalogs**: where several existing languages chose different
+words for one English string, English is hiding a distinction and the merged
+value is wrong.
 
 `catalogParity.test.ts` generates its cases from `SUPPORTED_LANGUAGES` and reads
 catalogs from the runtime `CATALOGS` map, so the new language automatically gets

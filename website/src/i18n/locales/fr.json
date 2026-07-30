@@ -924,6 +924,18 @@
     "artifactBody": {
       "rendering": "Rendu en cours…"
     },
+    "artifactChatPanel": {
+      "agent_chat": "Chat de l’agent",
+      "artifact_companion_chat": "Chat compagnon de l’artefact",
+      "close_chat_panel": "Fermer le panneau de chat",
+      "close_panel_the_session_stays_active": "Fermer le panneau (la session reste active)",
+      "new_chat": "Nouveau chat",
+      "new_chat_archive_this_conversation_and_start_fresh": "Nouveau chat — archiver cette conversation et repartir de zéro",
+      "no_active_session_for_this_artifact": "Aucune session active pour cet artefact.",
+      "open_in_chat_page": "Ouvrir dans la page de chat",
+      "start_chat": "Démarrer le chat",
+      "starting_session": "Démarrage de la session…"
+    },
     "artifactFolderDeleteDialog": {
       "cancel": "Annuler",
       "contents_move_up_to": "Le contenu est déplacé vers",
@@ -2372,6 +2384,7 @@
       "activity": "Activité",
       "add_a_tag": "Ajouter une étiquette",
       "add_a_tag_comma_separated_tags_supported": "Ajouter une étiquette (étiquettes séparées par des virgules acceptées)",
+      "agent_chat": "Chat de l’agent",
       "artifact": "Artefact",
       "back": "Retour",
       "back_to_library": "← Retour à la bibliothèque",
@@ -2380,6 +2393,7 @@
       "by": "par",
       "cancel": "Annuler",
       "cancel_esc": "Annuler (Esc)",
+      "chat_with_the_agent_about_this_artifact": "Discuter de cet artefact avec l’agent",
       "comments": "Commentaires",
       "content_copied_from_v": "contenu copié depuis la v",
       "created": "Créé",
@@ -2423,9 +2437,11 @@
       "tag": "étiquette…",
       "tag_2": "étiquette",
       "this_artifact_is_regenerated_by_a_cron_job_your": "cet artefact est régénéré par une tâche cron. Vos modifications seront conservées dans l'historique des versions, mais la prochaine exécution cron créera une version plus récente qui remplacera ce que vous enregistrez ici.",
+      "this_artifact_was_deleted": "Cet artefact a été supprimé.",
       "tip_select_text_to_anchor_a_comment_or_use_the": "Astuce : sélectionnez du texte pour ancrer un commentaire, ou utilisez le",
       "tip_use_the": "Astuce : utilisez le",
       "to_chat_with_the_agent": "pour discuter avec l'agent",
+      "toggle_agent_chat": "Afficher ou masquer le chat de l’agent",
       "toggle_comments": "Afficher/masquer les commentaires",
       "unsaved_changes": "• modifications non enregistrées",
       "updated": "· Mis à jour",
@@ -2708,14 +2724,14 @@
         "loop": "Boucle"
       },
       "recoveryCard": {
-        "tool_call_blocked": "Appel d'outil bloqué",
-        "n_tool_calls_blocked": "{{count}} appels d'outil bloqués",
-        "safety_policy_continuing": "politique de sécurité · poursuite automatique",
+        "cancelled_continuing": "annulé · poursuite",
         "n_patterns": "{{count}} motifs",
-        "turn_stalled": "Tour bloqué",
+        "n_tool_calls_blocked": "{{count}} appels d'outil bloqués",
         "recovered_continuing": "récupéré · poursuite",
+        "safety_policy_continuing": "politique de sécurité · poursuite automatique",
+        "tool_call_blocked": "Appel d'outil bloqué",
         "tool_stopped_responding": "L'outil ne répond plus",
-        "cancelled_continuing": "annulé · poursuite"
+        "turn_stalled": "Tour bloqué"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Modifiez votre palette de couleurs dans les paramètres d'affichage",
@@ -4567,7 +4583,7 @@
   "settings": {
     "display": {
       "language": {
-        "auto": "Automatique (suivre le navigateur)",
+        "auto": "Automatique",
         "description": "Langue de l'interface du tableau de bord.",
         "label": "Langue",
         "sync_failed": "Impossible d'enregistrer ce réglage dans votre configuration KiroCrew — la langue ne s'applique qu'à ce navigateur et peut être réinitialisée au rechargement."

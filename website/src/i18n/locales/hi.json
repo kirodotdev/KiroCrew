@@ -913,6 +913,18 @@
     "artifactBody": {
       "rendering": "रेंडर हो रहा है…"
     },
+    "artifactChatPanel": {
+      "agent_chat": "एजेंट चैट",
+      "artifact_companion_chat": "आर्टिफ़ैक्ट सहयोगी चैट",
+      "close_chat_panel": "चैट पैनल बंद करें",
+      "close_panel_the_session_stays_active": "पैनल बंद करें (सत्र सक्रिय रहता है)",
+      "new_chat": "नई चैट",
+      "new_chat_archive_this_conversation_and_start_fresh": "नई चैट — इस बातचीत को संग्रहित करें और नए सिरे से शुरू करें",
+      "no_active_session_for_this_artifact": "इस आर्टिफ़ैक्ट के लिए कोई सक्रिय सत्र नहीं है।",
+      "open_in_chat_page": "चैट पेज में खोलें",
+      "start_chat": "चैट शुरू करें",
+      "starting_session": "सत्र शुरू हो रहा है…"
+    },
     "artifactFolderDeleteDialog": {
       "cancel": "रद्द करें",
       "contents_move_up_to": "सामग्री ऊपर यहाँ चली जाएगी:",
@@ -2342,6 +2354,7 @@
       "activity": "गतिविधि",
       "add_a_tag": "टैग जोड़ें",
       "add_a_tag_comma_separated_tags_supported": "टैग जोड़ें (कॉमा से अलग किए गए टैग समर्थित)",
+      "agent_chat": "एजेंट चैट",
       "artifact": "आर्टिफ़ैक्ट",
       "back": "वापस",
       "back_to_library": "← लाइब्रेरी पर वापस",
@@ -2350,6 +2363,7 @@
       "by": "द्वारा:",
       "cancel": "रद्द करें",
       "cancel_esc": "रद्द करें (Esc)",
+      "chat_with_the_agent_about_this_artifact": "इस आर्टिफ़ैक्ट के बारे में एजेंट से चैट करें",
       "comments": "टिप्पणियाँ",
       "content_copied_from_v": "सामग्री इससे कॉपी की गई: v",
       "created": "बनाया गया",
@@ -2393,9 +2407,11 @@
       "tag": "टैग…",
       "tag_2": "टैग",
       "this_artifact_is_regenerated_by_a_cron_job_your": "यह आर्टिफ़ैक्ट किसी cron जॉब द्वारा फिर से बनाया जाता है। आपके संपादन संस्करण इतिहास में सुरक्षित रहेंगे, लेकिन अगला cron रन एक नया संस्करण बनाएगा जो आपके यहाँ सहेजे गए बदलावों को अधिलेखित कर देगा।",
+      "this_artifact_was_deleted": "यह आर्टिफ़ैक्ट हटा दिया गया था।",
       "tip_select_text_to_anchor_a_comment_or_use_the": "सुझाव: टिप्पणी जोड़ने के लिए टेक्स्ट चुनें, या उपयोग करें",
       "tip_use_the": "सुझाव: उपयोग करें",
       "to_chat_with_the_agent": "एजेंट से चैट करने के लिए",
+      "toggle_agent_chat": "एजेंट चैट टॉगल करें",
       "toggle_comments": "टिप्पणियाँ दिखाएँ/छिपाएँ",
       "unsaved_changes": "• बिना सहेजे गए बदलाव",
       "updated": "· अपडेट किया गया",
@@ -2675,14 +2691,14 @@
         "loop": "लूप"
       },
       "recoveryCard": {
-        "tool_call_blocked": "टूल कॉल अवरुद्ध",
-        "n_tool_calls_blocked": "{{count}} टूल कॉल अवरुद्ध",
-        "safety_policy_continuing": "सुरक्षा नीति · स्वतः जारी",
+        "cancelled_continuing": "रद्द · जारी",
         "n_patterns": "{{count}} पैटर्न",
-        "turn_stalled": "टर्न रुक गया",
+        "n_tool_calls_blocked": "{{count}} टूल कॉल अवरुद्ध",
         "recovered_continuing": "पुनर्प्राप्त · जारी",
+        "safety_policy_continuing": "सुरक्षा नीति · स्वतः जारी",
+        "tool_call_blocked": "टूल कॉल अवरुद्ध",
         "tool_stopped_responding": "टूल ने प्रतिक्रिया देना बंद कर दिया",
-        "cancelled_continuing": "रद्द · जारी"
+        "turn_stalled": "टर्न रुक गया"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "अपना रंग पैलेट प्रदर्शन सेटिंग्स में बदलें",
@@ -4523,7 +4539,7 @@
   "settings": {
     "display": {
       "language": {
-        "auto": "स्वतः (ब्राउज़र के अनुसार)",
+        "auto": "स्वतः",
         "description": "डैशबोर्ड इंटरफ़ेस की भाषा।",
         "label": "भाषा",
         "sync_failed": "इसे आपके KiroCrew कॉन्फ़िग में सहेजा नहीं जा सका — भाषा केवल इस ब्राउज़र में लागू होगी और रीलोड पर रीसेट हो सकती है।"

@@ -132,13 +132,19 @@ export function DisplayPanel() {
       <SettingsSection title={i18nT('pages.settings.displayPanel.view')}>
         <SettingsCard>
           {/* Options are built from SUPPORTED_LANGUAGES, so shipping a new
-              language needs no change here. The Auto entry names what THIS
-              browser's preferences resolve to ("Auto (follow browser) —
-              简体中文"), so the user can see what picking Auto gets them. That
-              suffix must come from `detected`, not the active language: the
-              latter made it echo the current selection ("— English" once English
-              was picked), which told the user nothing and hid the fact that
-              their browser asks for a different language. */}
+              language needs no change here. The Auto entry names what the host's
+              own preferences resolve to ("Auto — 简体中文"), so the user can see
+              what picking Auto gets them. That suffix must come from `detected`,
+              not the active language: the latter made it echo the current
+              selection ("— English" once English was picked), which told the user
+              nothing and hid the fact that the host asks for a different
+              language.
+
+              The label is plain "Auto", NOT "Auto (follow browser)": in the
+              desktop app there is no browser preference to follow — the locale
+              comes from the OS — so naming the browser was wrong on that
+              surface. The resolved language after the em dash is what actually
+              answers the question, on every surface. */}
           <SettingsSelect
             label={i18nT('settings.display.language.label')}
             description={i18nT('settings.display.language.description')}

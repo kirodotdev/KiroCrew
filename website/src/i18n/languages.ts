@@ -46,6 +46,8 @@ export const SUPPORTED_LANGUAGES: readonly LanguageEntry[] = [
   { code: 'bn', label: 'বাংলা' },
   { code: 'pt', label: 'Português' },
   { code: 'ru', label: 'Русский' },
+  { code: 'de', label: 'Deutsch' },
+  { code: 'it', label: 'Italiano' },
 ] as const
 
 /** The fallback language. Its catalog is the key-set authority for all others. */

@@ -913,6 +913,18 @@
     "artifactBody": {
       "rendering": "রেন্ডার হচ্ছে…"
     },
+    "artifactChatPanel": {
+      "agent_chat": "এজেন্ট চ্যাট",
+      "artifact_companion_chat": "আর্টিফ্যাক্ট সহযোগী চ্যাট",
+      "close_chat_panel": "চ্যাট প্যানেল বন্ধ করুন",
+      "close_panel_the_session_stays_active": "প্যানেল বন্ধ করুন (সেশন সক্রিয় থাকে)",
+      "new_chat": "নতুন চ্যাট",
+      "new_chat_archive_this_conversation_and_start_fresh": "নতুন চ্যাট — এই কথোপকথন আর্কাইভ করুন এবং নতুন করে শুরু করুন",
+      "no_active_session_for_this_artifact": "এই আর্টিফ্যাক্টের জন্য কোনো সক্রিয় সেশন নেই।",
+      "open_in_chat_page": "চ্যাট পৃষ্ঠায় খুলুন",
+      "start_chat": "চ্যাট শুরু করুন",
+      "starting_session": "সেশন শুরু হচ্ছে…"
+    },
     "artifactFolderDeleteDialog": {
       "cancel": "বাতিল",
       "contents_move_up_to": "বিষয়বস্তু উপরে সরে যাবে এখানে",
@@ -2342,6 +2354,7 @@
       "activity": "অ্যাক্টিভিটি",
       "add_a_tag": "একটি ট্যাগ যোগ করুন",
       "add_a_tag_comma_separated_tags_supported": "একটি ট্যাগ যোগ করুন (কমা দিয়ে আলাদা করা ট্যাগ সমর্থিত)",
+      "agent_chat": "এজেন্ট চ্যাট",
       "artifact": "আর্টিফ্যাক্ট",
       "back": "ফিরে যান",
       "back_to_library": "← লাইব্রেরিতে ফিরুন",
@@ -2350,6 +2363,7 @@
       "by": "তৈরি করেছেন",
       "cancel": "বাতিল",
       "cancel_esc": "বাতিল (Esc)",
+      "chat_with_the_agent_about_this_artifact": "এই আর্টিফ্যাক্ট নিয়ে এজেন্টের সঙ্গে চ্যাট করুন",
       "comments": "মন্তব্য",
       "content_copied_from_v": "কনটেন্ট কপি করা হয়েছে এই ভার্সন থেকে: v",
       "created": "তৈরি হয়েছে",
@@ -2393,9 +2407,11 @@
       "tag": "ট্যাগ…",
       "tag_2": "ট্যাগ",
       "this_artifact_is_regenerated_by_a_cron_job_your": "এই আর্টিফ্যাক্টটি একটি cron জব দিয়ে পুনরায় তৈরি হয়। আপনার সম্পাদনাগুলি ভার্সন ইতিহাসে সংরক্ষিত থাকবে, তবে পরবর্তী cron রান একটি নতুন ভার্সন তৈরি করবে, যা আপনি এখানে যা সংরক্ষণ করছেন তার উপরে বসে যাবে।",
+      "this_artifact_was_deleted": "এই আর্টিফ্যাক্টটি মুছে ফেলা হয়েছে।",
       "tip_select_text_to_anchor_a_comment_or_use_the": "টিপ: মন্তব্য জুড়ে দিতে টেক্সট নির্বাচন করুন, অথবা ব্যবহার করুন",
       "tip_use_the": "টিপ: ব্যবহার করুন",
       "to_chat_with_the_agent": "এজেন্টের সঙ্গে চ্যাট করার জন্য",
+      "toggle_agent_chat": "এজেন্ট চ্যাট চালু/বন্ধ করুন",
       "toggle_comments": "মন্তব্য দেখান বা লুকান",
       "unsaved_changes": "• অসংরক্ষিত পরিবর্তন",
       "updated": "· আপডেট হয়েছে",
@@ -2675,14 +2691,14 @@
         "loop": "লুপ"
       },
       "recoveryCard": {
-        "tool_call_blocked": "টুল কল ব্লক করা হয়েছে",
-        "n_tool_calls_blocked": "{{count}}টি টুল কল ব্লক করা হয়েছে",
-        "safety_policy_continuing": "নিরাপত্তা নীতি · স্বয়ংক্রিয়ভাবে চলছে",
+        "cancelled_continuing": "বাতিল · চলছে",
         "n_patterns": "{{count}}টি প্যাটার্ন",
-        "turn_stalled": "টার্ন থেমে গেছে",
+        "n_tool_calls_blocked": "{{count}}টি টুল কল ব্লক করা হয়েছে",
         "recovered_continuing": "পুনরুদ্ধার হয়েছে · চলছে",
+        "safety_policy_continuing": "নিরাপত্তা নীতি · স্বয়ংক্রিয়ভাবে চলছে",
+        "tool_call_blocked": "টুল কল ব্লক করা হয়েছে",
         "tool_stopped_responding": "টুল সাড়া দেওয়া বন্ধ করেছে",
-        "cancelled_continuing": "বাতিল · চলছে"
+        "turn_stalled": "টার্ন থেমে গেছে"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "ডিসপ্লে সেটিংসে আপনার রঙের প্যালেট পরিবর্তন করুন",
@@ -4523,7 +4539,7 @@
   "settings": {
     "display": {
       "language": {
-        "auto": "স্বয়ংক্রিয় (ব্রাউজার অনুযায়ী)",
+        "auto": "স্বয়ংক্রিয়",
         "description": "ড্যাশবোর্ড ইন্টারফেসের ভাষা।",
         "label": "ভাষা",
         "sync_failed": "এটি আপনার KiroCrew কনফিগে সংরক্ষণ করা যায়নি — ভাষাটি শুধু এই ব্রাউজারেই প্রযোজ্য হবে এবং রিলোড করলে রিসেট হয়ে যেতে পারে।"
