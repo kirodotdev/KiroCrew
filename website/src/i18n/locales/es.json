@@ -1676,6 +1676,15 @@
       "run_in_terminal": "Ejecutar en el terminal",
       "sent_to_terminal": "Enviado al terminal"
     },
+    "runInTerminalConfirm": {
+      "body_multi": "Se ejecutarán {{lines}} líneas en una nueva pestaña de terminal, en el directorio de trabajo de este chat.",
+      "body_single": "Se ejecutará en una nueva pestaña de terminal, en el directorio de trabajo de este chat.",
+      "cancel": "Cancelar",
+      "flagged": "Marcado:",
+      "run": "Ejecutar",
+      "run_anyway": "Ejecutar de todos modos",
+      "title": "Ejecutar en el terminal"
+    },
     "searchBar": {
       "case_sensitive": "Distinguir mayúsculas",
       "close_esc": "Cerrar (Esc)",

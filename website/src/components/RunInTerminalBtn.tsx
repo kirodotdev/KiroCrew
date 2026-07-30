@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { SquareTerminal, Check, AlertCircle, ShieldAlert } from 'lucide-react'
+import { SquareTerminal, Check, AlertCircle } from 'lucide-react'
 import { checkSensitiveCommand } from '../utils/sensitiveCommand'
+import RunInTerminalConfirm from './RunInTerminalConfirm'
 
 import { i18nT } from '../i18n/t'
 export const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'fish'])
@@ -15,17 +16,19 @@ function stripPromptChars(code: string): string {
  * that chat's working directory) and runs the command there, then echoes back a
  * `mc:run-in-terminal-result` so we can flash sent/failed. Correlated by reqId
  * so overlapping runs don't cross wires.
+ *
+ * Every click opens a confirmation dialog first. The code block clips long lines
+ * (the <pre> scrolls horizontally), so the visible text is not necessarily the
+ * whole command — the dialog shows the exact string that will run, wrapped.
  */
 export default function RunInTerminalBtn({ code }: { code: string }) {
-  const [status, setStatus] = useState<'idle' | 'sent' | 'error' | 'warn'>('idle')
-  const [warnReason, setWarnReason] = useState('')
-  const warnTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const [status, setStatus] = useState<'idle' | 'sent' | 'error'>('idle')
+  const [pending, setPending] = useState<{ command: string; warnReason: string } | null>(null)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const resultTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const resultUnsubRef = useRef<(() => void) | null>(null)
 
   useEffect(() => () => {
-    clearTimeout(warnTimerRef.current)
     clearTimeout(flashTimerRef.current)
     clearTimeout(resultTimerRef.current)
     resultUnsubRef.current?.()
@@ -56,83 +59,59 @@ export default function RunInTerminalBtn({ code }: { code: string }) {
     window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: cleaned, reqId } }))
   }, [flash])
 
-  const run = useCallback(() => {
+  const askToRun = useCallback(() => {
     const cleaned = stripPromptChars(code)
     if (!cleaned) return
-
-    const match = checkSensitiveCommand(code)
-    if (match) {
-      setWarnReason(match.reason)
-      setStatus('warn')
-      clearTimeout(warnTimerRef.current)
-      warnTimerRef.current = setTimeout(() => setStatus('idle'), 8000)
-      return
-    }
-
-    execute(cleaned)
-  }, [code, execute])
+    // Check both forms: a prompt-prefixed line only matches the patterns after stripping.
+    const match = checkSensitiveCommand(code) ?? checkSensitiveCommand(cleaned)
+    setPending({ command: cleaned, warnReason: match?.reason ?? '' })
+  }, [code])
 
   const confirmRun = useCallback(() => {
-    clearTimeout(warnTimerRef.current)
-    const cleaned = stripPromptChars(code)
-    if (!cleaned) return
-    setStatus('idle')
-    execute(cleaned)
-  }, [code, execute])
+    if (!pending) return
+    setPending(null)
+    execute(pending.command)
+  }, [pending, execute])
 
-  const cancelWarn = useCallback(() => {
-    clearTimeout(warnTimerRef.current)
-    setStatus('idle')
-  }, [])
+  const cancelRun = useCallback(() => setPending(null), [])
 
-  if (status === 'warn') {
-    return (
-      <span className="inline-flex items-center gap-1">
-        <span className="text-[11px] text-warn truncate max-w-[180px]" title={warnReason}>
-          <ShieldAlert size={11} className="inline mr-0.5" />{warnReason}
+  const trigger = (() => {
+    if (status === 'sent') {
+      return (
+        <span className="p-1 rounded text-accent" title={i18nT('components.runInTerminalBtn.sent_to_terminal')} aria-label={i18nT('components.runInTerminalBtn.sent_to_terminal')}>
+          <Check size={13} />
         </span>
-        <button
-          className="px-1.5 py-0.5 rounded text-[11px] bg-warn/20 text-warn hover:bg-warn/30 cursor-pointer"
-          onClick={confirmRun}
-          aria-label={i18nT('components.runInTerminalBtn.confirm_run_sensitive_command')}
-        >
-          {i18nT('components.runInTerminalBtn.run_anyway')}
-        </button>
-        <button
-          className="px-1.5 py-0.5 rounded text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-          onClick={cancelWarn}
-          aria-label={i18nT('components.runInTerminalBtn.cancel')}
-        >
-          {i18nT('components.runInTerminalBtn.cancel')}
-        </button>
-      </span>
-    )
-  }
-
-  if (status === 'sent') {
+      )
+    }
+    if (status === 'error') {
+      return (
+        <span className="p-1 rounded text-danger" title={i18nT('components.runInTerminalBtn.couldn_t_run_in_terminal')} aria-label={i18nT('components.runInTerminalBtn.couldn_t_run_in_terminal')}>
+          <AlertCircle size={13} />
+        </span>
+      )
+    }
     return (
-      <span className="p-1 rounded text-accent" title={i18nT('components.runInTerminalBtn.sent_to_terminal')} aria-label={i18nT('components.runInTerminalBtn.sent_to_terminal')}>
-        <Check size={13} />
-      </span>
+      <button
+        className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+        onClick={askToRun}
+        title={i18nT('components.runInTerminalBtn.run_in_terminal')}
+        aria-label={i18nT('components.runInTerminalBtn.run_in_terminal')}
+      >
+        <SquareTerminal size={13} />
+      </button>
     )
-  }
-
-  if (status === 'error') {
-    return (
-      <span className="p-1 rounded text-danger" title={i18nT('components.runInTerminalBtn.couldn_t_run_in_terminal')} aria-label={i18nT('components.runInTerminalBtn.couldn_t_run_in_terminal')}>
-        <AlertCircle size={13} />
-      </span>
-    )
-  }
+  })()
 
   return (
-    <button
-      className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-      onClick={run}
-      title={i18nT('components.runInTerminalBtn.run_in_terminal')}
-      aria-label={i18nT('components.runInTerminalBtn.run_in_terminal')}
-    >
-      <SquareTerminal size={13} />
-    </button>
+    <>
+      {trigger}
+      <RunInTerminalConfirm
+        open={!!pending}
+        command={pending?.command ?? ''}
+        warnReason={pending?.warnReason || undefined}
+        onConfirm={confirmRun}
+        onCancel={cancelRun}
+      />
+    </>
   )
 }

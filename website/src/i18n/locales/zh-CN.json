@@ -1636,6 +1636,15 @@
       "run_in_terminal": "在终端中运行",
       "sent_to_terminal": "已发送到终端"
     },
+    "runInTerminalConfirm": {
+      "body_multi": "将在本对话工作目录下的新终端标签页中运行 {{lines}} 行命令。",
+      "body_single": "将在本对话工作目录下的新终端标签页中运行。",
+      "cancel": "取消",
+      "flagged": "已标记：",
+      "run": "运行",
+      "run_anyway": "仍然运行",
+      "title": "在终端中运行"
+    },
     "searchBar": {
       "case_sensitive": "区分大小写",
       "close_esc": "关闭（Esc）",

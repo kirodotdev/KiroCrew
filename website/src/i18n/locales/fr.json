@@ -1676,6 +1676,15 @@
       "run_in_terminal": "Exécuter dans le terminal",
       "sent_to_terminal": "Envoyé au terminal"
     },
+    "runInTerminalConfirm": {
+      "body_multi": "{{lines}} lignes seront exécutées dans un nouvel onglet de terminal, dans le répertoire de travail de ce chat.",
+      "body_single": "La commande sera exécutée dans un nouvel onglet de terminal, dans le répertoire de travail de ce chat.",
+      "cancel": "Annuler",
+      "flagged": "Signalé :",
+      "run": "Exécuter",
+      "run_anyway": "Exécuter quand même",
+      "title": "Exécuter dans le terminal"
+    },
     "searchBar": {
       "case_sensitive": "Respecter la casse",
       "close_esc": "Fermer (Esc)",

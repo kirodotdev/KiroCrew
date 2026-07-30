@@ -1649,6 +1649,15 @@
       "run_in_terminal": "Run in terminal",
       "sent_to_terminal": "Sent to terminal"
     },
+    "runInTerminalConfirm": {
+      "body_multi": "{{lines}} lines will run in a new terminal tab, in this chat's working directory.",
+      "body_single": "This will run in a new terminal tab, in this chat's working directory.",
+      "cancel": "Cancel",
+      "flagged": "Flagged:",
+      "run": "Run",
+      "run_anyway": "Run anyway",
+      "title": "Run in terminal"
+    },
     "searchBar": {
       "case_sensitive": "Case sensitive",
       "close_esc": "Close (Esc)",
