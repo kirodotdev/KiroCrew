@@ -1137,11 +1137,10 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* Kiro dark: queued-message bar matches the Figma "Waiting for input" snackbar (1793:25695) —
    semi-transparent olive bg + Yellow/800 border + Yellow/100 text. */
 [data-theme="kiro-dark"] .queue-card{background-color:#2a2810;border-color:#5c5500;color:#fff7cc}
-/* Kiro theme: session agent-label ("default") gets a purple tint matching the accent foreground
-   (#B07FFF). The last-message subtitle is intentionally NOT tinted here — it keeps its default grey
-   and only turns purple (text-accent → #B07FFF) while the session is running, so both share one tint. */
-[data-theme="kiro-dark"] .session-agent-label{color:#b07fff}
-[data-theme="kiro-light"] .session-agent-label{color:#8e48ff}
+/* Kiro theme: the session agent-label is intentionally NOT tinted — it is metadata, not a link, and
+   the purple tint made every row's agent name compete with the session title for attention. It keeps
+   the row's neutral grey (`text-muted`), leaving purple to carry meaning: the running-state accent on
+   the last-message subtitle, and `--aim` on package-sourced agents. */
 .msg-content pre{background:rgba(0,0,0,.15);border-radius:var(--radius-sm);padding:10px 12px;overflow-x:auto;margin:4px 0;font-size:0.8125rem;font-family:var(--mono);line-height:1.5}
 [data-mode="light"] .msg-content pre{background:rgba(0,0,0,.04)}
 /* Reset pre inside new code/diff block components */

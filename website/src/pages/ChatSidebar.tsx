@@ -1775,7 +1775,8 @@ function ChatSidebar({
               onClick={() => createChatInFolder(folder.id, columnId)}
               title={kiroSessionReady ? 'New chat in folder' : 'Sign in to Kiro before starting a session'} aria-label={`New chat in ${folder.name}`}
               className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[11px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left disabled:opacity-50 disabled:cursor-not-allowed">
-              <MessageSquarePlus size={11} className="shrink-0" /><span>{i18nT('pages.chatSidebar.new_chat_in_folder')}</span>
+              {/* Trailing glyph — list-view parity (see renderFolderBlock). */}
+              <span>{i18nT('pages.chatSidebar.new_chat_in_folder')}</span><MessageSquarePlus size={11} className="shrink-0 ml-auto" />
             </button>
             {(deepChildren.length > 0 || childSlots.length > 0) && (
               <div className="mx-3 border-b border-border" />
@@ -2177,11 +2178,14 @@ function ChatSidebar({
         // and action buttons clickable; drag is off while renaming.
         {...(draggable ? dragHandleProps : {})}
         className={`group relative flex items-center gap-2 pr-2 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
-        // 13px left pad lands the folder NAME text on the same x as the nested
-        // session rows' text (glyph sits in the gutter to the left), giving a
-        // clean vertical guide down the tree. Measured: name / session both at
-        // the wrapper's text edge.
-        style={{ paddingLeft: '13px' }}>
+        // 16px left pad puts the folder GLYPH on the same x as the text of the
+        // session rows at the folder's OWN level (both `px-4`), so a folder and
+        // its siblings start the same column. The 5px glyph→name gap is chosen
+        // (not cosmetic) so glyph 14px + 5px == the 19px indent step of the
+        // nested body, which lands the folder NAME on the text x of the sessions
+        // INSIDE it. Both guides hold at once; changing either breaks one.
+        // Measured: glyph == sibling session text, name == child session text.
+        style={{ paddingLeft: '16px' }}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph icon={folder.icon} size={14} open={!folder.collapsed} />
@@ -2194,7 +2198,7 @@ function ChatSidebar({
              *  <button> (keyboard-operable for free), filling the row so clicking
              *  the folder glyph/name still toggles.  Double-click the name renames. */}
             <button type="button"
-              className="flex items-center gap-2 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
+              className="flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
               aria-expanded={!folder.collapsed}
               aria-label={`${folder.collapsed ? 'Expand' : 'Collapse'} folder ${folder.name}`}
               onClick={() => toggleCollapse(folder.id)}>
@@ -2308,7 +2312,11 @@ function ChatSidebar({
         onClick={() => createChatInFolder(folder.id)}
         title={kiroSessionReady ? 'New chat in folder' : 'Sign in to Kiro before starting a session'} aria-label={`New chat in ${folder.name}`}
         className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left disabled:opacity-50 disabled:cursor-not-allowed">
-        <MessageSquarePlus size={13} className="shrink-0" /><span>{i18nT('pages.chatSidebar.new_chat_in_folder')}</span>
+        {/* Label first, glyph trailing: a leading icon pushed this row's text
+         *  ~23px right of the session titles below it, breaking the single left
+         *  text guide the folder-header padding establishes. The ⊕ lands in the
+         *  same right-hand gutter as a session row's relative timestamp. */}
+        <span>{i18nT('pages.chatSidebar.new_chat_in_folder')}</span><MessageSquarePlus size={13} className="shrink-0 ml-auto" />
       </button>
     )
     const bodyNodes: React.ReactNode[] = showInlineNewChat

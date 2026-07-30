@@ -26,8 +26,13 @@ const json = (route, body, status = 200) => route.fulfill({
   status, contentType: 'application/json', body: JSON.stringify(body),
 })
 
+// f1 carries a nested subtree (depth 2 and 3) so the "New chat in folder"
+// alignment can be judged at every indent level, not just the root folder.
 const folders = [
   { id: 'f1', name: 'Kiro', icon: '🚀', order: 0, collapsed: false },
+  { id: 'f1a', name: 'Sidebar', icon: '🧩', order: 0, collapsed: false, parent_id: 'f1' },
+  { id: 'f1a1', name: 'Folder glyph', order: 0, collapsed: false, parent_id: 'f1a' },
+  { id: 'f1b', name: 'Updater', order: 1, collapsed: true, parent_id: 'f1' },
   { id: 'f2', name: 'Design', icon: '🎨', order: 1, collapsed: true },
   { id: 'f3', name: 'Infra', order: 2, collapsed: true },
 ]
@@ -41,6 +46,9 @@ const slot = (key, title, folder_id, last_ts, running = false) => ({
 const slots = [
   slot('s1', 'Replace collapse chevron', 'f1', '2026-07-29T20:00:00Z'),
   slot('s2', 'Auto-update install flow', 'f1', '2026-07-29T18:30:00Z'),
+  slot('s9', 'Folder row alignment', 'f1a', '2026-07-29T19:40:00Z'),
+  slot('s10', 'Glyph overlay emoji', 'f1a1', '2026-07-29T19:10:00Z'),
+  slot('s11', 'ShipIt swap race', 'f1b', '2026-07-29T17:00:00Z'),
   slot('s3', 'Tips Kit T1 analyzer', 'f1', '2026-07-29T16:00:00Z'),
   slot('s4', 'StyledSelect retirement', 'f2', '2026-07-28T12:00:00Z'),
   slot('s5', 'App Store revamp', 'f2', '2026-07-28T10:00:00Z'),
@@ -53,7 +61,7 @@ async function main() {
   const { srv, base } = await serveDist()
   const browser = await chromium.launch()
   const context = await browser.newContext({
-    viewport: { width: 1400, height: 950 },
+    viewport: { width: 1400, height: 1250 },
     deviceScaleFactor: 2, // 12-13px sidebar type renders soft at 1x on GitHub
   })
   const page = await context.newPage()
@@ -109,7 +117,7 @@ async function main() {
     const x = box ? Math.max(0, box.x - 44) : 470
     await page.screenshot({
       path: `${OUT}/${name}.png`,
-      clip: { x, y: 118, width: Math.min(1400 - x, 360), height: 820 },
+      clip: { x, y: 118, width: Math.min(1400 - x, 380), height: 1000 },
     })
     console.log('wrote', `${OUT}/${name}.png`)
   }
@@ -121,14 +129,28 @@ async function main() {
   // them up. Enable with MEASURE=1.
   if (process.env.MEASURE) {
     const m = await page.evaluate(() => {
-      const glyph = document.querySelector('[data-testid="folder-collapse-f1"]')
-      const btn = glyph && glyph.closest('button')
-      const name = btn && Array.from(btn.querySelectorAll('span')).find(s => s.textContent.trim() === 'Kiro')
-      const sess = document.querySelector('.session-agent-label')
       const left = el => (el ? Math.round(el.getBoundingClientRect().left * 100) / 100 : null)
-      return { glyphLeft: left(glyph), nameLeft: left(name), sessionTextLeft: left(sess) }
+      const glyph = id => document.querySelector(`[data-testid="folder-collapse-${id}"]`)
+      const nameOf = (id, text) => {
+        const btn = glyph(id) && glyph(id).closest('button')
+        return btn ? Array.from(btn.querySelectorAll('span')).find(s => s.textContent.trim() === text) : null
+      }
+      const rowTextFor = key => {
+        const row = document.querySelector(`[data-slot-key="${key}"] .session-agent-label`)
+        return left(row)
+      }
+      return {
+        rootFolderGlyph: left(glyph('f1')), rootFolderName: left(nameOf('f1','Kiro')),
+        rootSessionText: rowTextFor('s7'),            // ungrouped, root lane
+        depth1SessionText: rowTextFor('s1'),          // inside f1
+        depth1FolderGlyph: left(glyph('f1a')), depth1FolderName: left(nameOf('f1a','Sidebar')),
+        depth2SessionText: rowTextFor('s9'),          // inside f1a
+        depth2FolderGlyph: left(glyph('f1a1')),
+        depth3SessionText: rowTextFor('s10'),         // inside f1a1
+        newChatLabel: left(document.querySelector('button[aria-label="New chat in Kiro"] span')),
+      }
     })
-    console.log('MEASURE', JSON.stringify(m))
+    console.log('MEASURE', JSON.stringify(m, null, 1))
   }
 
   await browser.close()
