@@ -14,7 +14,7 @@ export default function CapabilitiesPage() {
 
   const tabs = useMemo(() => {
     return [
-      { key: 'agents', label: 'Agents', icon: <Users size={16} />, description: 'Manage agent → workspace → memory store bindings' },
+      { key: 'crews', label: 'Crews', icon: <Users size={16} />, description: 'Crews you chat with, each with its own workspace and memory' },
       { key: 'templates', label: 'Agent Templates', icon: <LayoutTemplate size={16} />, description: `Installed agent configurations and packages` },
       { key: 'mcp', label: 'Integrations(MCP)', icon: <Plug size={16} />, description: 'Add tools that let your agent work with Slack, AWS, code repos, and other services' },
       { key: 'skills', label: 'Skills', icon: <BookOpen size={16} />, description: 'Specialized knowledge files your agent loads on demand for specific tasks' },
@@ -27,7 +27,7 @@ export default function CapabilitiesPage() {
   return (
     <SidePanelLayout title={i18nT('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} headerRight={<RestartButton />}>
       {tab => <>
-        {tab === 'agents' && <KiroCrewAgentsPage embedded />}
+        {tab === 'crews' && <KiroCrewAgentsPage embedded />}
         {tab === 'templates' && <AgentsPage embedded />}
         {tab === 'mcp' && <McpTab />}
         {tab === 'skills' && <SkillsTab />}

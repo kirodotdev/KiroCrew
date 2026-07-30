@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test'
 
 /**
  * /capabilities — Agent Capabilities page.
- * SidePanelLayout with 6 tabs: Agents, Agent Templates, Integrations(MCP),
- * Skills, Hooks, Prompts. Default tab is "agents" (KiroCrewAgentsPage).
+ * SidePanelLayout with 6 tabs: Crews, Agent Templates, Integrations(MCP),
+ * Skills, Hooks, Prompts. Default tab is "crews" (KiroCrewAgentsPage).
  *
  * Covers: page load + heading, tab navigation with content change assertion,
  * the agents table read + a create/delete round-trip mutation.
@@ -16,7 +16,7 @@ test.describe('Capabilities Page — /capabilities', () => {
     await expect(page.locator('#main-content .text-lg.font-bold').first()).toBeVisible({ timeout: 10000 })
   })
 
-  test('renders the page title and default Agents tab heading', async ({ page }) => {
+  test('renders the page title and default Crews tab heading', async ({ page }) => {
     // SidePanelLayout nav title "Agent Capabilities" — scoped inside main-content
     await expect(page.locator('#main-content .text-lg.font-bold').first()).toHaveText('Agent Capabilities')
     // Default tab description from the content area header
@@ -24,24 +24,24 @@ test.describe('Capabilities Page — /capabilities', () => {
     // (CapabilitiesPage.tsx:16), not a PageHeader subtitle, so there is no
     // page-subtitle testid on this route. KiroCrewAgentsPage renders the same
     // string as a real PageHeader subtitle, hence the #main-content scope.
-    await expect(page.locator('#main-content').getByText('Manage agent → workspace → memory store bindings')).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('#main-content').getByText('Crews you chat with', { exact: false })).toBeVisible({ timeout: 5000 })
   })
 
   test('shows all 6 tab buttons in the side nav', async ({ page }) => {
     // Tab buttons inside the nav panel — look inside #main-content nav
     const nav = page.locator('#main-content nav')
-    const tabs = ['Agents', 'Agent Templates', 'Integrations(MCP)', 'Skills', 'Hooks', 'Prompts']
+    const tabs = ['Crews', 'Agent Templates', 'Integrations(MCP)', 'Skills', 'Hooks', 'Prompts']
     for (const label of tabs) {
       await expect(nav.getByRole('button', { name: label, exact: true })).toBeVisible({ timeout: 5000 })
     }
   })
 
-  test('agents tab shows the stats cards and agents table', async ({ page }) => {
-    // StatCard "Total Agents" rendered by KiroCrewAgentsPage
-    await expect(page.locator('#main-content').getByText('Total Agents')).toBeVisible({ timeout: 5000 })
+  test('crews tab shows the stats cards and crews table', async ({ page }) => {
+    // StatCard "Total Crews" rendered by KiroCrewAgentsPage
+    await expect(page.locator('#main-content').getByText('Total Crews')).toBeVisible({ timeout: 5000 })
     // StatCard "Default" showing the default agent name
     await expect(page.locator('#main-content').getByText('Default').first()).toBeVisible()
-    // The agents table has a header row with "Name" column
+    // The crews table has a header row with "Name" column
     await expect(page.locator('#main-content th').filter({ hasText: 'Name' }).first()).toBeVisible()
     // The minimal fixture seeds at least one agent (the "kirocrew" default)
     await expect(page.locator('#main-content td').filter({ hasText: 'kirocrew' }).first()).toBeVisible({ timeout: 5000 })

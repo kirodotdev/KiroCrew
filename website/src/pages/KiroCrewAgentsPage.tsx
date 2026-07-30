@@ -226,7 +226,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
         </div>
 
         <Card>
-          <CardTitle>{i18nT('pages.kiroCrewAgentsPage.create_agent')} <InfoTip text={`Create a new agent binding. Each agent maps a name to a ${provider.labels.agentTemplateField.toLowerCase()}, workspace, and memory store.`} /></CardTitle>
+          <CardTitle>{i18nT('pages.kiroCrewAgentsPage.create_agent')} <InfoTip text={`Name the crew, then choose the ${provider.labels.agentTemplateField.toLowerCase()} it starts from, the workspace it works in, and where its memory lives.`} /></CardTitle>
           <div className="flex gap-2 items-end flex-wrap">
             <div className="flex flex-col gap-1">
               {/* Native input associated via htmlFor+id; label-has-for's nesting requirement is a false positive. */}
