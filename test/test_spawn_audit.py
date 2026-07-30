@@ -95,7 +95,24 @@ _PREEXEC_TOKENS = ("resource_limit_preexec", "session_host_preexec")
 # agent-influenced code — a resource ceiling adds nothing. Keyed by
 # ``<relpath>::<function>`` with a justification, same discipline as
 # ``BENIGN_SPAWNS``.
-PREEXEC_EXEMPT: frozenset[str] = frozenset(set())
+PREEXEC_EXEMPT: frozenset[str] = frozenset(
+    {
+        # Applies the SAME limits post-exec instead of post-fork. This spawn
+        # already prepends the immutable process-group supervisor
+        # (`python -I -c <supervisor>`), so it hands the resolved rlimits to that
+        # supervisor as `--rlimits=NAME:value,...` (see
+        # sandbox.resource_limit_supervisor_argv) and the supervisor calls
+        # setrlimit before forking the real child, which inherits the ceiling.
+        # The limits are therefore NOT dropped; only the delivery point moved.
+        # Why it had to move: `preexec_fn` forces CPython off posix_spawn/vfork
+        # onto a plain fork() of the multi-GB, ~118-thread gateway and runs
+        # Python in the child before exec. A lock another thread held at fork
+        # time is unreleasable there, and a child so wedged deadlocked in a
+        # futex, never exec'd, never exited, and pinned every fd it inherited --
+        # including gateway.lock and the dashboard listener.
+        "kiro_prerequisite.py::_run_process",
+    }
+)
 
 # Benign spawns: command/args/cwd are fixed or operator-controlled, NOT
 # influenced by the agent, a hostile MCP-config entry, or an agent-selected

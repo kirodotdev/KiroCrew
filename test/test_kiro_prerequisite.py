@@ -6,6 +6,7 @@ import copy
 import hashlib
 import os
 import sqlite3
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -597,6 +598,75 @@ class TestKiroPrerequisiteHelpers:
             42,
             999,
         ) == {100}
+
+    def test_supervisor_rlimit_spec_ignores_junk(self) -> None:
+        """A malformed --rlimits= entry must never fail the spawn.
+
+        Safe to run in-process precisely because nothing here resolves to a real
+        rlimit, so no setrlimit call touches this test process.
+        """
+        supervisor._apply_rlimits("RLIMIT_DOES_NOT_EXIST:1")
+        supervisor._apply_rlimits("RLIMIT_NOFILE:not-an-int")
+        supervisor._apply_rlimits("")
+        supervisor._apply_rlimits("garbage")
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS, reason="POSIX resource limits"
+    )
+    def test_supervisor_applies_rlimits_and_child_inherits_them(self) -> None:
+        """The post-exec replacement for preexec_fn actually enforces a ceiling.
+
+        Runs the real supervisor the way ``_run_process`` does -- including
+        ``start_new_session=True``, without which the supervisor waits on the
+        caller's own process group and never exits -- and reads the limit from
+        the exec'd grandchild, which is what the ceiling has to cover.
+        """
+        code = Path(supervisor.__file__).read_text(encoding="utf-8")
+        probe = "import resource;print(resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
+        real_python = os.path.realpath(sys.executable)
+
+        def run(*extra: str) -> str:
+            done = subprocess.run(  # noqa: S603 - fixed argv, test-local
+                [sys.executable, "-I", "-c", code, *extra, real_python, "-c", probe],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                start_new_session=True,
+            )
+            assert done.returncode == 0, done.stderr
+            return done.stdout.strip()
+
+        inherited = int(run())
+        capped = int(run("--rlimits=RLIMIT_NOFILE:64"))
+        assert capped == 64
+        assert inherited != capped  # the cap came from the flag, not the host
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="oom_score_adj is Linux-only")
+    def test_supervisor_biases_oom_score_without_any_rlimit_flag(self) -> None:
+        """The OOM bias is independent of the rlimits and must not be gated on them.
+
+        ``preexec_fn`` applied it on every spawn. Gating it on ``--rlimits=``
+        would silently drop it for an operator who disables every limit.
+        """
+        code = Path(supervisor.__file__).read_text(encoding="utf-8")
+        probe = "print(open('/proc/self/oom_score_adj').read().strip())"
+        done = subprocess.run(  # noqa: S603 - fixed argv, test-local
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                code,
+                os.path.realpath(sys.executable),
+                "-c",
+                probe,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            start_new_session=True,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip() == "1000"
 
     def test_posix_candidates_are_discoverable_on_windows_host(
         self,
@@ -2412,6 +2482,8 @@ class TestKiroPrerequisiteWorkflow:
             "-I",
             "-c",
             prerequisite_module._PROCESS_GROUP_SUPERVISOR_CODE,
+            # Resource limits ride on the supervisor's argv, not preexec_fn.
+            *prerequisite_module.resource_limit_supervisor_argv(),
             "/sandbox/launcher",
             "/usr/bin/env",
             "/tmp/agent-writable/kiro-cli",
@@ -2499,7 +2571,10 @@ class TestKiroPrerequisiteWorkflow:
         )
 
         assert result.ok is True
-        assert captured["spawn_argv"][4] == f"/usr/bin/{wrapper}"
+        # 4 supervisor items (python, -I, -c, code) plus the optional --rlimits=
+        # fragment, then the resolved sandbox wrapper.
+        wrapper_index = 4 + len(prerequisite_module.resource_limit_supervisor_argv())
+        assert captured["spawn_argv"][wrapper_index] == f"/usr/bin/{wrapper}"
 
     @pytest.mark.skipif(
         platform_compat.IS_WINDOWS,

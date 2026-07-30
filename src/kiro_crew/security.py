@@ -5041,6 +5041,43 @@ def _bias_child_oom_score() -> None:
         pass
 
 
+def resource_limit_spec(config: dict | None = None) -> list[tuple[str, int]]:
+    """Resolve the configured rlimits as ``(RLIMIT_* name, value)`` pairs.
+
+    Split out of :func:`apply_resource_limits` so one policy reader serves both
+    ways of applying the limits:
+
+    * **post-fork**, as the ``preexec_fn`` :func:`apply_resource_limits` builds;
+    * **post-exec**, by the process-group supervisor
+      (``_process_group_supervisor.py``), which receives these pairs on its argv
+      because it cannot import this module -- it runs under ``python -I -c`` from
+      an immutable gateway-captured source string, and that is deliberate: a
+      mutable package path would let a same-UID agent swap the code out.
+
+    Names, not ``resource`` constants: the consumer resolves them with
+    ``getattr`` and skips any its platform lacks. A value of ``0`` means "leave
+    inherited" and is dropped here.
+    """
+    limits = dict(_RLIMIT_DEFAULTS)
+    if config and isinstance(config.get("resource_limits"), dict):
+        rl_config = config["resource_limits"]
+        for key in _RLIMIT_DEFAULTS:
+            val = rl_config.get(key)
+            # Accept 0 (explicit disable) and positive ints; ignore junk.
+            if isinstance(val, (int, float)) and not isinstance(val, bool) and val >= 0:
+                limits[key] = int(val)
+
+    # (rlimit name, requested soft/hard value in the rlimit's native unit).
+    max_memory_bytes = limits["max_memory_mb"] * 1024 * 1024
+    specs = [
+        ("RLIMIT_NPROC", limits["max_processes"]),
+        ("RLIMIT_NOFILE", limits["max_open_files"]),
+        ("RLIMIT_CPU", limits["max_cpu_seconds"]),
+        ("RLIMIT_AS", max_memory_bytes),
+    ]
+    return [(name, value) for name, value in specs if value > 0]
+
+
 def apply_resource_limits(config: dict | None = None) -> "Callable[[], None]":
     """Return a preexec_fn that applies POSIX resource limits to a child process.
 
@@ -5083,28 +5120,12 @@ def apply_resource_limits(config: dict | None = None) -> "Callable[[], None]":
     # type (closures don't inherit the guard's narrowing of the module global).
     res = _resource
 
-    limits = dict(_RLIMIT_DEFAULTS)
-    if config and isinstance(config.get("resource_limits"), dict):
-        rl_config = config["resource_limits"]
-        for key in _RLIMIT_DEFAULTS:
-            val = rl_config.get(key)
-            # Accept 0 (explicit disable) and positive ints; ignore junk.
-            if isinstance(val, (int, float)) and not isinstance(val, bool) and val >= 0:
-                limits[key] = int(val)
-
-    # (rlimit constant, requested soft/hard value in the rlimit's native unit).
-    # A value of 0 means "leave inherited" and is skipped below.
-    max_memory_bytes = limits["max_memory_mb"] * 1024 * 1024
-    specs = [
-        ("RLIMIT_NPROC", limits["max_processes"]),
-        ("RLIMIT_NOFILE", limits["max_open_files"]),
-        ("RLIMIT_CPU", limits["max_cpu_seconds"]),
-        ("RLIMIT_AS", max_memory_bytes),
-    ]
     # Resolve the rlimit constants once in the parent (cheap, keeps the
     # post-fork callable minimal). Skip any this platform lacks.
     resolved = [
-        (getattr(res, name), value) for name, value in specs if value > 0 and hasattr(res, name)
+        (getattr(res, name), value)
+        for name, value in resource_limit_spec(config)
+        if hasattr(res, name)
     ]
 
     def _set_limits() -> None:

@@ -45,7 +45,7 @@ from kiro_crew.kiro_cli import (
     find_kiro_cli_candidates,
     known_kiro_cli_dirs,
 )
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import resource_limit_supervisor_argv, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -1174,11 +1174,20 @@ async def _run_process(
             # two parent wait loops depend on each other; loading it from a
             # mutable package path would also let a same-UID agent replace code
             # immediately before an owner-triggered install.
+            #
+            # It also carries the resource limits (``--rlimits=``) that used to
+            # ride on ``preexec_fn``. See resource_limit_supervisor_argv: a
+            # preexec_fn forces a plain fork() of this multi-threaded gateway and
+            # runs Python in the child before exec, which is how a child wedged
+            # in a futex and pinned the fds it had inherited. The supervisor
+            # applies the same setrlimits after exec, single-threaded, and the
+            # exec'd child inherits them.
             spawn_argv = [
                 sys.executable,
                 "-I",
                 "-c",
                 _PROCESS_GROUP_SUPERVISOR_CODE,
+                *resource_limit_supervisor_argv(),
                 *spawn_argv,
             ]
         proc = await asyncio.create_subprocess_exec(
@@ -1187,7 +1196,6 @@ async def _run_process(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=spawn_env,
-            preexec_fn=resource_limit_preexec(),
             start_new_session=platform_compat.IS_POSIX,
             creationflags=creationflags,
         )

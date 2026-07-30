@@ -1,4 +1,14 @@
-"""Keep a POSIX setup subprocess group anchored until all descendants exit."""
+"""Keep a POSIX setup subprocess group anchored until all descendants exit.
+
+Also applies the caller's resource limits. This runs AFTER ``exec``, in a
+single-threaded process, which is the whole point: applying them via
+``preexec_fn`` instead forced CPython to ``fork()`` the multi-GB, ~118-thread
+gateway and run Python in the child before ``exec``. Locks other threads held at
+fork time are unreleasable there, so the child deadlocked in a futex, never
+exec'd, and never exited -- while pinning every fd it inherited (see the
+gateway.lock reclaim fix). Limits set here are inherited by the exec'd child and
+all of its descendants, so coverage is unchanged.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +18,65 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - Windows has no POSIX rlimits
+    _resource = None  # type: ignore[assignment]
+
 _POLL_SECONDS = 0.05
+_RLIMIT_FLAG = "--rlimits="
+
+
+def _apply_rlimits(spec: str) -> None:
+    """Apply ``RLIMIT_NAME:value`` pairs from *spec* to this process.
+
+    Mirrors ``kiro_crew.security.apply_resource_limits``'s clamp rules -- take
+    the min of the request and the inherited hard limit, set soft AND hard so the
+    child cannot raise its own ceiling back up, and skip anything the kernel or
+    platform rejects rather than failing the spawn. Duplicated rather than
+    imported on purpose: this file is executed as an immutable ``python -I -c``
+    source string, so it must stay stdlib-only.
+
+    The ``resource`` import is guarded because this module is also imported
+    directly by the test suite, including on Windows, where the supervisor itself
+    is never spawned.
+    """
+    if _resource is None:
+        return
+    res = _resource
+    for item in spec.split(","):
+        name, _, raw = item.partition(":")
+        try:
+            res_id = getattr(res, name)
+            requested = int(raw)
+        except (AttributeError, ValueError):
+            continue
+        try:
+            _soft, hard = res.getrlimit(res_id)
+            if hard != res.RLIM_INFINITY:
+                requested = min(requested, hard)
+            res.setrlimit(res_id, (requested, requested))
+        except (ValueError, OSError):
+            continue
+
+
+def _bias_oom_score() -> None:
+    """Bias the OOM killer toward this process tree (inherited by descendants).
+
+    Mirrors ``kiro_crew.security._bias_child_oom_score``: a memory-ballooning
+    tool subprocess should be killed before the cgroup ceiling takes out the
+    whole agent scope. Linux-only, unprivileged, best-effort.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        fd = os.open("/proc/self/oom_score_adj", os.O_WRONLY)
+        try:
+            os.write(fd, b"1000")
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
 
 
 def _proc_stat_group_member(text: str, pgid: int) -> bool:
@@ -98,6 +166,17 @@ def _exit_code(status: int) -> int:
 
 def main() -> None:
     argv = sys.argv[1:]
+    # Bias the OOM killer FIRST and unconditionally. It is an independent control
+    # from the rlimits -- ``preexec_fn`` applied it on every spawn -- so gating it
+    # on the presence of ``--rlimits=`` would silently drop it for an operator who
+    # disables every limit. Inherited by the exec'd child and its descendants.
+    _bias_oom_score()
+    # Optional leading --rlimits=NAME:value,... from the spawning gateway. Applied
+    # before the fork below so the exec'd child and every descendant inherit the
+    # ceiling, matching what preexec_fn used to cover.
+    if argv and argv[0].startswith(_RLIMIT_FLAG):
+        _apply_rlimits(argv[0][len(_RLIMIT_FLAG):])
+        argv = argv[1:]
     if not argv or not Path(argv[0]).is_absolute():
         raise SystemExit(127)
 

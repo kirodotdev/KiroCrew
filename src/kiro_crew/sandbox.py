@@ -2572,6 +2572,45 @@ def resource_limit_preexec() -> "Callable[[], None] | None":
     return _RESOURCE_PREEXEC  # type: ignore[return-value]
 
 
+# Cached ``--rlimits=`` argv fragment for the process-group supervisor. Same
+# policy as ``resource_limit_preexec``, delivered post-exec instead of post-fork.
+_RESOURCE_SUPERVISOR_ARGV: object = _UNSET
+
+
+def resource_limit_supervisor_argv() -> "tuple[str, ...]":
+    """Return the supervisor's ``--rlimits=`` argv fragment (empty if none apply).
+
+    The alternative to :func:`resource_limit_preexec` for the one spawn that
+    already prepends ``_process_group_supervisor.py``. Passing ``preexec_fn=``
+    forces CPython to ``fork()`` the multi-GB, ~118-thread gateway and run Python
+    in the child before ``exec``; a lock another thread held at fork time is
+    unreleasable there, and that is how a child deadlocked in a futex, never
+    exec'd, and pinned every fd it had inherited. Handing the limits to the
+    supervisor moves the same ``setrlimit`` calls after ``exec``, where the
+    process is single-threaded, and the exec'd child inherits them either way.
+
+    The values are policy numbers, not secrets, so argv (world-readable via
+    ``ps``) is a fine channel.
+    """
+    global _RESOURCE_SUPERVISOR_ARGV
+    if _RESOURCE_SUPERVISOR_ARGV is _UNSET:
+        if os.name != "posix":
+            _RESOURCE_SUPERVISOR_ARGV = ()
+            return ()
+        from kiro_crew.security import resource_limit_spec
+
+        cfg: dict | None = None
+        try:
+            from kiro_crew.config.loader import _raw_config
+
+            cfg = _raw_config()
+        except Exception:
+            logger.debug("resource_limit_supervisor_argv: config unavailable, using defaults")
+        spec = ",".join(f"{name}:{value}" for name, value in resource_limit_spec(cfg))
+        _RESOURCE_SUPERVISOR_ARGV = (f"--rlimits={spec}",) if spec else ()
+    return _RESOURCE_SUPERVISOR_ARGV  # type: ignore[return-value]
+
+
 # ---------------------------------------------------------------------------
 # Session host preexec — the inverse of resource_limit_preexec.
 # ---------------------------------------------------------------------------
