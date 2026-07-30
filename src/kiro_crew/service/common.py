@@ -15,13 +15,88 @@ def kirocrew_bin() -> str:
     """Return the resolved kirocrew executable path, or fall back to sys.argv[0].
 
     Used by both the systemd unit and the launchd plist as ``ExecStart`` /
-    ``ProgramArguments``. Falls back to ``sys.argv[0]`` for development
-    installs where ``kirocrew`` isn't on the global PATH.
+    ``ProgramArguments``. Resolution order:
+
+    1. ``KIROCREW_SERVICE_BIN`` if set — an explicit operator override. This
+       lets a launcher the resolver can't discover (a wrapper script, a venv
+       entry point not on the global PATH) be pinned as the service Program,
+       rather than silently falling back to whatever ``kirocrew`` happens to be
+       first on ``$PATH``. Resolved to an absolute path: the launchd/systemd
+       manager has no meaningful working directory, so a relative override
+       would produce an invalid ``ExecStart`` / ``ProgramArguments`` and the
+       service would fail to start.
+    2. ``shutil.which("kirocrew")`` — the installed console script.
+    3. ``sys.argv[0]`` — for development installs where ``kirocrew`` isn't on
+       the global PATH.
     """
+    override = os.environ.get("KIROCREW_SERVICE_BIN", "").strip()
+    if override:
+        return os.path.abspath(override)
     found = shutil.which("kirocrew")
     if found:
         return found
     return os.path.realpath(sys.argv[0])
+
+
+def service_environment(home: str) -> "dict[str, str]":
+    """Build the environment baked into the installed service.
+
+    launchd and systemd start a service with a minimal, non-login
+    environment, so anything the gateway (or a subprocess it spawns) relies on
+    must be captured explicitly at install time. This is the single source of
+    truth for both the launchd plist ``EnvironmentVariables`` and the systemd
+    unit ``Environment=`` lines, so the two managers can never drift.
+
+    Keys:
+
+    * ``HOME`` / ``PATH`` — always set. ``PATH`` snapshots the installer's
+      ``$PATH`` (see :func:`service_path`).
+    * ``LANG`` / ``LC_ALL`` — pinned to a fixed UTF-8 locale so that a
+      subprocess reading a non-ASCII file does not crash under the default
+      ``US-ASCII`` codec (Python raises ``UnicodeDecodeError`` / tools report
+      "invalid byte sequence in US-ASCII"). launchd sets no locale at all, so
+      without this a gateway that shells out to a locale-sensitive tool fails
+      only under the service and not from an interactive shell.
+
+      The value is a fixed, platform-appropriate UTF-8 locale, NOT the
+      installer's own. The installer environment is *not* trusted because: (1) a
+      non-UTF-8 installer locale (a bare ``LANG=C`` / ``POSIX`` under SSH without
+      locale forwarding, minimal containers, ``su``-invoked installs) would bake
+      a non-UTF-8 value in and, because ``LC_ALL`` is then explicitly set,
+      suppress CPython's PEP 538 coercion — reintroducing the exact ASCII-codec
+      crash this env exists to prevent; (2) even a *UTF-8-named* installer
+      locale can be one the target host never generated (e.g. an SSH-forwarded
+      ``LC_ALL=zz_ZZ.UTF-8``), where ``setlocale`` still falls back to C.
+
+      The concrete locale differs by platform because there is no single name
+      valid on both: ``C.UTF-8`` is the always-present UTF-8 locale on modern
+      glibc/musl (Linux/systemd) but is **not** a valid BSD-libc locale on
+      macOS — a launchd service pinned to ``C.UTF-8`` would leave kiro-cli /
+      node and other libc consumers with an invalid locale that degrades to
+      ASCII. macOS ships ``en_US.UTF-8`` in its base locale set, so Darwin uses
+      that. The install host's platform is the service host's platform, so
+      keying off :data:`sys.platform` at render time is correct.
+    * ``KIROCREW_KIRO_BIN`` — propagated only when the installer already has it
+      set, resolved to an absolute path (a relative pin is meaningless once the
+      service runs from a different working directory). The readiness ``whoami``
+      probe's real-home fallback keys off this pin; capturing it means a
+      ``service install`` no longer drops it and regresses the gateway to a
+      not-signed-in state.
+    """
+    # macOS BSD libc has no C.UTF-8; en_US.UTF-8 is always in its base set.
+    # Linux glibc/musl always has C.UTF-8 (and a minimal host may lack
+    # en_US.UTF-8). Pick per platform so the baked-in locale is always valid.
+    utf8_locale = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
+    env = {
+        "HOME": home,
+        "PATH": service_path(home),
+        "LANG": utf8_locale,
+        "LC_ALL": utf8_locale,
+    }
+    kiro_bin = os.environ.get("KIROCREW_KIRO_BIN", "").strip()
+    if kiro_bin:
+        env["KIROCREW_KIRO_BIN"] = os.path.abspath(kiro_bin)
+    return env
 
 
 def service_path(home: str) -> str:

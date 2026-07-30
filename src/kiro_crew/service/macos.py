@@ -16,7 +16,7 @@ from pathlib import Path
 from kiro_crew.service.common import (
     LAUNCHD_LABEL,
     kirocrew_bin,
-    service_path,
+    service_environment,
 )
 
 log = logging.getLogger(__name__)
@@ -40,10 +40,13 @@ def render_plist() -> str:
     """Render the launchd LaunchAgent plist contents."""
     bin_path = _xml_escape(kirocrew_bin())
     home_str = str(Path.home())
-    home = _xml_escape(home_str)
-    path = _xml_escape(service_path(home_str))
     out_log = _xml_escape(str(STDOUT_LOG))
     err_log = _xml_escape(str(STDERR_LOG))
+    env_entries = "".join(
+        f"        <key>{_xml_escape(key)}</key>\n"
+        f"        <string>{_xml_escape(value)}</string>\n"
+        for key, value in service_environment(home_str).items()
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -66,10 +69,7 @@ def render_plist() -> str:
         "    </dict>\n"
         "    <key>EnvironmentVariables</key>\n"
         "    <dict>\n"
-        "        <key>HOME</key>\n"
-        f"        <string>{home}</string>\n"
-        "        <key>PATH</key>\n"
-        f"        <string>{path}</string>\n"
+        f"{env_entries}"
         "    </dict>\n"
         f"    <key>StandardOutPath</key>\n"
         f"    <string>{out_log}</string>\n"

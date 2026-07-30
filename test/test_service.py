@@ -19,7 +19,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_crew.service.common import LAUNCHD_LABEL, SERVICE_NAME, Platform, current_platform
+from kiro_crew.service.common import (
+    LAUNCHD_LABEL,
+    SERVICE_NAME,
+    Platform,
+    current_platform,
+    kirocrew_bin,
+    service_environment,
+)
 
 
 class TestPlatformDetection:
@@ -72,7 +79,9 @@ class TestLinuxUnitRendering:
             "kiro_crew.service.linux.subprocess.run", return_value=gid_result
         ):
             unit = svc_linux.render_unit()
-        assert "ExecStart=/home/u/.toolbox/bin/kirocrew gateway" in unit
+        # ExecStart executable is double-quoted (systemd tokenizes on
+        # whitespace; a spaced path would otherwise break the exec).
+        assert 'ExecStart="/home/u/.toolbox/bin/kirocrew" gateway' in unit
         assert "Restart=on-failure" in unit
         assert "RestartSec=10" in unit
         # System-level unit must run as the invoking user with the user's
@@ -104,8 +113,8 @@ class TestLinuxUnitRendering:
         ):
             unit = svc_linux.render_unit()
         # argv[0] is realpathed; just check the unit references *something*
-        # that ends in "kirocrew gateway".
-        assert "kirocrew gateway" in unit
+        # that ends in the (quoted) kirocrew executable followed by gateway.
+        assert 'kirocrew" gateway' in unit
 
     def test_install_writes_unit_via_sudo_install_and_invokes_systemctl(
         self, tmp_path, monkeypatch
@@ -1072,3 +1081,208 @@ class TestRestartCommandHint:
                 svc_common, "current_platform", lambda p=platform: p
             )
             assert "systemctl --user" not in svc_common.restart_command_hint()
+
+
+class TestKirocrewBinOverride:
+    def test_service_bin_override_wins_over_which(self, monkeypatch):
+        monkeypatch.setenv("KIROCREW_SERVICE_BIN", "/opt/wrapper/kirocrew")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/usr/local/bin/kirocrew",
+        ):
+            assert kirocrew_bin() == "/opt/wrapper/kirocrew"
+
+    def test_falls_back_to_which_when_override_unset(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/usr/local/bin/kirocrew",
+        ):
+            assert kirocrew_bin() == "/usr/local/bin/kirocrew"
+
+    def test_blank_override_is_ignored(self, monkeypatch):
+        monkeypatch.setenv("KIROCREW_SERVICE_BIN", "   ")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/usr/local/bin/kirocrew",
+        ):
+            assert kirocrew_bin() == "/usr/local/bin/kirocrew"
+
+    def test_relative_override_is_made_absolute(self, monkeypatch):
+        # A relative override would produce an invalid ExecStart/ProgramArguments
+        # under launchd/systemd (no meaningful cwd), so it must be absolutised.
+        import os
+
+        monkeypatch.setenv("KIROCREW_SERVICE_BIN", "./.venv/bin/kirocrew")
+        result = kirocrew_bin()
+        assert os.path.isabs(result)
+        assert result == os.path.abspath("./.venv/bin/kirocrew")
+
+
+class TestServiceEnvironment:
+    # The pinned UTF-8 locale is platform-specific: en_US.UTF-8 on macOS (BSD
+    # libc has no C.UTF-8), C.UTF-8 on Linux (always present on glibc/musl).
+    EXPECTED_UTF8 = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
+
+    def test_always_sets_home_path_and_locale(self, monkeypatch):
+        monkeypatch.delenv("LANG", raising=False)
+        monkeypatch.delenv("LC_ALL", raising=False)
+        monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
+        env = service_environment("/home/tester")
+        assert env["HOME"] == "/home/tester"
+        assert "PATH" in env
+        # A valid UTF-8 locale is pinned so subprocesses that read non-ASCII
+        # files do not crash under the US-ASCII default codec.
+        assert env["LANG"] == self.EXPECTED_UTF8
+        assert env["LC_ALL"] == self.EXPECTED_UTF8
+
+    def test_locale_is_pinned_ignoring_installer(self, monkeypatch):
+        # The installer's locale is NOT trusted. A UTF-8-named installer locale
+        # can still be one the target host never generated (SSH-forwarded
+        # LC_ALL=zz_ZZ.UTF-8), where setlocale falls back to C; the fixed
+        # platform UTF-8 locale is used regardless.
+        monkeypatch.setenv("LANG", "en_GB.UTF-8")
+        monkeypatch.setenv("LC_ALL", "zz_ZZ.UTF-8")
+        env = service_environment("/home/tester")
+        assert env["LANG"] == self.EXPECTED_UTF8
+        assert env["LC_ALL"] == self.EXPECTED_UTF8
+
+    def test_locale_is_platform_appropriate(self, monkeypatch):
+        # C.UTF-8 is invalid on macOS BSD libc; en_US.UTF-8 is invalid-by-
+        # absence on minimal Linux. Assert each platform gets its always-valid
+        # UTF-8 locale.
+        env = service_environment("/home/tester")
+        if sys.platform == "darwin":
+            assert env["LANG"] == "en_US.UTF-8"
+            assert env["LC_ALL"] == "en_US.UTF-8"
+        else:
+            assert env["LANG"] == "C.UTF-8"
+            assert env["LC_ALL"] == "C.UTF-8"
+
+    def test_propagates_kiro_bin_pin_only_when_set(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
+        assert "KIROCREW_KIRO_BIN" not in service_environment("/home/tester")
+        monkeypatch.setenv("KIROCREW_KIRO_BIN", "/opt/shim/kiro-cli")
+        env = service_environment("/home/tester")
+        assert env["KIROCREW_KIRO_BIN"] == "/opt/shim/kiro-cli"
+
+    def test_kiro_bin_pin_is_absolutized(self, monkeypatch):
+        # A relative pin is meaningless once the service runs from a different
+        # cwd; it must be absolutised like the service-bin override.
+        import os
+
+        monkeypatch.setenv("KIROCREW_KIRO_BIN", "./kiro-cli")
+        env = service_environment("/home/tester")
+        assert os.path.isabs(env["KIROCREW_KIRO_BIN"])
+        assert env["KIROCREW_KIRO_BIN"] == os.path.abspath("./kiro-cli")
+
+    def test_non_utf8_installer_locale_not_preserved(self, monkeypatch):
+        # LANG=C / POSIX must NOT be preserved: with LC_ALL then explicitly set
+        # to it, PEP 538 coercion is suppressed and subprocesses crash on the
+        # ASCII codec. The fixed platform UTF-8 locale is used instead.
+        for bad in ("C", "POSIX", "en_US"):
+            monkeypatch.setenv("LANG", bad)
+            monkeypatch.delenv("LC_ALL", raising=False)
+            env = service_environment("/home/tester")
+            assert env["LANG"] == self.EXPECTED_UTF8, bad
+            assert env["LC_ALL"] == self.EXPECTED_UTF8, bad
+
+    def test_plist_includes_locale_and_kiro_bin(self, monkeypatch):
+        from kiro_crew.service import macos as svc_macos
+
+        monkeypatch.setenv("KIROCREW_KIRO_BIN", "/opt/shim/kiro-cli")
+        monkeypatch.setenv("LANG", "en_US.UTF-8")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/opt/homebrew/bin/kirocrew",
+        ):
+            plist = svc_macos.render_plist()
+        assert "<key>LANG</key>" in plist
+        assert "<key>LC_ALL</key>" in plist
+        assert "<key>KIROCREW_KIRO_BIN</key>" in plist
+        assert "<string>/opt/shim/kiro-cli</string>" in plist
+        assert "<key>HOME</key>" in plist
+        assert "<key>PATH</key>" in plist
+
+    def test_unit_includes_locale_and_kiro_bin(self, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setenv("KIROCREW_KIRO_BIN", "/opt/shim/kiro-cli")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/usr/local/bin/kirocrew",
+        ):
+            unit = svc_linux.render_unit()
+        # Environment values are double-quoted (systemd tokenizes on whitespace).
+        assert 'Environment="USER=tester"\n' in unit
+        assert 'Environment="LANG=' in unit
+        assert 'Environment="KIROCREW_KIRO_BIN=/opt/shim/kiro-cli"\n' in unit
+
+    def test_unit_quotes_spaced_program_and_env(self, monkeypatch):
+        # A spaced KIROCREW_SERVICE_BIN / KIROCREW_KIRO_BIN must not split the
+        # ExecStart exec (203/EXEC) or truncate the env value at the space.
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setenv("KIROCREW_SERVICE_BIN", "/opt/Kiro Crew/kirocrew")
+        monkeypatch.setenv("KIROCREW_KIRO_BIN", "/opt/Kiro Crew/kiro-cli")
+        unit = svc_linux.render_unit()
+        assert 'ExecStart="/opt/Kiro Crew/kirocrew" gateway' in unit
+        assert 'Environment="KIROCREW_KIRO_BIN=/opt/Kiro Crew/kiro-cli"\n' in unit
+        # The bare unquoted forms must NOT appear (would break systemd parsing).
+        assert "ExecStart=/opt/Kiro Crew/kirocrew gateway" not in unit
+
+    def test_unit_escapes_percent_specifiers(self, monkeypatch):
+        # systemd expands %-specifiers (%h=home, %i=instance) in ExecStart /
+        # Environment= regardless of quoting; a literal % in a path (e.g. a dir
+        # named "100%") must be escaped to %% or the exec targets the wrong path.
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setenv("KIROCREW_SERVICE_BIN", "/opt/100%/kirocrew")
+        unit = svc_linux.render_unit()
+        assert 'ExecStart="/opt/100%%/kirocrew" gateway' in unit
+        # The single-% form must NOT survive (systemd would treat %/ as a
+        # specifier). Guard against a bare "/opt/100%/kirocrew" in ExecStart.
+        assert "/opt/100%/kirocrew" not in unit
+
+    def test_sd_quote_escape_order(self):
+        from kiro_crew.service.linux import _sd_quote
+
+        # %% before \\ before \" — a value with all three renders correctly.
+        assert _sd_quote("a%b") == '"a%%b"'
+        assert _sd_quote('x"y') == '"x\\"y"'
+        assert _sd_quote("p\\q") == '"p\\\\q"'
+
+    def test_sd_quote_rejects_control_chars(self):
+        # A newline (or other C0/DEL) in a value would break out of the quoted
+        # systemd token and let the remainder be parsed as fresh unit
+        # directives (e.g. User=root injection into the root-owned unit) — must
+        # raise, not escape.
+        from kiro_crew.service.linux import _sd_quote
+
+        for bad in ("/opt/x\nUser=root", "a\tb", "a\x00b", "a\x7fb", "a\rb"):
+            with pytest.raises(ValueError):
+                _sd_quote(bad)
+
+    def test_render_unit_rejects_newline_injection(self, monkeypatch):
+        # End-to-end: a newline-bearing override must abort render_unit(), not
+        # emit an injectable unit file.
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setenv(
+            "KIROCREW_SERVICE_BIN", "/opt/x/kirocrew\nUser=root\nExecStart=/evil"
+        )
+        with pytest.raises(ValueError):
+            svc_linux.render_unit()
+
+    def test_plist_program_uses_spaced_override_verbatim(self, monkeypatch):
+        # launchd plist ProgramArguments are separate XML <string> elements, so
+        # a spaced path needs no quoting — just XML escaping (none needed here).
+        from kiro_crew.service import macos as svc_macos
+
+        monkeypatch.setenv("KIROCREW_SERVICE_BIN", "/opt/Kiro Crew/kirocrew")
+        plist = svc_macos.render_plist()
+        assert "<string>/opt/Kiro Crew/kirocrew</string>" in plist
