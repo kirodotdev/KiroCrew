@@ -44,8 +44,10 @@ release. Two concrete gaps:
   boundary.
 - An **effective removal path**: pulling an app must take effect without a client
   release, and must survive the stale-cache fallback.
-- Room for **multiple hosting sources** (internal git farms, artifact stores /
-  S3, OCI, other internal registries) without a breaking schema change.
+- Room for **multiple hosting sources** for an app's bytes (internal git farms,
+  artifact stores / S3, OCI) without a breaking schema change. Additional
+  *catalog* sources stay an operator concern — config or build time, never named
+  by a fetched document (§3.3).
 
 ### Non-goals
 
@@ -191,7 +193,7 @@ Notes that make this work in practice:
   "which fields apply?" ambiguity the union exists to remove. Note that needing
   credentials at all makes `s3` gated on §8's *per-repository credential grants*
   question — the tier never supplies them (§5).
-- **`ref` MUST be an immutable commit id for official and delegated entries.** A
+- **`ref` MUST be an immutable commit id for official entries.** A
   branch name is a *mutable* pointer, so a signed index naming `main` signs
   nothing about the bytes: whoever can push to that branch changes what a
   "verified" app installs, and the app's `setup.onInstall` then runs unreviewed
@@ -239,63 +241,55 @@ the host to the allowlist, decide the credential posture), not a transport
 change. Keeping these separate is what stops a transport enum from quietly
 implying "and it's safe to send credentials there."
 
-### 3.3 Other internal registries are a different axis (delegation)
+### 3.3 Where registry SOURCES come from (not from this document)
 
-"Pull from another internal registry" is **not** a `source.type` — a registry
-index is a catalog, not an app's bytes. It belongs at the **document** level as
-delegation: the official registry names other indexes whose entries are folded
-in, each with its own trust posture.
+A registry document lists **apps**. It does **not** list other registries. Adding
+a catalog source is an **operator** decision, made in owner config or at build
+time — never something a fetched document can do.
 
-```jsonc
-{
-  "schemaVersion": 1,
-  "generatedAt": "2026-07-29T19:00:00Z",
-  "delegates": [
-    {
-      "name": "acme-internal",
-      "url": "https://…/app-registry.json",
-      "trust": "official",
-      "publicKey": "…"        // REQUIRED for trust:"official" — see below
-    }
-  ],
-  "apps": [ /* entries as above */ ]
-}
-```
+There are exactly two ways a source enters the set, both of which already exist:
 
-This is deliberately a superset of today's user-configured external registries
-(same fetch-and-merge machinery, add-only, dedupe by `name`), with one added
-capability: a delegate reached *through the signed official doc* can be marked
-`trust: "official"`, because the first-party curator vouched for it — whereas a
-user-configured registry stays untrusted (§5). That is the mechanism by which an
-internal edition ships an internal catalog without every app entry having to live
-in the public file.
+| Mechanism | Where | Trust | Who decides |
+|---|---|---|---|
+| **Owner config** | `registries: [{name, repo, branch}]` (`ExternalRegistryConfig`) | untrusted (§5) | the machine's owner |
+| **Edition / build time** | the `AppsLoader.registry_rows()` CPP seam (`_edition_registry_rows()`), merged add-only | edition-designated | whoever composes the build |
 
-Hard limits on what delegation confers and costs:
+An internal git-farm catalog is therefore an **edition** concern: an internal
+build contributes its rows through the existing seam, or the operator adds the
+registry to their own config. Either way the decision is local.
 
-- **The delegate's CONTENTS must be authenticated, not just its URL.** Naming a
-  delegate inside the signed official document authenticates *that this URL was
-  designated* — it says nothing about the bytes served there. A compromised
-  delegate endpoint would otherwise have its unsigned catalog merged at Official
-  trust, making attacker-chosen apps featurable and installable. So
-  `trust: "official"` **requires** either the delegate's own signing key
-  (`publicKey`, carried in and therefore vouched for by the signed root) or a
-  pinned digest of an immutable delegate revision. A delegate that fails
-  verification is dropped — it does **not** silently downgrade to untrusted,
-  because a downgrade would let an attacker choose the tier by breaking the
-  signature.
-- **`trust: "official"` confers catalog trust only** — eligibility for featuring
-  and editorial reference. It **never** confers clone-credential posture. A
-  delegate's entries are third-party-authored, so they clone credential-free in a
-  strict sandbox exactly like a user-external entry (§5). Ambient credentials for
-  an internal source require an explicit per-repository grant, never a tier.
-- **Delegated entries are subject to the same content-pinning rule** as official
-  ones (§3.1): immutable commit / digest, no mutable refs.
-- **Depth capped at one level** — a delegate's own `delegates[]` is ignored, so
-  the merge cannot cycle.
-- **Breadth and work capped too** — depth alone does not bound cost: the root doc
-  could name an unbounded number of delegates. The schema caps `delegates[]`
-  length, and the client fetches them with bounded concurrency and a total time
-  budget, degrading to "delegates unavailable" rather than stalling a browse.
+**Why the official document must NOT carry a `delegates[]` list.** An earlier
+draft of this RFC did exactly that, and it was wrong on three counts:
+
+1. **It duplicates a mechanism that already exists.** Owner config and the
+   edition seam already cover both federation cases. A third path only creates
+   precedence questions between them.
+2. **It hands a remote document the power to add fetch targets.** The client
+   would fetch URLs it was told about by a document, not by its owner. That
+   converts a catalog into a redirector: a compromised (or merely
+   over-enthusiastic) first-party publish could point the entire fleet at new
+   hosts, including internal ones. Signing the document does not fix this — it
+   authenticates *who said it*, not whether the owner ever wanted those hosts
+   contacted.
+3. **It lets a document confer trust.** Trust in a source must be granted by the
+   party who owns the machine, not asserted by content arriving over the network.
+   A `trust: "official"` field is that inversion written down.
+
+The blast-radius argument is the decisive one. Without delegation, a compromise
+of the signing key means *lies about apps the client already knows about*. With
+delegation, the same compromise means *new fetch origins, at official trust*.
+That is a categorically larger failure, bought for a capability the config and
+edition seams already provide.
+
+Dropping delegation also removes the machinery that existed only to contain it:
+per-delegate signing keys, delegate digest pinning, depth caps, breadth caps,
+fetch-concurrency budgets, and the taxonomy-override rule for delegate-supplied
+categories. None of that is needed once the document stops naming sources.
+
+**Catalog size is a separate problem.** If the official catalog ever outgrows one
+document, that is *sharding* — parts enumerated under the same signature and the
+same origin — not federation of third-party catalogs. It does not require naming
+other registries and does not expand the trust set.
 
 ### 3.4 Baked search fields + curated categories
 
@@ -330,9 +324,9 @@ authored**:
   other baked field originates in author-controlled `app.json`; `category` is
   assigned by the curator in the catalog. If it were manifest-derived an author
   could self-promote into a curated category, which is exactly what the taxonomy
-  is meant to prevent. Likewise, a **delegate's** per-entry `category` values and
-  any `categories[]` it declares are **ignored** unless the signed root supplies
-  an explicit override — taxonomy authority stays with the root curator.
+  is meant to prevent. Taxonomy authority stays with the curator of the official
+  document; an edition-contributed or config-added registry does not define
+  categories.
 - **Generated, not hand-maintained.** The publish pipeline (§2) already fetches
   and resolves each entry, so it bakes these from the app's own `app.json`. App
   authors still never edit the catalog — they edit their manifest, and the next
@@ -385,7 +379,6 @@ The document wrapper carries the schema version and a generator stamp:
 {
   "schemaVersion": 1,
   "generatedAt": "2026-07-29T19:00:00Z",
-  "delegates": [ /* optional, §3.3 */ ],
   "categories": [ /* curated taxonomy, §3.4 */ ],
   "apps": [ /* entries */ ],
   "removed": [ /* tombstones, §3.6 */ ]
@@ -532,7 +525,6 @@ The official registry needs a tier **between** bundled and user-external:
 |------|--------|-----------------------|-------------------|--------------|
 | **Bundled** | compiled `app-registry.json` | honored | ambient (owner-designated) | ships in the wheel |
 | **Official** *(new)* | KiroCrew-owned CDN doc | **honored** (only once the signature verifies) | **credential-free + strict sandbox** | host-pin **and** required detached signature |
-| **Official delegate** *(new, §3.3)* | index named by the official doc | honored | **credential-free + strict sandbox** | **own signing key or pinned digest, verified** (§3.3) — being *named* in the signed root is not sufficient |
 | **External (user)** | user-configured repos | ignored | credential-free + strict sandbox | none |
 
 Two properties of this table are load-bearing and were nearly got wrong:
@@ -540,15 +532,14 @@ Two properties of this table are load-bearing and were nearly got wrong:
 **Catalog trust never implies credential posture.** Only the *bundled* tier gets
 ambient git/ssh credentials, because only bundled entries are
 owner-designated-at-build-time. Every remotely-fetched entry — official,
-delegated, or user-external — clones **credential-free in a strict sandbox**.
+edition, or user-external — clones **credential-free in a strict sandbox**.
 This matches what the code already decided:
 `index_originated = bool(entry.get("_registry"))` in `install_from_registry`
 forces the credential-free path precisely because an index entry can name a
 private *sibling* repo on a host that is already trusted, and cloning it with the
 gateway's identity would read that private repo as a confused deputy. An official
-entry is index-authored by construction and a delegate's entries are
-third-party-authored, so granting either ambient credentials would reopen exactly
-that hole. If ambient credentials are ever needed for an internal source, they
+entry is index-authored by construction, so granting it ambient credentials
+would reopen exactly that hole. If ambient credentials are ever needed for an internal source, they
 require an explicit **per-repository** grant, never a tier-wide one.
 
 **Host-pinning alone does not authenticate the bytes.** A fixed first-party
@@ -593,7 +584,7 @@ Relationship to `rfc-federated-app-platform` §5.2's tiers: its **Built-in** ≈
 this RFC's Bundled, **Curated** ≈ Official, and **Local** ≈ a locally-installed
 path (out of scope here). Its **Community** ("medium trust, hash-pinned") has *no*
 equivalent here — this RFC's External (user) tier is **untrusted**, not
-medium-trust, and the Official-delegate tier has no federated counterpart. The
+medium-trust. The
 two documents must not be read as using one shared tier vocabulary.
 
 ---
@@ -612,13 +603,12 @@ two documents must not be read as using one shared tier vocabulary.
   credential-posture key (`index_originated`). An official entry arrives through
   the same fetch-and-merge machinery, so it would carry `_registry` and land
   un-featurable *and* badged unverified — the exact opposite of §5 and §9. Fix:
-  carry `_tier: 'bundled' | 'edition' | 'official' | 'official-delegate' |
-  'external'`, and gate each consumer on the tier it actually cares about
+  carry `_tier: 'bundled' | 'edition' | 'official' | 'external'`, and gate each consumer on the tier it actually cares about
   (featuring/badging on catalog trust; cloning on credential posture, which is
   ambient for `bundled` only). The existing tests that encode the boolean
   ordering must be updated deliberately, not incidentally.
 - **Merge order** in `list_registry()`: bundled → **edition rows** → official →
-  official delegates (§3.3) → external, each add-only over the previous (dedupe by
+  external (§3.3), each add-only over the previous (dedupe by
   `name`). The edition seam is not optional to name: `_load_registry_file()`
   already merges edition/CPP rows into the bundled list add-only, so live code has
   four sources and this ladder must say where a CDN document sits relative to an
@@ -639,11 +629,9 @@ two documents must not be read as using one shared tier vocabulary.
   hardcoded taxonomy (issue #581). An entry whose `category` id is unknown falls
   into a default bucket and is never hidden.
 - **Enforce the content pin at install time**, not just at publish: refuse to
-  install an official or delegated entry whose `source` lacks an immutable pin
+  install an official entry whose `source` lacks an immutable pin
   (§3.1). The publish pipeline should make this unreachable; the client check is
   the backstop that makes it true regardless of who produced the document.
-- **Verify each delegate before merging it** (§3.3) — signature or pinned digest.
-  A delegate that fails verification is dropped, never downgraded to a lower tier.
 - **Source dispatch**: one `switch` on `source.type` selecting a fetcher, with a
   fail-closed default for unknown types, plus the legacy flat→tagged
   normalization at the read boundary (belt-and-braces with the publish-time
@@ -755,16 +743,14 @@ relitigated):
 - **An unsigned or signature-failing official document grants no trust** — the
   client falls through to cache/bundled instead of honoring its featuring.
 - **No remotely-fetched entry ever clones with ambient credentials**, regardless
-  of tier — official, delegated, and user-external all clone credential-free in a
+  of tier — official, edition, and user-external all clone credential-free in a
   strict sandbox.
 - **Official apps are featurable and show as verified**, proving the `_tier`
   refactor actually landed (the `_registry` boolean would have made both false).
 - **An invalid catalog cannot reach the CDN** — the publish workflow is the only
   write path and validates first.
-- **No official or delegated entry can be installed from a mutable ref** — every
+- **No official entry can be installed from a mutable ref** — every
   such entry carries an immutable pin, enforced at publish AND at install.
-- **A delegate whose contents fail verification contributes nothing** — it is
-  dropped, not silently downgraded to a lower trust tier.
 - **Discover renders and searches with zero per-app manifest fetches**, from the
   baked fields alone.
 - **The category taxonomy changes without a client release** (closes #581), and an
