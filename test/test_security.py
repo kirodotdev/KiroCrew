@@ -514,6 +514,118 @@ class TestRedactCredentials:
         assert result == text
         assert warnings == []
 
+    # ── Two-segment dashboard link token ──
+    # `dashboard.token_auth.generate_token` emits `base64url(payload).base64url(
+    # hmac_sig)` — TWO segments, so the JWT alternative's old `{2,4}` segment
+    # floor never matched it. The token then fell through to the bare-secret
+    # entropy pass, whose run class is STANDARD base64 (`[A-Za-z0-9+/]`) and
+    # excludes base64url's `-`/`_`. Redaction therefore depended on which
+    # characters a random signature happened to contain.
+
+    # Same payload; signatures differ only in whether they contain a `-`.
+    _LINK_PAYLOAD = (
+        "eyJzdWIiOiJsb2NhbC1hcHAiLCJleHAiOjE3ODU0MTc2MDYsInNlc3Npb25fZXhwIjoxNzg1NDg5MzA2"
+        "LCJpYXQiOjE3ODU0MTczMDYsIm5vbmNlIjoiOTM5YzE3MGQ5ZjBiNmEyMiIsImdlbiI6MH0"
+    )
+    _SIG_PLAIN = "gVhM4aKLA8dyFHoZlQx6SpYSNPkXA07kpDhWd6UhZIa"  # no `-`/`_`
+    _SIG_URLSAFE = "gVhM4aKLA8dyFH-oZlQx6SpYSNPkXA07kpDhWd6UhZI"  # contains `-`
+
+    def test_redacts_two_segment_dashboard_link_token(self) -> None:
+        """The whole two-segment token is replaced, not just its signature."""
+        token = f"{self._LINK_PAYLOAD}.{self._SIG_URLSAFE}"
+        text = f"https://host.example.com/?token={token}"
+        result, warnings = redact_credentials(text)
+        assert result == "https://host.example.com/?token=[REDACTED: credential]"
+        # The payload segment carries the claims (sub/exp/nonce) and must not
+        # survive: a partially-redacted token still looks like a usable URL.
+        assert "eyJzdWIi" not in result
+        assert len(warnings) == 1
+
+    def test_two_segment_token_redaction_independent_of_signature_alphabet(self) -> None:
+        """Redaction must not depend on `-`/`_` appearing in the signature.
+
+        Before the dedicated two-segment alternative, only signatures free of
+        base64url's `-`/`_` formed a 40+ run for the bare-secret pass, so ~29% of
+        minted tokens were partially redacted and ~71% streamed out verbatim.
+        """
+        for sig in (self._SIG_PLAIN, self._SIG_URLSAFE):
+            token = f"{self._LINK_PAYLOAD}.{sig}"
+            result, warnings = redact_credentials(f"?token={token}")
+            assert result == "?token=[REDACTED: credential]", sig
+            assert len(warnings) == 1, sig
+
+    def test_identifier_containing_eyj_not_redacted(self) -> None:
+        """An `eyJ`-containing identifier followed by attribute access is code.
+
+        The two-segment alternative needs a left boundary. Without one, the
+        substring `eyJson.get` inside `keyJson.get` matches and the line is
+        rewritten to `k[REDACTED: credential](raw)`. `redact_credentials` feeds
+        persisted diff bodies, saved artifacts and compressed history, so a false
+        positive is written to disk with no way to recover the original.
+        """
+        for text in (
+            "keyJson.get(raw)",
+            "surveyJson.title",
+            "serviceAccountKeyJson.load(path)",
+            "monkeyJson.dumps(x)",
+        ):
+            result, warnings = redact_credentials(text)
+            assert result == text, text
+            assert warnings == [], text
+
+    def test_short_two_segment_base64url_not_redacted(self) -> None:
+        """A short `eyJ…` value with one dot is a filename or a quoted claim set.
+
+        The per-segment length floors carry this: `eyJ2IjoxfQ` is 7 chars past the
+        prefix (far under the 40-char payload floor) and `json` is under the 20-char
+        signature floor. A real link token clears both by a wide margin.
+        """
+        for text in (
+            "cache file eyJ2IjoxfQ.json written",
+            "See https://example.com/path?q=eyJhbGciOiJIUzI1NiJ9.",
+        ):
+            result, warnings = redact_credentials(text)
+            assert result == text, text
+            assert warnings == [], text
+
+    def test_boundary_position_identifier_not_redacted(self) -> None:
+        """A dotted identifier that BEGINS with `eyJ` must survive.
+
+        The left boundary cannot help at offset 0, and a length FLOOR alone is
+        beatable by a verbose enough identifier, so the segment lengths are taken
+        from the generator instead: exactly 43 chars of HMAC signature, and a payload
+        floor no real identifier reaches. Without that, these collapse to
+        `[REDACTED: credential](x)` inside a persisted diff chip body.
+        """
+        for text in (
+            "eyJsonSerializer.deserializeFromStringValue(x)",
+            "eyJsonDocument.deserializeConfiguration(raw)",
+            "obj.eyJsonReader.readValueFromInputStream(x)",
+            "eyJargonized.intercontinentalization",
+            # exactly 40 chars past `eyJ`, which cleared an earlier `{40,}` floor
+            "eyJsonSerializerConfigurationFactoryBuilder.deserializeFromStringValue(x)",
+            # long enough to clear any plausible payload floor on the first component
+            "eyJsonSerializerConfigurationFactoryBuilderRegistryProviderDelegating"
+            "InterceptorFactoryAdapterHandler.deserializeFromStringValueUsing"
+            "ConfiguredObjectMapperInstance(x)",
+        ):
+            result, warnings = redact_credentials(text)
+            assert result == text, text
+            assert warnings == [], text
+
+    def test_link_token_signature_is_43_chars(self) -> None:
+        """Pin the assumption the 2-segment alternative encodes as `{43}`.
+
+        `token_auth._sign` is HMAC-SHA256 base64url-unpadded, so the signature is
+        always exactly 43 chars. The redaction pattern hard-codes that width. If the
+        digest ever changes, this fails loudly here rather than silently disabling
+        redaction of the link token in production.
+        """
+        from kiro_crew.dashboard.token_auth import _sign
+
+        for payload in (b'{"sub":"x"}', b"", b"a" * 4096):
+            assert len(_sign(payload)) == 43, payload[:16]
+
     def test_bearer_word_alone_not_redacted(self) -> None:
         """The word `Bearer` without the `Authorization:` header prefix is prose."""
         text = "The bond is a bearer instrument, not registered."
