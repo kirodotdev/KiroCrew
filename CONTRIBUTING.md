@@ -161,6 +161,10 @@ git push && git push --tags
 | `src/kiro_crew/__init__.py` | `__version__` (source of truth) |
 | `CHANGELOG.md` | New `## [X.Y.Z]` section |
 
+For the branch, channel, and RC model behind these steps — where the tag goes
+and how insider becomes stable — see
+**[docs/release-process.md](docs/release-process.md)**.
+
 ## Project Structure
 
 Key entry points:
