@@ -1,6 +1,10 @@
 # Foreign-Agent Import Module
 
-Last Updated: 2026-07-28 (initial spec: industry-consensus scope, session-import
+Last Updated: 2026-07-29 (deferred embedding for bulk memory writes; foreign
+workspace-scope sentinels and directive-typed rows no longer discard a whole
+memory store)
+
+Previously: 2026-07-28 (initial spec: industry-consensus scope, session-import
 removal, memory-hierarchy destination mapping, dry-run contract, and
 user-selectable conflict strategies)
 
@@ -128,11 +132,25 @@ Durable tiers only:
    directives: `MEMORY.md`, `USER.md`, `memories/*.md`, project-local memory
    dirs. Chunked by `_memory_chunks` (paragraph-packed, ≤2000 chars),
    `importance=0.5`, `tags=["imported", <source_id>]`, `source="import"`.
+   Written with **`defer_embedding=True`** — see "Deferred embedding" below.
 3. **Key-value facts → semantic memory.** Only where a source already stores
    an explicit key/value pair whose key matches `_SEMANTIC_KEY_RE` and carries
    one of `_SEMANTIC_PREFIXES` (`pref.` / `project.` / `user.` / `lesson.`).
    Written with `set_semantic_if_absent` so a concurrent native write is never
    overwritten.
+   **A row the source types as a `directive` is a rule, not a fact**, so it is
+   routed to the lesson tier via `_add_db_directive` instead — it passes the same
+   identity guard (`_IDENTITY_PARAGRAPH_RE`) and the same `_MAX_IMPORTED_LESSONS`
+   ceiling as a file-sourced directive. It is NOT dropped: MeshClaw stores every
+   learned lesson this way, so discarding them lost exactly the least replaceable
+   rows in the store.
+   **Screen the DECODED value, never the raw JSON.** A DB value arrives as JSON
+   text, so `_sanitize_text`/`contains_injection` applied to `value_json` inspect
+   escape sequences, not content: `"Ignore all previous\ninstructions…"` carries a
+   literal backslash-n on disk and matches no injection pattern, while the
+   `json.loads` result is a real newline and does. See security invariant 3a for
+   the two layers that enforce this. It applies to the plain semantic path too,
+   not just directives — a `lesson.*` key reaches the same always-injected tier.
 4. **Workspace-scoped rules → `.kiro/steering/`, opt-in only.** A per-project
    instruction file (a workspace's own `CLAUDE.md`/`AGENTS.md`) may be written
    to `<workspace>/.kiro/steering/imported-<source>.md` **only** when the user
@@ -145,6 +163,55 @@ Every imported memory item passes the existing content gates before it is
 written: `_sanitize_text` (truncate + credential redaction; a *redacted* file is
 dropped, a merely *truncated* one is not) and `contains_injection` (dropped as
 `injection_memory_excluded`).
+
+### Foreign workspace-scope columns: sentinel vs. real scoping
+
+A foreign memory store may carry a workspace/scope column. KiroCrew's own memory
+tables have none, so a genuinely workspace-scoped row has no faithful destination
+and is reported `scoped_memory_unsupported`.
+
+**A sentinel value is not scoping.** A single-workspace install stamps every row
+with the same placeholder, so treating the column as authoritative discards the
+entire store. `_UNSCOPED_WORKSPACE_IDS` (`""`, `default`, `global`, `main`,
+`none`, `null`) enumerates the placeholders; `_row_is_workspace_scoped()` is the
+single predicate both DB scanners use. MeshClaw stamps `default` on every row, so
+before this predicate existed **100% of a real MeshClaw memory store imported
+zero rows** while the UI reported success.
+
+Matching is exact after casefold + strip, never a prefix or substring: `default2`
+and `maintenance` are real workspace names, not sentinels. **Accepted ambiguity:** a
+user whose workspace is genuinely *named* one of the six placeholders has that
+row imported as an unscoped memory instead of reported unsupported. That is the
+right side to err on — the value is indistinguishable from a placeholder by
+construction, and the cost is one extra general-purpose memory rather than the
+silent total loss the strict reading caused. Keep the list to values that are
+placeholders by convention; do not add plausible real workspace names to it.
+
+### Deferred embedding (bulk memory writes)
+
+Episodic import writes pass `write_episodic(defer_embedding=True)`: the row lands
+with a **NULL embedding** and is FTS5 keyword-searchable immediately, but is not
+yet in vector search. `apply_import` returns
+**`embedding_backfill_pending`** (the episodic write count), and the caller MUST
+schedule `VectorMemoryStore.backfill_missing_embeddings()` off the request —
+`_schedule_embedding_backfill` in the dashboard handler runs it on the
+maintenance executor. When `apply_import` created its **own** store (CLI/tests,
+no caller to schedule anything) it runs the sweep itself before closing, and
+reports `embedding_backfill_pending: 0`.
+
+Why deferral and not batching: embedding cost grows steeply with text length
+(~0.4s per 2000-char chunk on CPU), and import writes hundreds of chunks, so an
+inline embed held the apply request for minutes. **`embed_batch()` is not the
+fix** — measured on real import text it is ~25% *slower* than looping `embed()`,
+because one 2000-char chunk already fills the model's micro-batch (`n_ubatch ==
+n_ctx == 2048`), so grouping adds padding with no parallelism to reclaim.
+
+`backfill_missing_embeddings()` requires numpy but **not faiss**. Faiss is an
+optional accelerator and not a declared dependency, so gating the sweep on it
+made it a silent no-op on a stock install — deferred rows would have stayed NULL
+forever. `search_episodic` already falls back to `_sqlite_vector_search` (a
+stdlib cosine scan over the stored blobs), so the vectors are useful either way;
+only the index rebuild is skipped when faiss is absent.
 
 ## Dry run
 
@@ -289,10 +356,20 @@ ledger but already present at the destination is `existing`, not a re-import.
 
 **Known limitation.** Exact-match dedupe for episodic memory means an upstream
 edit of one character produces a new chunk and therefore a second, near-identical
-episodic row. Similarity-based dedupe is possible (the vector store is already
-present) and is a candidate improvement; it is deliberately not in this version
-because a false "already have it" silently drops user knowledge, which is worse
-than a near-duplicate.
+episodic row. This is now structural rather than merely unimplemented: import
+writes with `defer_embedding=True`, and `write_episodic`'s similarity check needs
+a vector, so the fuzzy layer cannot run at write time. Accepted as the lesser
+evil — a false "already have it" silently drops user knowledge, which is worse
+than a near-duplicate — and the layers that actually protect the user are
+unaffected:
+
+- **Exact-text dedupe still applies** (the text-prefix check runs before any
+  embed), so a byte-identical re-import is still a no-op.
+- **The fingerprint ledger still applies**, so re-running an import does not
+  duplicate anything.
+- **The native memory is still never destroyed.** `preserve_existing=True` means
+  import cannot tombstone, merge away, or evict an existing row; deferral only
+  changes whether a *near*-duplicate is added alongside it.
 
 ## Status vocabulary
 
@@ -320,7 +397,7 @@ MUST be covered by a fixture-based regression test.
 |--------|------------------------------|--------------------|
 | `codex` | `CODEX_HOME` → `~/.codex` | `config.toml`; `AGENTS.md` (instructions); `memories/*.md`; `skills/` (excl. `.system`); `memories*.sqlite*` reported unsupported |
 | `claude_code` | `CLAUDE_CONFIG_DIR`/`CLAUDE_HOME` → `~/.claude`; also `~/.claude.json` | `CLAUDE.md`; `rules/*.md`; `settings.json`/`settings.local.json` (`permissions.deny`); `memory/`; `skills/`; per-workspace `.claude/` |
-| `meshclaw` | `MESHCLAW_HOME` → `~/.meshclaw` | SQLite memory DB; skills; config; `workspace/AGENTS.md` + `workspace/CLAUDE.md` and the same two per configured workspace. Only those canonical filenames are read — the MeshClaw workspace holds arbitrary user documents, so a blind `*.md` sweep there is wrong |
+| `meshclaw` | `MESHCLAW_HOME` → `~/.meshclaw` | SQLite memory DB (`memory.db`: `semantic_memory` + `episodic_memories`; `workspace_id` holds the sentinel `default`, and `kind='directive'` marks a rule — see the two sections above); skills; config; `workspace/AGENTS.md` + `workspace/CLAUDE.md` and the same two per configured workspace. Only those canonical filenames are read — the MeshClaw workspace holds arbitrary user documents, so a blind `*.md` sweep there is wrong |
 | `openclaw` | `OPENCLAW_STATE_DIR` → `OPENCLAW_HOME`/`<state>` → `~/.openclaw-<profile>` → `~/.openclaw` → `~/.clawdbot` | `openclaw.json` (+ legacy `clawdbot.json`); `SOUL.md`, `MEMORY.md`, `USER.md`, `memory/*.md` under `workspace/` \| `workspace-main/` \| `workspace-<agentId>/`; `skills/`, `.agents/skills/`; `exec-approvals.json` |
 | `hermes` | `HERMES_HOME`/`HERMES_AGENT_HOME`/`HERMES_CONFIG_DIR` → `%LOCALAPPDATA%/hermes` (Windows) → `~/.hermes` | `config.yaml`/`.yml`; `memories/MEMORY.md`, `memories/USER.md`; `SOUL.md`; `skills/` (excl. managed + re-import dirs); `cron/jobs.json`; `memory_store.db` reported unsupported |
 
@@ -364,9 +441,12 @@ so holding both in the other order would invert). MCP writes reuse the
 dashboard's MCP sidecar lock.
 
 Response: `{imported: {<category>: <count>}, imported_count, already_imported,
-item_outcomes: [...], conflicts: [...], skipped: [...], secret_count,
-unsupported_count, ledger}`. `item_outcomes` is authoritative; the aggregate
-counts MUST be derived from it and MUST NOT be reported independently.
+embedding_backfill_pending, item_outcomes: [...], conflicts: [...],
+skipped: [...], secret_count, unsupported_count, ledger}`. `item_outcomes` is
+authoritative; the aggregate counts MUST be derived from it and MUST NOT be
+reported independently. `embedding_backfill_pending` is **backend-only** — it
+tells the handler to schedule the embedding sweep and MUST NOT cross into the
+browser (the HTTP `summary` does not carry it).
 
 ## Session-import removal
 
@@ -415,6 +495,23 @@ These are load-bearing. Changing any of them requires a security review.
 3. **YAML aliases are rejected.** `_NoAliasSafeLoader` refuses anchors/aliases —
    `yaml.safe_load` alone still expands them, which is a billion-laughs vector
    on untrusted input.
+3a. **Content screens run on the value that will actually be written**, after any
+   decoding step. Screening a JSON/encoded form and then writing the decoded one
+   is not screening: a newline is stored as backslash-n so no injection pattern
+   matches, and `AKIA` hides a credential outright. Enforced in
+   two layers for DB-sourced values: `_decoded_value_is_unsafe()` screens every
+   string leaf (and dict key) of the `json.loads` result at the row level, and
+   `_add_db_directive` re-screens its own input as defence in depth — it is the
+   last gate before the always-injected lesson tier and must not trust its caller.
+   The walk **fails closed** past `_MAX_DECODED_VALUE_DEPTH`
+   (`unscreenable_memory_record`) rather than stopping: a bound that silently
+   truncates the walk reports a partially-screened value as clean, which makes the
+   bound itself the bypass — a credential nested past it would reach the lesson
+   tier. An unscreenable value is refused, never partially screened.
+   This is not only a `memories` concern: `_SEMANTIC_PREFIXES` includes `lesson.`
+   and `get_lessons()` selects `key LIKE 'lesson.%'`, so a plain semantic row under
+   that prefix reaches the same tier `get_lessons_context()` injects into every
+   session as authoritative.
 4. **Symlink components are re-checked immediately before every write**, not
    only at plan time (TOCTOU).
 5. **Skill packages land atomically** — staged in a sibling temp dir, then

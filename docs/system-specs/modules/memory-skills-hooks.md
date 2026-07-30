@@ -1,6 +1,6 @@
 # Memory, Skills & Hooks Modules
 
-Last Updated: 2026-07-28 (foreign-agent instruction/persona-directive text is rewritten into the durable memory tiers — directives to `lessons.jsonl`, narrative knowledge to episodic memory — and import may never write the consolidator-replaced `preferences.md`/`projects.md`; full contract in `docs/system-specs/modules/onboarding-import.md`. Prior — 2026-07-26 foreign-agent import boundaries for memories/preferences, MCP servers, user-authored skills, and hooks. Prior — 2026-07-19 in-process embeddings: always-on with no disable path, non-blocking background model load, download robustness — daemon-thread HTTPS download, Ollama-blob salvage, retry ladder — and the `EmbeddingBackend` swap seam; skills lazy-load usage-ranked top-K + skill_search + SkillUsageLedger, /api/skills discovery_executor offload)
+Last Updated: 2026-07-29 (the re-embed sweep needs numpy only, not faiss, and now also drains rows written with `write_episodic(defer_embedding=True)` — the foreign-agent importer defers embedding so its apply request is not held for minutes; foreign memory rows typed `directive` land in the lesson tier. Prior — 2026-07-28 foreign-agent instruction/persona-directive text is rewritten into the durable memory tiers — directives to `lessons.jsonl`, narrative knowledge to episodic memory — and import may never write the consolidator-replaced `preferences.md`/`projects.md`; full contract in `docs/system-specs/modules/onboarding-import.md`. Prior — 2026-07-26 foreign-agent import boundaries for memories/preferences, MCP servers, user-authored skills, and hooks. Prior — 2026-07-19 in-process embeddings: always-on with no disable path, non-blocking background model load, download robustness — daemon-thread HTTPS download, Ollama-blob salvage, retry ladder — and the `EmbeddingBackend` swap seam; skills lazy-load usage-ranked top-K + skill_search + SkillUsageLedger, /api/skills discovery_executor offload)
 
 ## Overview
 
@@ -209,7 +209,9 @@ Parses legacy markdown files into structured memory:
 
 **Automatic migration (boot-time, `GatewayOrchestrator._auto_migrate_memory`)**: migration is fully automatic — there is **no dashboard "Migrate" button**. Right after `_start_embeddings()`, the gateway schedules a fire-and-forget background task (retained in `_background_tasks`, cancelled on shutdown) that runs two idempotent phases, all blocking work offloaded to the maintenance executor so boot is never blocked:
 1. **Migrate** (gated on `memory.migrated == False`): detects legacy content via the shared `memory.legacy_memory_present()` helper (also used by `/api/memory/stats`), runs `migrate_from_markdown()`, then flips `memory.migrated=True` for **everyone** — fresh installs with zero legacy entries included, so all users land in vector-only mode. Syncs the live `consolidator._migrated`, and **acknowledges** with a `migration` audit event (`memory_events`, visible in the dashboard Audit tab, `source="auto"`, counts in `new_value`) plus a `logger.info` line. On error: logs and leaves `migrated=False` so the next boot retries.
-2. **Re-embed sweep** (gated on model readiness, independent of the migrated flag): once the model file is present (awaits the background download task if still in flight — safe, we are our own task), `VectorMemory.backfill_missing_embeddings()` embeds any episodic rows written with a NULL vector (migrated before the model landed) and rebuilds the FAISS index. Self-healing across boots and across a download that failed then later succeeded.
+2. **Re-embed sweep** (gated on model readiness, independent of the migrated flag): once the model file is present (awaits the background download task if still in flight — safe, we are our own task), `VectorMemory.backfill_missing_embeddings()` embeds any episodic rows written with a NULL vector and rebuilds the FAISS index. Self-healing across boots and across a download that failed then later succeeded.
+   - **Two producers of NULL-vector rows**, not just one: rows migrated before the model landed, and rows written by a bulk writer that passed `write_episodic(defer_embedding=True)` — the foreign-agent importer does this so its apply request is not held for minutes by per-chunk inference (see `docs/system-specs/modules/onboarding-import.md`). Import schedules its own sweep, so this boot sweep is the standing retry, not the only path.
+   - The sweep needs **numpy only, not faiss**. Faiss is an optional accelerator and not a declared dependency, so requiring it made the sweep a silent no-op on a stock install. Only the index rebuild is faiss-gated; `search_episodic` falls back to `_sqlite_vector_search` (stdlib cosine over the stored blobs), so the vectors are useful either way.
 
 The backend `POST /api/memory/migrate` endpoint and the `kirocrew memory migrate` CLI remain as a manual escape hatch, but the dashboard no longer calls them.
 
@@ -262,7 +264,10 @@ a **persona** document (`SOUL.md`) ARE in scope, and are rewritten into
 KiroCrew's own tiers by the `instructions` category: each directive paragraph
 becomes a `Lesson(category="preference")` in `lessons.jsonl` — the highest-priority
 durable tier — while narrative knowledge continues to go to episodic memory via
-the `memories` category. Import contributes at most 50 lessons
+the `memories` category. A **foreign memory row the source types as a
+`directive`** is also an instruction, not a fact, so it lands in the same lesson
+tier (`_add_db_directive`) under the same identity guard and ceiling rather than
+being dropped. Import contributes at most 50 lessons
 (`_MAX_IMPORTED_LESSONS`) because `LessonStore` prunes oldest-first at 200; an
 unbounded import would silently evict the user's own accumulated corrections. What is excluded
 is the persona *role*: a foreign persona document never becomes KiroCrew's
@@ -279,6 +284,15 @@ import operation needs to create its own `VectorMemoryStore`, it wires
 does. The callable remains non-blocking: until the embedding model is ready,
 episodic writes persist normally without vectors and continue to use keyword
 retrieval.
+
+Episodic import writes are **deliberately deferred** (`defer_embedding=True`) even
+when the model IS ready: per-chunk inference costs ~0.4s for a 2000-char chunk and
+an import writes hundreds, so embedding inline held the apply request for minutes.
+The row is keyword-searchable at once, and the embedding sweep runs afterwards off
+the request (the dashboard handler schedules it; a self-owned store sweeps before
+closing). Batching is not an alternative — `embed_batch` is measurably slower than
+looping `embed` at import chunk sizes. See `onboarding-import.md` → "Deferred
+embedding".
 
 Hermes Markdown import is limited to exact `memories/MEMORY.md` and
 `memories/USER.md` files under the main home and each profile; arbitrary memory

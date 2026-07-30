@@ -1713,6 +1713,93 @@ class TestBackfillMissingEmbeddings:
         assert store.backfill_missing_embeddings() == 0
 
 
+@pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available")
+class TestDeferredEmbedding:
+    """``defer_embedding`` + the backfill sweep that must fill the NULLs in.
+
+    Deliberately NOT gated on faiss: it is an optional accelerator and not a
+    declared dependency, so a faiss-gated test class silently skips on a stock
+    install — which is how the sweep shipped as a no-op there in the first place.
+    """
+
+    def test_defer_embedding_stores_null_and_skips_the_embed(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        calls: list[str] = []
+
+        def _embed(text: str) -> list[float]:
+            calls.append(text)
+            return [0.1] * store._embedding_dim
+
+        store.embed_fn = _embed
+        assert store.write_episodic(
+            "Deferred row that must land without a vector", defer_embedding=True
+        )
+        # The expensive inference never ran on the caller's thread...
+        assert calls == []
+        # ...and the row is on disk, just without a vector yet.
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=0 AND embedding IS NULL"
+            ).fetchone()[0]
+            == 1
+        )
+
+    def test_backfill_fills_deferred_rows(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = lambda text: [0.1] * store._embedding_dim
+        for index in range(3):
+            assert store.write_episodic(
+                f"Deferred memory number {index} for the sweep", defer_embedding=True
+            )
+
+        assert store.backfill_missing_embeddings() == 3
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=0 AND embedding IS NULL"
+            ).fetchone()[0]
+            == 0
+        )
+
+    def test_backfill_runs_without_faiss(self, tmp_path: Path, monkeypatch) -> None:
+        """Gating the sweep on faiss made it a silent no-op on a stock install.
+
+        faiss is not a declared dependency, so every deferred row would have
+        stayed NULL forever — invisible to vector search with no error anywhere.
+        ``search_episodic`` needs only the stored blob (``_sqlite_vector_search``),
+        so the vectors are useful with or without the index.
+        """
+        import kiro_crew.vector_memory as vm_mod
+
+        monkeypatch.setattr(vm_mod, "_HAS_FAISS", False)
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = lambda text: [0.1] * store._embedding_dim
+        assert store.write_episodic(
+            "A row that needs a vector but has no faiss", defer_embedding=True
+        )
+
+        assert store.backfill_missing_embeddings() == 1
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=0 AND embedding IS NULL"
+            ).fetchone()[0]
+            == 0
+        )
+
+    def test_deferred_rows_are_keyword_searchable_before_backfill(self, tmp_path: Path) -> None:
+        """Nothing is lost in the interim — FTS5 finds the row with no vector."""
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert store.write_episodic(
+            "The deployment pipeline uses a canary stage before production",
+            defer_embedding=True,
+        )
+        results = store.search_episodic(query_text="canary deployment pipeline", limit=5)
+        assert any("canary" in row["text"] for row in results)
+
+
 class TestFaissIndexIdMapSync:
     """Regression guards for the FAISS index / _faiss_id_map desync bug.
 

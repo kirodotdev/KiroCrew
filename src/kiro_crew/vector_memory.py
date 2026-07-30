@@ -1001,11 +1001,22 @@ class VectorMemoryStore:
         source: str = "consolidation",
         *,
         preserve_existing: bool = False,
+        defer_embedding: bool = False,
     ) -> bool:
         """Write an episodic memory with optional embedding and dedup.
 
         ``preserve_existing`` rejects similarity and capacity conflicts instead
         of tombstoning an active entry. Import paths use it to remain merge-only.
+
+        ``defer_embedding`` stores the row with a NULL embedding instead of
+        embedding inline, leaving it for :meth:`backfill_missing_embeddings`.
+        Inference cost grows steeply with text length (~0.4s per 2000-char chunk
+        on CPU), so a bulk writer such as the onboarding importer would hold its
+        caller for minutes. The row is FTS5 keyword-searchable immediately, and
+        becomes semantically searchable once the sweep fills it in. Only for
+        callers that schedule that sweep — a row left NULL forever is silently
+        absent from vector search. Deferral also skips the similarity dedup
+        (which needs a vector), so the caller keeps its own duplicate check.
         """
         text = text.strip()
         if len(text) < _EPISODIC_TEXT_MIN or len(text) > _EPISODIC_TEXT_MAX:
@@ -1058,7 +1069,7 @@ class VectorMemoryStore:
             return False
 
         # Auto-embed if no embedding provided and embed_fn available
-        if embedding is None and self.embed_fn is not None:
+        if embedding is None and not defer_embedding and self.embed_fn is not None:
             embedding = self._try_embed(text)
 
         embedding_blob: bytes | None = None
@@ -1912,16 +1923,25 @@ class VectorMemoryStore:
 
         Entries written while the embedding model was still downloading (first
         boot, or a migration that ran before the model landed) are stored with a
-        NULL ``embedding`` and are keyword-searchable only. Once the model is
-        present and ``embed_fn`` is bound, this sweep embeds those rows and
-        rebuilds the vector index so they become semantically searchable.
+        NULL ``embedding`` and are keyword-searchable only. So are rows written
+        with ``write_episodic(defer_embedding=True)`` by a bulk writer such as
+        the onboarding importer. Once the model is present and ``embed_fn`` is
+        bound, this sweep embeds those rows and rebuilds the vector index so they
+        become semantically searchable.
 
         Idempotent and cheap in steady state: a no-op (returns 0) when there is
-        no ``embed_fn``, faiss/numpy are missing, or no NULL-embedding rows
-        remain. Synchronous + blocking (runs model inference) — call from a
-        worker thread / executor, never directly on the event loop.
+        no ``embed_fn``, numpy is missing, or no NULL-embedding rows remain.
+        Synchronous + blocking (runs model inference) — call from a worker thread
+        / executor, never directly on the event loop.
+
+        FAISS is NOT required. It is an optional accelerator and not a declared
+        dependency, so gating on it made this sweep a silent no-op on a stock
+        install — every deferred row stayed NULL forever. ``search_episodic``
+        already falls back to ``_sqlite_vector_search`` (a stdlib cosine scan
+        over these blobs), so the stored vectors are useful either way; the
+        index rebuild below is simply skipped when faiss is absent.
         """
-        if self.embed_fn is None or not _HAS_FAISS or not _HAS_NUMPY:
+        if self.embed_fn is None or not _HAS_NUMPY:
             return 0
         with self._db_lock:
             rows = self.db.execute(
@@ -1961,9 +1981,10 @@ class VectorMemoryStore:
                 self.db.commit()
             embedded += 1
         if embedded:
-            with self._db_lock:
-                self.build_faiss_index()
-                self.save_faiss_index()
+            if _HAS_FAISS:
+                with self._db_lock:
+                    self.build_faiss_index()
+                    self.save_faiss_index()
             logger.info("Backfilled embeddings for %d episodic entries", embedded)
         return embedded
 

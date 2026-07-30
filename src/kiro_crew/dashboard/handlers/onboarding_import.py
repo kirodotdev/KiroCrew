@@ -401,6 +401,7 @@ def _merge_import_results(
         "imported": {},
         "imported_count": 0,
         "already_imported": 0,
+        "embedding_backfill_pending": 0,
         "secret_count": 0,
         "skipped": [],
         "conflicts": [],
@@ -417,7 +418,7 @@ def _merge_import_results(
                     merged["imported"][category] = merged["imported"].get(category, 0) + max(
                         0, count
                     )
-        for key in ("imported_count", "already_imported"):
+        for key in ("imported_count", "already_imported", "embedding_backfill_pending"):
             value = result.get(key)
             if isinstance(value, int) and not isinstance(value, bool):
                 merged[key] += max(0, value)
@@ -472,6 +473,70 @@ def _audit_item_outcomes(caller: str, result: object) -> None:
             outcome=str(outcome),
             resources=f"{source_id}:{category_id}:{item_hash}",
         )
+
+
+def _backfill_embeddings(vector_store: object) -> int:
+    """Embed the NULL-embedding rows import just wrote (worker-thread body).
+
+    Import defers embedding so the apply request returns promptly: inference
+    costs ~0.4s per 2000-char chunk on CPU, and an import writes hundreds. The
+    rows are FTS5 keyword-searchable the moment they land; this sweep is what
+    makes them semantically searchable, so it must actually run — a row left
+    NULL is silently absent from vector search.
+
+    Waits for the model to finish loading first: ``backfill_missing_embeddings``
+    embeds zero rows against a still-warming model, and nothing would re-schedule
+    it before the next gateway boot.
+    """
+    backfill = getattr(vector_store, "backfill_missing_embeddings", None)
+    if not callable(backfill):
+        return 0
+    try:
+        from kiro_crew.embeddings import get_shared_embedder, model_file_present
+
+        if not model_file_present():
+            # Still downloading — the gateway's own boot sweep backfills later.
+            return 0
+        embedder = get_shared_embedder()
+        # wait_ready() is on the llama.cpp backend but not the EmbeddingBackend
+        # ABC (a swapped-in backend need not support blocking-wait).
+        wait_ready = getattr(embedder, "wait_ready", None)
+        ready = wait_ready(timeout=120) if callable(wait_ready) else embedder.is_ready()
+        if not ready:
+            logger.info("Embedding model not ready; deferring import backfill to next boot")
+            return 0
+        return int(backfill())
+    except Exception:
+        # Never surface as an apply failure: the memories ARE imported and
+        # keyword-searchable; only the vectors are missing, and the gateway's
+        # boot sweep is the standing retry.
+        logger.warning("Import embedding backfill failed", exc_info=True)
+        return 0
+
+
+def _schedule_embedding_backfill(vector_store: object | None) -> None:
+    """Run the import backfill on the maintenance executor, off the request."""
+    if vector_store is None:
+        return
+    from kiro_crew.executors import maintenance_executor
+
+    loop = asyncio.get_running_loop()
+    task = loop.run_in_executor(maintenance_executor(), _backfill_embeddings, vector_store)
+    # Fire-and-forget, but retrieve the result so a failure is logged rather than
+    # resurfacing later as an unretrieved-future warning far from its cause.
+    task.add_done_callback(_log_backfill_result)
+
+
+def _log_backfill_result(task: asyncio.Future[int]) -> None:
+    try:
+        embedded = task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.warning("Import embedding backfill task failed", exc_info=True)
+        return
+    if embedded:
+        logger.info("Embedded %d imported memories in the background", embedded)
 
 
 def _rebuild_agent_config() -> None:
@@ -566,6 +631,12 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
                 await asyncio.to_thread(_rebuild_agent_config)
             result = _merge_import_results(results, conflict_strategy)
             response = web.json_response(_apply_response(result))
+            # Import wrote episodic rows without vectors so this request could
+            # return in ~1s instead of minutes. Embed them on a worker thread now
+            # — inside the import lock's scope but not awaited, so the response
+            # goes out immediately.
+            if result.get("embedding_backfill_pending"):
+                _schedule_embedding_backfill(vector_store)
     except _InvalidSelection:
         _audit(caller=caller, operation=operation, outcome="failed", error="invalid_request")
         return web.json_response({"error": "invalid request"}, status=400)

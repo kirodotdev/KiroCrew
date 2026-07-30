@@ -868,3 +868,152 @@ async def test_apply_rejects_an_explicit_null_conflict_strategy(monkeypatch) -> 
     assert response.status == 400
     assert body == {"error": "invalid request"}
     assert called == []
+
+
+@pytest.mark.asyncio
+async def test_apply_schedules_embedding_backfill_off_the_request(monkeypatch) -> None:
+    """Import defers embedding, so the handler MUST run the sweep afterwards.
+
+    Without this the deferred rows stay NULL until the next gateway boot —
+    imported but invisible to vector search.
+    """
+    module = _handler_module()
+    scheduled: list[object] = []
+    store = SimpleNamespace(backfill_missing_embeddings=lambda: 0)
+
+    def apply_import(plan, **kwargs):
+        return {
+            "imported": {"memories": 7},
+            "imported_count": 7,
+            "already_imported": 0,
+            "embedding_backfill_pending": 7,
+        }
+
+    monkeypatch.setattr(
+        module,
+        "_backend",
+        lambda: SimpleNamespace(
+            preview_import=lambda source_ids=None: {
+                "sources": [{"id": "codex", "categories": [{"id": "memories", "selected": True}]}],
+                "selection": [{"source_id": "codex", "category_id": "memories"}],
+            },
+            apply_import=apply_import,
+        ),
+    )
+    monkeypatch.setattr(module, "_schedule_embedding_backfill", scheduled.append)
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+
+    state = SimpleNamespace(vector_memory=store)
+    async with TestClient(TestServer(_make_app(module, state))) as client:
+        response = await client.post(
+            "/api/onboarding/import/apply",
+            json={"sources": [{"id": "codex", "categories": ["memories"]}]},
+            headers={"X-Test-User": "owner"},
+        )
+        body = await response.json()
+
+    assert response.status == 200
+    assert scheduled == [store]
+    # The counter is a backend-only signal — it must not leak to the browser.
+    assert "embedding_backfill_pending" not in body
+    assert "embedding_backfill_pending" not in body["summary"]
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_backfill_when_nothing_was_deferred(monkeypatch) -> None:
+    """No episodic writes (or apply owned its store and already swept) → no sweep."""
+    module = _handler_module()
+    scheduled: list[object] = []
+
+    monkeypatch.setattr(
+        module,
+        "_backend",
+        lambda: SimpleNamespace(
+            preview_import=lambda source_ids=None: {
+                "sources": [{"id": "codex", "categories": [{"id": "settings", "selected": True}]}],
+                "selection": [{"source_id": "codex", "category_id": "settings"}],
+            },
+            apply_import=lambda plan, **kwargs: {
+                "imported": {"settings": 1},
+                "imported_count": 1,
+                "already_imported": 0,
+                "embedding_backfill_pending": 0,
+            },
+        ),
+    )
+    monkeypatch.setattr(module, "_schedule_embedding_backfill", scheduled.append)
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+
+    async with TestClient(TestServer(_make_app(module, SimpleNamespace()))) as client:
+        response = await client.post(
+            "/api/onboarding/import/apply",
+            json={"sources": [{"id": "codex", "categories": ["settings"]}]},
+            headers={"X-Test-User": "owner"},
+        )
+
+    assert response.status == 200
+    assert scheduled == []
+
+
+def test_backfill_embeddings_waits_for_the_model_before_sweeping(monkeypatch) -> None:
+    """A still-warming model embeds zero rows, and nothing would re-schedule."""
+    module = _handler_module()
+    embeddings = importlib.import_module("kiro_crew.embeddings")
+    swept: list[bool] = []
+
+    monkeypatch.setattr(embeddings, "model_file_present", lambda: True)
+    monkeypatch.setattr(
+        embeddings,
+        "get_shared_embedder",
+        lambda: SimpleNamespace(wait_ready=lambda timeout=None: False, is_ready=lambda: False),
+    )
+    store = SimpleNamespace(backfill_missing_embeddings=lambda: swept.append(True) or 1)
+
+    assert module._backfill_embeddings(store) == 0
+    assert swept == []
+
+
+def test_backfill_embeddings_skips_while_the_model_is_downloading(monkeypatch) -> None:
+    module = _handler_module()
+    embeddings = importlib.import_module("kiro_crew.embeddings")
+    swept: list[bool] = []
+
+    monkeypatch.setattr(embeddings, "model_file_present", lambda: False)
+    store = SimpleNamespace(backfill_missing_embeddings=lambda: swept.append(True) or 1)
+
+    assert module._backfill_embeddings(store) == 0
+    assert swept == []
+
+
+def test_backfill_embeddings_never_raises_into_the_apply_response(monkeypatch) -> None:
+    """The memories ARE imported; a failed sweep must not fail the request."""
+    module = _handler_module()
+    embeddings = importlib.import_module("kiro_crew.embeddings")
+
+    monkeypatch.setattr(embeddings, "model_file_present", lambda: True)
+    monkeypatch.setattr(
+        embeddings,
+        "get_shared_embedder",
+        lambda: SimpleNamespace(wait_ready=lambda timeout=None: True, is_ready=lambda: True),
+    )
+
+    def _boom() -> int:
+        raise RuntimeError("model exploded")
+
+    assert module._backfill_embeddings(SimpleNamespace(backfill_missing_embeddings=_boom)) == 0
+
+
+def test_backfill_embeddings_sweeps_a_ready_model(monkeypatch) -> None:
+    module = _handler_module()
+    embeddings = importlib.import_module("kiro_crew.embeddings")
+
+    monkeypatch.setattr(embeddings, "model_file_present", lambda: True)
+    monkeypatch.setattr(
+        embeddings,
+        "get_shared_embedder",
+        lambda: SimpleNamespace(wait_ready=lambda timeout=None: True, is_ready=lambda: True),
+    )
+
+    assert (
+        module._backfill_embeddings(SimpleNamespace(backfill_missing_embeddings=lambda: 12)) == 12
+    )

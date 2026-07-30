@@ -215,6 +215,11 @@ _SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
 _SAFE_THEME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _SEMANTIC_KEY_RE = re.compile(r"^[a-z][a-z0-9_.]*[a-z0-9]$")
 _SEMANTIC_PREFIXES = ("pref.", "project.", "user.", "lesson.")
+# Foreign memory stores carry a workspace/scope column even for single-workspace
+# installs, where it holds a SENTINEL rather than a real workspace identity.
+# Treating a sentinel as "scoped" drops every row: MeshClaw stamps ``default`` on
+# all of them, so the whole store read as workspace-scoped and imported nothing.
+_UNSCOPED_WORKSPACE_IDS = frozenset({"", "default", "global", "main", "none", "null"})
 _MCP_RUNTIME_FIELDS = frozenset({"enabled", "disabled"})
 _MCP_CONSTRAINT_FIELDS = frozenset(
     {
@@ -1434,6 +1439,61 @@ def _add_instruction_files(
             )
 
 
+def _add_db_directive(scan: _Scan, key: str, value: Any) -> None:
+    """Project a foreign memory row typed as a DIRECTIVE onto the lesson tier.
+
+    A directive is a rule the user taught the agent, not a fact, so semantic
+    memory (key/value, confidence-gated) is the wrong destination — the lesson
+    tier is. These rows were previously dropped as
+    ``directive_memory_unsupported``, which discarded exactly the least
+    replaceable thing in a foreign store.
+
+    Passes the same gates as a file-sourced directive, and re-runs the content
+    screens on the DECODED rule. The caller screened ``value_json`` — the raw JSON
+    text — but what lands in the lesson is the ``json.loads`` result, and any JSON
+    escape survives a screen applied before decoding: ``"Ignore all previous\\n
+    instructions…"`` carries a literal backslash-n on disk, so the injection
+    pattern cannot match, yet the decoded string is a real newline and matches.
+    Screening pre-decode is therefore not screening at all for this destination —
+    and this tier is injected into every session as authoritative, so it is the
+    worst place to land unscreened text.
+    """
+    # The row's value is JSON — a bare string for a rule, or an object wrapping
+    # one. Anything else is not a directive we can render as a rule.
+    if isinstance(value, str):
+        rule = value.strip()
+    elif isinstance(value, dict):
+        candidate = value.get("rule") or value.get("text") or value.get("value")
+        rule = candidate.strip() if isinstance(candidate, str) else ""
+    else:
+        rule = ""
+    if len(rule) < _MIN_INSTRUCTION_CHARS or len(rule) > _MAX_TEXT_CHARS:
+        scan.diagnostic("memories", "unsupported_memory_length")
+        return
+    # Both screens, on the decoded text. A *redaction* means the rule carried a
+    # credential, so drop it (mirroring _add_instruction_files); a mere size
+    # truncation is not a reason to drop.
+    cleaned = _sanitize_text(rule, scan)
+    if cleaned != rule[:_MAX_TEXT_CHARS].strip():
+        scan.diagnostic("instructions", "credential_bearing_instruction")
+        return
+    if contains_injection(cleaned):
+        scan.diagnostic("instructions", "injection_instruction_excluded")
+        return
+    rule = cleaned
+    lines = [line.strip() for line in rule.splitlines() if line.strip()]
+    if any(_IDENTITY_PARAGRAPH_RE.match(_strip_markdown_prefix(line)) for line in lines):
+        scan.diagnostic("instructions", "identity_paragraph_excluded")
+        return
+    if len(scan.items["instructions"]) >= _MAX_IMPORTED_LESSONS:
+        scan.diagnostic("instructions", "instruction_count_limit")
+        return
+    digest = hashlib.sha256(rule.encode()).hexdigest()
+    scan.add(
+        "instructions", f"sqlite\0directive\0{key}\0{digest}", {"kind": "lesson", "rule": rule}
+    )
+
+
 def _add_memories(scan: _Scan, roots: list[Path]) -> None:
     seen: set[str] = set()
     paths: list[tuple[Path, Path]] = []
@@ -2411,6 +2471,79 @@ def _sqlite_columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
 
 
+_MAX_DECODED_VALUE_DEPTH = 8
+
+
+class _TooDeepToScreen(Exception):
+    """A decoded value nests deeper than the screen will walk."""
+
+
+def _decoded_value_strings(value: Any, depth: int = 0) -> Iterator[str]:
+    """Yield every string leaf (and dict key) of a decoded JSON value.
+
+    Raises :class:`_TooDeepToScreen` past ``_MAX_DECODED_VALUE_DEPTH`` rather than
+    returning. Silently stopping the walk would leave the deeper leaves UNSCREENED
+    while the caller reported the value clean — a credential nested 12 levels down
+    would then reach the lesson tier. An unscreenable value must be refused, not
+    partially screened.
+    """
+    if depth > _MAX_DECODED_VALUE_DEPTH:
+        raise _TooDeepToScreen
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child_key, child in value.items():
+            if isinstance(child_key, str):
+                yield child_key
+            yield from _decoded_value_strings(child, depth + 1)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _decoded_value_strings(child, depth + 1)
+
+
+def _decoded_value_is_unsafe(value: Any, scan: _Scan) -> str:
+    """Return a diagnostic reason if a DECODED DB value fails a content screen.
+
+    The caller screens ``value_json`` — the raw JSON text — but what gets written
+    is the ``json.loads`` result, and every JSON escape survives a pre-decode
+    screen: a newline is stored as backslash-n, so an injection pattern cannot
+    match, and ``\\u0041\\u004b\\u0049\\u0041`` hides a credential outright. So the
+    screens must run again here, on the decoded strings.
+
+    This matters beyond ``memories``: ``_SEMANTIC_PREFIXES`` includes ``lesson.``,
+    and ``VectorMemoryStore.get_lessons()`` selects ``key LIKE 'lesson.%'`` — so a
+    ``lesson.*`` row lands in the tier that ``get_lessons_context()`` injects into
+    every session as authoritative, exactly like an ``instructions`` item.
+
+    Fails CLOSED on a value too deeply nested to walk: a partially-screened value
+    reported as clean is worse than a refused one.
+    """
+    try:
+        texts = list(_decoded_value_strings(value))
+    except _TooDeepToScreen:
+        return "unscreenable_memory_record"
+    for text in texts:
+        if _sanitize_text(text, scan) != text[:_MAX_TEXT_CHARS].strip():
+            return "credential_bearing_memory"
+        if contains_injection(text):
+            return "injection_memory_excluded"
+    return ""
+
+
+def _row_is_workspace_scoped(value: Any) -> bool:
+    """Return whether a memory row belongs to ONE foreign workspace.
+
+    KiroCrew's own memory tables have no workspace column, so a genuinely
+    workspace-scoped row has no faithful destination and is reported unsupported.
+    A SENTINEL value is not scoping, though: a single-workspace install stamps
+    every row with the same placeholder (``default`` in MeshClaw's case), so
+    reading that as scoped discarded 100% of the store.
+    """
+    if value is None:
+        return False
+    return str(value).strip().casefold() not in _UNSCOPED_WORKSPACE_IDS
+
+
 def _scan_meshclaw_memory_db(scan: _Scan) -> bool:
     path = scan.root / "memory.db"
     if not path.is_file():
@@ -2461,20 +2594,19 @@ def _scan_meshclaw_memory_db(scan: _Scan) -> bool:
                         key = values["key"]
                         value_json = values["value_json"]
                         confidence = values["confidence"]
-                        if values.get("workspace_id") not in (None, ""):
+                        if _row_is_workspace_scoped(values.get("workspace_id")):
                             scan.diagnostic(
                                 "memories",
                                 "scoped_memory_unsupported",
                                 unsupported=True,
                             )
                             continue
-                        if str(values.get("kind", "")).casefold() == "directive":
-                            scan.diagnostic(
-                                "memories",
-                                "directive_memory_unsupported",
-                                unsupported=True,
-                            )
-                            continue
+                        # A directive is a RULE, not a fact, so semantic memory is
+                        # the wrong tier — but dropping it discarded exactly the
+                        # least replaceable rows (MeshClaw stores every learned
+                        # lesson this way). Route it to the instruction tier, which
+                        # is where an imported rule belongs, instead.
+                        is_directive = str(values.get("kind", "")).casefold() == "directive"
                         if (
                             not isinstance(key, str)
                             or len(key) > 100
@@ -2499,12 +2631,21 @@ def _scan_meshclaw_memory_db(scan: _Scan) -> bool:
                         if _count_secret_fields(value):
                             scan.diagnostic("memories", "secret_fields_omitted")
                             continue
+                        # Re-screen the DECODED value: the screens above ran on the
+                        # raw JSON text, which hides both patterns behind escapes.
+                        unsafe = _decoded_value_is_unsafe(value, scan)
+                        if unsafe:
+                            scan.diagnostic("memories", unsafe)
+                            continue
                         numeric_confidence = (
                             float(confidence)
                             if isinstance(confidence, (int, float))
                             and not isinstance(confidence, bool)
                             else 0.9
                         )
+                        if is_directive:
+                            _add_db_directive(scan, key, value)
+                            continue
                         payload = {
                             "kind": "semantic",
                             "key": key,
@@ -2535,20 +2676,14 @@ def _scan_meshclaw_memory_db(scan: _Scan) -> bool:
                         memory_id = values["id"]
                         text = values["text"]
                         importance = values["importance"]
-                        if values.get("workspace_id") not in (None, ""):
+                        if _row_is_workspace_scoped(values.get("workspace_id")):
                             scan.diagnostic(
                                 "memories",
                                 "scoped_memory_unsupported",
                                 unsupported=True,
                             )
                             continue
-                        if str(values.get("kind", "")).casefold() == "directive":
-                            scan.diagnostic(
-                                "memories",
-                                "directive_memory_unsupported",
-                                unsupported=True,
-                            )
-                            continue
+                        is_directive = str(values.get("kind", "")).casefold() == "directive"
                         if not isinstance(text, str):
                             scan.diagnostic("memories", "invalid_memory_record")
                             continue
@@ -2558,6 +2693,14 @@ def _scan_meshclaw_memory_db(scan: _Scan) -> bool:
                             continue
                         if contains_injection(cleaned):
                             scan.diagnostic("memories", "injection_memory_excluded")
+                            continue
+                        # A directive stored as an episode is still a rule: route it
+                        # to the lesson tier rather than dropping it (see
+                        # _add_db_directive). Checked before the episodic length
+                        # bound so a directive is measured against the instruction
+                        # limits, not the episodic ones.
+                        if is_directive:
+                            _add_db_directive(scan, str(memory_id), cleaned)
                             continue
                         if not 10 <= len(cleaned) <= 2000:
                             scan.diagnostic("memories", "unsupported_memory_length")
@@ -3266,12 +3409,21 @@ def _write_memory(
         text = str(item.payload["text"])
         if vector_store.has_episodic_text(text):
             return _WriteOutcome("existing")
+        # Embed OFF the request. Inference cost grows with text length (~0.4s per
+        # 2000-char chunk on CPU), and import writes hundreds of chunks, so an
+        # inline embed makes the user watch a spinner for minutes. The row is
+        # keyword-searchable immediately and the caller schedules the backfill
+        # sweep that fills the vector in (see ``schedule_embedding_backfill``).
+        # Batching is NOT the alternative: measured on real import text,
+        # ``embed_batch`` is ~25% SLOWER than looping ``embed`` because one
+        # 2000-char chunk already fills the model's micro-batch.
         written = vector_store.write_episodic(
             text,
             tags=["imported", item.source_id],
             importance=float(item.payload["importance"]),
             source="import",
             preserve_existing=True,
+            defer_embedding=True,
         )
         if written:
             return _WriteOutcome("imported")
@@ -3973,12 +4125,24 @@ def apply_import(
     finally:
         _flush_ledger()
         if owned_vector_store is not None:
+            # This store is ours alone, so no caller can schedule the sweep that
+            # fills the deferred vectors — run it here before closing. Blocking is
+            # correct on this path: it is the non-interactive one (CLI, tests),
+            # with no user watching a spinner.
+            if imported["memories"]:
+                with contextlib.suppress(Exception):
+                    owned_vector_store.backfill_missing_embeddings()
             owned_vector_store.close()
 
     return {
         "imported": imported,
         "imported_count": sum(imported.values()),
         "already_imported": already_imported,
+        # Episodic rows are written with a NULL embedding (see _write_memory), so
+        # a caller holding a shared store MUST schedule
+        # ``backfill_missing_embeddings`` off the request. Zero when this run
+        # owned its store and already swept above.
+        "embedding_backfill_pending": (imported["memories"] if owned_vector_store is None else 0),
         "item_outcomes": item_outcomes,
         "conflicts": conflicts,
         "skipped": skipped,
