@@ -5,7 +5,9 @@ we welcome issues and pull requests.
 
 ## Prerequisites
 
-- macOS or Linux (Windows is not supported by the `kiro-cli` backend)
+- macOS, Linux, or Windows (native source install — see
+  [docs/windows-install.md](docs/windows-install.md) for Windows-specific
+  prerequisites, the `venv` activation step, and per-feature parity notes)
 - Python ≥ 3.9
 - Node.js ≥ 18 and npm (for the frontend)
 - The `kiro-cli` agent on your `PATH`, logged in (`kiro-cli login`) — it is the
