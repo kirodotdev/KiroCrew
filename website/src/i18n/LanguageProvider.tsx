@@ -84,6 +84,18 @@ export interface LanguageContextValue {
   language: string
   /** The language actually rendering right now (never `''`). */
   resolved: string
+  /**
+   * What Auto would resolve to for THIS browser, regardless of the current
+   * choice (never `''`).
+   *
+   * Deliberately independent of `resolved`: the picker annotates its Auto entry
+   * with this ("Auto (follow browser) — 简体中文") to answer "what do I get if I
+   * pick Auto?". Using `resolved` there made the annotation echo the current
+   * selection instead — pick English and it read "— English", pick 简体中文 and
+   * it read "— 简体中文", on the same browser — so it conveyed nothing and
+   * actively misinformed anyone whose browser prefers a different language.
+   */
+  detected: string
   /** Persist a new choice (`''` = Auto) and re-render the tree. */
   setLanguage: (code: string) => void
   /**
@@ -104,6 +116,9 @@ const LanguageContext = createContext<LanguageContextValue | null>(null)
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [language, setLanguageState] = useState<string>(readStoredLanguage)
   const resolved = resolveLanguage(language)
+  // Same resolver with the Auto sentinel, so "what would Auto give me" can never
+  // drift from what Auto actually does.
+  const detected = resolveLanguage(AUTO_LANGUAGE)
 
   // Server-authoritative value. Shares the ['theme-boot'] query key AND options
   // with useTheme, so the two read one request between them rather than two.
@@ -277,7 +292,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   )
 
   return (
-    <LanguageContext.Provider value={{ language, resolved, setLanguage, syncFailed }}>
+    <LanguageContext.Provider value={{ language, resolved, detected, setLanguage, syncFailed }}>
       {refreshed}
     </LanguageContext.Provider>
   )
@@ -297,6 +312,7 @@ export function useLanguage(): LanguageContextValue {
   return {
     language: stored,
     resolved: resolveLanguage(stored),
+    detected: resolveLanguage(AUTO_LANGUAGE),
     setLanguage: () => {},
     syncFailed: false,
   }

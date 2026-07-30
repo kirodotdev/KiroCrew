@@ -54,7 +54,7 @@ function StatusIndicator({ label }: { label: string }) {
 }
 
 export function DisplayPanel() {
-  const { language, resolved: resolvedLanguage, setLanguage, syncFailed: langSyncFailed } = useLanguage()
+  const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed } = useLanguage()
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
   // Shortcut label for the zoom hint/description: ⌘ on macOS, Ctrl elsewhere.
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
@@ -132,16 +132,20 @@ export function DisplayPanel() {
       <SettingsSection title={i18nT('pages.settings.displayPanel.view')}>
         <SettingsCard>
           {/* Options are built from SUPPORTED_LANGUAGES, so shipping a new
-              language needs no change here. The Auto entry's label shows which
-              language detection actually resolved to ("Auto — 简体中文"), so the
-              user can see what following the browser gets them. */}
+              language needs no change here. The Auto entry names what THIS
+              browser's preferences resolve to ("Auto (follow browser) —
+              简体中文"), so the user can see what picking Auto gets them. That
+              suffix must come from `detected`, not the active language: the
+              latter made it echo the current selection ("— English" once English
+              was picked), which told the user nothing and hid the fact that
+              their browser asks for a different language. */}
           <SettingsSelect
             label={i18nT('settings.display.language.label')}
             description={i18nT('settings.display.language.description')}
             value={language}
             options={[AUTO_LANGUAGE, ...SUPPORTED_LANGUAGES.map(l => l.code)]}
             optionLabels={[
-              `${i18nT('settings.display.language.auto')} — ${languageLabel(resolvedLanguage)}`,
+              `${i18nT('settings.display.language.auto')} — ${languageLabel(detectedLanguage)}`,
               ...SUPPORTED_LANGUAGES.map(l => l.label),
             ]}
             onChange={setLanguage}

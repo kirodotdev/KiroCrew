@@ -21,11 +21,12 @@ function wrap(children: ReactNode, boot: { language?: string } = {}) {
 
 /** Surfaces the context so assertions can read it. */
 function Probe() {
-  const { language, resolved, setLanguage, syncFailed } = useLanguage()
+  const { language, resolved, detected, setLanguage, syncFailed } = useLanguage()
   return (
     <div>
       <span data-testid="choice">{language || '(auto)'}</span>
       <span data-testid="resolved">{resolved}</span>
+      <span data-testid="detected">{detected}</span>
       <span data-testid="sync">{syncFailed ? 'failed' : 'ok'}</span>
       <button onClick={() => setLanguage('zh-CN')}>to-zh</button>
       <button onClick={() => setLanguage('')}>to-auto</button>
@@ -59,6 +60,27 @@ describe('LanguageProvider', () => {
     vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['zh-CN'])
     wrap(<Probe />)
     await waitFor(() => expect(screen.getByTestId('resolved')).toHaveTextContent('en'))
+  })
+
+  it('reports what Auto would give independently of the explicit choice', async () => {
+    // The Settings picker annotates its Auto row with this. It must describe the
+    // BROWSER, so an explicit English choice on a zh-CN browser still reads
+    // "Auto (follow browser) — 简体中文" rather than echoing "— English".
+    localStorage.setItem(LANG_STORAGE_KEY, 'en')
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['zh-CN'])
+    wrap(<Probe />)
+    await waitFor(() => expect(screen.getByTestId('resolved')).toHaveTextContent('en'))
+    expect(screen.getByTestId('detected')).toHaveTextContent('zh-CN')
+
+    // …and switching the choice must not move it.
+    await userEvent.click(screen.getByText('to-zh'))
+    expect(screen.getByTestId('detected')).toHaveTextContent('zh-CN')
+  })
+
+  it('falls back to the default language when the browser matches nothing', async () => {
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['fr-FR'])
+    wrap(<Probe />)
+    await waitFor(() => expect(screen.getByTestId('detected')).toHaveTextContent('en'))
   })
 
   it('persists a new choice to config and localStorage', async () => {
