@@ -132,6 +132,16 @@
     "chatSidebar": {
       "mirroring_to": "Mirroring to {{label}}"
     },
+    "chatPage": {
+      "no_tools": "No tools",
+      "tool_search_deferred": "Tool Search · Deferred",
+      "tool_search_deferred_hint": "Tool specs load on demand — not sent to the model every turn.",
+      "tool_search_full": "Tool Search · Fully loaded",
+      "tool_search_full_hint": "Every MCP tool spec is sent to the model each turn.",
+      "tool_status_deferred": "Deferred",
+      "tool_status_disabled": "Disabled",
+      "tool_status_loaded": "Loaded this session"
+    },
     "settings": {
       "aboutPanel": {
         "automatic_updates_unavailable_dev_build": "Automatic updates are unavailable in this build (development build).",
