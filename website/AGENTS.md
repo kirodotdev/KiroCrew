@@ -129,6 +129,14 @@ hand-assemble a catalog: `join`'s fail-closed check is what stops English text
 shipping disguised as a translation. Keep shard dirs OUTSIDE the worktree (Rule
 9 — a dirty tree blocks worktree pruning).
 
+`split` also writes `shard-NN.context.json` beside each shard, carrying the
+translator context from `src/i18n/en.context.json` for the keys in that shard.
+**Read it before translating the shard** — it is the only thing that tells you
+`KB` is kilobytes and not "knowledge base", that `K` is a keyboard key you must
+leave alone, and that `Run` is the verb. `join` ignores those files. If a short
+or ambiguous string has no entry, add one there rather than guessing twice.
+`split` warns and emits no context files if the sidecar is not present.
+
 **Don't pin a test fixture to a language you might later ship.** Assertions like
 "`fr` is unsupported, so it falls back" silently invert the moment French ships.
 This has now bitten twice — `fr` when French shipped, then `de-DE` in
@@ -202,7 +210,8 @@ its own key-parity, placeholder-preservation, and no-empty-value tests. Miss one
 of the three edits and CI fails naming the gap; it can't silently ship as
 English. To seed a catalog for translation, `node scripts/i18n-shard.mjs split
 <dir>` writes flat key→value shards and `join <dir> <tag>` reassembles them,
-refusing to write a partial result.
+refusing to write a partial result. Each shard gets a `shard-NN.context.json`
+sibling holding the translator context for its keys — read it first.
 
 Guard tests that must stay green: `catalogParity.test.ts` (cross-language key
 parity), `englishIdentity.test.ts` (catalog holds real prose — no encoded HTML

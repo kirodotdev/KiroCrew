@@ -34,6 +34,22 @@ const EN_FILES = [
   path.join(ROOT, 'src/i18n/locales/en.manual.json'),
 ]
 
+/**
+ * Translator context, keyed the same way as the catalog. Carried into the shard
+ * directory as `shard-NN.context.json` so a translator filling shards sees why
+ * `KB` is kilobytes and not "knowledge base", and that `K` is a keyboard key.
+ * See `src/i18n/en.context.json` for what belongs in it.
+ *
+ * Absent-tolerant on purpose. The sidecar is a separate change, and a translation
+ * run must not hard-fail because context has not landed yet — but it warns rather
+ * than falling silent, because silently shipping context-free shards is the exact
+ * failure the sidecar exists to prevent.
+ */
+const CONTEXT_FILE = path.join(ROOT, 'src/i18n/en.context.json')
+const CONTEXT = fs.existsSync(CONTEXT_FILE)
+  ? JSON.parse(fs.readFileSync(CONTEXT_FILE, 'utf-8')).entries
+  : {}
+
 function flatten(obj, prefix = '') {
   const out = {}
   for (const [k, v] of Object.entries(obj)) {
@@ -89,22 +105,53 @@ for (const file of EN_FILES) {
 
 if (cmd === 'split') {
   const size = Number(arg) || 400
+  if (!fs.existsSync(CONTEXT_FILE)) {
+    console.warn(
+      'warning: src/i18n/en.context.json is missing, so shards carry no translator '
+      + 'context. Short and ambiguous strings (`KB`, `K`, `Run`) will be guessed at.',
+    )
+  }
   fs.mkdirSync(dir, { recursive: true })
+
+  // Clear previously generated context sidecars before rewriting. `split` into an
+  // existing directory otherwise leaves a stale one behind whenever a shard's keys
+  // lose all their context -- the write below is conditional, so nothing overwrites
+  // it -- and stale guidance is worse than none: a translator would follow it.
+  // Only the sidecars, never `shard-NN.json`: those are filled in place by a
+  // translator, so deleting one would destroy work.
+  for (const f of fs.readdirSync(dir)) {
+    if (/^shard-\d+\.context\.json$/.test(f)) fs.unlinkSync(path.join(dir, f))
+  }
+
   const keys = Object.keys(flat).sort()
   let shard = 0
+  let described = 0
   for (let i = 0; i < keys.length; i += size) {
     const chunk = {}
     for (const k of keys.slice(i, i + size)) chunk[k] = flat[k]
-    const file = path.join(dir, `shard-${String(++shard).padStart(2, '0')}.json`)
+    const stem = `shard-${String(++shard).padStart(2, '0')}`
+    const file = path.join(dir, `${stem}.json`)
     fs.writeFileSync(file, JSON.stringify(chunk, null, 2) + '\n')
-    console.log(`${file}  (${Object.keys(chunk).length} keys)`)
+
+    // Translator context, as a SIBLING file rather than inside the shard: the
+    // shard is filled in place, so a description living in it would either be
+    // overwritten or arrive back as a translation. `join` skips `*.context.json`.
+    // Without this the sidecar is inert — a translator working the documented
+    // workflow would never learn that `KB` is kilobytes and not "knowledge base".
+    const ctx = {}
+    for (const k of Object.keys(chunk)) if (CONTEXT[k]) ctx[k] = CONTEXT[k]
+    if (Object.keys(ctx).length) {
+      fs.writeFileSync(path.join(dir, `${stem}.context.json`), JSON.stringify(ctx, null, 2) + '\n')
+      described += Object.keys(ctx).length
+    }
+    console.log(`${file}  (${Object.keys(chunk).length} keys${Object.keys(ctx).length ? `, ${Object.keys(ctx).length} with context` : ''})`)
   }
-  console.log(`\n${shard} shards, ${keys.length} keys total`)
+  console.log(`\n${shard} shards, ${keys.length} keys total, ${described} carrying translator context`)
 } else if (cmd === 'join') {
   const locale = arg
   if (!locale) throw new Error('join requires a locale, e.g. zh-CN')
   const merged = {}
-  for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort()) {
+  for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.json') && !f.endsWith('.context.json')).sort()) {
     Object.assign(merged, JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8')))
   }
 
