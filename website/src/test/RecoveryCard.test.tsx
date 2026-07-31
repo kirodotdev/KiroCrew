@@ -11,6 +11,8 @@ import RecoveryCard, { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
 const REFUSAL = '[Tool refusal — automatic recovery]'
 const STALLED = '[Stalled turn — automatic recovery]'
 const TOOL_STALL = '[Tool stall — automatic recovery]'
+const POSTTOKEN = '[Interrupted turn — automatic recovery]'
+const EMPTY = '[Empty response — automatic recovery]'
 
 /** A refusal body shaped the way build_refusal_recovery_prompt() emits it. */
 function refusalBody(items: string[]): string {
@@ -97,6 +99,27 @@ describe('parseRecoveryMessage', () => {
     expect(p?.body).toBe('Your previous turn was interrupted.')
     expect(p?.body.startsWith('[')).toBe(false)
   })
+
+  it('labels a transient-backend interruption and an empty generation', () => {
+    // Verbatim bodies from chat_utils._POSTTOKEN_RECOVER_MSG /
+    // _EMPTY_AUTO_CONTINUE_MSG. Before this coverage both rendered as a
+    // full-width bubble of machine prose — the regression under test.
+    const interrupted = parseRecoveryMessage(
+      `${POSTTOKEN}\nThe previous response was interrupted partway through by a transient backend error.`,
+    )
+    expect(interrupted?.kind).toBe('posttoken')
+    expect(interrupted?.title).toBe('Turn interrupted')
+    expect(interrupted?.detail).toBe('backend error · continuing automatically')
+    expect(interrupted?.chip).toBe('')
+    expect(interrupted?.body.startsWith('[')).toBe(false)
+
+    const empty = parseRecoveryMessage(
+      `${EMPTY}\nYour previous turn produced no output (the model returned an empty response twice).`,
+    )
+    expect(empty?.kind).toBe('empty')
+    expect(empty?.title).toBe('No response returned')
+    expect(empty?.detail).toBe('empty output · continuing automatically')
+  })
 })
 
 describe('RecoveryCard', () => {
@@ -159,6 +182,26 @@ describe('RecoveryCard', () => {
     render(<RecoveryCard parsed={stalled} />)
     expect(screen.queryByTestId('recovery-card-chip')).toBeNull()
     expect(screen.getByTestId('recovery-card')).toHaveAttribute('data-kind', 'stalled')
+  })
+
+  it('marks infrastructure hiccups routine and blocks/stalls as needing attention', () => {
+    // A deny-pattern block may need the user to act; a transient 5xx or an empty
+    // generation is noise the gateway absorbs on its own. The severity split is
+    // what keeps the routine case from reading as urgently as the blocked case.
+    const { unmount } = render(
+      <RecoveryCard parsed={parseRecoveryMessage(`${POSTTOKEN}\nContinue from where it stopped.`)!} />,
+    )
+    expect(screen.getByTestId('recovery-card')).toHaveAttribute('data-severity', 'routine')
+    unmount()
+
+    render(<RecoveryCard parsed={parseRecoveryMessage(`${EMPTY}\nRespond now.`)!} />)
+    expect(screen.getByTestId('recovery-card')).toHaveAttribute('data-severity', 'routine')
+    expect(screen.getByText('No response returned')).toBeInTheDocument()
+  })
+
+  it('keeps the attention severity for a refusal', () => {
+    render(<RecoveryCard parsed={parsed} />)
+    expect(screen.getByTestId('recovery-card')).toHaveAttribute('data-severity', 'attention')
   })
 })
 

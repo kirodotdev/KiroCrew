@@ -2706,7 +2706,11 @@
         "turn_stalled": "轮次停滞",
         "recovered_continuing": "已恢复 · 继续中",
         "tool_stopped_responding": "工具停止响应",
-        "cancelled_continuing": "已取消 · 继续中"
+        "cancelled_continuing": "已取消 · 继续中",
+        "turn_interrupted": "轮次被中断",
+        "backend_error_continuing": "后端错误 · 正在自动继续",
+        "no_response_returned": "未返回响应",
+        "empty_output_continuing": "输出为空 · 正在自动继续"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "在“显示”设置中更改你的配色方案",

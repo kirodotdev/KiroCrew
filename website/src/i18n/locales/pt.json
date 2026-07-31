@@ -2771,7 +2771,11 @@
         "safety_policy_continuing": "política de segurança · continuando automaticamente",
         "tool_call_blocked": "Chamada de ferramenta bloqueada",
         "tool_stopped_responding": "A ferramenta parou de responder",
-        "turn_stalled": "Turno travado"
+        "turn_stalled": "Turno travado",
+        "turn_interrupted": "Turno interrompido",
+        "backend_error_continuing": "erro do backend · continuando automaticamente",
+        "no_response_returned": "Sem resposta",
+        "empty_output_continuing": "saída vazia · continuando automaticamente"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Altere sua paleta de cores nas configurações de Exibição",

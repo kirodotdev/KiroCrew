@@ -1,25 +1,28 @@
 import { memo, useState } from 'react'
-import { ChevronRight, TriangleAlert } from 'lucide-react'
+import { ChevronRight, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 
 /**
- * The three synthetic-continuation prefixes the gateway prepends when it
- * recovers a turn that ended early. Kept in sync with the constants in
+ * The synthetic-continuation prefixes the gateway prepends when it recovers a
+ * turn that ended early. Kept in sync with the constants in
  * `src/kiro_crew/dashboard/state.py` (REFUSAL_RECOVERY_PREFIX,
- * STALE_RECOVERY_PREFIX, TOOL_STALL_RECOVERY_PREFIX).
+ * STALE_RECOVERY_PREFIX, TOOL_STALL_RECOVERY_PREFIX,
+ * POSTTOKEN_RECOVERY_PREFIX, EMPTY_RESPONSE_RECOVERY_PREFIX).
  *
  * Detection is by content prefix rather than a meta flag on purpose: the rows
  * are appended with a plain CSS-class meta ("msg msg-inject"), and matching the
  * text means history-restored rows written by any gateway version render as a
  * card too.
  */
-export type RecoveryKind = 'refusal' | 'stalled' | 'tool_stall'
+export type RecoveryKind = 'refusal' | 'stalled' | 'tool_stall' | 'posttoken' | 'empty'
 
 const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   ['refusal', '[Tool refusal — automatic recovery]'],
   ['stalled', '[Stalled turn — automatic recovery]'],
   ['tool_stall', '[Tool stall — automatic recovery]'],
+  ['posttoken', '[Interrupted turn — automatic recovery]'],
+  ['empty', '[Empty response — automatic recovery]'],
 ]
 
 /** `Blocked by security policy: <pattern>` — the deny pattern that fired. */
@@ -73,6 +76,24 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
       body,
     }
   }
+  if (kind === 'posttoken') {
+    return {
+      kind,
+      title: i18nT('pages.chat.recoveryCard.turn_interrupted'),
+      detail: i18nT('pages.chat.recoveryCard.backend_error_continuing'),
+      chip: '',
+      body,
+    }
+  }
+  if (kind === 'empty') {
+    return {
+      kind,
+      title: i18nT('pages.chat.recoveryCard.no_response_returned'),
+      detail: i18nT('pages.chat.recoveryCard.empty_output_continuing'),
+      chip: '',
+      body,
+    }
+  }
 
   // Refusal: count the blocked-item bullets and collect the distinct deny
   // patterns. A turn can refuse several calls, and they need not share a cause.
@@ -113,12 +134,20 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
 export default memo(function RecoveryCard({ parsed }: { parsed: ParsedRecovery }) {
   const [expanded, setExpanded] = useState(false)
   const { kind, title, detail, chip, body } = parsed
+  // Severity split: a refusal or a stall means something was blocked or died and
+  // the user may need to act, so it keeps the warning triangle. A transient
+  // backend error or an empty generation is infrastructure noise the gateway
+  // handles on its own — a neutral retry glyph, so a routine hiccup does not
+  // read as urgently as a deny-pattern block.
+  const routine = kind === 'posttoken' || kind === 'empty'
+  const Icon = routine ? RotateCcw : TriangleAlert
 
   return (
     <div
       className="self-center w-full max-w-full min-w-0 rounded-md border border-border bg-card text-muted animate-scale-in"
       data-testid="recovery-card"
       data-kind={kind}
+      data-severity={routine ? 'routine' : 'attention'}
     >
       <button
         type="button"
@@ -138,7 +167,11 @@ export default memo(function RecoveryCard({ parsed }: { parsed: ParsedRecovery }
           className={`lucide-inline shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
           aria-hidden="true"
         />
-        <TriangleAlert size={13} className="lucide-inline shrink-0 text-warning" aria-hidden="true" />
+        <Icon
+          size={13}
+          className={`lucide-inline shrink-0 ${routine ? 'text-muted' : 'text-warning'}`}
+          aria-hidden="true"
+        />
         <span className="font-medium text-fg shrink-0">{title}</span>
         <span className="truncate text-[12px] opacity-75 min-w-0">{detail}</span>
         {chip && (

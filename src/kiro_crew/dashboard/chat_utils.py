@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
+    EMPTY_RESPONSE_RECOVERY_PREFIX,
+    POSTTOKEN_RECOVERY_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
     _ChatSlot,
@@ -528,7 +530,14 @@ def _edit_queued_by_id(messages: list[dict], queue_id: str, content: str) -> boo
 # The post-transient CONTINUE resumes an interrupted turn; the empty-response
 # nudge breaks the repeated-empty-generation pattern. Both are orchestration,
 # not user speech.
+#
+# Each carries a bracketed marker line, matching the three recovery prefixes in
+# state.py. The marker is what the dashboard matches to fold the row into a
+# one-line RecoveryCard instead of printing the machine-facing prose as a
+# full-width bubble; it also labels the injection for the model, which reads
+# these the same way it reads the refusal/stall continuations.
 _POSTTOKEN_RECOVER_MSG = (
+    f"{POSTTOKEN_RECOVERY_PREFIX}\n"
     "The previous response was interrupted partway through by a transient "
     "backend error. The work already done above (including any completed tool "
     "results) is preserved in the conversation. Continue from where it stopped "
@@ -536,6 +545,7 @@ _POSTTOKEN_RECOVER_MSG = (
     "re-run steps or tools that already completed successfully."
 )
 _EMPTY_AUTO_CONTINUE_MSG = (
+    f"{EMPTY_RESPONSE_RECOVERY_PREFIX}\n"
     "Your previous turn produced no output (the model returned an empty "
     "response twice). Continue working on the pending request from the "
     "conversation above and respond now — do NOT restart from scratch and do "

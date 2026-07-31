@@ -2738,7 +2738,11 @@
         "safety_policy_continuing": "নিরাপত্তা নীতি · স্বয়ংক্রিয়ভাবে চলছে",
         "tool_call_blocked": "টুল কল ব্লক করা হয়েছে",
         "tool_stopped_responding": "টুল সাড়া দেওয়া বন্ধ করেছে",
-        "turn_stalled": "টার্ন থেমে গেছে"
+        "turn_stalled": "টার্ন থেমে গেছে",
+        "turn_interrupted": "টার্ন বাধাগ্রস্ত হয়েছে",
+        "backend_error_continuing": "ব্যাকএন্ড ত্রুটি · স্বয়ংক্রিয়ভাবে চলছে",
+        "no_response_returned": "কোনো প্রতিক্রিয়া পাওয়া যায়নি",
+        "empty_output_continuing": "খালি আউটপুট · স্বয়ংক্রিয়ভাবে চলছে"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "ডিসপ্লে সেটিংসে আপনার রঙের প্যালেট পরিবর্তন করুন",

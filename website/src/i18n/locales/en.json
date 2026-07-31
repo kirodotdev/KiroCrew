@@ -2667,7 +2667,11 @@
         "turn_stalled": "Turn stalled",
         "recovered_continuing": "recovered · continuing",
         "tool_stopped_responding": "Tool stopped responding",
-        "cancelled_continuing": "cancelled · continuing"
+        "cancelled_continuing": "cancelled · continuing",
+        "turn_interrupted": "Turn interrupted",
+        "backend_error_continuing": "backend error · continuing automatically",
+        "no_response_returned": "No response returned",
+        "empty_output_continuing": "empty output · continuing automatically"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Change your color palette in Display settings",

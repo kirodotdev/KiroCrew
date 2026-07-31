@@ -2804,7 +2804,11 @@
         "safety_policy_continuing": "политика безопасности · продолжение автоматически",
         "tool_call_blocked": "Вызов инструмента заблокирован",
         "tool_stopped_responding": "Инструмент перестал отвечать",
-        "turn_stalled": "Ход застопорился"
+        "turn_stalled": "Ход застопорился",
+        "turn_interrupted": "Ход прерван",
+        "backend_error_continuing": "ошибка бэкенда · продолжение автоматически",
+        "no_response_returned": "Ответ не получен",
+        "empty_output_continuing": "пустой вывод · продолжение автоматически"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Измените цветовую палитру в настройках отображения",

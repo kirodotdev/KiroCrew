@@ -2738,7 +2738,11 @@
         "safety_policy_continuing": "Sicherheitsrichtlinie · wird automatisch fortgesetzt",
         "tool_call_blocked": "Werkzeugaufruf blockiert",
         "tool_stopped_responding": "Werkzeug antwortet nicht mehr",
-        "turn_stalled": "Zug blockiert"
+        "turn_stalled": "Zug blockiert",
+        "turn_interrupted": "Zug unterbrochen",
+        "backend_error_continuing": "Backend-Fehler · wird automatisch fortgesetzt",
+        "no_response_returned": "Keine Antwort",
+        "empty_output_continuing": "leere Ausgabe · wird automatisch fortgesetzt"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Ändern Sie Ihre Farbpalette in den Anzeigeeinstellungen",

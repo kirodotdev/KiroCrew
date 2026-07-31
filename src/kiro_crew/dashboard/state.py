@@ -510,6 +510,14 @@ STALE_RECOVERY_PREFIX = "[Stalled turn — automatic recovery]"
 # partial results and continue. Rendered as an "inject" message (not a user
 # bubble) and never mirrored to a linked Slack thread as user input.
 TOOL_STALL_RECOVERY_PREFIX = "[Tool stall — automatic recovery]"
+# Prefix on the runner-injected CONTINUE that resumes a turn cut short by a
+# transient backend 5xx after tokens/tools had already streamed. The body lives
+# in chat_utils as _POSTTOKEN_RECOVER_MSG; the prefix is here so all five
+# recovery markers share one home and the frontend has one list to mirror.
+POSTTOKEN_RECOVERY_PREFIX = "[Interrupted turn — automatic recovery]"
+# Prefix on the runner-injected nudge that breaks a repeated empty-generation
+# pattern (the model returned no output twice). Body: _EMPTY_AUTO_CONTINUE_MSG.
+EMPTY_RESPONSE_RECOVERY_PREFIX = "[Empty response — automatic recovery]"
 
 
 def should_queue_refusal_recovery(
