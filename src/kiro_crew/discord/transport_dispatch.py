@@ -28,7 +28,6 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE
 from kiro_crew.discord.commands import (
     ConversationState,
     parse_command,
@@ -979,40 +978,29 @@ class DiscordDispatcher:
 
             try:
 
-                async def _run() -> None:
-                    nonlocal result_text
-                    async for ev in provider.stream_command("/compact"):
-                        if ev.kind == EVENT_COMPACTION_STATUS:
-                            if ev.text == "completed":
-                                summary = _safe(ev.title or "")
-                                result_text = (
-                                    f"✅ Compacted: {summary}"
-                                    if summary
-                                    else "✅ Context compacted."
-                                )
-                            elif ev.text == "failed":
-                                result_text = (
-                                    f"❌ Compaction failed: "
-                                    f"{_safe(ev.title or '') or 'unknown error'}"
-                                )
-                        elif ev.kind == EVENT_COMPLETE:
-                            break
-
-                await asyncio.wait_for(_run(), timeout=120)
-                if not result_text:
-                    cr = await provider.wait_for_compaction(timeout=120.0)
-                    if cr["type"] == "completed":
-                        summary = _safe(cr.get("summary", ""))
-                        result_text = (
-                            f"✅ Compacted: {summary}" if summary else "✅ Context compacted."
-                        )
-                    elif cr["type"] == "failed":
-                        err = _safe(cr.get("summary", ""))
-                        result_text = (
-                            f"❌ Compaction failed: {err}" if err else "❌ Compaction failed."
-                        )
-                    else:
-                        result_text = "⚠️ Compaction timed out."
+                # Compaction runs over the prompt transport (#276):
+                # provider.compact() drives /compact via session/prompt (the
+                # commands/execute path does NOT run compaction — it returns
+                # with no status, the pre-#276 bug). Bound compact()'s prompt
+                # turn here, then let wait_for_compaction() own its OWN deadline
+                # for a status emitted async after end_turn — it must NOT be
+                # nested inside another timeout, or the graceful "timed out"
+                # branch is unreachable and a slow-but-healthy session gets
+                # destroyed by the outer TimeoutError.
+                await asyncio.wait_for(provider.compact(), timeout=120)
+                cr = await provider.wait_for_compaction(timeout=120.0)
+                if cr["type"] == "completed":
+                    summary = _safe(cr.get("summary", ""))
+                    result_text = (
+                        f"✅ Compacted: {summary}" if summary else "✅ Context compacted."
+                    )
+                elif cr["type"] == "failed":
+                    err = _safe(cr.get("summary", ""))
+                    result_text = (
+                        f"❌ Compaction failed: {err}" if err else "❌ Compaction failed."
+                    )
+                else:
+                    result_text = "⚠️ Compaction timed out."
             except Exception:
                 logger.warning("Discord !compact failed for %s", session_key, exc_info=True)
                 result_text = "❌ Compaction failed unexpectedly."

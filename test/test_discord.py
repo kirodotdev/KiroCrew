@@ -167,6 +167,9 @@ class FakeProvider:
         yield _Ev(EVENT_COMPACTION_STATUS, text="completed", title="ok")
         yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
 
+    async def compact(self, context: str = "") -> None:
+        return None
+
     async def wait_for_compaction(self, timeout: float = 0.0) -> dict:
         return {"type": "completed", "summary": "ok"}
 
@@ -938,6 +941,23 @@ class TestDispatcher:
         assert any("Compacted" in t for _, t, _ in cli.edits) or any(
             "Compacted" in t for t, _ in cli.sent
         )
+
+    @pytest.mark.asyncio
+    async def test_compact_timeout_reports_gracefully(self) -> None:
+        # Regression: nested 120s timeouts made the graceful-timeout branch
+        # unreachable and destroyed a healthy session. A compaction that yields
+        # no terminal status must report a timeout and KEEP the session.
+        d, cli, sess = _dispatcher({"u1"})
+
+        async def _timeout(timeout: float = 0.0) -> dict:
+            return {"type": "timeout"}
+
+        sess._gp.wait_for_compaction = _timeout
+        await d.handle_message(self._msg("!compact"))
+        assert any("timed out" in t for _, t, _ in cli.edits) or any(
+            "timed out" in t for t, _ in cli.sent
+        )
+        assert sess.destroyed == []  # healthy session preserved
 
     @pytest.mark.asyncio
     async def test_link_and_unlink(self) -> None:

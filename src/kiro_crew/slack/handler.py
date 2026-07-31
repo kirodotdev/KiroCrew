@@ -66,7 +66,6 @@ from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
 from kiro_crew.providers.base import (
-    EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -2110,54 +2109,67 @@ async def _handle_compact_command(
     session_key: str,
 ) -> None:
     """Trigger in-place ACP ``/compact`` on the current thread's session."""
-    provider = sessions.get_provider(session_key)
-    if not provider:
-        await slack.post_message(channel, "No active session to compact.", reply_ts)
-        sel().log_tool_invocation(
-            session_key=session_key,
-            source="slack",
-            tool_name="compact",
-            tool_kind="command",
-            outcome="no_session",
-        )
+    # Atomically take the turn semaphore for the WHOLE compaction, or refuse.
+    # Slack dispatches each message as its own task (asyncio.create_task), so a
+    # bare get_provider() + compact() would race a normal turn that holds the
+    # session and interleave two prompts on one stdio channel — corrupting
+    # session state (the reason Discord/Telegram guard the same way). Since
+    # #276 routes /compact through session/prompt, that collision now surfaces
+    # as "turn already active" and the except path would destroy a healthy
+    # session; try_acquire() serializes against the in-flight turn and the
+    # finally always releases.
+    if not await sessions.try_acquire(session_key):
+        if sessions.has_session(session_key):
+            await slack.post_message(
+                channel,
+                "⏳ Still working on your last message — try `!compact` once it finishes.",
+                reply_ts,
+            )
+        else:
+            await slack.post_message(channel, "No active session to compact.", reply_ts)
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="compact",
+                tool_kind="command",
+                outcome="no_session",
+            )
         return
-
-    _t0 = time.monotonic()
-
-    # --- Phase 1: Pre-compaction UI (cosmetic — log failures, don't abort) ---
     try:
-        await slack.add_reaction(channel, msg_ts, "recycle")
-        await slack.post_message(channel, "🔄 Compacting context…", reply_ts)
-    except Exception:
-        logger.debug("Pre-compact UI failed for %s", session_key, exc_info=True)
+        provider = sessions.get_provider(session_key)
+        if not provider:
+            await slack.post_message(channel, "No active session to compact.", reply_ts)
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="compact",
+                tool_kind="command",
+                outcome="no_session",
+            )
+            return
 
-    # --- Phase 2: Actual compaction (failures warrant error + session teardown) ---
-    result_text: str | None = None
-    outcome = "unknown"
-    try:
+        _t0 = time.monotonic()
 
-        async def _run_compact_stream() -> None:
-            nonlocal result_text, outcome
-            async for event in provider.stream_command("/compact"):
-                if event.kind == EVENT_COMPACTION_STATUS:
-                    if event.text == "completed":
-                        summary = event.title or ""
-                        result_text = (
-                            f"✅ Compacted: {summary}" if summary else "✅ Context compacted."
-                        )
-                        outcome = "completed"
-                    elif event.text == "failed":
-                        error = event.title or "unknown error"
-                        result_text = f"❌ Compaction failed: {error}"
-                        outcome = "failed"
-                elif event.kind == EVENT_COMPLETE:
-                    break
+        # --- Phase 1: Pre-compaction UI (cosmetic — log failures, don't abort) ---
+        try:
+            await slack.add_reaction(channel, msg_ts, "recycle")
+            await slack.post_message(channel, "🔄 Compacting context…", reply_ts)
+        except Exception:
+            logger.debug("Pre-compact UI failed for %s", session_key, exc_info=True)
 
-        await asyncio.wait_for(_run_compact_stream(), timeout=120)
-
-        # kiro-cli fires compaction asynchronously after EVENT_COMPLETE —
-        # wait for the real result, mirroring the dashboard's deferred path.
-        if not result_text:
+        # --- Phase 2: Actual compaction (failures warrant error + session teardown) ---
+        result_text: str | None = None
+        outcome = "unknown"
+        try:
+            # Compaction runs over the prompt transport (#276):
+            # provider.compact() drives /compact via session/prompt (the
+            # commands/execute path does NOT run compaction — it returns with
+            # no status, the pre-#276 bug). Bound compact()'s prompt turn here,
+            # then let wait_for_compaction() own its OWN deadline for a status
+            # emitted async after end_turn — it must NOT be nested inside
+            # another timeout, or the graceful "timed out" branch is
+            # unreachable and a slow-but-healthy session gets destroyed.
+            await asyncio.wait_for(provider.compact(), timeout=120)
             cr = await provider.wait_for_compaction(timeout=120.0)
             if cr["type"] == "completed":
                 summary = cr.get("summary", "")
@@ -2165,65 +2177,71 @@ async def _handle_compact_command(
                 outcome = "completed"
             elif cr["type"] == "failed":
                 error = cr.get("summary", "")
-                result_text = f"❌ Compaction failed: {error}" if error else "❌ Compaction failed."
+                result_text = (
+                    f"❌ Compaction failed: {error}" if error else "❌ Compaction failed."
+                )
                 outcome = "failed"
             else:
                 result_text = "⚠️ Compaction timed out."
                 outcome = "timeout"
-    except Exception:
-        logger.warning("Compact command failed for %s", session_key, exc_info=True)
-        try:
-            await slack.post_message(channel, "❌ Compaction failed unexpectedly.", reply_ts)
         except Exception:
-            logger.debug("Failed to post compact error for %s", session_key, exc_info=True)
-        try:
-            await sessions.destroy(session_key)
-        except Exception:
-            logger.warning(
-                "Failed to destroy session %s after compact failure", session_key, exc_info=True
+            logger.warning("Compact command failed for %s", session_key, exc_info=True)
+            try:
+                await slack.post_message(channel, "❌ Compaction failed unexpectedly.", reply_ts)
+            except Exception:
+                logger.debug("Failed to post compact error for %s", session_key, exc_info=True)
+            try:
+                await sessions.destroy(session_key)
+            except Exception:
+                logger.warning(
+                    "Failed to destroy session %s after compact failure",
+                    session_key,
+                    exc_info=True,
+                )
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="compact",
+                tool_kind="command",
+                outcome="failed",
+                error="exception",
             )
-        sel().log_tool_invocation(
-            session_key=session_key,
-            source="slack",
-            tool_name="compact",
-            tool_kind="command",
-            outcome="failed",
-            error="exception",
-        )
+            try:
+                await slack.remove_reaction(channel, msg_ts, "recycle")
+                await _add_phase_reaction(slack, channel, msg_ts, "done")
+            except Exception:
+                pass
+            return
+
+        # --- Phase 3: Post-compaction reporting (log failures, don't mislead) ---
+        try:
+            result_text, _ = redact_exfiltration_urls(result_text)
+            result_text, _ = redact_credentials(result_text)
+            await slack.post_message(channel, result_text, reply_ts)
+
+            elapsed = time.monotonic() - _t0
+            footer_blocks, footer_text = build_timing_footer(elapsed)
+            await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
+        except Exception:
+            logger.debug("Post-compact reporting failed for %s", session_key, exc_info=True)
+
+        try:
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="compact",
+                tool_kind="command",
+                outcome=outcome,
+            )
+        except Exception:
+            logger.debug("Failed to log compact outcome for %s", session_key, exc_info=True)
         try:
             await slack.remove_reaction(channel, msg_ts, "recycle")
             await _add_phase_reaction(slack, channel, msg_ts, "done")
         except Exception:
             pass
-        return
-
-    # --- Phase 3: Post-compaction reporting (log failures, don't mislead) ---
-    try:
-        result_text, _ = redact_exfiltration_urls(result_text)
-        result_text, _ = redact_credentials(result_text)
-        await slack.post_message(channel, result_text, reply_ts)
-
-        elapsed = time.monotonic() - _t0
-        footer_blocks, footer_text = build_timing_footer(elapsed)
-        await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
-    except Exception:
-        logger.debug("Post-compact reporting failed for %s", session_key, exc_info=True)
-
-    try:
-        sel().log_tool_invocation(
-            session_key=session_key,
-            source="slack",
-            tool_name="compact",
-            tool_kind="command",
-            outcome=outcome,
-        )
-    except Exception:
-        logger.debug("Failed to log compact outcome for %s", session_key, exc_info=True)
-    try:
-        await slack.remove_reaction(channel, msg_ts, "recycle")
-        await _add_phase_reaction(slack, channel, msg_ts, "done")
-    except Exception:
-        pass
+    finally:
+        sessions.release(session_key)
 
 
 async def maybe_handle_keyword_command(

@@ -98,6 +98,11 @@ class FakeSessionManager:
     async def record_failure(self, key):
         return False
 
+    async def try_acquire(self, key):
+        # Mirror the real SessionManager: succeed only when a session exists
+        # (an idle one to compact); the tests never simulate a busy turn.
+        return self.has_session(key)
+
     def release(self, key):
         pass
 
@@ -2519,22 +2524,29 @@ class TestCompactCommand:
         set_allowed_users({"U_OWNER"})
 
     def _make_provider_with_compact(self, events=None):
-        """Create a FakeProvider that supports stream_command for /compact."""
+        """Create a FakeProvider whose /compact runs via the prompt transport
+        (provider.compact() + wait_for_compaction()), the path #276 fixed.
+
+        The optional ``events`` list (compaction_status LLMEvents) is
+        translated into the terminal result wait_for_compaction() returns, so
+        existing call sites keep expressing the outcome the same way.
+        """
         provider = FakeProvider(events)
-        compact_events = (
-            events
-            if events is not None
-            else [
-                LLMEvent(kind="compaction_status", text="completed", title="Summary preserved"),
-            ]
-        )
+        result = {"type": "completed", "summary": "Summary preserved"}
+        if events is not None:
+            result = {"type": "timeout", "summary": ""}
+            for e in events:
+                if e.kind == "compaction_status" and e.text in ("completed", "failed"):
+                    result = {"type": e.text, "summary": e.title or ""}
 
-        async def stream_command(command):
-            for e in compact_events:
-                yield e
-            yield LLMEvent(kind="complete")
+        async def compact(context=""):
+            return None
 
-        provider.stream_command = stream_command
+        async def wait_for_compaction(timeout=120.0):
+            return result
+
+        provider.compact = compact
+        provider.wait_for_compaction = wait_for_compaction
         return provider
 
     def _make_sessions_with_active(self, provider):
@@ -2659,8 +2671,8 @@ class TestCompactCommand:
 
     @pytest.mark.asyncio
     async def test_compact_deferred_via_wait_for_compaction(self):
-        """When stream_command yields no compaction_status, handler falls back to wait_for_compaction."""
-        provider = self._make_provider_with_compact(events=[])  # no compaction_status events
+        """The terminal status arrives via wait_for_compaction (async after end_turn)."""
+        provider = self._make_provider_with_compact(events=[])  # no mid-turn status
 
         async def wait_for_compaction(timeout=120.0):
             return {"type": "completed", "summary": "Deferred summary"}
@@ -2676,14 +2688,13 @@ class TestCompactCommand:
 
     @pytest.mark.asyncio
     async def test_compact_exception_cleans_up(self):
-        """When stream_command raises, handler posts error and removes session."""
+        """When compact() raises, handler posts error and removes session."""
         provider = FakeProvider()
 
-        async def stream_command(command):
+        async def compact(context=""):
             raise RuntimeError("process died")
-            yield  # noqa: unreachable — makes this an async generator
 
-        provider.stream_command = stream_command
+        provider.compact = compact
         sessions = self._make_sessions_with_active(provider)
         slack = MockSlackClient()
 
@@ -2710,6 +2721,46 @@ class TestCompactCommand:
         assert footer["blocks"][0]["type"] == "context"
         assert "Finished in" in footer["text"]
         assert "ctx" not in footer["text"], "Footer must NOT include stale ctx% after compact"
+
+    @pytest.mark.asyncio
+    async def test_compact_timeout_reports_gracefully(self):
+        """A compaction that yields no terminal status reports a graceful
+        timeout and keeps the session (regression: nested 120s timeouts made
+        this branch dead code and destroyed a healthy session)."""
+        provider = self._make_provider_with_compact()
+
+        async def wait_for_compaction(timeout=120.0):
+            return {"type": "timeout"}
+
+        provider.wait_for_compaction = wait_for_compaction
+        sessions = self._make_sessions_with_active(provider)
+        slack = MockSlackClient()
+
+        await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
+
+        texts = self._posted_texts(slack)
+        assert any("timed out" in t for t in texts)
+        assert "destroy:thread1" not in sessions.removed
+
+    @pytest.mark.asyncio
+    async def test_compact_busy_refuses_without_starting(self):
+        """While a turn holds the session semaphore, /compact refuses politely
+        and never starts a second prompt or tears the session down."""
+        provider = self._make_provider_with_compact()
+        sessions = self._make_sessions_with_active(provider)
+
+        async def try_acquire(key):
+            return False  # a turn is already in flight
+
+        sessions.try_acquire = try_acquire
+        slack = MockSlackClient()
+
+        await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
+
+        texts = self._posted_texts(slack)
+        assert any("Still working" in t for t in texts)
+        assert not any("Compacting context" in t for t in texts)  # never started
+        assert "destroy:thread1" not in sessions.removed
 
 
 class TestBuildTimingFooter:

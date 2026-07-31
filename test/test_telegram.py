@@ -177,6 +177,9 @@ class FakeProvider:
         yield _Ev(EVENT_COMPACTION_STATUS, text="completed", title="ok")
         yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
 
+    async def compact(self, context: str = "") -> None:
+        return None
+
     async def wait_for_compaction(self, timeout: float = 0.0) -> dict:
         return {"type": "completed", "summary": "ok"}
 
@@ -1248,6 +1251,30 @@ class TestDispatcher:
         assert sess.acquired == ["telegram:kirocrew:direct:7"]  # acquired the turn semaphore
         assert sess.released == ["telegram:kirocrew:direct:7"]  # and released it in finally
         assert any("Compact" in s[0] for s in cli.sent) or any("Compact" in e[1] for e in cli.edits)
+
+    def test_compact_timeout_reports_gracefully(self) -> None:
+        # Regression: nested 120s timeouts made the graceful-timeout branch
+        # unreachable and destroyed a healthy session. A compaction that yields
+        # no terminal status must report a timeout and KEEP the session.
+        d, cli, sess = _dispatcher({7})
+
+        async def _timeout(timeout: float = 0.0) -> dict:
+            return {"type": "timeout"}
+
+        sess._gp.wait_for_compaction = _timeout
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/compact"
+                )
+            )
+
+        asyncio.run(_go())
+        assert any("timed out" in s[0] for s in cli.sent) or any(
+            "timed out" in e[1] for e in cli.edits
+        )
+        assert sess.destroyed == []  # healthy session preserved
 
     def test_callback_option_echoes_choice_and_redispatches(self) -> None:
         d, cli, sess = _dispatcher({7})
