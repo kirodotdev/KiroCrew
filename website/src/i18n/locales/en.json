@@ -3643,6 +3643,8 @@
         "clear": "Clear",
         "click_preview_to_see_what_gets_injected_into_pro": "Click Preview to see what gets injected into prompts.",
         "delete": "Delete",
+        "embed_model_label": "{{model}} · {{dim}}-dim",
+        "embed_model_runs_locally": "{{model}} · {{dim}}-dim · runs locally in-process",
         "embeddings": "Embeddings",
         "entries": "entries",
         "episodic_context_injected_per_message": "Episodic Context (injected per-message)",

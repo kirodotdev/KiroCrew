@@ -3803,6 +3803,8 @@
         "clear": "Очистить",
         "click_preview_to_see_what_gets_injected_into_pro": "Нажмите «Предпросмотр», чтобы увидеть, что подставляется в промпты.",
         "delete": "Удалить",
+        "embed_model_label": "{{model}} · {{dim}}-dim",
+        "embed_model_runs_locally": "{{model}} · {{dim}}-dim · выполняется локально в процессе",
         "embeddings": "Эмбеддинги",
         "entries": "записей",
         "episodic_context_injected_per_message": "Эпизодический контекст (подставляется в каждое сообщение)",

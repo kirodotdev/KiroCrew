@@ -3763,6 +3763,8 @@
         "clear": "Effacer",
         "click_preview_to_see_what_gets_injected_into_pro": "Cliquez sur Aperçu pour voir ce qui est injecté dans les prompts.",
         "delete": "Supprimer",
+        "embed_model_label": "{{model}} · {{dim}}-dim",
+        "embed_model_runs_locally": "{{model}} · {{dim}}-dim · s'exécute localement dans le processus",
         "embeddings": "Embeddings",
         "entries": "entrées",
         "episodic_context_injected_per_message": "Contexte épisodique (injecté à chaque message)",

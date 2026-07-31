@@ -3763,6 +3763,8 @@
         "clear": "Borrar",
         "click_preview_to_see_what_gets_injected_into_pro": "Haz clic en Vista previa para ver qué se inyecta en los prompts.",
         "delete": "Eliminar",
+        "embed_model_label": "{{model}} · {{dim}}-dim",
+        "embed_model_runs_locally": "{{model}} · {{dim}}-dim · se ejecuta localmente en el proceso",
         "embeddings": "Embeddings",
         "entries": "entradas",
         "episodic_context_injected_per_message": "Contexto episódico (inyectado por mensaje)",

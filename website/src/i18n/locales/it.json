@@ -3763,6 +3763,8 @@
         "clear": "Cancella",
         "click_preview_to_see_what_gets_injected_into_pro": "Clicca su Anteprima per vedere cosa viene inserito nei prompt.",
         "delete": "Elimina",
+        "embed_model_label": "{{model}} · {{dim}}-dim",
+        "embed_model_runs_locally": "{{model}} · {{dim}}-dim · viene eseguito localmente nel processo",
         "embeddings": "Embedding",
         "entries": "voci",
         "episodic_context_injected_per_message": "Contesto episodico (inserito per messaggio)",

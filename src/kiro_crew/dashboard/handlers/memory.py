@@ -320,6 +320,11 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
             # Legacy field names kept for frontend compatibility.
             "ollama_installed": True,  # n/a — runtime is vendored/always present
             "model_available": model_present,
+            # Model disclosure: the stable identifier of the embedding model
+            # producing vectors + its output dimensionality. Surfaced so the
+            # Memory tab can show users exactly which model runs locally.
+            "model_id": embedder.model_id,
+            "model_dim": embedder.dim,
             # "healthy" = embeddings usable now or ready to lazily activate:
             # the model file being present is what matters — the in-memory
             # load happens automatically on first embed.

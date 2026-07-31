@@ -32,6 +32,8 @@ interface EmbeddingStatus {
   setup_error?: string
   provider?: string
   model_available?: boolean
+  model_id?: string
+  model_dim?: number
   server_healthy?: boolean
   download_step?: string
   download_attempt?: number
@@ -96,6 +98,33 @@ export function semanticValueText(e: { value_json?: unknown }): string {
   let val: unknown = e?.value_json
   if (typeof val === 'string') { try { val = JSON.parse(val) } catch { /* raw string, keep as-is */ } }
   return typeof val === 'object' && val !== null ? JSON.stringify(val, null, 2) : String(val ?? '')
+}
+
+// Turn a raw embedding model id (e.g. "qwen3-embedding:0.6b") into a friendly
+// display name (e.g. "Qwen3-Embedding-0.6B") for disclosure in the UI. Falls
+// back to the raw id for any shape it doesn't recognise, so a future model
+// swap still discloses *something* rather than silently blanking.
+export function formatEmbedModel(modelId?: string): string {
+  const raw = (modelId ?? '').trim()
+  if (!raw) return ''
+  const [base, tag] = raw.split(':')
+  const pretty = base.split('-').map(p => p ? p[0].toUpperCase() + p.slice(1) : p).join('-')
+  return tag ? `${pretty}-${tag.toUpperCase()}` : pretty
+}
+
+// Build the embedding-model disclosure shown under the EMBEDDINGS badge:
+// a short label (friendly model name + vector dimension) plus a fuller tooltip.
+// The model name is a technical identifier; the surrounding copy is localized.
+// Returns null when no model id is known, so the disclosure line is omitted.
+export function embedModelDisclosure(status?: EmbeddingStatus | null): { label: string; title: string } | null {
+  const name = formatEmbedModel(status?.model_id)
+  if (!name) return null
+  const dim = status?.model_dim
+  const label = dim ? i18nT('pages.overview.vectorMemoryCard.embed_model_label', { model: name, dim }) : name
+  const title = dim
+    ? i18nT('pages.overview.vectorMemoryCard.embed_model_runs_locally', { model: status?.model_id, dim })
+    : String(status?.model_id ?? '')
+  return { label, title }
 }
 
 export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: { onActiveChange?: (active: boolean) => void; onMigratedChange?: (migrated: boolean) => void }) {
@@ -332,6 +361,11 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
                     })()
                 }
               </div>
+              {embedModelDisclosure(embStatus) && (
+                <div className="text-muted text-[11px] mt-1 font-normal truncate" title={embedModelDisclosure(embStatus)!.title}>
+                  {embedModelDisclosure(embStatus)!.label}
+                </div>
+              )}
             </div>
           </div>
           <div className="flex gap-2 flex-wrap items-center">

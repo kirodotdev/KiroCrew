@@ -3684,6 +3684,8 @@
         "clear": "清除",
         "click_preview_to_see_what_gets_injected_into_pro": "点击“预览”查看会注入提示词的内容。",
         "delete": "删除",
+        "embed_model_label": "{{model}} · {{dim}}-dim",
+        "embed_model_runs_locally": "{{model}} · {{dim}}-dim · 本地进程内运行",
         "embeddings": "嵌入",
         "entries": "条记录",
         "episodic_context_injected_per_message": "情景上下文（按消息注入）",

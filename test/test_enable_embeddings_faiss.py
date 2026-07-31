@@ -303,6 +303,8 @@ class TestEmbeddingStatusEndpoint:
         cfg.memory.embedding_provider = "llama_cpp"
         embedder = MagicMock()
         embedder.is_ready.return_value = True
+        embedder.model_id = "qwen3-embedding:0.6b"
+        embedder.dim = 1024
         mgr = MagicMock()
         mgr.status = {"step": "downloading", "error": "", "attempt": 2}
 
@@ -321,6 +323,10 @@ class TestEmbeddingStatusEndpoint:
         # companion change.
         assert body["provider"] == "ollama"
         assert body["model_available"] is False
+        # Model disclosure: the Memory tab surfaces exactly which embedding
+        # model runs locally + its vector dimensionality.
+        assert body["model_id"] == "qwen3-embedding:0.6b"
+        assert body["model_dim"] == 1024
         assert body["server_healthy"] is True
         # "downloading" maps to itself in the legacy setup_step vocabulary;
         # download_step/download_attempt expose the raw manager state.
@@ -338,6 +344,8 @@ class TestEmbeddingStatusEndpoint:
         cfg.memory.embedding_provider = "llama_cpp"
         embedder = MagicMock()
         embedder.is_ready.return_value = False
+        embedder.model_id = "qwen3-embedding:0.6b"
+        embedder.dim = 1024
         mgr = MagicMock()
         mgr.status = {"step": "failed", "error": "sha256 mismatch", "attempt": 6}
 

@@ -3723,6 +3723,8 @@
         "clear": "সাফ করুন",
         "click_preview_to_see_what_gets_injected_into_pro": "প্রম্পটে কী যোগ করা হয় তা দেখতে প্রিভিউ ক্লিক করুন।",
         "delete": "মুছুন",
+        "embed_model_label": "{{model}} · {{dim}}-dim",
+        "embed_model_runs_locally": "{{model}} · {{dim}}-dim · স্থানীয়ভাবে ইন-প্রসেসে চলে",
         "embeddings": "এমবেডিং",
         "entries": "এন্ট্রি",
         "episodic_context_injected_per_message": "এপিসোডিক কনটেক্সট (প্রতি বার্তায় যোগ করা হয়)",

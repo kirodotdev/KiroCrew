@@ -3723,6 +3723,8 @@
         "clear": "Leeren",
         "click_preview_to_see_what_gets_injected_into_pro": "Klicken Sie auf „Vorschau“, um zu sehen, was in Prompts eingefügt wird.",
         "delete": "Löschen",
+        "embed_model_label": "{{model}} · {{dim}}-dim",
+        "embed_model_runs_locally": "{{model}} · {{dim}}-dim · läuft lokal im Prozess",
         "embeddings": "Embeddings",
         "entries": "Einträge",
         "episodic_context_injected_per_message": "Episodischer Kontext (pro Nachricht eingefügt)",

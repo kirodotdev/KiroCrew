@@ -3723,6 +3723,8 @@
         "clear": "साफ़ करें",
         "click_preview_to_see_what_gets_injected_into_pro": "प्रॉम्प्ट में क्या इंजेक्ट होता है यह देखने के लिए 'पूर्वावलोकन' पर क्लिक करें।",
         "delete": "हटाएँ",
+        "embed_model_label": "{{model}} · {{dim}}-dim",
+        "embed_model_runs_locally": "{{model}} · {{dim}}-dim · स्थानीय रूप से इन-प्रोसेस में चलता है",
         "embeddings": "एम्बेडिंग",
         "entries": "एंट्री",
         "episodic_context_injected_per_message": "एपिसोडिक कॉन्टेक्स्ट (प्रति संदेश इंजेक्ट)",
