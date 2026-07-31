@@ -1,0 +1,89 @@
+{
+  "name": "pptx-maker",
+  "version": "0.3.0",
+  "displayName": "PPTX Maker",
+  "description": "Describe the deck you want in chat and get a real .pptx back. An agent interviews you, writes a brief, an outline and an art direction, then composes every slide and generates the file \u2014 and you watch each deliverable appear in a live preview beside the conversation. Slides render as animated SVG as they are built, so you can see a deck take shape instead of waiting for a download. Reusable styles and .pptx templates let the same content come out looking like three different presentations.",
+  "author": "sktok",
+  "license": "MIT-0",
+  "tags": [
+    "pptx",
+    "presentation",
+    "slides",
+    "productivity",
+    "documents"
+  ],
+  "highlights": [
+    "Chat your way to a finished .pptx \u2014 Spec mode plans it carefully, Vibe mode turns a URL or pasted text straight into slides",
+    "Live preview of every deliverable: brief, outline, art direction, then slides as animated SVG while they compose",
+    "Styles set the visual mood and .pptx templates set the structure, so one deck can be re-skinned without rewriting content",
+    "Import your own HTML style or existing .pptx template and the agent follows its colours, fonts and layouts",
+    "Open the finished file or reveal its folder without leaving the dashboard",
+    "Wraps the public spec-driven-presentation-maker engine, fetched at a sha256-pinned version; nothing to install by hand"
+  ],
+  "defaultEnabled": false,
+  "agents": [
+    "agents/sdpm-spec.json",
+    "agents/sdpm-composer.json",
+    "agents/sdpm-vibe.json",
+    "agents/sdpm-style.json"
+  ],
+  "permissions": {
+    "api": [
+      "/api/apps/pptx-maker",
+      "/api/apps/pptx-maker/*"
+    ],
+    "mcpTools": [
+      "@sdpm/analyze_template",
+      "@sdpm/apply_style",
+      "@sdpm/code_to_slide",
+      "@sdpm/generate_pptx",
+      "@sdpm/grid",
+      "@sdpm/import_attachment",
+      "@sdpm/init_presentation",
+      "@sdpm/list_asset_sources",
+      "@sdpm/list_guides",
+      "@sdpm/list_styles",
+      "@sdpm/list_templates",
+      "@sdpm/list_workflows",
+      "@sdpm/measure_slides",
+      "@sdpm/pptx_to_json",
+      "@sdpm/read_examples",
+      "@sdpm/read_guides",
+      "@sdpm/read_workflows",
+      "@sdpm/run_python",
+      "@sdpm/run_style_python",
+      "@sdpm/search_assets"
+    ],
+    "network": true,
+    "storage": true
+  },
+  "dependencies": {
+    "optionalCommands": [
+      "soffice",
+      "pdftoppm"
+    ]
+  },
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/pptx-maker",
+        "label": "PPTX Maker",
+        "icon": "Presentation"
+      }
+    ]
+  },
+  "platform": {
+    "os": [
+      "macos",
+      "linux"
+    ]
+  },
+  "iconUrl": "/app-assets/pptx-maker/icon.svg",
+  "heroImage": "/app-assets/pptx-maker/hero-light.svg",
+  "heroImageDark": "/app-assets/pptx-maker/hero-dark.svg",
+  "heroImageDetail": "/app-assets/pptx-maker/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/pptx-maker/hero-detail-dark.svg"
+}

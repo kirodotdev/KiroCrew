@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" width="480" height="270" role="img" aria-label="PPTX Maker">
+  <defs>
+    <linearGradient id="pm-bg-d" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#0f172e"/>
+    </linearGradient>
+    <linearGradient id="pm-slide-d" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#161f33"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="270" rx="12" fill="url(#pm-bg-d)"/>
+  <circle cx="58" cy="44" r="22" fill="#4338ca" opacity="0.4"/>
+  <circle cx="428" cy="228" r="30" fill="#6366f1" opacity="0.25"/>
+
+  <g transform="translate(96,58)">
+    <rect x="26" y="26" width="196" height="126" rx="8" fill="#312e81" stroke="#4338ca" stroke-width="1.2" opacity="0.8"/>
+    <rect x="13" y="13" width="196" height="126" rx="8" fill="#2e1065" stroke="#4338ca" stroke-width="1.2"/>
+    <rect x="0" y="0" width="196" height="126" rx="8" fill="url(#pm-slide-d)" stroke="#818cf8" stroke-width="2"/>
+
+    <rect x="16" y="16" width="86" height="9" rx="4.5" fill="#818cf8"/>
+    <rect x="16" y="34" width="140" height="5" rx="2.5" fill="#3730a3"/>
+    <rect x="16" y="45" width="112" height="5" rx="2.5" fill="#312e81"/>
+
+    <rect x="16" y="66" width="24" height="42" rx="3" fill="#1e3a8a"/>
+    <rect x="46" y="78" width="24" height="30" rx="3" fill="#14532d"/>
+    <rect x="76" y="71" width="24" height="37" rx="3" fill="#78350f"/>
+    <rect x="106" y="60" width="24" height="48" rx="3" fill="#831843"/>
+
+    <rect x="142" y="62" width="40" height="46" rx="4" fill="none" stroke="#818cf8" stroke-width="1.4" stroke-dasharray="4 3" opacity="0.9"/>
+    <path d="M176,104 L176,122 L182,116 L187,127 L191,125 L186,114 L194,113 Z" fill="#a5b4fc"/>
+  </g>
+
+  <g transform="translate(330,74)">
+    <rect x="0" y="0" width="104" height="26" rx="13" fill="#1e293b" opacity="0.95"/>
+    <rect x="12" y="11" width="58" height="4.5" rx="2.25" fill="#4338ca"/>
+    <rect x="8" y="36" width="88" height="26" rx="13" fill="#4f46e5" opacity="0.95"/>
+    <rect x="20" y="47" width="48" height="4.5" rx="2.25" fill="#c7d2fe"/>
+    <rect x="0" y="72" width="104" height="26" rx="13" fill="#1e293b" opacity="0.95"/>
+    <rect x="12" y="83" width="70" height="4.5" rx="2.25" fill="#4338ca"/>
+  </g>
+</svg>

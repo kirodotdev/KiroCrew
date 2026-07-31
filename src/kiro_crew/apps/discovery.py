@@ -56,6 +56,16 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     if backend_d:
         d["backend"] = backend_d
 
+    # Agents and skills. These are typed fields rather than ``extra``, so they
+    # have to be copied explicitly — omitting them silently stripped both from
+    # the persisted ``app.json``, and ``bridges.register_app`` re-reads that
+    # stripped file, so a builtin's declared agents were never symlinked into
+    # ``~/.kiro/agents`` and its skills were never registered.
+    if manifest.agents:
+        d["agents"] = list(manifest.agents)
+    if manifest.skills:
+        d["skills"] = list(manifest.skills)
+
     # MCP servers
     if manifest.mcpServers:
         d["mcpServers"] = manifest.mcpServers

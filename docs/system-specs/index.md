@@ -20,10 +20,13 @@ Load relevant module specs before making changes to that component. Read common 
 | [knowledge](modules/knowledge.md) | Knowledge Library ingest (FileReader/SUPPORTED formats incl. .org), folder watcher, LLMPool workers (sweep-shielded) |
 | [learn-cron-dashboard](modules/learn-cron-dashboard.md) | Self-learning, cron scheduler, web dashboard |
 | [mcp-apps](modules/mcp-apps.md) | SEP-1865 interactive MCP App rendering via gatewayd: marker grammar, spool schema v1 (enforced), `app-call` frame + `/api/mcp-apps/call` authorization ladder, sandboxed-iframe CSP model, single-consume slot-bound renders, 24h TTL sweep |
+| [meetings](modules/meetings.md) | Opt-in builtin app: live meeting transcription over the gateway's own STT, a batching multi-agent dispatcher, an action-item review gate, and the task + calendar (`.ics`) provider seams |
 | [memory-skills-hooks](modules/memory-skills-hooks.md) | Memory files, skill loading, message/tool hooks |
 | [messaging](modules/messaging.md) | Channel-neutral messaging transport: MessagingTransport/TurnDriver approval ladder/Renderer + ChannelLink session-key namespacing (gated via messaging.use_transport) |
 | [metrics](modules/metrics.md) | OpenTelemetry-based metrics facade: namespace/attribute guardrails, redaction/privacy contract, local-first JSONL sink, default-OFF consent model (+ `KIROCREW_TELEMETRY` env opt-in), bounded local retention (age + total-size caps), opt-in OTLP egress (off by default), privacy-safe gateway boot-to-ready + bounded-cardinality per-route latency metrics |
+| [papyrus](modules/papyrus.md) | Opt-in builtin app: LaTeX paper editor with live PDF preview and an embedded co-author chat — off-loop compile pipeline (`-no-shell-escape`), clickable compiler diagnostics, path-contained project store, git clone/commit/pull/push |
 | [persistent-agent-channels](modules/persistent-agent-channels.md) | Multi-agent collaboration channels |
+| [pptx-maker](modules/pptx-maker.md) | Opt-in builtin app: chat-driven `.pptx` generation over a pinned public engine, live deliverable viewer, style/template library, path-contained artifact serving |
 | [providers](modules/providers.md) | LLM provider abstraction (KiroACP / kiro-cli — the sole provider) |
 | [security](modules/security.md) | Defense-in-depth: sandbox, XPIA hardening, auth, denied commands |
 | [sel](modules/sel.md) | Security Event Log — immutable audit trail for tool invocations |

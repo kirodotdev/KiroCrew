@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" width="480" height="270" role="img" aria-label="Papyrus">
+  <defs>
+    <linearGradient id="pap-bg-d" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1b1712"/>
+      <stop offset="100%" stop-color="#241d15"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="270" rx="12" fill="url(#pap-bg-d)"/>
+  <circle cx="52" cy="38" r="22" fill="#4a3a20" opacity="0.5"/>
+  <circle cx="430" cy="238" r="30" fill="#5c4726" opacity="0.35"/>
+
+  <!-- LEFT PANE: the LaTeX source -->
+  <rect x="26" y="30" width="196" height="182" rx="8" fill="#201b14" stroke="#4a3d28" stroke-width="1.5"/>
+  <rect x="26" y="30" width="196" height="20" rx="8" fill="#2c2418"/>
+  <rect x="26" y="44" width="196" height="6" fill="#2c2418"/>
+  <text x="38" y="45" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#d9b477">main.tex</text>
+  <rect x="26" y="50" width="20" height="162" fill="#251e16"/>
+  <g fill="#6b5836" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7">
+    <text x="32" y="65">1</text><text x="32" y="79">2</text><text x="32" y="93">3</text>
+    <text x="32" y="107">4</text><text x="32" y="121">5</text><text x="32" y="135">6</text>
+    <text x="32" y="149">7</text><text x="32" y="163">8</text><text x="32" y="177">9</text>
+  </g>
+  <g>
+    <rect x="54" y="59" width="52" height="6" rx="2" fill="#e8a94f"/>
+    <rect x="110" y="59" width="34" height="6" rx="2" fill="#9d8f74" opacity="0.5"/>
+    <rect x="54" y="73" width="40" height="6" rx="2" fill="#e8a94f"/>
+    <rect x="54" y="87" width="88" height="6" rx="2" fill="#c4b79d" opacity="0.6"/>
+    <rect x="54" y="101" width="118" height="6" rx="2" fill="#c4b79d" opacity="0.6"/>
+    <rect x="54" y="115" width="64" height="6" rx="2" fill="#c4b79d" opacity="0.6"/>
+    <rect x="54" y="129" width="46" height="6" rx="2" fill="#e8a94f"/>
+    <rect x="104" y="129" width="58" height="6" rx="2" fill="#5ec59a" opacity="0.75"/>
+    <rect x="54" y="143" width="104" height="6" rx="2" fill="#c4b79d" opacity="0.6"/>
+    <rect x="54" y="157" width="76" height="6" rx="2" fill="#c4b79d" opacity="0.6"/>
+    <rect x="54" y="171" width="54" height="6" rx="2" fill="#e8a94f"/>
+  </g>
+  <rect x="112" y="169" width="1.6" height="10" fill="#e8a94f"/>
+
+  <!-- RIGHT PANE: the rendered PDF page (paper stays white in dark mode) -->
+  <rect x="246" y="22" width="150" height="198" rx="4" fill="#f6f3ec" stroke="#4a3d28" stroke-width="1.5"/>
+  <rect x="252" y="28" width="138" height="186" rx="2" fill="#ffffff"/>
+  <rect x="278" y="40" width="86" height="7" rx="2" fill="#4a4336"/>
+  <rect x="294" y="52" width="54" height="4" rx="2" fill="#8a8172"/>
+  <g fill="#c2b9a8">
+    <rect x="262" y="70" width="58" height="3.4" rx="1.7"/>
+    <rect x="262" y="78" width="58" height="3.4" rx="1.7"/>
+    <rect x="262" y="86" width="44" height="3.4" rx="1.7"/>
+    <rect x="262" y="98" width="58" height="3.4" rx="1.7"/>
+    <rect x="262" y="106" width="52" height="3.4" rx="1.7"/>
+    <rect x="326" y="70" width="58" height="3.4" rx="1.7"/>
+    <rect x="326" y="78" width="58" height="3.4" rx="1.7"/>
+    <rect x="326" y="86" width="50" height="3.4" rx="1.7"/>
+  </g>
+  <rect x="272" y="120" width="98" height="18" rx="3" fill="#f4efe2"/>
+  <rect x="284" y="127" width="14" height="4" rx="2" fill="#7a705d"/>
+  <rect x="302" y="127" width="6" height="4" rx="2" fill="#c1863a"/>
+  <rect x="312" y="127" width="44" height="4" rx="2" fill="#7a705d"/>
+  <rect x="262" y="150" width="122" height="40" rx="3" fill="#f1ece0" stroke="#ded4bd" stroke-width="1"/>
+  <path d="M270 182 L288 166 L302 176 L318 156 L336 172 L354 160 L376 178" fill="none" stroke="#2f7d5c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#c2b9a8">
+    <rect x="262" y="196" width="100" height="3.4" rx="1.7"/>
+    <rect x="262" y="204" width="70" height="3.4" rx="1.7"/>
+  </g>
+
+  <!-- co-author bubble -->
+  <g transform="translate(30,224)">
+    <rect width="186" height="30" rx="8" fill="#201b14" stroke="#4a3d28" stroke-width="1.5"/>
+    <circle cx="18" cy="15" r="7" fill="#e8a94f"/>
+    <path d="M15 15 L21 15 M18 12 L18 18" stroke="#201b14" stroke-width="1.6" stroke-linecap="round"/>
+    <rect x="33" y="9" width="112" height="5" rx="2.5" fill="#5a4c33"/>
+    <rect x="33" y="18" width="76" height="4" rx="2" fill="#453a26"/>
+  </g>
+</svg>

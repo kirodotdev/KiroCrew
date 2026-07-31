@@ -465,9 +465,20 @@ function buildThemeCss(vars: Record<string, string>, mode: 'dark' | 'light'): st
 /** Re-clone every <script> element under `root` so the iframe re-parses and
  * executes them. Browsers do not execute scripts that came in via DOMParser
  * or createContextualFragment — they have to be created via createElement
- * to flag them as parser-inserted. This is the same dance React does for
- * dangerouslySetInnerHTML script content. */
-function recloneScripts(root: ParentNode, doc: Document): void {
+ * to flag them as parser-inserted. This is the same dance React does when it
+ * injects raw markup containing a script.
+ *
+ * Exported so the non-obvious "not parser-inserted" reason is documented in
+ * exactly one place. Callers: the widget/artifact builder below, where running
+ * the LLM's own <script> IS the feature (Chart.js, D3).
+ *
+ * NOT a requirement of adopting untrusted HTML — the opposite. Adopting via
+ * createContextualFragment leaves scripts inert, and calling this is an explicit
+ * decision to make them live. The Meetings sketch frame used to call it and
+ * deliberately does NOT any more: model script in that frame was a BLOCKING
+ * DNS-prefetch exfiltration channel, and it strips scripts instead (see
+ * apps/meetings/lib/sketchSrcdoc.ts). Do not "restore" that call. */
+export function recloneScripts(root: ParentNode, doc: Document): void {
   const scripts = Array.from(root.querySelectorAll('script'))
   for (const oldScript of scripts) {
     const newScript = doc.createElement('script')

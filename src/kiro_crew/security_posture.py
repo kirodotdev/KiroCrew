@@ -401,6 +401,19 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cloud/connect.py",
         "cloud/login.py",
         "embeddings.py",
+        # Same shape as embeddings.py above: papyrus's managed-compiler download
+        # redacts the DOWNLOAD URL (userinfo + signed query) before logging it, so a
+        # mirrored/presigned override cannot leak credentials into a log. Nothing
+        # here reaches a user-facing surface — the app's egress paths (compile log,
+        # git stderr) redact separately in papyrus/backend/routes.py.
+        "apps/builtins/papyrus/backend/tectonic.py",
+        # Same shape again: pptx-maker's digest-pinned engine download redacts the
+        # DOWNLOAD URL (userinfo + signed query) before logging it, so a
+        # mirrored/presigned KIROCREW_PPTX_ENGINE_URL override cannot leak
+        # credentials into a log. Nothing here reaches a user-facing surface — the
+        # app's own egress path (model-authored deck names and brief previews)
+        # redacts separately in pptx_maker/backend/decks.py.
+        "apps/builtins/pptx_maker/backend/engine_source.py",
         # Redacts INBOUND attacker-controllable provider metadata before it is
         # stored/displayed — a sanitizer on the way in, not an output boundary.
         "dashboard/handlers/mcp_discover.py",
@@ -431,6 +444,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/code_review_sage/sage_lib/review_driver.py",
         "apps/builtins/dev_fleet/server.py",
         "apps/builtins/issue_radar/backend/routes.py",
+        "apps/builtins/meetings/backend/domain/session.py",
+        "apps/builtins/meetings/backend/providers/calendar.py",
+        "apps/builtins/meetings/backend/providers/tasks.py",
+        "apps/builtins/meetings/backend/routes/agents.py",
+        "apps/builtins/meetings/backend/routes/meeting_lifecycle.py",
+        "apps/builtins/meetings/backend/routes/tasks.py",
+        "apps/builtins/papyrus/backend/routes.py",
+        "apps/builtins/pptx_maker/backend/decks.py",
+        "apps/builtins/pptx_maker/backend/routes.py",
         "apps/builtins/workflows/server.py",
         # Bundled dev-skill script: prints CI/review findings to a
         # developer terminal, not an agent-output egress path.

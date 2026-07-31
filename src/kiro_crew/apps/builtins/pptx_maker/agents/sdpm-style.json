@@ -1,0 +1,27 @@
+{
+  "name": "sdpm-style",
+  "description": "Style creator. Builds a reusable presentation style guide (an HTML document) through conversation.",
+  "mcpServers": {
+    "sdpm": {
+      "command": "uv",
+      "args": ["run", "--directory", "{ENGINE_MCP_DIR}", "python", "server_acp.py"],
+      "env": { "PYTHONPATH": "" },
+      "timeout": 120000
+    }
+  },
+  "prompt": "file://{ENGINE_ROOT}/mcp-local/acp-agent-prompts/style-creator.md",
+  "resources": [
+    "file://{ENGINE_ROOT}/skill/references/workflows/create-style.md",
+    "file://{APP_PROMPTS}/spec-studio.md"
+  ],
+  "tools": [
+    "@sdpm/run_style_python", "@sdpm/list_styles", "@sdpm/analyze_template",
+    "read", "glob", "grep", "web_fetch", "web_search"
+  ],
+  "allowedTools": [
+    "@sdpm/run_style_python", "@sdpm/list_styles", "@sdpm/analyze_template",
+    "read", "glob", "grep", "web_fetch", "web_search"
+  ],
+  "welcomeMessage": "What style would you like to create?",
+  "model": "auto"
+}

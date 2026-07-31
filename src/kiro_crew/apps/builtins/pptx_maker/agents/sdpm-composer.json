@@ -1,0 +1,38 @@
+{
+  "name": "sdpm-composer",
+  "description": "Slide composer for the presentation engine. Writes slide JSON, builds the .pptx, measures it and polishes autonomously. Runs as a sub-agent with no user interaction.",
+  "mcpServers": {
+    "sdpm": {
+      "command": "uv",
+      "args": ["run", "--directory", "{ENGINE_MCP_DIR}", "python", "server_acp.py"],
+      "env": { "PYTHONPATH": "" },
+      "timeout": 120000
+    }
+  },
+  "prompt": "file://{ENGINE_ROOT}/mcp-local/acp-agent-prompts/composer.md",
+  "resources": [
+    "file://{ENGINE_ROOT}/skill/references/workflows/create-new-2-compose.md",
+    "file://{ENGINE_ROOT}/skill/references/workflows/create-new-3-review.md",
+    "file://{ENGINE_ROOT}/skill/references/workflows/slide-json-spec.md",
+    "file://{ENGINE_ROOT}/skill/references/guides/grid.md"
+  ],
+  "tools": [
+    "@sdpm/analyze_template", "@sdpm/apply_style", "@sdpm/code_to_slide",
+    "@sdpm/generate_pptx", "@sdpm/grid", "@sdpm/import_attachment",
+    "@sdpm/init_presentation", "@sdpm/list_asset_sources", "@sdpm/list_guides",
+    "@sdpm/list_styles", "@sdpm/list_templates", "@sdpm/list_workflows",
+    "@sdpm/measure_slides", "@sdpm/pptx_to_json", "@sdpm/read_examples",
+    "@sdpm/read_guides", "@sdpm/read_workflows", "@sdpm/run_python",
+    "@sdpm/search_assets", "read", "glob", "grep"
+  ],
+  "allowedTools": [
+    "@sdpm/analyze_template", "@sdpm/apply_style", "@sdpm/code_to_slide",
+    "@sdpm/generate_pptx", "@sdpm/grid", "@sdpm/import_attachment",
+    "@sdpm/init_presentation", "@sdpm/list_asset_sources", "@sdpm/list_guides",
+    "@sdpm/list_styles", "@sdpm/list_templates", "@sdpm/list_workflows",
+    "@sdpm/measure_slides", "@sdpm/pptx_to_json", "@sdpm/read_examples",
+    "@sdpm/read_guides", "@sdpm/read_workflows", "@sdpm/search_assets",
+    "read", "glob", "grep"
+  ],
+  "model": "auto"
+}

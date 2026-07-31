@@ -116,6 +116,24 @@ for mod in ["numpy", "pysqlite3", "lxml"]:
     except Exception:
         pass
 
+# The `uv` executable, which PPTX Maker uses to build its presentation engine's
+# virtualenv. It must be added EXPLICITLY: the `uv` PyPI package ships the binary
+# into the interpreter's *scripts* directory (bin/ or Scripts/) rather than inside
+# the importable package, and `uv.find_uv_bin()` locates it by walking
+# `sysconfig` script paths. A PyInstaller bundle has no such directory and no
+# site-packages, so without this the DMG build would resolve no uv at all and the
+# engine could never be provisioned — the exact "user must install something by
+# hand" failure that bundling uv is meant to remove. Staged next to the binary,
+# where `pptx_maker.backend.provision` also probes.
+try:
+    import uv as _uv_pkg
+
+    binaries.append((_uv_pkg.find_uv_bin(), "."))
+except Exception:
+    # No uv in the build environment: the desktop build still succeeds, and the
+    # PPTX Maker engine reports itself unprovisioned rather than crashing.
+    pass
+
 block_cipher = None
 
 # Entry point is __main__.py, NOT cli.py: __main__ runs _ensure_ssl_certs()

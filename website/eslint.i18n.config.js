@@ -39,6 +39,30 @@ export default [
       'src/test/**',
       // Generated and data-only.
       'src/i18n/locales/**',
+      // Agent-prompt modules: text handed to a MODEL, never rendered to the user.
+      // The skill names, file paths and role framing they carry are English
+      // identifiers the agent matches on, so translating them would degrade
+      // instruction-following while changing nothing anyone sees. Scoped to the
+      // `*Prompt.ts` filename convention so the exemption is declared by where a
+      // string lives, not hidden in a content regex — a file named this way holds
+      // ONLY prompt text, and its user-visible siblings stay fully gated.
+      'src/apps/*/companionPrompt.ts',
+      // The Meetings sketch-frame srcdoc builder. Same rationale as the prompt
+      // modules above, one step further from the user: every literal in it is
+      // handed to a PARSER, never to a person — CSP directives, a DOCTYPE, the
+      // frame's own CSS, and a fixed JS bootstrap. Translating any of them would
+      // not change a word anyone reads, it would break the policy or the diagram.
+      // The file carries no user-visible copy at all (its only strings shown to
+      // anyone are the i18nT keys in AgentPanel.tsx, which stays fully gated).
+      //
+      // Deliberately ONE exact path rather than a `*Srcdoc.ts` glob or a
+      // CSP-shaped content regex. A content regex was measured and rejected: a
+      // `^(default|script|img|…)-src\b` exclusion retroactively drops
+      // lib/mcpAppSrcdoc.ts 16 → 8 and lib/widgetSrcdoc.ts 21 → 17, and a
+      // ratchet that silently hands back other files' debt is worse than the
+      // false positive it fixes. A path this narrow cannot exempt a future file
+      // that does hold copy.
+      'src/apps/meetings/lib/sketchSrcdoc.ts',
     ],
     linterOptions: {
       // Every `eslint-disable` comment in this codebase targets the MAIN config's
@@ -124,6 +148,30 @@ export default [
               // which excluded most English prose and hid five of six strings in a
               // six-string probe file.
               '^[^A-Za-z]*$',
+              // A CATALOG KEY is not copy — it is the pointer TO the copy. These are
+              // the dotted ids passed to `i18nT()` indirectly: collected in a
+              // code->key lookup map, or handed to a helper that translates them
+              // (`failureNotice(err, 'apps.x.y')`). The `callees` exclusion below only
+              // covers a literal appearing directly in an `i18nT(...)` call, so
+              // without this every indirection reads as untranslated copy — which
+              // inverts the gate, flagging the files that translate MOST carefully.
+              //
+              // ANCHORED to the catalog's real top-level namespaces rather than "any
+              // dotted lowercase token": the looser form also matched storage keys
+              // (`kirocrew.tips.lastShownAt`) and so silently shrank unrelated files'
+              // debt — a gate that quietly exempts more than it claims.
+              '^(app|appSdk|apps|components|hooks|pages)(?:\\.[a-zA-Z0-9_]+)+$',
+              // Markup and stylesheet fragments: an HTML tag or a CSS declaration
+              // block. Never user-visible copy, and the existing lowercase-CSS
+              // pattern above does not match them because they carry `<`, `>`, `{`,
+              // `}` and `!`.
+              // Requires a REAL html tag name, not merely angle brackets: the loose
+              // `<[a-zA-Z...]` form also exempted the placeholder
+              // `'<your-cloud-desktop-host>'`, which IS user-visible copy.
+              '^\\s*<(?:/|!)?(?:!DOCTYPE|html|head|body|meta|style|script|link|title|div|span|p|br)\\b',
+              '[{;]\\s*[a-z-]+\\s*:\\s*[^;]+[;}]',
+              // A JSON payload literal — a wire frame, not prose.
+              '^\\s*\\{\\s*"[a-zA-Z_$][\\w$]*"\\s*:',
             ],
           },
 
@@ -149,6 +197,12 @@ export default [
               // regexes, so a bare 't' would exclude every callee whose name contains
               // the letter t.
               '^i18nT$', '^t$',
+              // App API helpers take an ENDPOINT PATH, and the per-app `request`
+              // wrappers are the only thing standing between a route string and the
+              // fetch. Same class as the `fetch` exclusion two lines up.
+              '^request$', '^failureNotice$',
+              // Monaco/DOMPurify/WebSocket take configuration and protocol frames.
+              '(^|\\.)sanitize$', '(^|\\.)send$',
             ],
           },
 
@@ -172,6 +226,10 @@ export default [
               'id', 'key', 'navId', 'slug', 'type', 'kind', 'code', 'name',
               'className', 'icon', 'path', 'route', 'href', 'url', 'method',
               'event', 'variant', 'color', 'align', 'position', 'placement',
+              // Monaco tokenizer/`languages` config: `next: '@pop'`, `token`, and the
+              // language-id lists are grammar directives, not copy.
+              'next', 'token', 'bracket', 'include', 'keywords', 'aliases',
+              'defaultToken', 'tokenPostfix',
             ],
           },
 
