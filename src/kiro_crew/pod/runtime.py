@@ -199,8 +199,62 @@ def pod_home(cfg: PodConfig, name: str) -> Path:
 # --------------------------------------------------------------------------- #
 # systemd --user helpers.
 # --------------------------------------------------------------------------- #
+def _session_runtime_dir() -> str:
+    """The per-user runtime directory ``systemctl --user`` resolves against.
+
+    ``XDG_RUNTIME_DIR`` when the caller has one, else systemd's conventional
+    ``/run/user/<uid>``. ``os.getuid`` is absent on Windows; pods are Linux-only
+    (:func:`require_systemd`) so that branch is unreachable at runtime, but the
+    ``getattr`` keeps this module importable there.
+    """
+    explicit = os.environ.get("XDG_RUNTIME_DIR")
+    if explicit:
+        return explicit
+    uid = getattr(os, "getuid", lambda: -1)()
+    return f"/run/user/{uid}"
+
+
+def session_bus_socket() -> str:
+    """Path of the D-Bus socket that fronts this user's systemd instance."""
+    return os.path.join(_session_runtime_dir(), "bus")
+
+
+def has_session_bus() -> bool:
+    """Whether ``systemctl --user`` can reach a per-user systemd instance.
+
+    An explicitly-set ``DBUS_SESSION_BUS_ADDRESS`` is taken at face value (the
+    caller has deliberately pointed somewhere, possibly not a filesystem path);
+    otherwise the conventional socket must actually exist.
+    """
+    if os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        return True
+    return os.path.exists(session_bus_socket())
+
+
 def _systemctl_env() -> dict[str, str]:
-    return {**os.environ}
+    """Environment for ``systemctl --user``, with the session-bus pointers
+    backfilled when absent.
+
+    ``systemctl --user`` finds the per-user systemd instance through
+    ``XDG_RUNTIME_DIR`` + ``DBUS_SESSION_BUS_ADDRESS``. A process launched from
+    a systemd SYSTEM unit — which is how ``kirocrew service install`` runs the
+    gateway — inherits no login-session environment and therefore neither
+    variable, so every pod verb died with "Failed to connect to bus: No medium
+    found" even though the bus socket was present and the pod unit installed.
+
+    Only ever ADDS: an explicitly-set value always wins, so a caller that has
+    deliberately pointed at another bus is left untouched. The socket must
+    exist before we name it — if ``systemd --user`` genuinely is not running we
+    want systemctl's own diagnostic, not a failure against a path we invented.
+    """
+    env = {**os.environ}
+    runtime_dir = _session_runtime_dir()
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        sock = os.path.join(runtime_dir, "bus")
+        if os.path.exists(sock):
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={sock}"
+    env.setdefault("XDG_RUNTIME_DIR", runtime_dir)
+    return env
 
 
 def _run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
@@ -218,6 +272,13 @@ def require_systemd() -> None:
     Windows instead of the documented "report the failure" one-liner. Checked
     here — the single chokepoint every systemd call funnels through — so no verb
     can forget it.
+
+    The third gate is the session bus. :func:`_systemctl_env` backfills the bus
+    pointers when the socket exists, but when ``systemd --user`` is genuinely
+    not running (no login session and ``Linger=no``) there is nothing to point
+    at and systemctl emits a raw "Failed to connect to bus: No medium found"
+    that names neither the cause nor the fix. Translate it here, keyed on the
+    socket's absence rather than on matching systemctl's stderr.
     """
     if not IS_LINUX:
         raise PodError(
@@ -227,6 +288,16 @@ def require_systemd() -> None:
     if shutil.which("systemctl") is None:
         raise PodError(
             "pods require `systemctl --user`, but no `systemctl` was found on PATH."
+        )
+    if not has_session_bus():
+        uid = getattr(os, "getuid", lambda: -1)()
+        user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
+        raise PodError(
+            f"no `systemd --user` session bus for uid {uid} "
+            f"(looked for {session_bus_socket()}).\n"
+            "Pods are systemd --user units, so one is required.\n"
+            f"Fix: loginctl enable-linger {user}   "
+            "# keeps the per-user instance alive independently of login sessions"
         )
 
 

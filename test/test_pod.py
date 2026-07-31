@@ -996,10 +996,14 @@ class TestPlatformGuard:
             rt.require_systemd()
 
     def test_require_systemd_passes_on_linux_with_systemctl(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setattr(rt, "IS_LINUX", True)
         monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        # Third gate: a reachable session bus (see TestSessionBus).
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        (tmp_path / "bus").touch()
         rt.require_systemd()  # must not raise
 
     def test_systemctl_gated_before_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1040,3 +1044,166 @@ class TestPlatformGuard:
         with pytest.raises(rt.PodError):
             pod_cli._install(cfg, argparse.Namespace())
         assert wrote == []
+
+
+class TestSessionBus:
+    """``systemctl --user`` needs the per-user systemd instance's bus pointers.
+
+    A process descended from a systemd SYSTEM unit — how ``kirocrew service
+    install`` runs the gateway — inherits no login-session environment, so
+    neither ``XDG_RUNTIME_DIR`` nor ``DBUS_SESSION_BUS_ADDRESS`` is set and every
+    pod verb died with "Failed to connect to bus: No medium found" even though
+    the bus socket existed. ``_systemctl_env()`` backfills them; when the socket
+    is genuinely absent ``require_systemd()`` explains the fix instead.
+    """
+
+    @staticmethod
+    def _bus(monkeypatch: pytest.MonkeyPatch, runtime_dir: Path, *, exists: bool) -> Path:
+        """Point at *runtime_dir* as the session runtime dir, with no inherited bus."""
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        sock = runtime_dir / "bus"
+        if exists:
+            sock.touch()
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        return sock
+
+    def test_backfills_both_when_socket_present(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        sock = self._bus(monkeypatch, tmp_path / "run", exists=True)
+        env = rt._systemctl_env()
+        assert env["XDG_RUNTIME_DIR"] == str(tmp_path / "run")
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={sock}"
+
+    def test_derives_runtime_dir_from_uid_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No ``XDG_RUNTIME_DIR`` → systemd's conventional ``/run/user/<uid>``."""
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(rt.os, "getuid", lambda: 4242, raising=False)
+        assert rt._systemctl_env()["XDG_RUNTIME_DIR"] == "/run/user/4242"
+
+    def test_leaves_bus_unset_when_socket_absent(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """No socket → no invented address, so systemctl emits its own diagnostic
+        instead of failing against a path we made up."""
+        self._bus(monkeypatch, tmp_path / "run", exists=False)
+        env = rt._systemctl_env()
+        assert "DBUS_SESSION_BUS_ADDRESS" not in env
+        assert env["XDG_RUNTIME_DIR"] == str(tmp_path / "run")
+
+    def test_never_clobbers_an_explicit_bus(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A caller pointing at another bus is left alone — this only ever ADDS."""
+        self._bus(monkeypatch, tmp_path / "run", exists=True)
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/elsewhere/bus")
+        assert rt._systemctl_env()["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/elsewhere/bus"
+
+    def test_never_clobbers_an_explicit_runtime_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._bus(monkeypatch, tmp_path / "run", exists=True)
+        assert rt._systemctl_env()["XDG_RUNTIME_DIR"] == str(tmp_path / "run")
+
+    def test_has_session_bus_trusts_an_explicit_address(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An explicit address may not be a filesystem path at all — take it as given."""
+        self._bus(monkeypatch, tmp_path / "run", exists=False)
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:abstract=/tmp/dbus-abc")
+        assert rt.has_session_bus() is True
+
+    def test_require_systemd_explains_a_missing_bus(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The raw systemctl message names neither cause nor fix — ours does."""
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        sock = self._bus(monkeypatch, tmp_path / "run", exists=False)
+        monkeypatch.setenv("USER", "tester")
+        with pytest.raises(rt.PodError) as exc:
+            rt.require_systemd()
+        msg = str(exc.value)
+        assert str(sock) in msg
+        assert "loginctl enable-linger tester" in msg
+        # Keyed on the socket's absence, not on matching systemctl's stderr.
+        assert "No medium found" not in msg
+
+    def test_missing_bus_is_reported_before_any_spawn(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        self._bus(monkeypatch, tmp_path / "run", exists=False)
+        spawned: list[list[str]] = []
+        monkeypatch.setattr(rt, "_run", lambda cmd, **k: spawned.append(cmd))
+        with pytest.raises(rt.PodError):
+            rt.systemctl("list-units")
+        assert spawned == []
+
+    def test_systemctl_env_is_the_only_env_source_for_systemd_calls(self) -> None:
+        """Anti-regression: a future direct ``subprocess.run(["systemctl", ...])``
+        that forgets ``env=_systemctl_env()`` would silently reintroduce the bug,
+        so pin every systemd/journalctl spawn in the module to that one source.
+        """
+        import ast
+
+        src = Path(rt.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+
+        def _is_subprocess_run(node: ast.Call) -> bool:
+            fn = node.func
+            return (
+                isinstance(fn, ast.Attribute)
+                and fn.attr == "run"
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == "subprocess"
+            )
+
+        def _uses_systemctl_env(node: ast.Call) -> bool:
+            for kw in node.keywords:
+                if kw.arg != "env":
+                    continue
+                val = kw.value
+                return (
+                    isinstance(val, ast.Call)
+                    and isinstance(val.func, ast.Name)
+                    and val.func.id == "_systemctl_env"
+                )
+            return False
+
+        literal_systemd = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not _is_subprocess_run(node):
+                continue
+            argv = node.args[0] if node.args else None
+            if not isinstance(argv, ast.List):
+                continue
+            head = argv.elts[0] if argv.elts else None
+            if not isinstance(head, ast.Constant) or head.value not in (
+                "systemctl",
+                "journalctl",
+            ):
+                continue
+            literal_systemd += 1
+            assert _uses_systemctl_env(node), (
+                f"line {node.lineno}: {head.value} spawned without env=_systemctl_env()"
+            )
+
+        # journalctl in recent_journal is the one literal systemd spawn; if that
+        # drops to zero the scan above has stopped covering anything.
+        assert literal_systemd >= 1, "no literal systemd spawn found — scan is inert"
+        # The variable-argv chokepoint every systemctl() call funnels through.
+        chokepoint = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_run"
+        )
+        assert any(
+            _is_subprocess_run(n) and _uses_systemctl_env(n)
+            for n in ast.walk(chokepoint)
+            if isinstance(n, ast.Call)
+        ), "_run no longer passes env=_systemctl_env()"

@@ -99,6 +99,22 @@ def _current_group(user: str) -> str:
     return user
 
 
+def _current_uid(user: str) -> int | None:
+    """Numeric uid for ``user``, or ``None`` when it cannot be resolved.
+
+    Needed to point the unit at the per-user systemd runtime directory
+    (``/run/user/<uid>``). ``pwd`` is Unix-only and this module is imported on
+    Windows too, so the lookup is lazy and failure is non-fatal: the caller
+    omits the session-bus variables rather than baking in a guessed path.
+    """
+    try:
+        import pwd  # Unix-only; lazy so this module still imports on Windows.
+
+        return int(pwd.getpwnam(user).pw_uid)
+    except Exception:
+        return None
+
+
 def render_unit() -> str:
     """Render the systemd system-unit file contents.
 
@@ -106,23 +122,43 @@ def render_unit() -> str:
     has access to ``$HOME/.kiro/crew``, the user's config, etc. The PATH
     is set explicitly so subprocess invocations of git, node, etc.
     resolve the same way they would from an interactive shell.
+
+    A system unit inherits no login-session environment, so the per-user
+    systemd instance is also wired up explicitly — see the ``XDG_RUNTIME_DIR`` /
+    ``DBUS_SESSION_BUS_ADDRESS`` lines below.
     """
     bin_path = kirocrew_bin()
     user = _current_user()
     group = _current_group(user) if user else ""
     home = str(Path.home())
-    # USER is systemd-specific (launchd derives the user from the login
-    # session); everything else comes from the shared service_environment()
-    # so the two managers can never drift. Every value is double-quoted +
-    # escaped: a path or locale containing a space (e.g. an override under
-    # ``/opt/Kiro Crew/``) would otherwise be split on whitespace by systemd's
-    # tokenizer — ``ExecStart`` would try to exec the first word (203/EXEC) and
-    # an ``Environment=`` value would be truncated at the space.
     exec_start = f"{_sd_quote(bin_path)} gateway"
     env_lines = f"Environment={_sd_quote(f'USER={user}')}\n" + "".join(
         f"Environment={_sd_quote(f'{key}={value}')}\n"
         for key, value in service_environment(home).items()
     )
+    # The gateway spawns agent shells, MCP servers and crons that drive
+    # `systemctl --user` (pods). A system unit inherits no login-session
+    # environment, so without these the per-user systemd instance is
+    # unreachable and every pod command fails with "Failed to connect to bus:
+    # No medium found".
+    #
+    # Deliberately NOT in the shared service_environment(): `/run/user/<uid>` is
+    # a Linux/systemd path with no launchd equivalent, so baking it into the
+    # macOS plist would be meaningless. Same reason USER= is systemd-only above.
+    #
+    # A numeric uid is used rather than systemd's `%U` specifier: it has no
+    # specifier-expansion semantics to get wrong (and _sd_quote escapes `%` to
+    # `%%` anyway, which would defeat a specifier), and it matches how this
+    # generator already resolves user/group/home in Python.
+    uid = _current_uid(user) if user else None
+    if uid is not None:
+        env_lines += "".join(
+            f"Environment={_sd_quote(f'{key}={value}')}\n"
+            for key, value in (
+                ("XDG_RUNTIME_DIR", f"/run/user/{uid}"),
+                ("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus"),
+            )
+        )
     return (
         "[Unit]\n"
         "Description=Kiro Crew gateway (dashboard + Slack + cron)\n"

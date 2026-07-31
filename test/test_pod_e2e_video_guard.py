@@ -561,3 +561,56 @@ def test_teardown_bail_row_matches_the_summary_grep(driver, tmp_path):
     assert re.search(pattern.group(1), line), (
         f"grep pattern {pattern.group(1)!r} no longer matches a teardown row"
     )
+
+
+def test_missing_playwright_interpreter_fails_the_run():
+    """A run that captured ZERO screenshots must not report a green summary.
+
+    The FE phase used to `warn` when KIROCREW_PW_PY was unset, so the summary
+    said "N passed, 0 failed" with no evidence on disk — which is how "capture
+    is in flight" becomes a believable but false statement. It must `fail`.
+    """
+    lines = _runner_text().splitlines()
+
+    def _index(needle: str):
+        return next((i for i, ln in enumerate(lines) if needle in ln), None)
+
+    fe_branch = _index('if [ "$RUN_FE" -eq 1 ]')
+    no_interp = _index('if [ -z "$PW_PY" ] || [ ! -x "$PW_PY" ]; then')
+    no_runner = _index('elif [ ! -f "$PW_RUNNER" ]; then')
+    assert fe_branch is not None and no_interp is not None and no_runner is not None
+    assert fe_branch < no_interp < no_runner
+
+    # Both zero-screenshot branches sit between the interpreter test and the
+    # `else` that launches the driver — neither may warn.
+    launch_else = next(
+        i for i, ln in enumerate(lines) if i > no_runner and ln.strip() == "else"
+    )
+    branch = "\n".join(lines[no_interp:launch_else])
+    assert "warn " not in branch, "a zero-screenshot branch still only warns"
+    assert branch.count("fail ") == 2, "both zero-screenshot branches must fail"
+    assert "KIROCREW_PW_PY" in branch
+
+
+def test_missing_playwright_message_names_the_pinned_version_and_the_opt_out():
+    """The fix must be copy-pasteable, and the pin must match the chromium build
+    the Node Playwright MCP server has already downloaded (1.61.0 → chromium-1228);
+    any other version triggers a fresh ~170MB download."""
+    body = _runner_text()
+    assert "playwright==1.61.0" in body
+    assert "export KIROCREW_PW_PY=" in body
+    # --api-only stays the one clean way to skip the frontend phase.
+    assert "--api-only" in body
+    assert "--api-only) RUN_FE=0 ;;" in body
+
+
+def test_api_only_skips_the_whole_fe_phase():
+    """`--api-only` sets RUN_FE=0, so the FE block (and its new failures) is
+    never entered — the graceful skip survives."""
+    lines = _runner_text().splitlines()
+    assert any("--api-only) RUN_FE=0 ;;" in ln for ln in lines)
+    fe_branch = next(i for i, ln in enumerate(lines) if 'if [ "$RUN_FE" -eq 1 ]' in ln)
+    no_interp = next(
+        i for i, ln in enumerate(lines) if 'if [ -z "$PW_PY" ] || [ ! -x "$PW_PY" ]' in ln
+    )
+    assert fe_branch < no_interp, "the interpreter check escaped the RUN_FE guard"

@@ -214,6 +214,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_commands.py::_cleanup_app_crons_from_scheduler",
         "cli_doctor.py::_doctor",
         "cli_doctor.py::_doctor_mcp_tools",
+        # Read-only diagnostic: `loginctl show-user <user> -p Linger --value`,
+        # a fixed argv whose only variable is the invoking account name taken
+        # from $USER/$LOGNAME (never agent-supplied). Same class as
+        # service/linux.py::_current_group — an identity/state query the doctor
+        # makes to tell the user whether pods survive logout. No shell, no
+        # agent-influenced argument, nothing written.
+        "cli_doctor.py::_linger_enabled",
         "cli_server.py::_logs_cmd",
         "cli_server.py::_spawn_detached_gateway",
         "cli_server.py::_update",

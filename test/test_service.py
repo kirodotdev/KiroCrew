@@ -104,6 +104,77 @@ class TestLinuxUnitRendering:
         # by `systemctl --user`).
         assert "WantedBy=multi-user.target" in unit
 
+    def test_render_unit_carries_the_session_bus_environment(self, monkeypatch):
+        """A system unit inherits no login-session env, so pods (systemd --user
+        units) were unreachable from the service-installed gateway. The unit must
+        wire up the per-user systemd instance explicitly."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        gid_result = MagicMock(returncode=0, stdout="staff\n", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/usr/local/bin/kirocrew",
+        ), patch(
+            "kiro_crew.service.linux.subprocess.run", return_value=gid_result
+        ), patch.object(
+            svc_linux, "_current_uid", return_value=4242
+        ):
+            unit = svc_linux.render_unit()
+
+        assert 'Environment="XDG_RUNTIME_DIR=/run/user/4242"\n' in unit
+        assert (
+            'Environment="DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/4242/bus"\n' in unit
+        )
+        # No reordering regression: the pre-existing Environment lines survive,
+        # still inside [Service] and still ahead of the new ones.
+        assert 'Environment="USER=tester"\n' in unit
+        assert 'Environment="HOME=' in unit
+        assert 'Environment="PATH=' in unit
+        service = unit.index("[Service]")
+        install = unit.index("[Install]")
+        for key in ("HOME", "USER", "PATH", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+            at = unit.index(f'Environment="{key}=')
+            assert service < at < install, f"Environment={key} escaped [Service]"
+        assert unit.index('Environment="PATH=') < unit.index('Environment="XDG_RUNTIME_DIR=')
+
+    def test_render_unit_omits_session_bus_when_uid_unresolvable(self, monkeypatch):
+        """Rather than bake in a guessed uid, omit the pair — the pod runtime
+        backfills the same values at call time anyway."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        gid_result = MagicMock(returncode=0, stdout="staff\n", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/usr/local/bin/kirocrew",
+        ), patch(
+            "kiro_crew.service.linux.subprocess.run", return_value=gid_result
+        ), patch.object(
+            svc_linux, "_current_uid", return_value=None
+        ):
+            unit = svc_linux.render_unit()
+
+        assert "XDG_RUNTIME_DIR" not in unit
+        assert "DBUS_SESSION_BUS_ADDRESS" not in unit
+        # The rest of the unit is still well-formed.
+        assert 'Environment="PATH=' in unit
+        assert "[Install]" in unit
+
+    def test_session_bus_is_systemd_only_not_in_the_shared_environment(self):
+        """`/run/user/<uid>` is a Linux/systemd path with no launchd equivalent,
+        so it must NOT leak into the env shared with the macOS plist."""
+        from kiro_crew.service.common import service_environment
+
+        keys = set(service_environment("/home/tester"))
+        assert "XDG_RUNTIME_DIR" not in keys
+        assert "DBUS_SESSION_BUS_ADDRESS" not in keys
+
+    def test_current_uid_returns_none_for_an_unknown_user(self):
+        from kiro_crew.service import linux as svc_linux
+
+        assert svc_linux._current_uid("no-such-user-e2b9f1") is None
+
     def test_render_unit_falls_back_to_argv0_when_kirocrew_not_on_path(self, monkeypatch):
         from kiro_crew.service import linux as svc_linux
 

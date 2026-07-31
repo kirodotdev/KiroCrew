@@ -227,7 +227,18 @@ Every failure teaches the next step: no worktree → create one; no venv → aut
 no dist → build-or-`--provision`.
 
 - Playwright venv: controlled by env `KIROCREW_PW_PY`.
-  The FE phase skips gracefully if this interpreter is not executable.
+  If that interpreter is missing or not executable, the FE phase **fails** —
+  it does not skip. A run that captured zero screenshots must never report a
+  green summary. Set it up once, pinning the version that matches the chromium
+  build already on disk:
+
+  ```sh
+  python3 -m venv <path> && <path>/bin/pip install playwright==1.61.0
+  export KIROCREW_PW_PY=<path>/bin/python
+  ```
+
+  To skip the frontend phase deliberately, pass `--api-only` — that is the only
+  clean skip.
 - `--video` needs `ffmpeg` on PATH (or pointed to by `POD_E2E_FFMPEG` env).
   If absent, `.webm` is kept but no `.mp4` transcoding occurs. Recording
   finalization is time-capped (see `POD_E2E_TEARDOWN_TIMEOUT`), so `--video`

@@ -248,11 +248,23 @@ fi
 # ---------------------------------------------------------------- FE ------
 if [ "$RUN_FE" -eq 1 ] && [ "$HEALTHY" -eq 1 ]; then
   if [ -z "$PW_PY" ] || [ ! -x "$PW_PY" ]; then
-    log "SKIP: Playwright python not found (set KIROCREW_PW_PY)"
-    warn "playwright — skipped (no KIROCREW_PW_PY)"
+    # The frontend phase was REQUESTED (no --api-only) and cannot run, so it
+    # produced zero screenshots. Warning here made the run print a green
+    # summary with no evidence — which is how "capture is in flight" becomes a
+    # believable but false statement. Fail instead. Pin playwright==1.61.0: it
+    # pins chromium-1228, which the Node Playwright MCP server has already
+    # downloaded into ~/.cache/ms-playwright, so any other version triggers a
+    # fresh ~170MB browser download.
+    log "FAIL: Playwright python not found (set KIROCREW_PW_PY)"
+    log "  python3 -m venv <path> && <path>/bin/pip install playwright==1.61.0"
+    log "  export KIROCREW_PW_PY=<path>/bin/python"
+    log "  (or re-run with --api-only to skip the frontend phase deliberately)"
+    fail "playwright — no usable KIROCREW_PW_PY, so zero screenshots were captured (see fix above)"
   elif [ ! -f "$PW_RUNNER" ]; then
-    log "SKIP: pod-playwright.py not found at $PW_RUNNER"
-    warn "playwright — skipped (script missing)"
+    # Same false-green defect: the phase was requested, the driver is missing,
+    # no screenshots exist. A broken install must not report success.
+    log "FAIL: pod-playwright.py not found at $PW_RUNNER"
+    fail "playwright — driver missing at $PW_RUNNER, so zero screenshots were captured"
   else
     log "running Playwright FE check ..."
     # Token goes via env, not argv — process arguments are world-readable

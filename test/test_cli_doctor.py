@@ -146,3 +146,142 @@ class TestDataHome:
         assert "legacy:" not in out
         assert "rollback copy" not in out
         assert "rm -rf" not in out
+
+
+class TestPodSessionBus:
+    """`kirocrew doctor` Pods section — the systemd --user session bus.
+
+    Pods are systemd --user units. A gateway started from a systemd SYSTEM unit
+    inherits no login-session environment, and if the per-user instance is not
+    running at all there is nothing to point at — every pod verb then fails with
+    "Failed to connect to bus: No medium found". Doctor reports the three states,
+    never gates its exit code on them (an absent bus means an optional dev
+    feature is unavailable, not a broken install), and never changes the user's
+    login-session lifetime itself.
+    """
+
+    @staticmethod
+    def _linux(monkeypatch, tmp_path: Path, *, bus: bool) -> Path:
+        monkeypatch.setattr(cli_doctor.sys, "platform", "linux")
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda n: f"/usr/bin/{n}")
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setenv("USER", "tester")
+        sock = tmp_path / "bus"
+        if bus:
+            sock.touch()
+        return sock
+
+    def test_missing_bus_is_reported_but_never_blocks(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # A container / CI runner / headless server has no per-user systemd
+        # instance. That is an unavailable optional feature, not a broken
+        # install, so it must NOT gate doctor's exit code — otherwise every
+        # such host is told its setup is broken (and `kirocrew doctor` starts
+        # exiting 1 in CI).
+        sock = self._linux(monkeypatch, tmp_path, bus=False)
+        issues: list[str] = ["pre-existing"]
+
+        cli_doctor._doctor_pod_session_bus(issues)
+
+        out = capsys.readouterr().out
+        assert "Pods" in out
+        assert str(sock) in out
+        assert "loginctl enable-linger tester" in out
+        assert "Everything else works" in out
+        assert issues == ["pre-existing"], "the missing bus must not add an issue"
+
+    def test_present_bus_passes_and_stays_quiet_when_lingering(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        sock = self._linux(monkeypatch, tmp_path, bus=True)
+        monkeypatch.setattr(cli_doctor, "_linger_enabled", lambda _u: True)
+        issues: list[str] = []
+
+        cli_doctor._doctor_pod_session_bus(issues)
+
+        out = capsys.readouterr().out
+        assert f"✅ {sock}" in out
+        assert "linger" not in out
+        assert issues == []
+
+    def test_present_bus_without_linger_warns_but_does_not_block(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # Pods work right now and die on logout — a warning, not an issue.
+        self._linux(monkeypatch, tmp_path, bus=True)
+        monkeypatch.setattr(cli_doctor, "_linger_enabled", lambda _u: False)
+        issues: list[str] = []
+
+        cli_doctor._doctor_pod_session_bus(issues)
+
+        out = capsys.readouterr().out
+        assert "linger:" in out and "⚠️" in out
+        assert "loginctl enable-linger tester" in out
+        assert issues == []
+
+    def test_unknown_linger_stays_quiet(self, monkeypatch, tmp_path: Path, capsys) -> None:
+        # No loginctl / unparseable value → say nothing rather than guess.
+        self._linux(monkeypatch, tmp_path, bus=True)
+        monkeypatch.setattr(cli_doctor, "_linger_enabled", lambda _u: None)
+        issues: list[str] = []
+
+        cli_doctor._doctor_pod_session_bus(issues)
+
+        assert "linger:" not in capsys.readouterr().out
+        assert issues == []
+
+    def test_non_linux_is_not_applicable(self, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(cli_doctor.sys, "platform", "darwin")
+        issues: list[str] = []
+
+        cli_doctor._doctor_pod_session_bus(issues)
+
+        out = capsys.readouterr().out
+        assert "not applicable" in out
+        assert issues == []
+
+    def test_no_systemctl_is_not_applicable(self, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(cli_doctor.sys, "platform", "linux")
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda _n: None)
+        issues: list[str] = []
+
+        cli_doctor._doctor_pod_session_bus(issues)
+
+        out = capsys.readouterr().out
+        assert "not applicable" in out and "systemctl" in out
+        assert issues == []
+
+
+class TestLingerProbe:
+    """`loginctl show-user <u> -p Linger --value` → tri-state."""
+
+    def _run(self, monkeypatch, *, stdout: str, returncode: int = 0):
+        import subprocess
+
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda _n: "/usr/bin/loginctl")
+        monkeypatch.setattr(
+            cli_doctor.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(
+                args=[], returncode=returncode, stdout=stdout, stderr=""
+            ),
+        )
+        return cli_doctor._linger_enabled("tester")
+
+    def test_yes_is_true(self, monkeypatch) -> None:
+        assert self._run(monkeypatch, stdout="yes\n") is True
+
+    def test_no_is_false(self, monkeypatch) -> None:
+        assert self._run(monkeypatch, stdout="no\n") is False
+
+    def test_unparseable_is_unknown(self, monkeypatch) -> None:
+        assert self._run(monkeypatch, stdout="wat\n") is None
+
+    def test_nonzero_exit_is_unknown(self, monkeypatch) -> None:
+        assert self._run(monkeypatch, stdout="", returncode=1) is None
+
+    def test_absent_loginctl_is_unknown(self, monkeypatch) -> None:
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda _n: None)
+        assert cli_doctor._linger_enabled("tester") is None

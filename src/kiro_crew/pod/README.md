@@ -113,3 +113,19 @@ chokepoint plus the two siblings that shell out directly (`recent_journal` and
 `_logs`, which run `journalctl`). `pod url` is pure port arithmetic and works
 anywhere; `pod up` / `provision` fail earlier on their own preconditions
 (worktree resolution, venv/dist) before reaching systemd.
+
+### Session bus
+
+`systemctl --user` locates the per-user systemd instance through
+`XDG_RUNTIME_DIR` + `DBUS_SESSION_BUS_ADDRESS`. A process descended from a
+systemd **system** unit — which is how `kirocrew service install` runs the
+gateway — inherits no login-session environment and therefore neither variable,
+so pods used to fail with a bare `Failed to connect to bus: No medium found`.
+
+`runtime._systemctl_env()` backfills both when the socket
+(`$XDG_RUNTIME_DIR/bus`, else `/run/user/<uid>/bus`) actually exists; an
+explicitly-set value always wins. When the socket is genuinely absent — no login
+session and `Linger=no` — `require_systemd()` refuses with the fix
+(`loginctl enable-linger <user>`) instead of letting systemctl emit a message
+that names neither cause nor remedy. `kirocrew doctor` reports the same three
+states (present / absent / present-but-no-linger).

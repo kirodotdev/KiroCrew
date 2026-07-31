@@ -238,6 +238,95 @@ def _doctor_data_home() -> None:
             print(f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)")
 
 
+def _linger_enabled(user: str) -> bool | None:
+    """Whether ``user``'s systemd instance lingers past logout.
+
+    ``None`` when it cannot be determined (no ``loginctl``, unknown user, or an
+    unrecognised value) so the caller can stay quiet rather than guess.
+    """
+    if shutil.which("loginctl") is None:
+        return None
+    try:
+        res = subprocess.run(
+            ["loginctl", "show-user", user, "-p", "Linger", "--value"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    val = res.stdout.strip().lower()
+    if val in ("yes", "true", "1"):
+        return True
+    if val in ("no", "false", "0"):
+        return False
+    return None
+
+
+def _doctor_pod_session_bus(issues: list[str]) -> None:
+    """Report whether pods have a reachable ``systemd --user`` session bus.
+
+    Pods are ``systemd --user`` units, so ``systemctl --user`` must be able to
+    reach the per-user systemd instance. A gateway started from a systemd SYSTEM
+    unit (``kirocrew service install``) inherits no login-session environment,
+    and if the per-user instance is not running at all there is nothing for
+    KiroCrew to point at — every pod verb then fails with "Failed to connect to
+    bus: No medium found". Diagnosing that belongs here.
+
+    Three outcomes: socket present → pass; absent → ❌ with the remediation;
+    present but ``Linger=no`` → warn, because pods work now and will die on
+    logout.
+
+    Advisory only (never appended to ``issues``, like the embedding-model URL
+    probe): a host with no per-user systemd instance — a container, a CI runner,
+    a headless server — is not a broken install, it is one where an optional dev
+    feature is unavailable. macOS and Windows already report that as "not
+    applicable" and block nothing, so blocking on Linux would be inconsistent as
+    well as a false alarm for everyone who never runs a pod.
+
+    Doctor only reports: enabling linger changes the user's login-session
+    lifetime and is theirs to choose, never a side effect of installing a
+    service.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    print("\nPods")
+    if not sys.platform.startswith("linux"):
+        print(
+            f"  session bus: ⏹ not applicable ({sys.platform} — pods are "
+            "Linux `systemd --user` only)"
+        )
+        return
+    if shutil.which("systemctl") is None:
+        print("  session bus: ⏹ not applicable (no `systemctl` on PATH)")
+        return
+
+    # Local import: keeps the pod package out of the CLI's import graph for
+    # every other command (circular-safe — pod.runtime imports no CLI module).
+    from kiro_crew.pod.runtime import has_session_bus, session_bus_socket
+
+    uid = getattr(os, "getuid", lambda: -1)()
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
+    sock = session_bus_socket()
+    if not has_session_bus():
+        print(f"  session bus: ❌ none for uid {uid} (looked for {sock})")
+        print("               Pods are systemd --user units, so `kirocrew pod` is")
+        print("               unavailable until one exists. Everything else works.")
+        print(f"               Fix: loginctl enable-linger {user}")
+        return
+    print(f"  session bus: ✅ {sock}")
+    if _linger_enabled(user) is False:
+        print(
+            "  linger:      ⚠️  disabled — the per-user systemd instance exits on "
+            "logout,"
+        )
+        print(
+            "               taking running pods with it. "
+            f"Fix: loginctl enable-linger {user}"
+        )
+
+
 def _doctor_model_url_reachable(issues: list[str]) -> None:
     """Light HTTPS-reachability probe of the resolved embedding-model URL.
 
@@ -465,6 +554,9 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
 
     # ── Data Home (+ leftover migration archive) ──
     _doctor_data_home()
+
+    # ── Pods (systemd --user session bus) ──
+    _doctor_pod_session_bus(issues)
 
     # ── MCP Tools ──
     print("\nMCP Tools")
