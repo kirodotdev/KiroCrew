@@ -7,6 +7,7 @@ when configured, gating spawn execution behind user approval.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -195,7 +196,13 @@ class TestSpawnWithoutApprovalCallback:
         # Assert
         assert first is not None
         assert second is not None  # queued, not rejected
-        assert second.id.startswith("q")  # queued ID prefix
+        assert second.queued is True  # queued, not started
+        # The queued member carries the REAL id it will run under, not a
+        # throwaway sentinel — spawn_run prints this id and the UI resolves the
+        # wave by it, so it must match the agent that eventually starts.
+        assert re.fullmatch(r"[0-9a-f]{8}", second.id)
+        assert manager._queue[0]["_preassigned_id"] == second.id
+        assert first.queued is False
 
 
 class TestSpawnWithApprovalCallback:

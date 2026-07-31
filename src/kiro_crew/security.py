@@ -3521,15 +3521,52 @@ _CREDENTIAL_PATTERNS = re.compile(
     r"://[^\s:/@]*:[^\s/@]+@"
     # ── JWT / JWE / OAuth Bearer tokens ──
     # `eyJ` is the base64url encoding of every JWT header's `{"` prefix; a signed
-    # JWT (JWS) is three `.`-separated base64url segments (header.payload.sig) and
-    # an encrypted JWT (JWE, RFC 7516) is five (header.key.iv.ciphertext.tag), so
-    # the segment quantifier accepts `(?:\.[A-Za-z0-9_-]*){2,4}` further segments
-    # after the header to redact BOTH shapes as one token. Post-header segments use
-    # `*` (not `+`) so an EMPTY segment still counts: a compact JWE with direct
+    # JWT (JWS) is three `.`-separated base64url segments (header.payload.sig), an
+    # encrypted JWT (JWE, RFC 7516) is five (header.key.iv.ciphertext.tag), and our
+    # OWN dashboard link token is two — `base64url(payload).base64url(hmac_sig)`,
+    # see `dashboard.token_auth.generate_token`. The 3-and-5-segment shapes are
+    # matched by the `{2,4}` quantifier below; the 2-segment link token has its
+    # OWN separately bounded alternative.
+    #
+    # The floor stays at 2: at 2 the two-segment dashboard token did not
+    # match here at all and fell through to the bare-secret entropy pass, whose run
+    # class `[A-Za-z0-9+/]` is STANDARD base64 and excludes base64url's `-`/`_`.
+    # That made redaction depend on which characters a random HMAC signature
+    # happened to contain: ~29% of tokens had a `-`/`_`-free 43-char signature, so
+    # only the signature was replaced (leaving the payload claims verbatim in a
+    # URL that still looked complete but no longer authenticated), and the other
+    # ~71% streamed out entirely unredacted. Matching the whole token here makes
+    # the outcome deterministic and replaces it as one unit. The 2-segment token gets
+    # its OWN alternative rather than relaxing the segment floor to `{1,4}`. Relaxing
+    # the floor over-redacts ordinary code and prose, because the pattern has no left
+    # boundary and post-header segments allow an EMPTY match: `keyJson.get(raw)` then
+    # redacts to `k[REDACTED…](raw)`, and a JWT quoted at the end of a sentence loses
+    # its trailing period. The 2-segment alternative therefore carries a left boundary
+    # (`(?<![A-Za-z0-9_.-])`, as `_BARE_SECRET_RUN_RE` already does, plus `.` so an
+    # attribute access `obj.eyJ…` is excluded too) and per-segment lengths taken from
+    # the generator, not from guesswork, because a length FLOOR alone is beatable by a
+    # sufficiently verbose identifier: at `{40,}` the 40-char
+    # `eyJsonSerializerConfigurationFactoryBuilder.deserializeFromStringValue` matched.
+    #
+    # `token_auth._sign` is HMAC-SHA256 base64url-unpadded, so the signature is
+    # EXACTLY 43 chars for every token ever minted; that is a property of the digest,
+    # not of the payload, so it is pinned as `{43}` rather than a floor. See
+    # `test_link_token_signature_is_43_chars`, which fails loudly if `_sign` changes
+    # digest, instead of letting redaction silently stop matching.
+    #
+    # `generate_token` always emits 6 claims (`sub`/`exp`/`session_exp`/`iat`/`nonce`/
+    # `gen`), with a 16-hex-char nonce and float timestamps; `app`, `prompt` and
+    # `extra` only ADD. The shortest possible payload (1-char `sub`) measures 169
+    # chars past `eyJ`, so the `{96,}` floor keeps 73 chars of headroom against a
+    # future shorter claim set while still excluding `eyJ2IjoxfQ.json`. Order matters:
+    # the 3-to-5-segment
+    # alternative is tried first at each position, so a real JWS still redacts whole
+    # instead of matching `header.payload` and leaving `.signature` exposed.
+    # The 3-to-5-segment alternative keeps `*` (not `+`) on post-header segments so an
+    # EMPTY segment still counts: a compact JWE with direct
     # (`alg:dir`) or key-agreement (`ECDH-ES`) key management has an empty Encrypted
     # Key (2nd) segment — shape `header..iv.ciphertext.tag` — which a `+` quantifier
-    # would fail to match, leaking the ciphertext + tag. The `.` separators are
-    # still required, so bare `eyJson`-style prose (no dots) is not over-redacted.
+    # would fail to match, leaking the ciphertext + tag.
     # The HTTP `Authorization: Bearer <token>` header carries opaque or JWT bearer
     # creds. The JWT alternative is case-sensitive (`eyJ` is a fixed base64url
     # prefix). The header name + scheme are matched case-insensitively via scoped
@@ -3546,6 +3583,7 @@ _CREDENTIAL_PATTERNS = re.compile(
     # Bearer header carrying a JWT redacts as one match (the Bearer class subsumes
     # the JWT); a bare JWT is still caught independently (defense in depth).
     r"|eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES)
+    r"|(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"  # 2-seg link token
     r"|(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
     r")",
 )

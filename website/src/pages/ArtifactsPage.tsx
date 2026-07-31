@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2, Star, FileText } from 'lucide-react'
+import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2, Star, FileText, FilePlus } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
 import type { ItemContent } from '@virtuoso.dev/masonry'
@@ -24,6 +24,7 @@ import { sanitize } from '../api/helpers'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { framablePreviewUrl } from '../lib/safeUrl'
+import { IMPORT_ACCEPT, IMPORTABLE_EXT_LIST, MAX_IMPORT_BYTES, planFileImport, wasContentRedacted, type ImportPlan, type ImportRejection } from '../lib/artifactImport'
 import { useAppPreview } from '../components/WebAppArtifactCard'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import type { Artifact, ArtifactFolder, PublishProviderDescriptor, RemoteArtifact, SessionDoc } from '../types'
@@ -56,6 +57,27 @@ const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'> = {
   json: 'ok',
   text: 'ok',
   webapp: 'aim',
+}
+
+/** Explain a refused "Add Artifact" pick in the library's error banner.
+ *
+ * Kept next to the page rather than inside `lib/artifactImport.ts` so that
+ * module stays free of catalog lookups and unit-testable without i18n. */
+function importRejectionText(reason: ImportRejection): string {
+  switch (reason) {
+    case 'unsupported-type':
+      return `${i18nT('pages.artifactsPage.add_artifact_error_unsupported_type')} ${IMPORTABLE_EXT_LIST}`
+    case 'too-large':
+      return i18nT('pages.artifactsPage.add_artifact_error_too_large', {
+        limit: Math.floor(MAX_IMPORT_BYTES / (1024 * 1024)),
+      })
+    case 'empty':
+      return i18nT('pages.artifactsPage.add_artifact_error_empty')
+    case 'not-text':
+      return i18nT('pages.artifactsPage.add_artifact_error_not_text')
+    case 'unreadable':
+      return i18nT('pages.artifactsPage.add_artifact_error_unreadable')
+  }
 }
 
 function isoToTs(iso: string): number {
@@ -1320,6 +1342,92 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     scheduleIconRefetch()
   }, [createFolderMut, view, filtersActive, scopeFolderId, newFolderColor, scheduleIconRefetch])
 
+  // ── Add Artifact — import a file from the user's machine ──────
+  // The file's text is COPIED into artifact storage, so the artifact does not
+  // stay bound to the file on disk (see lib/artifactImport.ts for why).
+  const addFileInputRef = useRef<HTMLInputElement>(null)
+  const [addError, setAddError] = useState<string | null>(null)
+  const addArtifactMut = useMutation({
+    mutationFn: async (vars: ImportPlan & { folder: string }) => {
+      // Create unfiled, then file by id. `POST /api/artifacts` resolves its
+      // `folder` field with mkdir -p semantics, so a folder id that went
+      // stale between the pick and the save (folder deleted in another tab,
+      // or a bookmarked ?folder=<id> URL) is not recognised as an id and gets
+      // treated as a NAME — minting a junk folder called e.g. "a1b2c3d4e5f6".
+      // The dedicated folder endpoint resolves ids only and errors on a stale
+      // one, so the worst case is an artifact left at the library root.
+      // This mirrors New Folder, which passes `parent_id` for the same reason.
+      const art = (await api.createArtifact({
+        name: vars.name,
+        content: vars.content,
+        kind: vars.kind,
+      })) as Artifact
+      // The store redacts credential-like text on every READ but stores the
+      // POST body verbatim, so a file carrying real credential material would
+      // read back as placeholders — and the next edit would save those
+      // placeholders over the imported text. Refuse the import rather than
+      // leave an artifact that silently corrupts itself (and rather than keep
+      // the secret in the library at all).
+      if (wasContentRedacted(vars.content, art.content)) {
+        try {
+          await api.deleteArtifact(art.slug)
+        } catch {
+          // Best effort: the refusal message is what matters, and the artifact
+          // is reachable in the library if this cleanup did not land.
+        }
+        return { art, filed: false, redacted: true }
+      }
+      let filed = true
+      if (vars.folder) {
+        try {
+          await api.setArtifactFolder(art.slug, vars.folder)
+        } catch {
+          // The artifact exists and is reachable — only its placement failed.
+          // Surfaced below rather than failing the whole add.
+          filed = false
+        }
+      }
+      return { art, filed, redacted: false }
+    },
+    onSuccess: ({ art, filed, redacted }) => {
+      qc.invalidateQueries({ queryKey: ['artifacts'] })
+      invalidateFolders()
+      if (redacted) {
+        setAddError(i18nT('pages.artifactsPage.add_artifact_error_redacted'))
+        return
+      }
+      if (!filed) {
+        // Stay put so the note is actually read; the artifact is at the root.
+        setAddError(i18nT('pages.artifactsPage.add_artifact_error_unfiled'))
+        return
+      }
+      // Open the new artifact: it confirms the file rendered, and it is the
+      // only reliable feedback — a fresh artifact is unpinned, so it would be
+      // invisible to a user whose library is filtered to Starred.
+      navigate(`/artifacts/${art.slug}`)
+    },
+  })
+  const handleAddArtifact = useCallback(() => {
+    setAddError(null)
+    addFileInputRef.current?.click()
+  }, [])
+  const handleAddArtifactFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    // Clear the input first so picking the SAME file again re-fires `change`
+    // (the value is unchanged otherwise, and the event never fires).
+    e.target.value = ''
+    if (!file) return
+    setAddError(null)
+    const result = await planFileImport(file)
+    if (!result.ok) {
+      setAddError(importRejectionText(result.reason))
+      return
+    }
+    // File it into the folder being browsed, matching New Folder's placement.
+    const parent = view === 'grid' && !filtersActive ? scopeFolderId : ''
+    addArtifactMut.mutate({ ...result.plan, folder: parent })
+  }, [addArtifactMut, view, filtersActive, scopeFolderId])
+
   const folderActions = useMemo<FolderActions>(() => ({
     onOpen: openFolder,
     onRename: (f) => setRenamingFolderId(f.id),
@@ -1574,7 +1682,11 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     ? deleteMut.error instanceof Error
       ? deleteMut.error.message
       : String(deleteMut.error)
-    : null
+    : addArtifactMut.error
+      ? addArtifactMut.error instanceof Error
+        ? addArtifactMut.error.message
+        : String(addArtifactMut.error)
+      : null
 
   if (isLoading) return <div className="p-6 text-muted">{i18nT('pages.artifactsPage.loading')}</div>
 
@@ -1588,20 +1700,31 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
           <StatCard label={i18nT('pages.artifactsPage.folders')} value={folders.length} />
           <StatCard label={i18nT('pages.artifactsPage.kinds')} value={new Set(artifacts.map(a => a.kind)).size} />
         </div>
-        {(errMessage || mutErr) && (
+        {(errMessage || mutErr || addError) && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
             <span className="text-danger text-lg shrink-0"><AlertTriangle className="lucide-inline" /></span>
             <div className="flex-1 min-w-0">
               <div className="text-sm text-danger font-medium">{i18nT('pages.artifactsPage.error')}</div>
-              <div className="text-[13px] text-danger/90 mt-0.5">{errMessage || mutErr}</div>
+              <div className="text-[13px] text-danger/90 mt-0.5">{errMessage || mutErr || addError}</div>
             </div>
-            <Btn onClick={() => deleteMut.reset()} className="text-danger/60 hover:text-danger shrink-0">×</Btn>
+            <Btn aria-label={i18nT('app.dismiss')} onClick={() => { deleteMut.reset(); addArtifactMut.reset(); setAddError(null) }} className="text-danger/60 hover:text-danger shrink-0"><X className="lucide-inline" /></Btn>
           </div>
         )}
 
         <div className="flex items-center justify-between gap-3 mb-3">
           <h3 className="text-sm font-semibold text-text-strong">{i18nT('pages.artifactsPage.your_artifacts')}</h3>
           <div className="flex items-center gap-2">
+            <Btn onClick={handleAddArtifact} disabled={addArtifactMut.isPending} className="flex items-center gap-1.5" title={i18nT('pages.artifactsPage.add_a_file_from_your_computer_to_the_library')}>
+              {addArtifactMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <FilePlus size={13} />} {i18nT('pages.artifactsPage.add_artifact')}
+            </Btn>
+            <Input
+              ref={addFileInputRef}
+              type="file"
+              accept={IMPORT_ACCEPT}
+              aria-label={i18nT('pages.artifactsPage.add_a_file_from_your_computer_to_the_library')}
+              className="hidden"
+              onChange={handleAddArtifactFile}
+            />
             <Btn onClick={handleNewFolder} className="flex items-center gap-1.5" title={i18nT('pages.artifactsPage.create_a_folder_to_organize_your_artifacts')}>
               <FolderPlus size={13} /> {i18nT('pages.artifactsPage.new_folder')}
             </Btn>

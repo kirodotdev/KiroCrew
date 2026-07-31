@@ -56,7 +56,9 @@ def _redact_obj(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_redact_obj(x) for x in obj]
     if isinstance(obj, dict):
-        return {k: _redact_obj(v) for k, v in obj.items()}
+        # Keys too: agent output is parsed into these structures, so a credential
+        # can arrive as a mapping key and a values-only walk would leak it.
+        return {_redact_obj(k): _redact_obj(v) for k, v in obj.items()}
     return obj
 
 

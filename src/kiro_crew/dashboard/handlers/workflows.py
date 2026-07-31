@@ -7,13 +7,16 @@ runner). LLM-derived strings are redacted before they hit a response surface.
 
 Routes (registered in dashboard/server.py):
   POST /api/workflows/author   {intent}           → {ok, source, meta} | {ok:false, errors}
-  POST /api/workflows/run      {source, args?, name?, budget_total?} → {run_id} | {error}
+  POST /api/workflows/run      {source, args?, name?, budget_total?, timeout_secs?}
+                                                    → {run_id} | {error}
   GET  /api/workflows/runs                          → [{run_id, name, status, ...}]
   GET  /api/workflows/runs/{id}                     → {…, events:[…]}  (full)
   POST /api/workflows/runs/{id}/cancel              → {cancelled: bool}
 """
 
 from __future__ import annotations
+
+from typing import Any, Optional
 
 from aiohttp import web
 
@@ -22,7 +25,14 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 
 def _redact_obj(obj):
-    """Recursively redact LLM-derived strings in a JSON-able structure."""
+    """Recursively redact LLM-derived strings in a JSON-able structure.
+
+    Redacts dict KEYS as well as values: agent output is parsed straight into
+    these structures, so a credential can arrive as a mapping key (``{"ghp_…":
+    …}``) and a values-only walk would pass it through untouched. Two distinct
+    credential-shaped keys can collapse into one redacted key — losing a
+    pathological key is strictly preferable to leaking the secret.
+    """
     if isinstance(obj, str):
         s, _ = redact_exfiltration_urls(obj)
         s, _ = redact_credentials(s)
@@ -30,7 +40,7 @@ def _redact_obj(obj):
     if isinstance(obj, list):
         return [_redact_obj(x) for x in obj]
     if isinstance(obj, dict):
-        return {k: _redact_obj(v) for k, v in obj.items()}
+        return {_redact_obj(k): _redact_obj(v) for k, v in obj.items()}
     return obj
 
 
@@ -56,6 +66,17 @@ async def api_workflow_author(request: web.Request) -> web.Response:
     return web.json_response(_redact_obj(out))
 
 
+def _opt_int(value: Any) -> Optional[int]:
+    """Coerce an optional integer body field; anything unusable → None.
+
+    None means "no override" at the service layer, which then applies its own
+    default — so a malformed value can never widen or remove a run's ceiling.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 async def api_workflow_run(request: web.Request) -> web.Response:
     """POST /api/workflows/run — launch a background run, return its run_id."""
     svc = _svc(request)
@@ -78,6 +99,7 @@ async def api_workflow_run(request: web.Request) -> web.Response:
         author=request.headers.get("X-Session-Key", ""),
         session_key=request.headers.get("X-Session-Key", ""),
         budget_total=budget_total,
+        timeout_secs=_opt_int(body.get("timeout_secs")),
     )
     status = 200 if "run_id" in out else 400
     return web.json_response(_redact_obj(out), status=status)
@@ -110,6 +132,7 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
         author=request.headers.get("X-Session-Key", ""),
         session_key=request.headers.get("X-Session-Key", ""),
         budget_total=budget_total,
+        timeout_secs=_opt_int(body.get("timeout_secs")),
     )
     status = 200 if "run_id" in out else 400
     return web.json_response(_redact_obj(out), status=status)

@@ -30,7 +30,7 @@ from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 from .agent_exec import build_agent_fn
 from .agent_pool import build_pooled_agent_fn
 from .registry import RunRegistry
-from .runner import WorkflowRunner
+from .runner import WorkflowRunner, clamp_run_timeout
 from .store import WorkflowRunStore
 from .validate import validate
 
@@ -132,6 +132,7 @@ class WorkflowService:
         store: Any = None,
         pool_agents: bool = True,
         nudge_authorizer: Optional[Callable[..., Any]] = None,
+        timeout_secs: Optional[int] = None,
     ) -> None:
         # Durable store (FIX-21): runs are mirrored to disk so they survive gateway
         # restarts. Pass persist=False (or store=None) to keep a purely in-memory
@@ -158,6 +159,11 @@ class WorkflowService:
         self._nudge_tasks: dict[str, set[Any]] = {}
         self._now_fn = now_fn or (lambda: "1970-01-01T00:00:00Z")
         self._concurrency = concurrency
+        # Default wall-clock ceiling for runs started through this service. The
+        # ceiling is a runaway backstop, so a deployment (or an individual run) can
+        # LENGTHEN it for genuinely long investigations but never remove it —
+        # clamp_run_timeout keeps every value inside [MIN, MAX].
+        self._timeout_secs = clamp_run_timeout(timeout_secs)
         # When True, each run's ``ctx.agent()`` calls reuse a small WARM session
         # pool instead of cold-starting a fresh session per call (kills the
         # per-call cold-start that dominates workflow wall-clock — see
@@ -173,6 +179,11 @@ class WorkflowService:
                 self._seq = self._max_persisted_seq()
         except Exception:  # noqa: BLE001
             pass
+
+    @property
+    def timeout_secs(self) -> int:
+        """Effective (clamped) default wall-clock ceiling for runs of this service."""
+        return self._timeout_secs
 
     def _max_persisted_seq(self) -> int:
         """Highest wf_NNNNNN sequence among loaded runs (so new ids don't collide)."""
@@ -318,7 +329,12 @@ class WorkflowService:
             # The underlying shielded add stays supervised by AutoNudgeService.
             await asyncio.gather(*still_pending, return_exceptions=True)
 
-    def _runner(self, run_id: str) -> WorkflowRunner:
+    def _runner(self, run_id: str, *, timeout_secs: Optional[int] = None) -> WorkflowRunner:
+        # ``timeout_secs`` overrides the service default for THIS run only (clamped
+        # into [MIN, MAX] so a per-run value can lengthen the ceiling but never
+        # remove it). None → the service default.
+        ceiling = clamp_run_timeout(timeout_secs, default=self._timeout_secs)
+
         # M4 native ports wired for every run of this service. ``nudge`` bridges
         # ``ctx.nudge`` to AutoNudge (the port is session-agnostic — the runner
         # supplies each run's originating session_key at call time; the closure
@@ -354,6 +370,7 @@ class WorkflowService:
                 return WorkflowRunner(
                     agent_fn=agent_fn,
                     concurrency=self._concurrency,
+                    timeout_secs=ceiling,
                     ports=ports,
                     pre_terminal=_drain,
                     on_complete=_teardown_pooled,
@@ -372,6 +389,7 @@ class WorkflowService:
         return WorkflowRunner(
             agent_fn=agent_fn,
             concurrency=self._concurrency,
+            timeout_secs=ceiling,
             ports=ports,
             pre_terminal=_drain,
             on_complete=_teardown,
@@ -451,12 +469,17 @@ class WorkflowService:
         author: str = "",
         session_key: str = "",
         budget_total: Optional[int] = None,
+        timeout_secs: Optional[int] = None,
     ) -> dict:
         """Launch a background run that AUTHORS its own script from ``intent`` (M6.7).
 
         Returns ``{run_id}`` immediately — authoring happens inside the run as a
         visible "Authoring" phase, so the slow model call(s) never block this call
         (no more 30s synchronous-author timeout) and progress streams to the UI.
+
+        ``timeout_secs`` raises or lowers the wall-clock ceiling for this run only
+        (clamped); a long multi-phase investigation can be given more room without
+        changing the default for everything else.
         """
         if not intent.strip():
             return {"error": "intent is required"}
@@ -467,7 +490,7 @@ class WorkflowService:
         ) -> dict:
             return await self.author(it, author=author, on_progress=on_progress)
 
-        await self._runner(run_id).run_background(
+        await self._runner(run_id, timeout_secs=timeout_secs).run_background(
             "",  # no source — author inside the run
             registry=self.registry,
             run_id=run_id,
@@ -491,13 +514,18 @@ class WorkflowService:
         author: str = "",
         session_key: str = "",
         budget_total: Optional[int] = None,
+        timeout_secs: Optional[int] = None,
     ) -> dict:
-        """Validate + launch a background run; return {run_id} or {error}."""
+        """Validate + launch a background run; return {run_id} or {error}.
+
+        ``timeout_secs`` overrides the wall-clock ceiling for this run only (clamped
+        into the runner's bounds).
+        """
         vr = validate(source)
         if not vr.ok:
             return {"error": "; ".join(vr.errors), "errors": vr.errors}
         run_id = self._new_run_id()
-        await self._runner(run_id).run_background(
+        await self._runner(run_id, timeout_secs=timeout_secs).run_background(
             source,
             registry=self.registry,
             run_id=run_id,
@@ -523,7 +551,12 @@ class WorkflowService:
         return await self.registry.cancel(run_id)
 
     async def rerun_subtree(
-        self, run_id: str, from_index: int = 0, *, source: Optional[str] = None
+        self,
+        run_id: str,
+        from_index: int = 0,
+        *,
+        source: Optional[str] = None,
+        timeout_secs: Optional[int] = None,
     ) -> dict:
         """Re-run a prior workflow, replaying agent calls BEFORE ``from_index`` from
         cache and re-executing from there ("restart parts" at runtime, M6.6).
@@ -557,7 +590,7 @@ class WorkflowService:
         replay_before = 0 if edited else max(0, from_index)
         replay_results = {} if edited else dict(prior.agent_results)
         label = "rerun-edited" if edited else f"rerun@{from_index}"
-        await self._runner(new_id).run_background(
+        await self._runner(new_id, timeout_secs=timeout_secs).run_background(
             run_source,
             registry=self.registry,
             run_id=new_id,

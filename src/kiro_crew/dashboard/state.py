@@ -213,7 +213,6 @@ _READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
     "cat",
     "head",
     "tail",
-    "find",
     "grep",
     "egrep",
     "fgrep",

@@ -696,22 +696,42 @@ function ResourceRow({ link }: { link: ExtractedLink }) {
 
 /* ── SessionArtifactsTab ─────────────────────────────────────────────────────
  *
- * Everything this session produced, from TWO inputs:
+ * Two sections, so the tab is both a session view AND a library browser:
  *
- *  1. Real artifacts scoped by `?session=` — including every `<mcwidget>` the
- *     agent emitted, which the backend auto-registers unpinned
- *     (kiro_crew/widget_artifacts.py). These have no filesystem path: a widget's
- *     HTML lives inline in the message, which is exactly why the file-backed
- *     scan below can never see them.
- *  2. Virtual session documents — non-code files recorded in chat
- *     `file_changes`, not persisted until starred (materialized).
+ *  A. "This session" — everything this session was involved with, from THREE
+ *     inputs:
+ *       1. Artifacts scoped by `?touched_by=` — the session's *involvement*
+ *          scope, not just its output: artifacts it created, read, edited,
+ *          iterated on or reverted (the backend unions the create-time
+ *          `session_key` with every event's `session_id`). Includes each
+ *          `<mcwidget>` the agent emitted, which the backend auto-registers
+ *          unpinned (kiro_crew/widget_artifacts.py). These have no filesystem
+ *          path — a widget's HTML lives inline in the message, which is exactly
+ *          why the file-backed scan below can never see them.
+ *       2. The session's bound companion artifact, if any. A session started
+ *          from an artifact's detail page carries `slot.artifact`, persisted in
+ *          the history meta line — so the binding still resolves after the user
+ *          leaves the detail page, picks the session up on the main chat page,
+ *          and opens this tab. Listed even when the agent never touched the
+ *          artifact, because the binding itself is the association.
+ *       3. Virtual session documents — non-code files recorded in chat
+ *          `file_changes`, not persisted until starred (materialized).
  *
- * Both render as one list; the star means "keep in library" for either. An
- * artifact row opens the artifact, a document row opens the file.
+ *  B. "Other artifacts" — the rest of the local library, so the tab answers "what do I
+ *     have?" and not only "what happened here?". De-duped against section A:
+ *     anything already listed above is omitted rather than shown twice.
+ *
+ * The star means "keep in library" for either kind. An artifact row opens the
+ * artifact, a document row opens the file.
  */
 type SessionArtifactRow =
   | { kind: 'artifact'; key: string; name: string; sub: string; slug: string; starred: boolean }
   | { kind: 'doc'; key: string; name: string; sub: string; path: string; slug: string; starred: boolean }
+
+/** Library rows rendered before the "Show all" cut. The library is unbounded
+ *  and this panel is ~460px wide, so cap the DOM the same way the Subagents
+ *  view does rather than mounting hundreds of rows nobody scrolls to. */
+const ARTIFACT_LIBRARY_CAP = 50
 
 function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: (path: string) => void }) {
   const qc = useQueryClient()
@@ -726,9 +746,21 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
   })
   const { data: artifactData, isFetching: artifactsFetching } = useQuery<{ artifacts: Artifact[] }>({
     queryKey: ['session-artifact-records', slot],
-    queryFn: () => api.artifacts({ session: slot }),
+    queryFn: () => api.artifacts({ touchedBy: slot }),
     enabled: !!slot,
   })
+  // The whole library, for section B. Its own query key so the session query's
+  // invalidations don't force a refetch of the (larger) library list and vice
+  // versa; both still refresh on the shared ['artifacts'] invalidation below.
+  const { data: libraryData, isFetching: libraryFetching } = useQuery<{ artifacts: Artifact[] }>({
+    queryKey: ['artifacts', 'panel-library'],
+    queryFn: () => api.artifacts({}),
+  })
+  // Companion binding for this slot. Narrowed to the primitive so an unrelated
+  // slot field changing (message count, running flag) can't re-render the tab.
+  const boundArtifactSlug = useAppSelector(
+    s => s.dashboard.slots.find(x => x.key === slot)?.artifact || '',
+  )
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['session-artifacts', slot] })
     qc.invalidateQueries({ queryKey: ['session-artifact-records', slot] })
@@ -751,13 +783,17 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
     // Matching on slug alone is not enough: the session-docs backend builds its
     // path→slug map from PINNED artifacts only, so a doc that was materialized
     // and then UN-starred reports `slug: ''` and its artifact would slip through
-    // as a second row with its own star. Excluding `source_path` artifacts covers
-    // both states — every materialized artifact is file-backed by construction
-    // (materialize requires a recorded `file_changes` entry), and an inline
-    // widget never has a source_path.
+    // as a second row with its own star. Joining on `source_path` as well covers
+    // that state, because a materialized artifact's source_path IS the doc path.
+    //
+    // The path join has to be exactly that narrow. Excluding file-backed
+    // artifacts outright would also drop artifacts this session merely READ or
+    // iterated on that happen to be file-backed — the very artifacts the
+    // touched_by scan exists to surface — banishing them to "Other artifacts".
     const docSlugs = new Set((data?.docs || []).map(d => d.slug).filter(Boolean))
+    const docPaths = new Set((data?.docs || []).map(d => d.path).filter(Boolean))
     const out: SessionArtifactRow[] = artifacts
-      .filter(a => !docSlugs.has(a.slug) && !a.source_path)
+      .filter(a => !docSlugs.has(a.slug) && !(a.source_path && docPaths.has(a.source_path)))
       .map(a => ({
         kind: 'artifact' as const,
         key: `artifact:${a.slug}`,
@@ -766,6 +802,25 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
         slug: a.slug,
         starred: !!a.pinned,
       }))
+    // The bound companion artifact belongs in this section even if the agent
+    // never touched it, so it is added when the touched_by scan didn't already
+    // return it. Its metadata comes from the library list rather than a third
+    // query; if the library hasn't loaded (or the artifact was deleted while the
+    // binding lingers) there is nothing to render, so skip it rather than
+    // inventing a placeholder row.
+    if (boundArtifactSlug && !out.some(r => r.slug === boundArtifactSlug)) {
+      const bound = (libraryData?.artifacts || []).find(a => a.slug === boundArtifactSlug)
+      if (bound) {
+        out.unshift({
+          kind: 'artifact',
+          key: `artifact:${bound.slug}`,
+          name: bound.name || bound.slug,
+          sub: bound.kind,
+          slug: bound.slug,
+          starred: !!bound.pinned,
+        })
+      }
+    }
     for (const d of data?.docs || []) {
       out.push({
         kind: 'doc' as const,
@@ -778,55 +833,148 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
       })
     }
     return out
-  }, [artifactData, data])
+  }, [artifactData, data, boundArtifactSlug, libraryData])
+
+  // Section B: the library minus whatever section A already shows.
+  //
+  // Two joins are needed, not one. Slug covers ordinary artifacts, but a
+  // materialized session doc that was later UNSTARRED reports `slug: ''` from
+  // the session-docs backend (it maps path→slug from PINNED artifacts only) —
+  // so its library twin has a slug nothing in section A claims, and a
+  // slug-only de-dup would list the same document twice: once as the
+  // path-aware doc row above, once as a library row here. Joining on
+  // `source_path` as well catches that state, mirroring the narrow path join
+  // section A applies to its own artifact rows.
+  const libraryRows = useMemo<SessionArtifactRow[]>(() => {
+    const shownSlugs = new Set(rows.map(r => r.slug).filter(Boolean))
+    const shownPaths = new Set(rows.filter(r => r.kind === 'doc').map(r => r.path))
+    return (libraryData?.artifacts || [])
+      .filter(a => !shownSlugs.has(a.slug) && !(a.source_path && shownPaths.has(a.source_path)))
+      .map(a => ({
+        kind: 'artifact' as const,
+        key: `lib:${a.slug}`,
+        name: a.name || a.slug,
+        sub: a.kind,
+        slug: a.slug,
+        starred: !!a.pinned,
+      }))
+  }, [libraryData, rows])
 
   const loading = isFetching || artifactsFetching
+  const [showAllLibrary, setShowAllLibrary] = useState(false)
+  const visibleLibrary = showAllLibrary ? libraryRows : libraryRows.slice(0, ARTIFACT_LIBRARY_CAP)
+  const cappedLibrary = libraryRows.length - visibleLibrary.length
+
+  const openRow = useCallback((r: SessionArtifactRow) => {
+    if (r.kind === 'doc') onFileOpen?.(r.path)
+    else navigate(`/artifacts/${r.slug}`)
+  }, [onFileOpen, navigate])
+  const toggleStar = useCallback((r: SessionArtifactRow) => {
+    // A doc with no slug isn't persisted yet — starring it materializes it.
+    // Everything else is a metadata pin flip.
+    if (r.kind === 'doc' && !r.slug) saveMut.mutate(r.path)
+    else if (r.slug) pinMut.mutate({ slug: r.slug, pinned: !r.starred })
+  }, [saveMut, pinMut])
+  const rowBusy = useCallback((r: SessionArtifactRow) => (
+    (r.kind === 'doc' && busyPath === r.path) || (!!r.slug && busySlug === r.slug)
+  ), [busyPath, busySlug])
+
+  // Nothing at all — no session activity AND an empty library.
+  if (rows.length === 0 && libraryRows.length === 0) {
+    return (
+      <div className="flex-1 overflow-y-auto py-1.5">
+        <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">
+          {loading || libraryFetching
+            ? i18nT('pages.chat.activityViewer.loading')
+            : i18nT('pages.chat.activityViewer.artifacts_empty')}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex-1 overflow-y-auto py-1.5">
-      {rows.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{loading ? 'Loading…' : 'Nothing produced in this session yet'}</div>
-      ) : (
-        <div className="px-3 flex flex-col">
-          {rows.map(r => {
-            const busy = (r.kind === 'doc' && busyPath === r.path) || (!!r.slug && busySlug === r.slug)
-            return (
-              <div key={r.key} className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-bg-hover transition-colors">
-                <button
-                  type="button"
-                  onClick={() => { if (r.kind === 'doc') onFileOpen?.(r.path); else navigate(`/artifacts/${r.slug}`) }}
-                  className="flex items-center gap-2 min-w-0 flex-1 text-left bg-transparent border-none cursor-pointer p-0"
-                  title={r.kind === 'doc' ? 'Open in side panel' : 'Open artifact'}
-                >
-                  {r.kind === 'doc'
-                    ? <FileText size={14} className="text-emerald-400 shrink-0" />
-                    : <Component size={14} className="text-accent shrink-0" />}
-                  <span className="min-w-0 flex-1 leading-tight">
-                    <span className="block text-[12.5px] text-text truncate">{r.name}</span>
-                    <span className="block text-[10.5px] text-muted/80 truncate">{r.sub}</span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => {
-                    // A doc with no slug isn't persisted yet — starring it
-                    // materializes it. Everything else is a metadata pin flip.
-                    if (r.kind === 'doc' && !r.slug) saveMut.mutate(r.path)
-                    else if (r.slug) pinMut.mutate({ slug: r.slug, pinned: !r.starred })
-                  }}
-                  className={`shrink-0 p-1 rounded transition-colors bg-transparent border-none cursor-pointer disabled:cursor-default ${r.starred ? 'text-accent' : 'text-muted/50 hover:text-accent'}`}
-                  title={r.starred ? 'Remove star' : 'Star'}
-                  aria-label={r.starred ? `Unstar ${r.name}` : `Star ${r.name}`}
-                  aria-pressed={r.starred}
-                >
-                  {busy ? <LoaderIcon size={13} className="animate-spin" /> : <Star size={13} className={r.starred ? 'fill-current' : ''} />}
-                </button>
-              </div>
-            )
-          })}
-        </div>
-      )}
+      <div className="px-3 flex flex-col">
+        {/* Section A — this session. Rendered whenever there is session
+            activity; suppressed entirely (header included) when there is none,
+            so a fresh session shows just the library instead of an empty
+            heading above it. */}
+        {rows.length > 0 && (
+          <>
+            <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1 mt-0.5">
+              {i18nT('pages.chat.activityViewer.artifacts_this_session')} ({rows.length})
+            </div>
+            {rows.map(r => (
+              <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onToggleStar={toggleStar} />
+            ))}
+          </>
+        )}
+        {/* Section B — the rest of the library. */}
+        {libraryRows.length > 0 && (
+          <>
+            <div className={`text-[10px] text-muted/40 uppercase tracking-wider mb-1 ${rows.length > 0 ? 'mt-3' : 'mt-0.5'}`}>
+              {i18nT('pages.chat.activityViewer.artifacts_library')} ({libraryRows.length})
+            </div>
+            {visibleLibrary.map(r => (
+              <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onToggleStar={toggleStar} />
+            ))}
+            {cappedLibrary > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowAllLibrary(true)}
+                className="self-start mt-1 px-2 py-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer transition-colors"
+              >
+                {i18nT('pages.chat.activityViewer.show_all')}{cappedLibrary})
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** One row of the Artifacts tab — an artifact or a virtual session document.
+ *  Module-scope (not nested in SessionArtifactsTab): a nested definition would
+ *  be a new component type on every render, remounting every row and dropping
+ *  the star button's pending state mid-flight. */
+function ArtifactListRow({ row, busy, onOpen, onToggleStar }: {
+  row: SessionArtifactRow
+  busy: boolean
+  onOpen: (row: SessionArtifactRow) => void
+  onToggleStar: (row: SessionArtifactRow) => void
+}) {
+  return (
+    <div className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-bg-hover transition-colors">
+      <button
+        type="button"
+        onClick={() => onOpen(row)}
+        className="flex items-center gap-2 min-w-0 flex-1 text-left bg-transparent border-none cursor-pointer p-0"
+        title={row.kind === 'doc'
+          ? i18nT('pages.chat.activityViewer.open_in_side_panel')
+          : i18nT('pages.chat.activityViewer.open_artifact')}
+      >
+        {row.kind === 'doc'
+          ? <FileText size={14} className="text-emerald-400 shrink-0" />
+          : <Component size={14} className="text-accent shrink-0" />}
+        <span className="min-w-0 flex-1 leading-tight">
+          <span className="block text-[12.5px] text-text truncate">{row.name}</span>
+          <span className="block text-[10.5px] text-muted/80 truncate">{row.sub}</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => onToggleStar(row)}
+        className={`shrink-0 p-1 rounded transition-colors bg-transparent border-none cursor-pointer disabled:cursor-default ${row.starred ? 'text-accent' : 'text-muted/50 hover:text-accent'}`}
+        title={row.starred
+          ? i18nT('pages.chat.activityViewer.remove_star')
+          : i18nT('pages.chat.activityViewer.star')}
+        aria-label={row.starred ? `Unstar ${row.name}` : `Star ${row.name}`}
+        aria-pressed={row.starred}
+      >
+        {busy ? <LoaderIcon size={13} className="animate-spin" /> : <Star size={13} className={row.starred ? 'fill-current' : ''} />}
+      </button>
     </div>
   )
 }

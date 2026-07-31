@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit as _urlsplit
 
 from kiro_crew import __version__, model_registry
 
@@ -524,6 +525,11 @@ def _meta(label: str, help: str, **kwargs: object) -> dict:
 _BOT_NAME_MAX = 50
 _BOT_NAME_RE = _re.compile(r"[^a-zA-Z0-9 _\-.]")
 
+# Default endpoint for the anonymous usage beacon (see kiro_crew/beacon.py).
+# Lives here with the other config defaults so beacon.py adds no import edge
+# into the config package. Setting the field to "" disables the beacon outright.
+_DEFAULT_BEACON_ENDPOINT = "https://d175o3ylxqum0e.cloudfront.net"
+
 
 def _sanitize_bot_name(raw: str) -> str:
     """Sanitize bot_name: strip markdown, braces, limit length."""
@@ -730,6 +736,17 @@ class AgentConfig:
         metadata=_meta(
             "Spawn Min Memory GB",
             "Minimum available memory (GB) required to spawn a subagent. 0 disables the check.",
+        ),
+    )
+    workflow_run_timeout_secs: int = field(
+        default=3600,
+        metadata=_meta(
+            "Workflow Run Timeout (secs)",
+            "Wall-clock ceiling for one dynamic-workflow run. This is a runaway "
+            "backstop, so it is clamped to 60s..21600s (6h) — raise it for long "
+            "multi-phase investigations, but it can never be disabled. Reaching "
+            "the ceiling is no longer a data-loss event: every agent result "
+            "completed before the cutoff is preserved on the run record.",
         ),
     )
     subagent_mem_buffer_pct: int = field(
@@ -1973,6 +1990,34 @@ class TelemetryConfig:
             sensitive=True,
         ),
     )
+    beacon_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Anonymous Usage Beacon",
+            "Anonymous daily heartbeat so maintainers can see how many "
+            "copies are actively running, which versions are in use, and "
+            "which platforms and distribution channels they run on. Sends "
+            "EXACTLY seven fields, at most once per day: a random installation "
+            "id, app version, OS, CPU architecture, Python minor version, "
+            "distribution channel, and a first-run bit. NEVER sends prompts, "
+            "model output, file contents, paths, repo names, credentials, "
+            "hostname, username, or IP address. Automatically suppressed in CI "
+            "and for a non-default KIROCREW_HOME. Opt out with "
+            "KIROCREW_TELEMETRY_DISABLED=1 or by turning this off. Independent "
+            "of the 'enabled' switch above, which is local-only metrics "
+            "collection and still never egresses.",
+        ),
+    )
+    beacon_endpoint: str = field(
+        default=_DEFAULT_BEACON_ENDPOINT,
+        metadata=_meta(
+            "Beacon Endpoint",
+            "HTTPS base URL that receives the anonymous heartbeat. EMPTY = no "
+            "beacon is ever sent, regardless of the toggle above. Must be "
+            "https:// (a plaintext heartbeat would reveal which hosts run this "
+            "software to any on-path observer); a non-https value is cleared.",
+        ),
+    )
 
     def __post_init__(self) -> None:
         if self.export_interval_seconds < 1:
@@ -1984,6 +2029,29 @@ class TelemetryConfig:
         if self.max_total_mb < 0:
             logger.warning("max_total_mb %d < 0, using 0 (no size cap)", self.max_total_mb)
             object.__setattr__(self, "max_total_mb", 0)
+        # Fail CLOSED on an unusable beacon endpoint: clear it rather than send
+        # the heartbeat in plaintext or defer a parse failure to the send path.
+        # Enforced here so the invariant holds for every consumer of the config.
+        # A startswith("https://") test is NOT sufficient — it accepts a host
+        # containing whitespace, which urlopen then rejects with
+        # http.client.InvalidURL from deep inside the beacon thread. Parse it the
+        # same way the send path does, and require a whitespace-free netloc.
+        endpoint = self.beacon_endpoint.strip()
+        if endpoint:
+            try:
+                parts = _urlsplit(endpoint)
+                usable = (
+                    parts.scheme == "https"
+                    and bool(parts.netloc)
+                    and not any(c.isspace() for c in parts.netloc)
+                )
+            except ValueError:
+                usable = False
+            if not usable:
+                logger.warning("beacon_endpoint is not a usable https:// URL; beacon disabled")
+                endpoint = ""
+        if endpoint != self.beacon_endpoint:
+            object.__setattr__(self, "beacon_endpoint", endpoint)
 
 
 # ---------------------------------------------------------------------------
@@ -3854,6 +3922,9 @@ class KiroCrewConfig:
                 subagent_result_ttl_secs=_safe_int(
                     agent_data.get("subagent_result_ttl_secs", 3600), 3600
                 ),
+                workflow_run_timeout_secs=_safe_int(
+                    agent_data.get("workflow_run_timeout_secs", 3600), 3600
+                ),
                 subagent_cwd_allowed_roots=(
                     [r for r in _roots if isinstance(r, str)]
                     if isinstance(_roots := agent_data.get("subagent_cwd_allowed_roots"), list)
@@ -3941,6 +4012,10 @@ class KiroCrewConfig:
                 retention_days=_safe_int(telemetry_data.get("retention_days", 0), 0),
                 max_total_mb=_safe_int(telemetry_data.get("max_total_mb", 0), 0),
                 otlp_endpoint=str(telemetry_data.get("otlp_endpoint", "")),
+                beacon_enabled=bool(telemetry_data.get("beacon_enabled", True)),
+                beacon_endpoint=str(
+                    telemetry_data.get("beacon_endpoint", _DEFAULT_BEACON_ENDPOINT)
+                ),
             ),
             memory=MemoryConfig(
                 embedding_provider=_coerce_embedding_provider(

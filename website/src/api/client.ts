@@ -1134,6 +1134,10 @@ export const api = {
   // never polls, so a refresh is always an explicit user action.
   fetchIssueSource: (url: string, refresh = false) => post('/api/source/issue', { url, refresh }).then(j) as Promise<IssueSource>,
   chatSlots: () => fetch('/api/chat/slots').then(j),
+  /** All goal loops across sessions. Returns `{enabled:false, loops:[]}` when
+   *  the auto-nudge feature flag is off, so callers need no flag check. */
+  autonudgeList: (): Promise<{ enabled: boolean; loops: { slot_key: string; active?: boolean; cycle_count?: number; max_cycles?: number }[] }> =>
+    fetch('/api/autonudge').then(j),
   chatSlotDetail: (slot: string, limit?: number, before?: number) => {
     const p = new URLSearchParams()
     if (limit) p.set('limit', String(limit))
@@ -1474,9 +1478,11 @@ export const api = {
   registerApp: (body: object) => post('/api/apps/register', body).then(j),
 
   // Artifacts
-  /** List artifacts. `session` scopes to one chat session's output (the
-   *  in-session Artifacts tab); `pinned` filters on the star. */
-  artifacts: (filters?: { tag?: string; kind?: string; q?: string; source_path?: string; snippet?: boolean; contentMatch?: boolean; session?: string; pinned?: boolean }) => {
+  /** List artifacts. `session` scopes to the artifacts one chat session
+   *  ORIGINATED; `touchedBy` widens that to every artifact the session was
+   *  involved with — created, read, edited, iterated on or reverted — which is
+   *  what the in-session Artifacts tab lists. `pinned` filters on the star. */
+  artifacts: (filters?: { tag?: string; kind?: string; q?: string; source_path?: string; snippet?: boolean; contentMatch?: boolean; session?: string; touchedBy?: string; pinned?: boolean }) => {
     const params = new URLSearchParams()
     if (filters?.tag) params.set('tag', filters.tag)
     if (filters?.kind) params.set('kind', filters.kind)
@@ -1485,6 +1491,7 @@ export const api = {
     if (filters?.snippet) params.set('snippet', '1')
     if (filters?.contentMatch) params.set('content', '1')
     if (filters?.session) params.set('session', filters.session)
+    if (filters?.touchedBy) params.set('touched_by', filters.touchedBy)
     if (filters?.pinned !== undefined) params.set('pinned', filters.pinned ? '1' : '0')
     const s = params.toString()
     return get(`/api/artifacts${s ? `?${s}` : ''}`).then(j)
@@ -1496,7 +1503,7 @@ export const api = {
     get(`/api/artifacts/${encodeURIComponent(slug)}/versions`).then(j),
   artifactEvents: (slug: string) =>
     get(`/api/artifacts/${encodeURIComponent(slug)}/events`).then(j),
-  createArtifact: (body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string }) =>
+  createArtifact: (body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string; folder?: string }) =>
     post('/api/artifacts', body).then(j),
   updateArtifact: (slug: string, body: { content?: string; name?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}`, body).then(j),

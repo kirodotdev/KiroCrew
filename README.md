@@ -109,6 +109,46 @@ Config lives at `~/.kiro/crew/config.json` — manage via `kirocrew config get/s
 Dashboard port: `KIROCREW_PORT` env var (default `5476`).
 Credentials: `~/.kiro/crew/.env` — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`.
 
+## Anonymous usage telemetry
+
+KiroCrew sends **one anonymous heartbeat per day** so maintainers can see how
+many copies are actively running, which versions are in use, and which
+platforms and install channels to support. This is on by default. To turn it off:
+
+```bash
+kirocrew telemetry disable        # persists to config.json
+export KIROCREW_TELEMETRY_DISABLED=1   # or per-shell / per-container
+kirocrew telemetry status         # print exactly what would be sent
+```
+
+**Exactly these seven fields are sent, once per day, and nothing else:**
+
+| Field | Example | Why |
+|-------|---------|-----|
+| Random instance id | `9c75560d…` (UUID4) | Lets us count how many copies ran on a given day. Generated once on first run and derived from nothing — not your hostname, username, MAC, IP, or any account. It identifies an installed copy, never a person. |
+| App version | `0.1.2` | Which releases are still in use |
+| OS | `darwin` | Which platforms to support |
+| CPU architecture | `arm64` | Which architectures to build for |
+| Python minor version | `3.12` | When the minimum can move up |
+| Install channel | `dmg` | Which install path people actually use |
+| First-run flag | `1` / `0` | New installs vs returning |
+
+We report this as **Daily Active Instances** rather than "users": with no account
+system there is no way to resolve a copy to a person, so one person running
+KiroCrew on three machines counts as three.
+
+**Never sent:** your prompts, model responses, file contents, file paths, repo
+or branch names, credentials, environment variables, hostname, username, or IP
+address. The receiving CDN is configured **not to log client IP addresses** — the
+log delivery does not include that field, so no IP is stored at all.
+
+**Automatically off** in CI, and whenever `KIROCREW_HOME` points somewhere other
+than `~/.kiro/crew` (dev instances and pods are never counted).
+
+This is separate from `telemetry.enabled`, which controls **local-only**
+performance metrics that never leave your machine. See
+[docs/system-specs/modules/metrics.md](docs/system-specs/modules/metrics.md).
+
 ## Troubleshooting
 
 | Problem | Fix |

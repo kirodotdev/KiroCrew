@@ -7,7 +7,7 @@ import { sseStatus, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, setC
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
 import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND, shouldChimeOnTurnDone, type McNotificationDetail } from './notificationEvent'
 import { emitThemeSound } from './themeSound'
-import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard, resolveQuestionCard, setFollowupCard, sseMcpAppRender } from '../store/chatSlice'
+import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard, resolveQuestionCard, setFollowupCard, sseMcpAppRender, setGoalLoops, sseGoalLoop } from '../store/chatSlice'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
@@ -181,6 +181,42 @@ export function useWebSocket() {
     })
   }, [dispatch])
 
+  /** Bumped by every `autonudge_state` frame. A seed captures this before its
+   *  fetch and discards the response if a frame landed while it was in flight:
+   *  the seed's full-replace would otherwise resurrect a loop whose `removed`
+   *  frame we had already applied, and because frames fire only on CHANGE
+   *  nothing would ever correct it — leaving a phantom "Loop N/M" that
+   *  suppresses that row's unread dot until the next reconnect. */
+  const goalLoopGenRef = useRef(0)
+
+  /** Cold-seed the sidebar's goal-loop map. `autonudge_state` only fires on
+   *  change, so a loop armed before this client connected would show no progress
+   *  until its next cycle fired — which can be minutes. Runs on first connect
+   *  and on every reconnect. Silent on failure and on the feature being
+   *  disabled (the endpoint answers `{enabled:false, loops:[]}`). */
+  const seedGoalLoops = useCallback(() => {
+    const gen = goalLoopGenRef.current
+    // Fully best-effort, including SYNCHRONOUS failure. This runs early in the
+    // connect handler, ahead of notification sync and the subagent subscribe, so
+    // an exception escaping here would silently strand those — a cosmetic seed
+    // must never be able to do that.
+    try {
+      api.autonudgeList()
+        .then(res => {
+          // A live frame superseded this snapshot — it is now stale, so drop it
+          // rather than replacing fresher state with older state.
+          if (goalLoopGenRef.current !== gen) return
+          dispatch(setGoalLoops((res?.loops || []).map(loop => ({
+            slot: loop.slot_key,
+            active: loop.active === true,
+            cycle_count: Number(loop.cycle_count) || 0,
+            max_cycles: Number(loop.max_cycles) || 0,
+          }))))
+        })
+        .catch(() => {})
+    } catch { /* seed is cosmetic — never break the connect path */ }
+  }, [dispatch])
+
   const syncPendingApprovals = useCallback(async () => {
     try {
       const approvals = await api.approvals()
@@ -351,6 +387,7 @@ export function useWebSocket() {
         chunkBufRef.current.clear()  // drop pre-disconnect partial chunks; refreshSlot recovers state
         dispatch(sseConnected())
         dispatch(fetchSlots()).finally(() => { reconnectingRef.current = false })
+        seedGoalLoops()
         dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       syncPendingQuestions()
         // Re-fetch active slot messages to recover from missed chunks
@@ -367,6 +404,7 @@ export function useWebSocket() {
       wasConnectedRef.current = true
       dispatch(sseConnected())
       dispatch(fetchSlots())
+      seedGoalLoops()
       dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       syncPendingQuestions()
       // Eagerly subscribe to subagent events on first connect too.
@@ -884,10 +922,35 @@ export function useWebSocket() {
               api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
             }
             break
-          case 'autonudge_state':
+          case 'autonudge_state': {
             // Broadcast for ChatPage to refresh its autonudge loop state.
             window.dispatchEvent(new CustomEvent('autonudge_state', { detail: data }))
+            // Mirror into the store as well, so the sidebar can show progress on
+            // EVERY looping row instead of only the active slot (ChatPage's
+            // listener filters to `activeSlot`). The service emits one event per
+            // fired cycle, which is what makes the cycle counter tick live.
+            const nudge = data as unknown as {
+              event?: string
+              slot?: string
+              loop?: { active?: boolean; cycle_count?: number; max_cycles?: number }
+            }
+            if (nudge.slot) {
+              // Bump BEFORE dispatching so an in-flight seed is invalidated even
+              // if its .then() runs immediately after this frame is handled.
+              goalLoopGenRef.current++
+              dispatch(sseGoalLoop({
+                slot: nudge.slot,
+                // `removed` still carries the loop object (the gateway observer
+                // only fires when `loop is not None`), and its `active` flag is
+                // whatever it was at removal — so the event name, not the flag,
+                // decides a removal.
+                active: nudge.event !== 'removed' && nudge.loop?.active === true,
+                cycle_count: Number(nudge.loop?.cycle_count) || 0,
+                max_cycles: Number(nudge.loop?.max_cycles) || 0,
+              }))
+            }
             break
+          }
           case 'voice_chunk': {
             if (voiceMutedRef.current) break
             if (data.slot !== store.getState().chat.activeSlot) break
@@ -1020,7 +1083,7 @@ export function useWebSocket() {
     }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, flushChunks, scheduleChunkFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, recordResolvedAskId])
+  }, [dispatch, flushChunks, scheduleChunkFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordResolvedAskId])
 
   /**
    * Force an immediate reconnect: cancels any pending backoff timer, closes

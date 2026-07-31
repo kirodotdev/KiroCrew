@@ -767,7 +767,7 @@
       "merge_only_setup_credentials_stay_where_they_are": "仅合并配置 · 凭证保持原处不动",
       "no_supported_setup_found": "未找到受支持的配置",
       "not_imported": "未导入",
-      "nothing_was_changed_import_the_new_copy_alongsid": "未做任何更改。你可以在保留自己版本的同时导入新副本，或替换自己的版本（网关上会保留一份可恢复的副本）。",
+      "nothing_was_changed_import_the_new_copy_alongsid": "未做任何更改。可以保留现有版本并同时导入新副本，或直接替换（网关会保留一份副本供恢复）。",
       "one_item_already_exists_with_different_content": "有 1 个条目已存在且内容不同。",
       "replace_mine": "替换我的",
       "scanning_for_agent_setup": "正在扫描代理配置",
@@ -778,12 +778,7 @@
       "skipped": "已跳过",
       "try_again": "重试",
       "we_could_not_scan_agent_setup": "我们无法扫描代理配置",
-      "your_existing_kirocrew_setup_will_not_be_affecte": "你已有的 Kiro Crew 设置不会受到影响。",
-      "keep_both": "两者都保留",
-      "replace_mine": "替换我的",
-      "nothing_was_changed_import_the_new_copy_alongsid": "未做任何更改。可以保留现有版本并同时导入新副本，或直接替换（网关会保留一份副本供恢复）。",
-      "one_item_already_exists_with_different_content": "有 1 个条目已存在且内容不同。",
-      "items_already_exist_with_different_content": "个条目已存在且内容不同。"
+      "your_existing_kirocrew_setup_will_not_be_affecte": "你已有的 Kiro Crew 设置不会受到影响。"
     },
     "agentSelector": {
       "agent_list": "代理列表",
@@ -894,7 +889,8 @@
         "ui_pages": "UI 页面：",
         "uninstall": "卸载",
         "update": "更新",
-        "v": "v"
+        "v": "v",
+        "page_other": "{{count}} 个页面"
       },
       "sourcesPopover": {
         "developer_install_of_a_local_app_directory_equiv": "以开发者方式安装本地应用目录（等同于",
@@ -2424,6 +2420,15 @@
     },
     "artifactsPage": {
       "actions": "操作",
+      "add_a_file_from_your_computer_to_the_library": "将你计算机上的文件添加到库中",
+      "add_artifact": "添加工件",
+      "add_artifact_error_empty": "该文件为空，没有可添加的内容。",
+      "add_artifact_error_not_text": "该文件不是 UTF-8 文本，库无法渲染它。",
+      "add_artifact_error_redacted": "该文件包含凭据，因此未添加——库会将其隐去，文本会被破坏。请移除密钥后重试。",
+      "add_artifact_error_too_large": "该文件过大，无法添加——上限为 {{limit}} MB。",
+      "add_artifact_error_unfiled": "已添加，但无法归入此文件夹——你可以在库的根目录中找到它。",
+      "add_artifact_error_unreadable": "无法读取该文件——它可能已被移动、删除，或位于已断开连接的驱动器上。",
+      "add_artifact_error_unsupported_type": "无法添加该文件类型。支持的类型：",
       "all": "全部",
       "all_tags": "所有标签",
       "artifact_deploy": "工件部署",
@@ -2528,6 +2533,9 @@
         "activity": "动态",
         "approve": "批准",
         "approved": "已批准",
+        "artifacts_empty": "暂无工件 — 让我创建一个，或为会话文件加星标",
+        "artifacts_library": "其他工件",
+        "artifacts_this_session": "本次会话",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "让我“用动态工作流来 …” — 此聊天中的运行会实时显示在这里。",
         "back_to_files": "返回文件",
         "cancel": "取消",
@@ -2546,12 +2554,15 @@
         "no_pull_requests_yet": "此会话中还没有拉取请求",
         "no_subagents_running": "没有运行中的子代理",
         "no_workflow_runs": "无工作流运行",
+        "open_artifact": "打开工件",
+        "open_in_side_panel": "在侧边面板中打开",
         "output": "输出",
         "output_shown_in_chat": "（输出已在聊天中显示）",
         "reject": "拒绝",
         "rejected": "已拒绝",
         "remove": "移除",
         "remove_file_from_list": "从列表中移除文件",
+        "remove_star": "移除星标",
         "resolving": "解析中…",
         "resolving_2": "解析中…",
         "resource_type_issue": "问题",
@@ -2562,6 +2573,7 @@
         "retry_failed": "重试失败项 (",
         "search_files": "按文件名、文件夹或链接搜索…",
         "show_all": "显示全部 (",
+        "star": "加星标",
         "trusted": "已信任",
         "trusted_base": "已信任的基础项",
         "trusted_command": "已信任的命令",
@@ -3860,7 +3872,9 @@
       "try_remind_me_to_check_my_pipeline_every_morning": "— 试试“提醒我每天早上检查流水线”",
       "type": "类型",
       "type_verb_to_confirm": "输入",
-      "you_can_also_create_schedules_by_chatting_try": "你也可以通过聊天创建计划 — 试试"
+      "you_can_also_create_schedules_by_chatting_try": "你也可以通过聊天创建计划 — 试试",
+      "this_permanently_removes_the_selected_job_other": "会永久删除所选任务",
+      "type_verb_to_confirm": "请输入"
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "模糊筛选（子串匹配）",

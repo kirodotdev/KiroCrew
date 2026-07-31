@@ -258,6 +258,82 @@ class TestList:
         results = store.list(tag="x")
         assert {a.slug for a in results} == {"a", "c"}
 
+    def test_touched_by_session_unions_origin_and_events(self, store: ArtifactStore) -> None:
+        """``touched_by_session`` is origin OR any event's session_id.
+
+        Three artifacts, three relationships to chat-1: authored it, only read
+        it, and nothing at all. The first two match, the third must not.
+        """
+        store.create(name="authored", content="a", slug="authored", session_key="chat-1")
+        store.create(name="read", content="b", slug="read")
+        store.record_impression("read", by="agent", session_id="chat-1")
+        store.create(name="unrelated", content="c", slug="unrelated", session_key="chat-2")
+        results = store.list(touched_by_session="chat-1")
+        assert {a.slug for a in results} == {"authored", "read"}
+
+    def test_touched_by_session_empty_is_a_no_op(self, store: ArtifactStore) -> None:
+        """Unlike ``session_key=""`` there is no "untouched" bucket to select."""
+        store.create(name="a", content="a", session_key="chat-1")
+        store.create(name="b", content="b")
+        assert len(store.list(touched_by_session="")) == 2
+        assert len(store.list(touched_by_session=None)) == 2
+
+    def test_touched_by_session_is_exact_not_prefix(self, store: ArtifactStore) -> None:
+        """Matching a prefix would leak a sibling session's artifacts.
+
+        Slot keys share a ``chat-<n>-`` shape, so ``chat-1`` must not match
+        ``chat-11`` — otherwise one session's tab lists another's work.
+        """
+        store.create(name="a", content="a", slug="a", session_key="chat-1")
+        store.create(name="b", content="b", slug="b", session_key="chat-11")
+        assert {x.slug for x in store.list(touched_by_session="chat-1")} == {"a"}
+
+    def test_touched_by_session_matches_the_real_mixed_key_formats(
+        self, store: ArtifactStore
+    ) -> None:
+        """The two provenance fields are persisted in DIFFERENT formats.
+
+        Production data (verified against a live store) holds a bare slot key
+        in ``session_key`` — written from the browser's slot — and a
+        scope-qualified ``dashboard:<slot>`` in each event's ``session_id``,
+        because MCP callers resolve identity through the scope-qualified
+        session key. The panel queries with the bare slot, so a literal
+        comparison silently drops every consumed artifact: exactly the case
+        the involvement scope exists to add.
+        """
+        store.create(name="read", content="b", slug="read")
+        store.record_impression("read", by="agent", session_id="dashboard:chat-1")
+        store.create(name="saved", content="c", slug="saved", session_key="dashboard:chat-1")
+        store.create(name="other", content="d", slug="other")
+        store.record_impression("other", by="agent", session_id="dashboard:chat-2")
+        # Bare slot key, as the dashboard sends it.
+        assert {x.slug for x in store.list(touched_by_session="chat-1")} == {"read", "saved"}
+        # Scope-qualified key, as an MCP caller would send it — same answer.
+        assert {
+            x.slug for x in store.list(touched_by_session="dashboard:chat-1")
+        } == {"read", "saved"}
+
+    def test_touched_by_session_does_not_collapse_other_scopes(
+        self, store: ArtifactStore
+    ) -> None:
+        """Only ``dashboard:`` is stripped.
+
+        A ``slack:``/``cron:`` key has no bare chat-slot twin, so collapsing
+        those prefixes would merge genuinely different sessions into one tab.
+        """
+        store.create(name="a", content="a", slug="a", session_key="slack:chat-1")
+        store.create(name="b", content="b", slug="b", session_key="cron:chat-1")
+        store.create(name="c", content="c", slug="c", session_key="dashboard:chat-1")
+        assert {x.slug for x in store.list(touched_by_session="chat-1")} == {"c"}
+
+    def test_touched_by_session_ignores_events_with_no_session(
+        self, store: ArtifactStore
+    ) -> None:
+        """A null/absent ``session_id`` must not match a real query key."""
+        store.create(name="a", content="a", slug="a")
+        store.record_impression("a", by="user", session_id=None)
+        assert store.list(touched_by_session="chat-1") == []
+
     def test_filter_by_kind(self, store: ArtifactStore) -> None:
         store.create(name="w", content="a", kind="widget")
         store.create(name="m", content="# md", kind="markdown")

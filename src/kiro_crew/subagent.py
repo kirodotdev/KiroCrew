@@ -796,6 +796,15 @@ class SubagentInfo:
     task: str
     started: float = field(default_factory=time.time)
     done: bool = False
+    # True for the record returned by a spawn that hit the stagger/concurrency
+    # gate and was QUEUED instead of started. Such a record is not registered in
+    # ``_agents`` and carries no live state — but its ``id`` IS the id the agent
+    # will run under once ``_drain_queue`` starts it (pre-assigned at accept
+    # time), so callers may print it or hold on to it. This flag replaces the old
+    # ``q<n>`` id-prefix sentinel, which signalled "queued" by destroying the
+    # very identity it was reporting on: the drained spawn minted a fresh uuid,
+    # so the id the caller was told never matched the agent that ran.
+    queued: bool = False
     result: str = ""
     result_path: str = ""
     result_truncated: bool = False  # completion-event copy dropped content → summary+path
@@ -2265,6 +2274,7 @@ class SubagentManager:
         batch_id: str = "",
         batch_total: int = 0,
         _from_queue: bool = False,
+        _preassigned_id: str = "",
     ) -> SubagentInfo | None:
         """Spawn a subagent for *task*.
 
@@ -2308,6 +2318,16 @@ class SubagentManager:
         Returns:
             SubagentInfo | None: Agent metadata, or None if at capacity.
         """
+        # Identity is assigned ONCE, here, and used by every exit path — the
+        # queued return, each rejection, and the started record. That is what
+        # makes the id the caller is handed the id it will actually see again:
+        # ``spawn_run`` prints this id into its wave roster, and the dashboard
+        # resolves a wave by matching those printed ids against live per-agent
+        # events. A drained spawn passes the id it was queued under back in via
+        # ``_preassigned_id``, so a member that waits behind the stagger /
+        # concurrency gate keeps its identity across the round-trip instead of
+        # being announced under one id and starting under another.
+        agent_id: str = _preassigned_id or uuid.uuid4().hex[:8]
         # Submission accounting (Arbiter item 2): count this member as
         # submitted BEFORE any rejection or queue/registration branching. A
         # member refused below (empty task, low memory, bad cwd, governance)
@@ -2345,7 +2365,7 @@ class SubagentManager:
             except Exception:
                 logger.debug("SEL audit failed for empty-task rejection", exc_info=True)
             return self._announce_rejection(SubagentInfo(
-                id=uuid.uuid4().hex[:8],
+                id=agent_id,
                 task="",
                 agent=agent,
                 parent_session_key=parent_session_key,
@@ -2381,7 +2401,7 @@ class SubagentManager:
                 },
             )
             info = SubagentInfo(
-                id=uuid.uuid4().hex[:8],
+                id=agent_id,
                 task=_redacted_task,
                 agent=agent,
                 parent_session_key=parent_session_key,
@@ -2414,7 +2434,7 @@ class SubagentManager:
                     metadata={"cwd": cwd[:200], "reason": cwd_err, "task": _redacted_task[:120]},
                 )
                 info = SubagentInfo(
-                    id=uuid.uuid4().hex[:8],
+                    id=agent_id,
                     task=_redacted_task,
                     agent=agent,
                     parent_session_key=parent_session_key,
@@ -2442,7 +2462,7 @@ class SubagentManager:
                 metadata={"agent": agent, "task": _redacted_task[:120]},
             )
             return self._announce_rejection(SubagentInfo(
-                id=uuid.uuid4().hex[:8],
+                id=agent_id,
                 task=_redacted_task,
                 agent=agent,
                 parent_session_key=parent_session_key,
@@ -2455,6 +2475,17 @@ class SubagentManager:
         now = time.monotonic()
         should_queue, slot_free = self._should_stagger_queue(now)
         if should_queue:
+            # Carry this spawn's id (assigned at the top) in the queue entry so
+            # the drained spawn runs under it. The identity must survive the
+            # round-trip because it is the only handle the caller gets: spawn_run
+            # prints the id this call returns, and the inline SubagentRunCard
+            # resolves a wave by matching those printed ids against live
+            # per-agent events. Returning a throwaway sentinel (the old
+            # ``q<n>``) and minting a fresh uuid on drain meant every wave member
+            # after the first was announced under an id no agent ever had — with
+            # the default 2s stagger that is EVERY member after the first, so a
+            # 2-agent wave permanently rendered "1 agent running" while the
+            # sidebar and Subagents panel correctly showed 2.
             self._queue.append(
                 {
                     "task": task,
@@ -2469,6 +2500,7 @@ class SubagentManager:
                     "silent": silent,
                     "batch_id": batch_id,
                     "batch_total": batch_total,
+                    "_preassigned_id": agent_id,
                 }
             )
             logger.info(
@@ -2491,7 +2523,7 @@ class SubagentManager:
                 except RuntimeError:
                     pass  # no running loop (sync/test context)
             info = SubagentInfo(
-                id=f"q{len(self._queue)}", task=_redacted_task, agent=agent,
+                id=agent_id, task=_redacted_task, agent=agent, queued=True,
                 batch_id=batch_id, batch_total=max(0, int(batch_total)),
             )
             return info
@@ -2500,14 +2532,13 @@ class SubagentManager:
             agent, err = _validate_agent(agent)
             if err:
                 info = SubagentInfo(
-                    id=uuid.uuid4().hex[:8], task=_redacted_task, agent="",
+                    id=agent_id, task=_redacted_task, agent="",
                     parent_session_key=parent_session_key,
                     done=True, error=err,
                     batch_id=batch_id, batch_total=max(0, int(batch_total)),
                 )
                 return self._announce_rejection(info)
 
-        agent_id: str = uuid.uuid4().hex[:8]
         info = SubagentInfo(
             id=agent_id,
             task=_redacted_task,
@@ -2709,7 +2740,9 @@ class SubagentManager:
         # spawn() re-checks the gate; since elapsed >= stagger and a slot is
         # free, it starts immediately and updates _last_spawn_ts. Forward the FULL
         # kwarg set so approval_mode / silent / model / allowed_tools / bare survive
-        # the queue round-trip.
+        # the queue round-trip — including `_preassigned_id`, which makes the agent
+        # start under the id its caller was already told (and, if the gate re-queues
+        # it, keeps that id across the second round-trip too).
         self.spawn(**params, _from_queue=True)
         if self._queue and self._running_count < self._max_concurrent:
             try:

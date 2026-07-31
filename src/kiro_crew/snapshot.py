@@ -31,6 +31,21 @@ VALID_COMPONENTS = ("memory", "crons", "config", "skills", "workspace", "notific
 # Files that must always have 0o600 permissions in snapshots and on restore.
 SECURITY_SENSITIVE_FILES: frozenset = frozenset({"sel_hmac.key", "telemetry_salt"})
 
+# Files that must NEVER ride a snapshot: sel_hmac.key is regenerated on restore
+# so audit-log HMACs stay bound to the host that wrote them.
+#
+# This set is matched by BASENAME inside `_data_filter`, which runs over the
+# ENTIRE tar — including the staged workspace/, plan_memory/ and skills/ trees.
+# So any name added here also silently drops a USER file that happens to share
+# it. Keep the set minimal for that reason.
+#
+# The beacon's per-install identity (beacon_install_id / beacon_last_sent) is
+# deliberately NOT here: snapshot staging copies an explicit per-component file
+# list (CORE_FILES) plus those three directories, and no component lists a beacon
+# file, so a root beacon file is never staged in the first place. The
+# id-cloning hazard is closed by that non-selection, not by a basename filter.
+NEVER_SNAPSHOT_FILES: frozenset = frozenset({"sel_hmac.key"})
+
 
 def _data_filter(info: tarfile.TarInfo, _dest: str = "") -> tarfile.TarInfo | None:
     """Equivalent to tarfile ``"data"`` filter (Python 3.12+), with 3.10 fallback.
@@ -68,9 +83,9 @@ def _data_filter(info: tarfile.TarInfo, _dest: str = "") -> tarfile.TarInfo | No
     if info.issym() or info.islnk():
         print(f"⚠️  Rejecting symlink/hardlink entry: {info.name}")
         return None
-    # Exclude sel_hmac.key — must be regenerated on restore, never shipped
+    # Never ship these — each must be regenerated on the restoring host.
     basename = PurePosixPath(info.name).name
-    if basename == "sel_hmac.key":
+    if basename in NEVER_SNAPSHOT_FILES:
         return None
     info.uid = info.gid = 0
     info.uname = info.gname = ""

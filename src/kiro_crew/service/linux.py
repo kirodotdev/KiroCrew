@@ -28,12 +28,52 @@ from pathlib import Path
 from kiro_crew.service.common import (
     SERVICE_NAME,
     kirocrew_bin,
-    service_path,
+    service_environment,
 )
 
 log = logging.getLogger(__name__)
 
 UNIT_PATH = Path(f"/etc/systemd/system/{SERVICE_NAME}.service")
+
+
+def _sd_quote(value: str) -> str:
+    """Double-quote a value for a systemd unit token.
+
+    systemd splits unquoted ``ExecStart`` / ``Environment=`` tokens on
+    whitespace, so any path or locale containing a space (a spaced
+    ``KIROCREW_SERVICE_BIN`` / ``KIROCREW_KIRO_BIN`` override, ``PATH`` entries
+    with spaces, etc.) must be wrapped in double quotes. Inside a double-quoted
+    token systemd honours C-style escapes, so ``\\`` and ``"`` are
+    backslash-escaped.
+
+    ``%`` is escaped to ``%%`` *first* (before quoting): systemd performs
+    specifier expansion on ``ExecStart`` / ``Environment=`` values regardless of
+    quoting — an unescaped ``%h`` / ``%i`` in a path (e.g. a directory literally
+    named ``100%``) would be replaced with the home dir / instance name and the
+    exec would target the wrong path. See systemd.unit(5) "Specifiers",
+    systemd.service(5) "Command lines", and systemd.exec(5) ``Environment=``.
+
+    A control character — most dangerously a newline — is rejected outright
+    (``ValueError``) rather than escaped. A double-quoted systemd token does not
+    span physical lines, so a newline in an operator override
+    (``KIROCREW_SERVICE_BIN`` / ``KIROCREW_KIRO_BIN``) would terminate the value
+    and let the remainder be parsed as fresh unit directives — e.g. injecting
+    ``User=root`` + a replacement ``ExecStart`` into the root-owned unit that
+    ``sudo … service install`` writes (a privilege-escalation vector). No
+    legitimate executable path or locale contains a C0/DEL control character, so
+    refusing them is strictly safer than trying to escape them.
+    """
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise ValueError(
+            "refusing to render a systemd unit value containing a control "
+            "character (possible unit-file injection): " + repr(value)
+        )
+    escaped = (
+        value.replace("%", "%%")
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+    )
+    return f'"{escaped}"'
 
 
 def _current_user() -> str:
@@ -71,6 +111,18 @@ def render_unit() -> str:
     user = _current_user()
     group = _current_group(user) if user else ""
     home = str(Path.home())
+    # USER is systemd-specific (launchd derives the user from the login
+    # session); everything else comes from the shared service_environment()
+    # so the two managers can never drift. Every value is double-quoted +
+    # escaped: a path or locale containing a space (e.g. an override under
+    # ``/opt/Kiro Crew/``) would otherwise be split on whitespace by systemd's
+    # tokenizer — ``ExecStart`` would try to exec the first word (203/EXEC) and
+    # an ``Environment=`` value would be truncated at the space.
+    exec_start = f"{_sd_quote(bin_path)} gateway"
+    env_lines = f"Environment={_sd_quote(f'USER={user}')}\n" + "".join(
+        f"Environment={_sd_quote(f'{key}={value}')}\n"
+        for key, value in service_environment(home).items()
+    )
     return (
         "[Unit]\n"
         "Description=Kiro Crew gateway (dashboard + Slack + cron)\n"
@@ -88,7 +140,7 @@ def render_unit() -> str:
         f"User={user}\n"
         f"Group={group}\n"
         f"WorkingDirectory={home}\n"
-        f"ExecStart={bin_path} gateway\n"
+        f"ExecStart={exec_start}\n"
         "Restart=on-failure\n"
         "RestartSec=10\n"
         "TimeoutStopSec=20\n"
@@ -100,9 +152,7 @@ def render_unit() -> str:
         # agent-launched builds and other FD-hungry work survive regardless
         # of the host default.
         "LimitNOFILE=65536\n"
-        f"Environment=HOME={home}\n"
-        f"Environment=USER={user}\n"
-        f"Environment=PATH={service_path(home)}\n"
+        f"{env_lines}"
         "\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n"

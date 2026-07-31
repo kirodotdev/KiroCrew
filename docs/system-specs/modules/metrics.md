@@ -1,6 +1,6 @@
 # Metrics Telemetry Module
 
-Last Updated: 2026-07-28 (per-turn token usage row store + context-occupancy fields, issue #647)
+Last Updated: 2026-07-30 (anonymous usage beacon — a THIRD, separate telemetry path)
 
 ## Overview
 
@@ -212,7 +212,7 @@ written (the panel therefore renders it even with OTEL export off).
 
 ## Per-turn token usage row store
 
-Separate from the OTEL histogram sink above (`~/.kirocrew/metrics/`, DELTA
+Separate from the OTEL histogram sink above (`~/.kiro/crew/metrics/`, DELTA
 histograms for trends/alerting), the gateway also keeps a **per-turn row store**
 for cost and context analytics: one JSON object per model-spending turn appended
 to `<data home>/usage/tokens/YYYY-MM-DD.jsonl` (shards partitioned by the user's
@@ -277,3 +277,267 @@ Tests: `test/test_usage.py` (`TestReadContextTokens`,
 from inside `config.loader`'s import chain (e.g. `acp/client.py`) MUST import
 `get_recorder` lazily (inside the function) so the provider is never loaded
 during that chain.
+
+## Anonymous usage beacon (`beacon.py`) — the THIRD telemetry path
+
+There are now **three independent** telemetry paths. Keep them straight:
+
+| Path | Purpose | Data | Egress | Switch |
+|------|---------|------|--------|--------|
+| OTEL metrics (`metrics/`) | Ops observability | DELTA histograms / counters | **Never** (local JSONL; OTLP only if the operator sets an endpoint) | `telemetry.enabled` (**off**) |
+| Token row store (`usage/tokens/`) | Cost + context analytics | One row per model-spending turn | **Never** | always on |
+| **Beacon (`beacon.py`)** | **Product analytics** | One anonymous ping per install per day | **Yes — to the KiroCrew endpoint** | `telemetry.beacon_enabled` (**on**) |
+
+`src/kiro_crew/beacon.py`, tests `test/test_beacon.py`. Fired from
+`slack/gateway.py::run_gateway` on a **detached daemon thread** (never awaited —
+a 5s blocking `urllib` call must not delay boot or pin interpreter exit), and
+skipped entirely under `--test-mode` so the offline E2E gate cannot egress.
+
+### Why it is NOT part of the OTEL trunk
+
+Four independently disqualifying reasons — do **not** "consolidate" them later:
+
+1. **The privacy guardrail eats the payload.** `MetricsRecorder._guard()` runs
+   every attribute through `schema.redact()`. A 64-char sha256 install id
+   becomes `"[REDACTED]"` (40+-hex rule), so DAU would silently compute as 1.
+   Ids that merely *survive* redaction are no better: `schema.py` mandates
+   low-cardinality enum-like values and the instrument cache never evicts, so a
+   per-machine id is precisely the "cardinality bomb" that contract prevents.
+2. **OTLP egress is an extra.** `opentelemetry-exporter-otlp-proto-http` ships
+   in `kirocrew[otlp]`, not the default dependency set, so a beacon riding it
+   would measure only users who installed an optional extra.
+3. **`telemetry.enabled` is a published no-egress promise** (config help, this
+   spec, the dashboard panel all say "nothing leaves this machine"). Hanging an
+   outbound heartbeat off it would retroactively change what that switch means.
+4. **Shape mismatch.** OTEL carries pre-aggregated data points; DAU needs one
+   row per install per day deduped at query time. Aggregating away the id makes
+   DAU uncomputable.
+
+The one thing it *does* share is the atomic create-once file pattern from
+`handlers_system.py::_get_telemetry_salt` (`os.link`, owner-only mode,
+in-memory fallback).
+
+### What `DailyActiveInstances` means (and does not)
+
+The metric is **`DailyActiveInstances`** — deliberately not "DAU" and not
+"Installations". The distinction matters because it is easy to misread the number:
+
+- It measures **activity, not installs.** The `install_id` is a *persistent
+  identity* generated once at first run, not a per-install event counter. A copy
+  that runs on ten days contributes to ten daily buckets with the same id;
+  `COUNT(DISTINCT install_id)` **per day** therefore answers "how many copies ran
+  today". Install *volume* is a separate metric (`NewInstallations`, from the
+  `first_seen` bit, plus model-CDN first-fetch).
+- It is **not DAU**, because the denominator is not a person and cannot be. There
+  is no account system — only a random per-data-home id — so one operator on
+  three machines counts as **3**, and three people sharing one machine count as
+  **1**. Calling it DAU would invite the reader to treat "14" as 14 people.
+- The over-count is **larger here than for a typical CLI**: KiroCrew supports
+  pods, worktree previews, and `KIROCREW_HOME` overrides, so one person on one
+  machine easily has several data homes. Dev homes and CI are suppressed, but a
+  user's own pods are not.
+
+`Instance` is the honest middle: it names a *running thing* (not the act of
+installing) without claiming to have resolved it to a human.
+
+### The seven fields (a fixed allowlist)
+
+`payload()` is the only producer; there is no caller-supplied field, so the
+shape cannot be widened from a call site.
+
+| Field | Example | Why |
+|-------|---------|-----|
+| `id` | 32-char hex | Random UUID4. Dedup key for `COUNT(DISTINCT)`. |
+| `v` | `0.1.2` | Version adoption. |
+| `os` | `darwin` | Platform mix. |
+| `arch` | `arm64` | Architecture mix. |
+| `py` | `3.12` | **Minor only.** Answers "when can the floor move off 3.10". |
+| `dist` | `dmg` | Which install path users take. Clamped to a fixed set. |
+| `first_seen` | `1`/`0` | One bit → new-install and "launched once, never again" rate. |
+
+**Anti-fingerprinting is a design constraint, not a side effect.** Every value
+is a low-cardinality constant or coarse bucket, because the id is stable and
+attributes on the same request are therefore correlated: enough precise
+attributes (exact patch level, CPU count, RAM, timezone, uptime) would combine
+into a quasi-unique identifier even though each is individually "anonymous".
+Do not add precise numeric or high-cardinality fields.
+
+**Never sent:** prompts, model output, file contents, paths, repo names,
+credentials, hostname, username, IP. Notably it does **not** reuse
+`handlers_system._get_owner_hash()` — that is `HMAC(salt, hostname + ":" +
+username)`; it stays local-only, and sending it would change its character.
+
+### Fail-open is the load-bearing contract
+
+**No beacon failure may ever block, delay, or surface an error in a user action.**
+A telemetry path that can fail a turn is worse than no telemetry, so this is
+enforced structurally, not by care:
+
+- **Boot is never delayed.** `run_gateway` starts `beacon.send` on a *detached
+  daemon* thread and never joins or awaits it. Measured cost to the boot path
+  with a beacon hanging 30s: **0.08 ms** (the thread spawn). `daemon=True` also
+  means it cannot pin interpreter exit. `TestFailOpen` pins both, plus a source
+  assertion against a refactor to `await asyncio.to_thread(...)`, which would
+  silently reintroduce up to `HTTP_TIMEOUT_SECS` of boot delay.
+- **Every failure returns `False` silently.** Verified across ten real modes:
+  DNS failure, connection refused, TLS handshake failure, HTTP 500, HTTP 403
+  (corporate block), socket timeout, captive-portal garbage bytes, malformed
+  URL, network-unreachable, and disk-full on the stamp write.
+- **Both filesystem probes are inside the guard.** `should_send()` and
+  `payload()` touch the data home, so they run *inside* `send()`'s `try` — an
+  unwritable home raises `PermissionError` from `config_dir()`, and a container
+  whose UID has no passwd entry makes `Path.home()` raise **`RuntimeError`**
+  (not `OSError`). Both are caught; the documented in-memory-id fallback is what
+  engages.
+- **`http.client.HTTPException` is named explicitly** in the except tuple: it
+  subclasses `Exception` directly, so it is neither `OSError` nor `ValueError`.
+  Without it, `http.client.InvalidURL` / `BadStatusLine` escaped into the daemon
+  thread and `threading.excepthook` printed a traceback to gateway stderr on
+  every boot.
+- **Even an unexpected exception class is contained** — it dies inside the daemon
+  thread and the main thread is unaffected.
+- **`status()` never tracebacks.** A diagnostic has to be readable precisely when
+  something is broken, so its probes are guarded too.
+
+The one thing deliberately *not* swallowed is a stamp-write failure's
+consequence: `_mark_sent()` runs only after a delivered request, so a failed send
+retries later rather than silently losing the day.
+
+### Default-ON with three suppressions
+
+`telemetry.beacon_enabled` defaults **true** (the only default-on egress in the
+repo). `should_send()` suppresses when: `KIROCREW_TELEMETRY_DISABLED` is truthy,
+the config toggle is false, the process looks like **CI**, or `KIROCREW_HOME` is
+**non-default** (dev home / pod / worktree preview — one operator's own extra
+instances would inflate the count).
+
+`is_default_home()` compares against `~/.kiro/crew` **directly, never against
+`config_dir()`** — `config_dir()` *honors* `KIROCREW_HOME`, so comparing the two
+always matches and the suppression would never fire (a real bug caught by
+`TestDefaultHomeDetection`).
+
+`kirocrew telemetry status | disable | enable` — `status` prints the exact
+payload and never materializes an id (`install_id(create=False)`); `disable`
+persists to `config.json` so the choice survives a new shell.
+
+### Cross-machine identity hazard
+
+A snapshot restored onto a second machine must not clone the id — two hosts
+sharing one would collapse into a single Daily Active Instance, and the copied
+stamp would suppress the new host's sends.
+
+This is guaranteed by **non-selection, NOT by a basename filter**, and the
+distinction matters: `portability.EXPORT_EXCLUDE` and
+`snapshot.NEVER_SNAPSHOT_FILES` are matched by BASENAME over the staged
+`workspace/`, `plan_memory/` and `skills/` trees, so registering a beacon
+filename there would silently drop any **user** file that happens to share the
+name — real data loss on restore, in exchange for nothing. Root-level export
+copies a hard-coded allowlist (`config.json`, `hooks.json`, `crons.json`,
+`notifications.jsonl`, `project_dir`, `workspace_dir`) and snapshot staging
+copies an explicit per-component list (`CORE_FILES`); neither names a beacon
+file, so the root paths are never selected in the first place.
+
+`TestSnapshotAndPortabilityRegistration` pins the whole property in both
+directions: the names are absent from both filters, absent from the export
+allowlist and `CORE_FILES`, and a workspace file sharing either name survives.
+
+### Bounded, symlink-safe state reads
+
+All beacon state goes through `_read_state()`, never `Path.read_text()`, with
+three guards:
+
+1. **Regular files only** (`lstat` + `S_ISREG`). `read_text` FOLLOWS symlinks, so
+   a link at `beacon_install_id` pointing at `/dev/zero` made the read allocate
+   unboundedly until OOM — inside the gateway's beacon thread. The check also
+   rejects FIFOs (whose `open()` blocks forever) and device nodes, without ever
+   opening them.
+2. **Bounded length** (`_MAX_STATE_BYTES`, 4 KiB). Even a regular file can be
+   enormous if a log is rotated onto the name.
+3. **Lenient decode** (`errors="replace"`). A strict decode raises
+   `UnicodeDecodeError`, which is a `ValueError` and **not** an `OSError`, so it
+   escaped the callers' handlers and killed `kirocrew telemetry status`.
+
+Anything unreadable returns `""`, which every caller already treats as
+absent/corrupt — so the id regenerates rather than merely not crashing. The
+`/dev/zero` and FIFO tests use a real thread timeout, because the failure mode is
+"never returns", which a plain assertion cannot catch.
+
+### Server side (account 116101834266, us-west-2)
+
+Zero application code — the access log **is** the data product:
+
+```
+client ──GET /b/1/<id>?v&os&arch&py&dist&first_seen──> CloudFront E1YM983XX3ASBM
+                                     │ CloudFront Function returns 204 at the edge
+                                     ▼
+        standard logging v2 → s3://kirocrew-beacon-logs (PERMANENT, tiered)
+                                     ▼
+              Athena kirocrew_analytics.beacon_logs (partition projection)
+                                     ▼
+        kirocrew-beacon-aggregator Lambda (daily 00:20 UTC) writes BOTH:
+                    ├── CloudWatch KiroCrew/Product  → dashboard (~15-month view)
+                    └── kirocrew_analytics.beacon_daily → PERMANENT record
+```
+
+### Retention: S3/Athena is permanent, CloudWatch is a 15-month view
+
+**CloudWatch cannot be the durable store.** Metric data is retained for at most
+**15 months** and expires on a **rolling** basis (1-min → 15 days, 5-min → 63
+days, 1-hour → 455 days), and that ceiling is not configurable. So the dashboard
+is inherently a ~15-month window, by AWS design rather than by our choice.
+
+The permanent record is therefore two things in S3:
+
+- **Raw logs** — `s3://kirocrew-beacon-logs`. The lifecycle policy has **no
+  `Expiration` on any rule**; objects only *transition* (Standard → Standard-IA
+  at 90d → Glacier Instant Retrieval at 365d) to cut cost. Glacier **Flexible
+  Retrieval / Deep Archive are deliberately avoided** — they require an async
+  restore before a read, which would silently break the long-range Athena
+  queries this design exists to support. Versioning is on; only *noncurrent*
+  versions are pruned (365d).
+- **Daily rollup** — `kirocrew_analytics.beacon_daily` (Parquet, stays in
+  Standard forever). One small row per `(day, metric, dimension, value)`. This
+  is what makes "permanent" *useful*: raw logs grow linearly forever, so a
+  multi-year dashboard query would scan every line ever written, while the
+  rollup keeps such queries fast and cheap.
+
+`_persist_rollup()` is **idempotent** — it deletes the target day's rows before
+inserting, so a backfill or a retry after a partial failure cannot double-count.
+It runs **last** in the handler, after the CloudWatch puts, because CloudWatch is
+best-effort presentation while the rollup is the durable store: a rollup failure
+must surface as a Lambda invocation error (visible on the dashboard's error
+widget) rather than being masked by an otherwise-successful metric write.
+
+**Object Lock is deliberately NOT enabled.** It would make the logs literally
+undeletable, which sounds like "permanent" but is the wrong trade for a
+privacy-sensitive dataset: it would also remove our own ability to purge after an
+operator mistake, a schema error, or a future deletion obligation. The goal is
+"retained indefinitely by policy", not "physically impossible to delete".
+
+**The aggregator cannot delete the permanent record.** Its IAM policy grants
+`s3:PutObject`/`s3:DeleteObject` on `kirocrew-beacon-logs/rollup/*` **only** —
+raw-log access is read-only, so the component that consumes the history has no
+permission to destroy it.
+
+**No client IP is ever stored.** The log delivery's `recordFields` selects only
+`date`, `time`, `cs-uri-stem`, `cs-uri-query`, `c-country`, `sc-status` —
+`c-ip`, `x-forwarded-for`, User-Agent and Cookie are simply not delivered.
+Verified against a real delivered log file. This is why the design uses a
+Lambda-free CDN log path rather than CDN logging with default fields, and it is
+what makes the "no IP" claim structural rather than a promise.
+
+**Aggregator timestamp rule (load-bearing):** metrics are stamped at the
+**end** of the target day, clamped to `now - 1min`. CloudWatch accepts
+timestamps up to two weeks old but points **24h+ old can take 48 hours** to
+become queryable, while <3h old are near-immediate. Stamping midnight-of-
+yesterday from an 02:30 run put every point in the 48-hour bucket and the
+dashboard rendered **empty** despite the data being accepted; the clamp is
+needed because a same-day backfill's 23:59 is in the future and
+`PutMetricData` rejects >2h ahead. Both failure modes were hit in development.
+
+**Model CDN.** `embeddings.py::_DEFAULT_MODEL_URL` points at
+`kirocrew-models` (distribution E2UX23B48LKM6V, OAC-only bucket access). The
+`_GGUF_SHA256` pin remains the sole integrity gate, so a tampered CDN object can
+only fail verification. Because `_ensure_downloaded()` returns early when
+`model_ready()`, a CDN request is a **first-install** signal, not a DAU signal —
+the dashboard shows it as "downloads", deliberately separate from DAI.

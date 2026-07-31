@@ -15,6 +15,7 @@ live in sibling modules:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import hashlib
 import importlib
@@ -28,6 +29,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import webbrowser
@@ -41,7 +43,7 @@ from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeCli
 
 import kiro_crew
 import kiro_crew.crash_guard as crash_guard
-from kiro_crew import platform_compat, shutdown_event
+from kiro_crew import beacon, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.autonudge import (
     AutoNudgeService,
@@ -5674,6 +5676,23 @@ async def run_gateway(
     # Standalone composes the all-defaults context (identical to today); a
     # non-standalone profile that cannot compose its companion fails closed.
     boot_platform(cfg)
+
+    # ── Anonymous usage beacon (at most one HTTP GET per day) ──
+    # Detached daemon thread, NOT awaited: ``beacon.send`` is blocking urllib
+    # with a 5s timeout, and boot must never wait on the network (nor pin
+    # interpreter exit — hence daemon=True, matching the model-download helper's
+    # reasoning in embeddings.py). Errors are swallowed inside ``send``; a failed
+    # heartbeat is invisible by design. ``test_mode`` skips it entirely so the
+    # offline E2E gate can never make an outbound request.
+    if not test_mode:
+        with contextlib.suppress(Exception):
+            threading.Thread(
+                target=beacon.send,
+                args=(cfg.telemetry.beacon_endpoint, kiro_crew.__version__),
+                kwargs={"enabled": cfg.telemetry.beacon_enabled},
+                name="kirocrew-beacon",
+                daemon=True,
+            ).start()
 
     orchestrator = GatewayOrchestrator(
         cfg,
