@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import DOMPurify from 'dompurify'
-import hljs from 'highlight.js'
+import hljs from '../utils/hljs'
 import { useTheme } from '../hooks/useTheme'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import { InlineCommentOverlay } from './InlineCommentOverlay'

@@ -13,8 +13,9 @@
  *  - The test suite has ~4000 assertions matching visible English text. A
  *    synchronous `t()` keeps them all valid with no per-test `await`.
  *
- * The cost is bundle size: every language ships to every user. With two
- * catalogs that is small, but it does NOT scale linearly forever.
+ * The cost is bundle size: every language ships to every user (except the
+ * pseudolocale, which is DEV-only — see `CATALOGS`). With two catalogs that is
+ * small, but it does NOT scale linearly forever.
  *
  * ## Lazy-loading seam (when to reach for it)
  *
@@ -71,10 +72,13 @@ function mergeCatalogs(
 /**
  * Catalog registry — the SINGLE place a language's catalog is bound to its code.
  *
- * Exported so tests read the same map the runtime uses instead of maintaining a
- * parallel copy. That parallel copy was a real trap: it made "add a language" a
- * 4-edit job where forgetting the 4th produced a confusing parity failure
- * pointing at the catalog rather than at the test's own map.
+ * Holds the authored languages; the generated pseudolocale is appended below in
+ * DEV builds only, and `CATALOGS` (not this constant) is the runtime registry.
+ *
+ * Exported via `CATALOGS` so tests read the same map the runtime uses instead of
+ * maintaining a parallel copy. That parallel copy was a real trap: it made "add
+ * a language" a 4-edit job where forgetting the 4th produced a confusing parity
+ * failure pointing at the catalog rather than at the test's own map.
  *
  * A language listed in `SUPPORTED_LANGUAGES` MUST appear here; `catalogParity.test.ts` asserts the two lists agree, so a language
  * added to one and not the other fails CI instead of silently rendering keys.
@@ -83,7 +87,7 @@ function mergeCatalogs(
  * (`settings.display.view`, `chat.composer.send`), which gives the same
  * grouping a namespace split would without making every call site name one.
  */
-export const CATALOGS = {
+const AUTHORED_CATALOGS: Record<string, { translation: Record<string, unknown> }> = {
   en: { translation: mergeCatalogs(enGenerated, enManual) },
   'zh-CN': { translation: zhCN },
   hi: { translation: hi },
@@ -94,9 +98,26 @@ export const CATALOGS = {
   ru: { translation: ru },
   de: { translation: de },
   it: { translation: it },
-  // Pseudolocale — generated, dev-only in the picker. See `languages.ts`.
-  'en-XA': { translation: enXA },
-} as const
+}
+
+/**
+ * The pseudolocale is registered in DEV builds ONLY.
+ *
+ * It is unreachable in a production build by two independent guards already —
+ * `devOnly` hides it from the picker and `isRestorableLanguage()` refuses it
+ * from persisted state — so shipping its catalog was pure weight: the accented,
+ * expansion-padded copy of every English string is the single largest catalog
+ * (~88 KB gzip on first load) and no production user can select it.
+ *
+ * `import.meta.env.DEV` is statically replaced with `false` at build time, so
+ * the ternary below is dead code in a production build and Rollup drops the
+ * `en-XA.json` module with it. The import stays static (not `await import`)
+ * because `t()` must remain SYNCHRONOUS — see the file header.
+ */
+export const CATALOGS: Record<string, { translation: Record<string, unknown> }> =
+  import.meta.env.DEV
+    ? { ...AUTHORED_CATALOGS, 'en-XA': { translation: enXA } }
+    : AUTHORED_CATALOGS
 
 /**
  * Initialize i18next exactly once.

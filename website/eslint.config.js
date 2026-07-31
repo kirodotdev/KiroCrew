@@ -28,6 +28,18 @@ export default [
       'react-hooks/exhaustive-deps': 'warn',
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      // The `highlight.js` barrel registers all ~190 bundled grammars (~200-240 KB
+      // gzip). `src/utils/hljs.ts` wraps `highlight.js/lib/core` with only the
+      // grammars the dashboard actually renders, so every main-thread caller must
+      // go through it. Type-only imports are exempt: they erase at compile time and
+      // carry no runtime weight (`utils/hljsLanguages.ts` needs `HLJSApi`).
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{
+          name: 'highlight.js',
+          message: "Import the core build instead: `import hljs from '<relative>/utils/hljs'`. The full barrel pulls every bundled grammar into the eager bundle.",
+          allowTypeImports: true,
+        }],
+      }],
       'no-console': 'warn',
     },
   },

@@ -1,5 +1,7 @@
+import { lazy, Suspense } from 'react'
 import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2 } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
+import { ContentSkeleton } from '../components/ui'
 import { LogViewer } from './LogsPage'
 import SystemPage from './SystemPage'
 import TelemetryPanel from './TelemetryPanel'
@@ -8,7 +10,15 @@ import LocalStorageDebug from './LocalStorageDebug'
 import { SharedMcpGatewayToggle } from './settings/SharedMcpGatewayToggle'
 import { McpPoolableServers } from './settings/McpPoolableServers'
 import { KiroCrewCfgTab, AgentCfgTab } from './overview'
-import MemoryGraphTab from './overview/MemoryGraphTab'
+
+/**
+ * Lazy: MemoryGraphTab is the only eager owner of the sigma/graphology stack
+ * (vendor-graph, ~180 KB gzip), which a static import keeps in the entry
+ * modulepreload set for every page load even though this tab is one of eight on
+ * an internals-only route. Deferred behind `lazy()`, the chunk is fetched when
+ * the Memory tab is first opened.
+ */
+const MemoryGraphTab = lazy(() => import('./overview/MemoryGraphTab'))
 
 import { i18nT } from '../i18n/t'
 const TABS = [
@@ -43,7 +53,9 @@ export default function DeveloperPage() {
                 user-facing memory browser (settings, preferences, projects,
                 history, lessons + vector store card) stays in Settings >
                 Overview > Memory. */}
-            <MemoryGraphTab />
+            <Suspense fallback={<ContentSkeleton rows={6} />}>
+              <MemoryGraphTab />
+            </Suspense>
           </>
         )}
         {tab === 'config' && (
