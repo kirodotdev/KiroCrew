@@ -29,7 +29,9 @@ import { i18nT } from '../../i18n/t'
  *  `meta.output`, so historical messages render the card too. */
 const SPAWN_HEADER_RE = /^Spawned (\d+) subagent\(s\)\./m
 /** Agent ids are hex digests from SubagentManager; the agent name is optional
- *  (spawn_run omits the parenthetical when no agent was pinned). */
+ *  (spawn_run omits the parenthetical when no agent was pinned). Non-hex ids are
+ *  skipped, which is what excludes the `q<n>` queue sentinels in scrollback
+ *  persisted before SubagentManager pre-assigned queued members their real id. */
 const SPAWN_AGENT_LINE_RE = /^ {2}([0-9a-f]{4,32})(?: \(([^)]*)\))?: /gm
 
 export interface SpawnRunLaunch {
@@ -162,21 +164,22 @@ const SubagentRunCard = memo(function SubagentRunCard({
   // from the panel). Treat them as neither running nor terminal.
   //
   // The header count is authoritative for the wave size, not `ids.length`:
-  // spawn_run lists one line per accepted agent, and agents still behind the
-  // concurrency cap are listed under a placeholder id (`q1`, `q2` — see
-  // mcp_core.py) that the hex-id pattern deliberately does not match. Taking
-  // the total from `ids` made a 2-agent wave read "1 agent". Tasks that failed
-  // to start are reported in a separate section and never reach the header, so
-  // this does not over-count them.
+  // spawn_run lists one line per accepted agent, and in LEGACY scrollback the
+  // members that were queued behind the concurrency cap / spawn stagger are
+  // listed under a sentinel id (`q1`, `q2`) that the hex-id pattern does not
+  // match. Taking the total from `ids` made a 2-agent wave read "1 agent".
+  // Tasks that failed to start are reported in a separate section and never
+  // reach the header, so this does not over-count them.
   const total = launch.announced || launch.ids.length
   const settled = counts.done + counts.failed + counts.stopped
   // True only when every announced member is observable through `launch.ids`.
-  // It often is not: a wave whose members are queued behind the concurrency cap
-  // (or behind `subagent_spawn_stagger_secs`, which triggers on a 2-task wave in
-  // default config) is announced under placeholder ids `q1`/`q2`, and when those
-  // members actually start they are assigned FRESH ids that never appear in the
-  // launch text. So the card can permanently see fewer members than the header
-  // announced, and must not make a claim about the ones it cannot see.
+  // Waves launched by a current backend always are: SubagentManager pre-assigns
+  // each queued member's real id at accept time and the drained spawn starts
+  // under it, so every announced member appears in the launch text. Two cases
+  // still fall short and must not be claimed on — messages persisted before
+  // that fix (queued members recorded as `q1`/`q2`, with the agent that ran
+  // carrying an id found nowhere in the text), and ids the live slice has since
+  // dropped (history reload, "Dismiss done").
   const fullyObservable = launch.ids.length >= total && counts.unknown === 0
 
   const label = counts.running > 0

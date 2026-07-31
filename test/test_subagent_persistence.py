@@ -353,12 +353,14 @@ class TestSpawnCreatesFolder:
             await manager._tasks[info1.id]
 
         assert info2 is not None
-        # Queued agent ID starts with 'q'
-        assert info2.id.startswith("q")
-        # No folder for queued agent
+        assert info2.queued is True
+        # No folder for a queued agent: the sandbox is created when the agent
+        # actually STARTS, not when it is accepted. Asserted against the queued
+        # member's real id — it no longer carries a `q<n>` name to filter on,
+        # because that sentinel destroyed the identity it was reporting on.
         folders = list(agent_root.iterdir()) if agent_root.exists() else []
-        queued_folders = [f for f in folders if f.name.startswith("q")]
-        assert len(queued_folders) == 0
+        assert not any(f.name == info2.id for f in folders)
+        assert not (agent_root / info2.id).exists()
 
 
 # ── Slice 3: Result streaming to agent folder ────────────────────────

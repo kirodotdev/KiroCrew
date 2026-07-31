@@ -400,7 +400,7 @@ class TestQueuedDepthWiring:
             m = _mgr(running=2, max_concurrent=2, last_ts=_t.monotonic())
             m._on_event = on_event
             info = m.spawn(task="x", parent_session_key="dashboard:s1")
-            assert info is not None and info.id.startswith("q")  # queued sentinel
+            assert info is not None and info.queued is True  # queued, not started
             assert len(m._queue) == 1  # actually appended
             await asyncio.sleep(0)
             await asyncio.sleep(0)
@@ -434,6 +434,102 @@ class TestQueuedDepthWiring:
 
         asyncio.run(run())
         assert ("dashboard:s1", 1) in events
+
+
+class TestQueuedIdentityRoundTrip:
+    """A queued member must START under the id its caller was handed.
+
+    Regression: spawn() used to return a throwaway ``q<n>`` sentinel for any
+    spawn that hit the stagger/concurrency gate, and _drain_queue minted a FRESH
+    uuid when it actually started the agent. With the default 2s stagger that is
+    every wave member after the first, so ``spawn_run``'s printed wave roster
+    listed one real id plus N placeholders no agent ever had — the inline
+    SubagentRunCard, which resolves a wave by matching those ids against live
+    per-agent events, could never observe more than one member and reported
+    "1 agent running" for a 2-agent wave the sidebar counted correctly.
+    """
+
+    def test_drained_spawn_reuses_the_announced_id(self, monkeypatch) -> None:
+        import re
+        import time as _t
+        from unittest.mock import MagicMock
+
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
+
+        m = _mgr(running=1, max_concurrent=16, last_ts=_t.monotonic(), stagger=2.0)
+        info = m.spawn(task="x", parent_session_key="dashboard:s1")
+
+        assert info is not None and info.queued is True
+        assert re.fullmatch(r"[0-9a-f]{8}", info.id), "queued id must be a real agent id"
+
+        # Drain: the gate is open now (stagger elapsed, slot free), so the
+        # popped entry must be re-spawned under the SAME id.
+        m._last_spawn_ts = _t.monotonic() - 10.0
+        m.spawn = MagicMock()  # type: ignore[method-assign]
+        m._drain_queue()
+
+        assert m.spawn.call_count == 1
+        kwargs = m.spawn.call_args.kwargs
+        assert kwargs["_preassigned_id"] == info.id
+        assert kwargs["_from_queue"] is True
+
+    def test_requeue_preserves_the_id(self, monkeypatch) -> None:
+        """A drained spawn that hits the gate AGAIN keeps the same id."""
+        import time as _t
+
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
+
+        m = _mgr(running=2, max_concurrent=2, last_ts=_t.monotonic(), stagger=2.0)
+        first = m.spawn(task="x", parent_session_key="dashboard:s1")
+        assert first is not None
+
+        # Re-enter spawn() with the id already assigned (what _drain_queue does)
+        # while the gate is still closed → queued a second time, id unchanged.
+        m._queue.clear()
+        again = m.spawn(
+            task="x",
+            parent_session_key="dashboard:s1",
+            _from_queue=True,
+            _preassigned_id=first.id,
+        )
+        assert again is not None and again.queued is True
+        assert again.id == first.id
+        assert m._queue[0]["_preassigned_id"] == first.id
+
+    def test_rejection_on_drain_uses_the_announced_id(self, monkeypatch) -> None:
+        """A member REJECTED when its queued spawn drains is announced under the
+        id its caller was handed, not a fresh one.
+
+        The guards that refuse a spawn (empty task, low memory, bad cwd,
+        governance, bad agent name) re-run on the drain pass, so a spawn accepted
+        at queue time can still be refused when it starts. Minting a fresh uuid
+        there would announce the failure under an id the caller never saw — the
+        same identity break this class of bug is about, just on the error path.
+        """
+        import time as _t
+
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub, "_vet_spawn_governance", lambda *a, **k: None)
+        # Refuse on memory so the guard fires ahead of the queue gate.
+        monkeypatch.setattr(sub, "check_memory_available", lambda min_gb=0: (False, 0.5))
+
+        m = _mgr(running=1, max_concurrent=16, last_ts=_t.monotonic(), stagger=2.0)
+        announced = "deadbeef"
+        info = m.spawn(
+            task="x",
+            parent_session_key="dashboard:s1",
+            _from_queue=True,
+            _preassigned_id=announced,
+        )
+
+        assert info is not None
+        assert info.done and "memory" in info.error
+        assert info.id == announced
 
 
 class TestCpuJiffiesParser:

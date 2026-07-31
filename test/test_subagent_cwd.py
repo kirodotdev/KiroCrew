@@ -279,13 +279,16 @@ class TestSpawnCwd:
             info = manager.spawn("t", cwd=str(project))
 
         assert info is not None
-        assert info.id.startswith("q"), "spawn at capacity should have returned a queued id"
+        assert info.queued is True, "spawn at capacity should have been queued"
         # Queue must carry the resolved cwd so dequeue can re-spawn correctly.
         # The queue stores the full spawn() kwarg dict (not a 5-tuple) so a
         # drained spawn preserves approval_mode / silent / model / allowed_tools.
         assert len(manager._queue) == 1
         queued = manager._queue[0]
         assert queued["cwd"] == os.path.realpath(str(project))
+        # ...and the pre-assigned id, so the drained agent runs under the id the
+        # caller was handed.
+        assert queued["_preassigned_id"] == info.id
 
     @pytest.mark.asyncio
     async def test_spawn_fails_closed_when_config_load_raises(

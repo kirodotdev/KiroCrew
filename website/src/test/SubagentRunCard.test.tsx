@@ -92,11 +92,12 @@ describe('extractSpawnRunLaunch — MCP result envelope', () => {
 })
 
 describe('SubagentRunCard — wave total comes from the header count', () => {
-  // A wave whose members are still behind the concurrency cap (or the spawn
-  // stagger, which fires on a 2-task wave in default config) is announced under
-  // placeholder ids q1/q2 that the hex-id pattern skips, and those members get
-  // FRESH ids when they actually start — so they never become observable to the
-  // card. `ids.length` therefore understates the wave permanently.
+  // LEGACY scrollback only: waves persisted before SubagentManager pre-assigned
+  // queued members their real id recorded those members as `q1`/`q2` (skipped by
+  // the hex-id pattern), and the agents that eventually started carried FRESH
+  // ids absent from the launch text — so they can never become observable to the
+  // card and `ids.length` understates the wave permanently. Current waves list
+  // every member's real id; see the 'fixed backend' case below.
   it('reports the announced total, not the number of parseable ids', () => {
     const store = createTestStore({
       chat: {
@@ -136,6 +137,38 @@ describe('SubagentRunCard — wave total comes from the header count', () => {
     })
     renderWithProviders(<SubagentRunCard launch={{ ids: ['a1', 'a2'], announced: 2 }} slot={SLOT} />, { store })
     expect(screen.getByText('2 agents launched')).toBeTruthy()
+  })
+
+  it('counts every member of a staggered wave now that queued ids are real', () => {
+    // The reported bug, end to end. Observed launch text (chat-9, 02:19:18Z):
+    //   Spawned 2 subagent(s). …
+    //     4fbc9f4b (kirocrew): RESEARCH …
+    //     q1 (kirocrew): RESEARCH …
+    // The second member started 2.0s later (the default spawn stagger) under a
+    // fresh id, 8b2f1e3b, that appeared nowhere in the text — so the card saw one
+    // member and said "1 agent running" while the sidebar and Subagents panel
+    // both correctly said 2. SubagentManager now pre-assigns the queued member's
+    // real id at accept time, so both ids reach the launch text and the card
+    // agrees with the sidebar.
+    const output =
+      'Spawned 2 subagent(s). Results will arrive as completion events:\n' +
+      '  4fbc9f4b (kirocrew): RESEARCH: is react-i18next\u2019s <Trans> still current\n' +
+      '  8b2f1e3b (kirocrew): RESEARCH: what is the current React version\n'
+    const parsed = extractSpawnRunLaunch({
+      role: 'tool', content: '🔧 spawn_run', cls: '', meta: { output },
+    } as ChatMessage)
+    expect(parsed).toEqual({ ids: ['4fbc9f4b', '8b2f1e3b'], announced: 2 })
+
+    const store = createTestStore({
+      chat: {
+        activeSlot: SLOT,
+        subagents: { '4fbc9f4b': agent('4fbc9f4b', 'running'), '8b2f1e3b': agent('8b2f1e3b', 'tool') },
+        subagentQueued: {},
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={parsed!} slot={SLOT} />, { store })
+    expect(screen.getByText('2 agents running')).toBeTruthy()
+    expect(screen.queryByText('1 agent running')).toBeNull()
   })
 })
 
