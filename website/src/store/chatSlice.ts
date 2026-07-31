@@ -621,7 +621,7 @@ export const createSlot = createAsyncThunk<
     // pending (e.g. New Chat spun on "Creating" under memory pressure and they
     // moved to another tab), the new slot must NOT hijack the view.
     const originActiveSlot = (getState() as RootState).chat.activeSlot
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, undefined, clean_mode)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, undefined, clean_mode, undefined, folderId || undefined)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.
@@ -630,12 +630,11 @@ export const createSlot = createAsyncThunk<
       slot.color_index = ci
       api.setSlotColor(slot.key, ci).catch(() => {})
     }
-    // Carry folder membership so a recreated slot stays in its folder
-    // instead of popping out to the top level.
-    if (folderId) {
-      slot.folder_id = folderId
-      api.setSlotFolder(slot.key, folderId).catch(() => {})
-    }
+    // Folder membership rides the create payload above, so the server files the
+    // slot before it broadcasts it. A follow-up PATCH would be too late to
+    // matter: the slots frame announcing this slot is emitted before the create
+    // response arrives here, so an unfiled slot would render at the top level
+    // first and visibly jump into its folder.
     // Carry the project directory. The create endpoint ignores `project` and
     // defaults it to the workspace dir, so a recreated slot would otherwise
     // lose its project — re-apply it via the dedicated endpoint. (We do NOT

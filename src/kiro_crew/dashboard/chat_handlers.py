@@ -682,6 +682,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     name = body.get("name")
     agent = body.get("agent", "")
     model = body.get("model", "")
+    # Folder membership at BIRTH. Assigning it afterwards (client PATCH) is
+    # visibly too late: get_or_create_slot broadcasts the new slot before this
+    # handler returns, so the dashboard renders it at the top level for a frame
+    # or two and it then jumps into the folder. Validated exactly as
+    # PATCH /api/chat/slots/{slot}/folder validates it.
+    folder_id = str(body.get("folder_id") or "")
+    if folder_id and not any(f["id"] == folder_id for f in state._folders):
+        return web.json_response(
+            {"error": "folder not found", "code": "folder_not_found"}, status=400
+        )
 
     # Resolve workspace from agent bindings
     workspace = "default"
@@ -694,52 +704,117 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     except Exception:
         logger.warning("Failed to resolve bindings for slot create", exc_info=True)
 
-    try:
-        memory_mode = body.get("memory_mode", "persistent")
-        if memory_mode not in ("persistent", "incognito", "temporary"):
-            return web.json_response({"error": "invalid memory_mode"}, status=400)
-        slot = state.get_or_create_slot(
-            name,
-            agent=agent,
-            workspace=workspace,
-            model=model,
-            mode=body.get("mode", ""),
-            memory_mode=memory_mode,
-            ephemeral=body.get("ephemeral"),
-            app=request.get("app", ""),
-        )
-    except ValueError as exc:
-        return web.json_response({"error": str(exc)}, status=409)
-    if slot.is_restricted:
-        logger.info("Slot %s created with memory_mode=%s", slot.key, slot.memory_mode)
-    # Pin title if explicitly provided (prevents auto-title from overwriting)
-    title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
-    if title:
-        title, _ = redact_exfiltration_urls(title)
-        title, _ = redact_credentials(title)
-        slot.title = title
-        slot._titled = True
-    # Bind to an artifact if provided (companion chat). Validate
-    # against the artifact slug grammar so an injection-shaped value can never
-    # land on the slot; anything invalid is silently dropped. Uniqueness (≤1
-    # active bound session per slug) is a frontend-flow convention, not
-    # enforced here.
-    artifact_slug = body.get("artifact") if isinstance(body, dict) else None
-    if isinstance(artifact_slug, str) and ARTIFACT_SLUG_RE.match(artifact_slug):
-        slot._artifact = artifact_slug
-    # Default project to workspace directory so file search works out of the box
-    if not slot.project:
-        cfg_proj = cfg.dashboard.default_project if cfg else ""
-        if isinstance(cfg_proj, str) and cfg_proj:
-            resolved = os.path.realpath(os.path.expanduser(cfg_proj))
-            if os.path.isdir(resolved) and not is_sensitive_path(resolved):
-                cfg_proj = resolved
+    # Coalesce every push inside into ONE broadcast at exit, so the first frame
+    # any client sees already carries the folder, title, artifact binding and
+    # project. Otherwise each of those is a separate post-create correction the
+    # UI renders as a jump.
+    with state.suspend_slots_push():
+        try:
+            memory_mode = body.get("memory_mode", "persistent")
+            if memory_mode not in ("persistent", "incognito", "temporary"):
+                return web.json_response({"error": "invalid memory_mode"}, status=400)
+            slot = state.get_or_create_slot(
+                name,
+                agent=agent,
+                workspace=workspace,
+                model=model,
+                mode=body.get("mode", ""),
+                memory_mode=memory_mode,
+                ephemeral=body.get("ephemeral"),
+                app=request.get("app", ""),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=409)
+        if slot.is_restricted:
+            logger.info("Slot %s created with memory_mode=%s", slot.key, slot.memory_mode)
+        # App ownership check (App Kit §5.2), same deny-by-default rule as
+        # api_chat_send. It matters HERE because `name` can address an
+        # ALREADY-EXISTING slot: get_or_create_slot returns that slot without
+        # consulting ownership, and everything below mutates it (folder, title,
+        # artifact binding). Without this an app token could refile or retitle
+        # another app's — or the dashboard's — session. A slot this request just
+        # created carries `_app == request_app`, so the new-slot path is
+        # unaffected; a dashboard caller (empty app) keeps full access.
+        request_app = request.get("app", "")
+        if request_app and slot._app != request_app:
+            sel().log_api_access(
+                caller=request_app,
+                operation="chat_slot_create",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={slot.key}",
+                error=(
+                    "app cannot access unscoped slots"
+                    if not slot._app
+                    else "app does not own this slot"
+                ),
+            )
+            # One code for BOTH reasons on purpose: a distinct code per reason
+            # would turn this 404 into an existence oracle for slots the caller
+            # may not know about. The prose stays in `error` for logs.
+            return web.json_response(
+                {"error": "not found", "code": "slot_not_found"}, status=404
+            )
+        # Pin title if explicitly provided (prevents auto-title from overwriting)
+        title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
+        if title:
+            title, _ = redact_exfiltration_urls(title)
+            title, _ = redact_credentials(title)
+            slot.title = title
+            slot._titled = True
+        # Bind to an artifact if provided (companion chat). Validate
+        # against the artifact slug grammar so an injection-shaped value can never
+        # land on the slot; anything invalid is silently dropped. Uniqueness (≤1
+        # active bound session per slug) is a frontend-flow convention, not
+        # enforced here.
+        artifact_slug = body.get("artifact") if isinstance(body, dict) else None
+        if isinstance(artifact_slug, str) and ARTIFACT_SLUG_RE.match(artifact_slug):
+            slot._artifact = artifact_slug
+        # Default project to workspace directory so file search works out of the box
+        if not slot.project:
+            cfg_proj = cfg.dashboard.default_project if cfg else ""
+            if isinstance(cfg_proj, str) and cfg_proj:
+                resolved = os.path.realpath(os.path.expanduser(cfg_proj))
+                if os.path.isdir(resolved) and not is_sensitive_path(resolved):
+                    cfg_proj = resolved
+                else:
+                    cfg_proj = ""
             else:
                 cfg_proj = ""
-        else:
-            cfg_proj = ""
-        slot.project = cfg_proj or default_project_dir(workspace)
-    _sync_dashboard_slots(state)
+            slot.project = cfg_proj or default_project_dir(workspace)
+        # File the slot before the coalesced broadcast, so its first appearance
+        # in every client is already inside the folder.
+        if folder_id:
+            # Mirror PATCH /api/chat/slots/{slot}/folder: a CHANGED folder must
+            # re-inject the [FOLDER] breadcrumb on the next turn. `is_new` alone
+            # is not enough — `name` can address an already-used slot, whose
+            # turn is `is_new=False`, so moving it would otherwise leave the
+            # model believing the session is still in its old folder.
+            # Harmless on the new-slot path: that turn is `is_new`, so the
+            # breadcrumb fires regardless and the flag is consumed there.
+            if folder_id != slot.folder_id:
+                slot._folder_changed = True
+            slot.folder_id = folder_id
+            _unhide_folder(state, folder_id)
+        _sync_dashboard_slots(state)
+        # Guarantee a frame. get_or_create_slot pushes for a NEW slot, but
+        # returns an existing named slot without pushing — and this handler is
+        # now the only thing that files a slot (the client's follow-up PATCH,
+        # which used to supply that push, is gone). Without this, re-creating an
+        # existing slot name with a different folder_id would move it for the
+        # requester while every other connected client kept the stale
+        # placement. Inside the suspension this only marks a push owed, so the
+        # new-slot path still emits exactly ONE coalesced frame.
+        state.push_slots_update()
+    # Persist OUTSIDE the suspension. save_slot_off_loop deliberately takes the
+    # patient cross-process history lock, which another holder (a workflow or
+    # cron appending to the same session) can hold for a while — and the
+    # suspension is process-wide, so awaiting it inside would stall every
+    # client's slot updates behind one session's file lock. The in-memory slot
+    # is the source of truth and was already broadcast at block exit; a failed
+    # write re-arms the periodic flush (best_effort).
+    if folder_id:
+        await save_slot_off_loop(state, slot, force=True)
     return web.json_response(state.serialize_slot(slot))
 
 

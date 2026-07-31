@@ -1696,21 +1696,24 @@ function ChatSidebar({
     mutationFn: ({ folderId }: { folderId: string; columnId?: string }) => {
       const agent = resolveFolderAgent(folders, folderId, defaultAgent)
       const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
+      // Carry folder membership in the create payload so createSlot publishes
+      // the new slot to Redux in its final location. Assigning it after create
+      // lets the sidebar render one frame at root before moving it.
+      //
       // Folder linked to a project directory (directly or via an ancestor):
       // carry it in the create payload so the slot starts on the linked
       // project — createSlot applies it before the slot activates, so the
       // first message can't race a late project switch.
       const project = resolveFolderProjectDir(folders, folderId)
-      return dispatch(createSlot({ agent, mode: effectiveMode, project })).unwrap()
+      return dispatch(createSlot({ agent, mode: effectiveMode, folder_id: folderId, project })).unwrap()
     },
-    onSuccess: (slot: Slot, { folderId, columnId }: { folderId: string; columnId?: string }) => {
-      if (slot?.key) {
-        assignToFolder(slot.key, folderId)
+    onSuccess: (slot: Slot, { columnId }: { folderId: string; columnId?: string }) => {
+      if (slot?.key && columnId) {
         // Board view: also drop the new session into the column it was created
         // from, so a status-lane column shows it immediately instead of the
         // untagged session vanishing from a tag-filtered column. Mirrors a
         // drag-drop and is a harmless no-op for filter-only / non-status columns.
-        if (columnId) dropSlotMutation.mutate({ slot: slot.key, columnId })
+        dropSlotMutation.mutate({ slot: slot.key, columnId })
       }
     },
     onError: (err: unknown) => {
@@ -1718,7 +1721,21 @@ function ChatSidebar({
       console.error('Failed to create chat in folder:', err)
     },
   })
-  const createChatInFolder = useCallback((folderId: string, columnId?: string) => { createChatInFolderMutation.mutate({ folderId, columnId }) }, [createChatInFolderMutation])
+  const createChatInFolder = useCallback((folderId: string, columnId?: string) => {
+    // A nested folder selected from the create menu may be hidden behind one
+    // or more collapsed ancestors. Expand the complete path optimistically so
+    // the destination and its new session are visible as creation begins.
+    const visited = new Set<string>()
+    let currentId: string | undefined = folderId
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId)
+      const folder = folders.find(f => f.id === currentId)
+      if (!folder) break
+      if (folder.collapsed) updateFolderMutation.mutate({ id: folder.id, body: { collapsed: false } })
+      currentId = folder.parent_id || undefined
+    }
+    createChatInFolderMutation.mutate({ folderId, columnId })
+  }, [createChatInFolderMutation, folders, updateFolderMutation])
 
   // Create autopilot session mutation (consistent with useMutation pattern)
   const createAutopilotMutation = useMutation({

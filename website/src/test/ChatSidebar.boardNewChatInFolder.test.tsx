@@ -1,16 +1,15 @@
 /**
  * Board view (tag-columns) previously had no way to start a session inside a
- * folder — the list-view folder header has a "New chat in folder" + button
- * (renderFolderHeader) but the compact column folder header (renderColumnFolder)
- * only exposed the ⋯ menu. This adds the same + button to board view.
+ * folder. The list-view folder header has a "New chat in folder" + button,
+ * but the compact column folder header only exposed the menu. This adds the
+ * same + button to board view.
  *
- * Two load-bearing assertions:
- *   (1) the + button renders inside every column's copy of the folder header
- *       (the feature now exists in board view), and
- *   (2) clicking it creates a slot, assigns it to the folder, AND drops it
- *       into the column it was clicked from — so a status-lane column shows
- *       the new session immediately instead of the untagged slot vanishing
- *       from a tag-filtered column.
+ * Three load-bearing assertions:
+ *   (1) the + button renders inside every column's copy of the folder header;
+ *   (2) clicking it publishes the slot with folder membership already set,
+ *       so the session never flashes at root before moving into the folder;
+ *   (3) the destination expands while creation is still pending and the new
+ *       slot is dropped into the clicked column.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, fireEvent, waitFor } from '@testing-library/react'
@@ -22,7 +21,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatTag, TagColumn, ChatFolder } from '../types'
 
-// Render framer-motion elements as plain DOM (jsdom can't run projection).
+// Render framer-motion elements as plain DOM because jsdom cannot run projection.
 vi.mock('framer-motion', async () => {
   const React = await import('react')
   const FRAMER_PROPS = new Set([
@@ -55,19 +54,18 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-// Hoisted spies shared between the api mock factory and the test body.
 const NEW_KEY = 'chat-new-1'
 const mocks = vi.hoisted(() => ({
   createChatSlot: vi.fn(),
   setSlotFolder: vi.fn(),
   dropSlotToColumn: vi.fn(),
+  updateChatFolder: vi.fn(),
   chatSlotProject: vi.fn(),
   setSlotColor: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
-  // Named spies for the create→assign→drop path; everything else resolves [].
   api: new Proxy(mocks as Record<string, unknown>, {
     get: (target, prop: string) => (prop in target ? target[prop] : vi.fn().mockResolvedValue([])),
   }),
@@ -98,9 +96,9 @@ const columns: TagColumn[] = [
   { id: COL_A, name: 'Planned/Blocked', tag_ids: [BLOCKED], mode: 'any', order: 0 },
   { id: COL_B, name: 'Review', tag_ids: [REVIEW], mode: 'any', order: 1 },
 ]
-const folders: ChatFolder[] = [{ id: FOLDER_ID, name: 'CDF', order: 0 }]
+const folders: ChatFolder[] = [{ id: FOLDER_ID, name: 'CDF', order: 0, collapsed: true }]
 
-function renderSidebar() {
+function renderSidebar(folderData: ChatFolder[] = folders) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: false, slots: [], approvalMode: 'normal',
@@ -113,8 +111,8 @@ function renderSidebar() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-tags'], tags)
   qc.setQueryData(['tag-columns'], columns)
-  qc.setQueryData(['chat-folders'], folders)
-  return render(
+  qc.setQueryData(['chat-folders'], folderData)
+  const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
@@ -128,13 +126,20 @@ function renderSidebar() {
       </Provider>
     </QueryClientProvider>,
   )
+  return { ...view, store, qc }
 }
 
 beforeEach(() => {
   localStorage.clear()
-  mocks.createChatSlot.mockResolvedValue({ key: NEW_KEY })
+  // Mirror the real endpoint: it files the slot and returns it already carrying
+  // folder_id, which is what lets the row render inside the folder on its first
+  // paint instead of being corrected afterwards.
+  mocks.createChatSlot.mockImplementation((...args: unknown[]) =>
+    Promise.resolve({ key: NEW_KEY, folder_id: (args[8] as string) || '' }),
+  )
   mocks.setSlotFolder.mockResolvedValue({})
   mocks.dropSlotToColumn.mockResolvedValue({ ok: true })
+  mocks.updateChatFolder.mockResolvedValue({ ok: true })
   mocks.chatSlotProject.mockResolvedValue({})
   mocks.setSlotColor.mockResolvedValue({})
 })
@@ -143,21 +148,60 @@ afterEach(() => vi.clearAllMocks())
 describe('board view: new chat in folder', () => {
   it('renders a "new chat in folder" button in every column copy of the folder', () => {
     const { container } = renderSidebar()
-    // The empty folder still renders in each column as a drop target, so the
-    // + button must be present under both columns.
     expect(container.querySelector(`[data-testid="col-${COL_A}-folder-${FOLDER_ID}-new-chat"]`)).toBeTruthy()
     expect(container.querySelector(`[data-testid="col-${COL_B}-folder-${FOLDER_ID}-new-chat"]`)).toBeTruthy()
   })
 
-  it('creates a session, assigns it to the folder, and drops it into the clicked column', async () => {
-    const { container } = renderSidebar()
+  it('publishes the session in its folder and drops it into the clicked column', async () => {
+    const { container, store } = renderSidebar()
+    const observedFolderIds: Array<string | null | undefined> = []
+    const unsubscribe = store.subscribe(() => {
+      const slot = store.getState().dashboard.slots.find(candidate => candidate.key === NEW_KEY)
+      if (slot) observedFolderIds.push(slot.folder_id)
+    })
+
     const btn = container.querySelector(`[data-testid="col-${COL_A}-folder-${FOLDER_ID}-new-chat"]`) as HTMLElement
     expect(btn).toBeTruthy()
     fireEvent.click(btn)
 
-    // create → assign folder → drop into the column it was created from.
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(mocks.setSlotFolder).toHaveBeenCalledWith(NEW_KEY, FOLDER_ID))
+    // Folder membership must ride the CREATE call. The server broadcasts the
+    // new slot before responding, so a follow-up PATCH lands too late and the
+    // session visibly flashes at the top level first.
+    expect(mocks.createChatSlot.mock.calls[0][8]).toBe(FOLDER_ID)
     await waitFor(() => expect(mocks.dropSlotToColumn).toHaveBeenCalledWith(NEW_KEY, COL_A))
+    expect(mocks.setSlotFolder).not.toHaveBeenCalled()
+    unsubscribe()
+
+    expect(observedFolderIds.length).toBeGreaterThan(0)
+    expect(observedFolderIds.every(folderId => folderId === FOLDER_ID)).toBe(true)
+  })
+
+  it('expands the destination before the pending create resolves', async () => {
+    let resolveCreate: ((slot: { key: string; folder_id: string }) => void) | undefined
+    let resolveFolderUpdate: ((result: { ok: boolean }) => void) | undefined
+    mocks.createChatSlot.mockReturnValue(new Promise(resolve => { resolveCreate = resolve }))
+    mocks.updateChatFolder.mockReturnValue(new Promise(resolve => { resolveFolderUpdate = resolve }))
+    const { container, qc, store } = renderSidebar()
+
+    const btn = container.querySelector(`[data-testid="col-${COL_A}-folder-${FOLDER_ID}-new-chat"]`) as HTMLElement
+    fireEvent.click(btn)
+
+    // The expand is optimistic, so it lands while the create is still pending.
+    await waitFor(() => {
+      const folderData = qc.getQueryData<ChatFolder[]>(['chat-folders'])
+      expect(folderData?.find(folder => folder.id === FOLDER_ID)?.collapsed).toBe(false)
+    })
+    expect(mocks.updateChatFolder).toHaveBeenCalledWith(FOLDER_ID, { collapsed: false })
+    expect(store.getState().dashboard.slots.find(slot => slot.key === NEW_KEY)).toBeUndefined()
+
+    resolveFolderUpdate?.({ ok: true })
+    resolveCreate?.({ key: NEW_KEY, folder_id: FOLDER_ID })
+    // The slot enters the store already filed — never at root.
+    await waitFor(() => {
+      const slot = store.getState().dashboard.slots.find(s => s.key === NEW_KEY)
+      expect(slot?.folder_id).toBe(FOLDER_ID)
+    })
+    expect(mocks.setSlotFolder).not.toHaveBeenCalled()
   })
 })
