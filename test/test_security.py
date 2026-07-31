@@ -545,8 +545,9 @@ class TestRedactCredentials:
         """Redaction must not depend on `-`/`_` appearing in the signature.
 
         Before the dedicated two-segment alternative, only signatures free of
-        base64url's `-`/`_` formed a 40+ run for the bare-secret pass, so ~29% of
-        minted tokens were partially redacted and ~71% streamed out verbatim.
+        base64url's `-`/`_` formed a 40+ run for the bare-secret pass, so
+        `(62/64)^42` = 26.4% of minted tokens were partially redacted and the
+        remaining ~74% streamed out verbatim.
         """
         for sig in (self._SIG_PLAIN, self._SIG_URLSAFE):
             token = f"{self._LINK_PAYLOAD}.{sig}"
@@ -625,6 +626,53 @@ class TestRedactCredentials:
 
         for payload in (b'{"sub":"x"}', b"", b"a" * 4096):
             assert len(_sign(payload)) == 43, payload[:16]
+
+    def test_link_token_payload_clears_the_96_char_floor(self) -> None:
+        """Pin the `{96,}` payload floor against the generator's own claim set.
+
+        The floor must stay BELOW the shortest payload a mint can produce, or the
+        pattern silently stops matching live tokens. That is a leak, not a
+        cosmetic miss, so it is pinned rather than asserted in a comment.
+
+        Both the floor and the claim set are read from source instead of restated
+        here: the floor comes from the compiled pattern, and the claim KEYS come
+        from a real mint, so dropping a claim or raising the floor fails loudly.
+        """
+        import re
+
+        from kiro_crew.dashboard.token_auth import generate_token
+        from kiro_crew.security import _CREDENTIAL_PATTERNS
+
+        floors = re.findall(
+            r"eyJ\[A-Za-z0-9_-\]\{(\d+),\}", _CREDENTIAL_PATTERNS.pattern
+        )
+        assert len(floors) == 1, f"expected one bounded eyJ floor, got {floors}"
+        floor = int(floors[0])
+
+        payload = generate_token("local-app", 300, register_nonce=False).split(".")[0]
+        assert payload.startswith("eyJ")
+        assert len(payload) - 3 > floor, "a real mint no longer clears the floor"
+
+        # Derived worst case: the narrowest `sub` a caller could pass, with every
+        # float claim at its shortest repr (an exactly-integral `time.time()`).
+        claims = json.loads(
+            base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        )
+        # `gen` is normalised alongside `sub` because it mirrors the process-global
+        # `_REVOCATION_GEN`, which is LOADED FROM DISK at import. Left ambient, the
+        # derived floor would depend on how many times this machine has revoked:
+        # the repr widens at 10, moving the floor 145 -> 147, so the pin below would
+        # fail on a clean checkout with no code change.
+        shortest = {"sub": "x", "gen": 0}
+        minimal = {
+            k: shortest.get(k, 1785543020.0 if isinstance(v, float) else v)
+            for k, v in claims.items()
+        }
+        raw = json.dumps(minimal, separators=(",", ":")).encode()
+        worst = len(base64.urlsafe_b64encode(raw).decode().rstrip("=")) - 3
+        assert worst > floor, f"derived floor {worst} no longer clears {{{floor},}}"
+        # Pinned so the figure quoted in `security.py` cannot rot silently.
+        assert worst == 145, f"derived floor moved to {worst}; update security.py"
 
     def test_bearer_word_alone_not_redacted(self) -> None:
         """The word `Bearer` without the `Authorization:` header prefix is prose."""

@@ -3532,10 +3532,18 @@ _CREDENTIAL_PATTERNS = re.compile(
     # match here at all and fell through to the bare-secret entropy pass, whose run
     # class `[A-Za-z0-9+/]` is STANDARD base64 and excludes base64url's `-`/`_`.
     # That made redaction depend on which characters a random HMAC signature
-    # happened to contain: ~29% of tokens had a `-`/`_`-free 43-char signature, so
-    # only the signature was replaced (leaving the payload claims verbatim in a
-    # URL that still looked complete but no longer authenticated), and the other
-    # ~71% streamed out entirely unredacted. Matching the whole token here makes
+    # happened to contain. That rate is derivable, so it is stated as a closed form
+    # rather than as a sample. HMAC-SHA256 is 256 bits and base64url-unpadded gives
+    # 43 chars. The first 42 each carry a full 6 bits, so each is uniform over the
+    # 64-char alphabet, of which exactly 2 are `-`/`_`. The 43rd carries only the
+    # leftover 4 bits (256 - 42*6), and they land in the HIGH bits of its 6-bit
+    # group with the low 2 bits zero, so it spans exactly the 16 alphabet indices
+    # divisible by 4 (`048AEIMQUYcgkosw`) and can never be `-`/`_`, which sit at
+    # 62/63. Hence P(no `-`/`_`) = (62/64)^42 = 26.4%, verified by encoding all
+    # 256 possible final digest bytes.
+    # So roughly a quarter of tokens had only the signature replaced (leaving the
+    # payload claims verbatim in a URL that still looked complete but no longer
+    # authenticated), and the other ~74% streamed out entirely unredacted. Matching the whole token here makes
     # the outcome deterministic and replaces it as one unit. The 2-segment token gets
     # its OWN alternative rather than relaxing the segment floor to `{1,4}`. Relaxing
     # the floor over-redacts ordinary code and prose, because the pattern has no left
@@ -3556,10 +3564,24 @@ _CREDENTIAL_PATTERNS = re.compile(
     #
     # `generate_token` always emits 6 claims (`sub`/`exp`/`session_exp`/`iat`/`nonce`/
     # `gen`), with a 16-hex-char nonce and float timestamps; `app`, `prompt` and
-    # `extra` only ADD. The shortest possible payload (1-char `sub`) measures 169
-    # chars past `eyJ`, so the `{96,}` floor keeps 73 chars of headroom against a
-    # future shorter claim set while still excluding `eyJ2IjoxfQ.json`. Order matters:
-    # the 3-to-5-segment
+    # `extra` only ADD. Payload length is NOT fixed. It scales with `len(sub)`, and
+    # `json.dumps` writes each float timestamp at its own repr width, which base64
+    # then quantises into 4-char steps. So the floor is derived, not sampled: a
+    # 1-char `sub` (the narrowest a caller passes: the app validator requires at
+    # least one char and the other call sites supply a literal fallback), `gen=0`,
+    # and all three timestamps at their shortest 12-char repr (an exactly-integral
+    # `time.time()` in the current 10-digit epoch era) measures 145 chars past
+    # `eyJ`, which leaves the `{96,}` floor 49 chars of headroom against a future
+    # shorter claim set while still excluding `eyJ2IjoxfQ.json`. ONLY that derived
+    # floor is pinned, by `test_link_token_payload_clears_the_96_char_floor`, which
+    # reads the bound from the compiled pattern and the claim keys from a real mint
+    # so a dropped claim fails loudly instead of silently disabling redaction. Live
+    # payloads are much larger and are NOT pinned, because the exact spread moves
+    # with float reprs and caller mix: measured 168-185 for the mandatory-only
+    # callers and 192-223 for the two that also pass `app=` (`handlers/core.py`,
+    # `token_auth.py`), which adds an `"app"` claim.
+    #
+    # Order matters: the 3-to-5-segment
     # alternative is tried first at each position, so a real JWS still redacts whole
     # instead of matching `header.payload` and leaving `.signature` exposed.
     # The 3-to-5-segment alternative keeps `*` (not `+`) on post-header segments so an

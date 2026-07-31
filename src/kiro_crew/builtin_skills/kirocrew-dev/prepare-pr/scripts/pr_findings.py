@@ -27,6 +27,28 @@ _SECRET_RE = re.compile(
     r"|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}"
     r"|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}"
     r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    # The dashboard link token is TWO segments (`base64url(payload).base64url(
+    # hmac_sig)`), so the three-segment alternative above never matched it and a
+    # bare token in prose printed verbatim. It needs its OWN alternative.
+    #
+    # Byte-identical to the one in `security.py`, which carries the full
+    # derivation of both bounds and is the single source for it; this script is
+    # documented as stdlib-only and portable, so it cannot import it, and
+    # `test/test_redaction_mirror_parity.py` fails if this copy drifts. Locally the
+    # points that matter: the signature width is PINNED (`{43}`, a property of the
+    # HMAC-SHA256 digest), the payload bound is a generator-derived floor rather
+    # than a guess (a guessed floor is beatable by a verbose identifier), and the
+    # left boundary (incl. `.`, so attribute access is excluded) keeps ordinary
+    # dotted code intact.
+    #
+    # Placing it after the three-segment alternative is defensive, not
+    # load-bearing for real tokens: a conventional JWS header is only 33 chars
+    # past `eyJ`, far below this alternative's first-segment floor, so it cannot
+    # match a real JWS's `header.payload`. It matters only for a JWS whose header
+    # clears that floor AND whose payload is exactly 43 chars, since the right
+    # boundary is satisfied by a `.` and would leave `.signature` in the printed
+    # log. That shape is covered by a test.
+    r"|(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"
     r"|-----BEGIN[A-Z ]*PRIVATE KEY-----)"
 )
 _KV_RE = re.compile(
