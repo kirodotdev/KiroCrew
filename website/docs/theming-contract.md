@@ -55,6 +55,87 @@ Out of contract: app structure/routing, functional-control behavior, security
 chrome, and anything outside the CSS-var set + the `overrides.css` selector
 allowlist.
 
+## Chat loader (compiled seam, not an installed pack)
+
+The loading indicator in the chat footer — shown while a turn is running — is
+theme-owned, but it is a **compiled seam, not a manifest capability**. It is
+declared in code through `registerThemeBranding()` (`src/themeBranding.tsx`),
+which runs at module load from the composition root (`src/extensions.ts`), so it
+is available to themes **bundled in the build**: the core's own themes and a
+downstream edition's. An *installed* `theme.json` pack cannot ship executable
+registration, so it cannot set a loader — a pack that needs one has to land as a
+compiled theme instead. (A pack can still restyle whatever loader is active via
+CSS; see the colour note below.)
+
+Two levels, pick one:
+
+```tsx
+import { registerThemeBranding } from '@/themeBranding'
+
+registerThemeBranding({
+  mytheme: {
+    logo: '/mytheme/logo.png',
+
+    // Level 1 — keep the stock carousel, swap the artwork it cycles.
+    loaderIcons: [Sun, Moon, Star, Cloud, Comet],
+
+    // Level 2 — replace the indicator outright (wins over loaderIcons).
+    loader: MyMascotLoader,
+  },
+})
+```
+
+**`loaderIcons`** is the easy path and the one to reach for first. The default
+loader is a 4-slot carousel: each slot cross-fades between two icons, the slots
+cascade 0.25s apart on a 2.8s beat, and every beat re-samples **4 distinct** icons
+from your pool (never repeating the set it replaces or the other layer). Supply at
+least 4; more gives more variety. You inherit the cross-fade, the cascade timing
+and the reduced-motion handling for free.
+
+**`loader`** replaces the whole indicator with your component — a mascot
+animation, a progress bar, a canvas, anything. It renders with no wrapper beyond
+the footer's padding, so it owns its size, layout and motion. Keep it small (the
+band is ~32px tall), mark it `aria-hidden` (it is decorative), and honour
+`prefers-reduced-motion` yourself.
+
+Resolution is `loader` → `loaderIcons` → artwork bundled for a core theme → the
+default icons, so a theme that registers neither renders exactly what it does
+today, and an empty pool falls back rather than rendering nothing. Both branches
+render inside an `ErrorBoundary fallback={null}`: the loader is decorative, so a
+component that throws collapses to nothing instead of escaping to the route
+boundary and replacing the chat UI with an error card.
+
+**Colour belongs in your CSS, not in the artwork.** Each icon renders itself,
+takes no props, and is sized to 14px by the carousel. A `lucide-react` glyph
+inherits `currentColor` (the accent) and needs no styling at all.
+
+For bespoke brand art, mind the `use-lucide-icons` rule (`website/AUTOSDE.yaml`):
+lucide ships no mascot marks, so your own art is exempt — but **only while it stays
+an asset**. Keep the art in an `.svg` file, import it by URL, and render it in an
+`<img>`; no `<svg>` element or path data may appear in a `.tsx` file (the CI gate
+blocks that in every file, tests included). Theme it by filtering the `<img>`,
+which traces the rendered alpha, so one asset serves every palette:
+
+```css
+[data-theme="mytheme-light"] .csb4 .lyr > .my-mark {
+  filter: drop-shadow(.6px 0 0 #000) drop-shadow(0 .6px 0 #000)
+          drop-shadow(-.6px 0 0 #000) drop-shadow(0 -.6px 0 #000);
+}
+```
+
+That is how the bundled Kiro poses get their light-palette outline — see
+`src/components/GhostPoses.tsx` and `src/assets/onboarding/GhostIcons.tsx`.
+
+One implementation constraint if you write a custom `loader`: the carousel's
+cross-fade animation lives on a persistent `.lyr` wrapper rather than on the icon,
+because swapping an icon changes the rendered component type and remounts its
+element — animating the icon itself would restart that animation and desync it
+from the other layer. If your loader swaps artwork on a timer, animate a stable
+wrapper for the same reason.
+
+Registration is read at module load (see `src/extensions.ts`); registering after
+the shell has rendered does not take effect until the next theme switch.
+
 ## Checker (advisory)
 
 ```bash

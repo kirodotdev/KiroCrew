@@ -1092,17 +1092,40 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 @keyframes progress-indeterminate{0%{transform:translateX(-100%)}100%{transform:translateX(400%)}}
 .progress-indeterminate{animation:progress-indeterminate 1.2s ease-in-out infinite}
 
-/* ── Chat footer icon carousel (cascade-swap-bounce) ── */
+/* ── Chat footer icon carousel (cascade-swap-bounce) ──
+   Two layers per slot cross-fade and trade places; slots cascade .25s apart.
+   The animation sits on the persistent `.lyr` wrapper rather than the icon itself,
+   because the carousel re-samples which icon a layer shows every beat — animating
+   the icon would restart its animation on each swap (see chat/ChatFooter). */
 .csb4{display:flex;gap:5px;padding:2px 0}
 .csb4 .slot{position:relative;width:14px;height:14px}
-.csb4 .slot svg{position:absolute;inset:0;color:var(--accent)}
-.csb4 .slot svg:nth-child(1){animation:csb-a 2.8s ease-in-out infinite both}
-.csb4 .slot svg:nth-child(2){animation:csb-b 2.8s ease-in-out infinite both}
-.csb4 .slot:nth-child(2) svg{animation-delay:.25s}
-.csb4 .slot:nth-child(3) svg{animation-delay:.5s}
-.csb4 .slot:nth-child(4) svg{animation-delay:.75s}
+.csb4 .slot .lyr{position:absolute;inset:0;display:block;color:var(--accent)}
+.csb4 .slot .lyr>svg,.csb4 .slot .lyr>img{display:block;width:100%;height:100%;overflow:visible}
+.csb4 .slot .lyr:nth-child(1){animation:csb-a 2.8s ease-in-out infinite both}
+.csb4 .slot .lyr:nth-child(2){animation:csb-b 2.8s ease-in-out infinite both}
+.csb4 .slot:nth-child(2) .lyr{animation-delay:.25s}
+.csb4 .slot:nth-child(3) .lyr{animation-delay:.5s}
+.csb4 .slot:nth-child(4) .lyr{animation-delay:.75s}
 @keyframes csb-a{0%,30%{opacity:1;transform:translateY(0) scale(1)}38%{opacity:0;transform:translateY(-3px) scale(.6)}45%,82%{opacity:0;transform:translateY(3px) scale(.6)}90%,100%{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes csb-b{0%,30%{opacity:0;transform:translateY(3px) scale(.6)}38%{opacity:0;transform:translateY(3px) scale(.6)}45%{opacity:1;transform:translateY(-2px) scale(1)}55%{opacity:1;transform:translateY(0) scale(1)}82%{opacity:1;transform:translateY(0) scale(1)}90%{opacity:0;transform:translateY(-3px) scale(.6)}100%{opacity:0;transform:translateY(3px) scale(.6)}}
+
+/* ── Kiro themes: the ghost-pose loader icons ──
+   The icons come from the themeBranding `loaderIcons` seam (see ChatFooter); they
+   are brand ASSETS rendered as <img> (the use-lucide-icons brand-mark exception
+   requires that), so they are themed from here rather than by editing the art.
+   This is the pattern a new theme follows: register the artwork, then style it. */
+.csb4 .lyr>.kp{width:100%;height:100%;object-fit:contain}
+/* The art is a fixed white body with black eyes, which reads on the dark palette
+   as-is. On the light palette it needs an outline: a drop-shadow chain traces the
+   image's rendered alpha, so one asset serves both themes and no per-theme variant
+   (or SVG editing) is required. Offsets every 45° at ~0.6px keep it a hairline. */
+[data-theme="kiro-light"] .csb4 .lyr>.kp{
+  filter:
+    drop-shadow(.6px 0 0 #000) drop-shadow(.45px .45px 0 #000)
+    drop-shadow(0 .6px 0 #000) drop-shadow(-.45px .45px 0 #000)
+    drop-shadow(-.6px 0 0 #000) drop-shadow(-.45px -.45px 0 #000)
+    drop-shadow(0 -.6px 0 #000) drop-shadow(.45px -.45px 0 #000);
+}
 @keyframes grow{0%{width:15%}50%{width:45%}100%{width:60%}}
 @property --glow-strength{syntax:'<number>';inherits:false;initial-value:0}
 @keyframes approval-glow{0%,100%{--glow-strength:0}50%{--glow-strength:1}}

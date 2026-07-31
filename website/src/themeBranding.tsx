@@ -44,6 +44,37 @@ export interface ThemeBranding {
   /** Side-effect fired once when this theme becomes active (off→on switch),
    *  e.g. a boot chime. Must be idempotent / cheap. */
   onActivate?: () => void
+  /**
+   * Replace the ENTIRE chat loading indicator (the animation in the footer while
+   * a turn runs) with the theme's own component. Use this when the theme wants
+   * something other than the stock 4-slot cross-fading carousel — a mascot
+   * animation, a progress bar, a spinner, a canvas, anything.
+   *
+   * Rendered in place of the default loader, with no wrapper of its own beyond the
+   * footer's padding, so the component owns its size, layout and motion. It should
+   * stay small (the footer band is ~32px tall), be purely decorative
+   * (`aria-hidden`), and honour `prefers-reduced-motion` itself.
+   *
+   * Takes precedence over `loaderIcons`. For the common case of "same carousel,
+   * different icons", prefer `loaderIcons` — it inherits the cross-fade, the
+   * cascade timing and the reduced-motion handling for free.
+   */
+  loader?: ComponentType
+  /**
+   * Artwork for the DEFAULT loading carousel (the four cross-fading icons in the
+   * footer while a turn runs). Supply at least 4; the carousel shows 4 at a time
+   * and re-samples a distinct set from this pool each beat, so a longer list
+   * gives more variety. Omit to inherit the default icon set.
+   *
+   * Each entry renders its own `<svg>` and needs no props — the carousel sizes it
+   * (14px) and the icon inherits `currentColor` (the accent) unless the theme's
+   * own CSS block says otherwise, so a theme can ship flat silhouettes or
+   * multi-fill artwork. Colour/stroke belong in the theme's CSS, scoped the usual
+   * way (e.g. `[data-theme="mytheme-light"] .csb4 …`), NOT in the components.
+   *
+   * Ignored when `loader` is set.
+   */
+  loaderIcons?: ComponentType[]
 }
 
 /**
