@@ -40,6 +40,7 @@ import pt from './locales/pt.json'
 import ru from './locales/ru.json'
 import de from './locales/de.json'
 import it from './locales/it.json'
+import enXA from './locales/en-XA.json'
 import { DEFAULT_LANGUAGE, SUPPORTED_CODES } from './languages'
 import { readStoredLanguage, resolveLanguage } from './detect'
 
@@ -93,6 +94,8 @@ export const CATALOGS = {
   ru: { translation: ru },
   de: { translation: de },
   it: { translation: it },
+  // Pseudolocale — generated, dev-only in the picker. See `languages.ts`.
+  'en-XA': { translation: enXA },
 } as const
 
 /**

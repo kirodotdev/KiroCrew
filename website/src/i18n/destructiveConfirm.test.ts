@@ -32,7 +32,14 @@ const FLAT: Record<string, Record<string, string>> = Object.fromEntries(
   ]),
 )
 
-const NON_DEFAULT = SUPPORTED_LANGUAGES.filter(l => l.code !== DEFAULT_LANGUAGE)
+/**
+ * Authored catalogs only. The pseudolocale is a mechanical transform of English, so its
+ * confirmation token is accented by construction and asserting on it would test the
+ * generator, not the copy.
+ */
+const AUTHORED = SUPPORTED_LANGUAGES.filter(l => !l.devOnly)
+
+const NON_DEFAULT = AUTHORED.filter(l => l.code !== DEFAULT_LANGUAGE)
 
 describe('bulk-delete confirmation token', () => {
   it('is a code constant, never a catalog value', () => {
@@ -40,7 +47,7 @@ describe('bulk-delete confirmation token', () => {
     // reachable by a translator. If it ever became a catalog key, every
     // non-English user would be locked out of bulk delete.
     expect(BULK_DELETE_TOKEN).toBe('delete')
-    for (const { code } of SUPPORTED_LANGUAGES) {
+    for (const { code } of AUTHORED) {
       const offenders = Object.entries(FLAT[code])
         .filter(([k, v]) => k.startsWith('pages.schedulePage.') && v.trim() === BULK_DELETE_TOKEN)
         .map(([k]) => k)
@@ -54,7 +61,7 @@ describe('bulk-delete confirmation token', () => {
     // the confirmation. One shared key forced translators to pick one meaning,
     // and es/pt both picked the noun ("Tipo delete para confirmar"), which is
     // not an instruction. Two keys is the fix; this asserts they stay two.
-    for (const { code } of SUPPORTED_LANGUAGES) {
+    for (const { code } of AUTHORED) {
       expect(FLAT[code]['pages.schedulePage.type_verb_to_confirm'],
         `${code} is missing the verb form`).toBeTruthy()
       expect(FLAT[code]['pages.schedulePage.type'],

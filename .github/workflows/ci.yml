@@ -423,6 +423,70 @@ jobs:
         working-directory: website
         run: npx jscpd .
 
+      - name: Check i18n extraction and plurals
+        working-directory: website
+        env:
+          # `check-source-strings.mjs` compares en.json against the merge base to find
+          # NEWLY ADDED keys, so it needs a ref to diff against. On a PR that is the
+          # base branch; on a push to main there is no new-key set to check and the
+          # script skips itself. Note `frontend-lint`'s checkout is shallow, so the ref
+          # has to be fetched — see the step below.
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        # Two codemods with different jobs to do. `i18n-plural-codemod.mjs --check` is a
+        # hard gate: it passes today and any reintroduced `{n} {t('item')}s`
+        # concatenation fails it. `i18n-codemod.mjs --check --baseline=N` is a
+        # ratchet, mirroring the `--max-warnings` idiom above: 76 user-visible
+        # strings are unextracted today, so a hard check would fail on arrival.
+        # Ratchet the baseline DOWN as they are converted; never raise it.
+        #
+        # `--check` is deliberately not `--dry-run`: dry-run reports and exits 0,
+        # which would make this step decorative. Note also that an unrecognised
+        # flag makes the script refuse to run rather than fall through to its
+        # destructive conversion path.
+        #
+        # The same script also runs `lint:i18n`, which drives a SECOND eslint
+        # invocation with its own config. `no-literal-string` at `mode: 'all'` reports
+        # 2886 findings across 308 files, and folding those into the 1116 budget above
+        # would make an i18n regression indistinguishable from a new `no-explicit-any`.
+        #
+        # Which gate trips for which defect, since two ratchets overlap here:
+        #   `i18n-codemod.mjs --check --baseline=76` — one AGGREGATE count of strings the
+        #     codemod could mechanically extract (JSX text and attributes). Trips on a new
+        #     literal in markup.
+        #   `lint:i18n` / `untranslated-baseline.json` — a PER-FILE count over every
+        #     string position eslint can see, including the ternary and expression-container
+        #     literals the codemod cannot rewrite. Trips on a new literal anywhere.
+        #   `gen-pseudolocale.mjs --check` — drift only, not coverage.
+        # Extracting a string therefore moves both counts; regenerate the per-file
+        # baseline with `node scripts/check-i18n-strings.mjs --update` and lower the
+        # codemod's `--baseline=` literal. Folding the two into one artifact is deferred:
+        # they measure different populations, and collapsing them would lose the
+        # per-file property below.
+        #
+        # That gate is a PER-FILE, BIDIRECTIONAL ratchet rather than
+        # `--max-warnings N`. Per file, so three strings fixed in one file cannot pay
+        # for three added in another. Bidirectional, so fixing a string forces the
+        # baseline down and the gain cannot be given back — a one-way budget has no
+        # downward pressure, which is how the budget above went 1066 -> 1116.
+        run: |
+          # `actions/checkout` fetches depth 1, so the base branch is not present and
+          # `git show origin/main:…` would fail. Fetch just that one ref.
+          #
+          # `set -e` on the chain is the point: `check-source-strings.mjs` SKIPS ITSELF
+          # and exits 0 when the base ref is unreadable, so a failed fetch used to sail
+          # past this step and silently disable the new-key gate for the whole PR --
+          # observed in practice, where the script printed "OK: skipped -- cannot read
+          # website/src/i18n/locales/en.json at origin/main (shallow clone?)" and the
+          # step still went green. A gate that cannot run must fail, not pass: an
+          # unavailable base ref is a CI problem to fix, not a reason to stop checking.
+          if [ -n "$I18N_BASE_REF" ]; then
+            git fetch --depth=1 origin "${I18N_BASE_REF#origin/}" \
+              || { echo "::error::could not fetch base ref ${I18N_BASE_REF#origin/}; the new-key i18n gate cannot run"; exit 1; }
+            git update-ref "refs/remotes/$I18N_BASE_REF" FETCH_HEAD \
+              || { echo "::error::could not update $I18N_BASE_REF; the new-key i18n gate cannot run"; exit 1; }
+          fi
+          npm run i18n:check
+
   cfn-lint:
     name: CloudFormation Lint
     runs-on: ubuntu-latest

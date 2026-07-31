@@ -49,7 +49,9 @@
  * `i18nT` collides with nothing (asserted before writing, below).
  *
  * Usage:
- *   node scripts/i18n-codemod.mjs --dry-run     # report only
+ *   node scripts/i18n-codemod.mjs --check              # exit 1 if anything is unextracted
+ *   node scripts/i18n-codemod.mjs --check --baseline=N  # CI gate: exit 1 above N (ratchet)
+ *   node scripts/i18n-codemod.mjs --dry-run     # report only, always exit 0
  *   node scripts/i18n-codemod.mjs               # full conversion (replaces en.json)
  *   node scripts/i18n-codemod.mjs --merge       # incremental: convert the files
  *                                               # that are still unconverted and
@@ -71,8 +73,46 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 const SRC = path.join(ROOT, 'src')
 const EN_CATALOG = path.join(SRC, 'i18n/locales/en.json')
-const DRY_RUN = process.argv.includes('--dry-run')
+/**
+ * `--check` and `--dry-run` answer different questions, and only the first can gate.
+ *
+ * `--dry-run` answers "what would change if I ran", and exits 0 whether or not
+ * anything would — useful to a human, useless as CI. `--check` answers "is there
+ * user-visible English in the source that is not in the catalog", and exits 1 when
+ * there is. It implies `--dry-run`, so nothing is written either way.
+ *
+ * This distinction is load-bearing: an UNRECOGNISED flag falls through to the full
+ * destructive conversion, so a CI job invoking the bare script would rewrite
+ * `en.json` on every build.
+ */
+const CHECK = process.argv.includes('--check')
+const DRY_RUN = CHECK || process.argv.includes('--dry-run')
 const MERGE = process.argv.includes('--merge')
+
+/**
+ * Ratchet, mirroring `npx eslint --max-warnings 1116` in `ci.yml`: 76 user-visible
+ * strings are unextracted today, so a hard `--check` would fail on arrival and get
+ * disabled. `--baseline=N` fails only ABOVE N. Ratchet it down, never up.
+ */
+const BASELINE_ARG = process.argv.find((a) => a.startsWith('--baseline='))
+const BASELINE = BASELINE_ARG ? Number.parseInt(BASELINE_ARG.slice('--baseline='.length), 10) : 0
+if (BASELINE_ARG && !Number.isInteger(BASELINE)) {
+  console.error(`--baseline must be an integer, got: ${BASELINE_ARG}`)
+  process.exit(2)
+}
+
+const KNOWN_FLAGS = new Set(['--check', '--dry-run', '--merge'])
+const unknownFlags = process.argv
+  .slice(2)
+  .filter((a) => a.startsWith('-') && !KNOWN_FLAGS.has(a) && !a.startsWith('--baseline='))
+if (unknownFlags.length > 0) {
+  console.error(
+    `unknown flag(s): ${unknownFlags.join(', ')}\n`
+    + `refusing to run, because an unrecognised flag would otherwise fall through to the\n`
+    + `destructive conversion path. Known flags: ${[...KNOWN_FLAGS].join(', ')}`,
+  )
+  process.exit(2)
+}
 
 /**
  * Name the translate function is imported as. Deliberately NOT `t` — see the
@@ -521,8 +561,32 @@ function sortDeep(obj) {
 }
 
 console.log(
-  `${DRY_RUN ? '[dry-run] ' : ''}scanned ${stats.files} files, changed ${stats.changedFiles}\n`
+  `${CHECK ? '[check] ' : DRY_RUN ? '[dry-run] ' : ''}scanned ${stats.files} files, changed ${stats.changedFiles}\n`
   + `  converted: ${total} (${stats.attrs} attrs, ${stats.texts} text nodes)\n`
   + `  skipped:   ${stats.skippedModuleLevel} module-level, ${stats.skippedDynamic} dynamic, `
   + `${stats.skippedCollision} name-collision`,
 )
+
+if (CHECK) {
+  // `skipped` is not a failure: module-level and dynamic sites are skipped BY
+  // DESIGN (a module-level `i18nT()` would freeze the boot language), and
+  // name-collision files are deliberately left alone. The gate is only about
+  // strings this codemod would have extracted and nobody has.
+  if (total > BASELINE) {
+    console.error(
+      `\n${total} unextracted user-visible string(s) across ${stats.changedFiles} file(s), `
+      + `above the baseline of ${BASELINE}.\n`
+      + `Run \`node scripts/i18n-codemod.mjs\` locally to extract them, review the diff,\n`
+      + `and commit the updated catalog with your change.`,
+    )
+    process.exit(1)
+  }
+  if (total < BASELINE) {
+    console.error(
+      `\n${total} unextracted string(s) — BELOW the baseline of ${BASELINE}. Ratchet it down:\n`
+      + `set --baseline=${total} so the gain cannot be given back.`,
+    )
+    process.exit(1)
+  }
+  console.log(`\nOK: ${total} unextracted string(s), at the baseline of ${BASELINE}.`)
+}

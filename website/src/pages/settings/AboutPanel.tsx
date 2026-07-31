@@ -41,23 +41,45 @@ function formatRate(bps: number): string {
  * library text (multi-line HttpError dumps, digest comparisons), so it is only
  * used as a last-resort detail for an unclassified failure.
  */
+/**
+ * Failure class → catalog key, written out in full.
+ *
+ * These keys used to be assembled as `i18nT(ap + 'update_error_offline')`. A
+ * concatenated key is invisible to static analysis: no extractor, linter or
+ * unused-key tool can see it, so the keys look dead and a pruning pass would
+ * delete them. That is not hypothetical here — the `server` branch below carries
+ * a comment about a missing key taking the whole panel down through the error
+ * boundary.
+ *
+ * `as const` on a literal map is the standard fix: the keys become plain string
+ * literals that tooling can find, and the lookup stays a single expression.
+ */
+const UPDATE_ERROR_KEYS = {
+  offline: 'pages.settings.aboutPanel.update_error_offline',
+  serverStatus: 'pages.settings.aboutPanel.update_error_server_status',
+  server: 'pages.settings.aboutPanel.update_error_server',
+  noRelease: 'pages.settings.aboutPanel.update_error_no_release',
+  integrity: 'pages.settings.aboutPanel.update_error_integrity',
+  misconfigured: 'pages.settings.aboutPanel.update_error_misconfigured',
+  unknown: 'pages.settings.aboutPanel.update_error_unknown',
+} as const
+
 function updateErrorText(st: UpdateState | null | undefined): string {
-  const ap = 'pages.settings.aboutPanel.'
   switch (st?.code) {
-    case 'offline': return i18nT(ap + 'update_error_offline')
+    case 'offline': return i18nT(UPDATE_ERROR_KEYS.offline)
     case 'server': {
       // Guard the interpolation: i18nT returns undefined for a key missing from
       // every catalog, and calling .replace() on that took the whole panel down
       // via the error boundary. A status-less fallback is strictly better than a
       // blank Settings page.
-      const template = i18nT(ap + 'update_error_server_status')
+      const template = i18nT(UPDATE_ERROR_KEYS.serverStatus)
       return st.httpStatus && typeof template === 'string'
         ? template.replace('{{status}}', String(st.httpStatus))
-        : i18nT(ap + 'update_error_server')
+        : i18nT(UPDATE_ERROR_KEYS.server)
     }
-    case 'no-release': return i18nT(ap + 'update_error_no_release')
-    case 'integrity': return i18nT(ap + 'update_error_integrity')
-    case 'misconfigured': return i18nT(ap + 'update_error_misconfigured')
+    case 'no-release': return i18nT(UPDATE_ERROR_KEYS.noRelease)
+    case 'integrity': return i18nT(UPDATE_ERROR_KEYS.integrity)
+    case 'misconfigured': return i18nT(UPDATE_ERROR_KEYS.misconfigured)
     // Unclassified failure. The localized generic WINS over st.message: the raw
     // value is electron-updater's exception text, written for a developer reading
     // logs ("ShipIt could not replace the application bundle") and always English.
@@ -65,7 +87,7 @@ function updateErrorText(st: UpdateState | null | undefined): string {
     // branch. The detail still reaches the log via the main process; only fall
     // back to it if the catalog key is somehow missing, since a raw string beats
     // an empty error line.
-    default: return i18nT(ap + 'update_error_unknown') || st?.message || ''
+    default: return i18nT(UPDATE_ERROR_KEYS.unknown) || st?.message || ''
   }
 }
 

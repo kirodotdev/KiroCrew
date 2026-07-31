@@ -27,6 +27,9 @@
     "jscpd": "jscpd .",
     "gen:settings": "node scripts/gen-settings-registry.mjs",
     "lint:theme-colors": "node scripts/check-theme-colors.mjs",
+    "lint:i18n": "node scripts/check-i18n-strings.mjs",
+    "i18n:pseudo": "node scripts/gen-pseudolocale.mjs",
+    "i18n:check": "node scripts/gen-pseudolocale.mjs --check && node scripts/i18n-codemod.mjs --check --baseline=76 && node scripts/i18n-plural-codemod.mjs --check && node scripts/check-source-strings.mjs && npm run lint:i18n",
     "pretest": "npm run jscpd"
   },
   "files": [
@@ -94,6 +97,7 @@
     "@vitest/coverage-v8": "3.2.4",
     "autoprefixer": "10.4.27",
     "eslint": "^9.39.4",
+    "eslint-plugin-i18next": "^6.1.5",
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react-hooks": "7.0.1",
     "fast-check": "4.6.0",

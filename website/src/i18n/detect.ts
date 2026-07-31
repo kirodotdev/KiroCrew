@@ -16,8 +16,8 @@
 import {
   AUTO_LANGUAGE,
   DEFAULT_LANGUAGE,
-  SUPPORTED_CODES,
-  isSupportedLanguage,
+  DETECTABLE_CODES,
+  isRestorableLanguage,
 } from './languages'
 
 /** localStorage key mirroring the persisted config value (boot fast-path). */
@@ -36,12 +36,14 @@ function matchTag(tag: string): string | null {
   if (!normalized) return null
 
   // Exact match, case-insensitive (browsers may report `zh-cn`).
-  const exact = SUPPORTED_CODES.find(c => c.toLowerCase() === normalized.toLowerCase())
+  // DETECTABLE_CODES, not SUPPORTED_CODES: a browser never sends the pseudolocale, and
+  // including it would make `en` ambiguous for every real `en-*` tag.
+  const exact = DETECTABLE_CODES.find(c => c.toLowerCase() === normalized.toLowerCase())
   if (exact) return exact
 
   // Primary-subtag match: 'zh-Hans' / 'zh' → 'zh-CN'.
   const primary = normalized.split('-')[0].toLowerCase()
-  const related = SUPPORTED_CODES.find(c => c.split('-')[0].toLowerCase() === primary)
+  const related = DETECTABLE_CODES.find(c => c.split('-')[0].toLowerCase() === primary)
   return related ?? null
 }
 
@@ -65,14 +67,14 @@ function matchConfident(tag: string): string | null {
   const normalized = tag.trim().toLowerCase()
   if (!normalized) return null
 
-  const exact = SUPPORTED_CODES.find(c => c.toLowerCase() === normalized)
+  const exact = DETECTABLE_CODES.find(c => c.toLowerCase() === normalized)
   if (exact) return exact
 
   // Regional variant of a supported language: confident only when the primary
   // subtag maps to a single supported code AND that code carries no region of
   // its own (so `en` matches `en-GB`, but `zh-CN` does not match `zh-TW`).
   const primary = normalized.split('-')[0]
-  const candidates = SUPPORTED_CODES.filter(c => c.split('-')[0].toLowerCase() === primary)
+  const candidates = DETECTABLE_CODES.filter(c => c.split('-')[0].toLowerCase() === primary)
   if (candidates.length === 1 && !candidates[0].includes('-')) return candidates[0]
   return null
 }
@@ -122,10 +124,13 @@ export function detectBrowserLanguage(): string | null {
  * Resolve the language to actually render in.
  *
  * @param stored the persisted explicit choice (config value or localStorage
- *   mirror). `''`/`undefined`/an unsupported value all mean "auto-detect".
+ *   mirror). `''`/`undefined`/an unsupported value all mean "auto-detect" — and
+ *   so does a dev-only code such as the `en-XA` pseudolocale in a production
+ *   build, which is what keeps a stored pseudolocale from accenting a shipped
+ *   dashboard. See `isRestorableLanguage`.
  */
 export function resolveLanguage(stored?: string | null): string {
-  if (stored && stored !== AUTO_LANGUAGE && isSupportedLanguage(stored)) return stored
+  if (stored && stored !== AUTO_LANGUAGE && isRestorableLanguage(stored)) return stored
   return detectBrowserLanguage() ?? DEFAULT_LANGUAGE
 }
 
@@ -138,7 +143,7 @@ export function resolveLanguage(stored?: string | null): string {
 export function readStoredLanguage(): string {
   try {
     const raw = localStorage.getItem(LANG_STORAGE_KEY)
-    return raw && isSupportedLanguage(raw) ? raw : AUTO_LANGUAGE
+    return raw && isRestorableLanguage(raw) ? raw : AUTO_LANGUAGE
   } catch {
     // Storage blocked (private mode / partitioned) — fall back to detection.
     return AUTO_LANGUAGE

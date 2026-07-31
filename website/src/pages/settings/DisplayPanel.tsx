@@ -17,7 +17,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { clampTintCount, RECENT_TINT_COUNT } from '../../utils/recencyTint'
 import { useLanguage } from '../../i18n/LanguageProvider'
-import { AUTO_LANGUAGE, SUPPORTED_LANGUAGES, languageLabel } from '../../i18n/languages'
+import { AUTO_LANGUAGE, PICKABLE_LANGUAGES, languageLabel } from '../../i18n/languages'
 
 import { i18nT } from '../../i18n/t'
 /**
@@ -149,10 +149,10 @@ export function DisplayPanel() {
             label={i18nT('settings.display.language.label')}
             description={i18nT('settings.display.language.description')}
             value={language}
-            options={[AUTO_LANGUAGE, ...SUPPORTED_LANGUAGES.map(l => l.code)]}
+            options={[AUTO_LANGUAGE, ...PICKABLE_LANGUAGES.map(l => l.code)]}
             optionLabels={[
               `${i18nT('settings.display.language.auto')} — ${languageLabel(detectedLanguage)}`,
-              ...SUPPORTED_LANGUAGES.map(l => l.label),
+              ...PICKABLE_LANGUAGES.map(l => l.label),
             ]}
             onChange={setLanguage}
           />
