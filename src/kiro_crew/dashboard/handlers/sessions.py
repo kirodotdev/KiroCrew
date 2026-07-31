@@ -378,16 +378,35 @@ async def _fetch_usage_bg() -> None:
             _usage_cache = {"available": False}
             _usage_cache_ts = time.time()
             return
+        # Identity FIRST, because it is the anchor for credential selection.
+        # ``whoami`` is kiro-cli's own account, and it costs no credits; passing
+        # its profile ARN into fetch_usage_limits is what stops a still-valid
+        # credential from a signed-out profile supplying the numbers. Fetched
+        # once here and reused by both the API and text branches below (it used
+        # to be spawned separately in each).
+        identity = await _fetch_whoami(kiro_bin)
+        raw_arn = identity.get("_profile_arn")
+        expected_arn = raw_arn if isinstance(raw_arn, str) and raw_arn else None
         # Primary source: the real GetUsageLimits API. It reads the live bearer
-        # token kiro-cli maintains and returns the true used/limit/overage, so it
-        # survives kiro-cli stdout format changes (the regression that dropped
-        # the overage line). Runs on the subprocess pool (not the default
-        # to_thread pool): the client makes blocking urllib calls that can hang
-        # on DNS / a wedged TLS handshake, so they are isolated from the
-        # maintenance/cron pools. Fails closed (returns None) so we fall through
-        # to the text scrape rather than showing a fabricated number.
+        # token kiro-cli already maintains and returns the true used/limit/overage,
+        # so it survives kiro-cli stdout format changes (the regression that dropped
+        # the overage line).
+        #
+        # Both ARN values are safe to pass. An ARN anchors on identity; None
+        # anchors on PROVENANCE (kiro-cli's own auth store only) — see
+        # fetch_usage_limits. So an account with no profile ARN, and a whoami that
+        # could not be resolved at all, both still get the free API call instead of
+        # the credit-consuming text scrape, while an unprovable credential is still
+        # refused.
+        #
+        # Runs on the subprocess pool (not the default to_thread pool): the client
+        # makes blocking urllib calls that can hang on DNS / a wedged TLS
+        # handshake, so they are isolated from the maintenance/cron pools. Fails
+        # closed (returns None) so we fall through to the text scrape rather than
+        # showing a fabricated number.
         api_usage = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), kiro_usage_api.fetch_usage_limits
+            subprocess_executor(),
+            functools.partial(kiro_usage_api.fetch_usage_limits, expected_arn=expected_arn),
         )
         if api_usage and api_usage.get("credits_plan") is not None:
             # API output is untrusted too: redact every string leaf before caching.
@@ -396,7 +415,9 @@ async def _fetch_usage_bg() -> None:
             api_arn = api_usage.pop("_profile_arn", None)
             # Attach the signed-in identity ONLY when it provably belongs to the
             # account these credits were billed to (see _identity_matches_account).
-            identity = await _fetch_whoami(kiro_bin)
+            # Anchoring already guarantees this whenever an ARN existed on both
+            # sides; the check is kept as the independent assertion of it, and
+            # still carries the no-ARN (Builder ID) case on its own.
             if identity and _identity_matches_account(api_arn, identity):
                 api_usage.update(
                     {
@@ -439,13 +460,27 @@ async def _fetch_usage_bg() -> None:
             # dict is cached and served (kiro-cli output is untrusted).
             parsed = _normalize_text_usage(parsed)
             parsed = {k: _redact_strings(v) for k, v in parsed.items()}
-            # No coupling check needed here: this scrape IS kiro-cli's own
-            # `/usage` output, so it and `whoami` describe the same account by
-            # construction.
+            # No ARN coupling check here: this scrape IS kiro-cli's own `/usage`
+            # output, so it and `whoami` describe the same account by construction.
+            #
+            # But that argument only holds if the two are read ADJACENTLY, so the
+            # identity is re-resolved HERE rather than reusing the one fetched at
+            # the top of this refresh. Between them sit a whoami (≤30s), the API
+            # attempt (≤30s) and this scrape (≤60s) — a profile switch landing in
+            # that window would pair the OLD account's email with the NEW
+            # account's credits, which is the misattribution this whole path
+            # exists to prevent. whoami costs no credits, so a second spawn is
+            # the cheap side of that trade.
+            #
+            # The API branch above does not need this: it gates the merge on
+            # `_identity_matches_account`, so a mid-refresh switch makes the
+            # stale identity's ARN mismatch the accepted credential's and the
+            # email is simply dropped.
+            fresh_identity = await _fetch_whoami(kiro_bin)
             parsed.update(
                 {
                     k: _redact_strings(v)
-                    for k, v in (await _fetch_whoami(kiro_bin)).items()
+                    for k, v in fresh_identity.items()
                     if not k.startswith("_")
                 }
             )
@@ -500,7 +535,14 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
         return blocked
     now = time.time()
     if now - _usage_cache_ts > _USAGE_REFRESH_SECS:
-        # Fire background fetch, return stale cache immediately
+        # Timed refresh only. An earlier revision also refreshed when the kiro-cli
+        # auth store changed on disk, to pick a profile switch up in seconds — but
+        # that store is shared: `data.sqlite3` holds `conversations`, `history` and
+        # `state` alongside `auth_kv`, so ordinary chat traffic rewrites it roughly
+        # every 30 seconds. The trigger therefore fired on nearly every poll, and
+        # each fire can reach the `/usage` text scrape, which spends credits. A
+        # faster readout is not worth billing the user for it; a profile switch is
+        # picked up on the next interval instead.
         state: DashboardState = request.app["state"]
         task = asyncio.create_task(_fetch_usage_bg())
         state._background_tasks.add(task)

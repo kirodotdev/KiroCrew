@@ -10,6 +10,42 @@ IDE credit meter reads them from the ``GetUsageLimits`` API on the CodeWhisperer
 runtime service (RTS). This module calls that same API so KiroCrew surfaces the
 true used/limit/overage regardless of how kiro-cli reshuffles its stdout.
 
+Whose credits are these?
+------------------------
+Several credentials can be readable at once (an IDE cache, a kiro-cli store, a
+leftover file from a profile the user has since signed out of), and "unexpired"
+does not mean "the one kiro-cli is actually using": a token for the previous
+profile stays valid at the API until it expires on its own. Picking by fixed
+path order therefore showed the OLD profile's credits after a profile switch,
+and a gateway restart did not help because the order was the same on boot.
+
+So the caller passes ``expected_arn`` — the profile ARN ``kiro-cli whoami``
+reports for itself — and a candidate is only used when its own
+ListAvailableProfiles ARN equals it. Credentials for any other account are
+skipped without being spent on a GetUsageLimits call. When every candidate is
+rejected the function fails closed (``None``) and the caller degrades to
+scraping kiro-cli's own ``/usage`` output, which describes the right account by
+construction. Showing a different account's number is the failure being
+prevented; showing no number for one refresh is not.
+
+There are TWO proofs of ownership, never an unverified path. When whoami reports a
+profile ARN, a candidate qualifies by matching it. When it reports none — a Builder
+ID account, or an older kiro-cli that prints no ``Profile:`` block, or a whoami that
+failed outright — a candidate qualifies only by PROVENANCE: it must come from
+kiro-cli's own auth store, where a token is the signed-in account's credential by
+construction. That is the same trust argument that makes scraping kiro-cli's own
+``/usage`` output safe, so it costs nothing to rely on here.
+
+What is refused in the no-ARN case is a credential from the JSON SSO caches or
+another product's store. Those may well be the same account, but nothing proves it,
+and treating them as interchangeable is what served one Builder ID account's
+leftover token as a different Builder ID account's balance.
+
+Provenance-anchoring is what keeps the free API path available to every account
+class. Requiring an ARN instead would push all profile-less accounts onto the text
+scrape — which spends credits on every refresh, indefinitely, and hits the smallest
+quotas hardest.
+
 It is a read-only client: it reads the live bearer token that kiro-cli already
 maintains and makes one authenticated call. The JSON SSO cache files live under
 ``~/.aws`` (a sensitive path), so they are read via
@@ -52,6 +88,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from kiro_crew import hooks
 
@@ -87,15 +124,27 @@ _JSON_TOKEN_READ_IDS = (
     "kiro_usage_api.sso_token_ide",
 )
 
-# kiro-cli / amazon-q SQLite auth stores. This is the authoritative live-token
-# source on Linux (kiro-cli refreshes it during normal use); the JSON files
-# above are not rewritten on refresh. ``~/.local/share`` is not a sensitive
-# credential path, so this read is a direct read-only sqlite open. auth_kv holds
-# a JSON blob per key.
-_TOKEN_SQLITE_DBS = (
+# kiro-cli's OWN SQLite auth store — the store kiro-cli itself authenticates
+# from, and the authoritative live-token source (it refreshes this during normal
+# use; the JSON files above are not rewritten on refresh). Being kiro-cli's own
+# store is what makes a token here provably the SIGNED-IN account's credential,
+# which is the basis of the source-anchored path in ``fetch_usage_limits`` — the
+# same trust argument as scraping kiro-cli's own ``/usage`` output. On this host
+# the running ``kiro-cli acp`` processes were observed holding descriptors on
+# exactly this path.
+# ``~/.local/share`` is not a sensitive credential path, so this read is a direct
+# read-only sqlite open. auth_kv holds a JSON blob per key.
+_CLI_SQLITE_DBS = (
     Path.home() / ".local" / "share" / "kiro-cli" / "data.sqlite3",
-    Path.home() / ".local" / "share" / "amazon-q" / "data.sqlite3",
     Path.home() / "Library" / "Application Support" / "kiro-cli" / "data.sqlite3",
+)
+
+# Auth stores belonging to OTHER products (amazon-q). Readable, and often the same
+# account, but NOT kiro-cli's own credential — so a token from here can only be
+# used when a matching profile ARN proves the account independently. It can never
+# satisfy the source-anchored path.
+_OTHER_SQLITE_DBS = (
+    Path.home() / ".local" / "share" / "amazon-q" / "data.sqlite3",
     Path.home() / "Library" / "Application Support" / "amazon-q" / "data.sqlite3",
 )
 _SQLITE_TOKEN_KEYS = ("kirocli:odic:token", "codewhisperer:odic:token")
@@ -119,6 +168,11 @@ _MAX_RESP_BYTES = 1_000_000
 # definitive ListAvailableProfiles 200 (the value may be None for individual
 # accounts); transient failures are never cached. See _list_profile_arn.
 _PROFILE_ARN_CACHE: dict[str, str | None] = {}
+
+# Size cap for the two profile caches below. They are keyed by token digest and
+# never expire, so a long-lived gateway that sees many profile switches / token
+# refreshes would otherwise accumulate one entry each. See _remember_profile.
+_PROFILE_CACHE_MAX = 32
 
 # Human profile/display name for the signed-in account, captured as a side
 # effect of the same ListAvailableProfiles probe that yields the ARN and keyed
@@ -216,6 +270,22 @@ def _parse_iso(ts: object) -> datetime | None:
         return None
 
 
+def _expiry_if_unexpired(exp: object, now: datetime) -> datetime | None:
+    """Return the parsed expiry only when it is present, parseable, and future.
+
+    Deny-by-default, same contract as :func:`_unexpired` (which delegates here):
+    a missing or unparseable expiry rejects the credential rather than treating
+    it as non-expiring. The parsed value is returned rather than a bool so
+    :func:`_candidate_tokens` can order candidates by it without re-parsing.
+    """
+    if not exp:
+        return None
+    parsed = _parse_iso(exp)
+    if parsed is None or parsed <= now:
+        return None
+    return parsed
+
+
 def _unexpired(exp: object, now: datetime) -> bool:
     """True only when the expiry is present, parseable, and in the future.
 
@@ -224,19 +294,16 @@ def _unexpired(exp: object, now: datetime) -> bool:
     field, and the multi-candidate loop + text-scrape fallback absorb a false
     rejection gracefully — failing closed here costs nothing.
     """
-    if not exp:
-        return False
-    parsed = _parse_iso(exp)
-    if parsed is None:
-        return False
-    return parsed > now
+    return _expiry_if_unexpired(exp, now) is not None
 
 
-def _token_from_json(read_id: str, now: datetime) -> str | None:
-    """Return an unexpired accessToken from a sanctioned JSON SSO cache read.
+def _token_from_json(read_id: str, now: datetime) -> tuple[str, datetime] | None:
+    """Return ``(accessToken, expiry)`` from a sanctioned JSON SSO cache read.
 
     The bytes are read via ``hooks.safe_read_file_internal`` (not a direct
-    ``~/.aws`` read) so the sensitive-path deny rule + SEL audit apply.
+    ``~/.aws`` read) so the sensitive-path deny rule + SEL audit apply. The
+    expiry is returned alongside the token so candidates can be ordered by
+    freshness; ``None`` means no usable unexpired credential here.
     """
     raw = hooks.safe_read_file_internal(read_id)
     if not raw:
@@ -251,11 +318,12 @@ def _token_from_json(read_id: str, now: datetime) -> str | None:
     exp = data.get("expiresAt") or data.get("expires_at")
     if not isinstance(tok, str) or not tok:
         return None
-    return tok if _unexpired(exp, now) else None
+    expiry = _expiry_if_unexpired(exp, now)
+    return (tok, expiry) if expiry is not None else None
 
 
-def _token_from_sqlite(db: Path, now: datetime) -> str | None:
-    """Return an unexpired access_token from a kiro-cli/amazon-q SQLite store.
+def _token_from_sqlite(db: Path, now: datetime) -> tuple[str, datetime] | None:
+    """Return ``(access_token, expiry)`` from a kiro-cli/amazon-q SQLite store.
 
     Opened read-only; the token value is never logged. This is the live token
     source on Linux, where the JSON cache file is not refreshed. The store is
@@ -297,7 +365,8 @@ def _token_from_sqlite(db: Path, now: datetime) -> str | None:
             tok = blob.get("access_token") or blob.get("accessToken")
             exp = blob.get("expires_at") or blob.get("expiresAt")
             if isinstance(tok, str) and tok:
-                if not _unexpired(exp, now):
+                expiry = _expiry_if_unexpired(exp, now)
+                if expiry is None:
                     # The credential blob WAS read even though it is expired —
                     # record that access so the audit trail covers every read
                     # of the store, not only reads that yield a usable token.
@@ -309,7 +378,7 @@ def _token_from_sqlite(db: Path, now: datetime) -> str | None:
                 # is never returned — the caller degrades to the text scrape.
                 if not hooks.emit_internal_read_audit(_SQLITE_AUDIT_READ_ID, "success"):
                     return None
-                return tok
+                return (tok, expiry)
         # Audit-on-every-outcome: the DB was opened, so record the access even
         # when it yielded no usable token (missing rows / malformed blob / query
         # failure) — otherwise an opened credential store would leave no trail.
@@ -320,46 +389,83 @@ def _token_from_sqlite(db: Path, now: datetime) -> str | None:
         con.close()
 
 
-def _candidate_tokens() -> list[str]:
-    """Return all unexpired bearer tokens to try, in priority order (deduped).
+class _Candidate(NamedTuple):
+    """A usable bearer token plus the provenance needed to trust it.
 
-    Order: sanctioned JSON SSO cache reads (honored when an IDE keeps them
-    fresh), then the kiro-cli/amazon-q SQLite auth stores (the live, refreshed
-    token on Linux). Expired tokens are skipped and token values are never
-    logged.
+    ``from_cli_store`` is True only for a token read from kiro-cli's OWN auth
+    store (:data:`_CLI_SQLITE_DBS`). That flag is a trust claim, not a label: it
+    is what lets :func:`fetch_usage_limits` accept a credential for an account
+    with no profile ARN, because a token in kiro-cli's own store is the
+    signed-in account's credential by construction. Tokens from the JSON SSO
+    caches and from other products' stores carry False — they may well be the
+    same account, but nothing here proves it, so they are usable only when a
+    matching ARN proves it independently.
+    """
 
-    Multiple candidates are returned (not just the first) because "unexpired"
-    is not the same as "accepted": an unexpired-but-rejected JSON/IDE token
-    must not shadow a working SQLite token. ``fetch_usage_limits`` tries each in
-    turn until one is accepted, so a stale-yet-unexpired token can no longer
-    mask a good one. v1 does not refresh — kiro-cli keeps the SQLite token
-    fresh during normal use.
+    token: str
+    expiry: datetime
+    from_cli_store: bool
+
+
+def _candidate_tokens() -> list[_Candidate]:
+    """Return all unexpired candidates to try, freshest expiry first (deduped).
+
+    Path order is deliberately NOT the ranking. Every enumerated source can hold
+    a valid credential at the same time, so ordering by path meant a leftover
+    token from a profile the user has since signed out of was tried first and,
+    being genuinely valid, was accepted — the "wrong profile" readout. Ordering
+    by expiry descending puts the most recently issued credential first, because
+    a token refreshed later carries a later expiry.
+
+    This is a heuristic, not proof: sources can issue different lifetimes, so a
+    long-lived stale token could still outrank a short-lived fresh one. Ordering
+    only decides which proven candidate is tried first —
+    ``fetch_usage_limits`` establishes ownership itself, by matching ARN or by
+    provenance. Ties keep the original path precedence (``sorted`` is stable).
+
+    Multiple candidates are returned (not just the first) because "unexpired" is
+    not the same as "accepted": an unexpired-but-rejected token must not shadow a
+    working one. Expired tokens are skipped and token values are never logged.
+    v1 does not refresh — kiro-cli keeps its own store fresh during normal use.
     """
     now = datetime.now(timezone.utc)
-    seen: set[str] = set()
-    tokens: list[str] = []
+    # Deduped by token value, keeping the latest expiry seen for it and ORing the
+    # provenance: the same token can appear in more than one store, and if any of
+    # them is kiro-cli's own store then it is kiro-cli's credential.
+    freshest: dict[str, tuple[datetime, bool]] = {}
 
-    def _add(tok: str | None) -> None:
-        if tok and tok not in seen:
-            seen.add(tok)
-            tokens.append(tok)
+    def _add(found: tuple[str, datetime] | None, *, from_cli_store: bool) -> None:
+        if not found:
+            return
+        tok, exp = found
+        current = freshest.get(tok)
+        if current is None:
+            freshest[tok] = (exp, from_cli_store)
+        else:
+            freshest[tok] = (max(exp, current[0]), current[1] or from_cli_store)
 
     for read_id in _JSON_TOKEN_READ_IDS:
-        _add(_token_from_json(read_id, now))
-    for db in _TOKEN_SQLITE_DBS:
-        _add(_token_from_sqlite(db, now))
-    return tokens
+        _add(_token_from_json(read_id, now), from_cli_store=False)
+    for db in _CLI_SQLITE_DBS:
+        _add(_token_from_sqlite(db, now), from_cli_store=True)
+    for db in _OTHER_SQLITE_DBS:
+        _add(_token_from_sqlite(db, now), from_cli_store=False)
+    ranked = sorted(freshest.items(), key=lambda kv: kv[1][0], reverse=True)
+    return [_Candidate(tok, exp, own) for tok, (exp, own) in ranked]
 
 
 def _load_bearer_token() -> str | None:
     """Return the single freshest available bearer token, or None.
 
-    Thin convenience wrapper over :func:`_candidate_tokens` (first candidate).
-    ``fetch_usage_limits`` uses :func:`_candidate_tokens` directly so it can
-    fall through to the next source on a rejected-but-unexpired token.
+    Thin convenience wrapper over :func:`_candidate_tokens` (first candidate,
+    which is the freshest-expiry one). It discards provenance and applies NO
+    ownership proof, so it must not be used to choose the credential a request is
+    made with — ``fetch_usage_limits`` uses :func:`_candidate_tokens` directly so
+    it can check each candidate's account (by ARN or by provenance) and fall
+    through to the next source on a rejected-but-unexpired token.
     """
-    tokens = _candidate_tokens()
-    return tokens[0] if tokens else None
+    candidates = _candidate_tokens()
+    return candidates[0].token if candidates else None
 
 
 def _post(token: str, target: str, payload: dict) -> _Resp:
@@ -463,9 +569,26 @@ def _list_profile_arn(token: str) -> str | None:
                 name = pname[:100]
             break
     if arn is not None:
-        _PROFILE_ARN_CACHE[key] = arn  # memoize only a found ARN, per token
-        _PROFILE_NAME_CACHE[key] = name  # co-cached; None when profile had no name
+        _remember_profile(key, arn, name)
     return arn
+
+
+def _remember_profile(key: str, arn: str, name: str | None) -> None:
+    """Memoize a found ARN (and its co-cached display name) under a size cap.
+
+    Entries are keyed by token digest and never expire, so each profile switch
+    or token refresh adds one. The cap bounds that growth over a long-lived
+    gateway; eviction is insertion-order (dicts preserve it), and both caches are
+    evicted together so a name can never outlive the ARN it belongs to and be
+    attributed to a different account.
+    """
+    if key not in _PROFILE_ARN_CACHE and len(_PROFILE_ARN_CACHE) >= _PROFILE_CACHE_MAX:
+        oldest = next(iter(_PROFILE_ARN_CACHE), None)
+        if oldest is not None:
+            _PROFILE_ARN_CACHE.pop(oldest, None)
+            _PROFILE_NAME_CACHE.pop(oldest, None)
+    _PROFILE_ARN_CACHE[key] = arn
+    _PROFILE_NAME_CACHE[key] = name
 
 
 def _account_name(token: str) -> str | None:
@@ -615,35 +738,54 @@ def _map_response(data: dict) -> dict | None:
     return result
 
 
-def fetch_usage_limits() -> dict | None:
+def fetch_usage_limits(expected_arn: str | None) -> dict | None:
     """Fetch real credit usage via the direct RTS API. Synchronous (uses urllib).
 
-    Returns the canonical usage dict on success, or None on ANY failure
-    (no token, every candidate rejected, unparseable body, no CREDIT
-    breakdown). The caller treats None as "fall back to the text scrape" — this
-    function never raises and never logs the token (controls 4 & 5).
+    A candidate credential is used only when its ownership by the signed-in
+    account is PROVEN. There are two proofs, and ``expected_arn`` selects which:
 
-    Tries each candidate token in turn (JSON SSO cache, then SQLite auth store)
-    until one is accepted, so an unexpired-but-rejected token no longer shadows
-    a working one.
+    * **ARN-anchored** (``expected_arn`` is a non-empty ARN — the one
+      ``kiro-cli whoami`` reports for itself): a candidate qualifies when its own
+      ListAvailableProfiles ARN is present and equal. This admits a credential
+      from any readable source, including an IDE cache, because the ARN match is
+      the proof.
+    * **Source-anchored** (``expected_arn`` is ``None`` — the account has no
+      profile ARN, or whoami could not be resolved): a candidate qualifies only if
+      it came from kiro-cli's OWN auth store (``from_cli_store``). A token there is
+      the signed-in account's credential by construction — the identical trust
+      argument that makes scraping kiro-cli's own ``/usage`` output safe. Whatever
+      ARN that credential reports is then used for the request payload, so an
+      enterprise account on a kiro-cli that prints no ``Profile:`` block still gets
+      its real overage figure instead of the lossier scrape.
+
+    ``None`` is therefore NOT an unverified mode: it swaps ARN proof for
+    provenance proof. What it will never do is accept a credential from the JSON
+    SSO caches or another product's store, which is what let one Builder ID
+    account's leftover token be served as a different Builder ID account's balance.
+
+    Returns the canonical usage dict on success, or None on ANY failure (no
+    token, no candidate proven, unparseable body, no CREDIT breakdown). The caller
+    treats None as "fall back to the text scrape". This function never raises and
+    never logs the token (controls 4 & 5).
 
     Call from async code via ``asyncio.get_running_loop().run_in_executor(...)``
     so the blocking HTTP call does not stall the event loop.
     """
     try:
-        tokens = _candidate_tokens()
+        candidates = _candidate_tokens()
     except Exception:
         # Token acquisition must fail closed to the text scrape, never raise —
         # an escaping error would make the caller cache {"available": False}
         # and skip the fallback entirely.
         logger.debug("Kiro usage API: token acquisition failed", exc_info=True)
         return None
-    if not tokens:
+    if not candidates:
         logger.debug("Kiro usage API: no live bearer token available")
         return None
     reason = "unknown"
     deadline = time.monotonic() + _TOTAL_DEADLINE_SECS
-    for token in tokens:
+    for candidate in candidates:
+        token = candidate.token
         if time.monotonic() > deadline:
             # Bound total time so a host with several stale tokens can't stall
             # the pill for minutes; degrade to the text scrape instead.
@@ -651,7 +793,33 @@ def fetch_usage_limits() -> dict | None:
             logger.debug("Kiro usage API: %s; falling back to text scrape", reason)
             break
         try:
-            arn = _list_profile_arn(token)  # None for individual (non-enterprise) accounts
+            if not expected_arn and not candidate.from_cli_store:
+                # Source-anchored mode with nothing to prove this credential's
+                # account. Skip WITHOUT probing or spending it: this is the exact
+                # candidate class that produced the wrong-account readout.
+                reason = "no credential from kiro-cli's own store"
+                logger.debug(
+                    "Kiro usage API: skipping a credential that is not from "
+                    "kiro-cli's own auth store"
+                )
+                continue
+            arn = _list_profile_arn(token)
+            if expected_arn and (not arn or arn != expected_arn):
+                # ARN-anchored mode: not provably the signed-in account. Skip
+                # WITHOUT calling GetUsageLimits. A null ``arn`` is rejected rather
+                # than compared, because None carries no identity — it is what a
+                # transient profile lookup returns AND what every profile-less
+                # account returns, so comparing it would match one account's
+                # leftover credential against a different one.
+                #
+                # ARNs are not secret, but they identify an account, so only the
+                # outcome is logged.
+                reason = "no candidate credential proved it belongs to the signed-in profile"
+                logger.debug(
+                    "Kiro usage API: skipping a credential whose profile is absent or "
+                    "does not match the signed-in account"
+                )
+                continue
             payload: dict[str, object] = {"origin": "AI_EDITOR"}
             if arn:
                 payload["profileArn"] = arn
@@ -683,14 +851,16 @@ def fetch_usage_limits() -> dict | None:
                 # Coupling metadata for the caller's identity check (private —
                 # stripped before the payload is cached or served).
                 #
-                # These numbers may come from a DIFFERENT account than
-                # ``kiro-cli whoami`` reports: this client tries several
-                # candidate credentials (IDE cache first, then the kiro-cli
-                # store) and uses whichever the API accepts, while whoami always
-                # reports kiro-cli's own identity. Attaching an unverified email
-                # to these credits would misattribute an overage bill, so the
-                # caller must prove they refer to the same account before
-                # displaying an identity alongside them.
+                # These numbers now provably belong to the account kiro-cli is
+                # signed in as: no candidate with a different ARN could have
+                # reached this point. The ARN is still handed back because
+                # matching on ``None`` (both sides have no profile — a Builder ID
+                # account) is weaker than matching a specific ARN: two different
+                # Builder ID accounts both present no ARN, so that case is
+                # consistent but not proof of the same account. The caller's
+                # ``_identity_matches_account`` encodes exactly that distinction
+                # and is what decides whether an email may sit next to an overage
+                # figure.
                 mapped["_profile_arn"] = arn  # None for individual accounts
                 _note_api_outcome(True)
                 return mapped
@@ -705,5 +875,5 @@ def fetch_usage_limits() -> dict | None:
             reason = "unexpected error"
             logger.debug("Kiro usage API: unexpected error for a token candidate", exc_info=True)
             continue
-    _note_api_outcome(False, f"all {len(tokens)} candidate token(s) failed; last: {reason}")
+    _note_api_outcome(False, f"all {len(candidates)} candidate credential(s) failed; last: {reason}")
     return None

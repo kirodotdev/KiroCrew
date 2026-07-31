@@ -26,6 +26,17 @@ def _resp(status: int, body: object) -> MagicMock:
     return r
 
 
+def _cand(value: str, *, own: bool = True, hours: float = 1.0):
+    """Build a credential candidate for tests.
+
+    ``own`` defaults to True (kiro-cli's own auth store) so ARN-anchored tests stay
+    focused on the ARN check rather than incidentally tripping the provenance one.
+    Pass ``own=False`` for the JSON SSO caches / another product's store.
+    """
+    expiry = datetime.now(timezone.utc) + timedelta(hours=hours)
+    return api._Candidate(value, expiry, own)
+
+
 class TestBounded:
     def test_valid(self):
         assert api._bounded("42.5") == 42.5
@@ -193,14 +204,16 @@ class TestLoadBearerToken:
             return (json.dumps({"accessToken": "tok-abc", "expiresAt": future}).encode()
                     if read_id == "kiro_usage_api.sso_token_cli" else None)
         with patch("kiro_crew.hooks.safe_read_file_internal", side_effect=fake_read), \
-             patch.object(api, "_TOKEN_SQLITE_DBS", ()):
+             patch.object(api, "_CLI_SQLITE_DBS", ()), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._load_bearer_token() == "tok-abc"
 
     def test_skips_expired_json_token(self):
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         blob = json.dumps({"accessToken": "old", "expiresAt": past}).encode()
         with patch("kiro_crew.hooks.safe_read_file_internal", return_value=blob), \
-             patch.object(api, "_TOKEN_SQLITE_DBS", ()):
+             patch.object(api, "_CLI_SQLITE_DBS", ()), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._load_bearer_token() is None
 
     def test_accepts_future_json_token(self):
@@ -210,12 +223,14 @@ class TestLoadBearerToken:
             return (json.dumps({"accessToken": "fresh", "expiresAt": future}).encode()
                     if read_id.endswith("cli") else None)
         with patch("kiro_crew.hooks.safe_read_file_internal", side_effect=fake_read), \
-             patch.object(api, "_TOKEN_SQLITE_DBS", ()):
+             patch.object(api, "_CLI_SQLITE_DBS", ()), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._load_bearer_token() == "fresh"
 
     def test_missing_sources_return_none(self, tmp_path):
         with patch("kiro_crew.hooks.safe_read_file_internal", return_value=None), \
-             patch.object(api, "_TOKEN_SQLITE_DBS", (tmp_path / "nope.sqlite3",)):
+             patch.object(api, "_CLI_SQLITE_DBS", (tmp_path / "nope.sqlite3",)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._load_bearer_token() is None
 
     def test_falls_through_expired_json_to_sqlite(self, tmp_path):
@@ -236,7 +251,8 @@ class TestLoadBearerToken:
         con.close()
         with patch("kiro_crew.hooks.safe_read_file_internal", return_value=stale), \
              patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True), \
-             patch.object(api, "_TOKEN_SQLITE_DBS", (db,)):
+             patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._load_bearer_token() == "live-sqlite"
 
     def test_sqlite_token_denied_when_audit_cannot_be_recorded(self, tmp_path):
@@ -255,7 +271,8 @@ class TestLoadBearerToken:
         con.close()
         with patch("kiro_crew.hooks.safe_read_file_internal", return_value=None), \
              patch("kiro_crew.hooks.emit_internal_read_audit", return_value=False), \
-             patch.object(api, "_TOKEN_SQLITE_DBS", (db,)):
+             patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._load_bearer_token() is None
 
     def test_skips_expired_sqlite_token(self, tmp_path):
@@ -272,7 +289,8 @@ class TestLoadBearerToken:
         con.close()
         with patch("kiro_crew.hooks.safe_read_file_internal", return_value=None), \
              patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True) as audit, \
-             patch.object(api, "_TOKEN_SQLITE_DBS", (db,)):
+             patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._load_bearer_token() is None
         # The credential blob WAS read even though expired — that access must
         # be recorded so the audit trail covers every read of the store.
@@ -304,7 +322,8 @@ class TestLoadBearerToken:
         # A JSON list/scalar cache entry must not raise on .get — it fails closed
         # (None) without aborting the remaining candidate sources.
         with patch("kiro_crew.hooks.safe_read_file_internal", return_value=b"[]"), \
-             patch.object(api, "_TOKEN_SQLITE_DBS", ()):
+             patch.object(api, "_CLI_SQLITE_DBS", ()), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._load_bearer_token() is None
 
     def test_symlinked_sqlite_db_is_rejected(self, tmp_path):
@@ -429,17 +448,18 @@ class TestFetchUsageLimits:
         # surfaced as the usage dict's ``account`` field.
         usage_body = {"usageBreakdownList": [
             {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
+        arn = "arn:aws:codewhisperer:...:profile/X"
 
         def fake_post(token, target, payload):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": [
-                    {"arn": "arn:aws:codewhisperer:...:profile/X",
+                    {"arn": arn,
                      "profileName": "Acme Corp"}]})
             return _resp(200, usage_body)
 
-        with patch.object(api, "_candidate_tokens", return_value=["tok"]), \
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
              patch.object(api, "_post", side_effect=fake_post):
-            out = api.fetch_usage_limits()
+            out = api.fetch_usage_limits(expected_arn=arn)
         assert out["account"] == "Acme Corp"
 
     def test_no_account_when_profile_has_no_name(self):
@@ -453,59 +473,63 @@ class TestFetchUsageLimits:
                 return _resp(200, {"profiles": [{"arn": "arn:x"}]})
             return _resp(200, usage_body)
 
-        with patch.object(api, "_candidate_tokens", return_value=["tok"]), \
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
              patch.object(api, "_post", side_effect=fake_post):
-            out = api.fetch_usage_limits()
+            out = api.fetch_usage_limits(expected_arn="arn:x")
         assert "account" not in out
 
     def test_rejected_token_falls_over_to_next(self):
         # An unexpired-but-rejected first token must not shadow a working one.
         usage_body = {"usageBreakdownList": [
             {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
+        arn = "arn:aws:codewhisperer:us-east-1:1:profile/A"
 
         def fake_post(token, target, payload):
             if target == api._TARGET_LIST_PROFILES:
-                return _resp(200, {"profiles": []})  # individual account, arn None
+                return _resp(200, {"profiles": [{"arn": arn}]})
             return _resp(403, {}) if token == "stale" else _resp(200, usage_body)
 
-        with patch.object(api, "_candidate_tokens", return_value=["stale", "live"]), \
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("stale"), _cand("live")]), \
              patch.object(api, "_post", side_effect=fake_post):
-            out = api.fetch_usage_limits()
+            out = api.fetch_usage_limits(expected_arn=arn)
         assert out is not None
         assert out["credits_used"] == 5.0
 
     def test_all_tokens_rejected_fails_closed(self):
-        with patch.object(api, "_candidate_tokens", return_value=["a", "b"]), \
-             patch.object(api, "_list_profile_arn", return_value=None), \
+        # A matching ARN so the candidates are ELIGIBLE and the 403 is what
+        # rejects them -- with a null ARN they would be skipped before _post and
+        # this would pass without exercising the rejection path at all.
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("a"), _cand("b")]), \
+             patch.object(api, "_list_profile_arn", return_value="arn:x"), \
              patch.object(api, "_post", return_value=_resp(403, {"reason": "FEATURE_NOT_SUPPORTED"})):
-            assert api.fetch_usage_limits() is None
+            assert api.fetch_usage_limits(expected_arn="arn:x") is None
 
     def test_request_exception_fails_closed(self):
-        with patch.object(api, "_candidate_tokens", return_value=["tok"]), \
-             patch.object(api, "_list_profile_arn", return_value=None), \
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
+             patch.object(api, "_list_profile_arn", return_value="arn:x"), \
              patch.object(api, "_post", side_effect=api._RequestError("boom")):
-            assert api.fetch_usage_limits() is None
+            assert api.fetch_usage_limits(expected_arn="arn:x") is None
 
     def test_non_json_body_fails_closed(self):
-        with patch.object(api, "_candidate_tokens", return_value=["tok"]), \
-             patch.object(api, "_list_profile_arn", return_value=None), \
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
+             patch.object(api, "_list_profile_arn", return_value="arn:x"), \
              patch.object(api, "_post", return_value=_resp(200, ValueError("not json"))):
-            assert api.fetch_usage_limits() is None
+            assert api.fetch_usage_limits(expected_arn="arn:x") is None
 
     def test_unexpected_error_fails_closed_not_raised(self):
         # An unforeseen exception for one token must be swallowed (fall back to
         # the text scrape), never propagate to _fetch_usage_bg.
-        with patch.object(api, "_candidate_tokens", return_value=["tok"]), \
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
              patch.object(api, "_list_profile_arn", side_effect=RuntimeError("boom")):
-            assert api.fetch_usage_limits() is None
+            assert api.fetch_usage_limits(expected_arn="arn:x") is None
 
     def test_aggregate_deadline_short_circuits(self):
         # Once the wall-clock budget is exhausted, no further tokens are tried —
         # the caller degrades to the text scrape instead of spinning for minutes.
         with patch.object(api, "_TOTAL_DEADLINE_SECS", -1), \
-             patch.object(api, "_candidate_tokens", return_value=["a", "b"]), \
+             patch.object(api, "_candidate_tokens", return_value=[_cand("a"), _cand("b")]), \
              patch.object(api, "_post") as mp:
-            assert api.fetch_usage_limits() is None
+            assert api.fetch_usage_limits(expected_arn="arn:x") is None
         mp.assert_not_called()
 
 
@@ -563,6 +587,314 @@ class TestListProfileArnCache:
             assert api._list_profile_arn("t2") is None
         with patch.object(api, "_post", return_value=_resp(200, {"profiles": [None]})):
             assert api._list_profile_arn("t3") is None
+
+
+class TestExpectedArnAnchor:
+    """A candidate credential is only used when it belongs to the account
+    ``kiro-cli whoami`` reports.
+
+    The bug: after switching Kiro profile, the previous profile's token is still
+    unexpired and still accepted by GetUsageLimits, so it supplied the credit
+    numbers — and a restart did not help, because candidate order was identical
+    on boot. Anchoring on whoami's profile ARN is what makes that impossible.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_arn_cache(self):
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+        yield
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+
+    ARN_A = "arn:aws:codewhisperer:us-east-1:1:profile/A"
+    ARN_B = "arn:aws:codewhisperer:us-east-1:2:profile/B"
+
+    def _fake_post(self, arn_for: dict[str, str], usage_for: dict[str, dict]):
+        def fake_post(token, target, payload):
+            if target == api._TARGET_LIST_PROFILES:
+                arn = arn_for.get(token)
+                profiles = [{"arn": arn}] if arn else []
+                return _resp(200, {"profiles": profiles})
+            return _resp(200, usage_for[token])
+        return fake_post
+
+    def test_foreign_credential_is_skipped_for_the_matching_one(self):
+        # Old profile's credential is first in the candidate list AND would be
+        # accepted by the API; the anchor must reach past it to the one that
+        # belongs to the signed-in account.
+        usage = {
+            "old-profile": {"usageBreakdownList": [
+                {"resourceType": "CREDIT", "currentUsage": 49.0, "usageLimit": 50.0}]},
+            "new-profile": {"usageBreakdownList": [
+                {"resourceType": "CREDIT", "currentUsage": 1200.0, "usageLimit": 10000.0}]},
+        }
+        arns = {"old-profile": self.ARN_B, "new-profile": self.ARN_A}
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("old-profile"), _cand("new-profile")]), \
+             patch.object(api, "_post", side_effect=self._fake_post(arns, usage)):
+            out = api.fetch_usage_limits(expected_arn=self.ARN_A)
+        assert out is not None
+        assert out["credits_plan"] == 10000.0, "used the signed-out profile's plan"
+        assert out["credits_used"] == 1200.0
+        assert out["_profile_arn"] == self.ARN_A
+
+    def test_foreign_credential_is_never_spent_on_a_usage_call(self):
+        # The mismatching credential must be dropped at the ARN probe, before a
+        # GetUsageLimits request is made with it.
+        usage = {"new-profile": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 1.0, "usageLimit": 10.0}]}}
+        arns = {"old-profile": self.ARN_B, "new-profile": self.ARN_A}
+        seen: list[tuple[str, str]] = []
+
+        inner = self._fake_post(arns, usage)
+
+        def recording_post(token, target, payload):
+            seen.append((token, target))
+            return inner(token, target, payload)
+
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("old-profile"), _cand("new-profile")]), \
+             patch.object(api, "_post", side_effect=recording_post):
+            assert api.fetch_usage_limits(expected_arn=self.ARN_A) is not None
+        assert ("old-profile", api._TARGET_GET_USAGE) not in seen
+
+    def test_all_foreign_fails_closed_to_the_text_scrape(self):
+        # Nothing matches -> None, so the caller degrades to scraping kiro-cli's
+        # own /usage output (right account by construction) rather than showing
+        # another account's balance.
+        usage = {"old-profile": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 49.0, "usageLimit": 50.0}]}}
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("old-profile")]), \
+             patch.object(api, "_post",
+                          side_effect=self._fake_post({"old-profile": self.ARN_B}, usage)):
+            assert api.fetch_usage_limits(expected_arn=self.ARN_A) is None
+
+    def test_unresolvable_arn_is_not_treated_as_a_match(self):
+        # A transient ListAvailableProfiles failure yields arn=None. With an
+        # anchor set that is NOT a match — otherwise a probe outage would
+        # reopen the exact hole being closed.
+        usage = {"tok": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 1.0, "usageLimit": 10.0}]}}
+
+        def fake_post(token, target, payload):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(500, {})
+            return _resp(200, usage[token])
+
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
+             patch.object(api, "_post", side_effect=fake_post):
+            assert api.fetch_usage_limits(expected_arn=self.ARN_A) is None
+
+    def test_two_arnless_accounts_are_never_matched_to_each_other(self):
+        # Builder ID account B is signed in; a leftover credential from Builder ID
+        # account A is still readable. Both probe to arn=None, so no ARN comparison
+        # can separate them -- PROVENANCE is what does. A's leftover token lives in
+        # a JSON SSO cache or another product's store (kiro-cli rewrites its OWN
+        # store on login), so own=False, and it is refused.
+        usage = {"leftover-a": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 49.0, "usageLimit": 50.0}]}}
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("leftover-a", own=False)]), \
+             patch.object(api, "_post", side_effect=self._fake_post({}, usage)):
+            assert api.fetch_usage_limits(expected_arn=None) is None
+
+    def test_arnless_credential_from_the_cli_store_is_accepted(self):
+        # The other half of the rule, and why Builder ID accounts keep the FREE API
+        # path instead of being pushed onto the credit-spending scrape: a token from
+        # kiro-cli's own store IS the signed-in account's credential, so no ARN is
+        # needed to trust it.
+        usage = {"builder": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 3.0, "usageLimit": 50.0}]}}
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("builder", own=True)]), \
+             patch.object(api, "_post", side_effect=self._fake_post({}, usage)):
+            out = api.fetch_usage_limits(expected_arn=None)
+        assert out is not None
+        assert out["credits_used"] == 3.0
+
+    def test_cli_store_credential_wins_over_a_foreign_arnless_one(self):
+        # Ordering puts the foreign credential first; provenance must reach past it
+        # rather than taking the first thing that is merely readable.
+        usage = {
+            "leftover-a": {"usageBreakdownList": [
+                {"resourceType": "CREDIT", "currentUsage": 49.0, "usageLimit": 50.0}]},
+            "builder": {"usageBreakdownList": [
+                {"resourceType": "CREDIT", "currentUsage": 3.0, "usageLimit": 50.0}]},
+        }
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("leftover-a", own=False),
+                                        _cand("builder", own=True)]), \
+             patch.object(api, "_post", side_effect=self._fake_post({}, usage)):
+            out = api.fetch_usage_limits(expected_arn=None)
+        assert out is not None
+        assert out["credits_used"] == 3.0, "served the foreign account's balance"
+
+    def test_enterprise_arn_is_still_sent_when_whoami_gave_none(self):
+        # An org account on a kiro-cli that prints no "Profile:" block: whoami
+        # yields no ARN, so this takes the provenance route -- but the credential's
+        # OWN ARN must still reach the payload, or the API returns 403 and the
+        # account loses its overage figure to the scrape.
+        arn = "arn:aws:codewhisperer:us-east-1:9:profile/ORG"
+        usage = {"cli": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 12000.0, "usageLimit": 10000.0}]}}
+        sent: list[dict] = []
+        inner = self._fake_post({"cli": arn}, usage)
+
+        def recording_post(token, target, payload):
+            if target == api._TARGET_GET_USAGE:
+                sent.append(payload)
+            return inner(token, target, payload)
+
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("cli", own=True)]), \
+             patch.object(api, "_post", side_effect=recording_post):
+            out = api.fetch_usage_limits(expected_arn=None)
+        assert out is not None
+        assert out["credits_overage"] == 2000.0
+        assert sent and sent[0].get("profileArn") == arn
+
+    def test_arnless_candidate_rejected_against_a_real_anchor(self):
+        # ARN-anchored mode: a candidate with no ARN cannot match a real one, and
+        # provenance does NOT override an explicit ARN anchor.
+        usage = {"leftover-a": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 49.0, "usageLimit": 50.0}]}}
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("leftover-a", own=True)]), \
+             patch.object(api, "_post", side_effect=self._fake_post({}, usage)):
+            assert api.fetch_usage_limits(expected_arn=self.ARN_A) is None
+
+    def test_foreign_arnless_candidate_is_never_spent_on_a_request(self):
+        usage = {"leftover-a": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 49.0, "usageLimit": 50.0}]}}
+        seen: list[tuple[str, str]] = []
+        inner = self._fake_post({}, usage)
+
+        def recording_post(token, target, payload):
+            seen.append((token, target))
+            return inner(token, target, payload)
+
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("leftover-a", own=False)]), \
+             patch.object(api, "_post", side_effect=recording_post):
+            assert api.fetch_usage_limits(expected_arn=None) is None
+        # Refused before ANY request -- not even the profile probe is spent on it.
+        assert seen == []
+
+    def test_empty_anchor_behaves_as_no_anchor(self):
+        # A falsy ARN means "nothing to match on", so it takes the provenance route
+        # rather than being compared as a literal.
+        usage = {"tok": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 1.0, "usageLimit": 10.0}]}}
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("tok", own=False)]), \
+             patch.object(api, "_post", side_effect=self._fake_post({}, usage)):
+            assert api.fetch_usage_limits(expected_arn="") is None
+
+
+class TestCandidateOrdering:
+    """Candidates are ranked by expiry (freshest first), not by path order."""
+
+    def test_freshest_expiry_ranks_first(self, tmp_path):
+        # A stale-but-unexpired JSON credential sits in the highest-priority PATH
+        # slot; the SQLite store holds a newer one. Path order used to decide,
+        # which is how a signed-out profile won.
+        now = datetime.now(timezone.utc)
+        soon = (now + timedelta(minutes=20)).isoformat()
+        later = (now + timedelta(hours=8)).isoformat()
+        stale = json.dumps({"accessToken": "older-json", "expiresAt": soon}).encode()
+
+        db = tmp_path / "data.sqlite3"
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        con.execute(
+            "INSERT INTO auth_kv VALUES (?, ?)",
+            ("kirocli:odic:token",
+             json.dumps({"access_token": "newer-sqlite", "expires_at": later})),
+        )
+        con.commit()
+        con.close()
+
+        def fake_read(read_id):
+            return stale if read_id.endswith("cli") else None
+
+        with patch("kiro_crew.hooks.safe_read_file_internal", side_effect=fake_read), \
+             patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True), \
+             patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
+            cands = api._candidate_tokens()
+        assert [c.token for c in cands] == ["newer-sqlite", "older-json"]
+        # Provenance rides along: the sqlite one is kiro-cli's own store,
+        # the JSON SSO cache is not.
+        assert [c.from_cli_store for c in cands] == [True, False]
+
+    def test_equal_expiry_keeps_path_precedence(self):
+        # Stable sort: with nothing to choose between them, the original source
+        # order stands rather than an arbitrary one.
+        same = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+
+        def fake_read(read_id):
+            name = "cli-tok" if read_id.endswith("cli") else "ide-tok"
+            return json.dumps({"accessToken": name, "expiresAt": same}).encode()
+
+        with patch("kiro_crew.hooks.safe_read_file_internal", side_effect=fake_read), \
+             patch.object(api, "_CLI_SQLITE_DBS", ()), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
+            assert [c.token for c in api._candidate_tokens()] == ["cli-tok", "ide-tok"]
+
+    def test_duplicate_token_keeps_latest_expiry_and_appears_once(self):
+        # The same token in two stores must be tried once, ranked by its best
+        # known expiry.
+        now = datetime.now(timezone.utc)
+        early = (now + timedelta(minutes=5)).isoformat()
+        late = (now + timedelta(hours=9)).isoformat()
+
+        def fake_read(read_id):
+            exp = early if read_id.endswith("cli") else late
+            return json.dumps({"accessToken": "same", "expiresAt": exp}).encode()
+
+        with patch("kiro_crew.hooks.safe_read_file_internal", side_effect=fake_read), \
+             patch.object(api, "_CLI_SQLITE_DBS", ()), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
+            cands = api._candidate_tokens()
+        assert [c.token for c in cands] == ["same"]
+
+    def test_expired_candidates_excluded(self):
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        blob = json.dumps({"accessToken": "old", "expiresAt": past}).encode()
+        with patch("kiro_crew.hooks.safe_read_file_internal", return_value=blob), \
+             patch.object(api, "_CLI_SQLITE_DBS", ()), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
+            assert api._candidate_tokens() == []
+
+
+class TestProfileCacheCap:
+    @pytest.fixture(autouse=True)
+    def _clear_arn_cache(self):
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+        yield
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+
+    def test_cache_is_bounded(self):
+        # Keyed by token digest and never expiring, so each profile switch adds
+        # an entry — the cap keeps a long-lived gateway from accumulating them.
+        for i in range(api._PROFILE_CACHE_MAX + 10):
+            with patch.object(api, "_post",
+                              return_value=_resp(200, {"profiles": [{"arn": f"arn:{i}"}]})):
+                api._list_profile_arn(f"token-{i}")
+        assert len(api._PROFILE_ARN_CACHE) <= api._PROFILE_CACHE_MAX
+        assert len(api._PROFILE_NAME_CACHE) <= api._PROFILE_CACHE_MAX
+
+    def test_both_caches_evict_together(self):
+        # A display name must never outlive the ARN it belongs to, or it could be
+        # shown next to a different account's credits.
+        for i in range(api._PROFILE_CACHE_MAX + 5):
+            with patch.object(api, "_post", return_value=_resp(200, {"profiles": [
+                    {"arn": f"arn:{i}", "profileName": f"Org {i}"}]})):
+                api._list_profile_arn(f"token-{i}")
+        assert set(api._PROFILE_ARN_CACHE) == set(api._PROFILE_NAME_CACHE)
 
 
 class TestSafeReadFileInternalSymlink:
