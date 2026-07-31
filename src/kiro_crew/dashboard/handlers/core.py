@@ -536,6 +536,8 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt["language_code"] = body["language_code"]
             if "streaming" in body and isinstance(body["streaming"], bool):
                 stt["streaming"] = body["streaming"]
+            if "dictation_panel" in body and isinstance(body["dictation_panel"], bool):
+                stt["dictation_panel"] = body["dictation_panel"]
             await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(_atomic_json_write, path, data)
         cfg = KiroCrewConfig.load()
@@ -555,6 +557,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "mlx_model": cfg.stt.mlx_model,
             "available": available,
             "streaming": cfg.stt.streaming,
+            "dictation_panel": cfg.stt.dictation_panel,
             "transcribe_region": cfg.stt.transcribe_region,
             "transcribe_profile": cfg.stt.transcribe_profile,
             "language_code": cfg.stt.language_code,

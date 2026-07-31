@@ -1780,7 +1780,8 @@
         "transcribe_region": "us-east-1",
         "transcribe_profile": "",
         "language_code": "en-US",
-        "streaming": false
+        "streaming": false,
+        "dictation_panel": true
       }
     },
     {
@@ -1945,6 +1946,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "stt.dictation_panel",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dictation Panel",
+      "help": "Show the animated dictation panel while recording instead of the thin status bar. Ignored when the browser lacks WebGL2 or the OS requests reduced motion — both fall back to the status bar.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "computer_use",

@@ -138,6 +138,10 @@ export default [
               '(local|session)Storage\\.\\w+', 'navigate', 'track', 'emit',
               'querySelector(All)?', 'getElementById', 'createElement',
               'addEventListener', 'removeEventListener', 'matchMedia',
+              // WebGL/DOM capability lookups take registry identifiers
+              // (`WEBGL_lose_context`), which are mixed-case and so escape the
+              // all-caps word exemption above.
+              'getExtension',
               // HTTP and serialisation: header names, endpoints, content types.
               'fetch', '\\w*[Hh]eaders?\\.\\w+', 'JSON\\.\\w+', 'encodeURI(Component)?',
               'setAttribute', 'getAttribute', 'removeAttribute', 'classList\\.\\w+',

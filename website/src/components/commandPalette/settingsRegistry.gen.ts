@@ -487,6 +487,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "voice.dictation-panel",
+    "label": "Dictation panel",
+    "description": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "voice.enabled",
     "label": "Enabled",
     "description": "Transcribe voice into the message box when you click the mic",

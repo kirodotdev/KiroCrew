@@ -1926,6 +1926,10 @@
       "the_app_will_stop_the_local_gateway_install_the": "অ্যাপটি লোকাল গেটওয়ে বন্ধ করবে, আপডেট ইনস্টল করবে এবং আবার চালু হবে।",
       "update_ready": "আপডেট প্রস্তুত"
     },
+    "voiceDictationPanel": {
+      "esc_to_stop_enter_to_send": "থামাতে Esc, পাঠাতে Enter",
+      "listening": "শোনা হচ্ছে"
+    },
     "voiceDisabledModal": {
       "enable_it_under": "এটি চালু করুন এখানে:",
       "not_now": "এখন নয়",
@@ -4367,6 +4371,7 @@
         "aws_region_transcribe": "AWS রিজিয়ন (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "স্পিচ রিকগনিশনের জন্য BCP-47 ভাষা কোড",
         "default": "ডিফল্ট",
+        "dictation_panel": "ডিক্টেশন প্যানেল",
         "dismiss_error": "ত্রুটি বাতিল করুন",
         "enabled": "সক্রিয়",
         "input_device_used_to_capture_your_voice": "আপনার কণ্ঠস্বর ধারণ করতে ব্যবহৃত ইনপুট ডিভাইস",
@@ -4383,6 +4388,7 @@
         "ready": "প্রস্তুত",
         "run_these_commands_in_your_terminal_first": "প্রথমে আপনার টার্মিনালে এই কমান্ডগুলো চালান:",
         "runtime": "রানটাইম",
+        "show_an_animated_panel_while_recording_instead_of": "রেকর্ডিংয়ের সময় সরু স্ট্যাটাস বারের বদলে একটি অ্যানিমেটেড প্যানেল দেখান। ব্রাউজারে WebGL2 না থাকলে বা আপনার সিস্টেম রিডিউসড-মোশন চাইলে বারেই ফিরে যায়।",
         "status": "স্ট্যাটাস",
         "stream_live_partial_transcripts_into_the_input_b": "আপনি কথা বলার সময় ইনপুট বক্সে লাইভ আংশিক ট্রান্সক্রিপ্ট স্ট্রিম করুন (শুধু Transcribe)",
         "streaming": "স্ট্রিমিং",

@@ -2490,6 +2490,15 @@ class SttConfig:
             "Stream partial transcripts live to the dashboard input (transcribe provider only).",
         ),
     )
+    dictation_panel: bool = field(
+        default=True,
+        metadata=_meta(
+            "Dictation Panel",
+            "Show the animated dictation panel while recording instead of the thin status bar. "
+            "Ignored when the browser lacks WebGL2 or the OS requests reduced motion — both "
+            "fall back to the status bar.",
+        ),
+    )
 
 
 @dataclass
@@ -4264,6 +4273,7 @@ class KiroCrewConfig:
                 transcribe_profile=stt_data.get("transcribe_profile", ""),
                 language_code=stt_data.get("language_code", "en-US"),
                 streaming=stt_data.get("streaming", False),
+                dictation_panel=_safe_bool(stt_data.get("dictation_panel"), True),
             ),
             # Every numeric knob is clamped to the same ceiling the MCP tool
             # schemas enforce, so a hand-edited config.json cannot ask for an

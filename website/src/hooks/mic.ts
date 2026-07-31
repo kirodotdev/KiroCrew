@@ -55,16 +55,56 @@ export function humanizeMicError(e: unknown): string {
 }
 
 /**
+ * Per-frame audio features for canvas/shader consumers.
+ *
+ * Distinct from the `onLevel` callback below on purpose. `onLevel` feeds React
+ * state and a CSS-width bar, so it is throttled to ~15fps and quantized to 25
+ * steps to bound re-renders. A shader driven off that signal visibly
+ * stair-steps. This struct is instead written IN PLACE every animation frame
+ * into a caller-owned ref, so a render loop can read it without causing a
+ * single React re-render.
+ */
+export interface AudioSample {
+  /** Envelope-smoothed RMS in [0, 1]. */
+  level: number
+  /** Spectral centroid in [0, 1] — roughly "how bright/sibilant". */
+  centroid: number
+  /** Decaying transient spike in [0, 1], for onset-driven accents. */
+  onset: number
+}
+
+export function createAudioSample(): AudioSample {
+  return { level: 0, centroid: 0.5, onset: 0 }
+}
+
+/** Envelope time constants. Fast attack, slow release: without the asymmetry
+ * every consonant reads as a strobe rather than as speech. */
+const ATTACK_SECS = 0.05
+const RELEASE_SECS = 0.25
+const CENTROID_SECS = 0.12
+const ONSET_DECAY_SECS = 0.11
+
+/**
  * Attach a live RMS level meter to a stream. Calls `onLevel` with a value in
  * [0, 1], throttled to ~15fps and only when the (quantized) level changes, so
  * it bounds re-renders of the consuming component during recording. Returns a
  * stop function that tears down the RAF loop + AudioContext and emits 0.
+ *
+ * When `sampleRef` is supplied, the same analyser additionally writes richer
+ * per-frame features into it (see {@link AudioSample}) with no throttling and
+ * no React involvement. One AudioContext, one analyser, two consumers.
  */
-export function createLevelMeter(stream: MediaStream, onLevel: (v: number) => void): () => void {
+export function createLevelMeter(
+  stream: MediaStream,
+  onLevel: (v: number) => void,
+  sampleRef?: { current: AudioSample },
+): () => void {
   let stopped = false
   let raf = 0
   let lastEmit = 0
   let lastQuantized = -1
+  let lastFrame = 0
+  let prevRms = 0
   let ctx: AudioContext | null = null
   try {
     ctx = new AudioContext()
@@ -74,6 +114,7 @@ export function createLevelMeter(stream: MediaStream, onLevel: (v: number) => vo
     source.connect(analyser)
     // Worklet/analyser output is never routed to destination — no echo.
     const buf = new Uint8Array(analyser.frequencyBinCount)
+    const freq = sampleRef ? new Uint8Array(analyser.frequencyBinCount) : null
     const tick = (t: number) => {
       if (stopped) return
       analyser.getByteTimeDomainData(buf)
@@ -90,6 +131,31 @@ export function createLevelMeter(stream: MediaStream, onLevel: (v: number) => vo
         lastEmit = t
         onLevel(q)
       }
+      if (sampleRef && freq) {
+        // Clamp dt so a backgrounded tab (or the very first frame, where
+        // lastFrame is 0) can't jump the envelope by a huge step on resume.
+        const dt = lastFrame ? Math.min(0.05, Math.max(0, (t - lastFrame) / 1000)) : 0
+        lastFrame = t
+        const s = sampleRef.current
+        analyser.getByteFrequencyData(freq)
+        let num = 0
+        let den = 0
+        for (let i = 0; i < freq.length; i++) {
+          num += i * freq[i]
+          den += freq[i]
+        }
+        // 0.42 maps a speech-typical centroid onto roughly the middle of the
+        // range rather than compressing everything into the bottom third.
+        const centroid = den > 0 ? Math.min(1, num / den / (freq.length * 0.42)) : 0.5
+        const tau = rms > s.level ? ATTACK_SECS : RELEASE_SECS
+        s.level += (rms - s.level) * (1 - Math.exp(-dt / tau))
+        s.centroid += (centroid - s.centroid) * (1 - Math.exp(-dt / CENTROID_SECS))
+        s.onset = Math.max(
+          s.onset * Math.exp(-dt / ONSET_DECAY_SECS),
+          Math.min(1, Math.max(0, rms - prevRms) * 5.5),
+        )
+        prevRms = rms
+      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
@@ -103,6 +169,10 @@ export function createLevelMeter(stream: MediaStream, onLevel: (v: number) => vo
       ctx?.close()
     } catch {
       /* already closed */
+    }
+    if (sampleRef) {
+      sampleRef.current.level = 0
+      sampleRef.current.onset = 0
     }
     onLevel(0)
   }

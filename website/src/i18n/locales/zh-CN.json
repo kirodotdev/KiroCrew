@@ -1906,6 +1906,10 @@
       "the_app_will_stop_the_local_gateway_install_the": "应用将停止本地网关、安装更新并重新启动。",
       "update_ready": "更新已就绪"
     },
+    "voiceDictationPanel": {
+      "esc_to_stop_enter_to_send": "Esc 停止，Enter 发送",
+      "listening": "正在聆听"
+    },
     "voiceDisabledModal": {
       "enable_it_under": "在",
       "not_now": "暂不",
@@ -4328,6 +4332,7 @@
         "aws_region_transcribe": "AWS 区域（Transcribe）",
         "bcp_47_language_code_for_speech_recognition": "语音识别的 BCP-47 语言代码",
         "default": "默认",
+        "dictation_panel": "听写面板",
         "dismiss_error": "忽略错误",
         "enabled": "已启用",
         "input_device_used_to_capture_your_voice": "用于采集语音的输入设备",
@@ -4344,6 +4349,7 @@
         "ready": "就绪",
         "run_these_commands_in_your_terminal_first": "先在终端中运行这些命令：",
         "runtime": "运行时",
+        "show_an_animated_panel_while_recording_instead_of": "录音时显示动画面板，而非窄状态栏。浏览器不支持 WebGL2 或系统要求减弱动态效果时，会回退到状态栏。",
         "status": "状态",
         "stream_live_partial_transcripts_into_the_input_b": "说话时将实时的部分转写结果流式输入到输入框（仅 Transcribe）",
         "streaming": "流式",

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { api } from '../api/client'
 import { streamingSupported, useStreamingStt } from './useStreamingStt'
-import { micAudioConstraints, humanizeMicError, createLevelMeter } from './mic'
+import { micAudioConstraints, humanizeMicError, createLevelMeter, createAudioSample } from './mic'
 
 function pickMimeType(): string {
   if (typeof MediaRecorder === 'undefined') return ''
@@ -32,6 +32,13 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
   const [error, setError] = useState<string | null>(null)
   const [level, setLevel] = useState(0)
   const [deviceLabel, setDeviceLabel] = useState('')
+  // Latest partial hypothesis, mirrored so the dictation panel can render it
+  // muted. Cleared on final/stop so a stale partial can't linger as grey text.
+  const [partial, setPartial] = useState('')
+  // Unthrottled per-frame audio features, written in place by the level meter
+  // and read by the shader's render loop. A ref (not state) on purpose: this
+  // updates ~60x/sec and must never trigger a React render.
+  const sampleRef = useRef(createAudioSample())
   const mediaRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const startingRef = useRef(false)
@@ -49,11 +56,11 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
   const streamEnabled = !!opts.streaming && streamingSupported
   const optsPartial = opts.onPartial
   const streamOnPartial = useCallback(
-    (text: string) => { optsPartial?.(text) },
+    (text: string) => { setPartial(text); optsPartial?.(text) },
     [optsPartial],
   )
   const streamOnFinal = useCallback(
-    (text: string) => { if (text) onText(text) },
+    (text: string) => { setPartial(''); if (text) onText(text) },
     [onText],
   )
   // Destructure individual members so downstream useCallback deps track
@@ -65,6 +72,7 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
     onError: setError,
     onLevel: setLevel,
     onDevice: setDeviceLabel,
+    sampleRef,
   })
 
   // Stop any in-flight streaming session when the user toggles streaming off
@@ -82,6 +90,7 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
     if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
     levelStopRef.current?.()
     levelStopRef.current = null
+    setPartial('')
     if (warmRef.current) { warmRef.current.getTracks().forEach(t => t.stop()); warmRef.current = null }
     warmPromiseRef.current = null
     if (mediaRef.current) {
@@ -115,7 +124,7 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
         throw new Error('mic acquisition cancelled')
       }
       setDeviceLabel(stream.getAudioTracks()[0]?.label || '')
-      levelStopRef.current = createLevelMeter(stream, setLevel)
+      levelStopRef.current = createLevelMeter(stream, setLevel, sampleRef)
       warmRef.current = stream
       return stream
     } finally {
@@ -210,6 +219,7 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
 
   const stop = useCallback(() => {
     if (streamEnabled) { streamStop(); return }
+    setPartial('')
     levelStopRef.current?.()
     levelStopRef.current = null
     if (mediaRef.current?.state === 'recording') {
@@ -222,5 +232,5 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
   const isRecording = streamEnabled ? streamRecording : recording
   const toggle = useCallback(() => { if (isRecording) stop(); else start() }, [isRecording, start, stop])
 
-  return { recording: isRecording, transcribing, toggle, prewarm, error, level, deviceLabel, clearError }
+  return { recording: isRecording, transcribing, toggle, prewarm, error, level, deviceLabel, clearError, partial, sampleRef }
 }

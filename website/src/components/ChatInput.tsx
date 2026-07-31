@@ -4,6 +4,8 @@ import { Toggle } from './ui'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import VoiceStatusBar from './VoiceStatusBar'
+import VoiceDictationPanel, { useDictationPanelUsable } from './VoiceDictationPanel'
+import type { AudioSample } from '../hooks/mic'
 import { createPortal } from 'react-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
@@ -220,6 +222,12 @@ interface ChatInputProps {
   voiceLevel?: number
   voiceDeviceLabel?: string
   onClearVoiceError?: () => void
+  /** Show the animated dictation panel while recording (stt.dictation_panel). */
+  voiceDictationPanel?: boolean
+  /** Per-frame audio features driving the dictation panel's shader. */
+  voiceSampleRef?: { current: AudioSample }
+  /** Latest partial hypothesis, rendered muted in the dictation panel. */
+  voicePartial?: string
   /** Chat-level controls in input bar */
   agentName?: string
   agentSource?: string
@@ -402,6 +410,9 @@ function ChatInput({
   voiceError = null,
   voiceLevel = 0,
   voiceDeviceLabel = '',
+  voiceDictationPanel = false,
+  voiceSampleRef,
+  voicePartial = '',
   onClearVoiceError,
   agentName,
   agentSource,
@@ -621,6 +632,15 @@ function ChatInput({
   const approvalBtnClass = 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border text-text text-[12px] cursor-pointer font-body hover:bg-[color-mix(in_srgb,var(--warn)_25%,transparent)] hover:text-text hover:border-border-strong transition-colors disabled:opacity-50'
 
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // Dictation-panel gate. Three independent conditions must hold: the setting
+  // is on, the browser has WebGL2, and the OS is not asking for reduced motion
+  // (the hook covers the latter two). A mic error always falls through to
+  // VoiceStatusBar, which owns the dismissible error affordance — the panel
+  // has no way to surface it. Resolves to the sample ref (not a boolean) so
+  // the non-optional prop narrows without a cast.
+  const dictationUsable = useDictationPanelUsable(voiceDictationPanel)
+  const showDictation =
+    dictationUsable && voiceRecording && !voiceError && voiceSampleRef ? voiceSampleRef : null
   const wrapperRef = useRef<HTMLDivElement>(null)
   // Backdrop mirror that paints chip backgrounds behind paste tokens; its scroll
   // is kept in lockstep with the textarea (see syncMirrorScroll on the textarea).
@@ -659,6 +679,55 @@ function ChatInput({
       ? `${base}\nDetached HEAD at ${projectBranch}`
       : `${base}\nBranch: ${projectBranch}`
   }, [project, projectBranch, projectDetached])
+  // Keep the (visually collapsed) textarea focused while dictating, so the
+  // panel's "Enter to send" hint routes through the composer's normal submit
+  // path instead of needing a duplicated send handler.
+  useEffect(() => {
+    if (showDictation) inputRef.current?.focus()
+  }, [showDictation])
+
+  // Escape stops dictation, from ANYWHERE. Deliberately a document-level
+  // listener rather than the textarea's onKeyDown: starting a recording means
+  // clicking the mic button, so focus sits on that button and a textarea-scoped
+  // handler never fires — the panel would advertise "Esc to stop" and do
+  // nothing. Keeps the transcript: this stops capture, it does not discard what
+  // was already transcribed.
+  //
+  // BUBBLE phase, not capture, and it yields three ways. Capture phase runs
+  // before every descendant, so an open menu/popover/selector (this composer
+  // has many) would lose its own Escape to this handler — recording would stop
+  // and the menu would stay open. Bubbling lets the innermost control consume
+  // Escape first; Radix and friends call preventDefault() when they do, which
+  // is what `defaultPrevented` detects. The three explicit refs cover the
+  // hand-rolled pickers that close on Escape WITHOUT preventing default, so
+  // they cannot be detected that way.
+  //
+  // The `[role="dialog"]` probe is the precedence rule: Escape belongs to the
+  // TOPMOST dismissible surface, and the composer is not it while a dialog is
+  // up. Modal, CommandPalette and SnipOverlay all bind Escape on `window` and
+  // all carry role="dialog", so one presence check defers to every one of them
+  // rather than enumerating them. Without it this handler would newly steal
+  // Escape from each — before this feature existed, Escape reached them
+  // normally, so stealing it would be a regression, not a trade.
+  //
+  // stopPropagation() only once we have decided the key is OURS. document
+  // bubbles on to `window`, and those window handlers do not check
+  // defaultPrevented, so a snip started during recording would otherwise be
+  // cancelled by the same keypress that stopped the recording.
+  useEffect(() => {
+    if (!voiceRecording || !onVoiceToggle) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.isComposing || e.defaultPrevented) return
+      if (slashMenuOpenRef.current || filePickerOpenRef.current || skillPickerOpenRef.current) return
+      if (document.querySelector('[role="dialog"]')) return
+      e.preventDefault()
+      e.stopPropagation()
+      onVoiceToggle()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [voiceRecording, onVoiceToggle])
+
   const ctxWrapRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!ctxPopoverOpen) return
@@ -2064,10 +2133,14 @@ function ChatInput({
       >
         <FilePreviewStrip files={pendingFiles} resizedInfo={resizedInfo} onRemove={onRemoveFile} />
 
-        <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} error={voiceError} onDismissError={onClearVoiceError} />
+        {showDictation ? (
+          <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} />
+        ) : (
+          <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} error={voiceError} onDismissError={onClearVoiceError} />
+        )}
 
         {optimizing && <span className="absolute inset-0 flex items-start px-4 pt-3 text-sm text-white font-medium pointer-events-none z-10 bg-black/60 rounded-2xl"><Sparkles size={14} className="inline mr-1 text-yellow-400" /> {i18nT('components.chatInput.optimizing_prompt')}</span>}
-        <div className={`relative ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
+        <div className={`relative ${showDictation ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
         <PasteHighlightLayer ref={mirrorRef} value={value} blocks={pasteBlocks} />
         <textarea
           ref={inputRef}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { micAudioConstraints, humanizeMicError, createLevelMeter } from './mic'
+import type { AudioSample } from './mic'
 
 /**
  * Streaming STT over `/api/ws/stt`.
@@ -28,9 +29,11 @@ interface Opts {
   onLevel?: (v: number) => void
   /** Active capture device label (e.g. "MacBook Pro Microphone"). */
   onDevice?: (label: string) => void
+  /** Unthrottled per-frame audio features for canvas consumers (see mic.ts). */
+  sampleRef?: { current: AudioSample }
 }
 
-export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevice }: Opts) {
+export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevice, sampleRef }: Opts) {
   const [recording, setRecording] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
@@ -79,7 +82,7 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     }
     streamRef.current = stream
     onDeviceRef.current?.(stream.getAudioTracks()[0]?.label || '')
-    levelStopRef.current = createLevelMeter(stream, v => onLevelRef.current?.(v))
+    levelStopRef.current = createLevelMeter(stream, v => onLevelRef.current?.(v), sampleRef)
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(`${proto}//${window.location.host}/api/ws/stt`)
@@ -211,7 +214,7 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     buffer.length = 0
     bufferedBytes = 0
     ready = true
-  }, [cleanup])
+  }, [cleanup, sampleRef])
 
   const stop = useCallback(() => {
     const ws = wsRef.current

@@ -33,6 +33,8 @@
     "components.remoteArtifactCard.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "components.runInTerminalConfirm.run": "Verb on a button: execute this job/workflow now. NOT the noun (\"a run\"), which several locales translate differently.",
     "components.shortcutsModal.k": "The literal letter on the keyboard's K key, shown inside a key cap next to a modifier (`Cmd + K`). Do not translate or transliterate: it names a physical key.",
+    "components.voiceDictationPanel.esc_to_stop_enter_to_send": "Keyboard hint in the corner of the voice dictation panel. 'Esc' and 'Enter' are physical key names -- use the conventional key names printed on keyboards for this locale. Width-constrained: keep it short.",
+    "components.voiceDictationPanel.listening": "Status label on the voice dictation panel while the microphone is capturing. Present participle describing the app's current state, not a command to the user.",
     "pages.appDetailPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.appsPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.artifactDeployPage.aws": "The literal name of the AWS CLI executable, `aws`. Do not translate: the user types it.",
@@ -85,6 +87,8 @@
     "pages.settings.securityPanel.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
     "pages.settings.securityPanel.off": "State value meaning disabled. Not the preposition or the adverb.",
     "pages.settings.slackPanel.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
+    "pages.settings.sttSettings.dictation_panel": "Label for the toggle in Settings > Voice that switches the recording UI between the animated dictation panel and the thin status bar.",
+    "pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of": "Description under the 'Dictation panel' toggle in Settings > Voice. 'WebGL2' is a technology name and must not be translated. 'reduced motion' refers to the OS accessibility preference.",
     "pages.telemetryPanel.ok": "Status value in a telemetry row, meaning healthy. A state, not the confirmation button."
   }
 }

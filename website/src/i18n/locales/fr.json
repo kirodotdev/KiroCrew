@@ -1947,6 +1947,10 @@
       "the_app_will_stop_the_local_gateway_install_the": "L'application va arrêter la passerelle locale, installer la mise à jour et redémarrer.",
       "update_ready": "Mise à jour prête"
     },
+    "voiceDictationPanel": {
+      "esc_to_stop_enter_to_send": "Échap pour arrêter, Entrée pour envoyer",
+      "listening": "Écoute en cours"
+    },
     "voiceDisabledModal": {
       "enable_it_under": "Activez-la dans",
       "not_now": "Pas maintenant",
@@ -4409,6 +4413,7 @@
         "aws_region_transcribe": "Région AWS (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "Code de langue BCP-47 pour la reconnaissance vocale",
         "default": "default",
+        "dictation_panel": "Panneau de dictée",
         "dismiss_error": "Ignorer l'erreur",
         "enabled": "Activé",
         "input_device_used_to_capture_your_voice": "Périphérique d'entrée utilisé pour capter votre voix",
@@ -4425,6 +4430,7 @@
         "ready": "prêt",
         "run_these_commands_in_your_terminal_first": "Exécutez d'abord ces commandes dans votre terminal :",
         "runtime": "Moteur d'exécution",
+        "show_an_animated_panel_while_recording_instead_of": "Afficher un panneau animé pendant l'enregistrement au lieu de la barre d'état fine. Revient à la barre si le navigateur ne prend pas en charge WebGL2 ou si votre système demande de réduire les animations.",
         "status": "Statut",
         "stream_live_partial_transcripts_into_the_input_b": "Diffuser les transcriptions partielles en direct dans le champ de saisie pendant que vous parlez (Transcribe uniquement)",
         "streaming": "Diffusion en continu",

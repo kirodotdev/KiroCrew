@@ -1947,6 +1947,10 @@
       "the_app_will_stop_the_local_gateway_install_the": "O app vai parar o gateway local, instalar a atualização e reiniciar.",
       "update_ready": "Atualização pronta"
     },
+    "voiceDictationPanel": {
+      "esc_to_stop_enter_to_send": "Esc para parar, Enter para enviar",
+      "listening": "Ouvindo"
+    },
     "voiceDisabledModal": {
       "enable_it_under": "Ative em",
       "not_now": "Agora não",
@@ -4409,6 +4413,7 @@
         "aws_region_transcribe": "Região AWS (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "Código de idioma BCP-47 para reconhecimento de fala",
         "default": "padrão",
+        "dictation_panel": "Painel de ditado",
         "dismiss_error": "Descartar erro",
         "enabled": "Ativado",
         "input_device_used_to_capture_your_voice": "Dispositivo de entrada usado para capturar sua voz",
@@ -4425,6 +4430,7 @@
         "ready": "pronto",
         "run_these_commands_in_your_terminal_first": "Execute primeiro estes comandos no seu terminal:",
         "runtime": "Runtime",
+        "show_an_animated_panel_while_recording_instead_of": "Exibir um painel animado durante a gravação em vez da barra de status fina. Volta para a barra quando o navegador não tem WebGL2 ou o seu sistema solicita movimento reduzido.",
         "status": "Status",
         "stream_live_partial_transcripts_into_the_input_b": "Transmitir transcrições parciais ao vivo para a caixa de entrada enquanto você fala (somente Transcribe)",
         "streaming": "Streaming",

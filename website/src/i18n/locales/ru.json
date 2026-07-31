@@ -1968,6 +1968,10 @@
       "the_app_will_stop_the_local_gateway_install_the": "Приложение остановит локальный шлюз, установит обновление и перезапустится.",
       "update_ready": "Обновление готово"
     },
+    "voiceDictationPanel": {
+      "esc_to_stop_enter_to_send": "Esc — стоп, Enter — отправить",
+      "listening": "Слушаю"
+    },
     "voiceDisabledModal": {
       "enable_it_under": "Включите его в",
       "not_now": "Не сейчас",
@@ -4451,6 +4455,7 @@
         "aws_region_transcribe": "Регион AWS (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "Код языка BCP-47 для распознавания речи",
         "default": "по умолчанию",
+        "dictation_panel": "Панель диктовки",
         "dismiss_error": "Закрыть ошибку",
         "enabled": "Включено",
         "input_device_used_to_capture_your_voice": "Устройство ввода для записи вашего голоса",
@@ -4467,6 +4472,7 @@
         "ready": "готово",
         "run_these_commands_in_your_terminal_first": "Сначала выполните эти команды в терминале:",
         "runtime": "Среда выполнения",
+        "show_an_animated_panel_while_recording_instead_of": "Показывать во время записи анимированную панель вместо тонкой строки состояния. Возвращается к строке, если в браузере нет WebGL2 или в системе включено уменьшение движения.",
         "status": "Статус",
         "stream_live_partial_transcripts_into_the_input_b": "Передавать промежуточную расшифровку в поле ввода по мере речи (только Transcribe)",
         "streaming": "Потоковая передача",

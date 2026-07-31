@@ -27,7 +27,18 @@ class MockMediaRecorder {
 
 class MockAudioContext {
   createMediaStreamSource() { return { connect() {} } }
-  createAnalyser() { return { fftSize: 0, frequencyBinCount: 16, getByteTimeDomainData() {}, connect() {} } }
+  // Both read methods are stubbed: the level meter reads the time domain for
+  // RMS and the frequency domain for the shader's spectral centroid, and a real
+  // AnalyserNode always exposes both.
+  createAnalyser() {
+    return {
+      fftSize: 0,
+      frequencyBinCount: 16,
+      getByteTimeDomainData() {},
+      getByteFrequencyData() {},
+      connect() {},
+    }
+  }
   close() { return Promise.resolve() }
 }
 

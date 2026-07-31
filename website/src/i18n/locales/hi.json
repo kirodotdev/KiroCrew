@@ -1926,6 +1926,10 @@
       "the_app_will_stop_the_local_gateway_install_the": "ऐप स्थानीय गेटवे रोकेगा, अपडेट इंस्टॉल करेगा और फिर से शुरू होगा।",
       "update_ready": "अपडेट तैयार"
     },
+    "voiceDictationPanel": {
+      "esc_to_stop_enter_to_send": "रोकने के लिए Esc, भेजने के लिए Enter",
+      "listening": "सुन रहा है"
+    },
     "voiceDisabledModal": {
       "enable_it_under": "इसे यहाँ चालू करें:",
       "not_now": "अभी नहीं",
@@ -4367,6 +4371,7 @@
         "aws_region_transcribe": "AWS रीजन (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "वाक् पहचान के लिए BCP-47 भाषा कोड",
         "default": "डिफ़ॉल्ट",
+        "dictation_panel": "डिक्टेशन पैनल",
         "dismiss_error": "त्रुटि बंद करें",
         "enabled": "सक्षम",
         "input_device_used_to_capture_your_voice": "आपकी आवाज़ कैप्चर करने के लिए उपयोग होने वाला इनपुट डिवाइस",
@@ -4383,6 +4388,7 @@
         "ready": "तैयार",
         "run_these_commands_in_your_terminal_first": "पहले अपने टर्मिनल में ये कमांड चलाएँ:",
         "runtime": "रनटाइम",
+        "show_an_animated_panel_while_recording_instead_of": "रिकॉर्डिंग के दौरान पतले स्टेटस बार के बजाय एनिमेटेड पैनल दिखाएँ। जब ब्राउज़र में WebGL2 न हो या सिस्टम कम-मोशन का अनुरोध करे, तो यह बार पर लौट आता है।",
         "status": "स्थिति",
         "stream_live_partial_transcripts_into_the_input_b": "बोलते समय लाइव आंशिक ट्रांसक्रिप्ट इनपुट बॉक्स में स्ट्रीम करें (केवल Transcribe)",
         "streaming": "स्ट्रीमिंग",

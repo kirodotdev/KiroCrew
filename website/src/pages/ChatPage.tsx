@@ -1234,10 +1234,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const isMac = useAppSelector(s => s.dashboard.status?.platform) === 'darwin'
   const { data: sttCfg } = useQuery({
     queryKey: ['sttConfig'],
-    queryFn: () => api.sttConfig() as Promise<{ streaming?: boolean; enabled?: boolean }>,
+    queryFn: () => api.sttConfig() as Promise<{ streaming?: boolean; enabled?: boolean; dictation_panel?: boolean }>,
   })
   const sttStreaming = !!sttCfg?.streaming
   const sttEnabled = !!sttCfg?.enabled
+  // Default true so the panel is the standard recording surface; the backend
+  // sends an explicit boolean, so `undefined` here means "config not loaded yet"
+  // rather than "off", and a pre-load recording would otherwise flash the bar.
+  const sttDictationPanel = sttCfg?.dictation_panel !== false
   // Treat "config not loaded yet" as disabled so the guard never lets a
   // recording start before STT is confirmed on. Stable boolean so toggleVoice's
   // deps don't churn on every sttCfg object identity from a refetch.
@@ -1277,6 +1281,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // changes (e.g. when `sttStreaming` flips).
   const voiceRef = useRef(voice)
   useEffect(() => { voiceRef.current = voice }, [voice])
+  // Same reason as voiceRef: send() deliberately keeps a minimal dep array (with
+  // an exhaustive-deps suppression), so reading `sttStreaming` directly there
+  // would close over the value from the render that created that send().
+  const sttStreamingRef = useRef(sttStreaming)
+  useEffect(() => { sttStreamingRef.current = sttStreaming }, [sttStreaming])
   // Re-arm when the user explicitly (re)starts recording — wrap toggle.
   // Depend on the individual stable members actually read so this callback
   // is only re-created when they change. `[voice]` would recreate every
@@ -2331,6 +2340,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const widgetOrigin = !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
     widgetPrefillRef.current = null
     if (!raw && !pendingFilesRef.current.length) return
+
+    // Sending while STREAMING dictation is live ends the dictation. The panel
+    // advertises "Enter to send", so this path is reachable by design — and
+    // without it, streaming STT keeps running past the send: `onPartial`
+    // re-derives the composer value from `frozenInputRef`, which was snapshotted
+    // BEFORE the send cleared it, so the next partial repopulates the composer
+    // with text the user already sent. Disarm FIRST so any partial/final already
+    // in flight is dropped, then stop capture (stop() is async — up to 5s for
+    // the backend close).
+    //
+    // STREAMING ONLY, deliberately. In batch mode the transcription arrives
+    // exactly once, from `MediaRecorder.onstop` AFTER capture ends, and it
+    // arrives through `onText` — which honours `sttDisarmedRef`. Disarming here
+    // would throw away the entire recording, which is the opposite of the bug
+    // being fixed. Batch therefore keeps its pre-existing behaviour untouched:
+    // capture continues, and the transcript lands when the user stops.
+    if (voiceRef.current.recording && sttStreamingRef.current) {
+      sttDisarmedRef.current = true
+      frozenInputRef.current = null
+      voiceRef.current.toggle()
+    }
 
     // The session actually on screen at send time. Read from the ref (fresh
     // every render), not the closure `activeSlot` (stale until send() is
@@ -4505,6 +4535,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               voiceLevel={voice.level}
               voiceDeviceLabel={voice.deviceLabel}
               onClearVoiceError={voice.clearError}
+              voiceDictationPanel={sttDictationPanel}
+              voiceSampleRef={voice.sampleRef}
+              voicePartial={voice.partial}
               onVoiceToggle={voiceInputSupported ? toggleVoice : undefined}
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
               agentName={currentSlot?.agent || 'default'}
