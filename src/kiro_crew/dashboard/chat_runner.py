@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlparse
 
 from kiro_crew import mcp_apps_render, model_registry
-from kiro_crew.acp.client import AcpError, AcpProcessDied, _is_safe_oauth_url
+from kiro_crew.acp.client import AcpAuthRequired, AcpError, AcpProcessDied, _is_safe_oauth_url
 from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
@@ -161,8 +161,6 @@ from kiro_crew.widget_artifacts import register_widgets_off_loop
 
 logger = logging.getLogger(__name__)
 
-_KIRO_QUEUE_READINESS_POLL_SECS = 2.0
-
 # The synthetic recovery message constants live in chat_utils (single source
 # of truth shared with the queue/merge predicates — is_system_injection must
 # classify them identically to the turn logic here). Re-exported under their
@@ -236,7 +234,11 @@ def _turn_outcome(stop_reason: str | None) -> str:
 
 
 def _emit_turn_metric(
-    duration_ms: int | float | None, stop_reason: str | None, slot_key: str
+    duration_ms: int | float | None,
+    stop_reason: str | None,
+    slot_key: str,
+    *,
+    elapsed_ms: int | float | None = None,
 ) -> None:
     """Emit kirocrew.turn.duration (best-effort).
 
@@ -244,8 +246,28 @@ def _emit_turn_metric(
     its unit test, so the metric name, attrs, and outcome mapping live in
     production and any drift fails the test (tests must drive real
     production code). One histogram powers both turn latency and fault rate.
+
+    ``duration_ms`` is the provider-reported duration and ``elapsed_ms`` the
+    locally measured wall clock; the first non-zero wins. Both are needed
+    because the acp provider ALWAYS reports ``TurnUsage.duration_ms == 0``
+    (nothing in the codebase assigns it — only claude_code fills it in), so a
+    provider-only value silently skipped the emit for effectively all traffic
+    and left turn latency / fault rate / throughput reading a flat 0.
+
+    A still-zero duration skips the emit deliberately: an absent sample reads
+    as "no data" on the Telemetry page, whereas a recorded 0 would render as a
+    plausible-looking 0ms p50 — the very symptom this guard's misuse caused.
+
+    Caveat on what the wall clock measures: ``elapsed_ms`` runs from the start
+    of the turn, so a turn parked on an interactive tool-approval prompt counts
+    the operator's thinking time as turn duration. There is no finer-grained
+    source on the acp path (the provider reports nothing at all), so this is
+    the honest maximum available — but it means the histogram is "turn
+    wall-clock", not pure model latency, and a high p90 can mean slow approvals
+    rather than a slow model.
     """
-    if not duration_ms:
+    value = duration_ms or elapsed_ms
+    if not value:
         return
     attrs: dict = {"outcome": _turn_outcome(stop_reason)}
     try:
@@ -255,7 +277,7 @@ def _emit_turn_metric(
     except Exception:
         pass
     try:
-        get_recorder().histogram("kirocrew.turn.duration", duration_ms, unit="ms", attrs=attrs)
+        get_recorder().histogram("kirocrew.turn.duration", value, unit="ms", attrs=attrs)
     except Exception:
         logger.debug("turn metric emit failed", exc_info=True)
 
@@ -1269,6 +1291,57 @@ def _resolve_mirror_target(state: Any, session_key: str) -> Any:
     )
 
 
+def _mark_kiro_signed_out(state: Any) -> None:
+    """Latch the prerequisite service to signed-out after an ACP auth failure.
+
+    Readiness is probed at boot and on explicit user action only, so the ACP
+    attempt is what discovers a mid-session logout. Feeding that back into the
+    service is what keeps the still-fail-closed gates — the poll-driven kiro-cli
+    spawn sites and the destructive reruns — from acting on a stale ready latch,
+    with no timer re-probe. Best-effort: never disrupt the turn's teardown.
+    """
+
+    service = getattr(state, "kiro_prerequisite_service", None)
+    if service is None:
+        return
+    try:
+        service.mark_signed_out()
+    except Exception:
+        logger.debug("Could not latch Kiro signed-out state", exc_info=True)
+
+
+async def _deliver_auth_error_to_slack(
+    state: Any,
+    slot: Any,
+    sessions: Any,
+    session_key: str,
+    message: str,
+) -> None:
+    """Mirror an auth-required error to a linked Slack thread.
+
+    Preserves the delivery the pre-turn readiness gate used to perform: a user
+    driving the linked session from Slack must not be left without a response
+    when the CLI is signed out.
+    """
+
+    slack_client = getattr(state, "slack_client", None)
+    if slack_client is None:
+        return
+    thread_ts = getattr(slot, "_slack_thread_ts", "")
+    channel_id = getattr(slot, "_slack_channel", "")
+    if (not thread_ts or not channel_id) and sessions is not None:
+        thread_ts, channel_id = sessions.get_slack_link(session_key)
+    if not (thread_ts and channel_id):
+        return
+    try:
+        await slack_client.post_message(channel_id, message, thread_ts)
+    except Exception:
+        logger.debug(
+            "Failed to deliver Kiro auth error to linked Slack thread",
+            exc_info=True,
+        )
+
+
 async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_text: str) -> None:
     """Deliver a completed dashboard reply to a linked NON-Slack channel.
 
@@ -1922,7 +1995,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
 
     task = asyncio.create_task(
         asyncio.wait_for(
-            _run_chat(state, slot, next_msg, _readiness_checked=True),
+            _run_chat(state, slot, next_msg),
             timeout=CHAT_TURN_TIMEOUT,
         )
     )
@@ -1933,55 +2006,40 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
 
 
 async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
-    """Wait for readiness, then consume and run one armed synthesis turn."""
+    """Consume and run one armed synthesis turn.
 
-    from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
+    Kiro readiness is no longer waited on here. Readiness is latched at boot and
+    only refreshed by an explicit user action, so a stale not-ready value would
+    have parked this waiter indefinitely instead of letting the ACP attempt
+    report the real auth state. The turn runs; a signed-out CLI surfaces as an
+    ``AcpAuthRequired`` error card from ``_run_chat``.
+    """
 
-    readiness_reported = False
     try:
-        while slot._pending_synthesis:
-            if await kiro_session_ready(getattr(state, "kiro_prerequisite_service", None)):
-                if slot._queue:
-                    state.push_slots_update()
-                    if await _start_next_queued_turn(state, slot):
-                        return
-                if (
-                    state.subagents is None
-                    or state.subagents.running_agents_for(f"dashboard:{slot.key}")
-                    or slot._subagent_deliveries_inflight != 0
-                ):
-                    _finish_queue_cycle(state, slot)
-                    return
-
-                # Readiness and all delivery guards now hold. Consuming here,
-                # immediately before the turn begins, preserves a retryable arm
-                # while authentication is unavailable.
-                slot._pending_synthesis = False
-                synthesis_task = asyncio.create_task(
-                    asyncio.wait_for(
-                        _run_chat(
-                            state,
-                            slot,
-                            SUBAGENT_SYNTHESIS_PROMPT,
-                            _readiness_checked=True,
-                        ),
-                        timeout=CHAT_TURN_TIMEOUT,
-                    )
-                )
-                await synthesis_task
+        if not slot._pending_synthesis:
+            _finish_queue_cycle(state, slot)
+            return
+        if slot._queue:
+            state.push_slots_update()
+            if await _start_next_queued_turn(state, slot):
                 return
+        if (
+            state.subagents is None
+            or state.subagents.running_agents_for(f"dashboard:{slot.key}")
+            or slot._subagent_deliveries_inflight != 0
+        ):
+            _finish_queue_cycle(state, slot)
+            return
 
-            if not readiness_reported:
-                slot.append(
-                    "error",
-                    "Kiro CLI setup or sign-in is required before " "sub-agent synthesis can run.",
-                    "msg msg-err",
-                )
-                state.push_slots_update()
-                readiness_reported = True
-            await asyncio.sleep(_KIRO_QUEUE_READINESS_POLL_SECS)
-
-        _finish_queue_cycle(state, slot)
+        # All delivery guards hold. Consume immediately before the turn begins.
+        slot._pending_synthesis = False
+        synthesis_task = asyncio.create_task(
+            asyncio.wait_for(
+                _run_chat(state, slot, SUBAGENT_SYNTHESIS_PROMPT),
+                timeout=CHAT_TURN_TIMEOUT,
+            )
+        )
+        await synthesis_task
     finally:
         slot._synthesis_inflight = False
 
@@ -2022,43 +2080,22 @@ def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
         title_task.add_done_callback(state._background_tasks.discard)
 
 
-async def _wait_for_queued_kiro_readiness(
-    state: DashboardState,
-    slot: _ChatSlot,
-) -> None:
-    """Own readiness polling outside the completed turn's timeout."""
-
-    from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
-
-    while slot._queue:
-        await asyncio.sleep(_KIRO_QUEUE_READINESS_POLL_SECS)
-        if await kiro_session_ready(getattr(state, "kiro_prerequisite_service", None)):
-            state.push_slots_update()
-            if await _start_next_queued_turn(state, slot):
-                return
-            break
-    _finish_queue_cycle(state, slot)
-
-
 async def _run_chat(
     state: DashboardState,
     slot: _ChatSlot,
     message: str,
     *,
     _prompt_depth: int = 0,
-    _readiness_checked: bool = False,
     regenerate_hint: str = "",
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
-
-    from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
 
     session_key = getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
     sessions = getattr(state, "sessions", None)
 
     # Inherit Slack link: if this dashboard session mirrors a Slack thread,
-    # copy the link so every exit path, including prerequisite failure, can
-    # reply on the originating surface.
+    # copy the link so every exit path, including an auth failure, can reply on
+    # the originating surface.
     if sessions is not None and session_key.startswith("dashboard:"):
         link = sessions.get_slack_link(session_key)
         if not (link and link[0]):
@@ -2067,31 +2104,10 @@ async def _run_chat(
             if link and link[0] and link[1]:
                 sessions.set_slack_link(session_key, link[0], link[1])
 
-    if not _readiness_checked and not await kiro_session_ready(
-        getattr(state, "kiro_prerequisite_service", None)
-    ):
-        message = "Kiro CLI setup or sign-in is required before starting a session."
-        slot.append("error", message, "msg msg-err")
-        slack_client = getattr(state, "slack_client", None)
-        if slack_client is not None:
-            thread_ts = getattr(slot, "_slack_thread_ts", "")
-            channel_id = getattr(slot, "_slack_channel", "")
-            if (not thread_ts or not channel_id) and sessions is not None:
-                thread_ts, channel_id = sessions.get_slack_link(session_key)
-            if thread_ts and channel_id:
-                try:
-                    await slack_client.post_message(channel_id, message, thread_ts)
-                except Exception:
-                    logger.debug(
-                        "Failed to deliver Kiro readiness error to linked Slack thread",
-                        exc_info=True,
-                    )
-        slot.append("done", "", "done")
-        slot.task = None
-        state.push_slots_update()
-        state.broadcast_ws("chat_done", {"slot": slot.key})
-        state.push_refresh("history")
-        return
+    # No pre-turn readiness gate: latched readiness is only refreshed at boot and
+    # on explicit user action, so denying here would block a send the CLI would
+    # have served. The ACP attempt below is the authority and raises
+    # AcpAuthRequired when the CLI is signed out.
 
     async def _fire(
         event: str,
@@ -2225,6 +2241,7 @@ async def _run_chat(
     slot._native_subagent_output = _native_card_output
     _native_card_output_len: dict[str, int] = {}
     needs_session_reset = False
+    _auth_required = False
     saw_compaction = False
     _produced_visible_output = False
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
@@ -4174,7 +4191,15 @@ async def _run_chat(
                     )
                 # ── Turn-completion histogram (OTel M2) ──
                 # kirocrew.turn.duration → turn latency p50/p90 + fault rate.
-                _emit_turn_metric(event.usage.duration_ms, event.stop_reason, slot.key)
+                # elapsed_ms carries the wall clock computed above because acp
+                # leaves usage.duration_ms at 0 — without it this histogram is
+                # never emitted for the default backend.
+                _emit_turn_metric(
+                    event.usage.duration_ms,
+                    event.stop_reason,
+                    slot.key,
+                    elapsed_ms=_turn_elapsed_ms,
+                )
                 _stop_reason = event.stop_reason
                 if _stop_reason == STOP_REASON_TOOL_STALL:
                     _stall_tool_title = event.title
@@ -4621,6 +4646,29 @@ async def _run_chat(
                 redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0],
                 "msg msg-a",
             )
+    except AcpAuthRequired as exc:
+        # The signed-out CLI is discovered HERE, not by a probe: this is the
+        # authoritative logout signal now that readiness is latched at boot.
+        # Non-retryable — respawning hits the same wall — so never re-queue, and
+        # latch the service signed-out so the fail-closed gates stop trusting a
+        # stale ready value.
+        logger.warning("ACP auth required in slot %s: %s", slot.key, exc)
+        # Every queued prompt would hit the same wall. Popping them one by one
+        # would drain the whole queue into identical failures, leaving nothing to
+        # resume after the user signs in — so hold the queue intact instead.
+        _auth_required = True
+        needs_session_reset = True
+        if assistant_text:
+            slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+            slot.append(
+                "assistant",
+                redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0],
+                "msg msg-a",
+            )
+        _auth_msg = str(exc)
+        slot.append("error", _auth_msg, "msg msg-err")
+        _mark_kiro_signed_out(state)
+        await _deliver_auth_error_to_slack(state, slot, sessions, session_key, _auth_msg)
     except AcpProcessDied as exc:
         logger.warning("ACP process died in slot %s: %s — resetting session", slot.key, exc)
         needs_session_reset = True
@@ -4970,29 +5018,19 @@ async def _run_chat(
         # nothing is ever silently lost.
         _requeue_unconsumed_steers(state, slot)
         next_turn_started = False
-        readiness_waiter_started = False
-        if slot._queue:
-            ready_for_queue = await kiro_session_ready(
-                getattr(state, "kiro_prerequisite_service", None)
-            )
-            if not ready_for_queue:
-                slot.append(
-                    "error",
-                    "Kiro CLI setup or sign-in is required before queued messages can run.",
-                    "msg msg-err",
-                )
-                state.push_slots_update()
-                # The completed agent turn is normally wrapped by
-                # CHAT_TURN_TIMEOUT. Poll in a fresh tracked task so exhausting
-                # that turn's budget cannot orphan the FIFO queue.
-                waiter = asyncio.create_task(_wait_for_queued_kiro_readiness(state, slot))
-                slot.task = waiter
-                state._background_tasks.add(waiter)
-                waiter.add_done_callback(state._background_tasks.discard)
-                readiness_waiter_started = True
-            else:
-                state.push_slots_update()
-                next_turn_started = await _start_next_queued_turn(state, slot)
+        if slot._queue and not _auth_required:
+            # No readiness gate before the next queued turn. Readiness is latched
+            # at boot, so parking the queue on a stale not-ready value would
+            # strand it indefinitely; the successor's own ACP attempt reports a
+            # signed-out CLI as an AcpAuthRequired error card instead.
+            #
+            # `_auth_required` is the ONE exception: this turn just proved the CLI
+            # is signed out, so every queued prompt would fail identically. The
+            # queue is left intact (cards stay visible and individually
+            # cancellable) and resumes on the user's next send after they log in
+            # — the no-loss rule, without a readiness waiter to strand it.
+            state.push_slots_update()
+            next_turn_started = await _start_next_queued_turn(state, slot)
 
-        if not next_turn_started and not readiness_waiter_started:
+        if not next_turn_started:
             _finish_queue_cycle(state, slot)

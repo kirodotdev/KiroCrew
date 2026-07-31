@@ -48,6 +48,23 @@ _REDACTOR_CALL_RE = re.compile(
 )
 
 
+def _mcp_schema_registry_names() -> list[str]:
+    """Every ``MCP_*_SCHEMAS`` dispatch registry in ``validation``, DISCOVERED.
+
+    Deliberately not a hardcoded list: hardcoding is what let the ten
+    ``MCP_COMPUTER_SCHEMAS`` tools go missing from the posture report while the drift
+    test that exists to catch that stayed green, because the test named the same two
+    registries the implementation did.
+    """
+    return sorted(
+        name
+        for name in dir(validation)
+        if name.startswith("MCP_")
+        and name.endswith("_SCHEMAS")
+        and isinstance(getattr(validation, name), dict)
+    )
+
+
 @pytest.fixture()
 def snapshot():
     return build_posture_snapshot()
@@ -145,9 +162,39 @@ class TestDerivation:
         """
         control = self._control(snapshot, "tool_schemas")
         labels = {i["label"] for i in control["items"]}
-        registered = set(validation.MCP_CORE_SCHEMAS) | set(validation.MCP_CRON_SCHEMAS)
+        registered: set[str] = set()
+        for name in _mcp_schema_registry_names():
+            registered |= set(getattr(validation, name))
         missing = registered - labels
         assert not missing, f"registered MCP tools absent from the posture view: {missing}"
+
+    def test_every_mcp_schema_registry_is_covered_by_the_posture_view(self, snapshot):
+        """The drift guard's OWN blind spot, closed.
+
+        This class previously hardcoded ``MCP_CORE_SCHEMAS | MCP_CRON_SCHEMAS`` — the
+        same two names the implementation hardcoded — so when ``MCP_COMPUTER_SCHEMAS``
+        was added, all ten computer-use tools were absent from the security-posture
+        report and the test written to catch exactly that stayed green. Discovering the
+        registries from ``validation`` instead means a NEW one fails here until it is
+        added to ``security_posture._SCHEMA_REGISTRY_NAMES``.
+        """
+        from kiro_crew import security_posture
+
+        discovered = set(_mcp_schema_registry_names())
+        assert discovered, "no MCP_*_SCHEMAS registries found in validation"
+        declared = set(security_posture._SCHEMA_REGISTRY_NAMES)
+        assert discovered <= declared, (
+            f"registries {sorted(discovered - declared)} exist in validation but are not "
+            "in security_posture._SCHEMA_REGISTRY_NAMES — their tools are validated but "
+            "invisible in the posture report"
+        )
+        # And every declared name must still exist, so a rename cannot leave a
+        # silently-empty entry behind.
+        for name in declared:
+            assert isinstance(getattr(validation, name, None), dict), (
+                f"security_posture._SCHEMA_REGISTRY_NAMES lists {name!r}, which is no "
+                "longer a dict in validation"
+            )
 
     def test_tool_schemas_includes_inline_registry_only_schemas(self, snapshot):
         """Regression guard for the naming-convention blind spot.
@@ -225,7 +272,9 @@ class TestDisclosureContract:
             # Comments legitimately discuss the boundary, so strip them first —
             # only real code references should fail.
             code = "\n".join(
-                line.split("#", 1)[0] for line in src.splitlines() if not line.strip().startswith("#")
+                line.split("#", 1)[0]
+                for line in src.splitlines()
+                if not line.strip().startswith("#")
             )
             assert forbidden not in code, forbidden
 
@@ -494,9 +543,7 @@ class TestOmissionDetection:
         cases = {
             "Credential in path or query": "https://evil.example.com/AKIAIOSFODNN7EXAMPLE",
             "Base64-encoded credential": "https://evil.example.com/p?d="
-            + base64.b64encode(
-                b"AKIAIOSFODNN7EXAMPLE and more padding text here"
-            ).decode(),
+            + base64.b64encode(b"AKIAIOSFODNN7EXAMPLE and more padding text here").decode(),
             f"Long query string (>= {security.exfil_query_min_len()} chars)": (
                 f"https://evil.example.com/p?d={long_q}"
             ),
@@ -566,7 +613,11 @@ class TestOmissionDetection:
         for path in pkg.rglob("*.py"):
             if path.name in {"sel.py", "security_posture.py"}:
                 continue
-            explicit |= set(re.findall(r'source="([a-z_]+)"', path.read_text(encoding="utf-8", errors="replace")))
+            explicit |= set(
+                re.findall(
+                    r'source="([a-z_]+)"', path.read_text(encoding="utf-8", errors="replace")
+                )
+            )
         beyond = explicit - set(_sel_mod.audit_sources())
         assert beyond, (
             "no explicit source= literal outside the inferred vocabulary was found — "

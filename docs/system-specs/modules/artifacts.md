@@ -616,8 +616,9 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
 
 ## Companion Chat
 
-The artifact detail page can host a **companion chat panel**: the artifact
-renders alongside a live agent session bound to it. This is the backend half.
+The artifact detail page hosts a **companion chat panel**: the artifact renders
+on the left and a live agent session bound to it runs on the right, so an
+iteration loop never leaves the page.
 
 **Binding** — a chat slot may carry an `artifact` field (a validated artifact
 slug) set at slot create (`POST /api/chat/slots` body key `artifact`,
@@ -649,6 +650,37 @@ MCP update / revert — metadata-only PATCHes do NOT emit), delete
 (`deleted: true`), relocate, and pull-latest (when the pull actually landed a
 new snapshot). Fire-and-forget; react-query's 30s staleness window remains
 the safety net.
+
+**Panel (frontend)** — the comments sidebar and the chat panel are mutually
+exclusive flex siblings of the artifact body, icon-toggled from the toolbar
+(sparkle = chat, speech bubble = comments); neither overlays the artifact. The
+comment-count auto-reveal never switches away from an open chat panel, since the
+chat panel opens only on explicit action.
+
+**Session resolution (frontend)** — the active bound session is resolved from
+the Redux slots snapshot (`slot.artifact === slug`), so no extra endpoint exists:
+the WS `slots` event already carries the binding. The flow keeps it to at most
+one *active* bound session per slug by archiving before creating; the resolver
+tolerates more by picking the most recently active, so a race or a History-page
+resume degrades gracefully rather than erroring.
+
+**Create is one round trip** — the `POST /api/chat/slots` response carries the
+binding, so it is dispatched straight into the slots list (`addSlotOptimistic`)
+and the panel becomes interactive immediately. The silent context entry POST and
+the `fetchSlots` reconciliation run in the background: the context entry is
+consumed on the *next* user message, so it always lands before a human can type
+and send.
+
+**Chat parity** — the panel embeds the same `ChatPage` component as `/chat`
+(`embedded` + `embedMode="chat"` for the single-session chrome), so follow-up
+option chips, question cards, steer-send, tool groups and regenerate are
+identical by construction. A `noUrlSync` prop gates ChatPage's one URL-write
+effect: the host route `/artifacts/:slug` owns the URL, and an in-place
+`navigate` would swap the host route out from under the panel.
+
+**Composer staging** — "Ask agent to address" routes into the bound session and
+*stages* (never auto-sends) its message through the existing `writePrefill`
+sessionStorage channel ChatPage already consumes on slot activation.
 
 ## Roadmap
 

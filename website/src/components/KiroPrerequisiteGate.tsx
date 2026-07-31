@@ -1,24 +1,21 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
-  Copy,
   ExternalLink,
   Loader2,
   LogIn,
   Package,
   RefreshCw,
   ShieldCheck,
-  Terminal,
 } from 'lucide-react'
 import {
   ApiError,
   api,
   type KiroPrerequisiteStatus,
 } from '../api/client'
-import { KiroReadinessProvider } from '../providers/KiroReadinessContext'
 import {
   PANEL_CLASS,
   SCRIM_CLASS,
@@ -172,183 +169,6 @@ function OperationProgress({ status }: { status: KiroPrerequisiteStatus }) {
   )
 }
 
-const TERMINAL_LOGIN_COMMAND = 'kiro-cli login'
-
-// kiro-cli owns the whole sign-in flow. The in-app button starts it on the
-// gateway host, but a terminal is always available and is the only path when the
-// gateway runs headless or over SSH — so surface the exact command too.
-function TerminalLoginCommand() {
-  const [copied, setCopied] = useState(false)
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(TERMINAL_LOGIN_COMMAND)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 2_000)
-    } catch {
-      setCopied(false)
-    }
-  }
-  return (
-    <div className="pointer-events-auto mt-2 flex flex-wrap items-center gap-2">
-      <span className="text-[12px] text-muted">
-        <Terminal className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.or_run_in_terminal')}
-      </span>
-      <code className="rounded-md bg-bg px-2 py-1 font-mono text-[12px] text-text">
-        {TERMINAL_LOGIN_COMMAND}
-      </code>
-      <Btn type="button" onClick={copy} aria-label={i18nT('components.kiroPrerequisiteGate.copy_sign_in_command')}>
-        <Copy className="lucide-inline" />
-        {copied ? 'Copied' : 'Copy'}
-      </Btn>
-    </div>
-  )
-}
-
-// Shown when the status check itself fails for a user the gateway has already
-// confirmed completed setup. Their dashboard stays mounted (sessions paused)
-// rather than being replaced by first-run setup chrome they have no use for.
-function UnavailableStatusBanner({
-  message,
-  retrying,
-  onRetry,
-}: {
-  message: string
-  retrying: boolean
-  onRetry: () => void
-}) {
-  return (
-    <aside
-      className="pointer-events-none fixed inset-x-3 top-3 z-[100] mx-auto max-w-4xl rounded-xl border border-warn/30 bg-card/95 p-4 shadow-[0_18px_55px_rgba(0,0,0,.24)] backdrop-blur-md"
-      role="status"
-      aria-live="polite"
-    >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-warn/10 text-warn">
-            <AlertTriangle className="lucide-inline" />
-          </span>
-          <div className="min-w-0">
-            <p className="font-semibold text-text-strong">{i18nT('components.kiroPrerequisiteGate.could_not_check_kiro_cli')}</p>
-            <p className="mt-1 text-[13px] leading-relaxed text-muted">
-              {i18nT('components.kiroPrerequisiteGate.sessions_are_paused_until_the_gateway_check_succ')}
-            </p>
-            <p className="mt-2 text-[13px] text-danger">{message}</p>
-          </div>
-        </div>
-        <div className="pointer-events-auto flex shrink-0 items-center gap-2 sm:justify-end">
-          <Btn type="button" disabled={retrying} onClick={onRetry}>
-            <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
-            {i18nT('components.kiroPrerequisiteGate.check_again')}
-          </Btn>
-        </div>
-      </div>
-    </aside>
-  )
-}
-
-function ReauthenticationBanner({
-  status,
-  busy,
-  retrying,
-  mutationError,
-  onInstall,
-  onLogin,
-  onRetry,
-}: {
-  status: KiroPrerequisiteStatus
-  busy: boolean
-  retrying: boolean
-  mutationError: Error | null
-  onInstall: () => void
-  onLogin: () => void
-  onRetry: () => void
-}) {
-  const owner = status.setup_allowed !== false
-  const loginUrl = trustedLoginUrl(status.operation.url)
-  const needsInstall = !status.installed
-  return (
-    <aside
-      className="pointer-events-none fixed inset-x-3 top-3 z-[100] mx-auto max-w-4xl rounded-xl border border-warn/30 bg-card/95 p-4 shadow-[0_18px_55px_rgba(0,0,0,.24)] backdrop-blur-md"
-      role="status"
-      aria-live="polite"
-    >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-warn/10 text-warn">
-            <AlertTriangle className="lucide-inline" />
-          </span>
-          <div className="min-w-0">
-            <p className="font-semibold text-text-strong">
-              {needsInstall ? 'Kiro CLI needs attention.' : 'Kiro Crew needs Kiro sign-in.'}
-            </p>
-            <p className="mt-1 text-[13px] leading-relaxed text-muted">
-              {owner
-                ? needsInstall
-                  ? 'Sessions are paused until Kiro CLI is restored on this gateway. Other dashboard areas remain available.'
-                  : 'Sign in again to start sessions. Your artifacts, settings, and history remain available.'
-                : 'The gateway owner needs to restore Kiro access. This page will update automatically.'}
-            </p>
-            {(status.operation.message || status.operation.error) && (
-              <p className={`mt-2 text-[13px] ${status.operation.error ? 'text-danger' : 'text-muted'}`}>
-                {status.operation.error || status.operation.message}
-              </p>
-            )}
-            {loginUrl && (
-              <a
-                className="pointer-events-auto mt-2 inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline focus-ring"
-                href={loginUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {i18nT('components.kiroPrerequisiteGate.open_kiro_sign_in_page')} <ExternalLink className="lucide-inline" />
-              </a>
-            )}
-            {!needsInstall && owner && <TerminalLoginCommand />}
-            {status.operation.detail && (
-              <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-md bg-bg p-2 font-mono text-[12px] text-muted">
-                {status.operation.detail}
-              </pre>
-            )}
-            {mutationError && <p className="mt-2 text-[13px] text-danger">{mutationError.message}</p>}
-          </div>
-        </div>
-        <div className="pointer-events-auto flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-          {owner && needsInstall && status.can_auto_install && (
-            <SendBtn type="button" disabled={busy} onClick={onInstall}>
-              {busy
-                ? <Loader2 className="lucide-inline animate-spin" />
-                : <Package className="lucide-inline" />}{' '}
-              {i18nT('components.kiroPrerequisiteGate.install_kiro_cli')}
-            </SendBtn>
-          )}
-          {owner && status.installed && (
-            <SendBtn type="button" disabled={busy} onClick={onLogin}>
-              {busy
-                ? <Loader2 className="lucide-inline animate-spin" />
-                : <LogIn className="lucide-inline" />}{' '}
-              {i18nT('components.kiroPrerequisiteGate.sign_in_to_kiro')}
-            </SendBtn>
-          )}
-          <Btn type="button" disabled={busy || retrying} onClick={onRetry}>
-            <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
-            {i18nT('components.kiroPrerequisiteGate.refresh')}
-          </Btn>
-          {owner && needsInstall && !status.can_auto_install && (
-            <a
-              className="text-[13px] font-medium text-accent hover:underline focus-ring"
-              href={status.docs_url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {i18nT('components.kiroPrerequisiteGate.installation_guide')} <ExternalLink className="lucide-inline" />
-            </a>
-          )}
-        </div>
-      </div>
-    </aside>
-  )
-}
-
 function OwnerSetupRequired({
   retrying,
   onRetry,
@@ -431,9 +251,17 @@ function SetupStatusError({
 
 export default function KiroPrerequisiteGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
+  // The gateway probes kiro-cli at boot and on explicit request only, so the
+  // background poll below reads latched state for free. A user-driven Refresh
+  // must still hit the host, so it arms this flag for exactly one fetch.
+  const forceProbe = useRef(false)
   const statusQuery = useQuery({
     queryKey: QUERY_KEY,
-    queryFn: api.kiroPrerequisite,
+    queryFn: () => {
+      const refresh = forceProbe.current
+      forceProbe.current = false
+      return api.kiroPrerequisite(refresh)
+    },
     refetchInterval: (query) => kiroPrerequisiteRefetchInterval(query.state.data),
   })
   const updateStatus = (status: KiroPrerequisiteStatus) => {
@@ -459,23 +287,24 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   }, [setupComplete])
 
   // An unresolved check is UNKNOWN — never "setup required", and never a reason
-  // to withhold the dashboard. Mount it immediately with sessions PAUSED: Kiro
-  // readiness is not a prerequisite for using Kiro Crew, only for starting a
-  // turn. Whichever way the check then resolves, the user is already where they
-  // need to be — signed out surfaces the reauthentication banner, ready unpauses
-  // sessions, and only a CONFIRMED genuine first run shows setup.
+  // to withhold the dashboard OR to pause sessions. Readiness is latched at
+  // gateway boot and refreshed only on explicit request, so it is never fresh
+  // enough to disable the composer on: a user who signed in from a terminal
+  // would sit behind a dead input box. The turn itself is the authority — a
+  // signed-out CLI surfaces as an actionable `kiro-cli login` error card in the
+  // transcript, which is the ONLY sign-out signal the dashboard shows.
   //
-  // This is what removes the flash at its root: previously this window rendered
-  // the setup-branded shell, so every launch showed first-run setup for as long
-  // as the gateway's two kiro-cli subprocesses took to answer. Sessions stay
-  // paused rather than optimistically enabled, and the server-side gate
-  // (reject_if_kiro_not_ready) independently 503s any turn regardless of what
-  // the client believes.
+  // This also removes the first-run flash at its root: this window used to
+  // render the setup-branded shell, so every launch showed first-run setup for
+  // as long as the gateway's two kiro-cli subprocesses took to answer.
   if (statusQuery.isPending) {
-    return <KiroReadinessProvider ready={false}>{children}</KiroReadinessProvider>
+    return <>{children}</>
   }
   const retrying = statusQuery.isFetching
-  const retryStatus = () => { void statusQuery.refetch() }
+  const retryStatus = () => {
+    forceProbe.current = true
+    void statusQuery.refetch()
+  }
   const prerequisite = statusQuery.data
 
   // An older gateway has no prerequisite API and must retain its existing
@@ -486,37 +315,26 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     && statusQuery.error instanceof ApiError
     && statusQuery.error.status === 404
   ) {
-    return <KiroReadinessProvider ready>{children}</KiroReadinessProvider>
+    return <>{children}</>
   }
   // No usable status: either a live gateway error or an unusable body. Both are
-  // "we cannot tell", so they share one resolution — keep setup visible with a
-  // retry path so users do not fall through into broken chat sessions, EXCEPT
-  // for a returning user, who must never be shown first-run chrome just because
-  // the check failed on a cold load. They keep their dashboard behind the same
-  // nonblocking banner an established install gets, sessions paused until the
-  // gateway confirms readiness again.
+  // "we cannot tell". A RETURNING user keeps their dashboard, fully usable —
+  // an unreachable status check is not evidence the CLI is broken, and the turn
+  // will report the truth either way. Only a user we have never seen complete
+  // setup gets the retry screen, since they may genuinely have no CLI yet.
   if (!prerequisite) {
+    if (rememberedSetupComplete()) {
+      return <>{children}</>
+    }
     const message = statusQuery.isError
       ? (statusQuery.error?.message || 'The gateway returned an unexpected error.')
       : 'The gateway returned no prerequisite status.'
-    if (rememberedSetupComplete()) {
-      return (
-        <>
-          <KiroReadinessProvider ready={false}>{children}</KiroReadinessProvider>
-          <UnavailableStatusBanner
-            message={message}
-            retrying={retrying}
-            onRetry={retryStatus}
-          />
-        </>
-      )
-    }
     return (
       <SetupStatusError message={message} retrying={retrying} onRetry={retryStatus} />
     )
   }
   if (prerequisite.ready) {
-    return <KiroReadinessProvider ready>{children}</KiroReadinessProvider>
+    return <>{children}</>
   }
   const status = prerequisite
   const busy = status.operation.status === 'running'
@@ -524,21 +342,13 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     || loginMutation.isPending
   const mutationError = installMutation.error || loginMutation.error
   const platform = status.platform || 'local'
+  // Established install, signed out: render NOTHING and pause nothing. The user
+  // is not guided to sign in — the chat error card carries that, in context,
+  // only when they actually try to use the agent. A persistent banner nagged
+  // every surface (including ones that never start a session) for a state the
+  // dashboard cannot even keep current.
   if (status.initial_setup_complete) {
-    return (
-      <>
-        <KiroReadinessProvider ready={false}>{children}</KiroReadinessProvider>
-        <ReauthenticationBanner
-          status={status}
-          busy={busy}
-          retrying={retrying}
-          mutationError={mutationError}
-          onInstall={() => installMutation.mutate()}
-          onLogin={() => loginMutation.mutate()}
-          onRetry={retryStatus}
-        />
-      </>
-    )
+    return <>{children}</>
   }
   if (prerequisite.setup_allowed === false) {
     return <OwnerSetupRequired retrying={retrying} onRetry={retryStatus} />
@@ -661,7 +471,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             <Btn
               type="button"
               disabled={busy || statusQuery.isFetching}
-              onClick={() => statusQuery.refetch()}
+              onClick={retryStatus}
             >
               <RefreshCw className={`lucide-inline ${statusQuery.isFetching ? 'animate-spin' : ''}`} />
               {i18nT('components.kiroPrerequisiteGate.check_again')}

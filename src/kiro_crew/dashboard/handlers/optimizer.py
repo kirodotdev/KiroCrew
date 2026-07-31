@@ -10,7 +10,6 @@ from collections import Counter
 
 from aiohttp import web
 
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.security import (
@@ -153,9 +152,6 @@ OPTIMIZER_SYSTEM = (
 
 async def handle_optimize(request: web.Request) -> web.Response:
     """POST /api/optimizer/optimize — rewrite a prompt using session context."""
-    blocked = await reject_if_kiro_not_ready(request)
-    if blocked is not None:
-        return blocked
     state: DashboardState = request.app["state"]
     try:
         data = await request.json()

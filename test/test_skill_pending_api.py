@@ -145,3 +145,174 @@ async def test_pin_rejects_non_bool_pinned(loader):
     assert resp.status == 400
     resp2 = await H.api_skill_pin(_Req(loader, body={"name": name, "pinned": 1}))
     assert resp2.status == 400
+
+
+# ── Part C: pending-update fields + approve/detail routing ──
+#
+# These monkeypatch the loader so they do NOT depend on part B landing the
+# kind/target/base_version support in skills.py.
+
+
+@pytest.mark.asyncio
+async def test_list_pending_passes_update_fields(loader, monkeypatch):
+    """kind/target/base_version flow through the list handler untouched."""
+    monkeypatch.setattr(
+        loader,
+        "list_pending_skills",
+        lambda: [
+            {
+                "slug": "deploy-helper-update",
+                "name": "auto/deploy-helper-update",
+                "description": "d",
+                "triggers": "t",
+                "has_scripts": False,
+                "created_at": "",
+                "source": "consolidation",
+                "kind": "update",
+                "target": "auto/deploy-helper",
+                "base_version": 3,
+            }
+        ],
+    )
+    resp = await H.api_skills_pending(_Req(loader))
+    p = _payload(resp)["pending"][0]
+    assert p["kind"] == "update"
+    assert p["target"] == "auto/deploy-helper"
+    assert p["base_version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_update_detail_includes_live_body(loader, monkeypatch):
+    """An update candidate's detail carries the target's current live body."""
+    monkeypatch.setattr(
+        loader,
+        "get_pending_skill",
+        lambda slug: {
+            "slug": slug,
+            "name": "auto/deploy-helper-update",
+            "meta": {"kind": "update", "target": "auto/deploy-helper"},
+            "content": "## Steps\nnew\n",
+            "scripts": [],
+        },
+    )
+    monkeypatch.setattr(
+        loader, "preview_pending_update",
+        lambda slug: {
+            "live_body": "## Steps\nOLD BODY\n",
+            "proposed_body": "## Steps\nNEW BODY\n",
+            "diff": "--- a\n+++ b\n@@ -1 +1 @@\n-OLD BODY\n+NEW BODY\n",
+            "from_version": 2,
+            "to_version": 3,
+            "base_version": 2,
+            "stale_base": False,
+        },
+        raising=False,
+    )
+    resp = await H.api_skill_pending_detail(
+        _Req(loader, match={"slug": "deploy-helper-update"})
+    )
+    data = _payload(resp)
+    assert data["live_body"] == "## Steps\nOLD BODY\n"
+    assert data["proposed_body"] == "## Steps\nNEW BODY\n"
+    assert "+NEW BODY" in data["diff"]
+    assert (data["from_version"], data["to_version"]) == (2, 3)
+    assert data["stale_base"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_detail_live_body_null_when_target_gone(loader, monkeypatch):
+    """If the target skill was removed, live_body is null (not an error)."""
+    monkeypatch.setattr(
+        loader,
+        "get_pending_skill",
+        lambda slug: {
+            "slug": slug,
+            "name": "auto/deploy-helper-update",
+            "meta": {"kind": "update", "target": "auto/deploy-helper"},
+            "content": "## Steps\nnew\n",
+            "scripts": [],
+        },
+    )
+    monkeypatch.setattr(
+        loader, "preview_pending_update", lambda slug: None, raising=False,
+    )
+    resp = await H.api_skill_pending_detail(
+        _Req(loader, match={"slug": "deploy-helper-update"})
+    )
+    data = _payload(resp)
+    assert data["live_body"] is None
+    assert data["diff"] is None
+    assert data["stale_base"] is False
+
+
+@pytest.mark.asyncio
+async def test_new_detail_has_no_live_body(loader):
+    """A plain (new) candidate detail does not gain a live_body field."""
+    resp = await H.api_skill_pending_detail(_Req(loader, match={"slug": "deploy-helper"}))
+    data = _payload(resp)
+    assert "live_body" not in data
+
+
+@pytest.mark.asyncio
+async def test_approve_routes_update_to_approve_pending_update(loader, monkeypatch):
+    """kind=='update' → approve_pending_update; approve_pending_skill untouched."""
+    monkeypatch.setattr(
+        loader,
+        "get_pending_skill",
+        lambda slug: {"slug": slug, "meta": {"kind": "update", "target": "auto/deploy-helper"}},
+    )
+    called: dict = {}
+
+    def _upd(slug):
+        called["update"] = slug
+        return "auto/deploy-helper"
+
+    def _new(slug):
+        called["new"] = slug
+        return "auto/should-not-run"
+
+    monkeypatch.setattr(loader, "approve_pending_update", _upd, raising=False)
+    monkeypatch.setattr(loader, "approve_pending_skill", _new)
+    monkeypatch.setattr(loader, "run_skill_lifecycle", lambda **k: None)
+    resp = await H.api_skill_pending_approve(
+        _Req(loader, match={"slug": "deploy-helper-update"})
+    )
+    assert resp.status == 200
+    assert _payload(resp)["approved"] == "auto/deploy-helper"
+    assert called.get("update") == "deploy-helper-update"
+    assert "new" not in called
+
+
+@pytest.mark.asyncio
+async def test_approve_routes_new_to_approve_pending_skill(loader, monkeypatch):
+    """A candidate without kind=='update' promotes via approve_pending_skill."""
+    called: dict = {}
+
+    def _upd(slug):
+        called["update"] = slug
+        return "auto/should-not-run"
+
+    monkeypatch.setattr(loader, "approve_pending_update", _upd, raising=False)
+    # get_pending_skill + approve_pending_skill remain the real (part-A) impls.
+    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper"}))
+    assert resp.status == 200
+    assert _payload(resp)["approved"] == "auto/deploy-helper"
+    assert "update" not in called
+    assert loader.list_pending_skills() == []
+
+
+@pytest.mark.asyncio
+async def test_dismiss_routes_update_candidate_by_slug(loader, monkeypatch):
+    """Dismiss is kind-agnostic — it deletes the pending dir by slug."""
+    seen: dict = {}
+
+    def _dismiss(slug):
+        seen["slug"] = slug
+        return True
+
+    monkeypatch.setattr(loader, "dismiss_pending_skill", _dismiss)
+    resp = await H.api_skill_pending_dismiss(
+        _Req(loader, match={"slug": "deploy-helper-update"})
+    )
+    assert resp.status == 200
+    assert seen["slug"] == "deploy-helper-update"

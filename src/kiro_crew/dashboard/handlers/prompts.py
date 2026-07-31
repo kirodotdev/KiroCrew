@@ -363,6 +363,35 @@ async def api_skill_pending_detail(request: web.Request) -> web.Response:
     )
     if detail is None:
         return web.json_response({"error": "not found"}, status=404)
+    # Update candidates carry an approval PREVIEW so the UI can show exactly what
+    # approving would change: the target's current live body, the proposed
+    # post-approval content, and a unified diff between them (computed
+    # server-side with difflib so the frontend needs no diff dependency).
+    # kind/target may be exposed at the top level or nested under ``meta`` — read
+    # defensively. All preview fields are null if the target skill was removed
+    # since the candidate was staged.
+    _meta = detail.get("meta") if isinstance(detail.get("meta"), dict) else {}
+    kind = detail.get("kind") or _meta.get("kind")
+    if kind == "update":
+
+        def _preview() -> dict | None:
+            try:
+                return skills.preview_pending_update(slug)
+            except Exception:
+                return None
+
+        try:
+            pv = await asyncio.get_running_loop().run_in_executor(
+                discovery_executor(), _preview
+            )
+        except Exception:
+            pv = None
+        detail["live_body"] = (pv or {}).get("live_body")
+        detail["proposed_body"] = (pv or {}).get("proposed_body")
+        detail["diff"] = (pv or {}).get("diff")
+        detail["from_version"] = (pv or {}).get("from_version")
+        detail["to_version"] = (pv or {}).get("to_version")
+        detail["stale_base"] = bool((pv or {}).get("stale_base"))
     return web.json_response(detail)
 
 
@@ -380,7 +409,23 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid slug"}, status=400)
 
     def _approve_and_bound() -> str | None:
-        nm = skills.approve_pending_skill(slug)
+        # Route on candidate kind: an UPDATE candidate rewrites an existing live
+        # skill (approve_pending_update); a NEW candidate is promoted fresh
+        # (approve_pending_skill). kind is read from the candidate detail
+        # (top-level or nested ``meta``), defaulting to the new path.
+        kind = None
+        try:
+            _detail = skills.get_pending_skill(slug)
+        except Exception:
+            _detail = None
+        if isinstance(_detail, dict):
+            _meta_raw = _detail.get("meta")
+            _meta: dict = _meta_raw if isinstance(_meta_raw, dict) else {}
+            kind = _detail.get("kind") or _meta.get("kind")
+        if kind == "update":
+            nm = skills.approve_pending_update(slug)
+        else:
+            nm = skills.approve_pending_skill(slug)
         if nm:
             # Approving consumes a slot — enforce the bound (archive, never
             # delete). Best-effort; runs in the same off-loop executor job.

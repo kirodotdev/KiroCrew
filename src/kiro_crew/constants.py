@@ -82,3 +82,18 @@ OPTIONS_RE_LINE = re.compile(r"\[OPTIONS:((?:[^[\n]|\[(?!OPTIONS:))*)\][ \t]*$",
 # allow it to span newlines (the body keeps ``[^[]`` because the old ``.*``
 # already spanned newlines under DOTALL). Trailing ``\s*`` before ``\Z``.
 OPTIONS_RE_TRAILER = re.compile(r"\[OPTIONS:((?:[^[]|\[(?!OPTIONS:))*)\]\s*\Z", re.DOTALL)
+
+
+# The product wordmark, figlet `small`. ONE definition on purpose: it used to be
+# copy-pasted into cli.py and cli_chat.py, and a rename left both spelling a
+# stale product name in the two most-seen surfaces (bare `kirocrew`, the chat
+# REPL). Import it; never re-inline it. `cloud/ui.py` keeps its own art because
+# it renders a different wordmark ("Kiro Crew Cloud") with ANSI color.
+BANNER = r"""
+   _  ___            ___
+  | |/ (_)_ _ ___   / __|_ _ _____ __ __
+  | ' <| | '_/ _ \ | (__| '_/ -_) V  V /
+  |_|\_\_|_| \___/  \___|_| \___|\_/\_/
+
+  👻 Your personal AI agent
+"""

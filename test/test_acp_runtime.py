@@ -3638,3 +3638,272 @@ async def test_runtime_spawn_scrubs_channel_creds_on_default_auto(monkeypatch):
         assert key not in env, f"{key} leaked into default-auto runtime child env"
     assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
     assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
+
+
+# ── Unroutable-frame drop accounting (log-flood containment) ──
+#
+# The reader drops any frame it cannot route. Logging that per frame turned a
+# multiplexed backend's post-teardown / transcript-replay stream into ~60
+# lines/second sustained for hours, taking 33–59% of every 2MB gateway.log
+# rotation and rolling incident evidence out of the retained window. These tests
+# lock in the replacement: one throttled summary per (sessionId, method) carrying
+# the count, with the DROP behaviour itself unchanged.
+
+
+async def _drain(reader: asyncio.StreamReader, timeout: float = 5.0) -> None:
+    """Wait until the reader loop has consumed everything fed, or fail loudly.
+
+    A fixed ``asyncio.sleep(0.05)`` encodes an assumption about scheduler
+    latency that a loaded CI runner breaks -- it is why this suite's Windows
+    shard failed while its siblings passed. Waiting on the observable condition
+    (stdout buffer drained, then a bounded number of turns for the handler that
+    follows ``readline``) is deterministic under load and faster locally.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while reader._buffer:
+        if loop.time() >= deadline:
+            raise AssertionError("reader loop did not consume the fed frames in time")
+        await asyncio.sleep(0)
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+def _drop_records(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "unroutable frame(s)" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_unknown_session_drops_aggregate_into_one_counted_record(caplog):
+    """N drops of the same (sid, method) inside one window → ONE record, count N."""
+    import logging
+
+    import kiro_crew.acp.runtime as runtime_mod
+
+    rt, reader, _ = _make_runtime()
+    task = await _start_reader(rt)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+            for _ in range(5):
+                _feed(reader, {"method": "session/update", "params": {"sessionId": "ghost"}})
+            await _drain(reader)
+            # Still inside the first window: aggregated, nothing emitted yet —
+            # this is the assertion that fails on the per-frame implementation.
+            assert _drop_records(caplog) == []
+            assert rt._dropped_frames == {("ghost", "session/update"): 5}
+
+            # Age the window out, then one more drop triggers the flush.
+            rt._dropped_frames_flushed_at -= runtime_mod._DROP_SUMMARY_INTERVAL_SECS + 1.0
+            _feed(reader, {"method": "session/update", "params": {"sessionId": "ghost"}})
+            await _drain(reader)
+
+        records = _drop_records(caplog)
+        assert len(records) == 1, records
+        assert (
+            "Dropped 6 unroutable frame(s) for session ghost (method=session/update)" in records[0]
+        )
+        # The point of the change: SIX dropped frames produce ONE log record,
+        # not six. Counts every record naming the session, whatever its wording.
+        assert len([r for r in caplog.records if "ghost" in r.getMessage()]) == 1
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_two_unknown_sessions_are_counted_separately(caplog):
+    """A global tally would hide that two distinct session UUIDs are flooding."""
+    import logging
+
+    rt, reader, _ = _make_runtime()
+    task = await _start_reader(rt)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+            for _ in range(3):
+                _feed(reader, {"method": "session/update", "params": {"sessionId": "sid-aaa"}})
+            for _ in range(2):
+                _feed(reader, {"method": "session/update", "params": {"sessionId": "sid-bbb"}})
+            await _drain(reader)
+            # Residual flush on reader exit reports both keys.
+            await _stop_reader(task)
+
+        records = _drop_records(caplog)
+        assert len(records) == 2, records
+        joined = "\n".join(records)
+        assert "Dropped 3 unroutable frame(s) for session sid-aaa" in joined
+        assert "Dropped 2 unroutable frame(s) for session sid-bbb" in joined
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_counted_drop_is_still_dropped_not_delivered():
+    """Logging change only: an unroutable frame reaches no queue, as before."""
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "ghost"}})
+        await _drain(reader)
+        # Not routed to the co-tenant, not broadcast — just counted.
+        assert q["sA"].empty()
+        assert rt._dropped_frames == {("ghost", "session/update"): 1}
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_no_session_broadcast_drops_are_counted(caplog):
+    """With zero registered sessions every global frame drops — same shape."""
+    import logging
+
+    import kiro_crew.acp.runtime as runtime_mod
+
+    rt, reader, _ = _make_runtime()
+    task = await _start_reader(rt)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+            for _ in range(4):
+                _feed(reader, {"method": "mcp/status", "params": {}})
+            await _drain(reader)
+            assert rt._dropped_frames == {(runtime_mod._DROP_NO_SESSION, "mcp/status"): 4}
+            await _stop_reader(task)
+
+        records = _drop_records(caplog)
+        assert len(records) == 1, records
+        assert "Dropped 4 unroutable frame(s)" in records[0]
+        assert "(method=mcp/status)" in records[0]
+    finally:
+        await _stop_reader(task)
+
+
+def test_drop_counter_state_does_not_leak_between_intervals(caplog):
+    """A flushed window starts empty — the next record counts only new drops."""
+    import logging
+
+    rt, _reader, _ = _make_runtime()
+
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+        rt._note_dropped_frame("sid-x", "session/update")
+        rt._note_dropped_frame("sid-x", "session/update")
+        rt._flush_dropped_frames()
+        assert rt._dropped_frames == {}
+
+        rt._note_dropped_frame("sid-x", "session/update")
+        rt._flush_dropped_frames()
+        assert rt._dropped_frames == {}
+
+    records = _drop_records(caplog)
+    assert len(records) == 2, records
+    assert "Dropped 2 unroutable frame(s) for session sid-x" in records[0]
+    # Not 3 — the first window's count did not carry over.
+    assert "Dropped 1 unroutable frame(s) for session sid-x" in records[1]
+
+
+def test_drop_counter_map_is_bounded(caplog):
+    """A wide fan-out of distinct keys flushes early instead of growing."""
+    import logging
+
+    import kiro_crew.acp.runtime as runtime_mod
+
+    rt, _reader, _ = _make_runtime()
+    cap = runtime_mod._DROP_SUMMARY_MAX_KEYS
+
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+        for i in range(cap * 3):
+            rt._note_dropped_frame(f"sid-{i}", "session/update")
+            assert len(rt._dropped_frames) <= cap
+
+    # Overflow forced flushes rather than an unbounded map.
+    assert len(_drop_records(caplog)) >= cap
+
+
+def test_drop_counter_truncates_backend_controlled_key_text():
+    """A pathological sessionId/method cannot be retained at full length."""
+    import kiro_crew.acp.runtime as runtime_mod
+
+    rt, _reader, _ = _make_runtime()
+    limit = runtime_mod._DROP_SUMMARY_KEY_MAX_CHARS
+
+    rt._note_dropped_frame("s" * (limit * 10), "m" * (limit * 10))
+
+    (session_id, method), count = next(iter(rt._dropped_frames.items()))
+    assert count == 1
+    assert len(session_id) == limit
+    assert len(method) == limit
+
+
+def test_drop_counter_handles_missing_method():
+    """A frame with no `method` is still counted, under a placeholder key."""
+    rt, _reader, _ = _make_runtime()
+
+    rt._note_dropped_frame("sid-x", None)
+
+    assert rt._dropped_frames == {("sid-x", "?"): 1}
+
+
+# The two key halves come straight from backend JSON, which is untrusted and
+# type-unchecked (JsonRpcMessage.from_dict copies `method` / `params` verbatim).
+# A wrong-typed value used to raise TypeError inside _reader_loop — the SINGLE
+# owner of this process's stdout — killing every multiplexed session over one
+# malformed frame. These lock in that the frame is counted and the demux lives.
+
+
+@pytest.mark.asyncio
+async def test_numeric_method_is_counted_and_reader_survives():
+    """`{"method": 123}` must not kill the shared reader (all sessions with it)."""
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        _feed(reader, {"method": 123, "params": {"sessionId": "ghost"}})
+        await _drain(reader)
+
+        # Counted under the placeholder, not crashed.
+        assert rt._dropped_frames == {("ghost", "?"): 1}
+        # The property the finding is about: the demux is still alive...
+        assert rt._dead is False
+        assert rt.is_alive() is True
+        assert not task.done()
+        # ...and still routing for every co-tenant session.
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await asyncio.wait_for(q["sA"].get(), timeout=1.0)
+        assert msg.params["sessionId"] == "sA"
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_non_string_session_id_is_counted_and_reader_survives():
+    """Same hazard on the sessionId half: `params.sessionId` is Any, not str."""
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        # Truthy, unregistered, and not a str → reaches the drop counter.
+        _feed(reader, {"method": "session/update", "params": {"sessionId": 12345}})
+        await _drain(reader)
+
+        assert rt._dropped_frames == {("?", "session/update"): 1}
+        assert rt._dead is False
+        assert rt.is_alive() is True
+        assert not task.done()
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await asyncio.wait_for(q["sA"].get(), timeout=1.0)
+        assert msg.params["sessionId"] == "sA"
+    finally:
+        await _stop_reader(task)
+
+
+def test_drop_counter_placeholder_appears_in_flushed_summary(caplog):
+    """A coerced key half is reported as the placeholder, wording unchanged."""
+    import logging
+
+    rt, _reader, _ = _make_runtime()
+
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
+        rt._note_dropped_frame(12345, 123)
+        rt._flush_dropped_frames()
+
+    records = _drop_records(caplog)
+    assert len(records) == 1, records
+    assert "Dropped 1 unroutable frame(s) for session ? (method=?)" in records[0]

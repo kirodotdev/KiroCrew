@@ -598,6 +598,72 @@ def test_apps_sub_paths_are_not_spa_shell(path: str) -> None:
 @pytest.mark.parametrize(
     "path",
     [
+        "/apps/detail/task-runner",
+        "/apps/detail/code-review-sage",
+        "/apps/migrate/legacy-app",
+        # An app whose name collides with a sub-namespace verb. The app name and
+        # the router's detail/migrate verbs share a segment position, so these
+        # are 3-segment client routes, not the 4-plus-segment server routes
+        # (/apps/{name}/api/{path}). An earlier `(?:/|$)` excluded them.
+        "/apps/detail/api",
+        "/apps/detail/ui",
+        "/apps/migrate/api",
+        "/apps/migrate/ui",
+    ],
+)
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_apps_router_subpaths_are_spa_shell(path: str, method: str) -> None:
+    """React Router owns /apps/detail/{name} and /apps/migrate/{name} (App.tsx).
+    Neither has a server-side route, so both must get the SPA shell.
+
+    Regression for: _APPS_SPA_EXCLUDED_RE matched any /apps/{seg}/ path, so it
+    read "detail" and "migrate" as the app name and excluded these from the
+    shell. Pasting /apps/detail/task-runner into the address bar (or refreshing
+    on it) returned 404; the routes worked only via in-app navigation.
+    """
+    import kiro_crew.dashboard.token_auth as ta
+
+    req = _make_request(path=path, method=method)
+    assert ta._is_spa_shell_request(req), (
+        f"{method} {path} should be a SPA shell request (React Router owns it, "
+        f"there is no server-side handler for this path)"
+    )
+
+
+def test_apps_server_routes_are_excluded_from_shell() -> None:
+    """Drift guard: every route apps/routes.py registers under /apps/ must be
+    excluded from the shell, or the SPA would shadow a real handler.
+
+    Reads the route literals from source so adding a third /apps/ sub-namespace
+    without extending _APPS_SPA_EXCLUDED_RE fails here.
+    """
+    import re as _re
+
+    import kiro_crew.apps.routes as ar
+    import kiro_crew.dashboard.token_auth as ta
+
+    source = open(ar.__file__, encoding="utf-8").read()
+    # add_get("/path", h) / add_route("*", "/path", h) / add_post("/path", h)
+    literals = _re.findall(r'add_(?:get|post|route)\(\s*(?:"[^"]*",\s*)?"([^"]+)"', source)
+    apps_routes = [p for p in literals if p.startswith("/apps/")]
+    assert apps_routes, "expected /apps/ route literals in apps/routes.py"
+
+    # Concretize aiohttp placeholders into a path the regex can be run against.
+    def concretize(p: str) -> str:
+        p = p.replace("{name}", "sample-app")
+        return _re.sub(r"\{[^}]+\}", "segment", p)
+
+    offenders = [p for p in apps_routes if not ta._APPS_SPA_EXCLUDED_RE.match(concretize(p))]
+    assert not offenders, (
+        f"/apps/ route(s) with a real handler are NOT excluded from the SPA "
+        f"shell and would be shadowed by index.html: {offenders}. Extend "
+        f"_APPS_SPA_EXCLUDED_RE in token_auth.py to cover their sub-namespace."
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "/app-assets/auto-research/icon.svg",
         "/app-assets/workflows/hero-light.svg",
         "/app-assets/auto-research/hero-dark.svg",

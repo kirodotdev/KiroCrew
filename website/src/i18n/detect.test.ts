@@ -44,7 +44,13 @@ describe('detectBrowserLanguage', () => {
   })
 
   it('returns null when nothing matches', () => {
-    withLanguages(['fr-FR', 'de'], () => expect(detectBrowserLanguage()).toBeNull())
+    // `ko`/`ja` are deliberately languages we do NOT ship — picking a tag we
+    // later add would silently turn this into a no-op assertion. This was
+    // `de-DE`, which stopped exercising the no-match path once German shipped:
+    // the assertion inverted from "nothing matches" to "de matches", and only
+    // stayed green because `toBeNull()` happened to still hold before the
+    // catalog landed.
+    withLanguages(['ko-KR', 'ja'], () => expect(detectBrowserLanguage()).toBeNull())
   })
 
   it('ignores blank tags', () => {
@@ -72,11 +78,11 @@ describe('resolveLanguage', () => {
 
   it('ignores an unsupported stored value and falls back to detection', () => {
     // e.g. config carried over from an install that shipped more languages.
-    withLanguages(['zh-CN'], () => expect(resolveLanguage('fr')).toBe('zh-CN'))
+    withLanguages(['zh-CN'], () => expect(resolveLanguage('ja')).toBe('zh-CN'))
   })
 
   it('falls back to en when neither stored nor browser matches', () => {
-    withLanguages(['fr-FR'], () => expect(resolveLanguage('')).toBe('en'))
+    withLanguages(['ja-JP'], () => expect(resolveLanguage('')).toBe('en'))
   })
 })
 
@@ -91,7 +97,7 @@ describe('readStoredLanguage', () => {
   })
 
   it('rejects an unsupported stored value', () => {
-    localStorage.setItem(LANG_STORAGE_KEY, 'fr')
+    localStorage.setItem(LANG_STORAGE_KEY, 'ja')
     expect(readStoredLanguage()).toBe('')
   })
 
@@ -134,10 +140,22 @@ describe('detectBrowserLanguage — exact vs loose precedence', () => {
 
   it('uses the loose match when nothing matches exactly', () => {
     withLanguages(['zh-TW'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
-    withLanguages(['fr-FR', 'zh-Hant'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['ja-JP', 'zh-Hant'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+  })
+
+  it('treats a regional variant of a region-less catalog as CONFIDENT', () => {
+    // `fr-FR`/`pt-BR`/`es-MX` name a language we ship whose catalog carries no
+    // region of its own, so there is no sibling catalog to confuse them with —
+    // they must win outright over an earlier tag's loose script fallback.
+    withLanguages(['fr-FR', 'zh-Hant'], () => expect(detectBrowserLanguage()).toBe('fr'))
+    withLanguages(['pt-BR'], () => expect(detectBrowserLanguage()).toBe('pt'))
+    withLanguages(['es-MX', 'zh-TW'], () => expect(detectBrowserLanguage()).toBe('es'))
   })
 
   it('takes the highest-ranked loose match when several match loosely', () => {
-    withLanguages(['de-DE', 'zh-TW', 'zh-MO'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    // The leading tag must be a language we do NOT ship, or it wins outright and
+    // this stops testing loose-match ranking at all. `de-DE` did exactly that
+    // once German shipped — it became an exact-match case asserting 'zh-CN'.
+    withLanguages(['ko-KR', 'zh-TW', 'zh-MO'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
   })
 })

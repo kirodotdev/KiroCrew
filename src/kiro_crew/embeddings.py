@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import platform
+import queue
 import shutil
 import ssl
 import sys
@@ -80,6 +81,10 @@ _N_CTX = 2048
 # n_ctx after clipping (dense CJK/code) fail the embed call and return None.
 _MAX_EMBED_CHARS = 6_000
 _LLM_LOAD_RETRY_SECS = 300.0  # re-attempt a failed model load after this long
+# How long close() waits for the inference thread to finish its current job and
+# exit. Bounded so an unload never wedges a shutdown; the thread is a daemon, so
+# a straggler cannot hold the interpreter open either.
+_INFER_STOP_TIMEOUT_SECS = 30.0
 
 # ── Download constants ──
 
@@ -266,6 +271,19 @@ class EmbeddingBackend(abc.ABC):
 # ── In-process llama.cpp backend ──
 
 
+class _InferJob:
+    """One ``create_embedding`` call handed to the embedder's worker thread."""
+
+    __slots__ = ("llm", "texts", "result", "error", "done")
+
+    def __init__(self, llm: object, texts: "list[str]") -> None:
+        self.llm = llm
+        self.texts = texts
+        self.result: object | None = None
+        self.error: BaseException | None = None
+        self.done = threading.Event()
+
+
 class LlamaCppEmbedder(EmbeddingBackend):
     """Serialized in-process embedder over the vendored llama.cpp runtime.
 
@@ -273,6 +291,18 @@ class LlamaCppEmbedder(EmbeddingBackend):
     inference call is serialized behind ``_lock``. All failures return
     ``None`` (graceful degradation) — callers already treat ``None`` as
     "no embedding available".
+
+    Inference does not run on the caller's thread. llama.cpp builds a compute
+    thread pool (``n_threads_batch``, which defaults to the CPU count) the
+    first time a GIVEN thread runs inference, and that pool lives as long as
+    its calling thread does. Embed calls arrive on long-lived executor threads
+    (``mc-embed``, asyncio's default executor, cron, maintenance), so calling
+    inference inline accumulated one CPU-count-sized pool per caller thread —
+    measured at 31 pools / ~1,460 threads in one gateway after an hour, still
+    climbing. Every call is therefore forwarded to ONE owned daemon thread
+    (``kc-embed-infer``), so the process holds exactly one compute pool no
+    matter how many threads embed. ``_lock`` already serialized inference, so
+    the hand-off adds no queueing that was not there before.
     """
 
     def __init__(
@@ -289,6 +319,9 @@ class LlamaCppEmbedder(EmbeddingBackend):
         self._lock = threading.Lock()  # serializes inference (Llama is not thread-safe)
         self._load_lock = threading.Lock()  # guards loader-thread spawn state
         self._load_thread: threading.Thread | None = None
+        # Single owned inference thread + its job queue (see the class docstring).
+        self._jobs: "queue.SimpleQueue[_InferJob | None]" = queue.SimpleQueue()
+        self._infer_thread: threading.Thread | None = None
 
     @property
     def model_path(self) -> Path:
@@ -364,6 +397,56 @@ class LlamaCppEmbedder(EmbeddingBackend):
             self._load_failed_at = time.monotonic()
             self._llm = None
 
+    def _infer_loop(self, jobs: "queue.SimpleQueue[_InferJob | None]") -> None:
+        """Worker body: run queued ``create_embedding`` calls, one at a time.
+
+        ``jobs`` is passed in rather than read from ``self`` so this worker is
+        bound for life to the queue it was started with. That is what makes a
+        straggler harmless: it can only ever drain — and exit on the sentinel
+        from — its own queue, never one feeding a later worker.
+
+        Every job is completed even on failure, so a caller can never be left
+        waiting on ``job.done``. ``None`` is the shutdown sentinel from
+        :meth:`close`; exiting the thread is what releases llama.cpp's compute
+        pool.
+        """
+        while True:
+            job = jobs.get()
+            if job is None:
+                return
+            try:
+                job.result = job.llm.create_embedding(job.texts)  # type: ignore[attr-defined]
+            except BaseException as exc:  # noqa: BLE001 - relayed to the caller verbatim
+                job.error = exc
+            finally:
+                job.done.set()
+
+    def _create_embedding(self, llm: object, texts: "list[str]") -> object:
+        """Run one ``create_embedding`` on the owned thread; re-raise its error.
+
+        Caller must hold ``_lock``, which keeps at most one job in flight.
+        The wait is unbounded, matching the previous inline call — a wedged
+        native inference blocked the caller then too.
+        """
+        thread = self._infer_thread
+        if thread is None or not thread.is_alive():
+            # New worker, new queue. A straggler left behind by a timed-out
+            # close() join keeps draining its OWN queue, so it can neither
+            # consume this worker's jobs nor eat this worker's future sentinel.
+            self._jobs = queue.SimpleQueue()
+            thread = threading.Thread(
+                target=self._infer_loop, args=(self._jobs,), name="kc-embed-infer", daemon=True
+            )
+            self._infer_thread = thread
+            thread.start()
+        jobs = self._jobs
+        job = _InferJob(llm, texts)
+        jobs.put(job)
+        job.done.wait()
+        if job.error is not None:
+            raise job.error
+        return job.result
+
     def embed(self, text: str) -> list[float] | None:
         """Embed a single text. Returns None on any failure."""
         result = self.embed_batch([text])
@@ -390,8 +473,8 @@ class LlamaCppEmbedder(EmbeddingBackend):
             clipped.append(t)
         with self._lock:
             try:
-                resp = llm.create_embedding(clipped)  # type: ignore[attr-defined]
-                vectors = [item["embedding"] for item in resp["data"]]
+                resp = self._create_embedding(llm, clipped)
+                vectors = [item["embedding"] for item in resp["data"]]  # type: ignore[index]
             except Exception:
                 logger.debug("In-process embed failed", exc_info=True)
                 return None
@@ -429,11 +512,24 @@ class LlamaCppEmbedder(EmbeddingBackend):
         return self.is_ready()
 
     def close(self) -> None:
-        """Unload the model (frees ~700MB RSS). Safe to call repeatedly."""
+        """Unload the model (frees ~700MB RSS). Safe to call repeatedly.
+
+        Also stops the inference thread: llama.cpp's compute pool is owned by
+        that thread, so it is only released when the thread exits.
+        """
         with self._lock, self._load_lock:
             self._llm = None
             self._load_failed_at = 0.0
             self._load_thread = None
+            thread, self._infer_thread = self._infer_thread, None
+            if thread is not None and thread.is_alive():
+                # Holding _lock means no job can be queued behind this sentinel.
+                # If the join times out, the straggler stays parked on THIS
+                # queue, which the next worker will not share (see
+                # _create_embedding), so the sentinel it eventually consumes is
+                # still its own.
+                self._jobs.put(None)
+                thread.join(_INFER_STOP_TIMEOUT_SECS)
 
 
 _shared_embedder: EmbeddingBackend | None = None

@@ -230,9 +230,18 @@ into a focused password box. `computer_press_key` is included for a second reaso
 `press_key("tab")` can *move* focus onto a password field, and the following keystroke
 would land there. `computer_click` is the only element-scoped tool that accepts an
 alternative, and only because coordinates are a target it can check
-(`policy.check_click_target`'s one-of). Enforced by `_ELEMENT_REQUIRED_TOOLS` at the
-chokepoint; `SKILL.md`'s tool table states the same thing, since an optional-looking
-argument there would have the model discover the refusal by hitting it.
+(`policy.check_click_target`'s one-of). **Three layers have to agree, and all three
+now do:** `MCP_COMPUTER_SCHEMAS` (the enforcement point), the advertised
+`inputSchema` in `mcp_computer._list_tools`, and `_ELEMENT_REQUIRED_TOOLS` at the
+chokepoint. The validator gave both keyboard tools the OPTIONAL field spec — the one
+that exists for `computer_click`, which legitimately takes coordinates instead — so
+an indexless call passed validation and was refused one step later, and the comments
+on both sides then described the *other* layer's behaviour (the chokepoint's called
+itself "unreachable through the MCP path"). Enforcement held throughout, because that
+`ValidationError` is converted to a refusal by `dispatch_tool`, but the chokepoint
+check is kept as the last line of defence rather than deleted as redundant.
+`SKILL.md`'s tool table states the same thing, since an optional-looking argument
+there would have the model discover the refusal by hitting it.
 
 Every tool has a `MCP_COMPUTER_SCHEMAS` entry in `validation.py`. That is
 mandatory, not tidiness: an unregistered tool's arguments pass RAW through
@@ -423,17 +432,36 @@ screen_recording, responsible_hint}, limits{field: [min, max]}}`.
   themselves rather than re-spelling them in TypeScript.
 
 **`PUT /api/computer-use/config`** accepts any subset of `{enabled, allowed_apps,
-extra_denied_apps}` (→ keystone) and the six budget fields (→ `config.json`), and
+extra_denied_apps}` (→ keystone) and the seven display/budget fields (the five
+`_INT_LIMITS` knobs plus `attach_screenshot` and `cursor_motion` → `config.json`), and
 returns the refreshed GET payload. Everything is validated before anything is
-written. `409` (matching `api_denied_command_builtin_toggle`, not the runtime
-chokepoints' `403`) when the ceiling forbids and the request would **widen** the
-surface — enabling, or editing the target lists. Disabling and shrinking a budget
-are always allowed: narrowing cannot conflict with a ceiling, and a user must
-never be locked out of switching this off. A corrupt keystone or `config.json` is
-`500` and is left byte-identical rather than clobbered
-(`StateCorruptError`, the `ConfigCorruptError` precedent). Every mutation SEL-audits
-the decision (`enabled=…`, changed field names) — never the app patterns
-themselves.
+written.
+
+**It is dashboard-browser-only, asserted in the handler** — `request["app"]` must be
+empty, else `403` before the body is read. That gate is the write boundary the
+keystone design rests on: `request["user"]` is truthy for an App-Kit token too, so
+the cookie check cannot separate them, and an app whose manifest declares
+`permissions.api: ["/api/computer-use"]` satisfies `app_token_path_allowed` (a bare
+prefix matches on the path boundary). Since `enable_state.save_state` deliberately
+bypasses `is_sensitive_path` — that is what lets the operator's own panel write a
+file the agent cannot — an agent able to author an app manifest could otherwise read
+its own `.app_secret`, mint a token, and flip `enabled: true` on its own desktop
+automation. Same guard as `handlers/kiro_prerequisite.py` and `messaging.py`'s
+notification push; the two machine routes are covered instead by their
+`request["internal_auth"]` assertion, which an app token can never satisfy.
+
+**There is no `409` and no `read_only` field**, because there is no ceiling: no
+`computer_use*` row exists in `SCOPE_CATALOG`. An earlier revision of this spec (and
+of the handler's own docstring and a 16-line comment) described a `409` for a widening
+request under a forbidding ceiling and a `forbidden`-only `read_only` the panel would
+key `disabled` on. Both belonged to the governance model that was removed by product
+decision, and the prose outlived the code — there is no `status=409` in the module at
+all. Do not re-document either without re-implementing it.
+
+A corrupt keystone or `config.json` is `500` and is left byte-identical rather than
+clobbered (`StateCorruptError`, the `ConfigCorruptError` precedent). Every mutation
+SEL-audits the decision (`enabled=…`, changed field names) — never the app patterns
+themselves, and the app-token refusal is audited too.
 
 **`POST /api/computer-use/invoke`** takes `{tool, args, session_key, agent, app}`
 and returns `{"text": …}` with a 200 for BOTH success and refusal, because a
@@ -789,6 +817,24 @@ turn-boundary signal kiro-cli does not have:
    legitimate action. A secure record contributes only role/subrole/title, so
    fingerprinting never reads credential bytes.
 
+**Both of a mutating action's walks re-use the budget the CACHED snapshot was
+walked at**, carried on `Snapshot.walk_budget` (stamped by `service.snapshot`, read
+back by `tools._mutation_walk_budget`). A mutating tool takes no `max_tree_nodes` /
+`max_tree_depth` / `text_limit` arguments — the model set those on the
+`computer_get_state` that produced the indices — so building either walk from the
+`config.json` default silently shrinks the tree: an element the model was
+legitimately shown at `max_tree_nodes=2001` resolves to *"no element at that index"*
+in the drift check, and the post-action refresh it is handed next is truncated
+identically, so calling `computer_get_state` again reproduces the same refusal
+forever. That is a documented happy path (the MCP schema advertises up to 5000 and
+the Settings copy says to raise it for dense apps), which is what made the loop
+worth a stamped field rather than a comment. `want_image` is still forced off for
+both — the verification compares structure, and spooling a screenshot nobody asked
+for would double the cost of every action. Pinned by
+`test_mcp_computer.py::TestTheDriftWalkHonoursTheSnapshotBudget`, which asserts the
+budget off the driver's own call journal (a behavioural assertion passed while the
+refresh walk was still using the default).
+
 Plus `computer_end_turn` for explicit early release, and `reset_shared_backend()`
 drops the cache too (indices from one driver's walk are meaningless against
 another's).
@@ -912,6 +958,31 @@ shown". Detected as `len(children) >= limit` rather than by re-reading the array
 a real count (that would reintroduce the cost the cap exists to avoid), so a node
 with exactly the cap many children is treated as truncated too — a false positive
 costs one suppressed screenshot, a false negative is the disclosure.
+
+**And that suppression ANNOUNCES itself** (`TRUNCATED_WINDOW_NOTE`, emitted by
+`render._render_image_note`). It did not: the renderer special-cased only
+`has_secure` and returned `""` for every other empty `image_path`, so a truncated
+walk produced no image and no reason. Truncation is the NORMAL state for a
+Chromium/Electron window at the shipped 1200-node default (Chrome measured 1475
+nodes), so `screenshot: true` on Chrome, Slack or VS Code silently returned nothing
+— the retry loop `SECURE_WINDOW_NOTE` and `OBS_SUPPRESSED_NOTE` exist to prevent.
+The note names the remedy (raise `max_tree_nodes` / `max_tree_depth`), because
+unlike the secure case this one is fixable by the caller, and it is checked AFTER
+`has_secure` so a window that is both keeps the more specific reason. The shipped
+`FakeComputerUseBackend` mirrors the refusal too — it previously attached pixels to
+a truncated walk, so deleting the production branch left the suite green.
+
+**It fires only when an image was actually REQUESTED** (`walk_budget.want_image`;
+`None` — an unstamped, backend-built snapshot — still announces, since there the
+request is unknown and a spurious note is cheaper than a silent omission). Without
+that condition the fix inverts into the same defect: every mutating action's refresh
+walk forces `want_image=False` by design, so a successful click on a browser window
+came back announcing the suppression of an image nobody asked for and telling the
+model to "re-run with a higher `max_tree_nodes`" — an argument mutating tools do not
+accept (reviewer finding on the first version of this fix). Both directions are
+pinned by `test_computer_use_snapshot.py::TestASuppressedScreenshotAlwaysSaysSoWhy`,
+including one case through the real `dispatch_tool` path, because neither is visible
+to a `render_tree` unit test on its own.
 
 **Every refusal is audited, including the pre-gate ones.** The gate audits its own
 denials and `_audit_allowed` records permitted calls, which left a hole between
@@ -1256,6 +1327,81 @@ re-signing anything in the chain can void a grant — the same mechanism that
 permanently broke the reference bundle's Accessibility 3/3 times — so
 `packaging/resign-macos-libs.sh` is a known hazard for this feature.
 
+### The grant shortcuts MUST use `window.open`, not `location.href`
+
+Each non-granted permission row offers an **Open System Settings** button that
+targets a macOS System Settings deep link (`SETTINGS_URL_*` in `permissions.py`;
+the frontend mirrors the two constants). It must be handed off with
+`window.open(pane, '_blank', 'noopener,noreferrer')` —
+`openSystemSettings()` in `ComputerUsePanel.tsx` — never by assigning
+`window.location.href`.
+
+The reason is CSP, and it is invisible in a browser tab: the dashboard renders
+inside an **instance `<iframe>`** (`InstancesViewport`), and a *frame* navigation
+is governed by the `frame-src` directive — declared explicitly in `_BASE_CSP`
+(`dashboard/server.py`) as `frame-src 'self' blob: https://*.cloudfront.net …`,
+a loopback/cloudfront allowlist that names no custom scheme.
+Assigning `location.href` to an
+`x-apple.systempreferences:` URL is therefore refused with
+`ERR_BLOCKED_BY_CSP` before it ever reaches LaunchServices, so the button is a
+**dead click in the packaged desktop app** while working fine from a top-level
+page. `window.open` is a new top-level request instead, which is not subject to
+`frame-src`.
+
+In Electron that `window.open` arrives at the main process's
+`setWindowOpenHandler`. That handler used to allow any **same-origin** URL in-app,
+forward cross-origin `http:`/`https:` to the browser, and silently deny
+everything else — so the deep link died there too.
+`electron/external-scheme.js` owns that decision now:
+`classifyNavigation()` returns `allow` (same-origin, in-app), `external`
+(cross-origin web + an **allowlisted** non-web URL → `shell.openExternal`), or
+`block`.
+
+The non-web allowlist (`EXTERNAL_URLS`) matches **whole URLs, exactly** — the two
+`SETTINGS_URL_*` panes — not the `x-apple.systempreferences:` scheme. A
+scheme-granular rule would admit unbounded attacker-chosen payloads into
+LaunchServices, and that is reachable rather than theoretical: LLM-authored widget
+and artifact content renders in iframes carrying
+`sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"`, no CSP
+directive constrains a `window.open` target's scheme, and remote-instance frames
+share this same handler — so model-generated JS could otherwise pop *any* pane
+(Sharing → Remote Login, Configuration Profiles) beside agent-authored text
+telling the user to enable it. Exact matching also removes a parser-differential
+class: the verdict is computed from `new URL(...)` (WHATWG lowercases the scheme,
+strips tabs/newlines inside it, resolves `..`) while the **raw** string is what
+`shell.openExternal` re-parses with NSURL/CFURL; requiring raw equality means the
+validated and forwarded values cannot diverge. Because it is exact-match, the
+constant must stay byte-identical to `permissions.py` and the panel's `PANE_*`
+mirrors — `external-scheme.test.js` reads both real files and asserts agreement,
+since a drift is a silent dead button.
+
+`file:` is excluded by construction (handing an arbitrary local path to the OS is
+a disclosure/execution vector, not a navigation), an unparseable URL fails closed
+to `block`, and an unusable app origin never *promotes* a cross-origin URL to
+same-origin — including an **opaque** one, where `new URL()` succeeds and reports
+the literal origin `"null"` that would otherwise compare equal to a foreign
+opaque origin. `shell.openExternal` returns a **rejecting** Promise when the OS
+has no handler, so the hand-off swallows the throw, the rejection, *and* a
+throwing log sink; the handler body is guarded end-to-end and fails closed to
+`deny`, because a dead grant shortcut must never take the main process down.
+
+That handler is the single gate for **every** `window.open` in the dashboard, not
+just this button, so it checks **same-origin before protocol** — the ordering the
+inline handler it replaced used. This matters for `blob:`, which *inherits* the
+creating page's origin: `WidgetFrame`'s "Open in new tab" opens a
+`URL.createObjectURL` wrapper document and needs a real window object, so a
+same-origin blob must classify as `allow`. A protocol-first ordering demoted it to
+`block` and turned that button into a dead click — the same silent-failure shape
+as the bug above. Origin-inheriting schemes are checked for same-origin ONLY and
+never appear in the external allowlist, so `blob:` can never reach
+`shell.openExternal`. `external-scheme.test.js` pins this with a parity table
+asserting that every pre-existing URL shape keeps its old verdict and that the
+System Settings deep link is the *only* changed one.
+
+Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
+`electron/test/external-scheme.test.js`) because the failure mode is a silent
+dead button that only reproduces in a packaged build.
+
 ---
 
 ## The CLI (`kirocrew computer`) — and what is deliberately not ported
@@ -1395,17 +1541,18 @@ computer use.
 - **"No screenshots" is not "no disclosure."** The accessibility tree itself
   leaked real paths, window titles and bundle ids in live probes, and a document
   path inside an `AXTitle` is not a credential so redaction will not catch it.
-  `window_titles`, `file_paths` and `element_values` are separately governable
-  channels, and the `file_paths` scrub is a pattern pass over the fields we walk,
-  not a proof of absence — a relative path, or a path split across two AX
-  attributes, survives it. A fleet that needs a real bound must also narrow
-  `computer_use.apps`.
-- **Governance is not an undo.** Every mutating tool is irreversible in the real
-  world: a click that sends an email, a `set_value` that changes production
-  config in an authenticated tab. `effective = POLICY ∩ PROFILE` decides
-  *whether*, never *how badly*. A fleet that sets only `enabled: true` with no
-  sibling rows has granted **unbounded** desktop automation, and the Settings
-  panel says exactly that in its `unrestricted` state.
+  `window_titles`, `file_paths` and `element_values` are **not** separately
+  governable — the `observations` scope was removed, `apply_observation_ceiling` is
+  a pass-through and `permitted_observation_channels` returns every channel — so
+  there is no `computer_use.apps` (or any other) row left to narrow. A deployment
+  that needs a real bound on what the tree may disclose should not enable the
+  feature.
+- **Nothing bounds the blast radius, and there is no undo.** Every mutating tool is
+  irreversible in the real world: a click that sends an email, a `set_value` that
+  changes production config in an authenticated tab. There is no
+  `effective = POLICY ∩ PROFILE` evaluation on this path — no module under
+  `computer_use/` consults a profile — so `enabled: true` grants **unbounded**
+  desktop automation by construction, not as the default of a tunable model.
 - **Element-index addressing is inherently racy** — see the honest limit under
   [Index lifecycle](#index-lifecycle-and-its-honest-limit).
 - **A ctypes fault ends computer use for the rest of the kiro-cli session.**

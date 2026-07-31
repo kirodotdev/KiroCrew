@@ -101,5 +101,15 @@ that can't collide with a developer's live pods — used by the test suite.
 
 ## Platform
 
-Linux `systemd --user` only. On hosts without `systemctl --user`, the verbs that
-touch systemd report the failure rather than pretend success.
+Linux `systemd --user` only. On hosts without `systemctl --user` (macOS, Windows,
+or a Linux box with no systemd on PATH), the verbs that touch systemd **refuse
+with a single actionable line** — `pod: pods require Linux systemctl --user; this
+host is darwin. Use ./dev-backend.sh to preview a worktree on this platform.` —
+and exit 1. They never raise a traceback, and `pod install` writes **no** unit
+file when the host can't load it.
+
+The gate is `runtime.require_systemd()`, called from the single `systemctl()`
+chokepoint plus the two siblings that shell out directly (`recent_journal` and
+`_logs`, which run `journalctl`). `pod url` is pure port arithmetic and works
+anywhere; `pod up` / `provision` fail earlier on their own preconditions
+(worktree resolution, venv/dist) before reaching systemd.

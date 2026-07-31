@@ -32,7 +32,7 @@ def _kiro_request(tmp_path: Path) -> MagicMock:
     # api_models is readiness-gated (a signed-out gateway must not spawn a
     # browser-opening kiro-cli), so every degraded-branch test has to get past
     # the fail-closed gate first. `assume_ready=True` is the documented test
-    # bypass (see kiro_readiness.reject_if_kiro_not_ready); without it these
+    # bypass (see kiro_readiness.reject_if_kiro_unverified); without it these
     # tests would assert the gate's 503 instead of the branch under test.
     service = KiroPrerequisiteService(
         platform_name="linux",

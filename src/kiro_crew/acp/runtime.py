@@ -107,11 +107,62 @@ _DEFAULT_MAX_RSS_MB = 500.0  # 500 MiB
 # runtime has lived long enough to plausibly have ballooned.
 _RSS_PROBE_MIN_AGE_SECS = 300.0  # 5 minutes
 
+# ── Unroutable-frame drop accounting ──
+#
+# The reader drops any frame it cannot route (see _reader_loop). That is
+# CORRECT behaviour, but logging it per frame is not: kiro-cli is multiplexed,
+# so every frame for a torn-down or not-yet-registered sessionId takes the drop
+# branch, and a backend that keeps streaming after teardown makes that an
+# unbounded STEADY STATE, not a burst. Measured on an operator host: ~60
+# lines/second for 6+ hours from one gateway PID, taking 33–59% of every
+# gateway.log rotation — which, at RotatingFileHandler(maxBytes=2MB,
+# backupCount=3) (see cli.py), rolls the genuine diagnostics needed for an
+# incident out of the retained 8MB window before anyone can read them.
+#
+# So the per-frame line is collapsed into a periodic count keyed by
+# (sessionId, method). The key must stay PER SESSION: the incident's decisive
+# signal was that two DIFFERENT session UUIDs were flooding at once, which a
+# single global tally would hide.
+_DROP_SUMMARY_INTERVAL_SECS = 60.0
+# Hard cap on distinct (sessionId, method) keys held between flushes. Both
+# halves of the key are backend-controlled, so an unbounded map would be a
+# memory sink; reaching the cap forces an early flush instead of growing.
+_DROP_SUMMARY_MAX_KEYS = 64
+# Backend-controlled key text is truncated before it is stored, so a
+# pathological sessionId/method (a stdout line may be up to
+# _STDOUT_BUFFER_LIMIT) cannot be retained at full length by the map either.
+_DROP_SUMMARY_KEY_MAX_CHARS = 80
+# Stands in for the sessionId half of the key on the no-sessionId broadcast
+# path, which has no session to name.
+_DROP_NO_SESSION = "-"
+# Stands in for EITHER half of the key when the backend supplied no usable
+# string: an absent `method`, or a value of the wrong JSON type (see
+# _drop_key_part).
+_DROP_KEY_PLACEHOLDER = "?"
+
 KIRO_CLI_BIN = "kiro-cli"
 KIRO_CLI_SUBCMD = "acp"
 CLIENT_NAME = "kirocrew"
 CLIENT_VERSION = "0.1.2"
 PROTOCOL_VERSION = "2025-08-22"
+
+
+def _drop_key_part(value: object) -> str:
+    """Bounded, hashable string for one half of a (sessionId, method) drop key.
+
+    BOTH halves arrive verbatim from backend JSON: `JsonRpcMessage.from_dict`
+    copies `method` and `params` with no validation, so the `str | None`
+    annotation is documentation, not enforcement — `{"method": 123}` yields an
+    int, and `params.sessionId` is `Any`. Slicing such a value raises TypeError
+    *inside* `_reader_loop`, the single owner of this process's stdout, which
+    marks the runtime dead and tears down EVERY multiplexed session on it. One
+    malformed frame must not cost every session, so anything that is not a
+    `str` (including the legitimate absent-`method` `None`) becomes the
+    placeholder before it is sliced or used as a dict key.
+    """
+    if not isinstance(value, str):
+        return _DROP_KEY_PLACEHOLDER
+    return value[:_DROP_SUMMARY_KEY_MAX_CHARS]
 
 
 def _get_rss_mb(pid: int) -> float | None:
@@ -320,6 +371,14 @@ class AcpRuntime:
         self._dead = False
         self._last_activity: float = 0.0
         self._stderr_lines: list[str] = []
+        # Unroutable-frame drop accounting: (sessionId, method) → count since
+        # the last flush, plus the monotonic timestamp of that flush (0.0 = no
+        # window open yet; the first counted drop opens it). Written ONLY from
+        # _reader_loop (the single stdout owner) and its flush helper, so a plain
+        # dict needs no lock — asyncio.ensure_future(self._reader_loop()) is
+        # called exactly once, in spawn(), and never re-entered.
+        self._dropped_frames: dict[tuple[str, str], int] = {}
+        self._dropped_frames_flushed_at: float = 0.0
 
     @property
     def pid(self) -> int | None:
@@ -628,6 +687,57 @@ class AcpRuntime:
 
     # ── Reader Task (single owner of stdout) ──
 
+    def _note_dropped_frame(self, session_id: object, method: object) -> None:
+        """Count one unroutable frame, flushing a summary at most once per interval.
+
+        Replaces a per-frame log line (see the drop-accounting constants above).
+        Cheap and synchronous by design: it is called from the hot demux path
+        and must not await, so there is no timer task to leak and no blocking
+        I/O beyond the throttled ``logger.debug`` the flush itself emits.
+
+        Both arguments are backend-controlled and deliberately typed `object`:
+        they are normalized through `_drop_key_part`, which is the only thing
+        that keeps a wrong-typed value from raising in the shared reader.
+        """
+        key = (_drop_key_part(session_id), _drop_key_part(method))
+        now = time.monotonic()
+        if self._dropped_frames_flushed_at == 0.0:
+            # First drop of this runtime's life opens the window. __init__ cannot
+            # supply the baseline (a runtime may be constructed long before
+            # spawn()), and a stale 0.0 would make every first drop flush
+            # immediately instead of aggregating.
+            self._dropped_frames_flushed_at = now
+        counts = self._dropped_frames
+        if key not in counts and len(counts) >= _DROP_SUMMARY_MAX_KEYS:
+            # A wide fan-out of distinct keys inside one interval must not grow
+            # the map; report what we have and start a fresh window.
+            self._flush_dropped_frames(now)
+        counts[key] = counts.get(key, 0) + 1
+        if now - self._dropped_frames_flushed_at >= _DROP_SUMMARY_INTERVAL_SECS:
+            self._flush_dropped_frames(now)
+
+    def _flush_dropped_frames(self, now: float | None = None) -> None:
+        """Emit one summary record per (sessionId, method) and reset the window.
+
+        Called on the interval from _note_dropped_frame and unconditionally when
+        the reader loop exits, so a low-rate trickle is reported late rather
+        than swallowed. A key seen once in an otherwise idle hour is therefore
+        reported at the next drop or at loop exit — deliberately traded for
+        having no wakeup timer on the event loop.
+        """
+        self._dropped_frames_flushed_at = time.monotonic() if now is None else now
+        counts = self._dropped_frames
+        if not counts:
+            return
+        for (session_id, method), count in counts.items():
+            logger.debug(
+                "Dropped %d unroutable frame(s) for session %s (method=%s)",
+                count,
+                session_id,
+                method,
+            )
+        counts.clear()
+
     async def _reader_loop(self) -> None:
         """Single reader task — owns stdout exclusively. Routes frames by type.
 
@@ -688,6 +798,18 @@ class AcpRuntime:
                     except (TypeError, ValueError, OverflowError):
                         # OverflowError: json parses 1e9999 to float("inf"),
                         # which int() rejects differently from a bad string.
+                        #
+                        # Left per-frame on purpose (same for the unmatched-id
+                        # line below), unlike the two session-routing drops:
+                        # here the ID is the whole diagnostic value, and it is a
+                        # distinct value per frame — aggregating by it would give
+                        # the counter an unbounded key space, while aggregating
+                        # without it would throw away the only datum that
+                        # identifies the correlation bug. Both branches also
+                        # require a response-shaped frame, i.e. one per request
+                        # THIS runtime issued (bounded by turns), so neither has
+                        # the after-teardown steady state that made the
+                        # unknown-session line a flood.
                         logger.debug("Response with non-numeric id %r dropped", msg.id)
                         continue
 
@@ -720,11 +842,10 @@ class AcpRuntime:
                     if queue is not None:
                         await queue.put(msg)
                     else:
-                        logger.debug(
-                            "Dropping frame for unknown session %s (method=%s)",
-                            session_id,
-                            msg.method,
-                        )
+                        # Counted, not logged per frame: this is the measured
+                        # flood (transcript replay during session/load, plus any
+                        # backend still streaming after teardown).
+                        self._note_dropped_frame(session_id, msg.method)
                     continue
 
                 # No sessionId → genuinely global notification; broadcast to all.
@@ -734,13 +855,23 @@ class AcpRuntime:
                     for queue in list(self._session_queues.values()):
                         await queue.put(msg)
                 else:
-                    logger.debug("Unrouted msg (no sessions): method=%s", msg.method)
+                    # Same unbounded shape as the unknown-session branch: with
+                    # zero registered sessions EVERY global notification lands
+                    # here, so a backend that keeps streaming after the last
+                    # teardown floods at frame rate. Counted the same way, with
+                    # a sentinel for the session half of the key.
+                    self._note_dropped_frame(_DROP_NO_SESSION, msg.method)
 
         except asyncio.CancelledError:
             return
         except Exception as exc:
             logger.error("Reader loop crashed: %s", exc, exc_info=True)
             self._mark_dead(f"reader crash: {exc}")
+        finally:
+            # Report the residual count on EVERY exit (EOF, overrun, cancel,
+            # crash) so a trickle that never reached the interval is still
+            # accounted for instead of vanishing with the task.
+            self._flush_dropped_frames()
 
     def saw_not_logged_in(self) -> bool:
         """True if kiro-cli's 'not logged in' auth-failure appeared on stderr.

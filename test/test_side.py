@@ -185,7 +185,14 @@ async def test_side_turn_returns_before_run_finishes(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_paused_readiness_rejects_side_turn_without_mutation(tmp_path):
+async def test_stale_not_ready_does_not_reject_a_side_turn(tmp_path):
+    """A latched not-ready value is advisory and must not 503 a side turn.
+
+    Readiness is probed at boot and on explicit action only, so a stale value
+    would block a turn the CLI would have served; the ACP attempt reports a
+    signed-out CLI itself.
+    """
+
     state = _make_state(tmp_path)
     parent = state.get_or_create_slot("parent")
     service = KiroPrerequisiteService(
@@ -197,24 +204,61 @@ async def test_paused_readiness_rejects_side_turn_without_mutation(tmp_path):
     )
     service._has_probed = True
     service._last_probe_at = 1.0
+    assert await service.session_ready() is False
     app = _make_side_app(state, service)
 
     async with TestClient(TestServer(app)) as client:
         opened = await client.post("/api/chat/slots/parent/side/open", json={})
         assert opened.status == 200
         assert parent._side is not None
-        before = list(parent._side.messages)
         response = await client.post(
             "/api/chat/slots/parent/side/turn",
             json={"question": _SIDE_QUESTION},
         )
         body = await response.json()
 
-    assert response.status == 503
-    assert body["code"] == "kiro_prerequisite_required"
-    assert parent._side is not None
-    assert parent._side.messages == before
-    assert not state._background_tasks
+    assert response.status == 200
+    assert body.get("code") != "kiro_prerequisite_required"
+
+
+@pytest.mark.asyncio
+async def test_side_turn_surfaces_the_actionable_auth_message(tmp_path, monkeypatch):
+    """A signed-out CLI must reach the side panel as its own message.
+
+    The side panel has no other channel to tell the user what to do, so the
+    generic "(side conversation failed — see server logs)" is not good enough:
+    AcpAuthRequired carries the actionable `kiro-cli login` text.
+    """
+
+    from kiro_crew.acp.client import AcpAuthRequired
+
+    state = _make_state(tmp_path)
+    parent = state.get_or_create_slot("parent")
+    parent._side = SideState()
+    parent._side.last_run_id = "run-auth"
+
+    async def exploding_stream(*_a, **_k):
+        raise AcpAuthRequired("kiro-cli is not logged in.")
+        yield  # pragma: no cover — generator shape only
+
+    client = MagicMock()
+    client.stream = exploding_stream
+    client.stream_command = exploding_stream
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    state.sessions.release = MagicMock()
+
+    broadcasts: list[dict] = []
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.broadcast_side_result",
+        lambda state, **kw: broadcasts.append(kw),
+    )
+
+    await _run_side_turn(state, parent, "run-auth", _SIDE_QUESTION, is_first_turn=True)
+
+    errors = [b for b in broadcasts if b.get("is_error")]
+    assert errors, broadcasts
+    assert "not logged in" in errors[-1]["content"]
+    assert "see server logs" not in errors[-1]["content"]
 
 
 @pytest.mark.asyncio

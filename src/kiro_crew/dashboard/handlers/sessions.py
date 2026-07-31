@@ -24,7 +24,7 @@ from aiohttp import web
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.dashboard.handlers import kiro_usage_api
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.history import INCOGNITO_MEMORY_MODES, SEARCH_MIN_CHARS, _archive_dir
@@ -494,7 +494,7 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
     # `kiro-cli chat --no-interactive ... /usage`, which auto-opens a browser
     # login while signed out. This endpoint is polled every 30s by the top-bar
     # credit pill, so an unauthenticated gateway spawned a browser every 30s.
-    blocked = await reject_if_kiro_not_ready(request)
+    blocked = await reject_if_kiro_unverified(request)
     if blocked is not None:
         return blocked
     now = time.time()

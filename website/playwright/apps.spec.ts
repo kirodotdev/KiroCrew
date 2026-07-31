@@ -15,10 +15,13 @@ import { test, expect, type APIRequestContext, type Page } from '@playwright/tes
  *
  * Tests assert the real harness state unconditionally. No conditional branches.
  *
- * FINDING: /apps/detail/:name is a client-side-only route — the server's SPA
- * fallback regex (_APPS_SPA_EXCLUDED_RE) treats "detail" as an app name and the
- * trailing segment as a sub-resource, returning 404 on direct navigation. Tests
- * navigate via the SPA shell rather than hitting the bare URL.
+ * Direct navigation to /apps/detail/:name works: the server's SPA fallback
+ * excludes only the two sub-namespaces apps/routes.py serves
+ * (/apps/{name}/api/ and /apps/{name}/ui/), so every other /apps/ path reaches
+ * React Router. It used to exclude any /apps/{seg}/ path, reading "detail" as
+ * the app name and 404ing the bare URL, which is why these tests previously
+ * navigated via pushState instead. gotoDetail() now hits the URL directly, so a
+ * regression re-appears here as a 404 rather than being routed around.
  */
 
 type AppEntry = {
@@ -77,15 +80,14 @@ async function gotoApps(page: Page) {
 }
 
 /**
- * Navigate to a detail page via client-side routing (avoids the server 404 on
- * direct /apps/detail/:name — see FINDING above).
+ * Navigate straight to /apps/detail/:name. Asserting on the HTTP status is the
+ * regression test for the SPA-fallback fix: before it, the gateway answered this
+ * URL with 404 instead of the shell, so the route worked only via in-app
+ * navigation.
  */
-async function gotoDetailViaRouter(page: Page, appName: string) {
-  await gotoApps(page)
-  await page.evaluate((name) => {
-    window.history.pushState({}, '', `/apps/detail/${name}`)
-    window.dispatchEvent(new PopStateEvent('popstate'))
-  }, appName)
+async function gotoDetail(page: Page, appName: string) {
+  const res = await page.goto(`/apps/detail/${appName}`, { waitUntil: 'domcontentloaded' })
+  expect(res?.status(), `GET /apps/detail/${appName} must be served the SPA shell, not 404`).toBe(200)
   // "Back to Apps" renders in both the found and not-found states.
   await expect(page.getByRole('button', { name: 'Back to Apps' })).toBeVisible({ timeout: 10000 })
 }
@@ -173,14 +175,14 @@ test.describe('Apps Page — /apps', () => {
 
 test.describe('App Detail Page — /apps/detail/:name', () => {
   test('renders detail view for Task Runner', async ({ page }) => {
-    await gotoDetailViaRouter(page, 'projects')
+    await gotoDetail(page, 'projects')
     // The detail page shows the display name
     await expect(page.locator('text=Task Runner').first()).toBeVisible({ timeout: 10000 })
     await expect(page.getByRole('button', { name: 'Back to Apps' })).toBeVisible()
   })
 
   test('shows "App Not Found" for a nonexistent app', async ({ page }) => {
-    await gotoDetailViaRouter(page, 'this-app-does-not-exist-zyx')
+    await gotoDetail(page, 'this-app-does-not-exist-zyx')
     await expect(page.locator('text=App Not Found')).toBeVisible({ timeout: 10000 })
     await expect(page.getByRole('button', { name: 'Back to Apps' })).toBeVisible()
   })
@@ -197,7 +199,7 @@ test.describe('App Detail Page — /apps/detail/:name', () => {
   })
 
   test('detail page shows Details metadata card', async ({ page }) => {
-    await gotoDetailViaRouter(page, 'projects')
+    await gotoDetail(page, 'projects')
     await expect(page.locator('text=Task Runner').first()).toBeVisible({ timeout: 10000 })
     // The Details card heading
     await expect(page.locator('text=Details').first()).toBeVisible({ timeout: 5000 })

@@ -62,7 +62,7 @@ vi.mock('../hooks/useSessionPalette', () => ({
 import { DisplayPanel } from '../pages/settings/DisplayPanel'
 
 /** Open the Language dropdown and return the Auto row's text,
- *  e.g. "Auto (follow browser) — 简体中文". */
+ *  e.g. "Auto — 简体中文". */
 function autoOptionText(): string {
   fireEvent.click(screen.getByRole('combobox', { name: 'Language' }))
   const texts = screen.getAllByRole('option').map(o => o.textContent ?? '')
@@ -95,7 +95,10 @@ describe('DisplayPanel — language picker Auto row', () => {
 
   it('falls back to the default language when the browser matches nothing', () => {
     localStorage.setItem(LANG_STORAGE_KEY, 'zh-CN')
-    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['fr-FR'])
+    // `ja-JP` is deliberately a language we do NOT ship — a shippable tag makes
+    // this assert the opposite of its name once that language lands (it was
+    // `fr-FR`, which broke when French shipped).
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['ja-JP'])
 
     renderWithProviders(<DisplayPanel />)
 

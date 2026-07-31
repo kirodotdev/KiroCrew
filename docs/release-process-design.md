@@ -459,9 +459,10 @@ hold. These are the invariants; the per-OS mechanics are free.
    file itself, but the client enables updates only for platforms with a
    working publish lane (`SUPPORTED_PLATFORMS` in `auto-update.js`);
    adding the lane means adding the platform there.
-9. Rollback: repointing the lane's feed at an older signed version MUST be
-   sufficient to move clients back. If the platform updater refuses
-   downgrades, the lane must document its own rollback mechanism.
+9. Roll-forward: a new version published to the lane MUST reach clients
+   through the same feed + updater path, since **rolling forward is the only
+   recovery mechanism** — there is no rollback. A lane whose updater cannot
+   pick up a newer version has no recovery story and is not supported.
 10. Retention: the lane's artifacts follow the channel lifecycle (nightly
     expiring, stable pinned), so no lane accumulates unbounded nightly
     artifacts.
@@ -472,7 +473,8 @@ Open as of 2026-07-28:
 
 | Item | Type | Notes |
 |---|---|---|
-| Rollback automation + forced minimum version (P5) | roadmap | Pullback was exercised manually once; a `rollback.yml` + minimum-version design exists but is unbuilt. Retention window doubles as the rollback window. The client side is ready: `allowDowngrade=true` means repointing a feed at an older version is offered as an update |
+| Rollback automation (P4) | **dropped** | Superseded by process decision: **there is no rollback — we roll forward by cutting a new version.** The `rollback.yml` + `blocked-versions` design described in P4/P5 above is not being built. The client-side capability remains (`allowDowngrade=true`, so a repointed feed *would* be offered), but the operational answer to a bad release is a new version cut from the release branch, not a feed rewind |
+| Forced minimum version (P5) | roadmap | Unbuilt and independent of rollback: a feed-served minimum-version floor that force-triggers the update flow for a critical security patch |
 | S3 lifecycle rules | roadmap | Designed (intermediates 7d, nightly 30d, insider 180d, stable forever); unmanaged growth is ~1 TB/year |
 | Windows lane | roadmap | CI builds a Squirrel.Windows `Setup.exe` (installer-only, unpublished); win32 auto-update stays disabled in the client until the NSIS migration (#598); the supported install path is still source |
 | Update-consent nudge polish, custom icon setting | roadmap | Nudge dots shipped; Settings card for custom icons deliberately deferred |
@@ -487,7 +489,7 @@ by PR number. The release system (channels, versioning, distribution,
 URL design, update flow, and their implementation) is authored by Zezhen
 Xu (GitHub: CrysisDeu).
 
-Pre-migration era (commit hashes from the KiroClaw history):
+Pre-migration era (commit hashes from the pre-rename history):
 
 | Date | Ref | Milestone |
 |---|---|---|

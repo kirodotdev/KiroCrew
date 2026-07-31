@@ -171,7 +171,7 @@ from kiro_crew.platform import (
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
-from kiro_crew.skills import SkillsLoader
+from kiro_crew.skills import SkillsLoader, set_pending_staged_hook
 from kiro_crew.suggestions import api_suggestions
 from kiro_crew.tips import api_tips_feedback, api_tips_next, api_tips_status
 from kiro_crew.tunnel.setup import setup_tunnel
@@ -435,6 +435,13 @@ _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
 # under a DoS-relevant size while covering ~60 accumulated ports plus other
 # request headers.
 _MAX_HEADER_FIELD_SIZE = 32 * 1024
+
+# Upper bound on the tunnel teardown at shutdown. The provider behind the
+# ``TunnelProvider`` seam may talk to a remote control plane (or supervise a
+# child process), so an unbounded await here could hang ``runner.cleanup()``
+# forever and wedge the whole gateway exit. 5s is generous for a local
+# teardown and still well inside the desktop app's shutdown window.
+_TUNNEL_STOP_TIMEOUT_SECS = 5.0
 
 
 def _extra_frame_ancestors(
@@ -1232,6 +1239,79 @@ def _wire_status_delta_sink(app: web.Application, state: DashboardState) -> None
     app.on_cleanup.append(_status_sink_shutdown)
 
 
+def _wire_tunnel_shutdown(app: web.Application, state: DashboardState) -> None:
+    """Register the tunnel teardown hook on ``app``'s shutdown path.
+
+    Without this the tunnel is started (``tunnel/setup.py`` → ``TunnelManager.start()``)
+    and then NEVER stopped: ``TunnelManager.stop()`` had no production caller, so
+    whatever the active ``TunnelProvider`` brought up outlived the gateway — even
+    on a clean Ctrl+C. A companion provider that supervises a child process
+    leaked it (reparented to PID 1) and the next gateway start collided on the
+    same tunnel name. The manager is edition-neutral, so stopping it here tears
+    down EVERY provider (the public Default's ``stop()`` is a no-op).
+
+    Registered like the other long-lived subsystems (``_watchdog_shutdown``,
+    ``_register_instances_hooks``): the hook is appended BEFORE ``runner.setup()``
+    freezes the app's signal lists, and reads ``state.tunnel_manager`` lazily —
+    the manager is only assigned later, after ``setup_tunnel`` runs, and this
+    hook fires at shutdown, long after that assignment. That lazy read is also
+    what lets the REGISTRATION sit first in ``start_dashboard``: ``on_cleanup``
+    handlers are dispatched in registration order under a hard shutdown
+    deadline, so a tunnel hook queued behind the other subsystems can be starved
+    (instances cleanup waiting on SSH children that ignore SIGTERM eats the
+    deadline, the gateway force-exits, and the tunnel is never stopped).
+
+    Two teardown paths, because a live tunnel does not imply a manager:
+    ``setup_tunnel`` builds a ``TunnelManager`` and the hook stops that, but the
+    on-demand link path (``slack.use_tunnel_url`` →
+    ``current_context().tunnel.ensure_available()`` in ``slack/allowlist.py``)
+    provisions and starts a tunnel straight on the provider and never constructs
+    a manager. With ``state.tunnel_manager`` still None, bailing out left exactly
+    the orphan this hook exists to prevent, so the no-manager path stops
+    ``current_context().tunnel`` directly. Only one path runs per shutdown — the
+    manager delegates to the same provider — so nothing is stopped twice.
+
+    Failure containment: ``on_cleanup`` handlers run in sequence and a raise
+    aborts the remaining ones, so a tunnel teardown must never propagate. BOTH
+    paths go through ``_stop_bounded``: the stop is bounded by
+    ``_TUNNEL_STOP_TIMEOUT_SECS`` and every exception is logged and swallowed, so
+    neither a hanging nor a raising provider — nor a fail-closed
+    ``current_context()`` — can block or crash the rest of gateway shutdown.
+    ``TunnelManager.stop()`` is itself idempotent (it re-delegates and, on
+    failure, simply declines to pin STOPPED) and a provider ``stop()`` is
+    expected to be too, so a shutdown path that runs twice is harmless on either
+    path.
+    """
+
+    async def _stop_bounded(stop: Callable[[], Awaitable[None]], what: str) -> None:
+        """Await *stop* under the shared bound, logging and swallowing everything.
+
+        *stop* is INVOKED inside the guard, so a synchronous raise — including a
+        fail-closed ``current_context()`` lookup — is contained as well.
+        """
+        try:
+            await asyncio.wait_for(stop(), timeout=_TUNNEL_STOP_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "%s did not finish within %.0fs — continuing shutdown",
+                what,
+                _TUNNEL_STOP_TIMEOUT_SECS,
+            )
+        except Exception:
+            logger.warning("%s failed during shutdown", what, exc_info=True)
+
+    async def _tunnel_shutdown(_app: web.Application) -> None:
+        mgr = getattr(state, "tunnel_manager", None)
+        if mgr is not None:
+            await _stop_bounded(mgr.stop, "Tunnel stop")
+            return
+        # No manager, but the provider may still own a running tunnel (the
+        # on-demand ``ensure_available()`` path never builds one).
+        await _stop_bounded(lambda: current_context().tunnel.stop(), "Tunnel provider stop")
+
+    app.on_cleanup.append(_tunnel_shutdown)
+
+
 async def start_dashboard(
     sessions: SessionManager,
     crons: CronService,
@@ -1303,6 +1383,77 @@ async def start_dashboard(
         slack_client=slack_client,
         owner_id=owner_id,
     )
+
+    # --- Pending-skill approval notifications ---
+    # A staged candidate (new OR update) stays invisible until a human approves
+    # it, so raise a bell-feed notification with a deep link to the review queue
+    # and broadcast ``skills.pending_changed`` so an open Skills tab refreshes
+    # live. The hook is registered at MODULE level in ``skills`` because
+    # candidates are staged by whichever loader instance the producer holds
+    # (consolidation uses the ContextBuilder's; dashboard requests build their
+    # own), so a per-instance callback would miss the consolidation path.
+    try:
+        # Capture the gateway loop: the hook fires from whatever thread staged
+        # the candidate, and consolidation stages from a worker thread
+        # (``asyncio.to_thread``). Both notify() and broadcast_ws() ultimately
+        # call ``asyncio.ensure_future``, which RAISES off-loop — and
+        # ``_send_ws_all`` treats that raise as a dead socket and EVICTS every
+        # connected client. Marshal the emit back onto the loop instead.
+        try:
+            _gw_loop: "asyncio.AbstractEventLoop | None" = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - sync/embedded launch
+            _gw_loop = None
+
+        def _on_pending_skill_staged(info: dict) -> None:
+            try:
+                name = str(info.get("name") or info.get("slug") or "skill")
+                is_update = info.get("kind") == "update"
+                target = str(info.get("target") or "")
+                if is_update:
+                    title = "Skill update awaiting review"
+                    body = (
+                        f"An update to {target or name} was generated and needs "
+                        "your approval before it takes effect."
+                    )
+                else:
+                    title = "New skill awaiting review"
+                    body = (
+                        f"{name} was generated from a session and needs your "
+                        "approval before it can be used."
+                    )
+                payload = {
+                    "slug": str(info.get("slug") or ""),
+                    "kind": "update" if is_update else "new",
+                    "target": target,
+                }
+
+                def _emit() -> None:
+                    try:
+                        state.notify(
+                            "skills",
+                            title,
+                            body,
+                            meta={"url": "/capabilities?tab=skills", **payload},
+                        )
+                        state.broadcast_ws("skills.pending_changed", payload)
+                    except Exception:
+                        logger.debug("pending-skill notification failed", exc_info=True)
+
+                if _gw_loop is not None and not _gw_loop.is_closed():
+                    # Safe from the loop thread too — call_soon_threadsafe just
+                    # schedules. RuntimeError means the loop is shutting down.
+                    try:
+                        _gw_loop.call_soon_threadsafe(_emit)
+                    except RuntimeError:  # pragma: no cover - loop closing
+                        pass
+                else:
+                    _emit()
+            except Exception:
+                logger.debug("pending-skill notification failed", exc_info=True)
+
+        set_pending_staged_hook(_on_pending_skill_staged)
+    except Exception:
+        logger.debug("Could not register pending-skill staged hook", exc_info=True)
 
     # --- Dynamic Workflows (M6) ---
     try:
@@ -1422,6 +1573,16 @@ async def start_dashboard(
         client_max_size=60 * 1024 * 1024
     )  # 60 MB: covers 50 MB upload + multipart overhead
     app["state"] = state
+    # ── Tunnel teardown (FIRST cleanup hook, deliberately) ───────────────────
+    # aiohttp dispatches ``on_cleanup`` in registration order and gateway
+    # shutdown has a hard deadline, so this is registered ahead of every other
+    # cleanup hook: behind them it can be starved — instances cleanup waiting on
+    # SSH children that ignore SIGTERM eats the deadline, the gateway
+    # force-exits, and the tunnel is never stopped. Safe this early: the hook
+    # only reads ``state.tunnel_manager`` lazily at shutdown, long after
+    # ``setup_tunnel`` assigns it further below, and this is still well before
+    # ``runner.setup()`` freezes the signal lists. See ``_wire_tunnel_shutdown``.
+    _wire_tunnel_shutdown(app, state)
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
     app["kiro_prerequisite_service"] = await asyncio.to_thread(
@@ -1843,6 +2004,7 @@ async def start_dashboard(
     app.router.add_get("/api/file-search", handlers.api_file_search)
     app.router.add_get("/api/browse-dirs", handlers.api_browse_dirs)
     app.router.add_get("/api/browse-files", handlers.api_browse_files)
+    app.router.add_get("/api/project/git", handlers.api_project_git)
     app.router.add_post("/api/upload", handlers.api_upload)
     app.router.add_post("/api/upload/file", handlers.api_upload_file)
     app.router.add_post("/api/slack/upload-file", handlers.api_slack_upload_file)

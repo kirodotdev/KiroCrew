@@ -148,7 +148,7 @@ function ExpandedList({ fileChanges, onOpenDiff, artifactPaths }: {
     <div className="ft-block-reveal mt-2 mb-1.5 w-full max-w-full rounded-xl border border-border bg-bg overflow-hidden">
       <div className="flex items-center gap-2.5 px-3.5 py-2 border-b border-border">
         <FileDiff size={14} className="text-muted shrink-0" />
-        <span className="text-[12px] font-medium text-muted">{n} {i18nT('components.fileChangeChips.file')}{n === 1 ? '' : 's'} {i18nT('components.fileChangeChips.changed')}</span>
+        <span className="text-[12px] font-medium text-muted">{i18nT('components.fileChangeChips.file', { count: n })} {i18nT('components.fileChangeChips.changed')}</span>
         {n > 1 && (
           <span className="ml-auto flex items-center gap-1.5 text-[11px] tabular-nums">
             <Stats added={totalAdded} removed={totalRemoved} />

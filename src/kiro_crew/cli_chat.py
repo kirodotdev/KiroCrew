@@ -14,17 +14,8 @@ from pathlib import Path
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import build_provider_factory, config_dir, config_path
-from kiro_crew.constants import DATA_WARNING
+from kiro_crew.constants import BANNER, DATA_WARNING
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMProvider
-
-BANNER = r"""
-   _  ___          ___ _
-  | |/ (_)_ _ ___ / __| |__ ___ __ __
-  | ' <| | '_/ _ \ (__| / _` \ V  V /
-  |_|\_\_|_| \___/\___|_\__,_|\_/\_/
-
-  👻 Your personal AI agent
-"""
 
 
 def _tui(args: argparse.Namespace) -> None:

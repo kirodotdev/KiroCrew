@@ -66,7 +66,13 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 | `kirocrew config set <key> <val>` | Set a config value (auto type detection) |
 | `kirocrew config set --file <path>` | Replace config from a JSON file |
 | `kirocrew config edit` | Open config in `$EDITOR` |
-| `kirocrew memory show/edit` | Show or edit memory (preferences, projects, history) |
+| `kirocrew memory list/search/stats/audit` | Inspect vector memory (entries, semantic search, counts, suspicious-content scan) |
+| `kirocrew memory export/import/migrate` | Export memory to JSON, import it back, or migrate legacy markdown memory into the vector store |
+| `kirocrew policy show/validate/explain/profile` | Inspect the effective enterprise security policy, load-check it and all profiles, explain one tool/scope decision for a surface, or print a profile |
+| `kirocrew pod up/down/ls/status/token/url/logs/exec/install/provision` | Isolated worktree test gateways (**Linux `systemd --user` only** — every systemd-touching verb refuses with a one-line message on macOS/Windows). See `src/kiro_crew/pod/README.md`. |
+| `kirocrew knowledge dedup [--apply]` | Collapse cross-source duplicate knowledge documents (dry-run unless `--apply`) |
+| `kirocrew cron preview <script>` | Run a script cron locally with real MCP tools; notifications are captured and printed instead of delivered |
+| `kirocrew workspace create/update --dir <name>` | `--dir` is a directory NAME that must resolve to a **strict descendant of the data home** (`~` is expanded first); anything landing outside — and the home **root itself**, in any spelling — is refused with a SEL `denied` audit event. Containment, not an absolute-path ban: an absolute path *under* the home resolves where the relative form would and is accepted. The strict-descendant test is what closes the root case for tilde paths, since the per-call-site root-equality checks compare un-expanded `config_dir() / ws_dir`. Deliberately stricter than the dashboard's `POST /api/workspaces`, which accepts an absolute `dir` anywhere, screened by `is_sensitive_path`. |
 | `kirocrew computer doctor [--json]` | Report computer-use availability: platform support, the keystone primary-enable state, and the **advisory** macOS Accessibility / Screen Recording probe with a `responsible_hint`. See [Computer Use Commands](#computer-use-commands). |
 | `kirocrew computer apps` | List on-screen applications the accessibility layer can address (human-facing twin of the `computer_list_apps` MCP tool). Gated by the same chokepoint as `call` — refused while the feature is off or the session is unattended. |
 | `kirocrew computer call <tool> [k=v ...]` | Run ONE computer-use tool through the same gated chokepoint the agent uses, and print its reply (debug / reproduction) |
@@ -214,10 +220,10 @@ An auto-created `config.json` alone does not mark first-run setup complete; a
 successful authenticated probe writes the setup marker, while existing
 session/history state preserves established-install migration behavior. Fresh
 installs receive the full-screen flow. Established dashboards remain navigable
-during reauthentication with session-starting controls paused. Readiness is
-latched at the central chat-turn entry point, covering HTTP, task-runner,
-workflow, queue, and automatic continuation paths without running subprocess
-probes on the message hot path. The SPA refreshes ready status every 30 seconds,
+and fully usable when signed out — no controls are paused. Readiness is probed
+once at gateway boot and thereafter only on explicit user action, so no path runs
+a subprocess probe on the message hot path; the authoritative logout signal is
+the ACP attempt's `AcpAuthRequired`. The SPA refreshes ready status every 30 seconds,
 retains cached readiness across transient refetch errors, and invalidates
 prerequisite state after access-cookie refresh.
 POSIX group membership ignores zombie records, which cannot retain pipes or
@@ -239,10 +245,13 @@ every platform — never a copy of its bytes. Setup discovery and ACP resolution
 Windows, so a winget/scoop install is never sent to a redundant reinstall.
 
 When a previously completed setup is no longer ready, the dashboard remains
-navigable but session creation and turn submission are paused. The shared
-frontend readiness context disables the primary composer and session affordance,
-and backend pre-enqueue guards return 503 before creating a slot or appending a
-turn, including regenerate, edit-resend, rewind, and OpenAI-compatible calls.
+fully navigable and fully usable — nothing is paused and no sign-in chrome is
+shown. A signed-out CLI is reported by the turn itself as an actionable
+`kiro-cli login` error card (see `modules/learn-cron-dashboard.md` § "The
+dashboard does not guide the user to sign in"). Only the endpoints that act
+BEFORE a turn still return 503: the poll-driven `kiro-cli` spawn sites
+(`/api/models`, `/api/sessions/usage`) and the destructive reruns (regenerate,
+edit-resend, rewind), which rewrite persisted history up front.
 
 ### Custom Domain
 

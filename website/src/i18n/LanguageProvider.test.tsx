@@ -65,7 +65,7 @@ describe('LanguageProvider', () => {
   it('reports what Auto would give independently of the explicit choice', async () => {
     // The Settings picker annotates its Auto row with this. It must describe the
     // BROWSER, so an explicit English choice on a zh-CN browser still reads
-    // "Auto (follow browser) — 简体中文" rather than echoing "— English".
+    // "Auto — 简体中文" rather than echoing "— English".
     localStorage.setItem(LANG_STORAGE_KEY, 'en')
     vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['zh-CN'])
     wrap(<Probe />)
@@ -78,7 +78,11 @@ describe('LanguageProvider', () => {
   })
 
   it('falls back to the default language when the browser matches nothing', async () => {
-    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['fr-FR'])
+    // `ja-JP` is deliberately a language we do NOT ship. Using a shippable tag
+    // here silently inverts the test the moment that language lands — this was
+    // originally `fr-FR`, which stopped exercising the fallback once French
+    // shipped.
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['ja-JP'])
     wrap(<Probe />)
     await waitFor(() => expect(screen.getByTestId('detected')).toHaveTextContent('en'))
   })

@@ -41,6 +41,8 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
   { id: 'chat-9', key: '9', alt: !IS_MAC, ctrl: IS_MAC, label: 'Jump to chat 9', group: 'Chat Navigation' },
   { id: 'chat-prev', key: 'ArrowLeft', alt: true, label: 'Previous chat', group: 'Chat Navigation' },
   { id: 'chat-next', key: 'ArrowRight', alt: true, label: 'Next chat', group: 'Chat Navigation' },
+  { id: 'chat-prev-bracket', key: '[', meta: true, label: 'Previous chat', group: 'Chat Navigation' },
+  { id: 'chat-next-bracket', key: ']', meta: true, label: 'Next chat', group: 'Chat Navigation' },
   { id: 'chat-mru', key: '`', alt: true, label: 'Last visited chat (MRU)', group: 'Chat Navigation' },
   { id: 'chat-mru-back', key: '`', alt: true, shift: true, label: 'Walk back MRU history', group: 'Chat Navigation' },
   // Panel navigation
@@ -192,6 +194,57 @@ export function isSettingsChord(
   return mac ? (e.metaKey && !e.altKey) || altOnly : altOnly
 }
 
+/**
+ * Session-cycle chord: ⌘[ / ⌘] on macOS, Ctrl+[ / Ctrl+] on Windows-Linux —
+ * step one session backwards/forwards through the sidebar order.
+ *
+ * Keyed by KeyboardEvent.code, so the chord is POSITIONAL: on layouts where the
+ * bracket glyphs sit elsewhere (or need AltGr to type) the physical keys in the
+ * US-QWERTY bracket positions still work, matching how every other chord in
+ * this module is matched.
+ */
+const SESSION_STEP_BY_CODE: Record<string, number> = { BracketLeft: -1, BracketRight: 1 }
+
+/**
+ * The step this event asks for (-1 back, +1 forward), or 0 when it is not the
+ * session-cycle chord. Exactly ONE primary modifier and no Alt/Shift, so it
+ * cannot fire from ⌘⌥[ misses and cannot shadow Alt+arrow chat-nav, the Mac
+ * Ctrl+digit chat-jumps, or ⌘/Ctrl+digit remote-crew switching.
+ *
+ * `mac` is injectable for the same reason as isSettingsChord: IS_MAC is fixed
+ * at module load, so both platform behaviours would otherwise be untestable.
+ */
+export function sessionCycleStep(
+  e: Pick<KeyboardEvent, 'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
+  mac: boolean = IS_MAC,
+): number {
+  const primary = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+  if (!primary || e.altKey || e.shiftKey) return 0
+  return SESSION_STEP_BY_CODE[e.code] ?? 0
+}
+
+/**
+ * Neighbour of `curIdx` in a list of `len`, stepping by `step` and wrapping at
+ * both ends. Returns -1 for an empty list. With no current selection (-1) a
+ * backward step lands on the last entry and a forward step on the first —
+ * the behaviour both the Alt+arrow and the bracket chord want.
+ */
+export function wrapIndex(len: number, curIdx: number, step: number): number {
+  if (len === 0) return -1
+  if (curIdx < 0) return step < 0 ? len - 1 : 0
+  return (curIdx + step + len) % len
+}
+
+/**
+ * True when the keystroke came from inside an embedded terminal. Ctrl+[ is a
+ * real PTY keystroke there (it sends ESC — how vim users leave insert mode), so
+ * the session-cycle chord must let it through rather than swallow it.
+ */
+function isTerminalTarget(target: EventTarget | null): boolean {
+  const el = target as Element | null
+  return !!el && typeof el.closest === 'function' && !!el.closest('.xterm')
+}
+
 export function formatShortcut(def: ShortcutDef): string {
   const mac = isMac()
   const parts: string[] = []
@@ -292,6 +345,23 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     if (code === 'Comma' && isSettingsChord(e)) {
       e.preventDefault()
       navigate('/settings')
+      return
+    }
+
+    // ⌘[ / ⌘] on macOS, Ctrl+[ / Ctrl+] on Windows-Linux: step to the
+    // previous/next session in sidebar order, wrapping at both ends — the same
+    // move as Alt+←/→, on a chord that survives being inside the composer
+    // (unlike Alt+arrow, which stays out of text fields to preserve word-jump;
+    // ⌘/Ctrl+bracket has no text-editing meaning). Handled BEFORE the Alt gate
+    // because the chord carries no Alt. Skipped when the keystroke came from a
+    // terminal, where Ctrl+[ is ESC and belongs to the PTY.
+    const step = sessionCycleStep(e)
+    if (step !== 0 && !isTerminalTarget(e.target)) {
+      if (!enabled || disabled) return
+      // Claim the keystroke: on macOS ⌘[ / ⌘] are the browser's Back/Forward.
+      e.preventDefault()
+      const nextIdx = wrapIndex(slots.length, activeSlot ? slots.findIndex(s => s.key === activeSlot) : -1, step)
+      if (nextIdx >= 0) { dispatch(switchSlot(slots[nextIdx].key)); navigate('/chat') }
       return
     }
 
@@ -399,11 +469,9 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // Alt+←/→: Previous/next chat (skip when in text input to preserve word-jump)
     if ((code === 'ArrowLeft' || code === 'ArrowRight') && !isInput) {
       e.preventDefault()
-      if (slots.length === 0) return
       const curIdx = activeSlot ? slots.findIndex(s => s.key === activeSlot) : -1
-      const nextIdx = code === 'ArrowLeft'
-        ? (curIdx <= 0 ? slots.length - 1 : curIdx - 1)
-        : (curIdx >= slots.length - 1 ? 0 : curIdx + 1)
+      const nextIdx = wrapIndex(slots.length, curIdx, code === 'ArrowLeft' ? -1 : 1)
+      if (nextIdx < 0) return
       dispatch(switchSlot(slots[nextIdx].key))
       navigate('/chat')
       return

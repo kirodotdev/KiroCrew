@@ -443,13 +443,13 @@ export default function AppsPage() {
                   </div>
                 )}
                 {(uninstallTarget.manifest?.agents?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Bot size={12} className="text-muted" /> {uninstallTarget.manifest.agents!.length} {i18nT('pages.appsPage.agent')}{uninstallTarget.manifest.agents!.length > 1 ? 's' : ''}</div>
+                  <div className="flex items-center gap-2"><Bot size={12} className="text-muted" /> {i18nT('pages.appsPage.agent', { count: uninstallTarget.manifest.agents!.length })}</div>
                 )}
                 {(uninstallTarget.manifest?.skills?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Zap size={12} className="text-muted" /> {uninstallTarget.manifest.skills!.length} {i18nT('pages.appsPage.skill')}{uninstallTarget.manifest.skills!.length > 1 ? 's' : ''}</div>
+                  <div className="flex items-center gap-2"><Zap size={12} className="text-muted" /> {i18nT('pages.appsPage.skill', { count: uninstallTarget.manifest.skills!.length })}</div>
                 )}
                 {(uninstallTarget.manifest?.crons?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Clock size={12} className="text-muted" /> {uninstallTarget.manifest.crons!.length} {i18nT('pages.appsPage.cron_job')}{uninstallTarget.manifest.crons!.length > 1 ? 's' : ''}</div>
+                  <div className="flex items-center gap-2"><Clock size={12} className="text-muted" /> {i18nT('pages.appsPage.cron_job', { count: uninstallTarget.manifest.crons!.length })}</div>
                 )}
               </div>
 
@@ -582,7 +582,7 @@ export default function AppsPage() {
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center justify-between mb-3 text-[12.5px] text-muted">
-                    <span>{filteredBrowse.length} {i18nT('pages.appsPage.app')}{filteredBrowse.length === 1 ? '' : 's'}</span>
+                    <span>{i18nT('pages.appsPage.app', { count: filteredBrowse.length })}</span>
                     <label className="flex items-center gap-1.5">
                       <span>{i18nT('pages.appsPage.sort')}</span>
                       <Select
@@ -635,7 +635,7 @@ export default function AppsPage() {
                 <div className="mb-4 border border-[color-mix(in_srgb,var(--info)_45%,transparent)] bg-bg-elevated rounded-lg p-3 flex items-center gap-3 animate-rise">
                   <ArrowUp size={15} className="text-[var(--info)] shrink-0" />
                   <span className="text-text text-sm flex-1">
-                    {updatables.length} {i18nT('pages.appsPage.update')}{updatables.length === 1 ? '' : 's'} {i18nT('pages.appsPage.available')}
+                    {i18nT('pages.appsPage.update', { count: updatables.length })} {i18nT('pages.appsPage.available')}
                   </span>
                   <Btn
                     className="!bg-[var(--info)] !text-white hover:!opacity-80"

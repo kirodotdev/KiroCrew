@@ -1,6 +1,6 @@
 import { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
 import Clickable from './Clickable'
-import { Paperclip, X, Download } from 'lucide-react'
+import { Paperclip, X, Download, Plus, Minus, Search } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -299,7 +299,7 @@ function ImgWithFallback({
   // viewBox aspect ratio then derives the height, clamped by max-h.
   const isSvg = /\.svg([?#]|$)/i.test(src)
   return (
-    <span className="inline-block my-2">
+    <span className="block my-2">
       {/* The <img> is the lightbox trigger; dispatchLightbox needs the image
           element itself as currentTarget and the [data-lightbox-image] query
           relies on it being an <img>, so it can't be a <button>. Keyboard users
@@ -308,8 +308,8 @@ function ImgWithFallback({
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
       <img
         src={url} alt={alt || ''} loading="lazy"
-        className="max-w-[240px] max-h-[160px] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity"
-        style={isSvg ? { width: '240px', height: 'auto' } : undefined}
+        className="max-w-[min(100%,760px)] max-h-[60vh] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity"
+        style={isSvg ? { width: '760px', height: 'auto' } : undefined}
         onClick={(e) => dispatchLightbox(e.currentTarget)}
         data-lightbox-image=""
         title={alt || src}
@@ -1133,6 +1133,13 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
 type LightboxImage = { src: string; alt: string }
 type LightboxDetail = { images: LightboxImage[]; index: number }
 
+/** Lightbox zoom (enlarge) bounds. `1` is fit-to-screen; each step scales the
+ *  fit box up so the image can overflow the viewport and be panned via the
+ *  scrollable overlay. */
+const LIGHTBOX_ZOOM_MIN = 1
+const LIGHTBOX_ZOOM_MAX = 5
+const LIGHTBOX_ZOOM_STEP = 0.5
+
 /** True when a keyboard event originates from an editable element, so global
  *  printable-key shortcuts (like the lightbox 'd' download) don't hijack typing. */
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -1208,6 +1215,43 @@ export function dispatchLightbox(target: HTMLImageElement): void {
  *  payload and the legacy { src, alt } single-image shape. */
 export function Lightbox() {
   const [state, setState] = useState<LightboxDetail | null>(null)
+  // Zoom (enlarge) factor for the current image. 1 = fit-to-screen; larger
+  // values scale the fit box up so the image overflows into the scrollable
+  // overlay. Reset to 1 whenever the shown image changes (see effect below).
+  const [zoom, setZoom] = useState(1)
+  const zoomIn = useCallback(() => setZoom(z => Math.min(LIGHTBOX_ZOOM_MAX, +(z + LIGHTBOX_ZOOM_STEP).toFixed(2))), [])
+  const zoomOut = useCallback(() => setZoom(z => Math.max(LIGHTBOX_ZOOM_MIN, +(z - LIGHTBOX_ZOOM_STEP).toFixed(2))), [])
+  // Pan offset (px) for dragging an enlarged image around. Only meaningful when
+  // zoom > 1. The image element itself is the drag surface; a small movement
+  // threshold distinguishes a pan-drag from a click (which steps the zoom).
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const imgRef = useRef<HTMLImageElement>(null)
+  const dragRef = useRef({ startX: 0, startY: 0, baseX: 0, baseY: 0, moved: 0, active: false, dragging: false })
+  const [dragging, setDragging] = useState(false)
+  // Live zoom for the pointer/clamp closures (avoids stale-closure math in the
+  // fire-and-forget pointer handlers and the post-layout re-clamp effect).
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+  // Clamp a candidate pan so the image can't be flung entirely off-screen. Zoom
+  // is applied as a CSS `scale()` transform, so the *visual* size is the layout
+  // box (offsetWidth/Height) times the current zoom; travel is allowed up to
+  // half that overflow beyond the viewport.
+  const clampPan = useCallback((x: number, y: number) => {
+    const el = imgRef.current
+    if (!el) return { x, y }
+    const z = zoomRef.current
+    const maxX = Math.max(0, (el.offsetWidth * z - window.innerWidth) / 2)
+    const maxY = Math.max(0, (el.offsetHeight * z - window.innerHeight) / 2)
+    return { x: Math.min(maxX, Math.max(-maxX, x)), y: Math.min(maxY, Math.max(-maxY, y)) }
+  }, [])
+  // End a drag on either pointerup OR pointercancel (touch/pen interrupted, or
+  // capture lost) so `active`/`dragging` never latch on with no contact held.
+  const endDrag = useCallback((e: React.PointerEvent<HTMLImageElement>) => {
+    const d = dragRef.current
+    if (d.active) { try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* no capture */ } }
+    d.active = false
+    if (d.dragging) { d.dragging = false; setDragging(false) }
+  }, [])
   // Keep a fresh ref so the global keydown handler (subscribed once per open)
   // can read the current image for the download shortcut without a stale closure.
   const stateRef = useRef<LightboxDetail | null>(null)
@@ -1228,6 +1272,14 @@ export function Lightbox() {
     return () => window.removeEventListener('lightbox', handler)
   }, [])
   const isOpen = state !== null
+  // Reset the zoom whenever the lightbox opens/closes or the shown image
+  // changes, so each image starts fit-to-screen rather than inheriting the
+  // previous one's zoom.
+  useEffect(() => { setZoom(LIGHTBOX_ZOOM_MIN) }, [isOpen, state?.index])
+  // On any zoom change, recentre at fit and otherwise re-clamp the existing pan
+  // to the new (smaller/larger) bounds — zooming out must not strand the image
+  // off-screen. Runs post-layout, so offsetWidth already reflects the new box.
+  useEffect(() => { setPan(p => (zoom <= LIGHTBOX_ZOOM_MIN ? { x: 0, y: 0 } : clampPan(p.x, p.y))) }, [zoom, clampPan])
   useEffect(() => {
     if (!isOpen) return
     const onKey = (e: KeyboardEvent) => {
@@ -1240,6 +1292,15 @@ export function Lightbox() {
       } else if (e.key === 'ArrowRight') {
         e.preventDefault()
         setState(s => (s && s.index < s.images.length - 1 ? { ...s, index: s.index + 1 } : s))
+      } else if ((e.key === '+' || e.key === '=') && !isEditableTarget(e.target) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        zoomIn()
+      } else if ((e.key === '-' || e.key === '_') && !isEditableTarget(e.target) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        zoomOut()
+      } else if (e.key === '0' && !isEditableTarget(e.target) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        setZoom(LIGHTBOX_ZOOM_MIN)
       } else if ((e.key === 'd' || e.key === 'D') && !isEditableTarget(e.target)) {
         e.preventDefault()
         const cur = stateRef.current
@@ -1248,28 +1309,95 @@ export function Lightbox() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isOpen])
+  }, [isOpen, zoomIn, zoomOut])
   if (!state) return null
   const img = state.images[state.index]
+  const zoomed = zoom > LIGHTBOX_ZOOM_MIN
   return (
-    <Clickable className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center cursor-pointer" onClick={() => setState(null)}>
-      {/* onClick only stops propagation so clicking the image itself doesn't
-          close the overlay; it is not a user action, so no keyboard handler is
-          needed (Escape closes via the global keydown listener above). */}
-      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
-      <img src={img.src} alt={img.alt} className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl" onClick={e => e.stopPropagation()} />
-      <div className="absolute top-4 right-4 flex items-center gap-1">
+    <Clickable className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center overflow-hidden cursor-pointer" onClick={() => setState(null)}>
+      {/* Inner wrapper centres the image; when enlarged, the image is dragged
+          around via a translate transform (see pointer handlers) rather than
+          scrollbars — a flex-centred overflow container can't scroll to its
+          hidden top/left edges, so drag-to-pan is the reliable mechanism. */}
+      <div className="flex items-center justify-center w-full h-full">
+        {/* The image is a drag surface for panning when zoomed; zoom itself
+            lives in the toolbar + keyboard. A plain click only stops the
+            backdrop-close from firing (clicking the image should not dismiss
+            the viewer). Escape / the toolbar buttons are the keyboard paths,
+            so this presentational <img> needs no key handler. */}
+        {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
+        <img
+          ref={imgRef}
+          src={img.src}
+          alt={img.alt}
+          draggable={false}
+          className={`select-none object-contain rounded-lg shadow-2xl ${dragging ? '' : 'transition-transform duration-150'} ${zoomed ? (dragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'}`}
+          style={{ maxWidth: '90vw', maxHeight: '90vh', transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: 'center' }}
+          onDragStart={e => e.preventDefault()}
+          onPointerDown={e => {
+            if (zoom <= LIGHTBOX_ZOOM_MIN) return // nothing to pan at fit
+            e.preventDefault()
+            try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* unsupported */ }
+            dragRef.current = { startX: e.clientX, startY: e.clientY, baseX: pan.x, baseY: pan.y, moved: 0, active: true, dragging: false }
+          }}
+          onPointerMove={e => {
+            const d = dragRef.current
+            if (!d.active) return
+            const dx = e.clientX - d.startX
+            const dy = e.clientY - d.startY
+            d.moved = Math.max(d.moved, Math.hypot(dx, dy))
+            if (d.moved > 4 && !d.dragging) { d.dragging = true; setDragging(true) }
+            setPan(clampPan(d.baseX + dx, d.baseY + dy))
+          }}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          onClick={e => { e.stopPropagation() }}
+        />
+      </div>
+      {/* Control cluster sits on its own translucent, blurred pill so the
+          white icons stay legible even when a light/enlarged image is panned
+          up behind the toolbar. */}
+      <div className="fixed top-4 right-4 flex items-center gap-0.5 rounded-full bg-black/60 backdrop-blur-md ring-1 ring-white/15 shadow-lg px-1 py-1">
+        {/* Zoom segment: − / reset (magnifier) / + always visible as a group. */}
+        <button
+          aria-label={i18nT('components.markdownRenderer.zoom_out')}
+          title={i18nT('components.markdownRenderer.zoom_out')}
+          disabled={zoom <= LIGHTBOX_ZOOM_MIN}
+          className="text-white/90 hover:text-white p-1.5 rounded-full hover:bg-white/15 transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+          onClick={(e) => { e.stopPropagation(); zoomOut() }}
+        >
+          <Minus className="lucide-inline" aria-hidden="true" />
+        </button>
+        <button
+          aria-label={i18nT('components.markdownRenderer.reset_zoom')}
+          title={i18nT('components.markdownRenderer.reset_zoom')}
+          disabled={zoom <= LIGHTBOX_ZOOM_MIN}
+          className="text-white/90 hover:text-white p-1.5 rounded-full hover:bg-white/15 transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+          onClick={(e) => { e.stopPropagation(); setZoom(LIGHTBOX_ZOOM_MIN) }}
+        >
+          <Search className="lucide-inline" aria-hidden="true" />
+        </button>
+        <button
+          aria-label={i18nT('components.markdownRenderer.zoom_in')}
+          title={i18nT('components.markdownRenderer.zoom_in')}
+          disabled={zoom >= LIGHTBOX_ZOOM_MAX}
+          className="text-white/90 hover:text-white p-1.5 rounded-full hover:bg-white/15 transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+          onClick={(e) => { e.stopPropagation(); zoomIn() }}
+        >
+          <Plus className="lucide-inline" aria-hidden="true" />
+        </button>
+        <span className="w-px h-5 bg-white/20 mx-0.5" aria-hidden="true" />
         <button
           aria-label={i18nT('components.markdownRenderer.download_image')}
           title={i18nT('components.markdownRenderer.download_d')}
-          className="text-white/80 hover:text-white p-1.5 rounded-md hover:bg-white/10 transition-colors"
+          className="text-white/90 hover:text-white p-1.5 rounded-full hover:bg-white/15 transition-colors"
           onClick={(e) => { e.stopPropagation(); void downloadLightboxImage(img) }}
         >
           <Download className="lucide-inline" aria-hidden="true" />
         </button>
         <button
           aria-label={i18nT('components.markdownRenderer.close')}
-          className="text-white/80 hover:text-white p-1.5 rounded-md hover:bg-white/10 transition-colors"
+          className="text-white/90 hover:text-white p-1.5 rounded-full hover:bg-white/15 transition-colors"
           onClick={() => setState(null)}
         >
           <X className="lucide-inline" aria-hidden="true" />

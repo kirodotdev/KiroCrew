@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
 import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
+import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import VoiceStatusBar from './VoiceStatusBar'
 import { createPortal } from 'react-dom'
@@ -9,7 +10,6 @@ import { useBranding } from '../hooks/useBranding'
 import { useAppSelector, useAppDispatch } from '../store'
 import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone } from '../store/chatSlice'
 import { useSlotId } from '../providers/SlotContext'
-import { useKiroSessionReady } from '../providers/KiroReadinessContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { api, ApiError } from '../api/client'
@@ -242,6 +242,10 @@ interface ChatInputProps {
   onFileSelect?: (path: string) => void
   onFileOpen?: (path: string) => void
   project?: string
+  /** Checked-out branch of the active project (or short SHA when detached). */
+  projectBranch?: string
+  /** True when the project's HEAD is detached, so the label is a commit. */
+  projectDetached?: boolean
   memoryMode?: string
   cleanMode?: boolean
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
@@ -420,6 +424,8 @@ function ChatInput({
   onFileSelect,
   onFileOpen,
   project,
+  projectBranch,
+  projectDetached,
   memoryMode,
   cleanMode,
   sentMessages,
@@ -443,9 +449,7 @@ function ChatInput({
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
-  const kiroSessionReady = useKiroSessionReady()
-  const kiroSetupRequired = !kiroSessionReady
-  const disabled = disabledProp || kiroSetupRequired
+  const disabled = disabledProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
   const pendingApproval = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
@@ -643,6 +647,18 @@ function ChatInput({
   // Below ~340px the labels no longer fit comfortably alongside the context bar
   // + model chip, so collapse the chips (agent/project) to icon-only.
   const shelfCompact = shelfWidth < 340
+  // Tooltip for the project chip. The chip itself shows the basename (plus the
+  // branch when known); the tooltip carries the full path so nothing that was
+  // previously discoverable is lost, and names the branch even when the label
+  // is truncated or the shelf has collapsed to icon-only.
+  const projectChipTitle = useMemo(() => {
+    if (!project) return 'Select project'
+    const base = `Project: ${project}`
+    if (!projectBranch) return base
+    return projectDetached
+      ? `${base}\nDetached HEAD at ${projectBranch}`
+      : `${base}\nBranch: ${projectBranch}`
+  }, [project, projectBranch, projectDetached])
   const ctxWrapRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!ctxPopoverOpen) return
@@ -1214,7 +1230,7 @@ function ChatInput({
     // Guard on the RAW lifecycle so a second optimize can't start while one is
     // in flight — even from a different session where scoped `optimizing` reads
     // false (a single mutation backs this instance).
-    if (!kiroSessionReady || !txt || optimizePendingRef.current) return
+    if (!txt || optimizePendingRef.current) return
     // Pin the slot that owns this optimize so the overlay and the completion
     // handler stay bound to it across session switches.
     optimizeSlotRef.current = slotId
@@ -1231,7 +1247,7 @@ function ChatInput({
     const referenced = pruneBlocks(txt, pasteBlocks)
     const pastes = referenced.map(b => ({ seq: b.seq, content: b.content }))
     runOptimize({ prompt: txt, context, pastes, slotId })
-  }, [runOptimize, chatMessages, pasteBlocks, slotId, kiroSessionReady])
+  }, [runOptimize, chatMessages, pasteBlocks, slotId])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Cmd/Ctrl+Shift+V → next paste inserts full text inline (no chip collapse).
@@ -1449,7 +1465,7 @@ function ChatInput({
     // the disabled-state on the Optimize button (line ~1734).
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
       e.preventDefault()
-      if (connected && kiroSessionReady) optimizePrompt()
+      if (connected) optimizePrompt()
       return
     }
     // Mode: enter-ctrl-newline — Ctrl/Cmd+Enter inserts newline, Enter sends
@@ -1538,7 +1554,7 @@ function ChatInput({
       }
       e.preventDefault()
     }
-  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, kiroSessionReady, ime, optimizePrompt])
+  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt])
 
   /** Intercept clipboard paste — files go to upload path, big text gets collapsed into a token. */
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -2058,7 +2074,7 @@ function ChatInput({
           aria-label={i18nT('components.chatInput.message_input')}
           className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? 'Gateway offline — message will not send' : kiroSetupRequired ? 'Finish Kiro CLI setup to start chatting' : disabledProp ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
+          placeholder={!connected ? 'Gateway offline — message will not send' : disabledProp ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
           readOnly={optimizing}
           rows={1}
           value={value}
@@ -2185,10 +2201,10 @@ function ChatInput({
                     {onBrowseToggle && (
                       <div className="flex items-start justify-between gap-2 mt-2 pt-2.5 border-t border-border">
                         <div className="min-w-0">
-                          <div className="text-[12px] font-medium text-text flex items-center gap-1.5"><Globe size={13} className="text-muted shrink-0" />{i18nT('components.chatInput.browser_use')}</div>
-                          <div className="text-[11px] text-muted mt-0.5 leading-snug">{i18nT('components.chatInput.let_the_agent_open_a_real_browser_to_load_web_pa')}</div>
+                          <div className="text-[12px] font-medium text-text flex items-center gap-1.5"><Globe size={13} className="text-muted shrink-0" />{i18nT('components.chatInput.let_the_agent_use_the_browser')}</div>
+                          <div className="text-[11px] text-muted mt-0.5 leading-snug">{i18nT('components.chatInput.it_can_click_type_and_navigate_pages_not_just_re')}</div>
                         </div>
-                        <div className="pt-0.5"><Toggle checked={browseMode} onChange={() => onBrowseToggle()} label={i18nT('components.chatInput.browser_use')} /></div>
+                        <div className="pt-0.5"><Toggle checked={browseMode} onChange={() => onBrowseToggle()} label={i18nT('components.chatInput.let_the_agent_use_the_browser')} /></div>
                       </div>
                     )}
                   </div>,
@@ -2352,9 +2368,9 @@ function ChatInput({
                 // still in flight — matching the re-entrancy guard in
                 // optimizePrompt(). optimizing ⊂ optimizePending, so this stays
                 // disabled on the originating session too.
-                disabled={!value.trim() || optimizePending || !connected || kiroSetupRequired}
+                disabled={!value.trim() || optimizePending || !connected}
                 aria-label={optimizePending && !optimizing ? 'Optimize prompt — busy optimizing another chat' : 'Optimize prompt'}
-                title={kiroSetupRequired ? 'Finish Kiro CLI setup to optimize prompts' : optimizePending && !optimizing ? 'Optimizing another chat — please wait' : `Optimize prompt (${platformShortcut('Cmd+Shift+Enter')})`}
+                title={optimizePending && !optimizing ? 'Optimizing another chat — please wait' : `Optimize prompt (${platformShortcut('Cmd+Shift+Enter')})`}
                 {...offlineProps(connected, 'optimize', 'Optimize')}
               >
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
@@ -2395,16 +2411,40 @@ function ChatInput({
             </button>
           )}
           {onProjectClick && (
+          /* Two sibling buttons inside one visual pill, NOT a nested button:
+             the folder segment opens the project picker and the branch segment
+             copies. A <button> inside a <button> is invalid HTML and browsers
+             collapse it, so the pill is a plain container and each segment owns
+             its own click target and hover state. */
+          <div className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono text-muted">
           <button
             className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
             onClick={e => onProjectClick(e.currentTarget.getBoundingClientRect())}
             disabled={isRunning}
-            title={isRunning ? 'Stop the current response to switch project' : (project ? `Project: ${project}` : 'Select project')}
-            aria-label={isRunning ? 'Stop the current response to switch project' : (project ? `Project: ${project}` : 'Select project')}
+            title={isRunning ? 'Stop the current response to switch project' : projectChipTitle}
+            aria-label={isRunning ? 'Stop the current response to switch project' : projectChipTitle}
           >
             <FolderOpen size={13} className="shrink-0 opacity-70" />
-            {!shelfCompact && <span className="truncate max-w-[200px]">{project ? (project.split('/').filter(Boolean).pop() || project) : 'Project'}</span>}
+            {/* Budget favours the branch: the folder name is also in the tooltip
+                and the picker, whereas a clipped branch ("feat/pro…") is exactly
+                the ambiguity this label exists to remove. The enclosing shelf
+                group is flex-1/min-w-0, so both segments still shrink below
+                these caps on a narrow window. */}
+            {!shelfCompact && <span className="truncate max-w-[160px]">{project ? (project.split('/').filter(Boolean).pop() || project) : 'Project'}</span>}
           </button>
+          {!shelfCompact && !!projectBranch && (
+            <>
+              <span className="opacity-40 shrink-0" aria-hidden="true">·</span>
+              {/* Copying stays enabled while a response is running — unlike
+                  switching project, reading the branch name is harmless. */}
+              <CopyBranchButton
+                branch={projectBranch}
+                label={projectDetached ? 'commit' : 'branch name'}
+                className="max-w-[220px] opacity-70 hover:opacity-100 hover:text-text"
+              />
+            </>
+          )}
+          </div>
           )}
           </div>
           <div className="flex items-center shrink-0">

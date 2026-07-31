@@ -355,7 +355,7 @@ function ChannelListItem({ ch, active, onClick }: { ch: Channel; active: boolean
     <Btn onClick={onClick} className={`w-full text-left px-3 py-2.5 !rounded-lg !border-none ${active ? 'bg-accent/15 text-text-strong' : 'text-muted hover:bg-bg-hover hover:text-text'}`}>
       <div className="text-sm font-medium truncate">{ch.topic}</div>
       <div className="flex items-center gap-2 mt-1 text-[13px] text-muted">
-        <span>{ch.agents.length} {i18nT('pages.channelPage.agent_2')}{ch.agents.length !== 1 ? 's' : ''}</span>
+        <span>{i18nT('pages.channelPage.agent_2', { count: ch.agents.length })}</span>
         {working > 0 && <Badge variant="ok"><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {working} {i18nT('pages.channelPage.active')}</Badge>}
       </div>
     </Btn>
@@ -529,7 +529,7 @@ export default function ChannelPage() {
             <h2 className="text-base font-semibold text-text-strong truncate">{channel.topic}</h2>
             <div className="flex items-center gap-1.5 shrink-0">
               <Btn onClick={() => setShowAgents(!showAgents)}>
-                <Users className="lucide-inline" /> {channel.agents.length} {i18nT('pages.channelPage.agent_2')}{channel.agents.length !== 1 ? 's' : ''}
+                <Users className="lucide-inline" /> {i18nT('pages.channelPage.agent_2', { count: channel.agents.length })}
                 {channel.agents.some(a => a.state === 'working' || a.state === 'tool_running') && <Badge variant="ok">●</Badge>}
               </Btn>
               <Btn onClick={async () => {

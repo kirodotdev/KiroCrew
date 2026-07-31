@@ -214,6 +214,14 @@ you to iterate / "address the comments"), triage EVERY open comment as part
 of the same pass — never leave the human to re-read and clean up stale
 annotations by hand.
 
+A comment may be **anchored**: `artifact_get_comments` returns the exact quoted
+span it was attached to, because the human selected that text in the artifact
+before writing the note. Treat an anchored comment as an instruction *about that
+span* — resolve it there rather than applying it globally, and re-read the span
+before editing, since a prior edit may have moved it. An anchor whose quote no
+longer exists in the content comes back flagged as orphaned; say so instead of
+guessing where it used to point.
+
 | Case | Action |
 |---|---|
 | Unambiguous directive, fully applied ("delete this", "fix typo", a clear reframe) | `artifact_delete_comment` with a reason ("applied in vN: <what you did>") |

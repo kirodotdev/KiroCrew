@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 
 from aiohttp import web
 
+from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
 from kiro_crew.dashboard.side_context import build_side_message
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.state import DashboardState
@@ -163,6 +163,26 @@ async def _run_side_turn(
         )
     except asyncio.CancelledError:
         raise
+    except AcpAuthRequired as exc:
+        # A signed-out CLI is actionable, so surface its own message rather than
+        # the generic failure below — the side panel has no other channel to tell
+        # the user what to do. Latch the service signed-out too, so the
+        # fail-closed gates stop trusting a stale ready value.
+        logger.warning("Side turn auth required: slot=%s run_id=%s", slot.key, run_id)
+        # Local import: chat_runner imports from this package, so a module-level
+        # import would close a cycle.
+        from kiro_crew.dashboard.chat_runner import _mark_kiro_signed_out
+
+        _mark_kiro_signed_out(state)
+        broadcast_side_result(
+            state,
+            slot_key=slot.key,
+            run_id=run_id,
+            role="assistant",
+            content=str(exc),
+            is_error=True,
+            final=True,
+        )
     except Exception:
         logger.exception(
             "Side turn failed: slot=%s run_id=%s",
@@ -281,9 +301,6 @@ async def api_side_turn(request: web.Request) -> web.Response:
     Returns ``{ok, run_id}`` immediately and drives the LLM stream in a
     background task; chunks are broadcast on ``chat.side_result``.
     """
-    blocked = await reject_if_kiro_not_ready(request)
-    if blocked is not None:
-        return blocked
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)

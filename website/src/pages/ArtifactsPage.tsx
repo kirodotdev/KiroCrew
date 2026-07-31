@@ -597,7 +597,7 @@ function FolderCard({ folder, folders, previewArtifacts, actions }: {
                     <div className="text-[15px] leading-tight text-text-strong font-semibold truncate">{folder.name}</div>
                   )}
                   <div className="text-[11px] text-muted mt-0.5">
-                    {stats.artifactCount} {i18nT('pages.artifactsPage.artifact')}{stats.artifactCount === 1 ? '' : 's'}
+                    {i18nT('pages.artifactsPage.artifact', { count: stats.artifactCount })}
                     {stats.subfolderCount > 0 ? ` · ${stats.subfolderCount} folder${stats.subfolderCount === 1 ? '' : 's'}` : ''}
                   </div>
                 </div>

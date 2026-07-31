@@ -44,8 +44,8 @@ export default function WorldsPage() {
         <div className="px-5 pt-2 pb-2">
           <div className="text-lg font-semibold text-text-strong"><Sparkles className="lucide-inline" /> {i18nT('pages.worldsPage.agent_worlds')}</div>
           <div className="text-sm text-muted">
-            {agents.length} {i18nT('pages.worldsPage.agent')}{agents.length !== 1 ? 's' : ''} {i18nT('pages.worldsPage.present')}{' '}
-            {activeCount} {i18nT('pages.worldsPage.active')} {maxAgents - agents.length} {i18nT('pages.worldsPage.slot')}{maxAgents - agents.length !== 1 ? 's' : ''} {i18nT('pages.worldsPage.open')}
+            {i18nT('pages.worldsPage.agent', { count: agents.length })} {i18nT('pages.worldsPage.present')}{' '}
+            {activeCount} {i18nT('pages.worldsPage.active')} {i18nT('pages.worldsPage.slot', { count: maxAgents - agents.length })} {i18nT('pages.worldsPage.open')}
           </div>
         </div>
 

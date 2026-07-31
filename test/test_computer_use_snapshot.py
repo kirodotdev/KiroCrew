@@ -33,6 +33,7 @@ from kiro_crew.computer_use.types import (
     SECURE_WINDOW_NOTE,
     SNAPSHOT_TTL_SECS,
     TOOL_GET_STATE,
+    TRUNCATED_WINDOW_NOTE,
     AppRef,
     ElementRec,
     Snapshot,
@@ -764,12 +765,16 @@ class TestRenderedTrailerAndTraits:
         """These lines are ABOUT the tree, not nodes in it. Without the blank line the
         origin note reads as a sibling of the last element — and the tree's structure
         IS its indentation, so that is a genuine misreading, not a cosmetic one."""
-        lines = render.render_tree(_snap(fake, FAKE_FILES_APP), text_limit=DEFAULT_TEXT_LIMIT).splitlines()
+        lines = render.render_tree(
+            _snap(fake, FAKE_FILES_APP), text_limit=DEFAULT_TEXT_LIMIT
+        ).splitlines()
         origin = next(i for i, ln in enumerate(lines) if ln.startswith("Window origin"))
         assert lines[origin - 1] == ""
         # And every element line precedes it.
-        assert all(not ln.startswith(("Window origin", "Focus:", "Selected text:"))
-                   for ln in lines[:origin])
+        assert all(
+            not ln.startswith(("Window origin", "Focus:", "Selected text:"))
+            for ln in lines[:origin]
+        )
 
     def test_a_SECURE_window_renders_no_trailing_selection(self, fake):
         """A selected password is still a password. The login fixture's focused
@@ -792,3 +797,256 @@ class TestRenderedTrailerAndTraits:
         )
         assert "@" not in line
         assert "(" not in line
+
+
+class TestTheCeilingRoundTripIsLossless:
+    """``_render_snapshot`` flattens every record to a dict and rebuilds it, so the
+    rebuild must be TOTAL over ``ElementRec`` (reviewer finding).
+
+    The pair dropped ``frame``, ``traits`` and ``focused`` — three of the fields the
+    accessibility walk exists to read — so every ``computer_get_state`` reached by a
+    model rendered without rects, without ``(editable)`` and without the focus line,
+    while the response still instructed the model to "add the origin for a screen
+    point" for rects that had been deleted. `editable` is the load-bearing loss: it
+    is the only signal separating a writable text field from a read-only one, so
+    without it the model types into a log pane, gets an ``ok``, and verifies a change
+    that never happened.
+
+    Every OTHER test for these fields calls ``render.render_tree`` directly, which is
+    exactly why none of them caught it — this one goes through ``tools``.
+    """
+
+    def test_every_ElementRec_field_survives_the_payload_round_trip(self):
+        """Field-by-field, driven off ``dataclasses.fields`` so a NEW field fails here
+        rather than being silently dropped by the next lossy rebuild."""
+        import dataclasses
+
+        from kiro_crew.computer_use.tools import _element_from_payload, _element_payload
+
+        rec = ElementRec(
+            index=4,
+            role="AXTextField",
+            subrole="AXSearchField",
+            title="Query",
+            value="kirocrew",
+            actions=("AXConfirm",),
+            depth=2,
+            secure=False,
+            enabled=True,
+            frame=(18.0, 12.0, 28.0, 24.0),
+            traits=("editable", "selected"),
+            focused=True,
+        )
+        rebuilt = _element_from_payload(_element_payload(rec))
+        lost = [
+            f.name
+            for f in dataclasses.fields(ElementRec)
+            if getattr(rec, f.name) != getattr(rebuilt, f.name)
+        ]
+        assert not lost, f"the ceiling round-trip silently dropped {lost}"
+        assert rebuilt == rec
+
+    def test_the_tools_render_path_emits_the_geometry_and_traits(self, fake):
+        """The model-facing surface, not ``render_tree`` in isolation."""
+        from kiro_crew.computer_use import tools as cu_tools
+
+        snap = _snap(fake, FAKE_FILES_APP)
+        text = cu_tools._render_snapshot(
+            snap,
+            SnapshotRequest(),
+            session_key="dashboard:main",
+            agent="kirocrew",
+            app=FAKE_FILES_APP.name,
+        )
+        assert "@ x=18,y=12 28x24" in text, "element frames were dropped before rendering"
+        assert "(editable)" in text, "the editable trait was dropped before rendering"
+        assert "<focused>" in text
+        assert "Focus: element" in text
+
+    def test_a_malformed_frame_becomes_None_not_a_bogus_rect(self):
+        """A partial/re-typed rect must not render as a plausible wrong rectangle.
+
+        Same reasoning as the driver's half-read refusal: a rect pointing somewhere
+        else is worse than no rect, because a model will pass it to a coordinate
+        click. ``bool`` is excluded explicitly (it is an ``int`` subclass).
+        """
+        from kiro_crew.computer_use.tools import _element_from_payload
+
+        for bad in ((1, 2, 3), (1, 2, 3, "x"), (1, 2, 3, True), "nope", (1, 2, 3, 4, 5), None):
+            rec = _element_from_payload({"index": 1, "role": "AXButton", "frame": bad})
+            assert rec.frame is None, f"frame={bad!r} produced {rec.frame!r}"
+        ok = _element_from_payload({"index": 1, "role": "AXButton", "frame": (1, 2, 3, 4)})
+        assert ok.frame == (1.0, 2.0, 3.0, 4.0)
+
+    def test_a_secure_record_still_discloses_only_its_existence(self, fake):
+        """The restored fields must not weaken the secure floor.
+
+        ``_render_record`` returns at the secure branch BEFORE reading traits/focus/
+        frame, so populating them in the payload cannot leak — asserted rather than
+        assumed, because this fix is what put real values in those fields.
+        """
+        from kiro_crew.computer_use import tools as cu_tools
+
+        snap = _snap(fake, FAKE_LOGIN_APP)
+        text = cu_tools._render_snapshot(
+            snap,
+            SnapshotRequest(),
+            session_key="dashboard:main",
+            agent="kirocrew",
+            app=FAKE_LOGIN_APP.name,
+        )
+        line = next(ln for ln in text.splitlines() if SECURE_PLACEHOLDER in ln)
+        assert "@" not in line and "(" not in line and "<focused>" not in line
+        assert FAKE_SECRET_VALUE not in text
+
+
+class TestASuppressedScreenshotAlwaysSaysSoWhy:
+    """No silent screenshot suppression — every refusal names its reason.
+
+    ``capture_macos`` refuses to capture a window whose walk was TRUNCATED, because a
+    cut-off walk cannot prove the window is free of a secure field ("unknown" behaves
+    as "present" at the one gate that lets pixels leave the process). That refusal was
+    silent: ``render._render_image_note`` special-cased only ``has_secure`` and
+    returned ``""`` for everything else. Truncation is the NORMAL state for a
+    Chromium/Electron window at the shipped 1200-node default (Chrome measured 1475
+    nodes), so ``screenshot: true`` on Chrome/Slack/VS Code produced no image and no
+    explanation — exactly the retry loop ``SECURE_WINDOW_NOTE`` /
+    ``OBS_SUPPRESSED_NOTE`` were written to prevent.
+    """
+
+    @staticmethod
+    def _snap(**kwargs):
+        app = AppRef(bundle_id="com.google.Chrome", name="Chrome", pid=637, window_id=42)
+        return Snapshot(
+            app=app,
+            window_title="Docs",
+            elements=(ElementRec(index=0, role="AXWindow", title="Docs"),),
+            **kwargs,
+        )
+
+    @pytest.mark.parametrize("flag", ["truncated", "depth_truncated"])
+    def test_a_truncated_walk_explains_the_missing_screenshot(self, flag):
+        snap = self._snap(**{flag: True}, walk_budget=SnapshotRequest(want_image=True))
+        text = render.render_tree(snap, text_limit=DEFAULT_TEXT_LIMIT)
+        assert TRUNCATED_WINDOW_NOTE in text, (
+            "a suppressed capture on a truncated tree said nothing at all — the model "
+            "asked for a screenshot, got none, and has no reason to stop retrying"
+        )
+
+    def test_the_note_names_the_remedy_the_model_can_act_on(self):
+        """Unlike the secure/policy cases, this one is fixable by the caller."""
+        assert "max_tree_nodes" in TRUNCATED_WINDOW_NOTE
+
+    def test_a_secure_window_keeps_the_more_specific_reason(self):
+        """Both conditions at once must not degrade to the vaguer explanation."""
+        text = render.render_tree(
+            self._snap(truncated=True, has_secure=True), text_limit=DEFAULT_TEXT_LIMIT
+        )
+        assert SECURE_WINDOW_NOTE in text
+        assert TRUNCATED_WINDOW_NOTE not in text
+
+    def test_a_clean_walk_that_asked_for_no_image_stays_silent(self):
+        """The note must not appear where there is nothing to explain."""
+        text = render.render_tree(self._snap(), text_limit=DEFAULT_TEXT_LIMIT)
+        assert TRUNCATED_WINDOW_NOTE not in text
+        assert SECURE_WINDOW_NOTE not in text
+
+    def test_the_shipped_fake_refuses_a_truncated_capture_like_production(self, fake):
+        """Otherwise deleting production's branch leaves the whole suite green.
+
+        The fake refused only on ``has_secure``, so a truncated walk came back WITH an
+        image — a capture the real driver refuses — and any downstream suite driving
+        the shipped fake would have inherited that false behaviour.
+        """
+        result = fake.snapshot(FAKE_FILES_APP, SnapshotRequest(max_nodes=1, want_image=True))
+        snap = result.snapshot
+        assert snap.truncated is True
+        assert snap.image_jpeg == b"", "the fake attached pixels to a truncated walk"
+        assert snap.image_width == 0 and snap.image_height == 0
+        # And the un-truncated case still captures, so this is a real branch not a
+        # blanket disable.
+        full = fake.snapshot(FAKE_FILES_APP, SnapshotRequest(want_image=True)).snapshot
+        assert full.truncated is False
+        assert full.image_jpeg
+
+    @pytest.mark.parametrize("flag", ["truncated", "depth_truncated"])
+    def test_no_note_when_the_caller_never_asked_for_an_image(self, flag):
+        """The inverse failure, and the first version of this fix shipped it.
+
+        An unconditional note announced the suppression of an image nobody requested.
+        Every mutating action's refresh walk forces ``want_image=False`` by design, and
+        truncation is routine on a browser — so a successful click came back with
+        "Screenshot suppressed … Re-run with a higher max_tree_nodes", naming an
+        argument mutating tools do not accept. That is the same retry loop the note was
+        added to prevent, pointed the other way.
+        """
+        snap = self._snap(**{flag: True}, walk_budget=SnapshotRequest(want_image=False))
+        text = render.render_tree(snap, text_limit=DEFAULT_TEXT_LIMIT)
+        assert (
+            TRUNCATED_WINDOW_NOTE not in text
+        ), "announced a suppressed screenshot on a walk that never requested one"
+
+    def test_an_unstamped_snapshot_still_announces(self):
+        """``walk_budget=None`` means the request is unknown — announce rather than
+        hide, since a spurious note is cheaper than a silent omission."""
+        snap = self._snap(truncated=True)
+        assert snap.walk_budget is None
+        assert TRUNCATED_WINDOW_NOTE in render.render_tree(snap, text_limit=DEFAULT_TEXT_LIMIT)
+
+    def test_the_note_appears_and_disappears_through_the_REAL_dispatch_path(
+        self, fake, tmp_path, monkeypatch
+    ):
+        """End-to-end, because both failure directions were invisible to unit tests.
+
+        ``render_tree`` in isolation cannot show either bug: the first needed a
+        ``get_state`` that asked for pixels, the second needed a mutating action's
+        forced ``want_image=False``. Only the dispatcher produces both.
+        """
+        import json
+
+        from kiro_crew.computer_use import backend as cu_backend
+        from kiro_crew.computer_use import index as cu_index
+        from kiro_crew.computer_use import service as cu_service
+        from kiro_crew.computer_use import tools as cu_tools
+
+        # The keystone primary enable, in an isolated home — the dispatcher refuses
+        # everything before rendering otherwise, and a developer's real
+        # ``~/.kiro/crew`` must never decide this test's outcome.
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        (tmp_path / "computer_use.json").write_text(json.dumps({"enabled": True}), encoding="utf-8")
+
+        fake.trees[FAKE_FILES_APP.key] = FakeNode(
+            role="AXWindow",
+            title="Wide",
+            children=tuple(
+                FakeNode(role="AXButton", title=f"b{i}", actions=("AXPress",)) for i in range(30)
+            ),
+        )
+        cu_backend.register_computer_use_backend(lambda: fake)
+        cu_backend.reset_shared_backend()
+        cu_service.reset_shared_service()
+        cu_index.reset_shared_index()
+        try:
+            session = "dashboard:main"
+            asked = cu_tools.dispatch_tool(
+                TOOL_GET_STATE,
+                {"app": FAKE_FILES_APP.name, "max_tree_nodes": 5, "screenshot": True},
+                session_key=session,
+            )
+            assert TRUNCATED_WINDOW_NOTE in asked, "a requested capture was suppressed silently"
+
+            clicked = cu_tools.dispatch_tool(
+                "computer_click",
+                {"app": FAKE_FILES_APP.name, "element_index": 3},
+                session_key=session,
+            )
+            assert not clicked.startswith("Error:"), clicked
+            assert TRUNCATED_WINDOW_NOTE not in clicked, (
+                "a successful click announced the suppression of an image it never "
+                "requested, and told the model to raise an argument it cannot pass"
+            )
+        finally:
+            cu_backend.register_computer_use_backend(None)
+            cu_backend.reset_shared_backend()
+            cu_service.reset_shared_service()
+            cu_index.reset_shared_index()

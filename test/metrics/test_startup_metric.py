@@ -119,3 +119,43 @@ async def test_unexpected_exception_not_ready():
     outcome = _last_outcome(rec)["outcome"]
     assert outcome != "ready"
     assert outcome == "error"
+
+
+class TestKiroStartupAttrs:
+    """The kiro (default) backend's emit, driven through production.
+
+    ``_start_kiro_runtime_impl`` always spawns a fresh AcpRuntime, so every point
+    from this path is a cold start. Regression guard: the emit previously carried
+    no ``spawned`` attribute, and the Telemetry aggregator splits cold from warm
+    on exactly that key — so bool(None) filed 100% of real cold starts as warm
+    and cold read 0ms / 0 startups permanently.
+    """
+
+    def _emit(self, outcome="ready"):
+        from kiro_crew.providers.acp import AcpProvider
+
+        rec = _CapturingRecorder()
+        provider = AcpProvider.__new__(AcpProvider)  # no spawn, just the emitter
+        phases = {"spawn_init": 1400.0, "session_new": 1900.0, "set_model": 1.0}
+        with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+            provider._emit_kiro_startup_metric(0.0, phases, outcome)
+        return [attrs for name, attrs in rec.calls]
+
+    def test_every_point_is_marked_spawned(self):
+        emitted = self._emit()
+        assert len(emitted) == 4  # total + 3 phases
+        assert all(a["spawned"] is True for a in emitted)
+
+    def test_exactly_one_end_to_end_point(self):
+        assert [a["phase"] for a in self._emit()].count("total") == 1
+
+    def test_phase_names_are_preserved(self):
+        assert {a["phase"] for a in self._emit()} == {
+            "total",
+            "spawn_init",
+            "session_new",
+            "set_model",
+        }
+
+    def test_outcome_propagates_to_every_point(self):
+        assert all(a["outcome"] == "auth_required" for a in self._emit("auth_required"))

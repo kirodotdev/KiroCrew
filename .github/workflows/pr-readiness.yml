@@ -171,6 +171,7 @@ jobs:
           for label in \
             "readiness: checking" \
             "readiness: action required" \
+            "readiness: maintainer review" \
             "readiness: passed"; do
             if grep -Fxq "$label" <<<"$current"; then
               encoded="$(jq -rn --arg value "$label" '$value | @uri')"
@@ -374,6 +375,20 @@ jobs:
             label="readiness: checking"
             status_state="pending"
             description="${#waiting[@]} readiness check(s) still pending"
+          elif [ "$FORK" = "true" ]; then
+            # Fork PRs structurally CANNOT run the AI code reviews (Opus/GPT/
+            # Design/UX/Arbiter) or CodeQL -- those are guarded off on fork
+            # heads and cannot be made to run there. Passing public CI/Build/
+            # Code Review is therefore NOT full validation, so a fork PR must
+            # never reach "passed". Emit a dedicated RED (failure) terminal
+            # verdict instead: it is unmistakable in the merge box and, as a
+            # required status check, blocks an accidental merge of code the AI
+            # reviewers never saw. A maintainer must review manually, or re-run
+            # validation from a trusted in-repo branch, before merge.
+            state="maintainer_review"
+            label="readiness: maintainer review"
+            status_state="failure"
+            description="Fork PR — AI reviews could not run; maintainer review required before merge"
           else
             state="passed"
             label="readiness: passed"
@@ -394,6 +409,12 @@ jobs:
             echo "- PR: #$PR"
             echo "- Revision: \`$SHA\`"
             echo "- Passed components: ${#passed[@]}"
+            if [ "$state" = "maintainer_review" ]; then
+              echo
+              echo "> ⚠️ **Fork PR — automated AI code reviews (Opus/GPT/Design/UX/Arbiter) and CodeQL cannot run on a fork head.**"
+              echo "> Passing public CI/Build/Code Review is NOT full validation. A maintainer must review manually,"
+              echo "> or re-run validation from a trusted in-repo branch, before this PR is merged."
+            fi
             if [ "${#skipped[@]}" -gt 0 ]; then
               echo
               echo "**Not eligible**"
@@ -433,6 +454,7 @@ jobs:
           label_specs=(
             "readiness: checking|BFDADC|Automated validation is still running"
             "readiness: action required|D73A4A|A blocking check or review needs attention"
+            "readiness: maintainer review|B60205|Fork PR — AI reviews could not run; maintainer must review before merge"
             "readiness: passed|0E8A16|Eligible automated validation passed for the current revision"
           )
           existing_labels="$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name')"
@@ -451,6 +473,7 @@ jobs:
           for label in \
             "readiness: checking" \
             "readiness: action required" \
+            "readiness: maintainer review" \
             "readiness: passed"; do
             if [ "$label" != "$TARGET_LABEL" ] && grep -Fxq "$label" <<<"$current"; then
               encoded="$(jq -rn --arg value "$label" '$value | @uri')"

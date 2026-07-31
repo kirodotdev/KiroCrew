@@ -38,7 +38,7 @@ export default function PixelCanvasWidget({ run }: { run: ProjectRun }) {
             <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
               <span className="text-sm font-bold" style={{ color: 'var(--text-strong)' }}>{name} {i18nT('components.pixelCanvasWidget.workspace')}</span>
               <div className="flex items-center gap-2">
-                <span className="text-[12px]" style={{ color: 'var(--muted)' }}>{active} {i18nT('components.pixelCanvasWidget.agent')}{active !== 1 ? 's' : ''}</span>
+                <span className="text-[12px]" style={{ color: 'var(--muted)' }}>{i18nT('components.pixelCanvasWidget.agent', { count: active })}</span>
                 <button aria-label={i18nT('components.pixelCanvasWidget.close')} className="text-lg cursor-pointer bg-transparent border-none font-body" style={{ color: 'var(--muted)' }} onClick={() => setOpen(false)}><X className="lucide-inline" /></button>
               </div>
             </div>

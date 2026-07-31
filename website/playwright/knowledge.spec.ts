@@ -39,18 +39,59 @@ test.describe('Knowledge Page E2E Tests', () => {
     }
   })
 
-  test('renders list view with stats bar on fresh fixture', async ({ page }) => {
-    // The default statusFilter='active' prevents the onboarding empty-state from
-    // rendering (isEmpty requires !statusFilter which is false for 'active').
-    // The stats bar renders once /stats returns. With the minimal fixture there
-    // are 0 items and 0 entities, but sources may be >0 due to auto_ingest_artifacts.
-    await expect(page.getByText('Knowledge Library')).toBeVisible({ timeout: 10000 })
-    // Stats bar contains "{N} items" text — on fresh fixture items=0
+  test('renders the onboarding empty state and stats bar on fresh fixture', async ({ page }) => {
+    // Regression: isEmpty used to require `!statusFilter`, but statusFilter
+    // starts at 'active', so this block was unreachable for every user. The
+    // fresh fixture has 0 items and no filters applied, which is exactly the
+    // state the onboarding copy exists for.
+    await expect(page.getByTestId('knowledge-onboarding')).toBeVisible({ timeout: 10000 })
+    // exact: true — the onboarding heading also contains "Knowledge Library"
+    // ("Welcome to the Knowledge Library"), so a substring match resolves to two
+    // elements and trips strict mode.
+    await expect(page.getByText('Knowledge Library', { exact: true })).toBeVisible({ timeout: 10000 })
+    // The stats bar renders outside the empty-state branch, once /stats returns.
+    // With the minimal fixture items and entities are 0, but sources may be >0
+    // due to auto_ingest_artifacts.
     await expect(page.getByText('0 items')).toBeVisible({ timeout: 10000 })
     await expect(page.getByText('0 entities')).toBeVisible()
     await expect(page.getByText('0 relations')).toBeVisible()
-    // Verify the stats bar itself rendered (sources count may be >0 due to auto-ingest)
     await expect(page.getByText(/\d+ sources/)).toBeVisible()
+  })
+
+  test('a filter matching nothing shows the empty list, not the onboarding state', async ({ page, request }) => {
+    test.skip(
+      !HARNESS_GATEWAY,
+      'seeding knowledge items requires the ephemeral harness gateway: delete_item runs a global orphan-entity sweep (store.py:472)',
+    )
+    // The onboarding branch REPLACES the filter bar, so rendering it while a
+    // filter is applied would leave no control to clear that filter with. One
+    // seeded item plus a filter that matches nothing must keep the bar mounted.
+    const itemId = trackedId()
+    const importRes = await request.post('/api/knowledge/import', {
+      data: {
+        items: [{
+          id: itemId,
+          title: `Playwright_FilterGuard_${randomUUID().slice(0, 8)}`,
+          content: 'Content for the filter-vs-onboarding guard.',
+          item_type: 'document',
+          status: 'active',
+          namespace: 'default',
+        }],
+        entities: [],
+        relations: [],
+      },
+    })
+    expect(importRes.ok()).toBeTruthy()
+
+    await page.goto('/knowledge', { waitUntil: 'domcontentloaded' })
+    const typeSelect = page.getByLabel('Filter by type')
+    await expect(typeSelect).toBeVisible({ timeout: 10000 })
+    // 'policy' is a valid ITEM_TYPES value that the seeded 'document' item
+    // cannot match, so the list goes to 0 results with a filter applied.
+    await typeSelect.selectOption('policy')
+
+    await expect(page.getByTestId('knowledge-onboarding')).toHaveCount(0)
+    await expect(typeSelect).toBeVisible()
   })
 
   test('tabs switch between list, graph, and sources', async ({ page }) => {

@@ -432,27 +432,53 @@ def _json_type_ok(value: Any, type_name: str) -> bool:
 # multipleOf, contains, …) is REJECTED fail-closed rather than partially
 # enforced — ignoring a constraint the tool author wrote would forward values
 # the tool declared forbidden.
-_SUPPORTED_SCHEMA_KEYWORDS = frozenset({
-    "type", "required", "properties", "additionalProperties", "items",
-    "enum", "const", "pattern", "minimum", "maximum",
-    "exclusiveMinimum", "exclusiveMaximum", "minLength", "maxLength",
-    "minItems", "maxItems", "uniqueItems",
-})
+_SUPPORTED_SCHEMA_KEYWORDS = frozenset(
+    {
+        "type",
+        "required",
+        "properties",
+        "additionalProperties",
+        "items",
+        "enum",
+        "const",
+        "pattern",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+    }
+)
 
 # Annotation-only keywords (non-validating per JSON Schema draft 2020-12 —
 # ``format`` is annotation-only unless the format-assertion vocabulary is
 # explicitly enabled, which MCP does not require). Safe to ignore.
-_ANNOTATION_SCHEMA_KEYWORDS = frozenset({
-    "title", "description", "default", "examples", "format",
-    "$schema", "$id", "$comment", "deprecated", "readOnly", "writeOnly",
-})
+_ANNOTATION_SCHEMA_KEYWORDS = frozenset(
+    {
+        "title",
+        "description",
+        "default",
+        "examples",
+        "format",
+        "$schema",
+        "$id",
+        "$comment",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+    }
+)
 
 
 def _reject_unsupported_keywords(schema: dict, path: str) -> None:
     unsupported = [
-        k for k in schema
-        if k not in _SUPPORTED_SCHEMA_KEYWORDS
-        and k not in _ANNOTATION_SCHEMA_KEYWORDS
+        k
+        for k in schema
+        if k not in _SUPPORTED_SCHEMA_KEYWORDS and k not in _ANNOTATION_SCHEMA_KEYWORDS
     ]
     if unsupported:
         raise ValidationError(
@@ -483,20 +509,19 @@ def _reject_malformed_keyword_shapes(schema: dict[str, Any], _path: str) -> None
     treated as "no constraint". Only shape is checked here — semantics are
     enforced by the main validator.
     """
+
     def _bad(key: str) -> None:
         raise ValidationError(_path, f"malformed `{key}` keyword shape")
 
     t = schema.get("type")
     if "type" in schema and not (
-        isinstance(t, str)
-        or (isinstance(t, list) and all(isinstance(x, str) for x in t))
+        isinstance(t, str) or (isinstance(t, list) and all(isinstance(x, str) for x in t))
     ):
         _bad("type")
     if "enum" in schema and not isinstance(schema["enum"], list):
         _bad("enum")
     if "required" in schema and not (
-        isinstance(schema["required"], list)
-        and all(isinstance(x, str) for x in schema["required"])
+        isinstance(schema["required"], list) and all(isinstance(x, str) for x in schema["required"])
     ):
         _bad("required")
     if "properties" in schema and not isinstance(schema["properties"], dict):
@@ -521,14 +546,10 @@ def _reject_malformed_keyword_shapes(schema: dict[str, Any], _path: str) -> None
     if "pattern" in schema and not isinstance(schema["pattern"], str):
         _bad("pattern")
     for k in ("minLength", "maxLength", "minItems", "maxItems"):
-        if k in schema and (
-            not isinstance(schema[k], int) or isinstance(schema[k], bool)
-        ):
+        if k in schema and (not isinstance(schema[k], int) or isinstance(schema[k], bool)):
             _bad(k)
     for k in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
-        if k in schema and (
-            not isinstance(schema[k], (int, float)) or isinstance(schema[k], bool)
-        ):
+        if k in schema and (not isinstance(schema[k], (int, float)) or isinstance(schema[k], bool)):
             _bad(k)
 
 
@@ -596,9 +617,7 @@ def validate_mcp_tool_arguments(
                 _path, f"expected {declared_type}, got {type(arguments).__name__}"
             )
     elif isinstance(declared_type, list):
-        if not any(
-            isinstance(t, str) and _json_type_ok(arguments, t) for t in declared_type
-        ):
+        if not any(isinstance(t, str) and _json_type_ok(arguments, t) for t in declared_type):
             raise ValidationError(
                 _path,
                 f"expected one of {declared_type}, got {type(arguments).__name__}",
@@ -624,9 +643,7 @@ def validate_mcp_tool_arguments(
                 # Oversized input, invalid pattern, or wall-clock timeout
                 # (possible ReDoS) — fail closed rather than forward a value
                 # whose declared constraint could not be safely checked.
-                raise ValidationError(
-                    _path, "pattern constraint could not be safely evaluated"
-                )
+                raise ValidationError(_path, "pattern constraint could not be safely evaluated")
             if not verdict:
                 raise ValidationError(_path, "does not match pattern")
 
@@ -670,15 +687,11 @@ def validate_mcp_tool_arguments(
             # dict subschema OR a boolean schema (`items: false` rejects every
             # element; `items: true` accepts). Recursion handles all three.
             for i, item in enumerate(arguments):
-                validate_mcp_tool_arguments(
-                    item, items, _path=f"{_path}[{i}]", _depth=_depth + 1
-                )
+                validate_mcp_tool_arguments(item, items, _path=f"{_path}[{i}]", _depth=_depth + 1)
         else:
             # No item schema: still bound depth/size of each element.
             for i, item in enumerate(arguments):
-                validate_mcp_tool_arguments(
-                    item, {}, _path=f"{_path}[{i}]", _depth=_depth + 1
-                )
+                validate_mcp_tool_arguments(item, {}, _path=f"{_path}[{i}]", _depth=_depth + 1)
 
     if isinstance(arguments, dict):
         properties = schema.get("properties")
@@ -695,12 +708,8 @@ def validate_mcp_tool_arguments(
                 raise ValidationError(_path, "object keys must be strings")
             sub = props.get(key)
             if sub is not None:
-                validate_mcp_tool_arguments(
-                    value, sub, _path=f"{_path}.{key}", _depth=_depth + 1
-                )
-            elif additional is False or (
-                isinstance(properties, dict) and not allow_extra
-            ):
+                validate_mcp_tool_arguments(value, sub, _path=f"{_path}.{key}", _depth=_depth + 1)
+            elif additional is False or (isinstance(properties, dict) and not allow_extra):
                 # Fail-closed: an explicit ``additionalProperties: false``
                 # rejects every undeclared key even when the schema declares
                 # NO ``properties`` map at all (i.e. it accepts only ``{}``),
@@ -713,9 +722,7 @@ def validate_mcp_tool_arguments(
                 )
             else:
                 # No properties map at all: bound depth/size of the blob.
-                validate_mcp_tool_arguments(
-                    value, {}, _path=f"{_path}.{key}", _depth=_depth + 1
-                )
+                validate_mcp_tool_arguments(value, {}, _path=f"{_path}.{key}", _depth=_depth + 1)
 
 
 # ── String Sanitization ──
@@ -1197,16 +1204,17 @@ def _validate_webapp_metadata_shape(am: dict) -> None:
     app_dir = am.get("app_dir")
     if app_dir is not None:
         if not isinstance(app_dir, str) or len(app_dir) > 4096:
-            raise ValidationError(
-                "webapp_metadata.app_dir", "must be a string (max 4096 chars)")
+            raise ValidationError("webapp_metadata.app_dir", "must be a string (max 4096 chars)")
         if app_dir != "":
             if any(ord(c) < 0x20 for c in app_dir):
                 raise ValidationError(
-                    "webapp_metadata.app_dir", "must not contain control characters")
+                    "webapp_metadata.app_dir", "must not contain control characters"
+                )
             posix_abs = app_dir.startswith("/") or app_dir.startswith("~/") or app_dir == "~"
             if not posix_abs and not PureWindowsPath(app_dir).is_absolute():
                 raise ValidationError(
-                    "webapp_metadata.app_dir", "must be an absolute path (or ~/-prefixed)")
+                    "webapp_metadata.app_dir", "must be an absolute path (or ~/-prefixed)"
+                )
     # deploy_target.public_url
     dt = am.get("deploy_target")
     if dt is not None:
@@ -1217,28 +1225,33 @@ def _validate_webapp_metadata_shape(am: dict) -> None:
             if not isinstance(pub_url, str):
                 raise ValidationError(
                     "webapp_metadata.deploy_target.public_url",
-                    "must be a valid http(s) URL (max 2048 chars)")
+                    "must be a valid http(s) URL (max 2048 chars)",
+                )
             # Empty string is allowed (documented draft state — URL not yet assigned).
             if pub_url != "" and not _WM_URL_RE.match(pub_url):
                 raise ValidationError(
                     "webapp_metadata.deploy_target.public_url",
-                    "must be a valid http(s) URL (max 2048 chars)")
+                    "must be a valid http(s) URL (max 2048 chars)",
+                )
             # R21 F2: reject Basic-auth userinfo (https://user:pass@host) —
             # the regex above accepts it, and a credential-bearing URL would
             # be surfaced/linked by the dashboard, transmitting the embedded
             # credentials to the host when opened.
             if pub_url != "":
                 from urllib.parse import urlsplit
+
                 try:
                     parts = urlsplit(pub_url)
                 except ValueError:
                     raise ValidationError(
                         "webapp_metadata.deploy_target.public_url",
-                        "must be a valid http(s) URL (max 2048 chars)")
+                        "must be a valid http(s) URL (max 2048 chars)",
+                    )
                 if parts.username or parts.password:
                     raise ValidationError(
                         "webapp_metadata.deploy_target.public_url",
-                        "must not contain userinfo (user:password@) credentials")
+                        "must not contain userinfo (user:password@) credentials",
+                    )
         # profile/region/slug — string-typed with existing regex patterns.
         for key, pattern, label in (
             ("profile", _WM_PROFILE_RE, "profile"),
@@ -1251,12 +1264,12 @@ def _validate_webapp_metadata_shape(am: dict) -> None:
             if val is not None:
                 if not isinstance(val, str) or len(val) > 128:
                     raise ValidationError(
-                        f"webapp_metadata.deploy_target.{key}",
-                        "must be a string (max 128 chars)")
+                        f"webapp_metadata.deploy_target.{key}", "must be a string (max 128 chars)"
+                    )
                 if val and not pattern.match(val):
                     raise ValidationError(
-                        f"webapp_metadata.deploy_target.{key}",
-                        f"invalid {label} format")
+                        f"webapp_metadata.deploy_target.{key}", f"invalid {label} format"
+                    )
 
     # lifecycle.status enum
     lc = am.get("lifecycle")
@@ -1268,39 +1281,38 @@ def _validate_webapp_metadata_shape(am: dict) -> None:
         # unhashable value (list/dict) raises TypeError inside `in` and
         # turns artifact save/update into a 500.
         if status is not None and not isinstance(status, str):
-            raise ValidationError(
-                "webapp_metadata.lifecycle.status", "must be a string")
+            raise ValidationError("webapp_metadata.lifecycle.status", "must be a string")
         if status is not None and status not in _WM_LIFECYCLE_STATUSES:
             raise ValidationError(
                 "webapp_metadata.lifecycle.status",
-                f"must be one of {sorted(_WM_LIFECYCLE_STATUSES)}")
+                f"must be one of {sorted(_WM_LIFECYCLE_STATUSES)}",
+            )
         # persistent: strict bool — the string "false" is truthy and would
         # silently flip expiry/teardown behavior downstream.
         pers = lc.get("persistent")
         if pers is not None and not isinstance(pers, bool):
-            raise ValidationError(
-                "webapp_metadata.lifecycle.persistent", "must be a boolean")
+            raise ValidationError("webapp_metadata.lifecycle.persistent", "must be a boolean")
         # ttl_hours: strict int (bool excluded — bool subclasses int), 0-8760.
         ttl = lc.get("ttl_hours")
         if ttl is not None:
             if isinstance(ttl, bool) or not isinstance(ttl, int):
-                raise ValidationError(
-                    "webapp_metadata.lifecycle.ttl_hours", "must be an integer")
+                raise ValidationError("webapp_metadata.lifecycle.ttl_hours", "must be an integer")
             if not (0 <= ttl <= 8760):
-                raise ValidationError(
-                    "webapp_metadata.lifecycle.ttl_hours", "must be 0-8760")
+                raise ValidationError("webapp_metadata.lifecycle.ttl_hours", "must be 0-8760")
         # expires_at ISO-8601 parseable
         exp = lc.get("expires_at")
         if exp is not None and exp != "":
             if not isinstance(exp, str):
                 raise ValidationError("webapp_metadata.lifecycle.expires_at", "must be a string")
             from datetime import datetime, timezone
+
             try:
                 datetime.strptime(exp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
             except (ValueError, TypeError):
                 raise ValidationError(
                     "webapp_metadata.lifecycle.expires_at",
-                    "must be ISO-8601 UTC (YYYY-MM-DDTHH:MM:SSZ)")
+                    "must be ISO-8601 UTC (YYYY-MM-DDTHH:MM:SSZ)",
+                )
 
     # cost and architecture lists capped
     for key in ("cost", "architecture"):
@@ -1312,11 +1324,12 @@ def _validate_webapp_metadata_shape(am: dict) -> None:
                     if isinstance(sub_val, list) and len(sub_val) > _WM_LIST_CAP:
                         raise ValidationError(
                             f"webapp_metadata.{key}.{sub_key}",
-                            f"list exceeds {_WM_LIST_CAP} entries")
+                            f"list exceeds {_WM_LIST_CAP} entries",
+                        )
             elif isinstance(val, list) and len(val) > _WM_LIST_CAP:
                 raise ValidationError(
-                    f"webapp_metadata.{key}",
-                    f"list exceeds {_WM_LIST_CAP} entries")
+                    f"webapp_metadata.{key}", f"list exceeds {_WM_LIST_CAP} entries"
+                )
 
 
 ARTIFACT_SAVE_SCHEMA = ToolSchema(
@@ -1696,9 +1709,7 @@ SEND_NOTIFICATION_SCHEMA = ToolSchema(
         # Cap matches the bus's _MAX_BODY_LEN (20000) so the schema never
         # rejects a body the advertised contract accepts.
         FieldSpec("body", str, max_len=20_000),
-        FieldSpec(
-            "priority", str, max_len=16, pattern=re.compile(r"^(critical|default|passive)$")
-        ),
+        FieldSpec("priority", str, max_len=16, pattern=re.compile(r"^(critical|default|passive)$")),
         # Path-only deep link -- the gateway re-validates with the full
         # WHATWG-hardened rule at the persistence trust root; this pattern
         # is the cheap first gate (must start with '/', not '//').
@@ -2037,20 +2048,25 @@ MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
         fields=[
             _CU_APP_FIELD,
             FieldSpec("text", str, required=True, max_len=_cu_types.MAX_TYPE_TEXT_LEN),
-            # Optional: typing into whatever the app has focused is a legitimate
-            # flow. A named element is still preferred (and is what the secure-field
-            # refusal inspects), which the tool description says.
-            _CU_OPTIONAL_ELEMENT_FIELD,
+            # REQUIRED, and a security control rather than an ergonomic choice: an
+            # unnamed target has no role or subrole, so ``policy.check_input_target``
+            # has nothing to inspect and the keystrokes would land in whatever the
+            # app happened to focus — possibly a password field. Enforced again at
+            # the chokepoint by ``tools._ELEMENT_REQUIRED_TOOLS``; both layers say
+            # required so a conforming call is never refused on arrival.
+            _CU_ELEMENT_FIELD,
         ],
     ),
     _cu_types.TOOL_PRESS_KEY: ToolSchema(
         tool_name=_cu_types.TOOL_PRESS_KEY,
         fields=[
             _CU_APP_FIELD,
-            # Optional: sending a shortcut to whatever the app already has focused
-            # is a legitimate flow (cmd+S on the frontmost window). When an index IS
-            # given the driver focuses that element first.
-            _CU_OPTIONAL_ELEMENT_FIELD,
+            # REQUIRED for the same reason as ``computer_type_text``, plus one of its
+            # own: ``press_key('tab')`` can MOVE focus onto a password box, so the
+            # keystroke after an indexless call would land there. The driver focuses
+            # the named element first, which is what makes the secure-field refusal
+            # meaningful.
+            _CU_ELEMENT_FIELD,
             FieldSpec(
                 "key",
                 str,
@@ -2226,9 +2242,7 @@ def validate_ask_user_question(raw: object) -> list[dict]:
             # would make distinct-looking rows submit the same value.
             norm_label = " ".join(label.split()).casefold()
             if norm_label in seen_labels:
-                raise ValidationError(
-                    "questions", "duplicate option labels are not allowed"
-                )
+                raise ValidationError("questions", "duplicate option labels are not allowed")
             seen_labels.add(norm_label)
             desc = str(o.get("description") or "")[:_ASK_MAX_DESC_LEN]
             opts.append({"label": label, "description": desc})

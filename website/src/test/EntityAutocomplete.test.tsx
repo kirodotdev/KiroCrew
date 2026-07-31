@@ -9,8 +9,22 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // already provides the context.
 import { MemoryRouter } from 'react-router-dom'
 
-// Mock the knowledge API
-const mockKnowledgeApi = vi.fn().mockResolvedValue([])
+// Mock the knowledge API.
+//
+// /source-counts must report total > 0. With query === '' the page reads its
+// total from that endpoint (index.tsx:204), and a total of 0 with pristine
+// filters renders the onboarding empty state INSTEAD of the filter bar, so the
+// search input this test types into would never mount. A non-empty library is
+// the state a debounce test means to exercise anyway.
+const mockKnowledgeApi = vi.fn().mockImplementation((path: string) => {
+  if (path.startsWith('/source-counts')) {
+    return Promise.resolve({ counts: { 'src-1': 1 }, total: 1 })
+  }
+  if (path.startsWith('/items')) {
+    return Promise.resolve({ items: [], total: 1 })
+  }
+  return Promise.resolve([])
+})
 vi.mock('../pages/knowledge/api', () => ({
   knowledgeApi: (...args: unknown[]) => mockKnowledgeApi(...args),
 }))

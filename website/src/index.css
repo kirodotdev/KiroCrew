@@ -1367,6 +1367,59 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   background-color: var(--search-highlight-current);
 }
 
+/* Anchored-comment highlights on the markdown / text artifact body are drawn
+   as a real overlay layer (InlineCommentOverlay), NOT the CSS Custom Highlight
+   API — real elements always paint and support box-shadow + a persistent active
+   state. Translucent marker over the text; the drop shadow gives contrast with
+   the page; the active comment stays lit.
+
+   Without these rules the overlay still mounts its rects and gutter bubbles
+   into the DOM, but they paint as zero-styled transparent divs — anchors look
+   like they are "not rendering" at all. */
+.mc-cmt-overlay { contain: layout style; }
+.mc-cmt-rect {
+  background-color: var(--warn-subtle);
+  border-bottom: 2px solid var(--warn);
+  border-radius: 2px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.38);
+  cursor: pointer;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.mc-cmt-rect:hover { box-shadow: 0 3px 9px rgba(0, 0, 0, 0.45); }
+.mc-cmt-rect.active {
+  background-color: var(--accent-subtle);
+  border-bottom-color: var(--accent);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--accent);
+}
+/* Gutter bubble, one per anchored thread: OUTLINE = read, FILLED = unread. */
+.mc-cmt-bubble {
+  width: 19px; height: 19px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; line-height: 1;
+  color: var(--warn); background-color: var(--card);
+  border: 1.5px solid var(--warn); border-radius: 10px 10px 10px 2px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  cursor: pointer; padding: 0;
+  transition: background-color 0.12s ease, transform 0.12s ease, color 0.12s ease;
+}
+.mc-cmt-bubble:hover { transform: scale(1.1); }
+.mc-cmt-bubble.unread { background-color: var(--warn); color: var(--warn-fg, #1a1a1a); }
+.mc-cmt-bubble.active { background-color: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+
+/* Artifact toolbar: every control (version select + buttons) the same height.
+   Icon-only buttons become squares; labeled buttons keep their padding-driven
+   width. ArtifactDetailPage already carries the `mc-art-toolbar` class. */
+.mc-art-toolbar > button,
+.mc-art-toolbar > select {
+  height: 32px;
+  box-sizing: border-box;
+}
+.mc-art-toolbar > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* Mobile: force ChatSidebar to fill overlay drawer width */
 @media (max-width: 767px) {
   .mobile-sessions-overlay .sidebar-inner { width: 100% !important; }

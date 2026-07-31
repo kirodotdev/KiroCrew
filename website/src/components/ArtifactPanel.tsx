@@ -15,16 +15,6 @@ import { api } from '../api/client'
 import type { Artifact } from '../types'
 
 import { i18nT } from '../i18n/t'
-// Artifact "Iterate" affordances are hidden pending an artifact redesign.
-// Here that gates the "Submit comments to chat" bar — the
-// side-panel analog of the full-page Iterate flow — while leaving the durable
-// comment stack (create/view/reply/resolve) fully intact. Flip to `true` (or
-// delete the gate) when the redesign lands.
-// NOTE: the upstream project keeps this visible — this is a deliberate
-// fork-initiated UX divergence, so do NOT let an upstream sync re-show it.
-// Mirrors ArtifactDetailPage.tsx.
-const SHOW_ARTIFACT_ITERATE = false
-
 interface Props {
   slug: string
   /** Kind captured at open time; the live query overrides it once loaded. */
@@ -69,7 +59,7 @@ function SubmitBar({ count, submitting, onSubmit, bleed = false }: {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[13px] text-text truncate">
-            {count} {i18nT('components.artifactPanel.comment')}{count === 1 ? '' : 's'} {i18nT('components.artifactPanel.to_send_to_this_chat')}
+            {i18nT('components.artifactPanel.comment', { count: count })} {i18nT('components.artifactPanel.to_send_to_this_chat')}
           </span>
           <button
             type="button"
@@ -208,9 +198,9 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
     return () => { document.body.style.overflow = '' }
   }, [fullscreen])
 
-  // Submit-to-chat is the side-panel analog of the full-page Iterate flow;
-  // hidden while iterate affordances are gated off (see SHOW_ARTIFACT_ITERATE).
-  const showSubmitBar = SHOW_ARTIFACT_ITERATE && !!onSubmitComments && humanComments.length > 0
+  // Submit-to-chat is the side-panel analog of the detail page's companion
+  // chat. Only rendered when the host actually supplies a submit channel.
+  const showSubmitBar = !!onSubmitComments && humanComments.length > 0
 
   const renderBody = (
     bodyScrollRef: React.RefObject<HTMLDivElement>,

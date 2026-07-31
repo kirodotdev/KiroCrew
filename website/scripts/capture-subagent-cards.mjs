@@ -19,6 +19,7 @@
  */
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
+import { json, makeFixedApi, handleBootRoute } from './lib/boot-api.mjs'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:6803'
 const OUT = process.argv[3] || '../temp-screenshots/subagent-card-header'
@@ -90,20 +91,7 @@ const DONE_CARD = {
   tool_count: 22,
 }
 
-const FIXED_API = new Map([
-  ['/api/status', { sessions: 1, crons: 0, lessons: 0, uptime: 120, version: 'dev' }],
-  ['/api/notifications', { notifications: [], unread: 0 }],
-  ['/api/auth/me', { user: 'owner', app: '' }],
-  ['/api/models', { models: [], default: 'auto' }],
-  ['/api/themes', { themes: [], installed: [] }],
-  ['/api/dashboard/branding', { bot_name: 'Kiro', avatar: '' }],
-  ['/api/recent-projects', { dirs: [PROJECT] }],
-  ['/api/chat/nav/resolve-links', { summaries: [] }],
-])
-
-const json = (route, body, status = 200) => route.fulfill({
-  status, contentType: 'application/json', body: JSON.stringify(body),
-})
+const FIXED_API = makeFixedApi(PROJECT)
 
 async function main() {
   const browser = await chromium.launch()
@@ -123,28 +111,7 @@ async function main() {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/chat/slots') return json(route, slots)
     if (path.startsWith('/api/chat/slots/')) return json(route, detail)
-    // The setup gate runs BEFORE the app shell: an array-shaped stub makes it
-    // read `.operation.status` off undefined and the whole shell error-boundaries
-    // out with nothing rendered.
-    if (path.startsWith('/api/kiro-prerequisite')) {
-      return json(route, {
-        platform: 'linux', installed: true, authenticated: true, ready: true,
-        initial_setup_complete: true, can_auto_install: false, can_login: false,
-        repair_required: false, docs_url: '', setup_allowed: true,
-        operation: { kind: '', status: 'idle', message: '', detail: '', url: '', error: '' },
-      })
-    }
-    // The app shell iterates this on boot; an object-shaped stub throws inside
-    // the ErrorBoundary and nothing renders at all.
-    if (path.startsWith('/api/instances')) return json(route, { instances: [], active: '' })
-    // These boot fixtures are static across every scene; keeping them in a map
-    // makes this harness's route contract explicit without cloning the long
-    // condition chain used by other screenshot harnesses.
-    if (FIXED_API.has(path)) return json(route, FIXED_API.get(path))
-    if (path === '/api/theme/boot') return json(route, { mode: scene.theme, theme: '' })
-    const objectish = /(config|tips|voice|autonudge|branding|status|usage-summary)/.test(path)
-    if (objectish) return json(route, {})
-    return json(route, [])
+    return handleBootRoute(route, path, { project: PROJECT, theme: scene.theme, fixedApi: FIXED_API })
   })
 
   page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))

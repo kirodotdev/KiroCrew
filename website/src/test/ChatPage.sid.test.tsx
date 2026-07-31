@@ -105,8 +105,10 @@ function renderChatPage(opts: {
   mode?: string
   activeSlot?: string | null
   slots?: ChatSlot[]
+  /** Render the companion-panel variant on a HOST route (see the noUrlSync suite). */
+  hostEmbed?: { noUrlSync?: boolean }
 }) {
-  const { route = '/chat', mode, activeSlot = null, slots = [] } = opts
+  const { route = '/chat', mode, activeSlot = null, slots = [], hostEmbed } = opts
   const preload: PreloadState = {
     dashboard: {
       status: { platform: 'darwin' }, connected: true, slots, approvalMode: 'normal',
@@ -133,6 +135,10 @@ function renderChatPage(opts: {
             <Routes>
               <Route path="/chat/:slug?" element={<ChatPage mode={mode} />} />
               <Route path="/orchestrated/:slug?" element={<ChatPage mode="orchestrator" />} />
+              <Route
+                path="/artifacts/:slug"
+                element={<ChatPage embedded embedMode="chat" noUrlSync={hostEmbed?.noUrlSync} />}
+              />
             </Routes>
             <UrlCapture />
           </MemoryRouter>
@@ -181,6 +187,47 @@ describe('ChatPage ?sid= URL parameter', () => {
       await waitFor(() => {
         expect(currentUrl).toMatch(/^\/chat\?sid=chat-3-300$/)
       })
+    })
+  })
+
+  // ── noUrlSync (artifact companion panel) ─────────────────────────────────
+  // noUrlSync must disable BOTH directions of the URL<->session sync. Gating
+  // only the WRITE side is not enough: the host route is not guaranteed to be
+  // sid-free, and an ungated READ effect would switch the embedded panel onto
+  // whatever session ?sid= names — so the user would type into the artifact
+  // panel and the message would land in an unrelated conversation.
+  describe('noUrlSync on a host route', () => {
+    it('ignores ?sid= on the host route', async () => {
+      const { store } = renderChatPage({
+        route: '/artifacts/cr-queue?sid=chat-2-200',
+        slots,
+        hostEmbed: { noUrlSync: true },
+      })
+      // Give the mount-activation effect every chance to fire.
+      await act(async () => { await new Promise(r => setTimeout(r, 150)) })
+      expect(store.getState().chat.activeSlot).not.toBe('chat-2-200')
+    })
+
+    it('honors ?sid= on the same route without noUrlSync (control)', async () => {
+      // Proves the assertion above can actually observe a switch — otherwise it
+      // would pass even if the read effects never ran for an unrelated reason.
+      const { store } = renderChatPage({
+        route: '/artifacts/cr-queue?sid=chat-2-200',
+        slots,
+        hostEmbed: { noUrlSync: false },
+      })
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+    })
+
+    it('never rewrites the host URL', async () => {
+      renderChatPage({
+        route: '/artifacts/cr-queue',
+        slots,
+        activeSlot: 'chat-1-100',
+        hostEmbed: { noUrlSync: true },
+      })
+      await act(async () => { await new Promise(r => setTimeout(r, 150)) })
+      expect(currentUrl).toBe('/artifacts/cr-queue')
     })
   })
 

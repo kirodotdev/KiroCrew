@@ -10,10 +10,15 @@ and an unusable dashboard.
 These tests pin the fix: both handlers consult the prerequisite readiness latch
 BEFORE resolving or spawning the binary, and return the shared 503 instead.
 
-The signed-out cases drive the REAL ``reject_if_kiro_not_ready`` (never a
+The signed-out cases drive the REAL ``reject_if_kiro_unverified`` (never a
 stubbed guard) and pin binary resolution to a fixed path, so a deleted or
 relocated gate must reach ``create_subprocess_exec`` — on a CI runner with no
 kiro-cli installed as much as on a developer machine that has one.
+
+Ordinary sends are UNGATED — the ACP attempt reports auth failures itself and
+they mutate nothing up front. These two sites (and the destructive reruns, which
+rewrite persisted history before their turn) keep failing closed because neither
+can use the ACP attempt as its authority.
 """
 
 from __future__ import annotations
@@ -38,6 +43,12 @@ class _SignedOutKiroPrerequisiteService(KiroPrerequisiteService):
     async def session_ready(self) -> bool:
         return False
 
+    # The gate authorizes on a fresh probe (`verified_ready`), never the bare
+    # latch — a stale ready=True would otherwise green-light a signed-out spawn.
+    async def verified_ready(self, *, max_age_secs: float) -> bool:
+        del max_age_secs
+        return False
+
 
 def _make_signed_out_kiro_prerequisite() -> KiroPrerequisiteService:
     """Return a filesystem-free NOT-ready prerequisite service."""
@@ -48,7 +59,7 @@ def _make_signed_out_kiro_prerequisite() -> KiroPrerequisiteService:
 def _request(service: KiroPrerequisiteService) -> MagicMock:
     """A request whose app carries *service* as the prerequisite latch.
 
-    ``reject_if_kiro_not_ready`` reads ``app["kiro_prerequisite_service"]`` and
+    ``reject_if_kiro_unverified`` reads ``app["kiro_prerequisite_service"]`` and
     falls back to ``app["state"].kiro_prerequisite_service``; both are wired so
     the real guard runs either way. ``state`` also carries the background-task
     set ``api_sessions_usage`` uses, so a removed gate reaches the scheduling

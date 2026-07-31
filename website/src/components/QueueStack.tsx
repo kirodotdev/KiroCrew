@@ -28,7 +28,7 @@ export function SubagentDeliveryProgress({ count }: { count: number }) {
         <Bot size={13} className="text-accent/70 shrink-0" />
         <Loader2 size={12} className="animate-spin text-accent/70 shrink-0" />
         <span>
-          {count} {i18nT('components.queueStack.sub_agent_result')}{count > 1 ? 's' : ''} {i18nT('components.queueStack.ready_processing_after_the_current_turn')}
+          {i18nT('components.queueStack.sub_agent_result', { count: count })} {i18nT('components.queueStack.ready_processing_after_the_current_turn')}
         </span>
       </div>
     </div>

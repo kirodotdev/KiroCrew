@@ -175,6 +175,10 @@ class ComputerUseService:
         if snap is None:
             raise ComputerUseError(f"the driver returned no state for '{app.label}'")
         snap = self._persist_image(snap)
+        # Stamp the budget this walk actually used, so the drift-verification
+        # re-walk can reproduce the SAME tree rather than the config default. See
+        # ``Snapshot.walk_budget`` and :meth:`verify_fingerprint`.
+        snap = replace(snap, walk_budget=req)
         self.index.put(snap, session_key=session_key)
         return snap
 
@@ -217,6 +221,13 @@ class ComputerUseService:
         in the overwhelming majority of cases; it is not a transactional
         guarantee.
         """
+        # *req* must carry the budget the CACHED snapshot was walked at, not the
+        # config default — ``tools._mutation_walk_budget`` resolves that from
+        # ``Snapshot.walk_budget`` before calling here. Verifying a tree walked at
+        # ``max_tree_nodes=2001`` against a 1200 default reports "no element at that
+        # index" for everything above 1200, and the refresh the model gets next is
+        # truncated identically, so re-snapshotting cannot break the loop.
+        #
         # want_image=False: the verification walk exists to compare structure, and
         # capturing (then discarding) pixels would double the cost of every
         # mutating action and spool a screenshot nobody asked for.

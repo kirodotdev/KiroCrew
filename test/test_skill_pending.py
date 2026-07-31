@@ -52,6 +52,29 @@ def test_staged_candidate_is_not_live_or_triggerable(loader):
     assert [p["slug"] for p in pend] == ["cand-one"]
 
 
+def test_new_candidate_kind_defaults_and_no_update_fields(loader):
+    """A plainly-staged candidate defaults to kind='new' with no target /
+    base_version — the update fields are omitted for backward compatibility."""
+    _stage(loader, "plainly")
+    entry = [p for p in loader.list_pending_skills() if p["slug"] == "plainly"][0]
+    assert entry["kind"] == "new"
+    assert entry["target"] is None
+    assert entry["base_version"] is None
+    detail = loader.get_pending_skill("plainly")
+    assert detail["kind"] == "new"
+    assert detail["target"] is None
+    assert detail["base_version"] is None
+    # .meta.json records kind but omits target/base_version.
+    import json as _json
+
+    meta = _json.loads(
+        (loader._pending_root() / "plainly" / ".meta.json").read_text(encoding="utf-8")
+    )
+    assert meta["kind"] == "new"
+    assert "target" not in meta
+    assert "base_version" not in meta
+
+
 def test_get_pending_returns_body_and_scripts(loader):
     _stage(loader, "with-script", scripts=[{"filename": "run.py", "content": "print(1)\n"}])
     detail = loader.get_pending_skill("with-script")

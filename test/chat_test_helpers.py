@@ -15,6 +15,12 @@ class _ReadyKiroPrerequisiteService(KiroPrerequisiteService):
     async def session_ready(self) -> bool:
         return True
 
+    # The fail-closed gate authorizes on a FRESH probe, not the latch, so an
+    # embedded test app must answer both or every gated route 503s.
+    async def verified_ready(self, *, max_age_secs: float) -> bool:
+        del max_age_secs
+        return True
+
 
 _READY_KIRO_PREREQUISITE = object.__new__(_ReadyKiroPrerequisiteService)
 

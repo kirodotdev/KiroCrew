@@ -454,9 +454,9 @@ export default function SchedulePage() {
           >
             <h3 className="text-base font-semibold text-text mb-2 flex items-center gap-2">
               <Trash2 size={16} className="text-danger shrink-0" />
-              {i18nT('pages.schedulePage.delete')} {selectedIds.size} {i18nT('pages.schedulePage.scheduled_job')}{selectedIds.size === 1 ? '' : 's'}?
+              {i18nT('pages.schedulePage.delete')} {i18nT('pages.schedulePage.scheduled_job', { count: selectedIds.size })}?
             </h3>
-            <p className="text-sm text-muted mb-3">{i18nT('pages.schedulePage.this_permanently_removes_the_selected_job')}{selectedIds.size === 1 ? '' : 's'} {i18nT('pages.schedulePage.and_their_run_history_this_action_cannot_be_undo')}</p>
+            <p className="text-sm text-muted mb-3">{i18nT('pages.schedulePage.this_permanently_removes_the_selected_job', { count: selectedIds.size })} {i18nT('pages.schedulePage.and_their_run_history_this_action_cannot_be_undo')}</p>
             <div className="max-h-[168px] overflow-y-auto rounded-md border border-border bg-bg divide-y divide-border/60 mb-4">
               {selectedJobs.map(jb => (
                 <div key={jb.id} className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
@@ -470,8 +470,16 @@ export default function SchedulePage() {
                   input (see `confirmArmed`), not display copy. Translating it
                   makes the confirm button impossible to arm in that language —
                   a zh-CN user typed the displayed 删除 and bulk delete stayed
-                  disabled. Keep it untranslated. */}
-              {i18nT('pages.schedulePage.type')} <code className="text-text font-semibold">{BULK_DELETE_TOKEN}</code> {i18nT('pages.schedulePage.to_confirm')}
+                  disabled. Keep it untranslated.
+
+                  The key is `type_verb_to_confirm`, NOT the `type` used by the
+                  table header above: English "Type" is both a noun (the column)
+                  and an imperative verb (this instruction), and no single
+                  translation serves both. Sharing one key made es/pt render the
+                  NOUN here ("Tipo delete para confirmar"), turning the
+                  instruction into a fragment. A key whose name states the part
+                  of speech is what keeps a translator from having to guess. */}
+              {i18nT('pages.schedulePage.type_verb_to_confirm')} <code className="text-text font-semibold">{BULK_DELETE_TOKEN}</code> {i18nT('pages.schedulePage.to_confirm')}
             </label>
             <input
               id="batch-delete-confirm"

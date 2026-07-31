@@ -1,12 +1,24 @@
 # KiroCrew Release Automation
 
-Design for the three-channel release pipeline: Nightly → Beta → Stable.
+Operational reference for the three-channel release pipeline:
+nightly → insider → stable.
 
-## As built (authoritative, 2026-07-28)
+Companion docs: **CONTRIBUTING.md → "Releasing New Versions"** owns the
+human process (release branches, RC numbering, promotion, back-merge);
+**docs/release-process-design.md** records the design rationale and the
+platform-lane contract. This file documents what the pipeline does.
 
-The sections below this one are the original design; the implementation
-deliberately diverged in several places. Where they disagree, THIS section
-is the contract.
+## As built (authoritative, 2026-07-30)
+
+This section is the contract. An earlier revision of this file carried a
+~440-line original design below it — a release-branch automation model
+(`beta-cut.yml`, `beta-hotfix.yml`, `promote-stable.yml`, `rollback.yml`), a
+Feed Lambda writing `latest-*.json` on S3 PUT, a `blocked-versions.json`
+force-update gate, and an `updates.kirocrew.dev` hostname. **None of it was
+built, and parts of it are now contradicted by product decision** (see
+"Superseded design" at the end). It was removed rather than left in place:
+readers were finding those workflow names and that rollback procedure and
+taking them for the process.
 
 **Channels and triggers (as built):**
 
@@ -16,11 +28,23 @@ is the contract.
 | insider | push of a prerelease tag (`v0.2.0-insider.1`, `-rc.N`, …) | `release.yml` |
 | stable  | push of a bare semver tag (`v0.2.0`) | `release.yml` |
 
-There is no release-branch / beta-cut / promote model and no
-`beta-hotfix.yml`, `promote-stable.yml`, or `rollback.yml`. Channel is
-derived from the tag; versions are stamped with seconds precision on
-nightly (`0.1.0-nightly.YYYYMMDDHHMMSS`) so no published key is ever
-overwritten.
+Channel is derived from the tag; versions are stamped with seconds
+precision on nightly (`0.1.0-nightly.YYYYMMDDHHMMSS`) so no published key
+is ever overwritten.
+
+**The release branch and RC promotion are human process, not automation.**
+Feature releases are cut as a `release/x.y.z` branch off `main` on 0.1
+increments; fixes for that release land on the branch (not `main`) and each
+is tagged as a new RC to insider; stable is the last good RC **promoted by
+tagging its commit**, never rebuilt; hot patches bump the patch digit from
+the same branch. After a stable cut, `main` is bumped by 0.1 and the
+branch's fixes are merged back. The pipeline has no knowledge of any of
+this — it only reacts to a pushed tag, which is why there is no
+`beta-cut.yml`, `beta-hotfix.yml`, or `promote-stable.yml`. See
+CONTRIBUTING.md → "Releasing New Versions" for the process itself.
+
+There is no `rollback.yml` and no rollback mechanism: **we roll forward by
+cutting a new version.**
 
 **Buckets (as built) — two, not one:**
 
@@ -116,14 +140,17 @@ other escape.
 **Feed-ordering protection (as built):** workflow-level `concurrency`
 groups (nightly: `cancel-in-progress: true`; release: queued) prevent an
 older run finishing last from rolling a channel feed backward. There is no
-`blocked-versions.json` and no rollback workflow yet; rollback is a manual
-feed overwrite.
+`blocked-versions.json` and no rollback workflow: the recovery path is to
+**roll forward** — cut a new version and let the feed advance to it.
 
 **CLI channel (as built):** `publish-cli.yml` publishes the wheel +
-SHA256SUMS + PEP 503 index to `cli/nightly/` from `nightly.yml` only;
-insider/stable CLI channel publication is not yet wired (wheels ship as
-GitHub Release assets). The signing trust domain for the wheel
-(minisign/cosign detached signatures) remains an open item.
+SHA256SUMS + PEP 503 index to `cli/{channel}/`, called by `nightly.yml`
+(`channel: nightly`) and by `release.yml` (`channel: insider | stable`,
+derived from the tag) — so all three channels are wired, and wheels also
+ship as GitHub Release assets. It depends only on the wheel build, never on
+CDSigner, so a macOS signing failure cannot block a CLI release. The
+signing trust domain for the wheel (minisign/cosign detached signatures)
+remains an open item.
 
 **Docker channel (as built):** `publish-docker.yml` publishes the same wheel
 inside a multi-arch image to `ghcr.io/kirodotdev/kirocrew`, with immutable
@@ -134,337 +161,24 @@ token carrying `read:packages`. Public distribution is a later release-policy
 change: setting `require_public_access: true` enables the logged-out pull gate
 that proves anonymous consumers can resolve the published image.
 
----
-
-## Channels
-
-| Channel | Cadence | Source | Who uses it |
-|---------|---------|--------|-------------|
-| **Nightly** | Every night (UTC 06:00 = 11pm PDT) | `main` HEAD | Developers, CI |
-| **Beta** | Friday cut (manual trigger) | `release/x.y.z` branch | Insider testers |
-| **Stable** | After 2-week bake (manual promote) | Same release branch | All users |
-
-## Versioning
-
-```
-Nightly:  0.2.0-nightly.20260708     (date-stamped, no branch)
-Beta:     0.2.0-beta.1, 0.2.0-beta.2 (increments on hotfix cherry-picks)
-Stable:   0.2.0                       (promoted from last beta)
-```
-
-Version source: `src/kiro_crew/__init__.py` (`__version__`).
-Nightly appends `-nightly.{date}`. Beta uses the release branch version + `-beta.{n}`.
-
-## Update Feed Structure (S3 + CloudFront)
-
-```
-s3://kirocrew-update-feed-{account}/
-├── pre-signed/                     ← CI uploads here (unsigned)
-│   ├── nightly/
-│   │   └── 0.2.0-nightly.20260708/
-│   │       ├── KiroCrew-...-arm64.dmg
-│   │       ├── KiroCrew-...-arm64.zip
-│   │       ├── KiroCrew-...-x64.AppImage
-│   │       └── kirocrew-...-py3-none-any.whl
-│   ├── beta/
-│   │   └── 0.2.0-beta.1/...
-│   └── stable/
-│       └── 0.2.0/...
-├── signed/                         ← CDSigner deposits here (signed + notarized)
-│   ├── nightly/
-│   │   └── 0.2.0-nightly.20260708/...
-│   ├── beta/...
-│   └── stable/...
-├── feed/                           ← Update feed (Lambda-written on signed/ PUT)
-│   ├── nightly/
-│   │   ├── latest-mac.json
-│   │   └── latest-linux.json
-│   ├── beta/
-│   │   ├── latest-mac.json
-│   │   └── latest-linux.json
-│   └── stable/
-│       ├── latest-mac.json
-│       └── latest-linux.json
-└── blocked-versions.json           ← versions to force-update away from
-```
-
-**CloudFront** sits in front with `updates.kirocrew.dev` CNAME.
-The client's `auto-update.js` already calls:
-```
-GET https://updates.kirocrew.dev/feed?platform=darwin-arm64&channel=insider&version=0.1.9
-```
-
-A CloudFront Function routes `?channel=X&platform=Y` to `/feed/{channel}/latest-{platform}.json`.
-
-## Signing Pipeline (all channels)
-
-Every build, regardless of channel, goes through signing. No unsigned builds
-reach users.
-
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐     ┌──────────────┐
-│  CI Build   │────>│ S3 pre-signed│────>│    CDSigner     │────>│  S3 signed/  │
-│ (GH Actions)│     │  /{channel}/ │     │ (sign+notarize) │     │  /{channel}/ │
-└─────────────┘     └──────────────┘     └─────────────────┘     └──────┬───────┘
-                                                                         │
-                                                                   S3 PUT event
-                                                                         │
-                                                                         ▼
-                                                                  ┌──────────────┐
-                                                                  │ Feed Lambda  │
-                                                                  │ writes       │
-                                                                  │ latest-*.json│
-                                                                  └──────┬───────┘
-                                                                         │
-                                                                         ▼
-                                                                  ┌──────────────┐
-                                                                  │  CloudFront  │
-                                                                  │  (5min TTL)  │
-                                                                  └──────┬───────┘
-                                                                         │
-                                                                         ▼
-                                                                  ┌──────────────┐
-                                                                  │   Client     │
-                                                                  │ auto-update  │
-                                                                  └──────────────┘
-```
-
-**CI workflow responsibilities (same for all channels):**
-1. Build artifacts (wheel + desktop apps)
-2. Upload unsigned to `s3://…/pre-signed/{channel}/{version}/`
-3. Done. CI exits.
-
-**Signing infrastructure responsibilities (CDK-managed):**
-1. CDSigner watches or is called for `pre-signed/` objects
-2. Signs macOS .app with Apple Developer ID + notarizes via Apple
-3. Deposits signed artifacts into `signed/{channel}/{version}/`
-4. S3 PUT event on `signed/` triggers the Feed Lambda
-
-**Feed Lambda responsibilities:**
-1. Triggered by S3 PUT on `signed/{channel}/{version}/*.zip`
-2. Reads artifact metadata (version from path, file size, S3 URL)
-3. Writes `feed/{channel}/latest-mac.json` (Squirrel-compatible):
-   ```json
-   {
-     "version": "0.2.0-nightly.20260708",
-     "url": "https://updates.kirocrew.dev/signed/nightly/0.2.0-nightly.20260708/KiroCrew-...-arm64.zip",
-     "name": "0.2.0-nightly.20260708",
-     "pub_date": "2026-07-08T06:15:00Z"
-   }
-   ```
-4. Similarly writes `latest-linux.json` if AppImage is present
-5. Does NOT write if version is in `blocked-versions.json`
-
-## Workflows
-
-### 1. `nightly.yml` — builds every night from main
-
-```yaml
-name: Nightly Build
-on:
-  schedule:
-    - cron: "0 6 * * *"  # 06:00 UTC = 11pm PDT
-  workflow_dispatch: {}   # manual trigger for testing
-
-jobs:
-  build:
-    # builds wheel + desktop (macOS arm64, Linux x64)
-
-  publish:
-    needs: build
-    steps:
-      - download all artifacts
-      - upload to s3://…/pre-signed/nightly/{version}/
-      # CI exits here. Signing + feed update is infrastructure-driven.
-```
-
-**Retention:** pre-signed/ nightly artifacts expire after 14 days (S3 lifecycle).
-signed/ nightly artifacts expire after 30 days.
-
-### 2. `beta-cut.yml` — Friday release branch cut (manual)
-
-```yaml
-name: Beta Cut
-on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to release (e.g. 0.2.0)"
-        required: true
-
-jobs:
-  cut:
-    runs-on: ubuntu-latest
-    steps:
-      - checkout main
-      - create branch: release/{version}
-      - bump __version__ to "{version}-beta.1"
-      - commit + push branch
-      - trigger build workflow on the release branch
-      - upload artifacts to s3://…/beta/
-      - write latest-mac.json for beta channel
-      - create tag: v{version}-beta.1
-      - invalidate CloudFront /beta/*
-```
-
-### 3. `beta-hotfix.yml` — push fixes to the release branch
-
-Triggered by pushes to `release/*` branches. Builds, increments beta number,
-uploads to the beta feed.
-
-### 4. `promote-stable.yml` — promote beta to stable (manual)
-
-```yaml
-name: Promote to Stable
-on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Beta tag to promote (e.g. v0.2.0-beta.3)"
-        required: true
-
-jobs:
-  promote:
-    runs-on: ubuntu-latest
-    steps:
-      - download beta artifacts matching the tag
-      - rename to stable version (strip -beta.N suffix)
-      - upload to s3://…/stable/
-      - write latest-mac.json for stable channel
-      - create tag: v{version}
-      - create GitHub Release with artifacts attached
-      - invalidate CloudFront /stable/*
-```
-
-### 5. `rollback.yml` — emergency rollback (manual)
-
-```yaml
-name: Rollback Channel
-on:
-  workflow_dispatch:
-    inputs:
-      channel: { type: choice, options: [nightly, beta, stable] }
-      version: { description: "Version to roll back TO" }
-
-jobs:
-  rollback:
-    steps:
-      - overwrite latest-mac.json with the specified version's metadata
-      - optionally add current (bad) version to blocked-versions.json
-      - invalidate CloudFront /{channel}/*
-```
-
-## Rollback Mechanism
-
-Two layers:
-
-1. **Feed rollback** — overwrite `latest-mac.json` to point at a previous
-   version's artifacts. Clients on the bad version auto-update "down" to the
-   good version (Squirrel doesn't enforce `new > current`; it just applies
-   whatever the feed says).
-
-2. **Version blocking** — add the bad version to `blocked-versions.json`.
-   The client checks this on startup (separate from the feed check) and
-   force-triggers an update if running a blocked version. This catches
-   users who dismissed the update prompt.
-
-## Client-Side Channel Selection
-
-In `website/electron/auto-update.js`, the `getFlavor()` function already
-maps "beta" → "insider" channel and "stable" → "stable" channel. We extend:
-
-- Add a user-facing **Settings > Update Channel** preference: Nightly / Beta / Stable
-- Store in electron-store (persists across updates)
-- `getFlavor()` reads this preference instead of the build-time constant
-- Default: "stable" for release builds, "beta" for beta-tagged builds
-
-## Infrastructure (CDK additions to KiroCrewPublishCDK)
-
-### Existing (already deployed)
-- `KiroCrewGitHubCi` — GitHub OIDC + Bedrock access
-- `KiroCrewCdSigner` — S3 bucket (`kirocrew-signing-artifacts-116101834266`), CDSigner IAM roles, CI signing invoker role
-
-### New: `KiroCrewUpdateFeedStack`
-
-```
-S3 Bucket: reuse existing kirocrew-signing-artifacts bucket
-  - pre-signed/{channel}/{version}/ — CI uploads here
-  - signed/{channel}/{version}/     — CDSigner deposits here
-  - feed/{channel}/latest-*.json    — Lambda writes here
-  - Lifecycle rules:
-    - pre-signed/nightly/* expires 14 days
-    - signed/nightly/* expires 30 days
-    - pre-signed/beta/* expires 90 days
-    - signed/beta/* expires 90 days
-    - signed/stable/* never expires
-  - Versioning: enabled (rollback = restore previous object version)
-
-S3 Event Notification:
-  - Prefix: signed/
-  - Suffix: .zip
-  - Event: s3:ObjectCreated:*
-  - Target: Feed Lambda
-
-Lambda: kirocrew-update-feed-writer
-  - Runtime: Python 3.12
-  - Trigger: S3 PUT on signed/**/*.zip
-  - Action: parse channel+version from key, write feed/{channel}/latest-mac.json
-  - Also writes latest-linux.json for .AppImage events
-  - Checks blocked-versions.json before writing
-  - IAM: S3 GetObject on signed/, PutObject on feed/, GetObject on blocked-versions.json
-
-CloudFront Distribution:
-  - Origin: S3 bucket (signed/ and feed/ prefixes)
-  - Custom domain: updates.kirocrew.dev (ACM cert in us-east-1)
-  - CloudFront Function: route ?channel=X&platform=Y queries to /feed/{channel}/latest-{platform}.json
-  - Cache: 5 min TTL on feed/*.json, 1 year on signed/ artifacts
-  - Origin Access Control (OAC) — no public bucket access
-
-CDSigner Integration:
-  - CDSigner watches pre-signed/ (or CI calls CDSigner API after upload)
-  - Signs + notarizes macOS artifacts (Developer ID + Apple notarization)
-  - Linux AppImages get GPG-signed (optional, lower priority)
-  - Deposits results into signed/{channel}/{version}/
-```
-
-## Release Calendar (steady state)
-
-```
-Mon-Thu: commits land on main
-Fri (weekly):
-  - Nightly builds every night as usual
-  - OPTIONAL: manual "Beta Cut" if enough has accumulated
-
-Fri (biweekly, when ready):
-  - Trigger "Beta Cut" workflow
-  - Creates release/x.y.z branch
-  - Beta testers get the update automatically
-
-Next 2 weeks:
-  - Bug reports → cherry-pick fixes to release branch
-  - Each push → new beta.N uploaded to beta feed
-  - Nightly continues independently from main
-
-After 2 weeks (or when beta is stable):
-  - Trigger "Promote to Stable"
-  - All stable users get the update
-
-Emergency:
-  - Trigger "Rollback" workflow
-  - Or cherry-pick fix → push to release branch → auto-publishes new beta
-```
-
 ## CLI (Linux / EC2) Distribution
 
-The channels above ship the **desktop** app (Squirrel `latest-mac.json`) and the Linux AppImage (`latest-linux.json`). The **CLI** — the `pip` wheel that runs the gateway headless on servers and EC2 — is not yet a first-class channel target; today `release.yml` publishes it only as a GitHub Release asset. This section makes the wheel a first-class target on the same three channels, so a Linux/EC2 host can track nightly, insider, or stable and self-update.
-
-Channel naming: the CLI uses the same pipeline channels — Nightly, Beta, Stable. The Beta channel is surfaced to users as **insider** (the same mapping `auto-update.js` uses for the desktop client), so `--channel insider` resolves to the `beta` feed prefix.
+Alongside the desktop app (`latest-mac.yml`) and the Linux AppImage
+(`latest-linux.yml`), the **CLI** — the `pip` wheel that runs the gateway
+headless on servers and EC2 — is a first-class channel target: a Linux/EC2
+host can track nightly, insider, or stable and self-update. `publish-cli.yml`
+implements this, called by `nightly.yml` and `release.yml` (see "As built"
+above). The channel is a literal path segment (`cli/insider/…`), so there is
+no beta→insider name mapping.
 
 ### How it differs from the desktop path
 
 - **No notarization, but a signature is required.** Linux has no Gatekeeper, so the CLI never touches CDSigner or Apple. A `SHA256SUMS` beside the wheel is only a corruption check — whoever can overwrite the wheel in S3/CloudFront (or via compromised CI) can rewrite `SHA256SUMS` and the feed's `sha256` in the same breath. So the installer verifies a required signature over the manifest — Sigstore cosign (keyless, identity-pinned) or minisign with a public key pinned in the installer/repo — against a trust root that is not stored beside the artifact. That pinned-key signature, not the checksum, is the authenticity anchor.
-- **CI-direct feed, independent of signing.** There is no `signed/` step for the wheel, so there is no S3 PUT to trigger the Feed Lambda — the CLI publish writes `latest-cli.json` directly from CI. It depends only on the built wheel, so a macOS signing failure never blocks a CLI release.
-- **Build once, promote.** The wheel rides the existing workflows: `nightly.yml` publishes the nightly wheel; `beta-cut.yml` builds the release-branch wheel once and publishes it to the beta (insider) channel; `promote-stable.yml` copies that same wheel to stable — byte-identical, no rebuild.
+- **CI-direct feed, independent of signing.** The wheel has no `signed/` stage at all, so `publish-cli.yml` writes `latest-cli.json` straight from CI (as every lane now does — see "Feed (as built)" above). It depends only on the built wheel, so a macOS signing failure never blocks a CLI release.
+- **Build once per tag.** `nightly.yml` publishes the nightly wheel;
+  `release.yml` publishes the tagged wheel to insider (RC tag) or stable
+  (bare tag). Promotion is a human step — tagging the good RC's commit — so
+  the stable build comes from the same commit the RC was validated on.
 
 ### Topology
 
@@ -472,7 +186,7 @@ Channel naming: the CLI uses the same pipeline channels — Nightly, Beta, Stabl
 flowchart TB
     subgraph SRC["Build sources"]
         NB["Nightly build — main HEAD, rebuilt nightly (rolling)"]
-        RC["beta-cut build — release/x.y.z, built ONCE"]
+        RC["release.yml — RC tag on release/x.y.z"]
     end
 
     subgraph PUB["Publish — each build does BOTH targets"]
@@ -483,20 +197,20 @@ flowchart TB
     end
 
     subgraph CH_N["Channel: nightly (rolling)"]
-        NMACF["feed/nightly/latest-mac.json"]
+        NMACF["feed/nightly/latest-mac.yml"]
         NCLIF["feed/nightly/latest-cli.json"]
     end
-    subgraph CH_B["Channel: beta = insider (release candidate)"]
-        BMACF["feed/beta/latest-mac.json"]
-        BCLIF["feed/beta/latest-cli.json"]
+    subgraph CH_B["Channel: insider (release candidate)"]
+        BMACF["feed/insider/latest-mac.yml"]
+        BCLIF["feed/insider/latest-cli.json"]
     end
-    subgraph CH_S["Channel: stable (promote — no rebuild)"]
-        SMACF["feed/stable/latest-mac.json"]
+    subgraph CH_S["Channel: stable (promoted RC commit)"]
+        SMACF["feed/stable/latest-mac.yml"]
         SCLIF["feed/stable/latest-cli.json"]
     end
 
     subgraph CLIENT["Clients"]
-        MACAPP["macOS app auto-update (Squirrel)"]
+        MACAPP["macOS app auto-update (electron-updater)"]
         LINUX["Linux / EC2 CLI — cli.sh --channel X / kirocrew update"]
     end
 
@@ -506,7 +220,7 @@ flowchart TB
     NCLI --> NCLIF
     RMAC --> BMACF
     RCLI --> BCLIF
-    CH_B -. "promote-stable: same artifacts, no rebuild / re-sign" .-> CH_S
+    CH_B -. "promote: bare tag on the RC commit" .-> CH_S
     NMACF --> MACAPP
     BMACF --> MACAPP
     SMACF --> MACAPP
@@ -528,11 +242,11 @@ feed/{channel}/latest-cli.json
 
 ```json
 {
-  "channel": "beta",
+  "channel": "insider",
   "version": "0.2.0",
-  "wheel_url": "https://updates.kirocrew.dev/cli/beta/0.2.0/kirocrew-0.2.0-py3-none-any.whl",
+  "wheel_url": "https://download.crew.kiro.dev/cli/insider/0.2.0/kirocrew-0.2.0-py3-none-any.whl",
   "sha256": "…",
-  "sig_url": "https://updates.kirocrew.dev/cli/beta/0.2.0/kirocrew-0.2.0-py3-none-any.whl.sig",
+  "sig_url": "https://download.crew.kiro.dev/cli/insider/0.2.0/kirocrew-0.2.0-py3-none-any.whl.sig",
   "python_requires": ">=3.10",
   "pub_date": "2026-07-18T06:15:00Z"
 }
@@ -540,19 +254,19 @@ feed/{channel}/latest-cli.json
 
 ### Version scheme (PEP 440)
 
-The wheel version is read from `pyproject.toml` `[project].version`, so the nightly build stamps that field to a PEP 440 dev release (stamping `src/kiro_crew/__init__.py` alone has no effect — setuptools reads the version from `pyproject.toml`). Insider and stable carry the plain release version and ship one byte-identical wheel; the channel, not the version, conveys maturity:
+The wheel version is read from `pyproject.toml` `[project].version`, so the nightly build stamps that field to a PEP 440 dev release (stamping `src/kiro_crew/__init__.py` alone has no effect — setuptools reads the version from `pyproject.toml`). An RC tag maps to a PEP 440 `rcN` wheel; stable carries the plain release version. See "As built" above for the mapping and its one collision trap.
 
 | Channel | Desktop display | CLI wheel version |
 |---------|-----------------|-------------------|
-| Nightly | `0.2.0-nightly.20260708` | `0.2.0.dev20260708` |
-| Beta (insider) | `0.2.0-beta.1` | `0.2.0` |
+| Nightly | `0.2.0-nightly.20260708t061155` | `0.2.0.dev20260708061155` |
+| Insider | `0.2.0-rc.1` | `0.2.0rc1` |
 | Stable | `0.2.0` | `0.2.0` |
 
 ### Install and self-update (client)
 
 ```bash
 # install, or switch channels
-curl -fsSL https://updates.kirocrew.dev/cli.sh | sh -s -- --channel {nightly|insider|stable}
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel {nightly|insider|stable}
 #   reads feed/{channel}/latest-cli.json -> downloads wheel -> verifies SHA256
 #   installs isolated via pipx (or uv tool) -> records channel in ~/.kiro/crew/channel
 
@@ -564,16 +278,28 @@ This is a new download path, separate from the source-build `install.sh` (git cl
 
 ### CI and infrastructure delta
 
-- Add a `publish-cli` step to `nightly.yml` and `beta-cut.yml` that uploads the wheel to `cli/{channel}/{version}/` and writes `feed/{channel}/latest-cli.json` + `SHA256SUMS` + a detached signature (cosign/minisign) over the manifest. Gate it on the wheel build only, never on CDSigner.
-- Extend `promote-stable.yml` to also copy the wheel and write `feed/stable/latest-cli.json`.
-- Grant the CI signing-invoker role `s3:PutObject` on `cli/*` and `feed/*` (the `feed/*` grant is currently missing).
-- Serve `cli.sh` from the existing CloudFront distribution alongside the feeds.
+Remaining open item: a detached signature (cosign/minisign) over the manifest,
+verified against a trust root not stored beside the artifact. `SHA256SUMS`
+alone is a corruption check, not an authenticity anchor — see "How it differs
+from the desktop path" above. The `cli/*` + `feed/*` PutObject grants and
+`cli.sh` serving are deployed.
 
-## Migration from Current State
+## Superseded design
 
-1. **Phase 1** — Add nightly workflow + S3 feed bucket (CDK). Wire `auto-update.js` to use the new feed URL once DNS is live.
-2. **Phase 2** — Add beta-cut + promote workflows. Test with internal users.
-3. **Phase 3** — Add rollback workflow + blocked-versions.json client check. Add Settings > Update Channel UI.
-4. **Phase 4** — Add the CLI channel feeds (`latest-cli.json`), the `publish-cli` step on nightly/beta-cut/promote-stable, the `cli/*` + `feed/*` PutObject grant, and publish `cli.sh` plus the `kirocrew update` self-update path.
+An earlier revision of this file specified a release-branch **automation** model
+that was never built, and which product decisions have since moved away from.
+Recorded here so the names do not resurface as if they were real:
 
-The existing `release.yml` (GitHub Releases on tag push) remains an additional wheel distribution; channel-based CLI installs and self-update use the S3 feed described in **CLI (Linux / EC2) Distribution** above. Desktop auto-update uses the S3 feed independently.
+| Specified | Status |
+|---|---|
+| `beta-cut.yml`, `beta-hotfix.yml`, `promote-stable.yml` | **Never built.** Cutting a branch, numbering RCs, and promoting are deliberately human steps; the pipeline reacts only to a pushed tag. |
+| `rollback.yml` + `blocked-versions.json` | **Never built, and dropped by decision.** There is no rollback — we roll forward by cutting a new version. |
+| Feed Lambda writing `latest-*.json` on S3 PUT | **Superseded** (`c1c7db05`, one day after the nightly pipeline landed). A PUT event cannot express "and signature verification passed", so CI writes the feed synchronously after the `spctl` gate. No Lambda is deployed. |
+| `latest-mac.json` + CloudFront Function query routing (`?channel=X&platform=Y`) | **Superseded** by static electron-updater channel files (`latest-mac.yml` / `latest-linux.yml`) fetched directly, with client-side version compare. |
+| `updates.kirocrew.dev` | **Superseded** by `updates.crew.kiro.dev` (pointers) + `download.crew.kiro.dev` (bytes). |
+| "Beta" as a channel name | **Renamed** to `insider` everywhere, including the feed path segment. |
+| 2-week Friday cadence calendar | **Not a commitment.** Insider bakes until judged stable; there is no fixed promote date. |
+
+The design rationale that *did* survive — channel model, versioning, URL classes,
+signing chain, client update flow, platform-lane contract — is in
+`docs/release-process-design.md`.

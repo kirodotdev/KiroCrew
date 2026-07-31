@@ -19,7 +19,6 @@ import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
-import { KiroReadinessProvider } from '../providers/KiroReadinessContext'
 import type { RootState } from '../store'
 import type { ChatTag, TagColumn, ChatFolder } from '../types'
 
@@ -101,7 +100,7 @@ const columns: TagColumn[] = [
 ]
 const folders: ChatFolder[] = [{ id: FOLDER_ID, name: 'CDF', order: 0 }]
 
-function renderSidebar(kiroReady = true) {
+function renderSidebar() {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: false, slots: [], approvalMode: 'normal',
@@ -120,12 +119,10 @@ function renderSidebar(kiroReady = true) {
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter>
-            <KiroReadinessProvider ready={kiroReady}>
-              <ChatSidebar
-                slots={[]} activeSlot={null} unreadSlots={[]}
-                history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
-              />
-            </KiroReadinessProvider>
+            <ChatSidebar
+              slots={[]} activeSlot={null} unreadSlots={[]}
+              history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
+            />
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
@@ -162,14 +159,5 @@ describe('board view: new chat in folder', () => {
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(mocks.setSlotFolder).toHaveBeenCalledWith(NEW_KEY, FOLDER_ID))
     await waitFor(() => expect(mocks.dropSlotToColumn).toHaveBeenCalledWith(NEW_KEY, COL_A))
-  })
-
-  it('disables every board folder session action until Kiro is ready', () => {
-    const { container } = renderSidebar(false)
-    const buttons = container.querySelectorAll<HTMLButtonElement>(
-      `[data-testid$="-folder-${FOLDER_ID}-new-chat"], button[aria-label="New chat in CDF"]`,
-    )
-    expect(buttons.length).toBe(4)
-    for (const button of buttons) expect(button).toBeDisabled()
   })
 })

@@ -4,7 +4,7 @@ import { Search, BookOpen, Network, FolderSync, HelpCircle, FileText, X, Copy } 
 import { Btn, SearchInput, Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
-import { useCopy, ITEM_TYPES, STATUSES, ONBOARDING } from './helpers'
+import { useCopy, ITEM_TYPES, STATUSES, DEFAULT_STATUS_FILTER, ONBOARDING } from './helpers'
 import DetailView from './DetailView'
 import SourcesList from './SourcesList'
 import { ItemCard } from './ItemCard'
@@ -143,7 +143,7 @@ export default function KnowledgePage() {
   const [query, setQuery] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
-  const [statusFilter, setStatusFilter] = useState('active')
+  const [statusFilter, setStatusFilter] = useState(DEFAULT_STATUS_FILTER)
   const [page, setPage] = useState(1)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null)
@@ -401,8 +401,60 @@ export default function KnowledgePage() {
     setShowAutocomplete(false)
   }, [])
 
-  const isEmpty = !loading && total === 0 && !query && !typeFilter && !statusFilter
+  // "The user has not narrowed anything" — every filter is still at its initial
+  // value. statusFilter starts at DEFAULT_STATUS_FILTER, so the earlier
+  // `!statusFilter` test could never be true and the onboarding block below was
+  // unreachable for every user since it was written.
+  //
+  // namespaceFilter is part of this test because fixing statusFilter exposes it:
+  // selecting a namespace that holds 0 items would otherwise render onboarding,
+  // and that branch replaces the filter bar, leaving no control to clear the
+  // filter with.
+  //
+  // Known gap: a library whose every item is archived also reports 0 active
+  // items, and both the list query and /namespaces are active-scoped, so it is
+  // indistinguishable from an empty library and shows onboarding. The Sources
+  // and Graph tabs stay mounted above this branch, so it is not a dead end.
+  const filtersPristine = !query && !typeFilter && !namespaceFilter && statusFilter === DEFAULT_STATUS_FILTER
+  const isEmpty = !loading && total === 0 && filtersPristine
   const totalPages = Math.ceil(total / limit)
+
+  // Extracted so the onboarding branch can render it too. Onboarding fires when
+  // total === 0 under pristine filters, which includes a library whose every
+  // item is archived. Replacing the filter bar in that state would strand the
+  // user: statusFilter defaults to active, so the only way back to their
+  // content is to change it. Keeping one definition avoids the bar drifting
+  // between the two render sites.
+  const listFilterBar = (
+    <div className="flex gap-2 mb-3 flex-wrap relative" ref={searchRef}>
+      <div className="relative flex-1 min-w-[200px]">
+        <SearchInput placeholder={i18nT('pages.knowledge.index.search_knowledge_press_enter_to_search')} value={searchInput}
+          onChange={e => { setSearchInput((e.target as HTMLInputElement).value); setShowAutocomplete(true) }}
+          onKeyDown={e => { if ((e as React.KeyboardEvent).key === 'Enter') { setQuery(searchInput); setPage(1) } }}
+          onFocus={() => setShowAutocomplete(true)}
+          onBlur={() => setTimeout(() => setShowAutocomplete(false), 200)}
+        />
+        {showAutocomplete && searchInput.length >= 2 && (
+          <EntityAutocomplete query={searchInput} onSelect={handleEntitySelect} />
+        )}
+      </div>
+      <select value={typeFilter} aria-label={i18nT('pages.knowledge.index.filter_by_type')} onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
+        className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
+        <option value="">{i18nT('pages.knowledge.index.all_types')}</option>
+        {ITEM_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+      </select>
+      <select value={statusFilter} aria-label={i18nT('pages.knowledge.index.filter_by_status')} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
+        className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
+        <option value="">{i18nT('pages.knowledge.index.all_statuses')}</option>
+        {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+      </select>
+      <select value={namespaceFilter} aria-label={i18nT('pages.knowledge.index.filter_by_namespace')} onChange={e => { setNamespaceFilter(e.target.value); setPage(1) }}
+        className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
+        <option value="">{i18nT('pages.knowledge.index.all_namespaces')}</option>
+        {namespaces.map(ns => <option key={ns.name} value={ns.name}>{ns.name} ({ns.count})</option>)}
+      </select>
+    </div>
+  )
 
   return (
     <div className="flex flex-col h-full">
@@ -457,43 +509,19 @@ export default function KnowledgePage() {
       <div className={`flex-1 px-4 sm:px-6 py-4 min-h-0 ${tab === 'graph' ? 'flex flex-col' : 'overflow-y-auto'}`} ref={listContainerRef}>
         <EmbeddingStatus />
         {isEmpty && tab === 'list' ? (
-          <div className="flex flex-col items-center justify-center py-12 animate-rise">
-            <BookOpen size={48} className="text-muted/20 mb-4" />
-            <h3 className="text-lg font-bold text-text-strong mb-1">{ONBOARDING.title}</h3>
-            <p className="text-sm text-muted mb-4 text-center max-w-md">{ONBOARDING.description}</p>
-            <button onClick={() => setTab('sources')} className="px-4 py-2 bg-accent text-accent-fg rounded-md text-sm hover:bg-accent/80 cursor-pointer">{i18nT('pages.knowledge.index.go_to_sources_to_upload_files')}</button>
-          </div>
+          <>
+            {listFilterBar}
+            <div className="flex flex-col items-center justify-center py-12 animate-rise" data-testid="knowledge-onboarding">
+              <BookOpen size={48} className="text-muted/20 mb-4" />
+              <h3 className="text-lg font-bold text-text-strong mb-1">{ONBOARDING.title}</h3>
+              <p className="text-sm text-muted mb-4 text-center max-w-md">{ONBOARDING.description}</p>
+              <button onClick={() => setTab('sources')} className="px-4 py-2 bg-accent text-accent-fg rounded-md text-sm hover:bg-accent/80 cursor-pointer">{i18nT('pages.knowledge.index.go_to_sources_to_upload_files')}</button>
+            </div>
+          </>
         ) : tab === 'list' ? (
           selectedId ? <DetailView itemId={selectedId} onBack={() => setSelectedId(null)} onEntityClick={handleEntitySelect} /> : (
             <>
-              <div className="flex gap-2 mb-3 flex-wrap relative" ref={searchRef}>
-                <div className="relative flex-1 min-w-[200px]">
-                  <SearchInput placeholder={i18nT('pages.knowledge.index.search_knowledge_press_enter_to_search')} value={searchInput}
-                    onChange={e => { setSearchInput((e.target as HTMLInputElement).value); setShowAutocomplete(true) }}
-                    onKeyDown={e => { if ((e as React.KeyboardEvent).key === 'Enter') { setQuery(searchInput); setPage(1) } }}
-                    onFocus={() => setShowAutocomplete(true)}
-                    onBlur={() => setTimeout(() => setShowAutocomplete(false), 200)}
-                  />
-                  {showAutocomplete && searchInput.length >= 2 && (
-                    <EntityAutocomplete query={searchInput} onSelect={handleEntitySelect} />
-                  )}
-                </div>
-                <select value={typeFilter} aria-label={i18nT('pages.knowledge.index.filter_by_type')} onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
-                  className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
-                  <option value="">{i18nT('pages.knowledge.index.all_types')}</option>
-                  {ITEM_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
-                </select>
-                <select value={statusFilter} aria-label={i18nT('pages.knowledge.index.filter_by_status')} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
-                  className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
-                  <option value="">{i18nT('pages.knowledge.index.all_statuses')}</option>
-                  {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-                <select value={namespaceFilter} aria-label={i18nT('pages.knowledge.index.filter_by_namespace')} onChange={e => { setNamespaceFilter(e.target.value); setPage(1) }}
-                  className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
-                  <option value="">{i18nT('pages.knowledge.index.all_namespaces')}</option>
-                  {namespaces.map(ns => <option key={ns.name} value={ns.name}>{ns.name} ({ns.count})</option>)}
-                </select>
-              </div>
+              {listFilterBar}
 
               {selectedItems.size > 0 && (
                 <BulkActions selectedIds={selectedItems} items={visibleItems} onDone={() => setSelectedItems(new Set())} />

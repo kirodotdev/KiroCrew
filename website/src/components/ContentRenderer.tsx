@@ -147,7 +147,7 @@ export const ContentRenderer = memo(function ContentRenderer({
   wordWrap: boolean
   autocomplete: boolean
   onChange: (v: string) => void
-  previewRef: React.RefObject<HTMLDivElement | null>
+  previewRef: React.RefObject<HTMLElement | null>
   displayContent: string
   isMarkdown: boolean
   highlightedHtml: string
@@ -192,7 +192,12 @@ export const ContentRenderer = memo(function ContentRenderer({
               {Array.from({ length: content.split('\n').length }, (_, i) => <div key={i}>{i + 1}</div>)}
             </div>
           )}
+          {/* previewRef also lands here (not just on the markdown branch) so a
+              selection in a text/json/svg body has a root to map back to source:
+              a <pre>'s textContent equals the source exactly (highlighting only
+              wraps spans), so rendered-text offsets are source offsets. */}
           <pre
+            ref={previewRef as React.RefObject<HTMLPreElement>}
             className="absolute inset-0 p-3 m-0 overflow-auto whitespace-pre"
             style={{ paddingLeft: lineNums ? 'calc(3em + 12px)' : undefined }}
             onScroll={gutterReadRef ? (e => { if (gutterReadRef.current) gutterReadRef.current.scrollTop = (e.target as HTMLElement).scrollTop }) : undefined}

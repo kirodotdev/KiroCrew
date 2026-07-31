@@ -13,7 +13,7 @@
   "settings": {
     "display": {
       "language": {
-        "auto": "Auto (follow browser)",
+        "auto": "Auto",
         "description": "Language for the dashboard interface.",
         "label": "Language",
         "sync_failed": "Couldn't save this to your KiroCrew config — the language applies in this browser only and may reset on reload."
@@ -87,15 +87,38 @@
     }
   },
   "components": {
+    "artifactChatPanel": {
+      "agent_chat": "Agent chat",
+      "artifact_companion_chat": "Artifact companion chat",
+      "close_chat_panel": "Close chat panel",
+      "close_panel_the_session_stays_active": "Close panel (the session stays active)",
+      "new_chat": "New chat",
+      "new_chat_archive_this_conversation_and_start_fresh": "New chat — archive this conversation and start fresh",
+      "no_active_session_for_this_artifact": "No active session for this artifact.",
+      "open_in_chat_page": "Open in chat page",
+      "start_chat": "Start chat",
+      "starting_session": "Starting session…"
+    },
     "linkedSurfacesSection": {
       "connected": "Connected: {{label}}",
       "mirror": "Mirror",
       "origin": "Origin",
       "post_reminder": "Post reminder in {{label}}",
       "stop_mirroring": "Stop mirroring to {{label}}"
+    },
+    "markdownRenderer": {
+      "reset_zoom": "Reset zoom (0)",
+      "zoom_in": "Zoom in (+)",
+      "zoom_out": "Zoom out (-)"
     }
   },
   "pages": {
+    "artifactDetailPage": {
+      "agent_chat": "Agent chat",
+      "chat_with_the_agent_about_this_artifact": "Chat with the agent about this artifact",
+      "this_artifact_was_deleted": "This artifact was deleted.",
+      "toggle_agent_chat": "Toggle agent chat"
+    },
     "chat": {
       "activityViewer": {
         "clear": "Clear",
@@ -108,6 +131,16 @@
     },
     "chatSidebar": {
       "mirroring_to": "Mirroring to {{label}}"
+    },
+    "chatPage": {
+      "no_tools": "No tools",
+      "tool_search_deferred": "Tool Search · Deferred",
+      "tool_search_deferred_hint": "Tool specs load on demand — not sent to the model every turn.",
+      "tool_search_full": "Tool Search · Fully loaded",
+      "tool_search_full_hint": "Every MCP tool spec is sent to the model each turn.",
+      "tool_status_deferred": "Deferred",
+      "tool_status_disabled": "Disabled",
+      "tool_status_loaded": "Loaded this session"
     },
     "settings": {
       "aboutPanel": {

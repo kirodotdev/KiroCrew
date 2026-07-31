@@ -282,7 +282,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
               ? 'Closed/merged PRs are capped at the 100 most recently updated — turn on a "me" filter for a complete, repo-wide search'
               : undefined
         }>
-          {filteredPulls.length} {i18nT('apps.issueRadar.components.prList.pr')}{filteredPulls.length === 1 ? '' : 's'}
+          {i18nT('apps.issueRadar.components.prList.pr', { count: filteredPulls.length })}
           {prSearchTruncatedAt ? '+' : ''}
         </span>
         <span className="ml-auto flex items-center gap-2">

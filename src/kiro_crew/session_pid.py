@@ -976,6 +976,16 @@ def _protected_pids() -> set[int]:
 _ORPHAN_SWEEP_MAX_KILLS = 30
 _ORPHAN_MIN_AGE_SECONDS = 120  # Never reap processes younger than this
 
+# A candidate PID can exit between the /proc (or ps) snapshot and the per-PID
+# probe. Linux surfaces that as FileNotFoundError/ProcessLookupError reading
+# /proc/<pid>/cmdline; macOS as a non-zero `ps -p <pid>` exit. All three mean
+# "already gone", which is the sweep's goal — not a failure worth a traceback.
+_PID_VANISHED_ERRORS = (
+    FileNotFoundError,
+    ProcessLookupError,
+    subprocess.CalledProcessError,
+)
+
 # Entrypoints that positively identify a KiroCrew-spawned MCP/worker process.
 # Each marker MUST be unique to a process KiroCrew itself launches — the sweep
 # SIGKILLs any user-owned orphan that matches, so a marker naming a server the
@@ -1187,6 +1197,13 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
                 fields = ps_out.split(None, 1)
                 pid_age = _parse_etime(fields[0].decode() if fields else "")
                 cmdline = fields[1] if len(fields) > 1 else b""
+        except _PID_VANISHED_ERRORS:
+            # Expected TOCTOU race: the PID was in the /proc (or ps) snapshot
+            # taken by _our_orphan_pids() and exited before this probe read it.
+            # That is the outcome the sweep wants, so log one line — a stack
+            # trace here would overstate a routine event.
+            logger.debug("Orphan candidate pid %s vanished before probe", pid)
+            continue
         except Exception:
             logger.debug(
                 "Orphan candidate probe failed for pid %s",

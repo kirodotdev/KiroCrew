@@ -44,8 +44,10 @@ release. Two concrete gaps:
   boundary.
 - An **effective removal path**: pulling an app must take effect without a client
   release, and must survive the stale-cache fallback.
-- Room for **multiple hosting sources** (internal git farms, artifact stores /
-  S3, OCI, other internal registries) without a breaking schema change.
+- Room for **multiple hosting sources** for an app's bytes (internal git farms,
+  artifact stores / S3, OCI) without a breaking schema change. Additional
+  *catalog* sources stay an operator concern — config or build time, never named
+  by a fetched document (§3.3).
 
 ### Non-goals
 
@@ -54,8 +56,15 @@ release. Two concrete gaps:
   companion covering the **source of the catalog + its merchandising**, not how
   an app's UI is loaded. **Precedence:** where the two overlap on the wire format,
   this RFC's document envelope and entry schema (§3) supersede that RFC's §3.7
-  registry sketch — integer `schemaVersion` replaces its string `"version"`, entry
-  display fields stay out of the index (they come from each app's `app.json`), and
+  registry sketch, **and this RFC owns the `app.json` additions in §3.7** —
+  superseding that RFC's §3.3 manifest table, which `AppManifest` has already
+  outgrown (its one substantive manifest change, removing `backend`, never shipped,
+  and the live manifest carries fields the table never lists). The authoritative
+  manifest is `AppManifest` in code, not either RFC's table. Concretely: §3.7 adds
+  `resources`/`lifecycle`/`platform.externalInstall`/`searchAliases` and widens
+  `author` to a struct; integer `schemaVersion` replaces its string
+  `"version"`, entry display fields are **generated** into the index from each app's
+  `app.json` (§3.4) rather than hand-authored, and
   its flat `bundleUrl` + `bundleHash` map onto `source.type: "bundle"` with
   `integrity`. Its trust-tier vocabulary is reconciled in §5.
 - Third-party/community registry trust changes. User-configured external
@@ -138,11 +147,29 @@ byte-consistent with what the CDN serves.
 
 ## 3. Registry schema
 
-The registry stays a **minimal index**: identity + install metadata only. All
-display fields (`displayName`, `description`, `screenshots`, `heroImage`,
-`tags`, `highlights`, ...) come from each app's own `app.json`, fetched and
-cached on demand. This is the existing "single source of truth" design — app
-authors never edit the registry to change their description.
+The registry answers exactly two questions per app: **what it is** (identity) and
+**where its bytes come from** (source). Everything else lives elsewhere, and the
+division is what keeps each document editable by the right party:
+
+| Concern | Home | Who edits |
+|---|---|---|
+| Identity + byte source | this document | curator |
+| What the app *is* (display, runtime shape, external presence) | the app's own `app.json` (§3.7) | app author |
+| How the store *presents* it (taxonomy, membership, layout) | `editorial.json` (§4) | curator |
+
+Three rules fall out, and each closes a specific hole:
+
+- **No curator-authored presentation in the catalog.** Taxonomy, membership and
+  layout live in `editorial.json`, so re-labelling or re-ordering a category is an
+  editorial edit. This is deliberately *not* a claim that no display text lives in
+  the catalog: the generated search subset (§3.4) does, and changing an app's own
+  `displayName`/`summary` therefore does ride a republish — that is the price of
+  letting Discover search without a per-app manifest fetch.
+- **No executable strings in the catalog.** The client never runs a command
+  supplied by a fetched document (§3.7 replaces the one that existed).
+- **Generated, not authored.** Display fields still appear in the *published*
+  document — baked at publish time from the app's `app.json` (§3.4) — but a
+  curator never types them and an app author never edits this file.
 
 The canonical published schema is **generic and host-neutral** — no
 Amazon/Brazil constructs.
@@ -162,10 +189,10 @@ discriminator exists from day one so a second transport is additive:
     "url": "https://github.com/acme/oncall-radar.git", // any git-cloneable URL
     "ref": "3f2a1c9…",               // MUST be an immutable commit id (see below)
     "subdir": ""                     // optional
-  },
-  "resources": "app",                // where it runs: "app" (its own) | "gateway"
-  "lifecycle": "app",                // who manages it: "app" | "gateway"
-  "detectInstalled": "test -d ~/Applications/OncallRadar.app" // optional probe
+  }
+  // Runtime shape and external-presence detection are NOT here — they describe
+  // the app, so they live in its app.json (§3.7). Display fields are baked in
+  // at publish time (§3.4). Category membership lives in editorial.json (§4).
 }
 ```
 
@@ -191,7 +218,7 @@ Notes that make this work in practice:
   "which fields apply?" ambiguity the union exists to remove. Note that needing
   credentials at all makes `s3` gated on §8's *per-repository credential grants*
   question — the tier never supplies them (§5).
-- **`ref` MUST be an immutable commit id for official and delegated entries.** A
+- **`ref` MUST be an immutable commit id for official entries.** A
   branch name is a *mutable* pointer, so a signed index naming `main` signs
   nothing about the bytes: whoever can push to that branch changes what a
   "verified" app installs, and the app's `setup.onInstall` then runs unreviewed
@@ -239,143 +266,113 @@ the host to the allowlist, decide the credential posture), not a transport
 change. Keeping these separate is what stops a transport enum from quietly
 implying "and it's safe to send credentials there."
 
-### 3.3 Other internal registries are a different axis (delegation)
+### 3.3 Where registry SOURCES come from (not from this document)
 
-"Pull from another internal registry" is **not** a `source.type` — a registry
-index is a catalog, not an app's bytes. It belongs at the **document** level as
-delegation: the official registry names other indexes whose entries are folded
-in, each with its own trust posture.
+A registry document lists **apps**. It does **not** list other registries. Adding
+a catalog source is an **operator** decision, made in owner config or at build
+time — never something a fetched document can do.
 
-```jsonc
-{
-  "schemaVersion": 1,
-  "generatedAt": "2026-07-29T19:00:00Z",
-  "delegates": [
-    {
-      "name": "acme-internal",
-      "url": "https://…/app-registry.json",
-      "trust": "official",
-      "publicKey": "…"        // REQUIRED for trust:"official" — see below
-    }
-  ],
-  "apps": [ /* entries as above */ ]
-}
-```
+There are exactly two ways a source enters the set, both of which already exist:
 
-This is deliberately a superset of today's user-configured external registries
-(same fetch-and-merge machinery, add-only, dedupe by `name`), with one added
-capability: a delegate reached *through the signed official doc* can be marked
-`trust: "official"`, because the first-party curator vouched for it — whereas a
-user-configured registry stays untrusted (§5). That is the mechanism by which an
-internal edition ships an internal catalog without every app entry having to live
-in the public file.
+| Mechanism | Where | Trust | Who decides |
+|---|---|---|---|
+| **Owner config** | `registries: [{name, repo, branch}]` (`ExternalRegistryConfig`) | untrusted (§5) | the machine's owner |
+| **Edition / build time** | the `AppsLoader.registry_rows()` CPP seam (`_edition_registry_rows()`), merged add-only | edition-designated | whoever composes the build |
 
-Hard limits on what delegation confers and costs:
+An internal git-farm catalog is therefore an **edition** concern: an internal
+build contributes its rows through the existing seam, or the operator adds the
+registry to their own config. Either way the decision is local.
 
-- **The delegate's CONTENTS must be authenticated, not just its URL.** Naming a
-  delegate inside the signed official document authenticates *that this URL was
-  designated* — it says nothing about the bytes served there. A compromised
-  delegate endpoint would otherwise have its unsigned catalog merged at Official
-  trust, making attacker-chosen apps featurable and installable. So
-  `trust: "official"` **requires** either the delegate's own signing key
-  (`publicKey`, carried in and therefore vouched for by the signed root) or a
-  pinned digest of an immutable delegate revision. A delegate that fails
-  verification is dropped — it does **not** silently downgrade to untrusted,
-  because a downgrade would let an attacker choose the tier by breaking the
-  signature.
-- **`trust: "official"` confers catalog trust only** — eligibility for featuring
-  and editorial reference. It **never** confers clone-credential posture. A
-  delegate's entries are third-party-authored, so they clone credential-free in a
-  strict sandbox exactly like a user-external entry (§5). Ambient credentials for
-  an internal source require an explicit per-repository grant, never a tier.
-- **Delegated entries are subject to the same content-pinning rule** as official
-  ones (§3.1): immutable commit / digest, no mutable refs.
-- **Depth capped at one level** — a delegate's own `delegates[]` is ignored, so
-  the merge cannot cycle.
-- **Breadth and work capped too** — depth alone does not bound cost: the root doc
-  could name an unbounded number of delegates. The schema caps `delegates[]`
-  length, and the client fetches them with bounded concurrency and a total time
-  budget, degrading to "delegates unavailable" rather than stalling a browse.
+**Why the official document must NOT carry a `delegates[]` list.** An earlier
+draft of this RFC did exactly that, and it was wrong on three counts:
 
-### 3.4 Baked search fields + curated categories
+1. **It duplicates a mechanism that already exists.** Owner config and the
+   edition seam already cover both federation cases. A third path only creates
+   precedence questions between them.
+2. **It hands a remote document the power to add fetch targets.** The client
+   would fetch URLs it was told about by a document, not by its owner. That
+   converts a catalog into a redirector: a compromised (or merely
+   over-enthusiastic) first-party publish could point the entire fleet at new
+   hosts, including internal ones. Signing the document does not fix this — it
+   authenticates *who said it*, not whether the owner ever wanted those hosts
+   contacted.
+3. **It lets a document confer trust.** Trust in a source must be granted by the
+   party who owns the machine, not asserted by content arriving over the network.
+   A `trust: "official"` field is that inversion written down.
 
-The "minimal index" rule above has one necessary exception, for the same reason
+The blast-radius argument is the decisive one. Without delegation, a compromise
+of the signing key means *lies about apps the client already knows about*. With
+delegation, the same compromise means *new fetch origins, at official trust*.
+That is a categorically larger failure, bought for a capability the config and
+edition seams already provide.
+
+Dropping delegation also removes the machinery that existed only to contain it:
+per-delegate signing keys, delegate digest pinning, depth caps, breadth caps,
+fetch-concurrency budgets, and the taxonomy-override rule for delegate-supplied
+categories. None of that is needed once the document stops naming sources.
+
+**Catalog size is a separate problem.** If the official catalog ever outgrows one
+document, that is *sharding* — parts enumerated under the same signature and the
+same origin — not federation of third-party catalogs. It does not require naming
+other registries and does not expand the trust set.
+
+### 3.4 Baked search fields (generated, never authored)
+
+The "identity + source only" rule has one necessary exception, for the reason
 every comparable store has it: **you cannot search or list a catalog you have not
-fetched.** Discover renders a dense sortable list, a category rail, and a search
+fetched.** Discover renders a dense sortable list, a category rail and a search
 box over *every* app before the user clicks anything. If display data lived only
-in each app's `app.json`, the client would have to fetch N remote manifests just
-to paint the first screen — today that means a throwaway shallow clone per app.
+in each app's `app.json`, the client would have to fetch N remote manifests to
+paint the first screen — today that means a throwaway shallow clone per app.
 
 So the published document carries a small **denormalized search subset** per
-entry, and the rule that keeps it honest is that it is **generated, never
-authored**:
+entry, and the rule that keeps it honest is that it is **generated**:
 
 ```jsonc
 {
   "name": "oncall-radar",
   "source": { /* … */ },
-  // ── generated at publish time from the app's own app.json ──
+  // ── baked at publish time from the app's own app.json ──
   "displayName": "Oncall Radar",
-  "summary": "Surfaces your oncall pages in one place.",  // short, list-safe
-  "author": "acme",
-  "tags": ["ops", "oncall"],       // author-declared, free-form
+  "summary": "Surfaces your oncall pages in one place.",   // short, list-safe
+  "author": { "name": "acme", "url": "https://acme.dev", "kind": "org" },
+  "tags": ["ops", "oncall"],            // author-declared, VISIBLE as facets
+  "searchAliases": ["pager", "pagerduty"], // invisible synonyms, never rendered
   "version": "1.2.0",
-  "iconRef": "…", "heroRef": "…"   // resolved media pointers
-  // NOTE: `category` is NOT in this list — it is curator-assigned, not
-  // manifest-derived. See the tags-vs-categories table below.
+  "iconRef": "…", "heroRef": "…"        // resolved media pointers
 }
 ```
 
-- **`category` is deliberately excluded from the manifest-derived set.** Every
-  other baked field originates in author-controlled `app.json`; `category` is
-  assigned by the curator in the catalog. If it were manifest-derived an author
-  could self-promote into a curated category, which is exactly what the taxonomy
-  is meant to prevent. Likewise, a **delegate's** per-entry `category` values and
-  any `categories[]` it declares are **ignored** unless the signed root supplies
-  an explicit override — taxonomy authority stays with the root curator.
 - **Generated, not hand-maintained.** The publish pipeline (§2) already fetches
   and resolves each entry, so it bakes these from the app's own `app.json`. App
   authors still never edit the catalog — they edit their manifest, and the next
-  publish picks it up. This preserves the single-source-of-truth premise while
-  giving the client something searchable. Precedent: Obsidian's
-  `community-plugins.json` carries `name`/`author`/`description` explicitly *for
-  search*, and Homebrew serves a fully generated JSON API off its tap.
+  publish picks it up. Precedent: Obsidian's `community-plugins.json` carries
+  `name`/`author`/`description` explicitly *for search*, and Homebrew serves a
+  fully generated JSON API off its tap.
 - **Advisory cache, not authority.** On the detail page the app's live manifest
   wins; the baked copy exists for list/search/first-paint. Long-form fields
   (screenshots, highlights, body) stay lazy and are never baked.
+- **`author` is structured from the start.** A bare string cannot carry a link or
+  distinguish a person from an org, and widening `string` → `object` later is a
+  breaking change while starting structured is not. A legacy bare string is
+  accepted on read and normalized to `{ name }` at publish.
+- **`searchAliases` are not tags.** Tags are a *visible* filter facet; aliases are
+  invisible synonyms ("deck", "powerpoint"). Overloading tags would put synonyms
+  in the UI as filter chips.
 - **Security bonus.** Because the baked fields live *inside the signed document*,
   they are signed claims: a compromised app repo cannot silently change what the
-  store displays until a republish. This is strictly better than rendering
-  unsigned text fetched from an arbitrary repo at browse time.
+  store displays until a republish. Strictly better than rendering unsigned text
+  fetched from an arbitrary repo at browse time.
 - **Staleness is bounded and visible.** The baked copy is only as fresh as the
-  last publish, which is the same cadence that already governs the pin in §3.1 —
-  a version bump and a description change land together, by construction.
+  last publish — the same cadence that already governs the pin in §3.1, so a
+  version bump and a description change land together by construction.
 
-**Tags vs categories** are different things and must not be conflated:
+**Category membership is deliberately absent here.** Taxonomy *and* membership
+both live in `editorial.json` (§4). Two reasons: assigning a category is a
+merchandising decision, not a property of the app; and putting membership next to
+the taxonomy makes the reference check intra-document, so single-category becomes
+a *checkable invariant* rather than a convention (§4).
 
-| | Source | Vocabulary | Who assigns |
-|---|---|---|---|
-| `tags` | app's own `app.json` | free-form | the app author |
-| `category` | curated taxonomy in the official doc | controlled, stable ids | the curator |
-
-The taxonomy itself is document-level, which is what lets it change without a
-client release — closing the hardcoded-category-taxonomy gap tracked in **issue
-#581**, where the category list currently lives in frontend source:
-
-```jsonc
-"categories": [
-  { "id": "ops", "label": "Ops", "order": 10 },
-  { "id": "productivity", "label": "Productivity", "order": 20 }
-]
-```
-
-- The editorial `category-order` section (§4) references these **ids**, not
-  display strings, so relabeling or reordering is a catalog edit.
-- Tolerant reader applies here too: an entry whose `category` id is not in
-  `categories[]` falls into a default bucket and is **never dropped** — an
-  unknown category must not hide an app.
-- `tags` stay searchable/filterable but never define the rail, so an author
-  cannot promote their app into a curated category by declaring a tag.
 
 ### 3.5 Document wrapper
 
@@ -385,12 +382,14 @@ The document wrapper carries the schema version and a generator stamp:
 {
   "schemaVersion": 1,
   "generatedAt": "2026-07-29T19:00:00Z",
-  "delegates": [ /* optional, §3.3 */ ],
-  "categories": [ /* curated taxonomy, §3.4 */ ],
   "apps": [ /* entries */ ],
-  "removed": [ /* tombstones, §3.6 */ ]
+  "removed": [ /* tombstones, §3.6 */ ],
+  "reinstated": [ /* reinstatement records, §3.6 */ ]
 }
 ```
+
+There is no `categories` key: the taxonomy is in `editorial.json` (§4). There is
+no `delegates` key either (§3.3).
 
 A bare top-level array (today's format) is still accepted and read as
 `schemaVersion: 1, apps: <array>` so nothing breaks during rollout.
@@ -453,6 +452,94 @@ Semantics:
 `removed` lives **inline in the registry document** (§3.5) — one fetch, one atomic
 view, so there is no way to hold a fresh index against a stale tombstone list.
 
+### 3.7 What moves to `app.json` (manifest additions)
+
+Three fields that were in the registry describe **the app**, not the catalog, and
+belong in the app's own manifest. Two of them are not `AppManifest` fields today,
+which is itself the finding: they were only ever *derived*.
+
+| Field | Today | Becomes |
+|---|---|---|
+| `resources` | not declared in `AppManifest`; derived from the installed record, or hardcoded for externally-detected apps | declared in `app.json` |
+| `lifecycle` | same | declared in `app.json` |
+| `detectInstalled` | a **shell command** in the registry, executed on the listing path | replaced by declarative `platform.externalInstall` |
+
+**`resources` / `lifecycle`.** These decide whether KiroCrew copies files and
+registers resources or the app self-registers. Their current wiring is thinner
+than it looks:
+
+- entry `resources` has exactly **one** read-site — `is_self_managed` in
+  `install_from_registry` — which runs on **install and update**, not just first
+  install;
+- entry `lifecycle` has **no** read-site at all. The listing enrichment only ever
+  *writes* it (from the installed record for installed rows, or hardcoded for
+  externally-detected ones), so as a registry field it is currently dead weight;
+- neither is a declared `AppManifest` field, so neither has an authoritative home
+  today.
+
+`install_from_registry` already fetches the manifest before it reads `resources`,
+so declaring both in `app.json` costs no extra fetch, gives `lifecycle` a real
+home instead of a write-only one, and puts the decision where the app author can
+state it.
+
+**`detectInstalled` → `platform.externalInstall`.** A shell command supplied by a
+fetched document and run by the client is the same class of mistake as the
+`delegates[]` list removed in §3.3: the document reaching into client *behavior*
+rather than describing apps. It is also self-evidently app knowledge ("does my
+bundle exist at this path"). The replacement is declarative and evaluated by
+KiroCrew, never by a shell:
+
+```jsonc
+"platform": {
+  "externalInstall": {
+    "macos": { "bundleId": "dev.kiro.OncallRadar" },
+    "linux": { "binary": "oncall-radar" }
+  }
+}
+```
+
+This is what comparable systems do. Homebrew records manager-installed state in a
+local per-keg `INSTALL_RECEIPT.json` and reads local state rather than probing;
+Homebrew Cask declares artifacts as *stanzas* from which paths are derived. iOS is
+the strongest form: `canOpenURL` only answers for schemes pre-declared in
+`LSApplicationQueriesSchemes`, and the **OS** performs the lookup — a design Apple
+adopted in iOS 9 specifically because arbitrary probing had been abused to
+fingerprint installed apps. Our `detectInstalled` is that same shape — a probe
+supplied by a third party — and it runs on the *listing* path (for every entry
+that declares one and is not already locally installed), not just at install.
+
+So installed-state resolution becomes: **local receipt** (apps KiroCrew installed
+— already the source of truth) **∪ declarative probe** (`externalInstall`,
+evaluated natively). Conservative by default: detect and report, never act.
+Homebrew Cask's own history is the caution — a pre-existing-artifact check once
+tripped an uninstall path and deleted the user's app.
+
+Also declared in `app.json` and baked at publish (§3.4): `searchAliases`, and
+`author` in its structured form. **`author` is a widening of a live field**, not a
+new one: `AppManifest.author` is `str` today, so the manifest gains an object form
+while the bare string stays valid on read and is normalized to `{ name }` at
+publish. `resources`, `lifecycle`, `platform.externalInstall` and `searchAliases`
+are additions.
+
+**Ownership.** These additions land in *this* RFC (see Non-goals). The sibling
+`rfc-federated-app-platform` §3.3 manifest table is stale rather than
+authoritative: `AppManifest` implements most of what it sketches but has moved past
+it — the table's one substantive manifest change (removing `backend`) never
+shipped, and live fields such as `publishProvider`, `notifications`, `dependencies`
+and `signer`/`signature` appear nowhere in it. Treating a stale table as the
+manifest contract would gate this change on a document already overtaken by the
+code. Ground truth is `AppManifest`; this RFC amends it.
+
+**Legacy entries keep a defined read rule.** Every other superseded shape in this
+document has one — flat `source` (§3.1), bare-string `author` (§3.4), bare
+top-level array (§3.5) — so these need one too. A `resources` value on an entry is
+**ignored** in favour of the manifest; `lifecycle` and `detectInstalled` on an entry
+are **ignored outright** (`lifecycle` has no read-site today, and `detectInstalled`
+is the key being removed). Ignoring rather than honoring is the safe direction, but
+it is a behaviour change for external and edition catalogs that rely on
+`detectInstalled` for external-app detection, so the deprecation path is an open
+question (§8).
+
 ---
 
 ## 4. Editorial schema (fail-safe + versioned)
@@ -473,10 +560,43 @@ checks).
     { "type": "spotlight", "appRef": "oncall-radar", "blurb": "…" },
     { "type": "rail", "title": "Made by the team", "appRefs": ["pptx-maker", "meetnote"] },
     { "type": "banner", "md": "New: **Channels**", "cta": { "label": "Learn more", "href": "…" } },
-    { "type": "category-order", "order": ["productivity", "ops", "fun"] }  // category IDs, not labels
+  ],
+  "categories": [                        // taxonomy AND membership (below)
+    { "id": "ops", "label": "Ops", "order": 10, "appRefs": ["oncall-radar"] }
   ]
 }
 ```
+
+### The taxonomy lives here, with membership
+
+`categories[]` carries both the vocabulary and which apps are in it. This closes
+the hardcoded-category-taxonomy gap tracked in **issue #581**, where the list
+currently lives in frontend source.
+
+Putting membership next to the taxonomy buys three things:
+
+- **Single-category becomes a checkable invariant.** The publish step asserts the
+  flattened membership list has no duplicates, so an app in two categories is a
+  detectable curation error rather than a convention nobody enforces. A
+  partitioned rail is the point; **cross-cutting placement is what a `rail`
+  section is for** ("Staff picks"), which is how an app appears in more than one
+  place without multi-category membership.
+- **No separate ordering section.** `categories[].order` carries the sequence, so
+  the `category-order` section type is removed as redundant. `order` must be
+  **unique** across `categories[]` (a publish-gate check); if two entries ever tie,
+  **array order breaks the tie**, so the rendered sequence is deterministic from
+  the document alone and two clients cannot disagree.
+- **Authors cannot self-promote — a change, not a restatement.** Today membership
+  is *derived from author-supplied tags*: `categories.ts` holds both the hardcoded
+  `CATEGORY_ORDER` (issue #581) and a tag→category `MATCHERS` map, and
+  `categoryFor(app.tags)` is what the filter, the sort and three card surfaces call.
+  An author can therefore place their own app in a rail today by choosing tags.
+  Curator-assigned membership removes that, and the tag-derived matcher is deleted —
+  not just the label list. §6 covers what replaces it.
+
+Tolerant reading applies here too: an app in no category falls into a default
+bucket and is **never hidden**. Nothing references a category by *label*, so
+relabeling is a catalog edit.
 
 ### Schema-evolution rules ("change how the page looks/works")
 
@@ -532,7 +652,6 @@ The official registry needs a tier **between** bundled and user-external:
 |------|--------|-----------------------|-------------------|--------------|
 | **Bundled** | compiled `app-registry.json` | honored | ambient (owner-designated) | ships in the wheel |
 | **Official** *(new)* | KiroCrew-owned CDN doc | **honored** (only once the signature verifies) | **credential-free + strict sandbox** | host-pin **and** required detached signature |
-| **Official delegate** *(new, §3.3)* | index named by the official doc | honored | **credential-free + strict sandbox** | **own signing key or pinned digest, verified** (§3.3) — being *named* in the signed root is not sufficient |
 | **External (user)** | user-configured repos | ignored | credential-free + strict sandbox | none |
 
 Two properties of this table are load-bearing and were nearly got wrong:
@@ -540,15 +659,14 @@ Two properties of this table are load-bearing and were nearly got wrong:
 **Catalog trust never implies credential posture.** Only the *bundled* tier gets
 ambient git/ssh credentials, because only bundled entries are
 owner-designated-at-build-time. Every remotely-fetched entry — official,
-delegated, or user-external — clones **credential-free in a strict sandbox**.
+edition, or user-external — clones **credential-free in a strict sandbox**.
 This matches what the code already decided:
 `index_originated = bool(entry.get("_registry"))` in `install_from_registry`
 forces the credential-free path precisely because an index entry can name a
 private *sibling* repo on a host that is already trusted, and cloning it with the
 gateway's identity would read that private repo as a confused deputy. An official
-entry is index-authored by construction and a delegate's entries are
-third-party-authored, so granting either ambient credentials would reopen exactly
-that hole. If ambient credentials are ever needed for an internal source, they
+entry is index-authored by construction, so granting it ambient credentials
+would reopen exactly that hole. If ambient credentials are ever needed for an internal source, they
 require an explicit **per-repository** grant, never a tier-wide one.
 
 **Host-pinning alone does not authenticate the bytes.** A fixed first-party
@@ -593,7 +711,7 @@ Relationship to `rfc-federated-app-platform` §5.2's tiers: its **Built-in** ≈
 this RFC's Bundled, **Curated** ≈ Official, and **Local** ≈ a locally-installed
 path (out of scope here). Its **Community** ("medium trust, hash-pinned") has *no*
 equivalent here — this RFC's External (user) tier is **untrusted**, not
-medium-trust, and the Official-delegate tier has no federated counterpart. The
+medium-trust. The
 two documents must not be read as using one shared tier vocabulary.
 
 ---
@@ -612,13 +730,12 @@ two documents must not be read as using one shared tier vocabulary.
   credential-posture key (`index_originated`). An official entry arrives through
   the same fetch-and-merge machinery, so it would carry `_registry` and land
   un-featurable *and* badged unverified — the exact opposite of §5 and §9. Fix:
-  carry `_tier: 'bundled' | 'edition' | 'official' | 'official-delegate' |
-  'external'`, and gate each consumer on the tier it actually cares about
+  carry `_tier: 'bundled' | 'edition' | 'official' | 'external'`, and gate each consumer on the tier it actually cares about
   (featuring/badging on catalog trust; cloning on credential posture, which is
   ambient for `bundled` only). The existing tests that encode the boolean
   ordering must be updated deliberately, not incidentally.
 - **Merge order** in `list_registry()`: bundled → **edition rows** → official →
-  official delegates (§3.3) → external, each add-only over the previous (dedupe by
+  external (§3.3), each add-only over the previous (dedupe by
   `name`). The edition seam is not optional to name: `_load_registry_file()`
   already merges edition/CPP rows into the bundled list add-only, so live code has
   four sources and this ladder must say where a CDN document sits relative to an
@@ -635,15 +752,33 @@ two documents must not be read as using one shared tier vocabulary.
   The Discover list, search, and category rail render entirely from the published
   document — no per-app manifest fetch on browse. The lazy manifest fetch stays,
   but only for the detail view, where it supersedes the baked copy.
-- **Categories come from the document, not from source** (§3.4), replacing the
-  hardcoded taxonomy (issue #581). An entry whose `category` id is unknown falls
-  into a default bucket and is never hidden.
+- **Categories come from the EDITORIAL document** (§4), replacing both the
+  hardcoded `CATEGORY_ORDER` and the tag→category `MATCHERS` derivation in
+  `website/src/components/appstore/categories.ts` (issue #581). This is a
+  **total-function → lookup** change and needs care: `categoryFor(app.tags)` always
+  returns a category today, whereas curator-enumerated `appRefs[]` does not cover
+  every app. So the migration must supply (a) a `name → category` map built from
+  the editorial document, since `sort: 'category'` and three card surfaces
+  (`AppListRow`, `FeatureCard`, `FeaturedSpotlight`) currently call `categoryFor`
+  per app, and (b) a defined default bucket for un-enumerated apps — which must
+  render as a real, labelled group rather than a blank category, so shipping
+  editorial with a partial `appRefs[]` degrades gracefully instead of stripping
+  labels off cards. `appstoreCategories.test.ts` pins the current derivation and
+  must be rewritten deliberately, not incidentally.
+- **Read runtime shape from the manifest, not the entry** (§3.7):
+  `install_from_registry` takes `resources`/`lifecycle` from the `app.json` it
+  already fetches, and the registry no longer carries them.
+- **Installed state = local receipt ∪ declarative probe** (§3.7). The shell
+  `detectInstalled` path is deleted **for entries from every source**, not just the
+  official document — the same loop serves owner-configured external registries and
+  edition-contributed rows, and those are the *less* trusted sources, so leaving the
+  key honored there would keep the shell exec reachable by the higher-risk path.
+  `platform.externalInstall` is evaluated natively (bundle-id lookup, `PATH`
+  resolution). Detect and report, never act.
 - **Enforce the content pin at install time**, not just at publish: refuse to
-  install an official or delegated entry whose `source` lacks an immutable pin
+  install an official entry whose `source` lacks an immutable pin
   (§3.1). The publish pipeline should make this unreachable; the client check is
   the backstop that makes it true regardless of who produced the document.
-- **Verify each delegate before merging it** (§3.3) — signature or pinned digest.
-  A delegate that fails verification is dropped, never downgraded to a lower tier.
 - **Source dispatch**: one `switch` on `source.type` selecting a fetcher, with a
   fail-closed default for unknown types, plus the legacy flat→tagged
   normalization at the read boundary (belt-and-braces with the publish-time
@@ -725,6 +860,22 @@ leaves a stale pointer elsewhere in the document.
    per-repository grant look like, who authors it, and is it owner-local config
    rather than anything a fetched index can influence?
 
+7. **Who evaluates `platform.externalInstall`, and when?** "Evaluated by KiroCrew,
+   never by a shell" does not name the evaluating process, the cadence (on browse vs
+   on `refresh_registries()`), or the result for a platform the descriptor omits —
+   the example covers macOS and Linux, leaving Windows undefined (not-installed vs
+   unknown). "Detect and report, never act" has no enforcement point until this is
+   pinned.
+8. **Deprecation path for legacy entry fields.** §3.7 has entries ignore
+   `resources`/`lifecycle`/`detectInstalled`, which is safe but silently removes
+   external-app detection for owner-configured external registries and
+   edition-contributed rows. Ignore quietly, warn, or honor for non-official tiers
+   during a deprecation window?
+9. **Is the single-category dedup assertion a hard merge gate or a warning?** §4
+   states the publish step asserts the flattened membership list has no duplicates.
+   Failing the publish is the strict reading; a warning is the lenient one. The
+   invariant only holds if it is a gate.
+
 **Resolved in-doc** (previously listed here; recorded so the decision isn't
 relitigated):
 
@@ -736,6 +887,12 @@ relitigated):
 - **Signature is required in v1**, not a fast-follow, and no tier confers ambient
   clone credentials (§5).
 - **Tombstones live inline** in the registry document (§3.6).
+- **This RFC owns the `app.json` additions** in §3.7, superseding
+  `rfc-federated-app-platform` §3.3's manifest table. That table is stale rather
+  than unimplemented: `AppManifest` covers most of it, but its one substantive
+  manifest change (removing `backend`) never shipped and several live fields are
+  absent from it. Gating this change on a table the code has already outgrown would
+  block indefinitely. The authoritative manifest is `AppManifest` in code.
 
 ## 9. Success criteria
 
@@ -755,16 +912,14 @@ relitigated):
 - **An unsigned or signature-failing official document grants no trust** — the
   client falls through to cache/bundled instead of honoring its featuring.
 - **No remotely-fetched entry ever clones with ambient credentials**, regardless
-  of tier — official, delegated, and user-external all clone credential-free in a
+  of tier — official, edition, and user-external all clone credential-free in a
   strict sandbox.
 - **Official apps are featurable and show as verified**, proving the `_tier`
   refactor actually landed (the `_registry` boolean would have made both false).
 - **An invalid catalog cannot reach the CDN** — the publish workflow is the only
   write path and validates first.
-- **No official or delegated entry can be installed from a mutable ref** — every
+- **No official entry can be installed from a mutable ref** — every
   such entry carries an immutable pin, enforced at publish AND at install.
-- **A delegate whose contents fail verification contributes nothing** — it is
-  dropped, not silently downgraded to a lower trust tier.
 - **Discover renders and searches with zero per-app manifest fetches**, from the
   baked fields alone.
 - **The category taxonomy changes without a client release** (closes #581), and an
@@ -772,5 +927,14 @@ relitigated):
 - **Signing-key rotation AND revocation require no app release** — publishing new
   root-signed key metadata is sufficient, and the superseded key stops being
   accepted. Only root-key compromise needs a client update.
+- **The registry contains no curator-authored presentation and no executable
+  string** — re-labelling or re-ordering a category is an editorial edit that never
+  touches the catalog, and the client runs no command supplied by a fetched
+  document. (Changing an app's own generated `displayName`/`summary` does ride a
+  republish, by design — §3.4.)
+- **An app cannot place itself in a curated category** by editing its own
+  manifest, and an app in two categories fails the publish gate.
+- **Discover renders and searches with zero per-app manifest fetches**, from the
+  baked fields alone.
 - Adding a second `source.type` requires no schema-major bump and no change to
   any existing entry.

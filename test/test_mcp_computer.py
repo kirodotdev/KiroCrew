@@ -290,6 +290,33 @@ def test_every_REQUIRED_validated_field_is_advertised_as_required(keystone: Path
         )
 
 
+@pytest.mark.parametrize("tool", sorted(cu_tools._ELEMENT_REQUIRED_TOOLS))
+def test_element_required_tools_demand_the_index_in_the_validator_too(tool: str):
+    """**The third layer.** ``MCP_COMPUTER_SCHEMAS`` must require what the chokepoint does.
+
+    Three layers have to agree that ``element_index`` is mandatory, and two of them
+    silently disagreed: ``validation.py`` gave ``computer_type_text`` and
+    ``computer_press_key`` the OPTIONAL field spec (the one that exists for
+    ``computer_click``, which legitimately takes coordinates instead), so an indexless
+    call passed the validator and was refused one step later by
+    ``tools._ELEMENT_REQUIRED_TOOLS``. Enforcement held — that raise is converted to a
+    refusal at ``tools.dispatch_tool`` — but the comments on both sides then described
+    the *other* layer's behaviour, and one of them invited a reader to delete the
+    chokepoint check as unreachable.
+
+    The two existing parity tests could not catch it: both compare the ADVERTISED
+    schema against the VALIDATOR, and here those two agreed with each other while the
+    validator disagreed with the chokepoint. This asserts that last edge.
+    """
+    required = {field.name for field in MCP_COMPUTER_SCHEMAS[tool].fields if field.required}
+    assert "element_index" in required, (
+        f"{tool} is in _ELEMENT_REQUIRED_TOOLS but its validation schema does not "
+        "require element_index — an indexless call would pass validation and be "
+        "refused one layer later, and an unnamed target has no role/subrole for the "
+        "always-on secure-field refusal to inspect"
+    )
+
+
 def test_unknown_tool_is_rejected_with_no_raw_passthrough():
     """There is no raw pass-through fallback for an unregistered tool name.
 
@@ -408,9 +435,7 @@ def test_an_unresolved_session_key_PROCEEDS_with_an_empty_identity(
     _enable(keystone)
     posted: list[Any] = []
     monkeypatch.setattr(mcp_computer, "_resolve_session_key_strict", lambda: "")
-    monkeypatch.setattr(
-        mcp_computer, "_invoke", lambda *a, **k: posted.append(a) or {"text": "ok"}
-    )
+    monkeypatch.setattr(mcp_computer, "_invoke", lambda *a, **k: posted.append(a) or {"text": "ok"})
     result = mcp_computer._call_tool_inner(TOOL_LIST_APPS, {})
     assert not result.startswith(ERROR_PREFIX), result
     assert result == "ok"
@@ -1504,10 +1529,12 @@ class TestAutoNeverResolvesToGlobal:
     """**The invariant.**
 
     ``auto`` resolving onto ``global`` would let a model take over the operator's
-    physical mouse without ever naming the method — which would make the Settings
-    opt-in and the ``capabilities.computer_use_pointer`` permit reachable by accident
-    rather than by an explicit request. Asserted three ways, because a single
-    behavioural case would not survive a refactor of the resolver.
+    physical mouse without ever naming the method. Since the separate pointer opt-in
+    was removed — there is no keystone ``allow_pointer_move`` and no
+    ``capabilities.computer_use_pointer`` row — this resolver is the ONLY thing
+    standing between an ordinary click and the operator's cursor, so it matters more
+    now, not less. Asserted three ways, because a single behavioural case would not
+    survive a refactor of the resolver.
     """
 
     @pytest.mark.parametrize(
@@ -1629,11 +1656,17 @@ class TestCursorMotionIsWiredToThePointerPath:
         assert not result.startswith(ERROR_PREFIX), result
         assert motions == [(10, 20, 1)]
 
-    def test_the_opt_in_does_not_imply_the_primary_enable(
+    def test_an_unrecognized_keystone_key_does_not_imply_the_primary_enable(
         self, keystone: Path, fake_backend: FakeComputerUseBackend
     ):
-        """The two flags are independent; the primary enable is checked FIRST, so a
-        pointer opt-in on a disabled feature is still a disabled feature."""
+        """Only ``enabled`` enables. Anything else on the keystone is not a grant.
+
+        ``allow_pointer_move`` is used as the payload precisely because an earlier
+        revision documented it as a second consent switch for the real-pointer path.
+        It was removed by product decision and ``PolicyConfig.from_state`` never reads
+        it, so a keystone carrying it and nothing else must still resolve to DISABLED
+        rather than to "the operator configured something, so presumably yes".
+        """
         keystone.write_text(json.dumps({"allow_pointer_move": True}), encoding="utf-8")
         result = _dispatch(TOOL_CLICK, app=FAKE_FILES_APP.name, x=1, y=2, click_method="global")
         assert result.startswith(ERROR_PREFIX)
@@ -1643,9 +1676,15 @@ class TestCursorMotionIsWiredToThePointerPath:
     def test_an_app_post_click_never_consults_the_pointer_permit(
         self, keystone: Path, fake_backend: FakeComputerUseBackend, monkeypatch
     ):
-        """The whole reason for a separate row: a fleet that has not authored the key
-        must keep clicking exactly as before, so the non-pointer paths must not even
-        ASK."""
+        """A pointer-free click must not travel the real-pointer code path at all.
+
+        ``require_pointer_move`` is now a no-op that only exists so an edition can
+        reintroduce a decision, but the CALL still marks which gestures the code
+        treats as pointer-moving — so an ``AXPress`` or an ``app_post`` click asking
+        for the pointer permit would mean the chokepoint had lost track of which
+        methods warp the cursor, which is the invariant that keeps ``auto`` off the
+        real-pointer path.
+        """
         from kiro_crew.computer_use import gate as cu_gate
 
         asked: list[str] = []
@@ -1835,9 +1874,7 @@ class TestTheActionHeaderIsRedacted:
         assert FAKE_CREDENTIAL_FIXTURE not in out
         assert "REDACTED" in out
 
-    def test_the_TREE_half_is_not_redacted_a_SECOND_time(
-        self, keystone: Path, fake_backend
-    ):
+    def test_the_TREE_half_is_not_redacted_a_SECOND_time(self, keystone: Path, fake_backend):
         """Why the two halves are redacted SEPARATELY rather than as one joined string.
 
         ``render_tree`` appends its screenshot note AFTER its own redaction pass, on
@@ -1879,14 +1916,10 @@ class TestTheSkillContractMatchesTheRuntime:
     """
 
     _SKILL = (
-        Path(__file__).resolve().parents[1]
-        / "src/kiro_crew/builtin_skills/computer-use/SKILL.md"
+        Path(__file__).resolve().parents[1] / "src/kiro_crew/builtin_skills/computer-use/SKILL.md"
     )
 
-    _SPEC = (
-        Path(__file__).resolve().parents[1]
-        / "docs/system-specs/modules/computer-use.md"
-    )
+    _SPEC = Path(__file__).resolve().parents[1] / "docs/system-specs/modules/computer-use.md"
 
     def test_the_skill_does_not_advertise_an_optional_element_index(self):
         text = self._SKILL.read_text(encoding="utf-8")
@@ -1931,6 +1964,49 @@ class TestTheSkillContractMatchesTheRuntime:
         assert TOOL_CLICK not in cu_tools._ELEMENT_REQUIRED_TOOLS
         for tool in (TOOL_TYPE_TEXT, TOOL_PRESS_KEY, TOOL_SET_VALUE, TOOL_SCROLL):
             assert tool in cu_tools._ELEMENT_REQUIRED_TOOLS, tool
+
+    def test_no_worked_example_in_the_skill_omits_a_required_element_index(self):
+        """The shipped example must be RUNNABLE, not just the prose correct.
+
+        ``SKILL.md``'s only end-to-end example called
+        ``computer_press_key(app="Finder", key="return")`` twice — both refused by
+        ``_CU_ELEMENT_FIELD`` and again by ``_ELEMENT_REQUIRED_TOOLS`` — while the same
+        file's prose said an index was required. A model following the example hits a
+        refusal on its second call, which is exactly the trial-and-error the skill
+        exists to remove, and prose alone could not catch it.
+        """
+        text = self._SKILL.read_text(encoding="utf-8")
+        offenders: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            for tool in sorted(cu_tools._ELEMENT_REQUIRED_TOOLS):
+                # Only literal invocations, not the signature rows in the tool table
+                # (which are rendered as `| \`tool(app, element_index, …)\` |`).
+                if stripped.startswith(f"{tool}(") and "element_index" not in stripped:
+                    offenders.append(stripped)
+        assert not offenders, (
+            "SKILL.md shows call(s) that every layer refuses — a model copying them "
+            f"gets an error, not a result: {offenders}"
+        )
+
+    def test_the_skill_documents_the_truncated_screenshot_suppression(self):
+        """Every non-failure message the model can see belongs in the skill's table.
+
+        A suppressed capture on a truncated walk is ROUTINE (a browser or Electron app
+        exceeds the default node budget), and it used to be emitted with no text at
+        all — the model asked for a screenshot, got none, and had no reason to stop
+        retrying. The note is now in ``types``; asserting the skill quotes it keeps the
+        two from drifting, since ``SKILL.md`` ships to every pip/DMG install and is
+        what tells the model this is an answer rather than a fault.
+        """
+        from kiro_crew.computer_use.types import TRUNCATED_WINDOW_NOTE
+
+        text = self._SKILL.read_text(encoding="utf-8")
+        # The distinctive opening clause, not the whole sentence: the table wraps it.
+        head = TRUNCATED_WINDOW_NOTE.split(",")[0]
+        assert head in text, f"SKILL.md does not document the {head!r} response"
+        # And the remedy the model can actually act on.
+        assert "max_tree_nodes" in TRUNCATED_WINDOW_NOTE
 
 
 class TestUnresolvedSessionsAreNamespaced:
@@ -2007,9 +2083,7 @@ class TestUnresolvedSessionsAreNamespaced:
         attribution the strict resolver exists to provide."""
         _enable(keystone)
         posted: list[Any] = []
-        monkeypatch.setattr(
-            mcp_computer, "_resolve_session_key_strict", lambda: "dashboard:main"
-        )
+        monkeypatch.setattr(mcp_computer, "_resolve_session_key_strict", lambda: "dashboard:main")
         monkeypatch.setattr(
             mcp_computer, "_invoke", lambda *a, **k: posted.append(a) or {"text": "ok"}
         )
@@ -2026,3 +2100,79 @@ class TestUnresolvedSessionsAreNamespaced:
         src = inspect.getsource(mcp_computer)
         assert "could not be identified" not in src
         assert "ERR_NO_SESSION" not in src
+
+
+class TestTheDriftWalkHonoursTheSnapshotBudget:
+    """A raised ``max_tree_nodes`` must not make its own elements un-actionable.
+
+    Reviewer finding, reproduced end-to-end. A mutating tool takes no tree-budget
+    arguments, so ``tools`` built the drift-verification request from
+    ``service.snapshot_request()`` — the *config default* (1200) — and discarded the
+    budget the cached snapshot was actually walked at. So ``computer_get_state(app,
+    max_tree_nodes=2001)`` rendered element 1400 with no truncation note, and the
+    follow-up ``computer_click(element_index=1400)`` was refused with
+    ``"… now no element at that index"`` because ``verify_fingerprint`` re-walked at
+    1200. Re-snapshotting reproduced the same tree and the same refusal, so the model
+    had no way out of the loop — on a documented happy path: the MCP schema advertises
+    ``max_tree_nodes`` up to 5000 and the Settings copy says to raise it for dense
+    apps.
+
+    Fixed by stamping ``Snapshot.walk_budget`` in ``service.snapshot`` and re-walking
+    at it.
+    """
+
+    @staticmethod
+    def _wide_tree(count: int = 1500):
+        from kiro_crew.testing.fake_computer_use import FakeNode
+
+        return FakeNode(
+            role="AXWindow",
+            title="Wide",
+            children=tuple(
+                FakeNode(role="AXButton", title=f"b{i}", actions=("AXPress",)) for i in range(count)
+            ),
+        )
+
+    def test_an_element_above_the_config_default_stays_actionable(
+        self, keystone: Path, fake_backend: FakeComputerUseBackend
+    ):
+        _enable(keystone)
+        fake_backend.trees[FAKE_FILES_APP.key] = self._wide_tree()
+        shown = _dispatch(
+            TOOL_GET_STATE, app=FAKE_FILES_APP.name, max_tree_nodes=2001, screenshot=False
+        )
+        assert '1400 button "b1399"' in shown, "the raised budget did not render element 1400"
+
+        result = _dispatch(TOOL_CLICK, app=FAKE_FILES_APP.name, element_index=1400)
+        assert not result.startswith(ERROR_PREFIX), result
+        assert "no element at that index" not in result
+
+    def test_the_snapshot_records_the_budget_it_was_walked_at(
+        self, keystone: Path, fake_backend: FakeComputerUseBackend
+    ):
+        """The mechanism, asserted directly: a stamp of ``None`` would silently
+        restore the old behaviour via the ``or req`` fallback."""
+        _enable(keystone)
+        fake_backend.trees[FAKE_FILES_APP.key] = self._wide_tree(20)
+        _dispatch(TOOL_GET_STATE, app=FAKE_FILES_APP.name, max_tree_nodes=1777, screenshot=False)
+        svc = cu_service.get_shared_service()
+        cached = svc.index.get(FAKE_FILES_APP.window_key, session_key=_SESSION)
+        assert cached is not None
+        assert cached.walk_budget is not None, "service.snapshot did not stamp walk_budget"
+        assert cached.walk_budget.max_nodes == 1777
+
+    def test_the_drift_walk_reuses_that_budget_not_the_config_default(
+        self, keystone: Path, fake_backend: FakeComputerUseBackend
+    ):
+        """Read off the fake's own journal, so this pins the request the driver saw."""
+        _enable(keystone)
+        fake_backend.trees[FAKE_FILES_APP.key] = self._wide_tree(20)
+        _dispatch(TOOL_GET_STATE, app=FAKE_FILES_APP.name, max_tree_nodes=1777, screenshot=False)
+        fake_backend.calls.clear()
+        _dispatch(TOOL_CLICK, app=FAKE_FILES_APP.name, element_index=3)
+        walks = [kw["max_nodes"] for name, kw in fake_backend.calls if name == "snapshot"]
+        assert walks, "the mutating action performed no verification walk"
+        assert all(n == 1777 for n in walks), (
+            f"the drift/refresh walks used {walks} instead of the snapshot's own 1777 — "
+            "an element the model was legitimately shown would be refused"
+        )

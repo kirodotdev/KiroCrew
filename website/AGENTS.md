@@ -108,11 +108,93 @@ Catalogs live in `src/i18n/locales/`:
 | `en.manual.json` | hand-authored English with no source literal to extract (e.g. the language picker's own labels). |
 | `<tag>.json` | one per translation, key set must match `en.json` exactly. |
 
+Shipped: `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `it` — ordered by global
+speaker count, which is also the picker order. **Right-to-left languages
+(Arabic, Urdu) are intentionally not shipped**: the layout is built from
+physical-direction utilities (`pl-*`, `left-*`, `text-left`) and unmirrored
+directional icons, so an RTL catalog would render correct text in a visibly
+wrong shell. Adding one needs `dir="rtl"` + a logical-property conversion first
+(`ps-*`/`pe-*`, `start-*`/`end-*`), not just a catalog.
+
 Adding a language is a **data change** — three edits, no component or test changes:
 
 1. `locales/<tag>.json` (same key set as `en.json` + `en.manual.json`)
 2. one entry in `SUPPORTED_LANGUAGES` (`src/i18n/languages.ts`)
 3. one line in `CATALOGS` (`src/i18n/index.ts`)
+
+To translate the corpus, shard it rather than doing one pass — `node
+scripts/i18n-shard.mjs split <dir>` writes flat key→value shards, and `join
+<dir> <tag>` reassembles them, **refusing to write a partial result**. Never
+hand-assemble a catalog: `join`'s fail-closed check is what stops English text
+shipping disguised as a translation. Keep shard dirs OUTSIDE the worktree (Rule
+9 — a dirty tree blocks worktree pruning).
+
+**Don't pin a test fixture to a language you might later ship.** Assertions like
+"`fr` is unsupported, so it falls back" silently invert the moment French ships.
+This has now bitten twice — `fr` when French shipped, then `de-DE` in
+`detect.test.ts` when German shipped. Use a language the project has no plans for
+(`ja`, `ko`) for negative cases, and derive positive cases from
+`SUPPORTED_CODES` so a new language is covered automatically.
+
+### Counts: never concatenate a plural suffix
+
+**Never append a plural marker outside `i18nT()`.** This pattern is a bug:
+
+```tsx
+// WRONG — renders 会话s, 3 sesións, এজেন্টs
+{n} {i18nT('pages.overview.memoryTab.session')}{n === 1 ? '' : 's'}
+```
+
+The `s` is added *outside* the translate call, so **no catalog value can fix it**.
+English plural rules also aren't universal: Russian needs 4 forms, Spanish 3,
+Chinese 1. Pass the count instead and let i18next pick the form via
+`Intl.PluralRules`:
+
+```tsx
+// RIGHT
+{i18nT('pages.overview.memoryTab.session', { count: n })}
+```
+
+The count goes *inside* the string (`"{{count}} sessions"`) so a translation can
+place the number where its grammar requires. Add one catalog key per category
+the language actually has (`_one`/`_other`, plus `_few`/`_many` where needed) —
+`catalogParity.test.ts` checks each language against its OWN categories and
+fails on a missing or unreachable form.
+
+`scripts/i18n-plural-codemod.mjs` performs the conversion and maintains
+`src/i18n/pluralKeys.json`, the registry of pluralized keys. **Run it with
+`--check` to verify none crept back in** — an upstream sync reintroduced this
+exact pattern once. Which keys are plural comes from that registry, never from
+sniffing a `_one`/`_other` suffix: real copy ends in those words
+(`panel_to_add_one` = "panel to add one.").
+
+### One key, one meaning
+
+**Never reuse a key across two grammatical roles.** English collapses
+distinctions other languages keep, so a shared key forces translators to guess:
+
+- `schedulePage.type` was both a table column header ("Type", the noun) *and*
+  the imperative verb in "Type `delete` to confirm". es/pt/ru picked the noun
+  and broke the instruction; zh-CN/hi/bn picked the verb, so the column header
+  read "please enter". Now two keys, the verb one named `type_verb_to_confirm`.
+- `artifactDeployPage.webapp` was both a type badge and a counted phrase.
+
+If a value's part of speech isn't obvious from the key, **put it in the key**.
+
+**A literal token the user must type must never be a catalog value** — keep it a
+code constant (see `BULK_DELETE_TOKEN`), or translating it makes the action
+impossible to complete. `destructiveConfirm.test.ts` pins this.
+
+**Never dedupe translation work by English value alone.** The corpus has ~3.9k
+keys but only ~3.2k distinct English strings, so translating each unique string
+once is tempting — and it silently merges keys whose shared English word carries
+two different meanings. Adding de/it this way collapsed `Open` (verb "Apri" vs.
+issue status "Aperta"), `Review` (verb vs. noun), `Plan`/`Schedule` (button vs.
+label), and `Type` — the last caught by `destructiveConfirm.test.ts`, the rest
+only by auditing. If you dedupe, afterwards **diff each duplicate group against
+the already-shipped catalogs**: where several existing languages chose different
+words for one English string, English is hiding a distinction and the merged
+value is wrong.
 
 `catalogParity.test.ts` generates its cases from `SUPPORTED_LANGUAGES` and reads
 catalogs from the runtime `CATALOGS` map, so the new language automatically gets

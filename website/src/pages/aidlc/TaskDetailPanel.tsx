@@ -166,7 +166,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
           const isBlocked = task.status === 'pending' && blocking.length > 0
           return isBlocked ? (
             <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-              {i18nT('pages.aidlc.taskDetailPanel.blocked_waiting_on')} {blocking.length} {i18nT('pages.aidlc.taskDetailPanel.task_2')}{blocking.length > 1 ? 's' : ''}:
+              {i18nT('pages.aidlc.taskDetailPanel.blocked_waiting_on')} {i18nT('pages.aidlc.taskDetailPanel.task_2', { count: blocking.length })}:
               {blocking.map(d => (
                 <div key={d.index} className="mt-1 pl-4">
                   {i18nT('pages.aidlc.taskDetailPanel.task')} {d.index}: {d.title} — <span className={d.status === 'failed' ? 'text-danger' : d.status === 'in_progress' ? 'text-accent' : 'text-muted'}>{d.status.replace('_', ' ')}</span>

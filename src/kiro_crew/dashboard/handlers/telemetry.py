@@ -37,12 +37,16 @@ from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard.handlers.usage import context_occupancy
 from kiro_crew.hooks import validate_file_path
 
 logger = logging.getLogger(__name__)
 
 _STARTUP_METRIC = "kirocrew.session.startup.duration"
 _TURN_METRIC = "kirocrew.turn.duration"
+# The end-to-end startup point. The claude path emits no ``phase`` attribute at
+# all, so an absent phase is treated as the total (see _aggregate).
+_PHASE_TOTAL = "total"
 _WINDOW_DAYS = 14
 
 # (shard-fingerprint, TTL) cache — shards are append-only, so a change to any
@@ -190,6 +194,7 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     warm = _Hist()  # spawned == False
     outcome: dict[str, int] = {}
     daily: dict[str, dict[str, _Hist]] = {}  # day -> {"cold"|"warm": _Hist}
+    phases: dict[str, _Hist] = {}  # startup internal phase -> _Hist
     # generic surface for every other kirocrew.* metric
     other_hist: dict[str, _Hist] = {}
     other_ctr: dict[str, dict[str, Any]] = {}  # name -> {total, by_attr}
@@ -216,6 +221,21 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
                                     attrs = dp.get("attributes") or {}
                                     is_hist = "bucket_counts" in dp
                                     if name == _STARTUP_METRIC and is_hist:
+                                        # One startup emits an end-to-end point
+                                        # (phase absent, or phase=total from the
+                                        # kiro path) PLUS one point per internal
+                                        # phase. Only the end-to-end point is a
+                                        # startup: counting the phase points too
+                                        # multiplied the startup count by ~4 and
+                                        # summed four unrelated latency
+                                        # distributions into one set of buckets,
+                                        # producing a bimodal "distribution" that
+                                        # was really set_model + session_new +
+                                        # spawn_init + total stacked together.
+                                        phase = str(attrs.get("phase", _PHASE_TOTAL))
+                                        if phase != _PHASE_TOTAL:
+                                            phases.setdefault(phase, _Hist()).add(dp)
+                                            continue
                                         overall.add(dp)
                                         spawned = bool(attrs.get("spawned"))
                                         (cold if spawned else warm).add(dp)
@@ -298,6 +318,12 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
             "outcome": outcome,
             "daily": daily_out,
             "distribution": {"buckets": overall.buckets, "bounds": overall.bounds},
+            # Internal phase split (kiro backend): spawn_init, session_new,
+            # set_model. Deliberately outside the startup totals above — these
+            # are components of one startup, not startups.
+            "phases": [
+                {"name": n, **phases[n].stats()} for n in sorted(phases)
+            ],
         },
         "turn": turn_block,
         "other": other,
@@ -335,15 +361,40 @@ def _parse_startup_metrics() -> dict[str, Any]:
     return result
 
 
+def _context_block() -> dict[str, Any] | None:
+    """Per-turn context-window occupancy, or None when nothing is recorded.
+
+    Best-effort: this panel must still render its OTEL sections if the token row
+    store is unreadable.
+    """
+    try:
+        block = context_occupancy(_WINDOW_DAYS)
+    except Exception:
+        logger.debug("context occupancy aggregation failed", exc_info=True)
+        return None
+    return block if block.get("turns") else None
+
+
 async def api_telemetry_startup(request: web.Request) -> web.Response:
     """GET /api/telemetry/startup — session-startup latency + all kirocrew.* metrics.
 
     Returns ``enabled`` (telemetry main switch), ``window_days``, ``shard_count``,
-    a detailed ``startup`` block (overall/cold/warm p50/p90 + outcome + daily), and
-    a generic ``other`` list surfacing every other emitted kirocrew.* metric.
+    a detailed ``startup`` block (overall/cold/warm p50/p90 + outcome + daily +
+    internal phase split), a ``context`` block (per-turn context-window
+    occupancy), and a generic ``other`` list surfacing every other emitted
+    kirocrew.* metric.
+
+    ``context`` is sourced from the per-turn token row store, NOT from the OTEL
+    shards: occupancy is a per-session ratio and slot keys are unbounded-
+    cardinality, which is exactly what must not become a metric label. It is
+    reported here anyway because "how full is the window" belongs next to the
+    other per-turn health signals rather than on a separate page. It is
+    independent of the telemetry main switch — those rows are always written —
+    so it is fetched even when OTEL export is off.
     """
     enabled, directory = _telemetry_cfg()
     data = await asyncio.to_thread(_parse_startup_metrics)
+    context = await asyncio.to_thread(_context_block)
     return web.json_response(
         {
             "enabled": enabled,
@@ -352,6 +403,7 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
             "shard_count": data.get("shard_count", 0),
             "startup": data.get("startup"),
             "turn": data.get("turn"),
+            "context": context,
             "other": data.get("other", []),
         }
     )

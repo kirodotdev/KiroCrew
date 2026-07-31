@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import logging
 import os
@@ -739,7 +740,7 @@ def _own_console_script() -> str | None:
     return str(path)
 
 
-def _spawn_detached_gateway(port: int | None = None) -> int:
+def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
     """Spawn a detached ``kirocrew gateway`` so the calling shell returns.
 
     Used by :func:`_restart` when no platform service is active. The
@@ -770,7 +771,11 @@ def _spawn_detached_gateway(port: int | None = None) -> int:
     would bind 5476 while the parent polls 6776 and prints a 6776 URL. Naming
     the port explicitly removes the disagreement by construction.
 
-    Returns the new PID.
+    Returns the ``Popen`` handle, not just the pid: the caller must be able to
+    ask whether the replacement is still alive before it reports success, and
+    only the handle yields the child's **exit status** when it is not. A
+    replacement refused by the ``KIROCREW_HOME`` ownership guard exits 1 within
+    milliseconds, and that status is the whole diagnosis.
     """
     log_path = config_dir() / "gateway.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -808,16 +813,151 @@ def _spawn_detached_gateway(port: int | None = None) -> int:
         start_new_session=platform_compat.IS_POSIX,
         creationflags=(platform_compat.DETACHED_PROCESS | platform_compat.CREATE_NEW_PROCESS_GROUP),
     )
-    return proc.pid
+    return proc
 
 
 _RESTART_TOKEN_TTL = "20h"
 _RESTART_READY_TIMEOUT = 15  # seconds to wait for gateway to become ready
+# Gap between readiness probes while waiting for the replacement gateway. Short
+# enough that a fast boot is reported promptly, long enough not to hammer the
+# starting gateway's event loop while it restores sessions.
+_RESTART_READY_POLL_INTERVAL = 0.5
 # Seconds to wait for the incumbent gateway to exit before spawning its
 # replacement. Generous because a graceful shutdown reaps MCP servers and
 # kiro-cli children; the wait ends as soon as the pids are gone, so the common
 # case costs a fraction of a second.
 _RESTART_STOP_TIMEOUT = 30.0
+
+# Verdicts returned by :func:`_wait_gateway_ready`. The two failure modes are
+# kept apart because they need different operator action: a replacement that
+# DIED is a refused/broken startup (read the log), while one that never became
+# READY is still running and may simply be slow.
+_READY_OK = "ready"
+_READY_DIED = "died"
+_READY_TIMEOUT = "timeout"
+
+
+def _probe_gateway_ready(port: int, timeout: int = 3) -> int:
+    """HTTP status of ``GET /api/ready`` on the loopback gateway, ``0`` if unreachable.
+
+    Same contract as :func:`kiro_crew.pod.runtime.health` (the status code, or
+    ``0`` when the connection itself fails) but pointed at ``/api/ready`` rather
+    than ``/api/health``. That choice is the point of the probe: liveness only
+    proves a socket is bound, whereas readiness returns 503 until
+    ``DashboardState.ready`` is published *and* 503 again the moment shutdown is
+    requested — exactly the difference between "something answers this port" and
+    "the new gateway is serving". Both paths are in ``origin.PROBE_PATHS`` and
+    need no auth, so this hands no secret to whatever answers.
+
+    Every failure mode collapses to ``0`` (unreachable), including a listener
+    that answers the TCP handshake but does not speak HTTP. That case raises
+    ``http.client.HTTPException`` (``BadStatusLine`` and friends), which is NOT
+    an ``OSError`` or a ``URLError``, so it has to be caught explicitly -- and it
+    is exactly the case this probe exists to survive: a wedged fork holding the
+    port is the reason restart is being run at all, and it must produce a
+    "not ready" verdict, never an uncaught traceback out of the CLI.
+    """
+    url = f"http://{_CLI_LOOPBACK}:{port}/api/ready"
+    try:
+        # Loopback-only probe to our own gateway on 127.0.0.1; the URL is
+        # internally derived (never attacker-supplied), so the dynamic-URL SSRF
+        # audit rule is a false positive here.
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosemgrep
+            return int(resp.status)
+    except urllib.error.HTTPError as e:
+        return int(e.code)
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        return 0
+
+
+def _replacement_is_serving(port: int, prior_pid: int | None) -> bool:
+    """True when the gateway now answering *port* is NOT the pre-restart one.
+
+    A bare port probe cannot tell a replacement from the incumbent — the old
+    gateway keeps answering until its socket closes, so a 200 taken during the
+    handover would report success for the process we just asked to die. The
+    discriminator is the run-marker pid: every dashboard-serving gateway records
+    its own pid in ``run/gateway-<port>.pid`` while wiring the dashboard, i.e.
+    *before* it publishes readiness, so a ready gateway's marker always names the
+    process that is serving. Waiting for that identity to CHANGE (rather than for
+    any 200) mirrors the ``_gateway_start_id`` handshake in the dev-fleet app.
+
+    On POSIX with a working listener lookup the marker claim is additionally
+    checked against reality via :func:`_gateway_owns_port` (recorded pid holds
+    the port, owned by us, looks like a gateway). That check denies outright on
+    Windows — and on any POSIX host without ``lsof``/``netstat`` it cannot
+    succeed either — so it is only applied where it can pass; elsewhere the
+    marker comparison alone stands, which keeps restart from reporting a false
+    failure on those hosts.
+
+    **No marker means not proven, never proven.** An absent marker is the state
+    the handover itself produces: ``clear_marker`` runs on graceful shutdown
+    BEFORE the outgoing gateway's ``_shutdown()``, so there is a window in which
+    the old gateway has erased its marker and its socket still answers. Treating
+    that as "the replacement is serving" would report the outgoing gateway's 200
+    as the new one's — precisely the confusion this function exists to prevent —
+    and on a host without a listener lookup nothing downstream would catch it.
+    So an unreadable marker returns ``False``: the caller keeps polling until a
+    marker appears or the deadline passes. The cost is a gateway whose marker
+    write failed (the write is best-effort, wrapped in ``except Exception``)
+    being reported as "not ready" while it is in fact serving. That is the right
+    way to be wrong here — a misleading timeout leaves a working gateway and an
+    accurate ``kirocrew token``, whereas a false success leaves the operator
+    believing a dead replacement is up.
+    """
+    recorded = run_marker.read_pid(port)
+    if recorded is None:
+        return False
+    if prior_pid is not None and recorded == prior_pid:
+        return False
+    if platform_compat.IS_POSIX and platform_compat.listening_pid_tool_available():
+        return _gateway_owns_port(port)
+    return True
+
+
+def _wait_gateway_ready(
+    proc: subprocess.Popen[bytes],
+    port: int,
+    prior_pid: int | None,
+    timeout: float,
+) -> tuple[str, int | None]:
+    """Poll until the spawned gateway actually serves *port*, or fail.
+
+    Returns ``(_READY_OK, None)`` once the replacement answers ``/api/ready``,
+    ``(_READY_DIED, exit_status)`` as soon as the child has exited, or
+    ``(_READY_TIMEOUT, None)`` when the deadline passes with it still up.
+
+    Two details earn their keep:
+
+    * **Early death short-circuits the wait.** A replacement refused by the
+      ``KIROCREW_HOME`` ownership guard exits within milliseconds; polling the
+      port for the full timeout would turn a instantly-knowable failure into a
+      15s stall with a worse message. ``proc.poll()`` is used rather than a pid
+      liveness probe because we are the child's parent, so it both detects the
+      exit and yields the status the operator needs. (Same shape as ``pod``'s
+      ``_wait_healthy`` bailing out on a dead unit instead of burning the wait.)
+    * **A zero timeout still probes once.** The deadline is checked *after* the
+      probe, so a collapsed timeout reports what is actually there instead of a
+      reflexive failure.
+    * **The child is re-polled before the timeout verdict.** A replacement that
+      exits DURING the last probe would otherwise be reported as "still running
+      but not ready", sending the operator to look for a live process that no
+      longer exists. The extra poll costs nothing and makes the two verdicts
+      mutually exclusive in fact, not just by intention.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        status = proc.poll()
+        if status is not None:
+            return _READY_DIED, status
+        if _probe_gateway_ready(port) == 200 and _replacement_is_serving(port, prior_pid):
+            return _READY_OK, None
+        if time.monotonic() >= deadline:
+            status = proc.poll()
+            if status is not None:
+                return _READY_DIED, status
+            return _READY_TIMEOUT, None
+        time.sleep(_RESTART_READY_POLL_INTERVAL)
 
 
 def _print_token_url(port: int) -> None:
@@ -862,7 +1002,11 @@ def _restart(cli_port: int | None = None) -> None:
        it (``systemctl restart`` / ``launchctl unload + load``).
     2. Otherwise, SIGTERM the foreground gateway via the existing
        lsof+SIGTERM path used by ``kirocrew stop``, then spawn a
-       detached replacement.
+       detached replacement and **verify it is serving** before reporting
+       success: a spawn only proves a pid was created, so the replacement is
+       polled on ``/api/ready`` until it answers. If it dies or never becomes
+       ready the command prints why and exits non-zero rather than claiming a
+       gateway that is not there.
 
     When ``cli_port is not None`` (user passed ``--port N``), branch (1) is
     bypassed: the systemd unit name is not bound to a specific port, so
@@ -899,6 +1043,13 @@ def _restart(cli_port: int | None = None) -> None:
     # kirocrew-process predicate so an unrelated listener on this port never
     # becomes something we block on. The entry condition below stays on the
     # UNFILTERED lookup so _stop() keeps emitting its existing diagnostics.
+    # Identity of the gateway we are about to replace, read BEFORE the stop: a
+    # graceful shutdown clears the run-marker, so afterwards there is nothing
+    # left to compare the replacement against. _replacement_is_serving() uses it
+    # so a 200 from the OUTGOING gateway can never be mistaken for the new one
+    # coming up. None (no marker, e.g. after a crash) simply means there is no
+    # old identity to exclude.
+    prior_marker_pid = run_marker.read_pid(port)
     listeners = platform_compat.find_listening_pids(port)
     incumbents = [p for p in listeners if _is_kirocrew_process(p)]
     if listeners or not platform_compat.listening_pid_tool_available():
@@ -935,7 +1086,45 @@ def _restart(cli_port: int | None = None) -> None:
             )
             sys.exit(1)
 
-    pid = _spawn_detached_gateway(port)
+    proc = _spawn_detached_gateway(port)
+    pid = proc.pid
+    # A pid is not a running gateway. The replacement can be refused by the
+    # ownership guard, crash on a bad config, or hang before it binds — all of
+    # which used to print the success line below and exit 0 with nothing serving.
+    # Report success only once the NEW gateway answers, and audit what happened.
+    verdict, exit_status = _wait_gateway_ready(proc, port, prior_marker_pid, _RESTART_READY_TIMEOUT)
+    if verdict != _READY_OK:
+        reason = (
+            f"replacement_died exit={exit_status}"
+            if verdict == _READY_DIED
+            else f"replacement_not_ready_within={int(_RESTART_READY_TIMEOUT)}s"
+        )
+        sel().log_api_access(
+            caller="cli",
+            operation="gateway_restart",
+            outcome="denied",
+            source="cli",
+            resources=f"port={port} via=fork pid={pid} reason={reason}",
+        )
+        if verdict == _READY_DIED:
+            print(
+                f"❌ Replacement gateway (pid {pid}) died immediately "
+                f"(exit status {exit_status}). Nothing is serving port {port}.\n"
+                f"   A replacement that exits at once is usually refused startup — "
+                f"another process still owning {config_dir()}, or a broken config.\n"
+                f"   To see why it exited, run: kirocrew logs -f"
+            )
+        else:
+            print(
+                f"❌ Replacement gateway (pid {pid}) did not become ready within "
+                f"{int(_RESTART_READY_TIMEOUT)}s. It is still running but not "
+                f"serving port {port}.\n"
+                f"   It may be slow to start or wedged during startup; nothing is "
+                f"serving the dashboard yet.\n"
+                f"   To follow its startup, run: kirocrew logs -f"
+            )
+        sys.exit(1)
+
     sel().log_api_access(
         caller="cli",
         operation="gateway_restart",

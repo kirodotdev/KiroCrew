@@ -73,10 +73,17 @@ class TestOptimizerEndpoint:
         assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_paused_readiness_rejects_before_acquiring_optimizer_session(
+    async def test_stale_not_ready_does_not_reject_the_optimizer(
         self,
         tmp_path,
     ):
+        """A latched not-ready value is advisory — it must not 503 the request.
+
+        Readiness is probed at boot and on explicit action only, so denying here
+        would block a request the CLI would have served. The ACP attempt reports
+        a signed-out CLI itself.
+        """
+
         service = KiroPrerequisiteService(
             platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": ""},
@@ -86,6 +93,7 @@ class TestOptimizerEndpoint:
         )
         service._has_probed = True
         service._last_probe_at = 1.0
+        assert await service.session_ready() is False
         mock_sessions = MagicMock()
         request = MagicMock()
         request.app = {
@@ -96,10 +104,12 @@ class TestOptimizerEndpoint:
         resp = await handle_optimize(request)
         data = json.loads(resp.body)
 
-        assert resp.status == 503
-        assert data["code"] == "kiro_prerequisite_required"
-        assert mock_sessions.mock_calls == []
-        request.json.assert_not_called()
+        # Admitted past the advisory gate: it proceeds to read the body (and
+        # fails validation on this MagicMock request), rather than returning the
+        # prerequisite 503.
+        assert resp.status != 503
+        assert data.get("code") != "kiro_prerequisite_required"
+        request.json.assert_called()
 
     @pytest.mark.asyncio
     async def test_unchanged_response_from_llm(self):

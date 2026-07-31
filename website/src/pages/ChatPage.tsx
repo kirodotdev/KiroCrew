@@ -44,6 +44,9 @@ import { useTheme } from '../hooks/useTheme'
 import CollapsibleToolGroup from './chat/CollapsibleToolGroup'
 import ThinkingBlock from './chat/ThinkingBlock'
 import type { DisplayItem, TurnItem } from './chat/types'
+import McpToolsPanel from './chat/McpToolsPanel'
+import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
+import type { McpServer } from '../types'
 import { useScrollManager } from './chat/useScrollManager'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, findUnreferencedAttachments } from '../utils/fileTokens'
@@ -148,6 +151,7 @@ import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
 import StopEventCard from './chat/StopEventCard'
 import NudgeCard, { nudgeMatchesLoop } from './chat/NudgeCard'
+import RecoveryCard, { parseRecoveryMessage } from './chat/RecoveryCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
@@ -190,6 +194,31 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
     queryFn: () => api.mcpActive(agent || undefined),
     enabled: mcpOpen,
   })
+  // Tool Search mode for this session's MCP tools (shared ['kirocrewConfig']
+  // cache). When on, tool specs are deferred (search-and-call), so every server
+  // shows as connected but its tools load only when used; when off, every spec
+  // is sent each turn. Explains the "why are they all loaded?" question.
+  const { data: toolSearchOn = true } = useQuery<{ agent?: { tool_search?: boolean } }, Error, boolean>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    select: (c) => c.agent?.tool_search ?? true,
+    enabled: mcpOpen,
+  })
+  // Per-tool loaded/deferred state is derived client-side (no endpoint): the
+  // full server list carries each server's tool names + disabledTools, and the
+  // "loaded this session" set comes from scanning this slot's tool_search
+  // results in the chat store. See deriveLoadedMcpTools for the caveats.
+  const { data: fullServers = [] } = useQuery<McpServer[]>({
+    queryKey: ['mcp-servers-full'],
+    queryFn: () => api.mcpServers(),
+    enabled: mcpOpen,
+  })
+  const toolsByServer = useMemo(
+    () => Object.fromEntries(fullServers.map(s => [s.name, { tools: s.tools, disabledTools: s.disabledTools }])),
+    [fullServers],
+  )
+  const sessionMessages = useAppSelector(s => s.chat.messages)
+  const loadedTools = useMemo(() => deriveLoadedMcpTools(sessionMessages), [sessionMessages])
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -213,14 +242,14 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
                 <span className="flex-1">{i18nT('pages.chatPage.mcp_servers')}</span>
                 <ChevronRight size={12} className="text-muted" />
               </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="min-w-[220px] max-w-[280px] max-h-[300px] overflow-y-auto px-3 py-2">
-                <div className="text-[11px] uppercase tracking-wider text-muted font-semibold mb-1.5">{i18nT('pages.chatPage.mcp_servers_2')} {servers.length > 0 && `(${servers.filter((s: {enabled?: boolean}) => s.enabled !== false).length}/${servers.length})`}</div>
-                {servers.length === 0 ? <div className="text-muted text-[12px] italic">{i18nT('pages.chatPage.loading')}</div> : servers.map((s: {name: string; enabled?: boolean}) => (
-                  <div key={s.name} className={`flex items-center gap-2 py-0.5 text-[12px] ${s.enabled === false ? 'opacity-40' : ''}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.enabled === false ? 'bg-muted' : 'bg-ok'}`} />
-                    <code className="text-text">{s.name}</code>
-                  </div>
-                ))}
+              <DropdownMenuSubContent className="min-w-[240px] max-w-[300px] max-h-[340px] overflow-y-auto px-3 py-2">
+                <McpToolsPanel
+                  servers={servers}
+                  toolsByServer={toolsByServer}
+                  loaded={loadedTools}
+                  toolSearchOn={toolSearchOn}
+                  loading={servers.length === 0}
+                />
               </DropdownMenuSubContent>
             </DropdownMenuSub>,
           ]}
@@ -530,7 +559,7 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
  *  equal value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_APP_ID_SET: ReadonlySet<string> = new Set()
 
-export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean } = {}) {
+export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const navigationType = useNavigationType()
@@ -749,14 +778,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     if (!slot) return
     setBrowseModeBySlot(prev => ({ ...prev, [slot]: !(prev[slot] ?? false) }))
   }
-  // Broadcast the active slot's browse-mode ("Browser use") so the Browser
-  // panel's live mirror can show "Enable interaction" only while it's OFF.
+  // Broadcast the active slot's browse-mode ("Let the agent use the browser") so the Browser
+  // panel's live mirror can show "Let the agent act" only while it's OFF.
   // (browseModeRef, kept in sync with browseMode below, is reused by the
   // browse-frame effect to replay state to a late-mounting panel.)
   useEffect(() => {
     window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: browseMode } }))
   }, [browseMode])
-  // The Browser panel's "Enable interaction" button requests turning Browser use
+  // The Browser panel's "Let the agent act" button requests turning browse mode
   // ON for the active slot (idempotent — never toggles it back off).
   useEffect(() => {
     const onEnable = (e: Event) => {
@@ -1896,7 +1925,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   useEffect(() => () => { if (activeSlotRef.current && filteredSlotsRef.current.find(s => s.key === activeSlotRef.current)) safeSetItem(slotStorageKeyRef.current, activeSlotRef.current) }, [])
   // Handle ?sid= (or legacy ?slot=) query parameter — activate the given session
   // Capture initial ?sid= at mount time before any effect can overwrite it
-  const initialSidRef = useRef(searchParams.get('sid') || searchParams.get('slot'))
+  // noUrlSync also disables the sid-READ paths, not just the URL write. The host
+  // route (e.g. /artifacts/:slug) is not required to be sid-free: land on
+  // /artifacts/foo?sid=other and an ungated read effect would switchSlot() the
+  // embedded panel onto an unrelated session, so the composer would send into
+  // it. Zeroing the ref here neutralizes the mount-activation effect AND the 5s
+  // "session not found" timeout that keys off it; the POP effect reads
+  // searchParams live and is gated separately below.
+  const initialSidRef = useRef(noUrlSync ? null : (searchParams.get('sid') || searchParams.get('slot')))
   const initialMsgRef = useRef(searchParams.get('msg'))
   const initialNewRef = useRef(searchParams.get('new') === '1')
   // Deep-link mount activation in progress — stops the sync effect from stripping
@@ -1969,6 +2005,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // with empty messages — the WelcomeView fallback then renders. Defer
   // the switch until reconnect so cached state stays put.
   useEffect(() => {
+    // noUrlSync: the host page owns the URL and the panel's session is chosen by
+    // the host, never by a query param. This effect otherwise treats embedMode as
+    // "the host drives ?sid" and would switch the panel onto whatever session the
+    // host route happens to carry.
+    if (noUrlSync) return
     // Embed: host app drives the URL — react to any ?sid change.
     // Main dashboard: honor only a genuine Back/Forward POP. react-router reports
     // the initial render as 'POP' and stays 'POP' until our own switch navigates
@@ -1994,7 +2035,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       popInFlightRef.current = true
       dispatch(switchSlot(urlSid))
     }
-  }, [searchParams, filteredSlots, activeSlot, dispatch, embedMode, navigationType, location.key, connected])
+  }, [searchParams, filteredSlots, activeSlot, dispatch, embedMode, navigationType, location.key, connected, noUrlSync])
   // Timeout: if slot never appears after 5s, show error.
   // Gated on `connected` so the timer only runs while the gateway is reachable
   // — otherwise an offline tab would burn its 5s while the resolve effects
@@ -2022,6 +2063,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   searchParamsRef.current = searchParams
   useEffect(() => {
     if (embedded && !embedMode) return
+    // noUrlSync (artifact companion chat panel): the host page owns the URL
+    // entirely (e.g. /artifacts/:slug) and passes embedMode="chat" only for its
+    // single-session chrome (no sessions sidebar). Never write ?sid= or
+    // navigate to basePath — an in-place navigate would swap the host route out
+    // from under the panel. The sid-READ paths are gated for the same flag
+    // above (initialSidRef + the post-mount POP effect); do not assume a
+    // noUrlSync host route is sid-free.
+    if (noUrlSync) return
     // In sessions embed mode, the URL is `/embed/sessions` regardless of
     // activeSlot. Navigation away from sessions is driven by the explicit
     // onSelectSlot callback in ChatSidebar — never auto-navigate from here,
@@ -2066,7 +2115,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     const isSessionSwitch = !!current && current !== activeSlot
     navigate(`${basePath}${slug ? '/' + slug : ''}?${next}`, { replace: !isSessionSwitch })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, filteredSlots, navigate, basePath, location.pathname, embedded])
+  }, [activeSlot, filteredSlots, navigate, basePath, location.pathname, embedded, noUrlSync])
   // Re-fetch slot messages on mount (handles nav away + back).
   // Skip when newSession=1 — createSlot in send() will set the active slot;
   // dispatching switchSlot here would race and overwrite it.
@@ -2561,9 +2610,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
     // satisfies the linter without re-creating this callback.
   }, [activeSlot, installedAgents, provider, queryClient, setAgentDropdown, setPendingAgent, setPendingModel])
   const switchModel = useCallback(async (modelName: string) => {
-    const val = modelName === 'auto' ? '' : modelName
-    if (!activeSlot) { setPendingModel(val); return }
-    await api.chatSlotModel(activeSlot, val)
+    // 'auto' is stored VERBATIM, not collapsed to ''. Both resolve to the same
+    // provider behaviour server-side, but '' is also the "never chosen" state,
+    // and every reader of an empty model re-resolves it to the agent template's
+    // model (the `resolvedModel` / `_initResolvedModel` queries below, and the
+    // backend's slot.model backfill). Writing '' therefore made an explicit Auto
+    // pick snap straight back to e.g. claude-opus-5 — Auto was unselectable.
+    // kiro-cli advertises `auto` as a real model id (and its default_model), and
+    // the ChatPane + Alt+Shift model-cycle paths already send it verbatim.
+    if (!activeSlot) { setPendingModel(modelName); return }
+    await api.chatSlotModel(activeSlot, modelName)
     // Keep the dropdown open after selecting — the user may switch models again
     // or drill into the reasoning-effort panel. Dismiss is via outside-click/Escape.
     // setPendingModel is a stable useState setter.
@@ -2766,7 +2822,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       // Only auto-open the Browser tab when the browsing session IS the one on
       // screen (the active slot). A background session's frames must not open —
       // or, with the panel's own session gate, display in — another session's
-      // panel; that would misattribute the "Enable interaction" grant.
+      // panel; that would misattribute the "Let the agent act" grant.
       if (!key || key !== activeSlotRef.current) return
       const prev = browseFrameOpenedRef.current
       if (prev.key !== key || now - prev.ts > 90_000) {
@@ -2875,6 +2931,28 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
   // configured default. Display only — the slot's raw value still drives the
   // picker so "no override" stays distinguishable from an explicit pick.
   const effectiveEffort = currentSlot?.reasoning_effort || defaultEffort
+  // Branch label for the active project chip. The user can check out a
+  // different branch outside the dashboard at any time, so this refetches on a
+  // slow interval and on window focus rather than being read once. A failure
+  // (no git, path gone, not a repo) leaves the chip showing the folder name
+  // alone, which is the pre-existing behaviour.
+  const _slotProject = currentSlot?.project || ''
+  const { data: projectGit, isError: projectGitError } = useQuery({
+    queryKey: ['project-git', _slotProject],
+    queryFn: () => api.projectGit(_slotProject),
+    enabled: !!_slotProject,
+    staleTime: 15_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    retry: false,
+  })
+  // React Query keeps the last successful data after a failed refetch, so a
+  // project that was deleted or revoked would keep showing its old branch
+  // indefinitely. Treat an errored query as "no branch" and fall back to the
+  // folder name, which is the same degradation as a non-repo project.
+  const projectBranch = projectGitError
+    ? ''
+    : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
   const isMobile = useIsMobile()
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -3520,6 +3598,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
       return <NudgeCard key={key} message={m} onOpenLoop={ownLoop ? () => setAutoNudgeOpen(true) : undefined} />
     }
     if (m.kind === 'stop_event' || m.meta?.kind === 'stop_event') return <StopEventCard key={m.meta?.id as string ?? key} message={m} />
+    // A synthetic turn-recovery continuation (tool refusal / stalled turn /
+    // stalled tool) is machine-facing instruction text. It stays in the
+    // transcript for auditability, but as a one-line card that names the event
+    // and the deny pattern rather than a full-width bubble of prompt prose.
+    if (m.role === 'inject') {
+      const recovery = parseRecoveryMessage(m.content)
+      if (recovery) return <RecoveryCard key={key} parsed={recovery} />
+    }
     if (m.role === 'error') return <div key={key} className="bg-danger-subtle text-danger text-[13px] px-3 py-2 rounded-md border border-danger/15 self-center animate-scale-in">{m.content}</div>
     if (m.role === 'notice') return <div key={key} className="bg-card text-muted text-[13px] px-3 py-2 rounded-md border border-border self-center animate-scale-in">{m.content}</div>
     if (m.role === 'permission') return null
@@ -4249,6 +4335,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout }: { mode?:
               onFileSelect={path => setPendingFiles(prev => prev.includes(path) ? prev : [...prev, path])}
               onFileOpen={handleFileOpen}
               project={currentSlot?.project || ''}
+              projectBranch={projectBranch}
+              projectDetached={!projectGitError && !!projectGit?.detached}
               isMac={isMac}
               onDrop={handleDrop}
               dragOver={dragOver}

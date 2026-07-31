@@ -150,7 +150,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
           The gradient fade above (see card list) replaces the old top border. */}
       <div className="flex-shrink-0 flex items-center gap-2 px-3 pt-2 pb-4 text-[12px] text-muted">
         <span title={stateFilter === 'closed' && issues.length >= 100 ? 'Closed issues are capped at the 100 most recently updated' : undefined}>
-          {filteredIssues.length} {i18nT('apps.issueRadar.components.issueList.issue')}{filteredIssues.length === 1 ? '' : 's'}
+          {i18nT('apps.issueRadar.components.issueList.issue', { count: filteredIssues.length })}
         </span>
         <span className="ml-auto flex items-center gap-2">
           {lastUpdated && (

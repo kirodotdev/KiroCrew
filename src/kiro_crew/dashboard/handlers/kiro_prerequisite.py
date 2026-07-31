@@ -106,19 +106,29 @@ async def _dashboard_owner_only(request: web.Request) -> web.Response | None:
 
 
 async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
-    """GET /api/kiro-prerequisite — current install/login readiness."""
+    """GET /api/kiro-prerequisite — current install/login readiness.
+
+    Reads LATCHED state by default: readiness is probed at gateway start and
+    then only on explicit request, so the SPA's background poll costs no
+    ``kiro-cli`` subprocess. ``?refresh=1`` (the gate's Refresh / Check again
+    button) is the explicit user action that forces a real probe.
+    """
 
     if request.get("app") != "":
         denied = await _dashboard_owner_only(request)
         assert denied is not None
         return denied
 
+    # Only an owner may force a host probe; a non-owner's refresh reads latched
+    # state like any other poll (they receive the redacted payload regardless).
+    force = request.query.get("refresh") in ("1", "true") and _is_dashboard_owner(request)
+
     # Resolve the service OUTSIDE the guard: a genuinely unwired service is a
     # real misconfiguration that must stay a 503, not be masked as a 200
     # not-ready. Only the probe itself is guarded.
     service = _service(request)
     try:
-        snapshot = await service.snapshot()
+        snapshot = await service.snapshot(force=force)
     except asyncio.CancelledError:
         raise
     except web.HTTPException:

@@ -46,6 +46,7 @@ const { findConfiguredDashboardPort } = require("./data-home");
 const { createTokenRetryHandler } = require("./token-retry");
 const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
 const { createDisplayMediaHandler } = require("./display-media");
+const { createWindowOpenHandler } = require("./external-scheme");
 const { initAutoUpdate } = require("./auto-update");
 const {
   classifyBundleLocation,
@@ -913,18 +914,19 @@ function setupWindowContents(win, backendUrl) {
   // Sync native tab bar to dashboard dark/light mode on focus (process-global setting)
   win.on("focus", () => syncNativeTheme(view, win));
 
-  view.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const u = new URL(url);
-      if (u.origin === new URL(backendUrl).origin) {
-        return { action: 'allow' };
-      }
-      if (u.protocol === 'http:' || u.protocol === 'https:') {
-        shell.openExternal(url);
-      }
-    } catch {}
-    return { action: 'deny' };
-  });
+  // Same-origin opens in-app; cross-origin http(s) and allowlisted non-web
+  // schemes are handed to the OS. The non-web branch is what makes the
+  // Settings -> Computer Use "Open System Settings" shortcuts work: the
+  // dashboard renders inside an instance <iframe>, where a `location.href`
+  // assignment to a custom scheme is refused by CSP `frame-src`, so the panel
+  // routes through `window.open` — which arrives here. See external-scheme.js.
+  view.webContents.setWindowOpenHandler(
+    createWindowOpenHandler({
+      openExternal: (url) => shell.openExternal(url),
+      getAppOrigin: () => backendUrl,
+      log: glog,
+    }),
+  );
 
   view.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
     delete details.requestHeaders["Referer"];

@@ -37,6 +37,9 @@ export function useCopy() {
 
 export const ITEM_TYPES = ['design_doc', 'runbook', 'meeting_notes', 'code_doc', 'presentation', 'report', 'policy', 'personal_notes', 'external_reference', 'document']
 export const STATUSES = ['active', 'archived']
+// Status the list view opens on. This is the default view, NOT user narrowing,
+// so the onboarding empty state treats this value as "no filter applied".
+export const DEFAULT_STATUS_FILTER = 'active'
 export const SUPPORTED_FORMATS = 'Markdown, Plain text, Code files (.py, .ts, .java, .go, .rs, etc.), HTML, JSON, YAML, CSV, DOCX'
 
 export const ONBOARDING = {

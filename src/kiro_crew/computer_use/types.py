@@ -135,7 +135,11 @@ MIN_CLICK_COUNT = 1
 # live tuning, and it is below the threshold where a turn feels slow.
 POST_ACTION_SETTLE_SECS = 0.15
 
-# ── Observation channels (the ``computer_use.observations`` item vocabulary) ──
+# ── Observation channels ──
+# Was the ``computer_use.observations`` scope's item vocabulary; that scope is gone
+# and ``gate.permitted_observation_channels`` now returns all of these
+# unconditionally. Retained as the shared names the renderers and the screenshot
+# relay agree on, and as the seam an edition would narrow.
 # What a result MAY carry. Queried one channel at a time and enforced at RESPONSE
 # SHAPING (``gate.apply_observation_ceiling``), not only against the caller's
 # request flag — an implementation that attaches a screenshot unconditionally
@@ -392,6 +396,18 @@ SCREENSHOT_NOTE = (
 SECURE_WINDOW_NOTE = (
     "Screenshot suppressed: this window contains a secure (password) field, so "
     "its pixels are not captured."
+)
+#: A truncated walk cannot prove the window holds no password field, so
+#: ``capture_macos`` treats "unknown" as "present" and captures nothing. That
+#: refusal used to be SILENT, which is the normal state for a browser (Chrome
+#: measured 1475 nodes against a 1200 default) — so ``screenshot: true`` on
+#: Chrome/Slack/VS Code returned no image and no reason, and the model retried in
+#: exactly the loop the sibling notes exist to prevent. It names the remedy,
+#: because raising the budget is something the model can actually do.
+TRUNCATED_WINDOW_NOTE = (
+    "Screenshot suppressed: the accessibility tree was truncated, so this window "
+    "cannot be confirmed free of a secure (password) field. Re-run with a higher "
+    "max_tree_nodes / max_tree_depth to capture it."
 )
 NO_APPS_NOTE = "No applications with on-screen windows were found."
 
@@ -853,6 +869,17 @@ class Snapshot:
     #: sanitized and clipped. Empty when there is no selection, when the focused
     #: element is secure, or when nothing is focused.
     selected_text: str = ""
+    #: The tree budget this snapshot was actually WALKED at, stamped by
+    #: ``service.snapshot``. The drift-verification re-walk reads it so it re-walks
+    #: the same tree the model was shown: verifying a snapshot taken at
+    #: ``max_tree_nodes=2001`` against the 1200 config default made every element
+    #: above 1200 permanently un-actionable ("changed since the last
+    #: computer_get_state … now no element at that index"), and re-snapshotting
+    #: reproduced the same refusal — a loop with no way out on a documented happy
+    #: path (the schema advertises up to 5000 and the Settings copy says to raise it
+    #: for dense apps). ``None`` for a snapshot a backend built directly, in which
+    #: case the caller's own request is used.
+    walk_budget: "SnapshotRequest | None" = None
 
     @property
     def key(self) -> str:

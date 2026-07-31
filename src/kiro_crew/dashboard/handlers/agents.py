@@ -38,7 +38,7 @@ from kiro_crew.dashboard.handlers._shared import (
     apply_skill_mapping,
 )
 from kiro_crew.dashboard.handlers.discover import _redact_external
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_not_ready
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor
 
@@ -681,7 +681,7 @@ async def api_models(request: web.Request) -> web.Response:
     # opened a browser window every 8s indefinitely. The 503 is the same
     # degraded response the timeout/unresolved branches already return, so the
     # client contract is unchanged; only the subprocess is skipped.
-    blocked = await reject_if_kiro_not_ready(request)
+    blocked = await reject_if_kiro_unverified(request)
     if blocked is not None:
         return blocked
     kiro_bin: str | None = None

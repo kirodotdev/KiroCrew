@@ -8,7 +8,7 @@
  */
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { join, extname } from 'node:path'
+import { join, extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // fileURLToPath, not URL.pathname: on Windows .pathname yields "/C:/…", which
@@ -26,16 +26,32 @@ export const MIME = {
  * @returns {Promise<{srv: import('node:http').Server, base: string}>}
  */
 export function serveDist(dist = DEFAULT_DIST) {
-  return new Promise(resolve => {
+  // Resolved once so the per-request containment test compares two absolute,
+  // normalized paths (a trailing-slash dist would otherwise fail the prefix).
+  const root = resolve(dist)
+  return new Promise(resolve_ => {
     const srv = createServer((req, res) => {
-      // new URL() normalizes away ".." segments before the join, so a crafted
-      // request cannot escape dist.
-      const rel = decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/^\/+/, '')
-      let file = join(dist, rel)
-      if (!rel || !existsSync(file) || statSync(file).isDirectory()) file = join(dist, 'index.html')
+      // Decode FIRST, then containment-check the resolved path. new URL()
+      // normalizes literal ".." segments, but it runs BEFORE decoding, so an
+      // encoded "%2e%2e%2f" survives normalization and only becomes "../" at
+      // decodeURIComponent — which is why normalization alone is not a defence.
+      // resolve() + a prefix test on the real dist root is.
+      let rel
+      try {
+        rel = decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/^\/+/, '')
+      } catch {
+        // Malformed percent-escapes throw; treat as a bad request rather than
+        // crashing the harness mid-capture.
+        res.writeHead(400); res.end('bad request'); return
+      }
+      let file = resolve(root, rel)
+      if (file !== root && !file.startsWith(root + sep)) {
+        res.writeHead(403); res.end('forbidden'); return
+      }
+      if (!rel || !existsSync(file) || statSync(file).isDirectory()) file = join(root, 'index.html')
       res.writeHead(200, { 'Content-Type': MIME[extname(file)] || 'application/octet-stream' })
       res.end(readFileSync(file))
     })
-    srv.listen(0, '127.0.0.1', () => resolve({ srv, base: `http://127.0.0.1:${srv.address().port}` }))
+    srv.listen(0, '127.0.0.1', () => resolve_({ srv, base: `http://127.0.0.1:${srv.address().port}` }))
   })
 }

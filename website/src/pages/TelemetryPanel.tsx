@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Activity, Rocket, Zap } from 'lucide-react'
+import { Activity, Gauge, Rocket, Zap } from 'lucide-react'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
@@ -19,8 +19,28 @@ type Startup = {
   outcome: Record<string, number>
   daily: { date: string; count: number; cold_p50_ms: number; cold_p90_ms: number; warm_p50_ms: number }[]
   distribution: { buckets: number[]; bounds: number[] }
+  phases: (Stat & { name: string })[]
 }
 type Turn = Stat & { outcome: Record<string, number>; fault_rate: number }
+type ContextSession = {
+  slot: string
+  turns: number
+  peak_pct: number
+  used: number
+  window: number
+  agent: string
+  model: string
+  surface: string
+  ts: string
+}
+type Context = {
+  turns: number
+  p50_pct: number
+  p90_pct: number
+  max_pct: number
+  sessions: ContextSession[]
+  window_days: number
+}
 type Other = {
   name: string
   kind: string
@@ -37,6 +57,7 @@ type Resp = {
   metrics_dir: string
   startup: Startup | null
   turn: Turn | null
+  context: Context | null
   other: Other[]
 }
 
@@ -96,6 +117,90 @@ function Card({ title, meaning, children }: { title: string; meaning: string; ch
   )
 }
 
+/**
+ * Occupancy colour thresholds. Compaction triggers at 90% of the window, so
+ * that is the danger line rather than an arbitrary "nearly full" guess; 70% is
+ * the point where a long session still has room but is worth watching. Below
+ * 70% stays on the neutral accent (matching the sibling distribution bars) —
+ * painting the healthy majority green would make a wall of green in which
+ * amber and red no longer read as signal.
+ */
+const occColor = (p: number): string =>
+  p >= 90 ? 'var(--danger)' : p >= 70 ? 'var(--warn)' : 'var(--accent)'
+
+const fmtTokens = (n: number): string =>
+  n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(n)
+
+/**
+ * Per-turn context-window occupancy, read from the token row store rather than
+ * the OTEL shards (see api_telemetry_startup): a per-session ratio keyed by an
+ * unbounded slot id is not a metric label. Rendered whether or not OTEL export
+ * is on, because these rows are always written.
+ */
+function ContextSection({ c }: { c: Context }) {
+  return (
+    <Section title={i18nT('pages.telemetryPanel.context_window')} icon={<Gauge size={13} />}>
+      {/* Names the source explicitly AND bounds it in time: this section is the
+          one part of the page that survives telemetry.enabled=false, where the
+          "Window: last Nd" footer below is not rendered — so without the window
+          here the turn count reads as unbounded, and the page looks
+          self-contradictory next to the "telemetry is off" banner. */}
+      <div className="text-[10px] text-muted -mt-1.5 mb-2.5">{i18nT('pages.telemetryPanel.measured_from_token_records', { days: c.window_days })}</div>
+      <div className="grid gap-2.5 grid-cols-[repeat(auto-fit,minmax(140px,1fr))] mb-3">
+        <Tile
+          label={i18nT('pages.telemetryPanel.occupancy_p50')}
+          value={String(c.p50_pct)}
+          unit="%"
+          color={occColor(c.p50_pct)}
+          sub={i18nT('pages.telemetryPanel.turns_measured', { count: c.turns })}
+        />
+        <Tile
+          label={i18nT('pages.telemetryPanel.occupancy_p90')}
+          value={String(c.p90_pct)}
+          unit="%"
+          color={occColor(c.p90_pct)}
+        />
+        <Tile
+          label={i18nT('pages.telemetryPanel.peak_occupancy')}
+          value={String(c.max_pct)}
+          unit="%"
+          color={occColor(c.max_pct)}
+        />
+      </div>
+      {c.sessions.length > 0 && (
+        <div className="card-glow border border-border bg-card rounded-xl p-3.5">
+          <div className="text-[10px] text-muted mb-2">{i18nT('pages.telemetryPanel.hottest_sessions_by_peak_occupancy')}</div>
+          <div className="flex flex-col gap-1.5">
+            {c.sessions.map(s => (
+              <div key={s.slot} className="flex items-center gap-2 text-[10px]">
+                {/* Identity is rendered, not just hover-titled: a title= tooltip
+                    is unreachable by keyboard and touch, and "which session is
+                    at 92%" is the whole point of the row. */}
+                <span className="w-40 shrink-0 min-w-0">
+                  <span className="block truncate font-mono text-text" title={s.slot}>{s.slot}</span>
+                  <span className="block truncate text-muted">
+                    {[s.surface, s.agent, s.model].filter(Boolean).join(' · ') || '—'}
+                  </span>
+                </span>
+                <div className="flex-1 h-3 bg-[var(--bg)] rounded overflow-hidden">
+                  <span
+                    className="block h-full rounded"
+                    style={{ width: `${Math.min(100, s.peak_pct)}%`, background: occColor(s.peak_pct) }}
+                  />
+                </div>
+                <span className="text-text font-mono w-10 text-right shrink-0">{s.peak_pct}%</span>
+                <span className="text-muted font-mono w-24 text-right shrink-0 max-[720px]:hidden">
+                  {fmtTokens(s.used)}/{fmtTokens(s.window)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Section>
+  )
+}
+
 export default function TelemetryPanel() {
   const { data, isLoading } = useQuery<Resp>({
     queryKey: ['telemetry-startup'],
@@ -105,19 +210,41 @@ export default function TelemetryPanel() {
 
   if (isLoading && !data) return <Notice>{i18nT('pages.telemetryPanel.loading_telemetry')}</Notice>
   if (data && !data.enabled) {
-    return (
-      <Notice>
-        <div className="text-text font-medium mb-1">{i18nT('pages.telemetryPanel.telemetry_is_off')}</div>
+    // Context occupancy comes from the token row store, which is written
+    // regardless of the OTEL switch — so show it rather than an empty page.
+    // With real data on screen the off-state is a compact banner, not the
+    // centered empty-state block: a full-page "nothing here" under live
+    // numbers makes the page contradict itself.
+    const offBody = (
+      <>
         {i18nT('pages.telemetryPanel.enable_with')} <code className="text-accent">{i18nT('pages.telemetryPanel.telemetry_enabled_true')}</code>{i18nT('pages.telemetryPanel.metrics_stay_local')}
         <code className="text-accent">{data.metrics_dir}</code>{i18nT('pages.telemetryPanel.nothing_leaves_this_machine')}
-      </Notice>
+      </>
+    )
+    if (!data.context) {
+      return (
+        <Notice>
+          <div className="text-text font-medium mb-1">{i18nT('pages.telemetryPanel.telemetry_is_off')}</div>
+          {offBody}
+        </Notice>
+      )
+    }
+    return (
+      <div className="overflow-y-auto flex-1 min-h-0 pb-8">
+        <ContextSection c={data.context} />
+        <div className="border border-border bg-card rounded-xl p-3 text-[11px] leading-relaxed">
+          <span className="text-text font-medium">{i18nT('pages.telemetryPanel.telemetry_is_off')}</span>{' '}
+          <span className="text-muted">{offBody}</span>
+        </div>
+      </div>
     )
   }
 
   const s = data?.startup ?? null
   const t = data?.turn ?? null
+  const ctx = data?.context ?? null
   const other = data?.other ?? []
-  const hasData = !!(s && s.overall.count) || !!(t && t.count) || other.length > 0
+  const hasData = !!(s && s.overall.count) || !!(t && t.count) || !!ctx || other.length > 0
   if (!data || !hasData) {
     return <Notice>{i18nT('pages.telemetryPanel.no_telemetry_recorded_yet_in_the_last')} {data?.window_days ?? 14} {i18nT('pages.telemetryPanel.days')}</Notice>
   }
@@ -210,6 +337,20 @@ export default function TelemetryPanel() {
             <Tile label={i18nT('pages.telemetryPanel.warm_start_p50')} value={fmtMs(s.warm.p50_ms)} color="var(--ok)" sub={`${s.warm.count} warm`} />
             <Tile label={i18nT('pages.telemetryPanel.overall_mean')} value={fmtMs(s.overall.mean_ms)} sub={`min ${fmtMs(s.overall.min_ms)} · max ${fmtMs(s.overall.max_ms)}`} />
           </div>
+          {s.phases?.length > 0 && (
+            <div className="card-glow border border-border bg-card rounded-xl p-3.5 mb-3">
+              <div className="text-[10px] text-muted mb-2">{i18nT('pages.telemetryPanel.internal_phase_breakdown')}</div>
+              <div className="grid gap-2.5 grid-cols-[repeat(auto-fit,minmax(120px,1fr))]">
+                {s.phases.map(p => (
+                  <div key={p.name}>
+                    <div className="text-[10px] text-muted font-mono">{p.name}</div>
+                    <div className="text-[15px] font-bold">{fmtMs(p.p50_ms)}</div>
+                    <div className="text-[10px] text-muted">p90 {fmtMs(p.p90_ms)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {distRows.length > 0 && (
             <div className="card-glow border border-border bg-card rounded-xl p-3.5">
               <div className="text-[10px] text-muted mb-2">{i18nT('pages.telemetryPanel.startup_latency_distribution_from_otel_histogram')}</div>
@@ -229,7 +370,10 @@ export default function TelemetryPanel() {
         </Section>
       )}
 
-      {/* ── Section 3: Acceleration internals ──────────────────── */}
+      {/* ── Section 3: Context window ──────────────────────────── */}
+      {ctx && <ContextSection c={ctx} />}
+
+      {/* ── Section 4: Acceleration internals ──────────────────── */}
       <Section title={i18nT('pages.telemetryPanel.acceleration_internals')} icon={<Zap size={13} />}>
         <div className="grid grid-cols-2 gap-2.5 max-[720px]:grid-cols-1">
           <Card title={i18nT('pages.telemetryPanel.warm_pool_efficiency')} meaning="Sessions reusing a warm MCP backend vs a cold spawn">

@@ -465,17 +465,16 @@ class KiroCrewConfig:
     slack_dm_activation: str = "always"       # activation mode for DMs (D-prefix channels)
 ```
 
-### Computer use: no `enabled` field here, and no pointer flag either
+### Computer use: no `enabled` field here
 
-`ComputerUseConfig` carries display and limits only. **Two** switches for native
-desktop GUI automation live **outside `config.json`**, on the keystone at
+`ComputerUseConfig` carries display and limits only. The switch for native desktop
+GUI automation lives **outside `config.json`**, on the keystone at
 `~/.kiro/crew/computer_use.json` (path via `config.loader.computer_use_state_path()`,
 leaf on `security._CREW_SECRET_LEAVES`):
 
 ```json
 {
   "enabled": false,
-  "allow_pointer_move": false,
   "allowed_apps": [],
   "extra_denied_apps": []
 }
@@ -490,17 +489,24 @@ redirect.
 
 - **`enabled`** — the primary enable for full desktop observation plus input
   synthesis. A security ceiling, so it goes where the agent can neither read nor
-  write it.
-- **`allow_pointer_move`** — the operator's consent for `click_method: "global"`,
-  the one path that warps the **real** mouse pointer. Same class of control, same
-  treatment, for exactly the same reason. It is only half the permit: the
-  `capabilities.computer_use_pointer` governance row is required in addition
-  (tightest-wins), and neither substitutes for the other.
+  write it. Read with a strict `is True` identity test, so a truthy string such as
+  `"enabled": "false"` does **not** enable desktop control, and the read fails soft
+  to `{}` → **off**.
+- **`allowed_apps` / `extra_denied_apps`** — the operator's own narrowing. These
+  are the ONLY other keys `PolicyConfig.from_state` reads.
 
-Both are read with a strict `is True` identity test, so a truthy string such as
-`"allow_pointer_move": "false"` does **not** hand over the mouse, and both reads
-fail soft to `{}` → **off**. See [security.md](security.md),
-[governance.md](governance.md) and [computer-use.md](computer-use.md).
+**There is no `allow_pointer_move` key, and writing one has no effect.** An earlier
+revision documented it here as a second consent switch for `click_method: "global"`
+(the one path that warps the real mouse pointer), gated together with a
+`capabilities.computer_use_pointer` governance row. Both were removed by product
+decision: there are no `computer_use.*` governance scopes at all, and
+`from_state` reads only the three keys above, so a hand-written
+`{"enabled": true, "allow_pointer_move": false}` silently grants the pointer path —
+the operator would believe they had withheld consent. What actually contains that
+path is that the model must NAME the method (`auto` never resolves onto it) and every
+use is SEL-audited under its own `tool_kind`. Do not re-document the flag without
+re-implementing it. See [security.md](security.md), [governance.md](governance.md)
+and [computer-use.md](computer-use.md).
 
 #### `computer_use.cursor_motion` — the one new `config.json` flag
 
@@ -512,18 +518,17 @@ invisible to `screencapture`, so an agent flipping it could at most decorate its
 clicks. A keystone flag would imply a security decision that does not exist.
 
 `overlay.cursor_motion_enabled()` reads it through `getattr(section,
-"cursor_motion", False)` rather than as a typed attribute, which makes the read
+"cursor_motion", False)` **even though the field is now declared** on
+`ComputerUseConfig`, and that stays deliberate: it makes the read
 **forward-compatible and fail-OFF**: a build whose `ComputerUseConfig` predates the
 field resolves to OFF rather than raising inside a tool call, and a missing field can
-only ever mean "no decoration", never "start drawing on the user's screen". The
-typed `ComputerUseConfig` field (and its `_EDITABLE_CONFIG` row) is the remaining
-wiring step; until it lands the flag is inert and the overlay stays off.
+only ever mean "no decoration", never "start drawing on the user's screen".
 
 Three consequences for this module: `"computer_use"` MUST be present in
 `_KNOWN_CONFIG_SECTIONS` (the guarded invariant that `to_dict()`'s emitted sections
 equal that set); the dashboard's `_EDITABLE_CONFIG` exposes only the limits
 (`computer_use.max_tree_nodes`, `computer_use.screenshot_max_px`) — never an
-`enabled` key and never `allow_pointer_move`; and every numeric knob is clamped to
+`enabled` key; and every numeric knob is clamped to
 the same `*_LIMIT` ceiling the MCP tool schemas enforce, so a hand-edited
 `config.json` cannot ask for an unbounded accessibility walk or a full-resolution
 screenshot.
@@ -588,11 +593,34 @@ Auto option writes `""` to clear a previous explicit choice. An explicit choice
 always outranks detection, so a user who selects English on a zh-CN machine is
 not re-detected back to Chinese on the next load.
 
+The picker's Auto row is labelled plain **"Auto"**, not "Auto (follow browser)".
+The desktop app has no browser preference to follow — its locale comes from the
+OS — so naming the browser was wrong on that surface. The row annotates itself
+with the language Auto actually resolves to ("Auto — Deutsch"), which answers the
+question accurately on every surface.
+
 The backend validates **shape only** (`_LANGUAGE_TAG_RE`, a conservative BCP-47
 subset), not membership in the set of shipped catalogs. That keeps "which
 languages exist" a pure frontend data change (`SUPPORTED_LANGUAGES` + one
 `locales/<tag>.json`) and never requires a backend edit to add one; a well-formed
 tag with no catalog falls back to detection client-side.
+
+Shipped catalogs (ordered by global speaker count, which is also the picker
+order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `it`. Right-to-left
+languages are deliberately **not** shipped yet: the catalogs would translate
+fine, but the dashboard's layout uses physical-direction utilities (`pl-*`,
+`left-*`, `text-left`) and unmirrored directional icons, so an RTL locale would
+render correct text in a visibly wrong shell. RTL requires `dir="rtl"` plus a
+logical-property conversion first.
+
+All catalogs are **statically bundled**, so `t()` stays synchronous (see the
+rationale in `website/src/i18n/index.ts`). The cost is that every user downloads
+every language (~70–80 KB gzip each; ~615 KB gzip for the ten shipped catalogs
+combined). This is acceptable while the dashboard is served from a loopback
+gateway, but it does not scale indefinitely — the documented next step is to keep
+`en` static and lazily fetch the active non-English catalog. That seam is already
+isolated to `website/src/i18n/index.ts` plus a `<Suspense>` boundary in
+`main.tsx`; no call site changes.
 
 ### Foreign-agent import onboarding state
 

@@ -7,7 +7,6 @@ vi.mock('@radix-ui/react-context-menu', () => import('./__mocks__/@radix-ui/reac
 
 import ChatSidebar from '../src/pages/ChatSidebar'
 import { renderWithProviders } from './helpers'
-import { KiroReadinessProvider } from '../src/providers/KiroReadinessContext'
 import { server } from './mocks/server'
 import { http, HttpResponse } from 'msw'
 import { __resetAuthRecoveryStateForTests } from '../src/api/client'
@@ -143,32 +142,6 @@ describe('ChatSidebar Folder Grouping', () => {
     renderWithProviders(<ChatSidebar {...defaultProps} />)
     await user.click(await screen.findByLabelText('More create options'))
     await waitFor(() => expect(screen.getByText('New folder')).toBeInTheDocument())
-  })
-
-  it('disables create-menu session actions until Kiro is ready', async () => {
-    const user = userEvent.setup()
-    server.use(
-      http.get('/api/chat/folders', () => HttpResponse.json([
-        { id: 'f1', name: 'Project A', order: 0, collapsed: false },
-      ])),
-    )
-    renderWithProviders(
-      <KiroReadinessProvider ready={false}>
-        <ChatSidebar {...defaultProps} />
-      </KiroReadinessProvider>,
-    )
-
-    expect(screen.getByRole('button', { name: 'New chat session' })).toBeDisabled()
-    await user.click(await screen.findByLabelText('More create options'))
-
-    const autopilot = screen.getByText('New autopilot chat').closest('[role="menuitem"]')
-    const newFolder = screen.getByText('New folder').closest('[role="menuitem"]')
-    const inFolder = screen.getAllByRole('menuitem').find(
-      item => item.textContent?.includes('New chat in folder'),
-    )
-    expect(autopilot).toHaveAttribute('disabled')
-    expect(newFolder).not.toHaveAttribute('disabled')
-    expect(inFolder).toHaveAttribute('disabled')
   })
 
   it('creates a folder via inline input and API', async () => {

@@ -25,9 +25,29 @@ export interface LanguageEntry {
   label: string
 }
 
+/**
+ * Ordered by global speaker count, so the picker's top entries are the ones
+ * most users are looking for rather than an alphabetical accident.
+ *
+ * Right-to-left languages (Arabic, Urdu) are deliberately absent: the catalogs
+ * would translate correctly, but the dashboard's layout is built from
+ * physical-direction Tailwind utilities (`pl-*`, `left-*`, `text-left`) and
+ * unmirrored directional icons, so an RTL locale would render readable text in
+ * a visibly wrong shell. RTL needs `dir="rtl"` plus a logical-property
+ * conversion first; shipping the catalog before that would be a worse
+ * experience than English.
+ */
 export const SUPPORTED_LANGUAGES: readonly LanguageEntry[] = [
   { code: 'en', label: 'English' },
   { code: 'zh-CN', label: '简体中文' },
+  { code: 'hi', label: 'हिन्दी' },
+  { code: 'es', label: 'Español' },
+  { code: 'fr', label: 'Français' },
+  { code: 'bn', label: 'বাংলা' },
+  { code: 'pt', label: 'Português' },
+  { code: 'ru', label: 'Русский' },
+  { code: 'de', label: 'Deutsch' },
+  { code: 'it', label: 'Italiano' },
 ] as const
 
 /** The fallback language. Its catalog is the key-set authority for all others. */

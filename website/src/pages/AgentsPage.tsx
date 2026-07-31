@@ -88,7 +88,7 @@ function AgentMetadataEditor({ name }: { name: string }) {
     <div className="mb-3">
       <div className="flex items-center gap-2 mb-1">
         <span className="text-[12px] text-muted font-medium uppercase tracking-wider">{i18nT('pages.agentsPage.routing_metadata')}</span>
-        <InfoTip text="Describes when to delegate tasks to this agent. Used by the conductor skill to route tasks to the right specialist. Markdown format." />
+        <InfoTip text="Routing hints for the conductor skill: describe the tasks and triggering conditions where this agent should be picked (e.g. 'Use for frontend/React UI work' or 'Handle DB migrations'). An incoming task is matched against this text to delegate to the right specialist. These hints only take effect once Orchestrator Mode is enabled in Config (Developer → Config → Orchestrator Mode); otherwise they're ignored. Markdown format." />
       </div>
       <textarea aria-label={i18nT('pages.agentsPage.routing_metadata_2')} className="w-full bg-bg-elevated border border-border rounded-md p-2.5 text-text font-mono text-[12px] outline-none resize-y leading-relaxed transition-colors focus-ring" rows={4} value={content} onChange={e => setContent(e.target.value)} placeholder={i18nT('pages.agentsPage.describe_when_to_use_this_agent')} />
       <div className="flex items-center gap-2 mt-1">
@@ -395,7 +395,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       </>)}
                     </div>
                     <div className="flex justify-between mt-1 text-[12px] text-muted">
-                      <span>{s.prompts} {i18nT('pages.agentsPage.prompt')}{s.prompts !== 1 ? 's' : ''}</span>
+                      <span>{i18nT('pages.agentsPage.prompt', { count: s.prompts })}</span>
                       <span>{awaiting ? <><Hourglass className="lucide-inline" /> {i18nT('pages.agentsPage.idle')}</> : pct >= 90 ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--danger)]" /> {i18nT('pages.agentsPage.critical')}</> : pct >= 70 ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--warn)]" /> {i18nT('pages.agentsPage.high')}</> : <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {i18nT('pages.agentsPage.healthy')}</>}</span>
                     </div>
                   </div>

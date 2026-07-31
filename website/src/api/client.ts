@@ -83,9 +83,10 @@ export interface ComputerUsePermissions {
 /** Computer-use config as returned by GET /api/computer-use/config.
  *
  * `enabled` comes from the keystone `computer_use.json`, not `config.json`; the
- * numeric fields are the config.json budgets. `read_only` is derived from
- * governance (never from the platform — an unsupported platform is the separate
- * `supported: false` branch). */
+ * numeric fields are the config.json budgets. There is deliberately no
+ * `read_only`/governance-lock field — computer use is one operator opt-in with no
+ * `computer_use*` governance scope, so nothing can forbid it and there is nothing to
+ * grey out. An unsupported platform is the separate `supported: false` branch. */
 export interface ComputerUseConfigData {
   enabled: boolean
   supported: boolean
@@ -806,8 +807,13 @@ export const api = {
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
   system: () => fetch('/api/system').then(j),
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
-  kiroPrerequisite: () =>
-    get('/api/kiro-prerequisite').then(j) as Promise<KiroPrerequisiteStatus>,
+  // Background polls read the gateway's latched state (no kiro-cli subprocess).
+  // `refresh` is the explicit user action (Refresh / Check again) that forces a
+  // real host probe.
+  kiroPrerequisite: (refresh = false) =>
+    get(`/api/kiro-prerequisite${refresh ? '?refresh=1' : ''}`).then(
+      j,
+    ) as Promise<KiroPrerequisiteStatus>,
   installKiroPrerequisite: () =>
     post('/api/kiro-prerequisite/install').then(j) as Promise<KiroPrerequisiteStatus>,
   loginKiroPrerequisite: () =>
@@ -945,6 +951,7 @@ export const api = {
   recentProjects: () => fetch('/api/recent-projects').then(j) as Promise<{ dirs: string[] }>,
   browseDirs: (path?: string) => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
   browseFiles: (path?: string) => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
+  projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; branch?: string; detached?: boolean; head?: string }>,
   workspaces: () => fetch('/api/workspaces').then(j),
   createWorkspace: (body: object) => post('/api/workspaces', body).then(j),
   updateWorkspace: (name: string, body: object) =>
@@ -1133,7 +1140,11 @@ export const api = {
     if (before !== undefined) p.set('before', String(before))
     return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '?' + p).then(j)
   },
-  createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}) }).then(j),
+  createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}), ...(artifact ? { artifact } : {}) }).then(j),
+  /** Inject silent background context into a slot — consumed on the next user
+   * message. Used by the artifact companion chat to name the bound artifact so
+   * the user's first message needs no slug boilerplate. */
+  chatSlotContext: (slot: string, content: string, opts?: { source?: string; ephemeral?: boolean }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/context', { content, ...(opts?.source ? { source: opts.source } : {}), ...(opts?.ephemeral !== undefined ? { ephemeral: opts.ephemeral } : {}) }).then(j),
   deleteChatSlot: (slot: string) => del('/api/chat/slots/' + encodeURIComponent(slot)).then(j),
   cleanupSessions: (maxInactiveDays: number, activeSlot?: string, dryRun?: boolean) => post('/api/chat/slots/cleanup', { max_inactive_days: maxInactiveDays, active_slot: activeSlot || '', dry_run: !!dryRun }).then(j) as Promise<{ ok: boolean; archived: number; keys: string[]; failed: string[]; dry_run?: boolean; count?: number; active_is_stale?: boolean }>,
   stopChatSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/stop').then(j),

@@ -346,7 +346,15 @@ class AcpProvider(LLMProvider):
             self._emit_kiro_startup_metric(t0, phases, outcome)
 
     def _emit_kiro_startup_metric(self, t0: float, phases: dict[str, float], outcome: str) -> None:
-        """Emit the kiro cold-start histogram (total + per-phase). Best-effort."""
+        """Emit the kiro cold-start histogram (total + per-phase). Best-effort.
+
+        ``spawned=True`` is unconditional and correct: ``_start_kiro_runtime_impl``
+        always constructs and spawns a fresh ``AcpRuntime``, so every point from
+        this path is a cold start (the warm fast-path returns before reaching
+        here). Without the attribute the Telemetry aggregator — which splits
+        cold from warm on exactly this key — filed all kiro startups as warm and
+        reported cold as permanently empty.
+        """
         try:
             # circular import: importing get_recorder at module top would form a
             # config.loader -> ... -> metrics.provider -> config.loader cycle
@@ -361,14 +369,24 @@ class AcpProvider(LLMProvider):
                 "kirocrew.session.startup.duration",
                 total_ms,
                 unit="ms",
-                attrs={"backend": "kiro", "phase": "total", "outcome": outcome},
+                attrs={
+                    "backend": "kiro",
+                    "phase": "total",
+                    "outcome": outcome,
+                    "spawned": True,
+                },
             )
             for phase, ms in phases.items():
                 rec.histogram(
                     "kirocrew.session.startup.duration",
                     ms,
                     unit="ms",
-                    attrs={"backend": "kiro", "phase": phase, "outcome": outcome},
+                    attrs={
+                        "backend": "kiro",
+                        "phase": phase,
+                        "outcome": outcome,
+                        "spawned": True,
+                    },
                 )
         except Exception:  # never let telemetry break session startup
             logger.debug("kiro startup metric emit failed", exc_info=True)
