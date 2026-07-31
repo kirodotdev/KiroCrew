@@ -122,6 +122,24 @@ class TestToLlmEventFieldPropagation:
         assert ev.usage.cache_creation_tokens == 33
         assert ev.usage.cache_read_tokens == 44
 
+    @pytest.mark.asyncio
+    async def test_stream_propagates_diff_fields(self):
+        provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
+        src = AcpEvent(
+            kind="tool_result",
+            tool_call_id="tc-diff",
+            diff_old_text="old content",
+            diff_path="src/example.py",
+        )
+        provider._client.stream_events = MagicMock(return_value=_async_iter([src]))
+
+        events = await _drain(provider.stream("hi"))
+
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.diff_old_text == "old content"
+        assert ev.diff_path == "src/example.py"
+
 
 class TestCompactRouting:
     @pytest.mark.asyncio
