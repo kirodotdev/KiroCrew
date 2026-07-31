@@ -708,6 +708,8 @@ function ChatSidebar({
   // loaded" from "data loaded and genuinely empty".
   const slotsLoaded = useAppSelector(s => s.dashboard.slotsLoaded)
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail)
+  // Presence in this map means "this session is in an active goal loop".
+  const goalLoops = useAppSelector(s => s.chat.goalLoops)
   // Live subagent activity per slot, for the sidebar row's "N agents running"
   // subtitle. Mirrors SubagentProgressBar's source of truth: chatSlice.subagents
   // for the store's active slot, slotActivity[slot].subagents for background
@@ -1984,6 +1986,35 @@ function ChatSidebar({
       ? '1 sub-agent needs approval'
       : `${subagentAwaiting} sub-agents need approval`
     const wfActive = workflowActive[s.key]
+    // Goal loop (auto-nudge). A loop is a MODE, not a turn state, so it is not
+    // gated on `s.running` — a looping session spends most of its life mid-turn,
+    // and hiding the indicator then would hide it almost always.
+    // Own-property read only. The store normalizes writes through `safeKey`
+    // (`__proto__`/`constructor`/`prototype` are rerouted to an inert key), so a
+    // bare `goalLoops[s.key]` would disagree with it — returning a truthy
+    // `Object.prototype` for such a key and rendering "Loop · undefined" while
+    // suppressing the row's unread dot.
+    const goalLoop = Object.prototype.hasOwnProperty.call(goalLoops ?? {}, s.key)
+      ? goalLoops[s.key]
+      : undefined
+    // `max_cycles === 0` means unlimited (autonudge.py NudgeLoop default), so
+    // there is no denominator to show — fall back to a bare count.
+    const goalLoopLabel = !goalLoop
+      ? ''
+      : goalLoop.max_cycles > 0
+        ? `Loop ${goalLoop.cycle_count}/${goalLoop.max_cycles}`
+        : `Loop · ${goalLoop.cycle_count}`
+    // Whatever this row would have said if no loop were running, reused as the
+    // loop line's trailing detail. This is why the loop branch can outrank the
+    // working signals below without swallowing them: live workflow/subagent/tool
+    // status still shows, and between cycles it falls back to the last message.
+    const goalLoopDetail = wfActive
+      ? wfActive.label
+      : subagentCount > 0
+        ? subagentLabel
+        : s.running
+          ? (slotStatusDetail[s.key]?.text || 'Thinking…')
+          : (s.last_message || '')
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
     const rowColor = ci != null ? paletteColors[ci] : null
     const boostStyle: Record<string, string> = {}
@@ -2062,7 +2093,7 @@ function ChatSidebar({
             dispatch(switchSlot(s.key))
             onSelectSlot?.(s.key)
           }}>
-          {s.unread && !s.running && !s.pending_approval && !subagentAwaiting && (
+          {s.unread && !s.running && !s.pending_approval && !subagentAwaiting && !goalLoop && (
             // Blue dot = "your turn": the agent finished its turn (not running)
             // and you haven't opened the session since (unread). Redefined from
             // the old "any unseen output" trigger so it no longer lights
@@ -2070,6 +2101,9 @@ function ChatSidebar({
             // treatment instead (including a sub-agent's spawn approval, which
             // leaves the parent turn idle and would otherwise read as a plain
             // unread reply).
+            // A goal loop suppresses it too: the loop appends a turn every cycle,
+            // so the dot would light permanently and stop meaning "your turn".
+            // The "Loop N/M" subtitle carries the state instead.
             <span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none" style={{ background: 'var(--accent)' }} title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
           )}
           <div className="flex-1 min-w-0 overflow-hidden">
@@ -2161,6 +2195,16 @@ function ChatSidebar({
               <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={subagentApprovalLabel}>
                 <Bot size={11} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
                 <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
+              </div>
+            ) : goalLoop ? (
+              // An active goal loop outranks every "working" signal below it but
+              // stays under both approval branches: an owed decision must never
+              // read as unattended progress. Nothing is lost by ranking it high
+              // — `goalLoopDetail` carries whatever the lower branch would have
+              // shown, so this line reads "Loop 7/24 · 3 agents running".
+              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={goalLoop.max_cycles > 0 ? `Goal loop · cycle ${goalLoop.cycle_count} of ${goalLoop.max_cycles}` : `Goal loop · cycle ${goalLoop.cycle_count} (no cap)`}>
+                <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" aria-hidden />
+                <span className="truncate"><span className="font-medium text-accent">{goalLoopLabel}</span>{goalLoopDetail ? <span className="text-muted"> · {goalLoopDetail}</span> : null}</span>
               </div>
             ) : wfActive ? (
               // A dynamic-workflow run launched from this session is still

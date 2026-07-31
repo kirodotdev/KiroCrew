@@ -222,6 +222,18 @@ interface ChatState {
    *  by slot name so it survives active-slot switches without the subagents
    *  map's active/non-active split. Populated by `subagent_queued` WS events. */
   subagentQueued: Record<string, number>
+  /** Live goal-loop (auto-nudge) progress per slot, keyed by the BARE slot key
+   *  the sidebar renders — `binding_key_for` strips the `dashboard:` prefix, so
+   *  these match `Slot.key` directly. Channel loops (`slack:`/`discord:` keys)
+   *  land here too and simply match no sidebar row.
+   *  Only ACTIVE loops are held: a loop that hit `max_cycles` stays in the
+   *  service registry with `active=false`, and a stopped loop must not keep
+   *  showing progress, so presence in this map IS "looping".
+   *  Cold-seeded from `GET /api/autonudge`, then kept live by `autonudge_state`
+   *  WS events — the service emits one per fired cycle (autonudge.py
+   *  `_emit("fired", …)` right after the `cycle_count` bump), which is what
+   *  makes the counter tick without rebroadcasting the whole slots list. */
+  goalLoops: Record<string, { cycle_count: number; max_cycles: number }>
   /** Agent id the user picked from the chip — the Activity Subagents tab
    *  scrolls to, expands, and auto-loads this card (1-click transcript). */
   selectedSubagentId: string | null
@@ -299,6 +311,7 @@ const initialState: ChatState = {
   voiceAudio: null,
   subagents: {},
   subagentQueued: {},
+  goalLoops: {},
   selectedSubagentId: null,
   toolLog: [],
   workflowRuns: {},
@@ -1183,6 +1196,33 @@ const chatSlice = createSlice({
       state.subagentQueued ??= {}
       if (n === 0) delete state.subagentQueued[safeKey(action.payload.slot)]
       else state.subagentQueued[safeKey(action.payload.slot)] = n
+    },
+    /** Replace the whole goal-loop map from a cold `GET /api/autonudge` seed.
+     *  A full replace (not a merge) is correct here: the response is the
+     *  service's complete registry, so a loop this client still holds but the
+     *  server no longer reports has ended and must disappear. */
+    setGoalLoops(state, action: PayloadAction<{ slot: string; active: boolean; cycle_count: number; max_cycles: number }[]>) {
+      const next: Record<string, { cycle_count: number; max_cycles: number }> = {}
+      for (const loop of action.payload) {
+        if (!loop.active || isUnsafeKey(loop.slot)) continue
+        next[safeKey(loop.slot)] = {
+          cycle_count: Math.max(0, Math.floor(Number(loop.cycle_count) || 0)),
+          max_cycles: Math.max(0, Math.floor(Number(loop.max_cycles) || 0)),
+        }
+      }
+      state.goalLoops = next
+    },
+    /** Upsert (or drop) one loop from an `autonudge_state` WS event. */
+    sseGoalLoop(state, action: PayloadAction<{ slot: string; active: boolean; cycle_count: number; max_cycles: number }>) {
+      const { slot, active } = action.payload
+      if (isUnsafeKey(slot)) return
+      // Same partial-preloaded-state tolerance as subagentQueued above.
+      state.goalLoops ??= {}
+      if (!active) { delete state.goalLoops[safeKey(slot)]; return }
+      state.goalLoops[safeKey(slot)] = {
+        cycle_count: Math.max(0, Math.floor(Number(action.payload.cycle_count) || 0)),
+        max_cycles: Math.max(0, Math.floor(Number(action.payload.max_cycles) || 0)),
+      }
     },
     sseSubagentPending(state, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
@@ -2218,6 +2258,7 @@ export const {
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
+  setGoalLoops, sseGoalLoop,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseMcpAppRender,
   sseWorkflowEvent, clearWorkflowRun,

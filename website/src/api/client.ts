@@ -1134,6 +1134,10 @@ export const api = {
   // never polls, so a refresh is always an explicit user action.
   fetchIssueSource: (url: string, refresh = false) => post('/api/source/issue', { url, refresh }).then(j) as Promise<IssueSource>,
   chatSlots: () => fetch('/api/chat/slots').then(j),
+  /** All goal loops across sessions. Returns `{enabled:false, loops:[]}` when
+   *  the auto-nudge feature flag is off, so callers need no flag check. */
+  autonudgeList: (): Promise<{ enabled: boolean; loops: { slot_key: string; active?: boolean; cycle_count?: number; max_cycles?: number }[] }> =>
+    fetch('/api/autonudge').then(j),
   chatSlotDetail: (slot: string, limit?: number, before?: number) => {
     const p = new URLSearchParams()
     if (limit) p.set('limit', String(limit))
