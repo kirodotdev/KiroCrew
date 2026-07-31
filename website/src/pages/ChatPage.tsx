@@ -4282,6 +4282,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       // leave the answer only in a non-persisted optimistic bubble.
                       setInput((prev) => (prev.trim() ? `${prev}\n${text}` : text))
                     }}
+                    onDirectSend={(text) => {
+                      // No-ask_id card: the card IS the interaction, so answer
+                      // and send in one click (#755).
+                      //
+                      // Offline, send() bails at its own !connected guard and
+                      // the card clears regardless — which would DROP the
+                      // answer. Fall back to the composer so it survives, the
+                      // same recovery the 404 path uses.
+                      if (!connected) {
+                        setInput((prev) => (prev.trim() ? `${prev}\n${text}` : text))
+                        return
+                      }
+                      void send(text, activeSlot || undefined)
+                    }}
                   />
                 </div>
               )}

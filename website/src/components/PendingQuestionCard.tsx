@@ -12,6 +12,18 @@ interface PendingQuestionCardProps {
    *  `ask_id`, nothing is blocked on them) and when the wait has provably
    *  expired, so the user's input is not silently dropped. */
   onFallbackSend: (text: string) => void
+  /**
+   * Send the answer as a message IMMEDIATELY (no composer round-trip).
+   *
+   * Used only by the no-``ask_id`` card, where the card IS the primary
+   * interaction: nothing is blocked, so there is no expired wait to guard and
+   * no 404 to recover from, and pre-filling the composer would cost the user a
+   * second click for no safety benefit. ``onFallbackSend`` keeps its original
+   * job — recovering an answer whose blocked wait has already vanished, where
+   * an explicit retry IS the right behaviour. Optional so existing callers and
+   * tests that pass only ``onFallbackSend`` keep working unchanged.
+   */
+  onDirectSend?: (text: string) => void
 }
 
 /**
@@ -23,7 +35,7 @@ interface PendingQuestionCardProps {
  * silently start a second turn and strand the blocked tool call. One
  * implementation means a pane cannot drift from the main view.
  */
-export default function PendingQuestionCard({ slotKey, onFallbackSend }: PendingQuestionCardProps) {
+export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectSend }: PendingQuestionCardProps) {
   const dispatch = useAppDispatch()
   // Optional-chained: existing tests build partial preloaded chat state without
   // the pendingQuestions key.
@@ -102,9 +114,11 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend }: Pending
       onDismiss={askId ? () => resolve(undefined) : undefined}
       onSubmit={(answers) => {
         if (!askId) {
-          // Legacy card: nothing is blocked, so the answer is just a message.
+          // Legacy card: nothing is blocked, so the answer is just a message —
+          // and it is sent RIGHT NOW. Falls back to onFallbackSend only when no
+          // direct sender was supplied (older callers / tests).
           const text = asText(answers)
-          if (text.trim()) onFallbackSend(text)
+          if (text.trim()) (onDirectSend ?? onFallbackSend)(text)
           clearThisCard()
           return
         }

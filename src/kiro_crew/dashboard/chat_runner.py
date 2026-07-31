@@ -3298,6 +3298,22 @@ async def _run_chat(
                         _dir_consumed_out[event.tool_call_id] = _out
                     else:
                         _dir_args = session_directive.decode(_out, _dir_tool)
+                        if _dir_args is None and event.tool_final:
+                            # The gate already AUTHENTICATED this as a directive
+                            # tool via the canonical _meta identity, and this is
+                            # the FINAL frame — so a marker that does not decode
+                            # means the effect is being dropped outright. Never
+                            # let that be silent: this exact silence hid the
+                            # rawOutput-envelope escaping bug (#755) for a day.
+                            # Mid-stream frames legitimately decode to None and
+                            # are excluded by the tool_final guard.
+                            logger.warning(
+                                "session-directive decode FAILED for %r "
+                                "(tool_call_id=%s, out_len=%d) — effect dropped",
+                                _dir_tool,
+                                event.tool_call_id,
+                                len(_out or ""),
+                            )
                         if _dir_args is not None:
                             # SINGLE-CONSUME (see the native branch above): drop
                             # the mapping BEFORE applying, so a second result

@@ -68,7 +68,15 @@ CORE_MCP_SERVER = "kirocrew-core"
 # Marker begins a line; the remainder of that line is the compact-JSON payload
 # ``{"kind": <tool>, "args": {...}}``. Placed on its own trailing line after the
 # human-readable confirmation so a consumer-less surface still shows sane text.
-_SENTINEL = "\u2063[[KIROCREW_SESSION_DIRECTIVE]]"
+#
+# ASCII-ONLY, deliberately. This previously carried a leading U+2063 INVISIBLE
+# SEPARATOR so the marker rendered invisibly, and that made every directive
+# silently fail: ``validation.build_tool_response`` — the single exit point for
+# all tool responses — strips category ``Cf``, so the prefix was destroyed
+# before the response left the MCP server and ``decode`` could no longer match.
+# A machine-facing framing token must not depend on characters that sanitisers,
+# Unicode normalisers and transports all legitimately rewrite.
+_SENTINEL = "[[KIROCREW_SESSION_DIRECTIVE]]"
 
 # The ACP tool-result parser truncates each output part at 4000 chars
 # (``acp/_dispatch.py`` ``str(text)[:4000]``). The marker is the TAIL of the

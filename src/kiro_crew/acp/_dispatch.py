@@ -516,6 +516,37 @@ def _build_tool_call_event(
     )
 
 
+def _mcp_content_text(payload: dict[str, Any]) -> str | None:
+    """Return the text of an MCP tool-result envelope, or None if not one.
+
+    An MCP ``tools/call`` result is ``{"content": [{"type": "text", "text": ...}]}``
+    and kiro-cli forwards that dict verbatim as a ``rawOutput`` ``Json`` item.
+    Serialising it with ``json.dumps`` escapes the payload — quotes become ``\\"``
+    and non-ASCII becomes ``\\uXXXX`` — so any structured marker carried INSIDE the
+    text is destroyed while still LOOKING intact to a human reading the transcript.
+    That silently broke every session-directive tool (#755): the directive's
+    sentinel survived visually but no longer matched, so the effect was dropped
+    with no error. Extracting the inner text keeps the payload byte-exact.
+
+    Returns None for anything that is not a pure text envelope, so genuinely
+    structured payloads still fall back to ``json.dumps``.
+    """
+    blocks = payload.get("content")
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    parts: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            return None
+        text = block.get("text")
+        if not isinstance(text, str):
+            return None
+        parts.append(text)
+    if not parts:
+        return None
+    return "\n".join(parts)
+
+
 def _build_tool_result_event(update: dict[str, Any]) -> AcpEvent | None:
     """Build an ``EVENT_TOOL_RESULT`` from a ``tool_call_update`` carrying output.
 
@@ -556,7 +587,11 @@ def _build_tool_result_event(update: dict[str, Any]) -> AcpEvent | None:
                         if "stdout" in j and j.get("stdout"):
                             output_parts.append(str(j["stdout"])[:4000])
                         else:
-                            output_parts.append(json.dumps(j, default=str)[:4000])
+                            _mcp_text = _mcp_content_text(j)
+                            if _mcp_text is not None:
+                                output_parts.append(_mcp_text[:4000])
+                            else:
+                                output_parts.append(json.dumps(j, default=str)[:4000])
     if not output_parts:
         return None
     final_output = _redact("\n".join(output_parts)[:8000])

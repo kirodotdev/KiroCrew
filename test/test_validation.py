@@ -41,8 +41,82 @@ class TestStripHiddenUnicode:
     def test_strips_zero_width_space(self):
         assert strip_hidden_unicode("he\u200bllo") == "hello"
 
-    def test_strips_zero_width_joiner(self):
+    def test_preserves_zero_width_joiner(self):
+        # ZWJ is script-essential where it can actually shape: it welds emoji
+        # sequences and is required by Arabic / Persian / Indic text. Between
+        # two ASCII characters it shapes nothing, so it is dropped there (that
+        # is the credential-redaction bypass — see the credential test below).
+        assert (
+            strip_hidden_unicode("\U0001f468\u200d\U0001f469")
+            == "\U0001f468\u200d\U0001f469"
+        )
+        assert strip_hidden_unicode("\u0915\u200d\u0937") == "\u0915\u200d\u0937"
         assert strip_hidden_unicode("a\u200db") == "ab"
+
+    def test_preserves_zwnj_and_variation_selector(self):
+        assert strip_hidden_unicode("\u0645\u06cc\u200c\u062e") == "\u0645\u06cc\u200c\u062e"
+        assert strip_hidden_unicode("\u2764\ufe0f") == "\u2764\ufe0f"
+
+    def test_format_chars_are_deny_by_default(self):
+        # Cf is fail-closed: only ZWNJ/ZWJ/LRM/RLM are allowed through, so a
+        # format character nobody enumerated is stripped rather than silently
+        # becoming an evasion vector.
+        for ch in (
+            "\u00ad",  # SOFT HYPHEN
+            "\u180e",  # MONGOLIAN VOWEL SEPARATOR
+            "\u2063",  # INVISIBLE SEPARATOR
+            "\u2060",  # WORD JOINER
+            "\ufff9",  # INTERLINEAR ANNOTATION ANCHOR
+        ):
+            assert ch not in strip_hidden_unicode(f"a{ch}b"), f"{ch!r} should be stripped"
+
+    def test_shaping_marks_need_a_non_ascii_neighbour(self):
+        # The four allowlisted marks shape NON-ASCII text, so between two ASCII
+        # characters they have no rendering effect and are dropped.
+        for ch in ("\u200c", "\u200d", "\u200e", "\u200f"):
+            assert strip_hidden_unicode(f"a{ch}b") == "ab", f"{ch!r} between ASCII"
+            assert strip_hidden_unicode(f"\u0645{ch}\u062e") == f"\u0645{ch}\u062e"
+            assert strip_hidden_unicode(f"{ch}abc") == "abc", f"leading {ch!r}"
+            assert strip_hidden_unicode(f"abc{ch}") == "abc", f"trailing {ch!r}"
+
+    def test_marks_cannot_vouch_for_each_other(self):
+        # "\u200d".isascii() is False, so a RUN of shaping marks would let each
+        # one qualify as the next one's non-ASCII neighbour and all of them
+        # survive inside an ASCII credential. The neighbour test skips over
+        # adjacent marks, and runs after the other hidden characters are
+        # already removed, so a stripped character cannot vouch either.
+        clean = "AKIAIOSFODNN7EXAMPLE"
+        for spike in (
+            "\u200d\u200d",  # doubled ZWJ
+            "\u200d\u200c\u200e",  # mixed run of three
+            "\u200b\u200d",  # stripped ZWSP then ZWJ
+            "\ufeff\u200c",  # stripped BOM then ZWNJ
+            "\u202e\u200d",  # stripped bidi override then ZWJ
+        ):
+            assert strip_hidden_unicode(f"AKIA{spike}IOSFODNN7EXAMPLE") == clean, spike
+        # A doubled joiner between real emoji is still legitimate and survives.
+        emoji = "\U0001f468\u200d\u200d\U0001f469"
+        assert strip_hidden_unicode(emoji) == emoji
+
+    def test_invisible_cannot_hide_a_credential_from_redaction(self):
+        # This sanitizer runs BEFORE credential redaction, so an invisible
+        # character embedded in a credential must not survive to defeat the
+        # redaction patterns and carry a recoverable secret into the dashboard
+        # or the notification JSONL. Covers the allowlisted shaping marks too:
+        # a credential is ASCII, so they have no neighbour that justifies them.
+        clean = "AKIAIOSFODNN7EXAMPLE"
+        for ch in (
+            "\u200b",  # ZWSP
+            "\u2063",  # invisible separator
+            "\ufeff",  # BOM
+            "\u00ad",  # soft hyphen
+            "\u200c",  # ZWNJ — allowlisted, but not between ASCII
+            "\u200d",  # ZWJ — same
+            "\u200e",  # LRM — same
+            "\u200f",  # RLM — same
+        ):
+            spiked = f"AKIA{ch}IOSFODNN7EXAMPLE"
+            assert strip_hidden_unicode(spiked) == clean, f"{ch!r} survived"
 
     def test_strips_bom(self):
         assert strip_hidden_unicode("\ufeffhello") == "hello"
@@ -82,7 +156,13 @@ class TestSanitizeString:
         assert sanitize_string("") == ""
 
     def test_only_hidden_chars(self):
+        # ZWSP is always dropped. ZWNJ/ZWJ shape neighbouring non-ASCII text,
+        # and a string of nothing but marks has no such neighbour, so it
+        # collapses to empty rather than keeping decorative invisibles.
+        assert sanitize_string("\u200b") == ""
         assert sanitize_string("\u200b\u200c\u200d") == ""
+        # Beside real script they survive.
+        assert sanitize_string("\u0645\u200c\u062e") == "\u0645\u200c\u062e"
 
 
 # ── Response Sanitization ──

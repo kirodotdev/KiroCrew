@@ -534,6 +534,10 @@ class TestBadInputsCaught:
         # Verify the API received cleaned text
         call_body = mock_post.call_args[0][1]
         assert "\u200b" not in call_body["task"]
+        # ZWJ between two ASCII characters shapes nothing, so it is stripped
+        # here too — that is what stops an invisible from hiding a credential
+        # from redaction. It survives only beside non-ASCII text (emoji
+        # sequences, Arabic / Persian / Indic), covered in test_validation.py.
         assert "\u200d" not in call_body["task"]
 
     def test_learn_invalid_category(self):

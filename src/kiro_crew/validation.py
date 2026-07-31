@@ -16,6 +16,7 @@ Implements: SDO-183 (Tool Input and Response Validation)
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -179,12 +180,61 @@ CRON_SESSION_RE = re.compile(r"^cron:[a-zA-Z0-9]+(?::[a-zA-Z0-9]+)?$")
 
 # Hidden Unicode categories to strip (control chars, format chars, etc.)
 # Keeps: letters, numbers, punctuation, symbols, separators (space/newline)
+# Categories removed wholesale. ``Cf`` (format) is deliberately NOT here: it
+# holds ZWJ U+200D, ZWNJ U+200C and the variation selectors that emoji
+# sequences and Arabic / Persian / Indic scripts REQUIRE to render correctly,
+# so deleting the category corrupts user content instead of hardening anything
+# (``dashboard/chat_folders.py`` already treats U+200D / U+FE0F as meaningful
+# emoji modifiers, and test_context_marker_neutralization asserts ZWNJ/ZWJ
+# survive). ``Co`` (private use) is likewise excluded — Nerd Fonts and terminal
+# themes carry real icon glyphs there. The genuinely dangerous Cf members are
+# removed by codepoint via ``_BIDI_CONTROLS`` instead of by category.
 _HIDDEN_CATEGORIES = frozenset(
     {
         "Cc",  # control (except \n \r \t)
-        "Cf",  # format (zero-width, BOM, directional overrides)
-        "Co",  # private use
-        "Cs",  # surrogate
+        "Cs",  # surrogate — never valid in well-formed text
+    }
+)
+
+# Categories removed wholesale. ``Cf`` (format) IS included — it is stripped by
+# default and only the shaping characters named in ``_ALLOWED_FORMAT`` below get
+# through. Fail-closed is required here rather than aesthetic: this sanitizer
+# runs BEFORE credential redaction, so any invisible character it preserves can
+# be inserted into a credential to defeat ``redact_credentials``' patterns and
+# carry a recoverable secret into the dashboard and the notification JSONL. An
+# allowlist means a newly-assigned or simply un-enumerated ``Cf`` codepoint is
+# blocked instead of silently becoming an evasion vector.
+#
+# ``Co`` (private use) is excluded: Nerd Fonts and terminal themes carry real
+# icon glyphs there, and unlike ``Cf`` those are visible, so they cannot hide a
+# credential from a human reader.
+_HIDDEN_CATEGORIES = frozenset(
+    {
+        "Cc",  # control (except \n \r \t)
+        "Cf",  # format — see _ALLOWED_FORMAT for the narrow exceptions
+        "Cs",  # surrogate — never valid in well-formed text
+    }
+)
+
+# The ONLY format characters allowed through. Each has a real text-shaping job
+# that scripts and emoji sequences cannot express without it, so removing them
+# corrupts user content (``dashboard/chat_folders.py`` treats U+200D as a
+# meaningful emoji modifier, and test_context_marker_neutralization asserts
+# ZWNJ/ZWJ survive).
+#
+# Everything else in ``Cf`` stays denied, including ZWSP U+200B, the word joiner
+# and invisible operators U+2060-2064, BOM U+FEFF, the bidi embedding/override/
+# isolate controls (Trojan Source, CVE-2021-42574), interlinear annotation
+# controls, and SOFT HYPHEN U+00AD.
+#
+# NOTE: the variation selectors (U+FE00-FE0F) are category ``Mn``, not ``Cf``,
+# so they were never subject to this rule and need no entry here.
+_ALLOWED_FORMAT = frozenset(
+    {
+        "\u200c",  # ZWNJ — required by Persian / Arabic / Indic orthography
+        "\u200d",  # ZWJ — welds emoji sequences; required by Indic scripts
+        "\u200e",  # LRM — ordinary mark in mixed-direction text
+        "\u200f",  # RLM — ordinary mark in mixed-direction text
     }
 )
 
@@ -729,15 +779,64 @@ def validate_mcp_tool_arguments(
 
 
 def strip_hidden_unicode(text: str) -> str:
-    """Remove hidden Unicode characters (zero-width, directional overrides, etc.).
+    """Remove hidden Unicode, preserving only script-essential shaping marks.
 
-    Preserves normal whitespace (\\n, \\r, \\t) and all visible characters.
+    Removes control characters (except \\n, \\r, \\t), surrogates, and category
+    ``Cf`` — which covers ZWSP, BOM, the word joiner and invisible operators,
+    and the bidi override/isolate controls behind Trojan Source
+    (CVE-2021-42574).
+
+    The four marks in :data:`_ALLOWED_FORMAT` are kept ONLY when at least one
+    immediate neighbour is non-ASCII. They exist to shape non-ASCII text —
+    emoji sequences, Arabic / Persian / Indic orthography — so between two
+    ASCII characters they have no rendering effect and their only practical use
+    is hiding a credential from redaction: this function runs BEFORE
+    ``redact_credentials``, so a surviving invisible inside
+    ``AKIA<ZWJ>IOSFODNN7EXAMPLE`` would defeat its patterns and carry a
+    recoverable secret to the dashboard and the notification JSONL.
+
+    Tradeoff, accepted deliberately: an LRM/RLM placed between two ASCII
+    characters inside otherwise-bidi text is also dropped. That usage is rare
+    in tool output, and a per-string "contains any RTL" test would let an
+    attacker re-enable the mark by planting one non-ASCII character elsewhere
+    in the same response — so the neighbour test is the one that actually
+    closes the bypass.
     """
-    return "".join(
-        ch
-        for ch in text
-        if ch in _ALLOWED_CONTROL or unicodedata.category(ch) not in _HIDDEN_CATEGORIES
-    )
+    # Pass 1: drop every hidden character EXCEPT the shaping marks, so the
+    # neighbour test below only ever sees characters that actually SURVIVE.
+    # Testing against the raw input let a stripped character vouch for a mark
+    # (``AKIA<ZWSP><ZWJ>IOSF…``: the ZWSP is removed, but the ZWJ saw it as a
+    # non-ASCII neighbour and stayed, leaving the credential unredactable).
+    kept: list[str] = []
+    for ch in text:
+        if (
+            ch in _ALLOWED_CONTROL
+            or ch in _ALLOWED_FORMAT
+            or unicodedata.category(ch) not in _HIDDEN_CATEGORIES
+        ):
+            kept.append(ch)
+    # Pass 2: a shaping mark survives only if the nearest surviving
+    # NON-MARK character on one side is non-ASCII. Skipping over adjacent
+    # marks is what stops a run of them from vouching for each other —
+    # ``"\u200d".isascii()`` is False, so ``AKIA<ZWJ><ZWJ>IOSF…`` would
+    # otherwise keep both and stay unredactable.
+    total = len(kept)
+    out: list[str] = []
+    for i, ch in enumerate(kept):
+        if ch not in _ALLOWED_FORMAT:
+            out.append(ch)
+            continue
+        left = i - 1
+        while left >= 0 and kept[left] in _ALLOWED_FORMAT:
+            left -= 1
+        right = i + 1
+        while right < total and kept[right] in _ALLOWED_FORMAT:
+            right += 1
+        prev_ch = kept[left] if left >= 0 else ""
+        next_ch = kept[right] if right < total else ""
+        if (prev_ch and not prev_ch.isascii()) or (next_ch and not next_ch.isascii()):
+            out.append(ch)
+    return "".join(out)
 
 
 def normalize_unicode(text: str) -> str:
@@ -759,6 +858,15 @@ def sanitize_response(text: str, max_len: int = MAX_RESPONSE_LEN) -> str:
     """Sanitize and truncate a tool response before returning to caller."""
     text = sanitize_string(text)
     if len(text) > max_len:
+        # Truncation drops the TAIL, and tail-anchored payloads live there —
+        # a session directive's marker is the last line, so a response over the
+        # cap loses its effect entirely. Never silent (#755).
+        logging.getLogger(__name__).warning(
+            "tool response truncated: %d chars over the %d cap — a "
+            "tail-anchored marker (e.g. a session directive) would be lost",
+            len(text) - max_len,
+            max_len,
+        )
         text = text[:max_len] + "\n…[response truncated]"
     return text
 
