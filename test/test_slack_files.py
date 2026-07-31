@@ -45,7 +45,7 @@ class TestSafeSuffix:
 class TestProcessSlackFiles:
     @pytest.mark.asyncio
     async def test_image_downloaded_to_temp(self):
-        orch = _make_orch(b"\x89PNG fake image data")
+        orch = _make_orch(b"\x89PNG\r\n\x1a\nfake image data")
         files = [
             {
                 "mimetype": "image/png",
@@ -76,7 +76,9 @@ class TestProcessSlackFiles:
         ]
         image_paths, text_blocks = await process_slack_files(orch, files)
         assert image_paths == []
-        assert text_blocks == []
+        # Reported, not silently skipped: a dropped attachment with no
+        # explanation is the defect this change fixes.
+        assert any("too large" in b for b in text_blocks)
 
     @pytest.mark.asyncio
     async def test_text_file_content_injected(self):
@@ -183,6 +185,8 @@ class TestProcessSlackFiles:
         ]
         image_paths, text_blocks = await process_slack_files(orch, files)
         assert image_paths == []
+        # Audio is transcribed on a separate upstream path, so it is skipped
+        # here SILENTLY -- this is not a rejection the user needs to see.
         assert text_blocks == []
         orch.slack.download_file.assert_not_called()
 
@@ -192,12 +196,14 @@ class TestProcessSlackFiles:
         files = [{"mimetype": "image/png", "name": "no_url.png", "size": 100}]
         image_paths, text_blocks = await process_slack_files(orch, files)
         assert image_paths == []
-        assert text_blocks == []
+        # A missing URL is now REPORTED rather than silently swallowed: a
+        # dropped attachment with no explanation is the defect being fixed.
+        assert any("no download URL" in b for b in text_blocks)
 
     @pytest.mark.asyncio
     async def test_url_private_fallback(self):
         """url_private used when url_private_download is absent."""
-        orch = _make_orch(b"\x89PNG")
+        orch = _make_orch(b"\x89PNG\r\n\x1a\n")
         files = [
             {
                 "mimetype": "image/png",
@@ -230,7 +236,8 @@ class TestProcessSlackFiles:
         ]
         image_paths, text_blocks = await process_slack_files(orch, files)
         assert image_paths == []
-        assert text_blocks == []
+        # Reported, not silently skipped.
+        assert any("download failed" in b for b in text_blocks)
 
     @pytest.mark.asyncio
     async def test_text_temp_file_cleaned(self):
@@ -243,7 +250,12 @@ class TestProcessSlackFiles:
 
         def tracking_mkstemp(**kwargs):  # type: ignore[no-untyped-def]
             fd, path = original_mkstemp(**kwargs)
-            created_paths.append(path)
+            # Patching the module attribute intercepts EVERY mkstemp caller in
+            # the process, including unrelated subsystems (the SEL audit writes
+            # .sel_hmac_*.tmp). Track only this attachment's temp file so the
+            # count stays a statement about the code under test.
+            if path.endswith(".txt"):
+                created_paths.append(path)
             return fd, path
 
         orch = _make_orch(b"hello world")
@@ -256,7 +268,10 @@ class TestProcessSlackFiles:
                 "size": 11,
             }
         ]
-        with patch("kiro_crew.slack.files.tempfile.mkstemp", side_effect=tracking_mkstemp):
+        # Temp handling now lives in the channel-neutral ingestion layer.
+        with patch(
+            "kiro_crew.messaging.attachments.tempfile.mkstemp", side_effect=tracking_mkstemp
+        ):
             await process_slack_files(orch, files)
         assert len(created_paths) == 1
         assert not os.path.exists(created_paths[0])
@@ -299,7 +314,7 @@ class TestProcessSlackFiles:
     @pytest.mark.asyncio
     async def test_mixed_files(self):
         """Multiple file types in one message."""
-        img_data = b"\x89PNG"
+        img_data = b"\x89PNG\r\n\x1a\n"
         call_count = 0
 
         async def _download(url: str, dest: str) -> None:

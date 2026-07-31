@@ -55,6 +55,7 @@ from kiro_crew.acp.liveness import (
     LivenessOracle,
     ToolCallState,
 )
+from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
@@ -172,6 +173,16 @@ class AcpRuntimeProtocol(Protocol):
     def pid(self) -> int | None:
         """Subprocess pid (sandbox launcher parent under the Linux namespace
         sandbox) — the liveness oracle scans its descendant tree for evidence."""
+        ...
+
+    @property
+    def supports_image_prompt(self) -> bool:
+        """Whether the agent advertised ``promptCapabilities.image``.
+
+        Read by :meth:`AcpSessionHandle.prompt` to decide if an image may travel
+        as an inline block. Fails closed, so a backend that never handshaked
+        gets text only.
+        """
         ...
 
     async def send_request(self, method: str, params: dict[str, Any]) -> int:
@@ -390,12 +401,38 @@ class AcpSessionHandle:
         # stay cleared forever — is_turn_active would report True permanently and
         # every future prompt() on this handle would be rejected. Re-set it on
         # failure so the handle stays reusable.
+        #
+        # The guard catches BaseException, not Exception: asyncio.CancelledError
+        # derives from BaseException, and BOTH awaits below are cancellation
+        # points. A turn cancelled or timed out while the prompt is still being
+        # assembled would otherwise wedge the handle permanently — the exact
+        # failure this guard exists to prevent, just arriving by a different
+        # exception hierarchy. Re-raised unchanged, so cancellation still
+        # propagates.
         try:
             req_id = await self._runtime.send_request(
                 METHOD_PROMPT,
-                {"sessionId": self._session_id, "prompt": [{"type": "text", "text": message}]},
+                {
+                    "sessionId": self._session_id,
+                    # An image reaches the model ONLY as an image block. This path
+                    # previously hardcoded a single text block, so every channel
+                    # that appended a local image path (Slack, dashboard) shipped
+                    # a filesystem path as prose and the model never saw the
+                    # picture. Gated on the agent's advertised capability; when it
+                    # is absent the path stays in the text as a tool-openable
+                    # reference rather than being dropped.
+                    # Offloaded: the builder stats and reads image files (up to
+                    # MAX_IMAGE_BYTES each) and base64-encodes them. Inline, that
+                    # blocking I/O runs on the gateway loop and pauses every other
+                    # session's streaming for the duration.
+                    "prompt": await asyncio.to_thread(
+                        build_prompt_blocks,
+                        message,
+                        allow_image=self._runtime.supports_image_prompt,
+                    ),
+                },
             )
-        except Exception:
+        except BaseException:
             self._turn_done.set()
             raise
 

@@ -24,7 +24,7 @@ import json
 import os
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from spawn_test_helpers import strip_spawn_shim
@@ -784,6 +784,52 @@ async def test_prompt_resets_turn_done_when_send_request_fails():
         await gen.__anext__()  # send_request fires on first iteration
 
     # Recovered: turn no longer active, so the handle is reusable.
+    assert handle.is_turn_active is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_resets_turn_done_when_cancelled():
+    """Same guard, but for cancellation — which is NOT an ``Exception``.
+
+    ``asyncio.CancelledError`` derives from ``BaseException``, so an
+    ``except Exception`` guard lets it through and leaves ``_turn_done`` cleared
+    forever: ``is_turn_active`` reports True permanently and every later
+    ``prompt()`` on the handle is rejected as already active. A turn timing out
+    or being cancelled is routine, so this must recover.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(side_effect=asyncio.CancelledError())
+
+    gen = handle.prompt("hi", timeout=3.0)
+    with pytest.raises(asyncio.CancelledError):
+        await gen.__anext__()
+
+    assert handle.is_turn_active is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_resets_turn_done_when_cancelled_while_building_blocks():
+    """Cancellation at the prompt-ASSEMBLY await, not the send await.
+
+    Image reads are offloaded with ``asyncio.to_thread``, which adds a second
+    cancellation point inside the turn-state guard — and a longer-lived one,
+    since it does file I/O. Cancelling there must not wedge the handle either.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=1)
+
+    with patch(
+        "kiro_crew.acp.session_handle.build_prompt_blocks",
+        side_effect=asyncio.CancelledError(),
+    ):
+        gen = handle.prompt("hi", timeout=3.0)
+        with pytest.raises(asyncio.CancelledError):
+            await gen.__anext__()
+
     assert handle.is_turn_active is False
 
 

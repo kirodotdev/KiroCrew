@@ -64,7 +64,7 @@ from kiro_crew.slack.blocks import (
     dashboard_link_block,
     voice_config_modal,
 )
-from kiro_crew.slack.files import process_slack_files
+from kiro_crew.slack.files import SLACK_AUDIO_MIMETYPES, process_slack_files
 from kiro_crew.slack.handler import (
     _YOLO_TTL_SECS,
     APPROVAL_AUTO,
@@ -1396,7 +1396,9 @@ def _maybe_prompt_owner(orch: GatewayOrchestrator, event: dict) -> None:
 # Audio transcription helper
 # ---------------------------------------------------------------------------
 
-_AUDIO_MIMETYPES = {"audio/", "video/webm"}
+# Single source of truth lives with the attachment adapter so the
+# transcriber and the ingestion path cannot disagree about what is audio.
+_AUDIO_MIMETYPES = SLACK_AUDIO_MIMETYPES
 
 
 async def _transcribe_with_reaction(

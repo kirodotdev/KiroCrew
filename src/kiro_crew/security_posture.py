@@ -385,7 +385,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cli_commands.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.
         "slack/events.py",
-        "slack/files.py",
+        # Inbound attachment ingestion: redacts text extracted FROM a user's
+        # own uploaded file before it enters the prompt. Inbound sanitisation,
+        # not agent output on its way to a user.
+        "messaging/attachments.py",
         "slack/interactions.py",
         "slack/renderer.py",
         "slack/sessions_view.py",

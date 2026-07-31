@@ -369,6 +369,10 @@ class AcpRuntime:
         # response. Mirrors AcpClient._can_load_session — load_session() guards
         # on it so we never issue session/load against a backend that lacks it.
         self._can_load_session = False
+        # promptCapabilities from the initialize response (e.g. {"image": true}).
+        # Empty until the handshake completes, so callers fail CLOSED and send
+        # text-only rather than guessing a modality the agent never advertised.
+        self._prompt_capabilities: dict = {}
         self._dead = False
         self._last_activity: float = 0.0
         self._stderr_lines: list[str] = []
@@ -384,6 +388,16 @@ class AcpRuntime:
     @property
     def pid(self) -> int | None:
         return self._pid
+
+    @property
+    def supports_image_prompt(self) -> bool:
+        """True when the agent advertised ``promptCapabilities.image``.
+
+        Fails closed: an un-handshaked or silent backend reports False, so the
+        prompt path sends text only instead of an image block the agent may
+        reject.
+        """
+        return bool(self._prompt_capabilities.get("image", False))
 
     def is_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
@@ -581,6 +595,12 @@ class AcpRuntime:
             self._can_load_session = bool(
                 init_resp.get("agentCapabilities", {}).get("loadSession", False)
             )
+            # Retain promptCapabilities so the prompt path can gate non-text
+            # blocks. Previously only loadSession was kept, so an image block was
+            # sent regardless of whether the agent accepted one -- and a refusal
+            # surfaced as a generic error with no fallback.
+            _prompt_caps = init_resp.get("agentCapabilities", {}).get("promptCapabilities", {})
+            self._prompt_capabilities = _prompt_caps if isinstance(_prompt_caps, dict) else {}
             self._initialized = True
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
         except BaseException:
