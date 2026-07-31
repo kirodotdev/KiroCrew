@@ -44,14 +44,17 @@ PRIVACY:
   * Deliberately NOT ``handlers_system._get_owner_hash()``: that is
     ``HMAC(salt, hostname + ":" + username)``. It never leaves the host today,
     and sending it would change its character entirely.
-  * The payload is a fixed eight-key ALLOWLIST built by :func:`payload`. There
+  * The payload is a fixed nine-key ALLOWLIST built by :func:`payload`. There
     is no free-form field and no caller-supplied pass-through, so no prompt,
     path, repo name, credential, or model output can reach the wire — not by
     accident and not via a future call site.
   * Every value is a low-cardinality constant or coarse bucket. ``py`` is
-    minor-only (``3.12``, never ``3.12.13``) and ``first_seen`` is a single
-    bit, specifically so the field set cannot become a fingerprint when
-    combined.
+    minor-only (``3.12``, never ``3.12.13``), ``v`` is release-only (``0.1.2``,
+    never the ``-nightly.20260731t065756`` build stamp), ``chan`` is one of
+    three values, and ``first_seen`` is a single bit — specifically so the field
+    set cannot become a fingerprint when combined. A per-build timestamp is the
+    clearest example of why: it is near-unique, so combined with a stable id it
+    would pick out individual machines.
   * The server persists NO client IP: the beacon distribution's log delivery
     selects only ``date``/``time``/``cs-uri-stem``/``cs-uri-query``/
     ``c-country``/``sc-status``. ``c-ip`` is never among the delivered fields,
@@ -72,6 +75,7 @@ import json
 import logging
 import os
 import platform
+import re
 import stat
 import sys
 import tempfile
@@ -144,9 +148,37 @@ POSTURE_NONE = "none"  # no Level-1 ceiling loaded
 POSTURE_UNSIGNED = "unsigned"  # ceiling enforced, integrity rests on file modes
 POSTURE_SIGNED = "signed"  # signature present but unproven / unchecked
 POSTURE_VERIFIED = "verified"  # signature verified against a trust key
-KNOWN_POSTURES = frozenset(
-    {POSTURE_NONE, POSTURE_UNSIGNED, POSTURE_SIGNED, POSTURE_VERIFIED}
-)
+KNOWN_POSTURES = frozenset({POSTURE_NONE, POSTURE_UNSIGNED, POSTURE_SIGNED, POSTURE_VERIFIED})
+
+# Release channel markers. Every release lane stamps ``__version__`` in TWO
+# spellings — semver for the Electron app, PEP 440 for the pip wheel — so
+# :func:`channel` has to read both or a whole install channel misreports.
+#
+#   lane     semver (desktop)          PEP 440 (wheel)   stamped by
+#   nightly  <base>-nightly.<d>t<t>    <base>.dev<dt>    nightly.yml:103-104
+#   insider  <base>-insider.N / -rc.N  <base>rcN         release.yml:56
+#   stable   <base>                    <base>            release.yml
+#
+# ``_NIGHTLY_MARKER`` / ``_DEV_MARKER`` catch the nightly pair. The insider pair
+# needs the PEP 440 form matched by SHAPE, not a literal: ``release.yml`` maps any
+# semver prerelease to ``rcN``, and setuptools also emits ``aN``/``bN`` for
+# alpha/beta, none of which contain a hyphen.
+_NIGHTLY_MARKER = "-nightly."
+_DEV_MARKER = ".dev"
+# A PEP 440 pre-release segment on the END of the release number: a1, b2, rc4
+# (with optional separators). Anchored so a release number alone cannot match,
+# and ``.post``/``.dev`` are deliberately NOT here — post-releases ship on the
+# release's own channel, and ``.dev`` is already nightly above.
+_PRERELEASE_RE = re.compile(r"\d+(?:[._-]?(?:a|b|c|rc|alpha|beta|pre|preview))\d*$")
+CHANNEL_NIGHTLY = "nightly"
+CHANNEL_INSIDER = "insider"
+CHANNEL_STABLE = "stable"
+
+# Fallback when a version string carries no parseable release number.
+UNKNOWN_VERSION = "unknown"
+
+# ``major.minor.patch`` and nothing else.
+_RELEASE_RE = re.compile(r"^\D*(\d+)\.(\d+)(?:\.(\d+))?")
 
 # Fallback id when the data home is unwritable (read-only container, etc).
 # Process-local, so such a host contributes at most one count per process and
@@ -194,6 +226,77 @@ def distribution() -> str:
     """Return the build's distribution channel, clamped to the known set."""
     raw = (os.environ.get(DIST_ENV, "") or "").strip().lower()
     return raw if raw in KNOWN_DISTRIBUTIONS else DEFAULT_DISTRIBUTION
+
+
+def release(app_version: str) -> str:
+    """Return ``major.minor.patch`` only, dropping every build stamp.
+
+    ``__version__`` is not low-cardinality in the field. Dev and nightly builds
+    carry a per-build timestamp (``0.1.2-nightly.20260731t065756``,
+    ``0.1.2.dev20260731065756``), so sending it raw mints a NEW CloudWatch
+    metric per build and fragments the one number this field exists to produce:
+    a real 54-install 0.1.2 population reported as 35 + a fringe of one-install
+    series, which reads as adoption decay when nothing changed.
+
+    Worse than the noise, it is LOSSY. The aggregator caps each breakdown at
+    ``LIMIT 25`` per day, so once the distinct-version count crosses that, real
+    low-install releases fall below the cut and vanish from BOTH CloudWatch and
+    the permanent Athena rollup — silently, since only the surviving row count
+    is reported. A long-tail release is exactly what drops first, and that is
+    the one you most need to know is still running.
+
+    The channel moves to its own :func:`channel` field rather than being
+    discarded: it is genuinely wanted ("is nightly adoption growing?") but it
+    belongs in a three-value bucket, not smuggled into the version string.
+
+    Returns ``UNKNOWN_VERSION`` when no release number can be parsed, so a
+    malformed stamp becomes one bounded bucket instead of a new metric.
+    """
+    match = _RELEASE_RE.match((app_version or "").strip())
+    if not match:
+        return UNKNOWN_VERSION
+    major, minor, patch = match.group(1), match.group(2), match.group(3)
+    return f"{major}.{minor}.{patch or '0'}"
+
+
+def channel(app_version: str) -> str:
+    """Return the release channel: ``nightly``, ``insider``, or ``stable``.
+
+    Follows ``auto-update.js::channelForVersion``, but cannot simply mirror it.
+    That helper only ever reads an ELECTRON semver stamp; this reads
+    ``kiro_crew.__version__``, and EVERY release lane also stamps a PEP 440
+    spelling for the pip wheel — a form containing no hyphen at all, so a
+    hyphen-only test reports ``stable`` for it:
+
+      * nightly: ``<base>-nightly.<d>t<t>`` (desktop) / ``<base>.dev<dt>`` (wheel)
+      * insider: ``<base>-insider.N``       (desktop) / ``<base>rcN``      (wheel)
+      * stable:  ``<base>``                 (both)
+
+    Both wheel forms are published channels (``publish-cli.yml`` writes
+    ``feed/<channel>/latest-cli.json``), so each must report its own channel.
+    Mirroring the JS literally folded every nightly AND insider *wheel* install
+    into ``stable`` — silently undercounting exactly the pre-release adoption
+    this field exists to measure.
+
+    ``+local`` is stripped first: a local build tag is metadata and carries no
+    channel meaning, so such a build reports the release's own channel.
+    ``.post`` releases likewise ship on the channel of the release they follow.
+
+    Three values by construction, so this recovers the channel signal that
+    :func:`release` strips without reintroducing per-build cardinality.
+    """
+    version = (app_version or "").strip()
+    if _NIGHTLY_MARKER in version:
+        return CHANNEL_NIGHTLY
+    # Strip a local build tag first: it is metadata, never a channel.
+    base = version.split("+", 1)[0]
+    if _DEV_MARKER in base:
+        return CHANNEL_NIGHTLY
+    # A semver prerelease label, or its PEP 440 equivalent (rcN/aN/bN) which
+    # carries no hyphen for the "-" test to find.
+    if "-" in base or _PRERELEASE_RE.search(base):
+        return CHANNEL_INSIDER
+    return CHANNEL_STABLE
 
 
 def python_minor() -> str:
@@ -408,16 +511,18 @@ def governance_posture() -> str:
         return POSTURE_NONE
 
 
-def payload(app_version: str) -> dict[str, str]:
-    """Build the exact eight-key allowlist that goes on the wire.
+def _fields(app_version: str) -> dict[str, str]:
+    """Build every payload field EXCEPT the install id.
 
-    Every value is a random id, a low-cardinality platform constant, or a
-    single bit. There is no caller-supplied field, so the payload shape is
-    fixed here and cannot be widened from a call site.
+    Split out so :func:`payload` and :func:`status`'s preview share one
+    definition of the wire format: a status command that describes a different
+    shape than the one actually sent is worse than no status command. The id is
+    excluded because the two callers resolve it differently — ``payload`` mints
+    one, ``status`` must not (``create=False``).
     """
     return {
-        "id": install_id(),
-        "v": app_version,
+        "v": release(app_version),
+        "chan": channel(app_version),
         "os": platform.system().lower(),
         "arch": platform.machine().lower(),
         "py": python_minor(),
@@ -425,6 +530,21 @@ def payload(app_version: str) -> dict[str, str]:
         "gov": governance_posture(),
         "first_seen": "1" if is_first_send() else "0",
     }
+
+
+def payload(app_version: str) -> dict[str, str]:
+    """Build the exact nine-key allowlist that goes on the wire.
+
+    Every value is a random id, a low-cardinality platform constant, a coarse
+    bucket, or a single bit. There is no caller-supplied field, so the payload
+    shape is fixed here and cannot be widened from a call site.
+
+    ``v`` is CLAMPED by :func:`release` and the channel split out into ``chan``
+    (three values). Together these send strictly LESS information than the raw
+    ``__version__`` they replace — a per-build timestamp is dropped — so this is
+    a narrowing of the wire format, not a widening.
+    """
+    return {"id": install_id(), **_fields(app_version)}
 
 
 def should_send(*, enabled: bool) -> tuple[bool, str]:
@@ -460,9 +580,7 @@ def beacon_url(endpoint: str, fields: dict[str, str]) -> str:
     if not _valid_id(ident):
         raise ValueError("refusing to send a malformed install id")
     base = endpoint.rstrip("/")
-    query = urllib.parse.urlencode(
-        {k: v for k, v in fields.items() if k != "id" and v}
-    )
+    query = urllib.parse.urlencode({k: v for k, v in fields.items() if k != "id" and v})
     return f"{base}/b/{BEACON_SCHEMA}/{ident}?{query}"
 
 
@@ -492,7 +610,7 @@ def send(endpoint: str, app_version: str, *, enabled: bool) -> bool:
         return False
     try:
         req = urllib.request.Request(url, method="GET")
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- beacon_url enforces https:// and the payload is a fixed eight-key allowlist
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- beacon_url enforces https:// and the payload is a fixed nine-key allowlist
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECS):
             pass
         # Stamp only after a delivered request, so a failed send retries later
@@ -540,15 +658,10 @@ def status(endpoint: str, *, enabled: bool, app_version: str) -> dict[str, objec
         ident = install_id(create=False)
     except (OSError, RuntimeError):
         ident = ""
-    preview = {
-        "id": ident or "(generated on first send)",
-        "v": app_version,
-        "os": platform.system().lower(),
-        "arch": platform.machine().lower(),
-        "py": python_minor(),
-        "dist": distribution(),
-        "first_seen": "1" if is_first_send() else "0",
-    }
+    # Shares _fields() with payload() so the preview cannot drift from what is
+    # actually sent. The id is filled in separately from the create=False lookup
+    # above, so merely inspecting status never materializes one.
+    preview = {"id": ident or "(generated on first send)", **_fields(app_version)}
     return {
         "beacon_enabled": enabled,
         "endpoint_configured": bool(endpoint),

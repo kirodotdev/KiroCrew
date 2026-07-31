@@ -1738,7 +1738,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Anonymous Usage Beacon",
-      "help": "Anonymous daily heartbeat so maintainers can see how many copies are actively running, which versions are in use, and which platforms and distribution channels they run on. Sends EXACTLY seven fields, at most once per day: a random installation id, app version, OS, CPU architecture, Python minor version, distribution channel, and a first-run bit. NEVER sends prompts, model output, file contents, paths, repo names, credentials, hostname, username, or IP address. Automatically suppressed in CI and for a non-default KIROCREW_HOME. Opt out with KIROCREW_TELEMETRY_DISABLED=1 or by turning this off. Independent of the 'enabled' switch above, which is local-only metrics collection and still never egresses.",
+      "help": "Anonymous daily heartbeat so maintainers can see how many copies are actively running, which versions are in use, and which platforms and distribution channels they run on. Sends EXACTLY nine fields, at most once per day: a random installation id, app release (major.minor.patch only — build stamps are stripped), release channel, OS, CPU architecture, Python minor version, distribution channel, governance posture, and a first-run bit. NEVER sends prompts, model output, file contents, paths, repo names, credentials, hostname, username, or IP address. Automatically suppressed in CI and for a non-default KIROCREW_HOME. Opt out with KIROCREW_TELEMETRY_DISABLED=1 or by turning this off. Independent of the 'enabled' switch above, which is local-only metrics collection and still never egresses.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

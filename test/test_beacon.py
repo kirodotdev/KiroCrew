@@ -142,9 +142,19 @@ class TestInstallId:
 
 
 class TestPayloadAllowlist:
-    EXPECTED_KEYS = {"id", "v", "os", "arch", "py", "dist", "gov", "first_seen"}
+    EXPECTED_KEYS = {
+        "id",
+        "v",
+        "chan",
+        "os",
+        "arch",
+        "py",
+        "dist",
+        "gov",
+        "first_seen",
+    }
 
-    def test_exactly_eight_keys(self, _isolated_home):
+    def test_exactly_nine_keys(self, _isolated_home):
         assert set(beacon.payload("1.2.3")) == self.EXPECTED_KEYS
 
     def test_no_value_leaks_identity_or_paths(self, _isolated_home, monkeypatch):
@@ -167,6 +177,149 @@ class TestPayloadAllowlist:
         monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen())
         beacon.send("https://example.invalid", "1.2.3", enabled=True)
         assert beacon.payload("1.2.3")["first_seen"] == "0"
+
+
+class TestVersionClamp:
+    """`v` must stay low-cardinality however the build stamped __version__.
+
+    Guards a real defect: raw ``__version__`` carries a per-build timestamp on
+    dev/nightly builds, which minted one CloudWatch metric per build and — worse
+    — pushed real low-install releases past the aggregator's LIMIT 25, dropping
+    them from CloudWatch AND the permanent rollup silently.
+    """
+
+    # The exact spellings observed in live beacon logs, plus the stable case.
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("0.1.2", "0.1.2"),
+            ("0.1.2-nightly.20260731t065756", "0.1.2"),
+            ("0.1.2.dev20260731065756", "0.1.2"),
+            ("0.1.2-insider.4", "0.1.2"),
+            ("0.1.2+local.abcdef", "0.1.2"),
+            ("v0.1.2", "0.1.2"),
+            ("1.2", "1.2.0"),
+        ],
+    )
+    def test_release_strips_every_build_stamp(self, _isolated_home, raw, expected):
+        assert beacon.release(raw) == expected
+
+    @pytest.mark.parametrize("raw", ["", "   ", "probe", "not-a-version", None])
+    def test_unparseable_version_is_one_bounded_bucket(self, _isolated_home, raw):
+        assert beacon.release(raw) == beacon.UNKNOWN_VERSION
+
+    def test_distinct_nightly_builds_collapse_to_one_value(self, _isolated_home):
+        """The cardinality property itself, not just one spelling."""
+        stamps = [f"0.1.2-nightly.20260731t0657{n:02d}" for n in range(50)]
+        assert len({beacon.release(s) for s in stamps}) == 1
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("0.1.2", beacon.CHANNEL_STABLE),
+            ("10.20.30", beacon.CHANNEL_STABLE),
+            # A post-release ships on the channel of the release it follows.
+            ("0.1.2.post1", beacon.CHANNEL_STABLE),
+            ("0.1.2-insider.4", beacon.CHANNEL_INSIDER),
+            ("0.1.2-rc.1", beacon.CHANNEL_INSIDER),
+            # PEP 440 pre-release forms carry NO hyphen, so a hyphen-only test
+            # reported `stable` for every insider WHEEL install: release.yml maps
+            # any semver prerelease to rcN for the wheel (1.2.3-insider.4 ->
+            # 1.2.3rc4), and setuptools also emits aN/bN.
+            ("0.1.2rc4", beacon.CHANNEL_INSIDER),
+            ("0.1.2b1", beacon.CHANNEL_INSIDER),
+            ("0.1.2a2", beacon.CHANNEL_INSIDER),
+            # BOTH nightly stamps nightly.yml emits from one run: semver for the
+            # desktop app, PEP 440 for the pip wheel. Both are published
+            # nightlies, so both must report `nightly` — mirroring
+            # auto-update.js literally (it only ever sees the semver form) folded
+            # every nightly WHEEL install into `stable` and undercounted the
+            # nightly CLI lane, which is the question this field answers.
+            ("0.1.2-nightly.20260731t065756", beacon.CHANNEL_NIGHTLY),
+            ("0.1.2.dev20260731065756", beacon.CHANNEL_NIGHTLY),
+            # A local build tag carries no channel meaning, so it reports the
+            # release's own channel rather than being treated as a pre-release.
+            ("0.1.2+local.abcdef", beacon.CHANNEL_STABLE),
+            ("0.1.2.dev20260731065756+local.abcdef", beacon.CHANNEL_NIGHTLY),
+        ],
+    )
+    def test_channel_mirrors_the_updater(self, _isolated_home, raw, expected):
+        assert beacon.channel(raw) == expected
+
+    @pytest.mark.parametrize(
+        "desktop, wheel, expected",
+        [
+            # nightly.yml:103-104 — one run, two stamps.
+            (
+                "0.1.2-nightly.20260731t065756",
+                "0.1.2.dev20260731065756",
+                beacon.CHANNEL_NIGHTLY,
+            ),
+            # release.yml:56 — a semver prerelease tag maps to rcN for the wheel.
+            ("1.2.3-insider.4", "1.2.3rc4", beacon.CHANNEL_INSIDER),
+            ("1.2.3", "1.2.3", beacon.CHANNEL_STABLE),
+        ],
+    )
+    def test_desktop_and_wheel_lanes_agree(self, _isolated_home, desktop, wheel, expected):
+        """Both stamps a release lane emits must report the SAME channel.
+
+        Regression test for two real defects of one shape: every lane stamps
+        semver for the Electron app and PEP 440 for the pip wheel, and the PEP
+        440 form has no hyphen. A hyphen-only test therefore reported `stable`
+        for nightly AND insider wheel installs, so one release looked like two
+        different channels depending on how it was installed.
+        """
+        assert beacon.channel(desktop) == expected
+        assert beacon.channel(wheel) == expected
+
+    def test_release_number_alone_is_never_a_prerelease(self, _isolated_home):
+        """The prerelease shape must not misfire on an ordinary version.
+
+        The PEP 440 check matches a trailing `a`/`b`/`rc` segment, so it has to
+        be anchored: a bare release number (or one with many digits) must stay
+        `stable`, or every install would report `insider`.
+        """
+        for plain in ("0.1.2", "1.2.3", "10.20.30", "2.0.0", "0.0.1"):
+            assert beacon.channel(plain) == beacon.CHANNEL_STABLE, plain
+
+    def test_channel_is_a_three_value_bucket(self, _isolated_home):
+        # Both spellings of every lane, so the bucket count is proven against
+        # the real stamp shapes rather than the semver ones alone.
+        stamps = [f"0.1.{n}-nightly.2026073{n}t0657{n:02d}" for n in range(20)]
+        stamps += [f"0.1.{n}.dev2026073{n}0657{n:02d}" for n in range(20)]
+        stamps += [f"0.1.{n}" for n in range(20)]
+        stamps += [f"0.1.{n}-insider.{n}" for n in range(20)]
+        stamps += [f"0.1.{n}rc{n}" for n in range(20)]
+        assert {beacon.channel(s) for s in stamps} == {
+            beacon.CHANNEL_STABLE,
+            beacon.CHANNEL_NIGHTLY,
+            beacon.CHANNEL_INSIDER,
+        }
+
+    def test_payload_sends_the_clamped_version_not_the_raw_one(self, _isolated_home):
+        fields = beacon.payload("0.1.2-nightly.20260731t065756")
+        assert fields["v"] == "0.1.2"
+        assert fields["chan"] == beacon.CHANNEL_NIGHTLY
+        assert "20260731" not in json.dumps(fields), "build stamp must not reach the wire"
+
+    def test_build_stamp_is_absent_from_the_url(self, _isolated_home):
+        url = beacon.beacon_url(
+            "https://e.invalid", beacon.payload("0.1.2-nightly.20260731t065756")
+        )
+        assert "20260731" not in url
+        assert "v=0.1.2" in url
+
+    def test_status_preview_matches_what_is_actually_sent(self, _isolated_home):
+        """The preview shares _fields() with payload(), so it cannot drift."""
+        info = beacon.status(
+            "https://e.invalid", enabled=True, app_version="0.1.2-nightly.20260731t065756"
+        )
+        preview = info["payload_preview"]
+        sent = beacon.payload("0.1.2-nightly.20260731t065756")
+        assert set(preview) == set(sent)
+        assert {k: v for k, v in preview.items() if k != "id"} == {
+            k: v for k, v in sent.items() if k != "id"
+        }
 
 
 class TestSuppression:
@@ -224,9 +377,7 @@ class TestDefaultHomeDetection:
 class TestThrottle:
     def test_second_send_same_day_suppressed(self, _isolated_home, monkeypatch):
         calls = []
-        monkeypatch.setattr(
-            beacon.urllib.request, "urlopen", _fake_urlopen(calls)
-        )
+        monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen(calls))
         assert beacon.send("https://example.invalid", "1.2.3", enabled=True) is True
         assert beacon.send("https://example.invalid", "1.2.3", enabled=True) is False
         assert len(calls) == 1, "at most one request per day"
@@ -291,6 +442,7 @@ class TestUrlAndTransport:
             http.client.InvalidURL("bad host"),
             http.client.HTTPException("protocol error"),
         ):
+
             def boom(*_a, _e=exc, **_k):
                 raise _e
 
@@ -306,6 +458,7 @@ class TestUrlAndTransport:
         boot) and made `kirocrew telemetry status` crash — while the module
         documents an in-memory fallback for exactly this case.
         """
+
         def denied(*_a, **_k):
             raise PermissionError(13, "Permission denied")
 
@@ -325,9 +478,7 @@ class TestUrlAndTransport:
         """Path.home() raises RuntimeError (not OSError) when the UID has no
         passwd entry — normal in a container. It must not escape either."""
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
-        monkeypatch.setattr(
-            beacon, "is_default_home", lambda: _REAL_IS_DEFAULT_HOME()
-        )
+        monkeypatch.setattr(beacon, "is_default_home", lambda: _REAL_IS_DEFAULT_HOME())
 
         def no_home():
             raise RuntimeError("Could not determine home directory.")
@@ -372,13 +523,19 @@ class TestFailOpen:
             OSError(28, "No space left on device"),
         ],
         ids=[
-            "dns", "refused", "tls", "http500", "http403",
-            "timeout", "captive-portal", "bad-url", "unreachable", "disk-full",
+            "dns",
+            "refused",
+            "tls",
+            "http500",
+            "http403",
+            "timeout",
+            "captive-portal",
+            "bad-url",
+            "unreachable",
+            "disk-full",
         ],
     )
-    def test_every_transport_failure_returns_false_silently(
-        self, _isolated_home, monkeypatch, exc
-    ):
+    def test_every_transport_failure_returns_false_silently(self, _isolated_home, monkeypatch, exc):
         def boom(*_a, **_k):
             raise exc
 
@@ -391,6 +548,7 @@ class TestFailOpen:
         Pins the boot-path contract: even a beacon that hangs far past its own
         timeout costs the caller only the thread spawn.
         """
+
         def hang(*_a, **_k):
             time.sleep(30)
 
@@ -475,9 +633,7 @@ class TestTelemetryCliWrite:
     @pytest.mark.parametrize(
         "raw", ['[{"important": "data"}]', '"a string"', "42"], ids=["array", "str", "num"]
     )
-    def test_non_object_config_is_never_overwritten(
-        self, _isolated_home, monkeypatch, raw
-    ):
+    def test_non_object_config_is_never_overwritten(self, _isolated_home, monkeypatch, raw):
         """A config.json that is valid JSON but not an object must not be replaced.
 
         Regression test: the toggle used to coerce non-dict data to ``{}``, then
@@ -685,9 +841,9 @@ class TestConfigDefaults:
         from kiro_crew.config.loader import TelemetryConfig
 
         for bad in (
-            "https://exa mple.invalid",   # whitespace in host
-            "https://",                    # no netloc
-            "https:///path-only",          # empty netloc
+            "https://exa mple.invalid",  # whitespace in host
+            "https://",  # no netloc
+            "https:///path-only",  # empty netloc
         ):
             assert TelemetryConfig(beacon_endpoint=bad).beacon_endpoint == "", bad
 
@@ -759,9 +915,7 @@ class TestGovernancePosture:
             ("unchecked", beacon.POSTURE_SIGNED),
         ],
     )
-    def test_signature_state_maps_to_posture(
-        self, _isolated_home, monkeypatch, state, expected
-    ):
+    def test_signature_state_maps_to_posture(self, _isolated_home, monkeypatch, state, expected):
         self._with_context(monkeypatch, self._ceiling(state))
         assert beacon.governance_posture() == expected
 
