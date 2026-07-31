@@ -1,6 +1,6 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — regenerate with `node scripts/check-i18n-strings.mjs --update`. This is both the CI ratchet and the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 2887,
+  "_total": 2884,
   "files": {
     "api/client.ts": {
       "total": 39,
@@ -540,10 +540,9 @@
       "template": 4
     },
     "components/McpAppFrame.tsx": {
-      "total": 10,
-      "expression": 4,
+      "total": 7,
       "object-prop": 4,
-      "prose": 2
+      "prose": 3
     },
     "components/McpBrowserModal.tsx": {
       "total": 4,

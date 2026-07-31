@@ -128,6 +128,16 @@
       "reset_zoom": "Reset zoom (0)",
       "zoom_in": "Zoom in (+)",
       "zoom_out": "Zoom out (-)"
+    },
+    "mcpAppFrame": {
+      "collapse": "Collapse",
+      "collapse_app": "Collapse app",
+      "exit_full_screen": "Exit full screen",
+      "exit_full_screen_esc": "Exit full screen (Esc)",
+      "expand": "Expand",
+      "expand_app": "Expand app",
+      "full_screen": "Full screen",
+      "open_app_full_screen": "Open app full screen"
     }
   },
   "pages": {

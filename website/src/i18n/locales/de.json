@@ -1410,6 +1410,16 @@
       "contents": "Inhalt",
       "table_of_contents": "Inhaltsverzeichnis"
     },
+    "mcpAppFrame": {
+      "collapse": "Einklappen",
+      "collapse_app": "App einklappen",
+      "exit_full_screen": "Vollbild beenden",
+      "exit_full_screen_esc": "Vollbild beenden (Esc)",
+      "expand": "Ausklappen",
+      "expand_app": "App ausklappen",
+      "full_screen": "Vollbild",
+      "open_app_full_screen": "App im Vollbild öffnen"
+    },
     "mcpBrowserModal": {
       "a_server_named": "Ein Server mit dem Namen „",
       "add_server": "Server hinzufügen",

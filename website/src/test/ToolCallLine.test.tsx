@@ -348,3 +348,48 @@ describe('ToolCallLine file-open icon', () => {
     expect(screen.queryByTitle(/in side panel$/)).toBeNull()
   })
 })
+
+// `.ft-block-reveal` animates opacity, so while it is present the row keeps a
+// stacking context — which traps a `position: fixed` DESCENDANT (an MCP app's
+// full-screen sheet) inside the row instead of the viewport, painting it beneath
+// shell navigation. The class is a ONE-SHOT entrance fade, so it must come off
+// when the animation ends rather than persisting for the row's whole life.
+describe('ToolCallLine entrance reveal', () => {
+  it('drops the one-shot reveal class once the animation ends', () => {
+    const store = createTestStore({
+      chat: {
+        messages: [toolMsg()],
+        toolLog: [{ type: 'tool', text: 'echo hello', tool_call_id: 'tc_reveal', output: 'hello', ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    const { container } = renderWithProviders(
+      <ToolCallLine message={toolMsg({ meta: { tool_call_id: 'tc_reveal' } })} running={false} />,
+      { store },
+    )
+    const row = container.firstElementChild as HTMLElement
+    expect(row.className).toContain('ft-block-reveal')
+
+    fireEvent.animationEnd(row)
+    expect(row.className).not.toContain('ft-block-reveal')
+  })
+
+  it('ignores a nested element ending its own animation', () => {
+    const store = createTestStore({
+      chat: {
+        messages: [toolMsg()],
+        toolLog: [{ type: 'tool', text: 'echo hello', tool_call_id: 'tc_nested', output: 'hello', ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    const { container } = renderWithProviders(
+      <ToolCallLine message={toolMsg({ meta: { tool_call_id: 'tc_nested' } })} running={false} />,
+      { store },
+    )
+    const row = container.firstElementChild as HTMLElement
+    const inner = row.querySelector('button')!
+
+    fireEvent.animationEnd(inner)
+    expect(row.className).toContain('ft-block-reveal')
+  })
+})

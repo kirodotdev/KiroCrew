@@ -1410,6 +1410,16 @@
       "contents": "বিষয়সূচি",
       "table_of_contents": "সূচিপত্র"
     },
+    "mcpAppFrame": {
+      "collapse": "সংকুচিত করুন",
+      "collapse_app": "অ্যাপ সংকুচিত করুন",
+      "exit_full_screen": "পূর্ণ স্ক্রিন থেকে বেরিয়ে আসুন",
+      "exit_full_screen_esc": "পূর্ণ স্ক্রিন থেকে বেরিয়ে আসুন (Esc)",
+      "expand": "প্রসারিত করুন",
+      "expand_app": "অ্যাপ প্রসারিত করুন",
+      "full_screen": "পূর্ণ স্ক্রিন",
+      "open_app_full_screen": "অ্যাপটি পূর্ণ স্ক্রিনে খুলুন"
+    },
     "mcpBrowserModal": {
       "a_server_named": "একটি সার্ভার যার নাম “",
       "add_server": "সার্ভার যোগ করুন",

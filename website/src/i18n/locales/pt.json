@@ -1427,6 +1427,16 @@
       "contents": "Conteúdo",
       "table_of_contents": "Sumário"
     },
+    "mcpAppFrame": {
+      "collapse": "Recolher",
+      "collapse_app": "Recolher o aplicativo",
+      "exit_full_screen": "Sair da tela cheia",
+      "exit_full_screen_esc": "Sair da tela cheia (Esc)",
+      "expand": "Expandir",
+      "expand_app": "Expandir o aplicativo",
+      "full_screen": "Tela cheia",
+      "open_app_full_screen": "Abrir o aplicativo em tela cheia"
+    },
     "mcpBrowserModal": {
       "a_server_named": "Um servidor chamado “",
       "add_server": "Adicionar servidor",

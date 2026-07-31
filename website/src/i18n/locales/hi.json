@@ -1410,6 +1410,16 @@
       "contents": "विषय-सूची",
       "table_of_contents": "विषय-सूची तालिका"
     },
+    "mcpAppFrame": {
+      "collapse": "छोटा करें",
+      "collapse_app": "ऐप छोटा करें",
+      "exit_full_screen": "पूर्ण स्क्रीन से बाहर निकलें",
+      "exit_full_screen_esc": "पूर्ण स्क्रीन से बाहर निकलें (Esc)",
+      "expand": "बड़ा करें",
+      "expand_app": "ऐप बड़ा करें",
+      "full_screen": "पूर्ण स्क्रीन",
+      "open_app_full_screen": "ऐप को पूर्ण स्क्रीन में खोलें"
+    },
     "mcpBrowserModal": {
       "a_server_named": "एक सर्वर जिसका नाम है “",
       "add_server": "सर्वर जोड़ें",

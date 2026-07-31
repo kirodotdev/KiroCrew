@@ -295,8 +295,29 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const [animateEntrance] = useState(() => !revealId || !revealedToolIds.has(revealId))
   useEffect(() => { if (revealId) revealedToolIds.add(revealId) }, [revealId])
 
+  // Drop the class once the fade has played. It is a ONE-SHOT animation, but the
+  // class used to persist for the row's whole life, and `ft-fade` animates
+  // opacity — so the element kept a compositing/stacking context long after the
+  // 0.6s was over. That traps a `position: fixed` DESCENDANT (an MCP app's
+  // full-screen sheet) inside this row's stacking context instead of the
+  // viewport's, leaving it painted beneath shell navigation. Removing the class
+  // when it finishes is both tidier and what keeps that escape hatch working.
+  //
+  // Guarded on the event target so a nested element's animation cannot end the
+  // parent's, and only armed while the class is present. Under
+  // `prefers-reduced-motion` the animation is `none` and never fires — harmless,
+  // because with no opacity animation there is no stacking context to escape.
+  const [revealPlayed, setRevealPlayed] = useState(false)
+  const revealing = animateEntrance && !revealPlayed
+
   return (
-    <div ref={containerRef} className={animateEntrance ? 'ft-block-reveal' : undefined}>
+    <div
+      ref={containerRef}
+      className={revealing ? 'ft-block-reveal' : undefined}
+      onAnimationEnd={revealing
+        ? (e) => { if (e.target === e.currentTarget) setRevealPlayed(true) }
+        : undefined}
+    >
       <div className="inline-flex items-start gap-1 group/toolpill">
       <button
         ref={pillButtonRef}

@@ -1444,6 +1444,16 @@
       "contents": "Содержание",
       "table_of_contents": "Содержание"
     },
+    "mcpAppFrame": {
+      "collapse": "Свернуть",
+      "collapse_app": "Свернуть приложение",
+      "exit_full_screen": "Выйти из полного экрана",
+      "exit_full_screen_esc": "Выйти из полного экрана (Esc)",
+      "expand": "Развернуть",
+      "expand_app": "Развернуть приложение",
+      "full_screen": "Полный экран",
+      "open_app_full_screen": "Открыть приложение в полноэкранном режиме"
+    },
     "mcpBrowserModal": {
       "a_server_named": "Сервер с именем «",
       "add_server": "Добавить сервер",

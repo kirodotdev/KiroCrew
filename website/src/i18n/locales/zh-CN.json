@@ -1394,6 +1394,16 @@
       "contents": "目录",
       "table_of_contents": "目录"
     },
+    "mcpAppFrame": {
+      "collapse": "收起",
+      "collapse_app": "收起应用",
+      "exit_full_screen": "退出全屏",
+      "exit_full_screen_esc": "退出全屏 (Esc)",
+      "expand": "展开",
+      "expand_app": "展开应用",
+      "full_screen": "全屏",
+      "open_app_full_screen": "全屏打开应用"
+    },
     "mcpBrowserModal": {
       "a_server_named": "名为“",
       "add_server": "添加服务器",

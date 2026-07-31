@@ -1427,6 +1427,16 @@
       "contents": "Sommaire",
       "table_of_contents": "Table des matières"
     },
+    "mcpAppFrame": {
+      "collapse": "Réduire",
+      "collapse_app": "Réduire l'application",
+      "exit_full_screen": "Quitter le plein écran",
+      "exit_full_screen_esc": "Quitter le plein écran (Échap)",
+      "expand": "Développer",
+      "expand_app": "Développer l'application",
+      "full_screen": "Plein écran",
+      "open_app_full_screen": "Ouvrir l'application en plein écran"
+    },
     "mcpBrowserModal": {
       "a_server_named": "Un serveur nommé «",
       "add_server": "Ajouter un serveur",

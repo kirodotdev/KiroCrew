@@ -538,4 +538,346 @@ describe('McpAppFrame — app log forwarding', () => {
       expect(prefix).not.toContain('x'.repeat(41))
     } finally { spy.mockRestore() }
   })
+
+  // --- three presentations: inline | wide | overlay --------------------------
+  //
+  // The ambient ResizeObserver in the test setup is inert (it never fires), and
+  // happy-dom reports every width as 0, so the `wide` breakout cannot be observed
+  // without driving both: a firing RO plus stubbed layout reads.
+  describe('expansion', () => {
+    /** A ResizeObserver whose callback we can fire on demand. */
+    class FakeResizeObserver {
+      static instances: FakeResizeObserver[] = []
+      cb: ResizeObserverCallback
+      constructor(cb: ResizeObserverCallback) {
+        this.cb = cb
+        FakeResizeObserver.instances.push(this)
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      fire() { this.cb([] as unknown as ResizeObserverEntry[], this as unknown as ResizeObserver) }
+    }
+
+    /** Put the frame inside a `.chat-container` scroller and give the scroller a
+     *  real clientWidth and the column a real rect, so the breakout measurement
+     *  has something to read under happy-dom's zero layout. */
+    function mountInScroller({ pane = 1600, column = 900 } = {}) {
+      const restore: Array<() => void> = []
+
+      const origRO = globalThis.ResizeObserver
+      FakeResizeObserver.instances = []
+      globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver
+      restore.push(() => { globalThis.ResizeObserver = origRO })
+
+      const origClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
+      Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+        configurable: true,
+        get() { return this.classList?.contains('chat-container') ? pane : 0 },
+      })
+      restore.push(() => {
+        if (origClientWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', origClientWidth)
+      })
+
+      const origRect = HTMLElement.prototype.getBoundingClientRect
+      HTMLElement.prototype.getBoundingClientRect = function () {
+        // The scroller starts at x=0; the centred column is inset within it.
+        const isScroller = (this as HTMLElement).classList?.contains('chat-container')
+        const left = isScroller ? 0 : (pane - column) / 2
+        const width = isScroller ? pane : column
+        return { width, height: 0, top: 0, left, right: left + width, bottom: 0, x: left, y: 0, toJSON: () => {} } as DOMRect
+      }
+      restore.push(() => { HTMLElement.prototype.getBoundingClientRect = origRect })
+
+      const scroller = document.createElement('div')
+      scroller.className = 'chat-container'
+      // The real transcript scroller sets this inline; the overlay's scroll lock
+      // resolves its target by computed overflow, so the fixture needs it too.
+      scroller.style.overflowY = 'auto'
+      // Mirror the real nesting: the scroll area contains a centred, width-capped
+      // column, and the frame lives inside that. Without the column the measured
+      // "column" would BE the pane and there would be nothing to break out of.
+      const columnEl = document.createElement('div')
+      scroller.appendChild(columnEl)
+      document.body.appendChild(scroller)
+      restore.push(() => { scroller.remove() })
+
+      const view = renderWithProviders(<McpAppFrame payload={payload()} />, { container: columnEl })
+      return { view, cleanup: () => { restore.reverse().forEach((f) => f()) } }
+    }
+
+    it('grows left/right as well as down when expanded to `wide`', () => {
+      const { view, cleanup } = mountInScroller({ pane: 1600, column: 900 })
+      try {
+        const frame = view.container.querySelector('iframe')!
+        const wrapper = frame.parentElement as HTMLElement
+        // Inline: no width override — the column's own max-width governs.
+        expect(wrapper.style.width).toBe('')
+
+        act(() => { view.getByLabelText('Expand app').click() })
+
+        // 1600 pane - 2*24 gutter = 1552, i.e. genuinely wider than the 900 column.
+        expect(wrapper.style.width).toBe('1552px')
+        // ...and shifted left out of the centred column so it grows BOTH ways.
+        expect(wrapper.style.marginLeft).toBe('-326px')
+      } finally { cleanup() }
+    })
+
+    it('tells the app the wide width, not just the height', () => {
+      const { view, cleanup } = mountInScroller({ pane: 1600, column: 900 })
+      try {
+        const win = stubContentWindow(view.container.querySelector('iframe')!)
+        act(() => { view.getByLabelText('Expand app').click() })
+
+        const dims = win.postMessage.mock.calls
+          .map(([m]) => m)
+          .filter((m) => m.method === 'ui/notifications/host-context-changed')
+          .at(-1)!.params.containerDimensions
+        expect(dims.width).toBe(1552)
+        expect(dims.height).toBeGreaterThan(0)
+      } finally { cleanup() }
+    })
+
+    it('does not break out when the pane is no wider than the column', () => {
+      const { view, cleanup } = mountInScroller({ pane: 900, column: 900 })
+      try {
+        const wrapper = view.container.querySelector('iframe')!.parentElement as HTMLElement
+        act(() => { view.getByLabelText('Expand app').click() })
+        expect(wrapper.style.width).toBe('')
+        expect(wrapper.style.marginLeft).toBe('')
+      } finally { cleanup() }
+    })
+
+    it('promotes to a fixed overlay only from the host control', () => {
+      const { container, getByLabelText } = renderWithProviders(<McpAppFrame payload={payload()} />)
+      const wrapper = container.querySelector('iframe')!.parentElement as HTMLElement
+      expect(wrapper.className).not.toContain('fixed')
+
+      act(() => { getByLabelText('Open app full screen').click() })
+
+      expect(wrapper.className).toContain('fixed')
+      expect(wrapper.getAttribute('role')).toBe('dialog')
+      expect(wrapper.getAttribute('aria-modal')).toBe('true')
+      // Body scroll is locked while the sheet is open.
+      expect(document.body.style.overflowY).toBe('hidden')
+
+      act(() => { getByLabelText('Exit full screen').click() })
+      expect(wrapper.className).not.toContain('fixed')
+      expect(document.body.style.overflowY).not.toBe('hidden')
+    })
+
+    it('an app asking for fullscreen gets `wide`, never the overlay', () => {
+      const { container } = renderWithProviders(<McpAppFrame payload={payload()} />)
+      const iframe = container.querySelector('iframe')!
+      const win = stubContentWindow(iframe)
+
+      act(() => {
+        dispatchFromApp(
+          { jsonrpc: '2.0', id: 9, method: 'ui/request-display-mode', params: { mode: 'fullscreen' } },
+          win,
+        )
+      })
+
+      // The app is told `fullscreen` (its own gate), but the host stayed in the
+      // transcript — an app must not be able to throw a modal over the user.
+      const reply = win.postMessage.mock.calls.map(([m]) => m).find((m) => m.id === 9)!
+      expect(reply.result).toEqual({ mode: 'fullscreen' })
+      expect((iframe.parentElement as HTMLElement).className).not.toContain('fixed')
+    })
+
+    // The sheet is the user's choice in BOTH directions. Granting `wide` here
+    // would demote — closing an overlay the user deliberately opened — on nothing
+    // more than an app re-render.
+    it('an app re-requesting fullscreen does not demote the user out of the sheet', () => {
+      const { container, getByLabelText } = renderWithProviders(<McpAppFrame payload={payload()} />)
+      const iframe = container.querySelector('iframe')!
+      const wrapper = iframe.parentElement as HTMLElement
+      const win = stubContentWindow(iframe)
+
+      act(() => { getByLabelText('Open app full screen').click() })
+      expect(wrapper.className).toContain('fixed')
+
+      act(() => {
+        dispatchFromApp(
+          { jsonrpc: '2.0', id: 11, method: 'ui/request-display-mode', params: { mode: 'fullscreen' } },
+          win,
+        )
+      })
+
+      expect(wrapper.className).toContain('fixed')
+      const reply = win.postMessage.mock.calls.map(([m]) => m).find((m) => m.id === 11)!
+      expect(reply.result).toEqual({ mode: 'fullscreen' })
+    })
+
+    it('an app asking for inline still collapses the sheet (its own Esc path)', () => {
+      const { container, getByLabelText } = renderWithProviders(<McpAppFrame payload={payload()} />)
+      const iframe = container.querySelector('iframe')!
+      const wrapper = iframe.parentElement as HTMLElement
+      const win = stubContentWindow(iframe)
+
+      act(() => { getByLabelText('Open app full screen').click() })
+      expect(wrapper.className).toContain('fixed')
+
+      act(() => {
+        dispatchFromApp(
+          { jsonrpc: '2.0', id: 12, method: 'ui/request-display-mode', params: { mode: 'inline' } },
+          win,
+        )
+      })
+
+      expect(wrapper.className).not.toContain('fixed')
+    })
+
+    it('escape from the overlay restores the previous presentation, not inline', () => {
+      const { view, cleanup } = mountInScroller({ pane: 1600, column: 900 })
+      try {
+        const wrapper = view.container.querySelector('iframe')!.parentElement as HTMLElement
+        act(() => { view.getByLabelText('Expand app').click() })
+        expect(wrapper.style.width).toBe('1552px')
+
+        act(() => { view.getByLabelText('Open app full screen').click() })
+        expect(wrapper.className).toContain('fixed')
+
+        act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })) })
+
+        // Back to `wide`, the state it was promoted from.
+        expect(wrapper.className).not.toContain('fixed')
+        expect(wrapper.style.width).toBe('1552px')
+      } finally { cleanup() }
+    })
+
+    // The transcript is virtualized, so letting it scroll behind the sheet can
+    // unmount the originating row — destroying the iframe and reloading the app
+    // with the user's work. Freezing `document.body` does NOT prevent that,
+    // because the transcript scrolls its own container.
+    it('freezes the transcript scroller, not the body, while the sheet is open', () => {
+      const { view, cleanup } = mountInScroller()
+      try {
+        const scroller = document.querySelector('.chat-container') as HTMLElement
+        expect(scroller.style.overflowY).not.toBe('hidden')
+
+        act(() => { view.getByLabelText('Open app full screen').click() })
+        expect(scroller.style.overflowY).toBe('hidden')
+
+        act(() => { view.getByLabelText('Exit full screen').click() })
+        expect(scroller.style.overflowY).not.toBe('hidden')
+      } finally { cleanup() }
+    })
+
+    it('releases the scroll lock if the frame unmounts while still expanded', () => {
+      const { view, cleanup } = mountInScroller()
+      try {
+        const scroller = document.querySelector('.chat-container') as HTMLElement
+        act(() => { view.getByLabelText('Open app full screen').click() })
+        expect(scroller.style.overflowY).toBe('hidden')
+
+        act(() => { view.unmount() })
+        expect(scroller.style.overflowY).not.toBe('hidden')
+      } finally { cleanup() }
+    })
+
+    // Frozen overflow stops the wheel but NOT the follow controller's
+    // programmatic scrollTop writes during streaming — and the virtualizer
+    // derives its mounted window from scroll position, so an unattended write
+    // could unmount the originating row and reload the app mid-edit.
+    it('reverts a programmatic scroll while the sheet is open, and stops on release', () => {
+      const { view, cleanup } = mountInScroller()
+      try {
+        const scroller = document.querySelector('.chat-container') as HTMLElement
+        scroller.scrollTop = 100
+
+        act(() => { view.getByLabelText('Open app full screen').click() })
+
+        // Simulate the follow controller moving the transcript.
+        scroller.scrollTop = 4000
+        scroller.dispatchEvent(new Event('scroll'))
+        expect(scroller.scrollTop).toBe(100)
+
+        // After release the transcript follows again.
+        act(() => { view.getByLabelText('Exit full screen').click() })
+        scroller.scrollTop = 4000
+        scroller.dispatchEvent(new Event('scroll'))
+        expect(scroller.scrollTop).toBe(4000)
+      } finally { cleanup() }
+    })
+
+    it('keeps the app itself reachable by keyboard inside the overlay', () => {
+      const { container } = renderWithProviders(<McpAppFrame payload={payload()} />)
+      const iframe = container.querySelector('iframe')!
+      // The focus trap's FOCUSABLE selector matches [tabindex]:not([tabindex="-1"]);
+      // without an explicit tab stop the trap would cycle on the header button
+      // alone and the canvas would be unreachable.
+      expect(iframe.getAttribute('tabindex')).toBe('0')
+      expect(iframe.matches('[tabindex]:not([tabindex="-1"])')).toBe(true)
+    })
+
+    // The global shortcut layer binds Ctrl/Alt+digit to chat jumps, and switching
+    // session unmounts the frame — reloading the app and losing the user's work
+    // from a keystroke aimed at a sheet covering the whole viewport.
+    it('contains keystrokes while the sheet is open, but not Escape', () => {
+      const { container, getByLabelText } = renderWithProviders(<McpAppFrame payload={payload()} />)
+      const wrapper = container.querySelector('iframe')!.parentElement as HTMLElement
+      const globalSpy = vi.fn()
+      window.addEventListener('keydown', globalSpy) // bubble phase, like the shortcut layer
+      try {
+        // Inline: the transcript is normal, shortcuts must keep working.
+        act(() => {
+          wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: '1', ctrlKey: true, bubbles: true }))
+        })
+        expect(globalSpy).toHaveBeenCalledTimes(1)
+
+        act(() => { getByLabelText('Open app full screen').click() })
+        globalSpy.mockClear()
+
+        act(() => {
+          wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: '1', ctrlKey: true, bubbles: true }))
+        })
+        expect(globalSpy).not.toHaveBeenCalled()
+
+        // Escape still dismisses — the focus trap listens in the capture phase.
+        act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })) })
+        expect(wrapper.className).not.toContain('fixed')
+      } finally { window.removeEventListener('keydown', globalSpy) }
+    })
+
+    // Two frames sharing one scroller must not unfreeze each other: the first
+    // release would re-arm the virtualization data loss for the sheet still open,
+    // and the last could write a stale value back and freeze the transcript for
+    // good. The lock is therefore ref-counted, not per-instance.
+    it('holds the scroll lock until the LAST overlay releases it', () => {
+      const restore: Array<() => void> = []
+      const origRect = HTMLElement.prototype.getBoundingClientRect
+      restore.push(() => { HTMLElement.prototype.getBoundingClientRect = origRect })
+
+      const scroller = document.createElement('div')
+      scroller.className = 'chat-container'
+      scroller.style.overflowY = 'auto'
+      const colA = document.createElement('div')
+      const colB = document.createElement('div')
+      scroller.append(colA, colB)
+      document.body.appendChild(scroller)
+      restore.push(() => { scroller.remove() })
+
+      try {
+        renderWithProviders(<McpAppFrame payload={payload()} />, { container: colA })
+        renderWithProviders(<McpAppFrame payload={payload()} />, { container: colB })
+        // Bound queries search document.body, which now holds BOTH frames — so
+        // each control has to be reached through its own column.
+        const control = (col: HTMLElement, label: string) =>
+          col.querySelector<HTMLElement>(`[aria-label="${label}"]`)!
+
+        act(() => { control(colA, 'Open app full screen').click() })
+        expect(scroller.style.overflowY).toBe('hidden')
+        act(() => { control(colB, 'Open app full screen').click() })
+
+        // First release must NOT unfreeze — the second sheet is still open.
+        act(() => { control(colA, 'Exit full screen').click() })
+        expect(scroller.style.overflowY).toBe('hidden')
+
+        // Last release restores the original value.
+        act(() => { control(colB, 'Exit full screen').click() })
+        expect(scroller.style.overflowY).not.toBe('hidden')
+      } finally { restore.reverse().forEach((f) => f()) }
+    })
+  })
 })
