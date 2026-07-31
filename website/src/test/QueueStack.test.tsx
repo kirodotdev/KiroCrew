@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import QueueStack, { SubagentDeliveryProgress, isSystemDelivery } from '../components/QueueStack'
+import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
 
 // QueueStack renders framer-motion cards; we only exercise the inline
@@ -86,5 +86,30 @@ describe('system sub-agent delivery handling', () => {
   it('SubagentDeliveryProgress renders nothing at zero', () => {
     render(<SubagentDeliveryProgress count={0} />)
     expect(screen.queryByTestId('subagent-delivery-progress')).toBeNull()
+  })
+})
+
+describe('isNonInteractiveQueued (composer QueueStack exclusion)', () => {
+  it('excludes sub-agent completion deliveries', () => {
+    expect(isNonInteractiveQueued(queued('[Subagent completion event]\nAgent `x` completed', 'q1'))).toBe(true)
+    expect(isNonInteractiveQueued(queued('[Subagent batch completion event]\nWave finished', 'q2'))).toBe(true)
+  })
+
+  it('excludes synthetic turn-recovery injections (the tool-refusal composer leak)', () => {
+    // Regression: a [Tool refusal — automatic recovery] injection was rendering
+    // as an editable/cancellable user card in the composer QueueStack.
+    expect(isNonInteractiveQueued(queued(
+      '[Tool refusal — automatic recovery]\nOne or more tool calls in your previous turn were blocked.', 'q1',
+    ))).toBe(true)
+    expect(isNonInteractiveQueued(queued('[Stalled turn — automatic recovery]\n…', 'q2'))).toBe(true)
+    expect(isNonInteractiveQueued(queued('[Tool stall — automatic recovery]\n…', 'q3'))).toBe(true)
+    expect(isNonInteractiveQueued(queued('[Interrupted turn — automatic recovery]\n…', 'q4'))).toBe(true)
+    expect(isNonInteractiveQueued(queued('[Empty response — automatic recovery]\n…', 'q5'))).toBe(true)
+  })
+
+  it('keeps real user-typed messages interactive', () => {
+    expect(isNonInteractiveQueued(queued('please also check the docs', 'q1'))).toBe(false)
+    // A user quoting the prefix mid-sentence is still a user message.
+    expect(isNonInteractiveQueued(queued('why did I see [Tool refusal — automatic recovery]?', 'q2'))).toBe(false)
   })
 })

@@ -4766,7 +4766,11 @@ async def _run_chat(
         ):
             _recovery_body = build_refusal_recovery_prompt(_refusal_reasons)
             if _recovery_body:
-                slot.queue_insert(0, f"{REFUSAL_RECOVERY_PREFIX}\n{_recovery_body}")
+                slot.queue_insert(
+                    0,
+                    f"{REFUSAL_RECOVERY_PREFIX}\n{_recovery_body}",
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                )
 
         # ── Bidirectional sync: mirror response to linked Slack thread ──
         if assistant_text and state.slack_client and _mirror_thread and _mirror_chan:

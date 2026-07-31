@@ -9,7 +9,7 @@ import ToolCallLine from '../pages/chat/ToolCallLine'
 import type { ChatMessage } from '../types'
 import ChatInput from './ChatInput'
 import PendingQuestionCard from './PendingQuestionCard'
-import QueueStack, { SubagentDeliveryProgress, isSystemDelivery } from './QueueStack'
+import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import AgentDropdownList from './AgentDropdownList'
 import ModelDropdownList from './ModelDropdownList'
@@ -82,12 +82,14 @@ export default function ChatPane({
   const title = paneSlot?.title || slotKey
   const displayMode = approvalMode === 'yolo' ? 'yolo' : paneSlot?.trust ? 'trust' : paneSlot?.trust_reads ? 'trust_reads' : 'normal'
   // Queued messages render in the QueueStack, not inline in the message list.
-  // System sub-agent deliveries collapse into one progress line instead of
-  // interactive (edit/cancel) queue cards.
+  // System injections are excluded from the interactive stack (isNonInteractiveQueued):
+  // sub-agent deliveries collapse into one progress line, and synthetic
+  // turn-recovery injections drain automatically and render as a RecoveryCard.
+  // Mirrors ChatPage — split view (⌘D) is a second live QueueStack consumer.
   const messages = allMessages.filter((m) => m.role !== 'queued')
   const allQueued = allMessages.filter((m) => m.role === 'queued')
-  const queuedMessages = allQueued.filter((m) => !isSystemDelivery(m))
-  const systemDeliveryCount = allQueued.length - queuedMessages.length
+  const queuedMessages = allQueued.filter((m) => !isNonInteractiveQueued(m))
+  const systemDeliveryCount = allQueued.filter((m) => isSystemDelivery(m)).length
 
   // Pickers — same hooks/data sources ChatPage uses, but selection targets THIS slot.
   const { agents: installedAgents, defaultAgent } = useAgents(0)

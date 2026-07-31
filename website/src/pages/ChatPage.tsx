@@ -96,7 +96,7 @@ import SearchHighlightContext, { MessageSearchScope } from '../hooks/SearchHighl
 import SearchBar from '../components/SearchBar'
 import SearchResultsList from '../components/SearchResultsList'
 import { pickSearchScrollBehavior, scrollCurrentMatchIntoView, pollRowSettled, glideOnceStep, attachUserScrollIntent } from '../utils/searchScroll'
-import QueueStack, { SubagentDeliveryProgress, isSystemDelivery } from '../components/QueueStack'
+import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
 import { useVoiceInput, voiceInputSupported } from '../hooks/useVoiceInput'
@@ -3447,10 +3447,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [activeSlot])
 
   const allQueuedMessages = useMemo(() => messages.filter(m => m.role === 'queued'), [messages])
-  // System sub-agent deliveries collapse into one progress line; only
-  // user-typed queued messages get the interactive (edit/cancel) card stack.
-  const queuedMessages = useMemo(() => allQueuedMessages.filter(m => !isSystemDelivery(m)), [allQueuedMessages])
-  const systemDeliveryCount = allQueuedMessages.length - queuedMessages.length
+  // Only user-typed queued messages get the interactive (edit/cancel) card
+  // stack. System injections are excluded (isNonInteractiveQueued): sub-agent
+  // deliveries collapse into one progress line, and synthetic turn-recovery
+  // continuations (tool refusal / stalled turn / stalled tool / interrupted /
+  // empty response) are machine-facing orchestration — they drain
+  // automatically and must never render as an editable/cancellable "user" card
+  // (editing or cancelling one corrupts the recovery). They surface as a
+  // compact RecoveryCard in the transcript once dequeued instead.
+  const queuedMessages = useMemo(
+    () => allQueuedMessages.filter(m => !isNonInteractiveQueued(m)),
+    [allQueuedMessages],
+  )
+  // Count sub-agent deliveries directly (not by subtraction): recovery
+  // injections are also excluded from queuedMessages, but they are NOT
+  // sub-agent results and must not inflate the delivery progress line.
+  const systemDeliveryCount = useMemo(
+    () => allQueuedMessages.filter(m => isSystemDelivery(m)).length,
+    [allQueuedMessages],
+  )
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing for the next one. Mirrors send()'s payload prep so pending

@@ -71,6 +71,33 @@ class TestDequeueNextMessage:
             # The user message stays queued for its own (user-role) turn.
             assert [i["content"] for i in slot._queue] == ["a genuine user message"]
 
+    def test_refusal_recovery_entry_breaks_merge(self):
+        """A tool-refusal recovery injection (built dynamically, not a constant
+        in _SYNTHETIC_RECOVERY_MSGS) must carry the structural kind tag so it
+        drains ALONE rather than folding into a user-role merged turn — the
+        regression behind the composer leak, where an untagged refusal-recovery
+        entry classified as user speech AND rendered as an editable queue card.
+        Mirrors the chat_runner call site, which now passes
+        kind=SYNTHETIC_RECOVERY_KIND."""
+        from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND
+        from kiro_crew.dashboard.state import (
+            REFUSAL_RECOVERY_PREFIX,
+            build_refusal_recovery_prompt,
+        )
+
+        body = build_refusal_recovery_prompt(
+            [("write /tmp/x", "not on read-only allowlist")]
+        )
+        injection = f"{REFUSAL_RECOVERY_PREFIX}\n{body}"
+
+        slot = _ChatSlot("s1")
+        slot.queue_insert(0, "a genuine user message")
+        slot.queue_insert(0, injection, kind=SYNTHETIC_RECOVERY_KIND)
+        next_msg, consumed = _dequeue_next_message(slot, merge_enabled=True)
+        assert next_msg == injection
+        assert [c["content"] for c in consumed] == [injection]
+        assert [i["content"] for i in slot._queue] == ["a genuine user message"]
+
     def test_user_pasted_recovery_text_is_plain_user_content(self):
         """A user PASTING the transcript-visible recovery text verbatim is a
         plain user message: without the structural kind tag it must merge and
