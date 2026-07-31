@@ -339,6 +339,76 @@
         "usually_means": "signifie généralement"
       }
     },
+    "designCritique": {
+      "askLayer": {
+        "ask": "Demander",
+        "ask_about_this": "Poser une question",
+        "close": "Fermer",
+        "remove_this_annotation": "Supprimer cette annotation",
+        "thinking": "Réflexion…"
+      },
+      "composer": {
+        "add_screens": "Ajouter des écrans",
+        "clear_all": "Tout effacer",
+        "drop_screenshots_or_click_to_browse": "Déposez des captures — ou cliquez pour parcourir",
+        "fix_the_link": "Corriger le lien",
+        "move_earlier": "Déplacer avant",
+        "move_later": "Déplacer après",
+        "one_screen_or_several_in_order_for_a_flow_png_jp": "un écran, ou plusieurs dans l'ordre pour un parcours · PNG, JPG, WebP",
+        "remove": "Supprimer",
+        "send_screenshots": "Envoyer les captures",
+        "try_again": "Réessayer",
+        "use_a_local_folder_instead": "Utiliser plutôt un dossier local"
+      },
+      "designCritiquePage": {
+        "a_critique_is_still_running_click_to_watch_it": "Une critique est encore en cours — cliquez pour la suivre",
+        "across_the_flow": "Sur l'ensemble du parcours",
+        "close_esc": "Fermer (Échap)",
+        "couldn_t_see": "Non visible",
+        "critique_ready": "critique prête",
+        "design_critique": "Design Critique",
+        "enlarge": "Agrandir",
+        "full_size": "taille réelle",
+        "full_size_view": "Affichage taille réelle",
+        "new": "Nouvelle",
+        "no_screens_to_show_the_critic_couldn_t_get_pixel": "Aucun écran à afficher — le critique n'a pas pu récupérer les pixels de celui-ci. Voir « Non visible » dans le panneau.",
+        "nothing_major": "rien de majeur",
+        "on_screen": "● à l'écran",
+        "point_me_at_a_running_url": "Indiquez-moi une URL active",
+        "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "Montrez-moi un écran — ou tout un parcours — et je le lirai comme le ferait un ami designer : ce qui fonctionne, ce qu'il faut resserrer, et pourquoi.",
+        "running": "en cours",
+        "see_an_example": "Voir un exemple",
+        "send_screenshots": "Envoyer les captures",
+        "show_this_screen": "Afficher cet écran",
+        "start_a_new_critique_anything_already_running_ke": "Lancer une nouvelle critique — celles déjà en cours se poursuivent",
+        "switch_critique": "Changer de critique",
+        "what_i_d_tighten": "Ce que je resserrerais",
+        "what_s_working": "Ce qui fonctionne",
+        "what_you_ll_get": "Ce que vous obtiendrez",
+        "your_critiques": "Vos critiques",
+        "your_question_click_to_see_the_answer": "Votre question — cliquez pour voir la réponse"
+      },
+      "findingRow": {
+        "based_on": "D'après",
+        "what_i_saw": "Ce que j'ai vu",
+        "where": "Où"
+      },
+      "scopingPicker": {
+        "drag_to_reorder": "Glisser pour réorganiser",
+        "move_earlier": "Déplacer avant",
+        "move_later": "Déplacer après",
+        "optional_brief_who_is_it_for_and_what_is_the_mai": "Brief facultatif : à qui s'adresse-t-il et quelle est la tâche principale ?",
+        "optional_who_is_it_for_and_what_s_the_main_task": "Facultatif : à qui s'adresse-t-il et quelle est la tâche principale ?",
+        "screens": "Écrans",
+        "start_over": "Recommencer",
+        "suggested_flows": "Parcours suggérés",
+        "what_should_i_audit": "Que dois-je auditer ?"
+      },
+      "waitingScreen": {
+        "cancel_this_run": "Annuler cette exécution",
+        "stop_this_run_and_discard_it": "Arrêter cette exécution et l'abandonner"
+      }
+    },
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Backend inaccessible :",

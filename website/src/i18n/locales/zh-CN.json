@@ -103,6 +103,76 @@
     }
   },
   "apps": {
+    "designCritique": {
+      "askLayer": {
+        "ask": "提问",
+        "ask_about_this": "就此提问",
+        "close": "关闭",
+        "remove_this_annotation": "移除此标注",
+        "thinking": "思考中…"
+      },
+      "composer": {
+        "add_screens": "添加界面",
+        "clear_all": "全部清除",
+        "drop_screenshots_or_click_to_browse": "拖入截图，或点击浏览",
+        "fix_the_link": "修正链接",
+        "move_earlier": "前移",
+        "move_later": "后移",
+        "one_screen_or_several_in_order_for_a_flow_png_jp": "单个界面，或按顺序排列多个组成流程 · PNG、JPG、WebP",
+        "remove": "移除",
+        "send_screenshots": "发送截图",
+        "try_again": "重试",
+        "use_a_local_folder_instead": "改用本地文件夹"
+      },
+      "designCritiquePage": {
+        "a_critique_is_still_running_click_to_watch_it": "有评审仍在进行 — 点击查看",
+        "across_the_flow": "整个流程",
+        "close_esc": "关闭（Esc）",
+        "couldn_t_see": "无法查看",
+        "critique_ready": "评审完成",
+        "design_critique": "设计评审",
+        "enlarge": "放大",
+        "full_size": "原始尺寸",
+        "full_size_view": "查看原图",
+        "new": "新建",
+        "no_screens_to_show_the_critic_couldn_t_get_pixel": "没有可显示的界面 — 评审无法获取此项的像素。请查看面板中的“无法查看”。",
+        "nothing_major": "无重大问题",
+        "on_screen": "● 单个界面",
+        "point_me_at_a_running_url": "指向一个运行中的网址",
+        "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "给我一个界面 — 或整个流程 — 我会像设计师朋友一样解读：哪些做得好、哪些可以打磨、以及为什么。",
+        "running": "运行中",
+        "see_an_example": "查看示例",
+        "send_screenshots": "发送截图",
+        "show_this_screen": "显示此界面",
+        "start_a_new_critique_anything_already_running_ke": "开始新的评审 — 进行中的不受影响",
+        "switch_critique": "切换评审",
+        "what_i_d_tighten": "可以打磨的地方",
+        "what_s_working": "做得好的地方",
+        "what_you_ll_get": "你将获得",
+        "your_critiques": "你的评审",
+        "your_question_click_to_see_the_answer": "你的提问 — 点击查看回答"
+      },
+      "findingRow": {
+        "based_on": "依据",
+        "what_i_saw": "我看到的",
+        "where": "位置"
+      },
+      "scopingPicker": {
+        "drag_to_reorder": "拖动重新排序",
+        "move_earlier": "前移",
+        "move_later": "后移",
+        "optional_brief_who_is_it_for_and_what_is_the_mai": "可选说明：面向谁，主要任务是什么？",
+        "optional_who_is_it_for_and_what_s_the_main_task": "可选：面向谁，主要任务是什么？",
+        "screens": "界面",
+        "start_over": "重新开始",
+        "suggested_flows": "推荐流程",
+        "what_should_i_audit": "我该评审什么？"
+      },
+      "waitingScreen": {
+        "cancel_this_run": "取消本次运行",
+        "stop_this_run_and_discard_it": "停止并丢弃本次运行"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "accept": "采纳",

@@ -337,6 +337,76 @@
         "usually_means": "bedeutet normalerweise"
       }
     },
+    "designCritique": {
+      "askLayer": {
+        "ask": "Fragen",
+        "ask_about_this": "Dazu fragen",
+        "close": "Schließen",
+        "remove_this_annotation": "Diese Anmerkung entfernen",
+        "thinking": "Denkt nach…"
+      },
+      "composer": {
+        "add_screens": "Screens hinzufügen",
+        "clear_all": "Alle entfernen",
+        "drop_screenshots_or_click_to_browse": "Screenshots ablegen — oder zum Durchsuchen klicken",
+        "fix_the_link": "Link korrigieren",
+        "move_earlier": "Nach vorne",
+        "move_later": "Nach hinten",
+        "one_screen_or_several_in_order_for_a_flow_png_jp": "ein Screen oder mehrere in Reihenfolge für einen Flow · PNG, JPG, WebP",
+        "remove": "Entfernen",
+        "send_screenshots": "Screenshots senden",
+        "try_again": "Erneut versuchen",
+        "use_a_local_folder_instead": "Stattdessen einen lokalen Ordner verwenden"
+      },
+      "designCritiquePage": {
+        "a_critique_is_still_running_click_to_watch_it": "Eine Kritik läuft noch — zum Ansehen klicken",
+        "across_the_flow": "Über den gesamten Flow",
+        "close_esc": "Schließen (Esc)",
+        "couldn_t_see": "Nicht sichtbar",
+        "critique_ready": "Kritik fertig",
+        "design_critique": "Design Critique",
+        "enlarge": "Vergrößern",
+        "full_size": "volle Größe",
+        "full_size_view": "Ansicht in voller Größe",
+        "new": "Neu",
+        "no_screens_to_show_the_critic_couldn_t_get_pixel": "Keine Screens zum Anzeigen — für diesen konnten keine Pixel erfasst werden. Siehe „Nicht sichtbar“ im Panel.",
+        "nothing_major": "nichts Gravierendes",
+        "on_screen": "● auf dem Screen",
+        "point_me_at_a_running_url": "Zeigen Sie mir eine laufende URL",
+        "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "Zeigen Sie mir einen Screen — oder einen ganzen Flow — und ich lese ihn so, wie es ein befreundeter Designer tun würde: was funktioniert, was sich verfeinern lässt und warum.",
+        "running": "läuft",
+        "see_an_example": "Beispiel ansehen",
+        "send_screenshots": "Screenshots senden",
+        "show_this_screen": "Diesen Screen anzeigen",
+        "start_a_new_critique_anything_already_running_ke": "Neue Kritik starten — bereits laufende Kritiken laufen weiter",
+        "switch_critique": "Kritik wechseln",
+        "what_i_d_tighten": "Was ich verfeinern würde",
+        "what_s_working": "Was funktioniert",
+        "what_you_ll_get": "Was Sie erhalten",
+        "your_critiques": "Ihre Kritiken",
+        "your_question_click_to_see_the_answer": "Ihre Frage — zum Anzeigen der Antwort klicken"
+      },
+      "findingRow": {
+        "based_on": "Basierend auf",
+        "what_i_saw": "Was ich gesehen habe",
+        "where": "Wo"
+      },
+      "scopingPicker": {
+        "drag_to_reorder": "Zum Umsortieren ziehen",
+        "move_earlier": "Nach vorne",
+        "move_later": "Nach hinten",
+        "optional_brief_who_is_it_for_and_what_is_the_mai": "Optionaler Kurzbrief: für wen ist es, und was ist die Hauptaufgabe?",
+        "optional_who_is_it_for_and_what_s_the_main_task": "Optional: für wen ist es, und was ist die Hauptaufgabe?",
+        "screens": "Screens",
+        "start_over": "Neu beginnen",
+        "suggested_flows": "Vorgeschlagene Flows",
+        "what_should_i_audit": "Was soll ich prüfen?"
+      },
+      "waitingScreen": {
+        "cancel_this_run": "Diesen Lauf abbrechen",
+        "stop_this_run_and_discard_it": "Diesen Lauf stoppen und verwerfen"
+      }
+    },
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Backend nicht erreichbar:",

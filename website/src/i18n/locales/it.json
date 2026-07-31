@@ -339,6 +339,76 @@
         "usually_means": "di solito significa"
       }
     },
+    "designCritique": {
+      "askLayer": {
+        "ask": "Chiedi",
+        "ask_about_this": "Fai una domanda",
+        "close": "Chiudi",
+        "remove_this_annotation": "Rimuovi questa annotazione",
+        "thinking": "Sto pensando…"
+      },
+      "composer": {
+        "add_screens": "Aggiungi schermate",
+        "clear_all": "Cancella tutto",
+        "drop_screenshots_or_click_to_browse": "Trascina gli screenshot — o clicca per sfogliare",
+        "fix_the_link": "Correggi il link",
+        "move_earlier": "Sposta prima",
+        "move_later": "Sposta dopo",
+        "one_screen_or_several_in_order_for_a_flow_png_jp": "una schermata, o più in sequenza per un flusso · PNG, JPG, WebP",
+        "remove": "Rimuovi",
+        "send_screenshots": "Invia gli screenshot",
+        "try_again": "Riprova",
+        "use_a_local_folder_instead": "Usa invece una cartella locale"
+      },
+      "designCritiquePage": {
+        "a_critique_is_still_running_click_to_watch_it": "Una critica è ancora in corso — clicca per seguirla",
+        "across_the_flow": "In tutto il flusso",
+        "close_esc": "Chiudi (Esc)",
+        "couldn_t_see": "Non ho potuto vedere",
+        "critique_ready": "critica pronta",
+        "design_critique": "Design Critique",
+        "enlarge": "Ingrandisci",
+        "full_size": "dimensione reale",
+        "full_size_view": "Vista a dimensione reale",
+        "new": "Nuova",
+        "no_screens_to_show_the_critic_couldn_t_get_pixel": "Nessuna schermata da mostrare — il critico non è riuscito a ottenere i pixel per questa. Vedi “Non ho potuto vedere” nel pannello.",
+        "nothing_major": "niente di grave",
+        "on_screen": "● sulla schermata",
+        "point_me_at_a_running_url": "Indicami un URL attivo",
+        "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "Indicami una schermata — o un intero flusso — e la leggerò come farebbe un amico designer: cosa funziona, cosa rifinire e perché.",
+        "running": "in esecuzione",
+        "see_an_example": "Guarda un esempio",
+        "send_screenshots": "Invia gli screenshot",
+        "show_this_screen": "Mostra questa schermata",
+        "start_a_new_critique_anything_already_running_ke": "Avvia una nuova critica — quelle già in corso proseguono",
+        "switch_critique": "Cambia critica",
+        "what_i_d_tighten": "Cosa rifinirei",
+        "what_s_working": "Cosa funziona",
+        "what_you_ll_get": "Cosa otterrai",
+        "your_critiques": "Le tue critiche",
+        "your_question_click_to_see_the_answer": "La tua domanda — clicca per vedere la risposta"
+      },
+      "findingRow": {
+        "based_on": "Basato su",
+        "what_i_saw": "Cosa ho visto",
+        "where": "Dove"
+      },
+      "scopingPicker": {
+        "drag_to_reorder": "Trascina per riordinare",
+        "move_earlier": "Sposta prima",
+        "move_later": "Sposta dopo",
+        "optional_brief_who_is_it_for_and_what_is_the_mai": "Brief facoltativo: a chi è rivolto e qual è il compito principale?",
+        "optional_who_is_it_for_and_what_s_the_main_task": "Facoltativo: a chi è rivolto e qual è il compito principale?",
+        "screens": "Schermate",
+        "start_over": "Ricomincia",
+        "suggested_flows": "Flussi suggeriti",
+        "what_should_i_audit": "Cosa devo esaminare?"
+      },
+      "waitingScreen": {
+        "cancel_this_run": "Annulla questa esecuzione",
+        "stop_this_run_and_discard_it": "Arresta questa esecuzione e scartala"
+      }
+    },
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Backend non raggiungibile:",

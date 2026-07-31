@@ -339,6 +339,76 @@
         "usually_means": "geralmente significa"
       }
     },
+    "designCritique": {
+      "askLayer": {
+        "ask": "Perguntar",
+        "ask_about_this": "Perguntar sobre isto",
+        "close": "Fechar",
+        "remove_this_annotation": "Remover esta anotação",
+        "thinking": "Pensando…"
+      },
+      "composer": {
+        "add_screens": "Adicionar telas",
+        "clear_all": "Limpar tudo",
+        "drop_screenshots_or_click_to_browse": "Solte as capturas de tela — ou clique para procurar",
+        "fix_the_link": "Corrigir o link",
+        "move_earlier": "Mover antes",
+        "move_later": "Mover depois",
+        "one_screen_or_several_in_order_for_a_flow_png_jp": "uma tela, ou várias em ordem para um fluxo · PNG, JPG, WebP",
+        "remove": "Remover",
+        "send_screenshots": "Enviar capturas de tela",
+        "try_again": "Tentar de novo",
+        "use_a_local_folder_instead": "Usar uma pasta local"
+      },
+      "designCritiquePage": {
+        "a_critique_is_still_running_click_to_watch_it": "Uma crítica ainda está em andamento — clique para acompanhar",
+        "across_the_flow": "Ao longo do fluxo",
+        "close_esc": "Fechar (Esc)",
+        "couldn_t_see": "Não consegui ver",
+        "critique_ready": "crítica pronta",
+        "design_critique": "Design Critique",
+        "enlarge": "Ampliar",
+        "full_size": "tamanho real",
+        "full_size_view": "Visualização em tamanho real",
+        "new": "Nova",
+        "no_screens_to_show_the_critic_couldn_t_get_pixel": "Nenhuma tela para mostrar — não foi possível capturar os pixels desta. Veja \"Não consegui ver\" no painel.",
+        "nothing_major": "nada grave",
+        "on_screen": "● na tela",
+        "point_me_at_a_running_url": "Aponte para uma URL em execução",
+        "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "Me mostre uma tela — ou um fluxo inteiro — e eu vou analisá-lo como um amigo designer faria: o que está funcionando, o que ajustar e por quê.",
+        "running": "em andamento",
+        "see_an_example": "Ver um exemplo",
+        "send_screenshots": "Enviar capturas de tela",
+        "show_this_screen": "Mostrar esta tela",
+        "start_a_new_critique_anything_already_running_ke": "Iniciar uma nova crítica — o que já estiver em andamento continua",
+        "switch_critique": "Trocar de crítica",
+        "what_i_d_tighten": "O que eu ajustaria",
+        "what_s_working": "O que está funcionando",
+        "what_you_ll_get": "O que você vai receber",
+        "your_critiques": "Suas críticas",
+        "your_question_click_to_see_the_answer": "Sua pergunta — clique para ver a resposta"
+      },
+      "findingRow": {
+        "based_on": "Com base em",
+        "what_i_saw": "O que eu vi",
+        "where": "Onde"
+      },
+      "scopingPicker": {
+        "drag_to_reorder": "Arraste para reordenar",
+        "move_earlier": "Mover antes",
+        "move_later": "Mover depois",
+        "optional_brief_who_is_it_for_and_what_is_the_mai": "Brief opcional: para quem é e qual é a tarefa principal?",
+        "optional_who_is_it_for_and_what_s_the_main_task": "Opcional: para quem é e qual é a tarefa principal?",
+        "screens": "Telas",
+        "start_over": "Começar de novo",
+        "suggested_flows": "Fluxos sugeridos",
+        "what_should_i_audit": "O que devo analisar?"
+      },
+      "waitingScreen": {
+        "cancel_this_run": "Cancelar esta execução",
+        "stop_this_run_and_discard_it": "Parar esta execução e descartá-la"
+      }
+    },
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Backend inacessível:",

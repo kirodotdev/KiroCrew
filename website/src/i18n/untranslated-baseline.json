@@ -1,6 +1,6 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — regenerate with `node scripts/check-i18n-strings.mjs --update`. This is both the CI ratchet and the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 1747,
+  "_total": 1860,
   "files": {
     "api/client.ts": {
       "total": 35,
@@ -45,6 +45,45 @@
     "apps/code-review-sage/CodeReviewSagePage.tsx": {
       "total": 8,
       "template": 8
+    },
+    "apps/design-critique/api.ts": {
+      "total": 1,
+      "prose": 1
+    },
+    "apps/design-critique/AskLayer.tsx": {
+      "total": 2,
+      "expression": 2
+    },
+    "apps/design-critique/Composer.tsx": {
+      "total": 18,
+      "expression": 13,
+      "prose": 5
+    },
+    "apps/design-critique/DesignCritiquePage.tsx": {
+      "total": 56,
+      "array": 3,
+      "expression": 22,
+      "object-prop": 1,
+      "prose": 30
+    },
+    "apps/design-critique/FindingRow.tsx": {
+      "total": 4,
+      "expression": 2,
+      "prose": 2
+    },
+    "apps/design-critique/ScopingPicker.tsx": {
+      "total": 11,
+      "expression": 5,
+      "prose": 6
+    },
+    "apps/design-critique/utils.ts": {
+      "total": 11,
+      "prose": 11
+    },
+    "apps/design-critique/WaitingScreen.tsx": {
+      "total": 10,
+      "expression": 6,
+      "prose": 4
     },
     "apps/file-explorer/api.ts": {
       "total": 7,

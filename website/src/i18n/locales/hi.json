@@ -902,6 +902,76 @@
         "run_detail": "रन विवरण",
         "select_a_run_to_see_its_phases_agents_and_result": "इसके चरण, एजेंट और परिणाम देखने के लिए कोई रन चुनें।"
       }
+    },
+    "designCritique": {
+      "askLayer": {
+        "ask": "पूछें",
+        "ask_about_this": "इस बारे में पूछें",
+        "close": "बंद करें",
+        "remove_this_annotation": "यह एनोटेशन हटाएँ",
+        "thinking": "सोच रहे हैं…"
+      },
+      "composer": {
+        "add_screens": "स्क्रीन जोड़ें",
+        "clear_all": "सभी हटाएँ",
+        "drop_screenshots_or_click_to_browse": "स्क्रीनशॉट यहाँ छोड़ें — या ब्राउज़ करने के लिए क्लिक करें",
+        "fix_the_link": "लिंक ठीक करें",
+        "move_earlier": "पहले ले जाएँ",
+        "move_later": "बाद में ले जाएँ",
+        "one_screen_or_several_in_order_for_a_flow_png_jp": "एक स्क्रीन, या फ़्लो के लिए क्रम में कई · PNG, JPG, WebP",
+        "remove": "हटाएँ",
+        "send_screenshots": "स्क्रीनशॉट भेजें",
+        "try_again": "फिर से कोशिश करें",
+        "use_a_local_folder_instead": "इसके बजाय लोकल फ़ोल्डर इस्तेमाल करें"
+      },
+      "designCritiquePage": {
+        "a_critique_is_still_running_click_to_watch_it": "एक समीक्षा अभी चल रही है — देखने के लिए क्लिक करें",
+        "across_the_flow": "पूरे फ़्लो में",
+        "close_esc": "बंद करें (Esc)",
+        "couldn_t_see": "देख नहीं सके",
+        "critique_ready": "समीक्षा तैयार",
+        "design_critique": "डिज़ाइन समीक्षा",
+        "enlarge": "बड़ा करें",
+        "full_size": "पूरा आकार",
+        "full_size_view": "पूरे आकार में देखें",
+        "new": "नया",
+        "no_screens_to_show_the_critic_couldn_t_get_pixel": "दिखाने के लिए कोई स्क्रीन नहीं — समीक्षक इसके पिक्सेल नहीं ले सका। पैनल में \"देख नहीं सके\" देखें।",
+        "nothing_major": "कुछ बड़ा नहीं",
+        "on_screen": "● स्क्रीन पर",
+        "point_me_at_a_running_url": "मुझे कोई चालू URL बताएँ",
+        "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "मुझे कोई स्क्रीन — या पूरा फ़्लो — दिखाएँ, और मैं उसे एक डिज़ाइनर दोस्त की तरह पढ़ूँगा: क्या अच्छा चल रहा है, क्या कसना है, और क्यों।",
+        "running": "चल रही है",
+        "see_an_example": "एक उदाहरण देखें",
+        "send_screenshots": "स्क्रीनशॉट भेजें",
+        "show_this_screen": "यह स्क्रीन दिखाएँ",
+        "start_a_new_critique_anything_already_running_ke": "नई समीक्षा शुरू करें — जो पहले से चल रहा है वह चलता रहेगा",
+        "switch_critique": "समीक्षा बदलें",
+        "what_i_d_tighten": "क्या कसना है",
+        "what_s_working": "क्या अच्छा चल रहा है",
+        "what_you_ll_get": "तुम्हें क्या मिलेगा",
+        "your_critiques": "तुम्हारी समीक्षाएँ",
+        "your_question_click_to_see_the_answer": "तुम्हारा सवाल — उत्तर देखने के लिए क्लिक करो"
+      },
+      "findingRow": {
+        "based_on": "किस आधार पर",
+        "what_i_saw": "मैंने क्या देखा",
+        "where": "कहाँ"
+      },
+      "scopingPicker": {
+        "drag_to_reorder": "क्रम बदलने के लिए खींचें",
+        "move_earlier": "पहले ले जाएँ",
+        "move_later": "बाद में ले जाएँ",
+        "optional_brief_who_is_it_for_and_what_is_the_mai": "वैकल्पिक ब्रीफ़: यह किसके लिए है, और मुख्य काम क्या है?",
+        "optional_who_is_it_for_and_what_s_the_main_task": "वैकल्पिक: यह किसके लिए है, और मुख्य काम क्या है?",
+        "screens": "स्क्रीन",
+        "start_over": "फिर से शुरू करें",
+        "suggested_flows": "सुझाए गए फ़्लो",
+        "what_should_i_audit": "मैं किसका ऑडिट करूँ?"
+      },
+      "waitingScreen": {
+        "cancel_this_run": "यह रन रद्द करें",
+        "stop_this_run_and_discard_it": "यह रन रोकें और हटा दें"
+      }
     }
   },
   "components": {

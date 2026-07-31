@@ -269,6 +269,76 @@
         "usually_means": "usually means"
       }
     },
+    "designCritique": {
+      "askLayer": {
+        "ask": "Ask",
+        "ask_about_this": "Ask about this",
+        "close": "Close",
+        "remove_this_annotation": "Remove this annotation",
+        "thinking": "Thinking…"
+      },
+      "composer": {
+        "add_screens": "Add screens",
+        "clear_all": "Clear all",
+        "drop_screenshots_or_click_to_browse": "Drop screenshots — or click to browse",
+        "fix_the_link": "Fix the link",
+        "move_earlier": "Move earlier",
+        "move_later": "Move later",
+        "one_screen_or_several_in_order_for_a_flow_png_jp": "one screen, or several in order for a flow · PNG, JPG, WebP",
+        "remove": "Remove",
+        "send_screenshots": "Send screenshots",
+        "try_again": "Try again",
+        "use_a_local_folder_instead": "Use a local folder instead"
+      },
+      "designCritiquePage": {
+        "a_critique_is_still_running_click_to_watch_it": "A critique is still running — click to watch it",
+        "across_the_flow": "Across the flow",
+        "close_esc": "Close (Esc)",
+        "couldn_t_see": "Couldn’t see",
+        "critique_ready": "critique ready",
+        "design_critique": "Design Critique",
+        "enlarge": "Enlarge",
+        "full_size": "full size",
+        "full_size_view": "Full size view",
+        "new": "New",
+        "no_screens_to_show_the_critic_couldn_t_get_pixel": "No screens to show — the critic couldn’t get pixels for this one. See \"Couldn’t see\" in the panel.",
+        "nothing_major": "nothing major",
+        "on_screen": "● on screen",
+        "point_me_at_a_running_url": "Point me at a running URL",
+        "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "Point me at a screen — or a whole flow — and I’ll read it the way a designer friend would: what’s working, what to tighten, and why.",
+        "running": "running",
+        "see_an_example": "See an example",
+        "send_screenshots": "Send screenshots",
+        "show_this_screen": "Show this screen",
+        "start_a_new_critique_anything_already_running_ke": "Start a new critique — anything already running keeps going",
+        "switch_critique": "Switch critique",
+        "what_i_d_tighten": "What I'd tighten",
+        "what_s_working": "What’s working",
+        "what_you_ll_get": "What you’ll get",
+        "your_critiques": "Your critiques",
+        "your_question_click_to_see_the_answer": "Your question — click to see the answer"
+      },
+      "findingRow": {
+        "based_on": "Based on",
+        "what_i_saw": "What I saw",
+        "where": "Where"
+      },
+      "scopingPicker": {
+        "drag_to_reorder": "Drag to reorder",
+        "move_earlier": "Move earlier",
+        "move_later": "Move later",
+        "optional_brief_who_is_it_for_and_what_is_the_mai": "Optional brief: who is it for, and what is the main task?",
+        "optional_who_is_it_for_and_what_s_the_main_task": "Optional: who is it for, and what’s the main task?",
+        "screens": "Screens",
+        "start_over": "Start over",
+        "suggested_flows": "Suggested flows",
+        "what_should_i_audit": "What should I audit?"
+      },
+      "waitingScreen": {
+        "cancel_this_run": "Cancel this run",
+        "stop_this_run_and_discard_it": "Stop this run and discard it"
+      }
+    },
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Backend not reachable:",
@@ -2669,18 +2739,18 @@
         "jump_to_this_prompt": "Jump to this prompt"
       },
       "recoveryCard": {
-        "tool_call_blocked": "Tool call blocked",
-        "n_tool_calls_blocked": "{{count}} tool calls blocked",
-        "safety_policy_continuing": "safety policy · continuing automatically",
-        "n_patterns": "{{count}} patterns",
-        "turn_stalled": "Turn stalled",
-        "recovered_continuing": "recovered · continuing",
-        "tool_stopped_responding": "Tool stopped responding",
-        "cancelled_continuing": "cancelled · continuing",
-        "turn_interrupted": "Turn interrupted",
         "backend_error_continuing": "backend error · continuing automatically",
+        "cancelled_continuing": "cancelled · continuing",
+        "empty_output_continuing": "empty output · continuing automatically",
+        "n_patterns": "{{count}} patterns",
+        "n_tool_calls_blocked": "{{count}} tool calls blocked",
         "no_response_returned": "No response returned",
-        "empty_output_continuing": "empty output · continuing automatically"
+        "recovered_continuing": "recovered · continuing",
+        "safety_policy_continuing": "safety policy · continuing automatically",
+        "tool_call_blocked": "Tool call blocked",
+        "tool_stopped_responding": "Tool stopped responding",
+        "turn_interrupted": "Turn interrupted",
+        "turn_stalled": "Turn stalled"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Change your color palette in Display settings",

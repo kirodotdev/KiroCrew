@@ -902,6 +902,76 @@
         "run_detail": "রানের বিবরণ",
         "select_a_run_to_see_its_phases_agents_and_result": "ফেজ, এজেন্ট ও ফলাফল দেখতে একটি রান বেছে নিন।"
       }
+    },
+    "designCritique": {
+      "askLayer": {
+        "ask": "জিজ্ঞাসা",
+        "ask_about_this": "এটি সম্পর্কে জিজ্ঞাসা করুন",
+        "close": "বন্ধ করুন",
+        "remove_this_annotation": "এই অ্যানোটেশন সরান",
+        "thinking": "ভাবছে…"
+      },
+      "composer": {
+        "add_screens": "স্ক্রিন যোগ করুন",
+        "clear_all": "সব মুছুন",
+        "drop_screenshots_or_click_to_browse": "স্ক্রিনশট ড্রপ করুন — বা ব্রাউজ করতে ক্লিক করুন",
+        "fix_the_link": "লিঙ্কটি ঠিক করুন",
+        "move_earlier": "আগে সরান",
+        "move_later": "পরে সরান",
+        "one_screen_or_several_in_order_for_a_flow_png_jp": "একটি স্ক্রিন, বা ফ্লোর জন্য ক্রমানুসারে কয়েকটি · PNG, JPG, WebP",
+        "remove": "সরান",
+        "send_screenshots": "স্ক্রিনশট পাঠান",
+        "try_again": "আবার চেষ্টা করুন",
+        "use_a_local_folder_instead": "পরিবর্তে একটি লোকাল ফোল্ডার ব্যবহার করুন"
+      },
+      "designCritiquePage": {
+        "a_critique_is_still_running_click_to_watch_it": "একটি ক্রিটিক এখনও চলছে — দেখতে ক্লিক করুন",
+        "across_the_flow": "ফ্লো জুড়ে",
+        "close_esc": "বন্ধ করুন (Esc)",
+        "couldn_t_see": "দেখা যায়নি",
+        "critique_ready": "ক্রিটিক প্রস্তুত",
+        "design_critique": "ডিজাইন ক্রিটিক",
+        "enlarge": "বড় করুন",
+        "full_size": "পূর্ণ আকার",
+        "full_size_view": "পূর্ণ আকারে দেখুন",
+        "new": "নতুন",
+        "no_screens_to_show_the_critic_couldn_t_get_pixel": "দেখানোর মতো কোনো স্ক্রিন নেই — এটির জন্য ক্রিটিক পিক্সেল পায়নি। প্যানেলে \"দেখা যায়নি\" দেখুন।",
+        "nothing_major": "বড় কিছু নেই",
+        "on_screen": "● স্ক্রিনে",
+        "point_me_at_a_running_url": "একটি চলমান URL আমাকে দেখান",
+        "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "একটি স্ক্রিন — বা একটি পূর্ণ ফ্লো — আমাকে দেখান, আর আমি একজন ডিজাইনার বন্ধুর মতো করে সেটি পড়ব: কী কাজ করছে, কী আরও নিখুঁত করা যায়, এবং কেন।",
+        "running": "চলছে",
+        "see_an_example": "একটি উদাহরণ দেখুন",
+        "send_screenshots": "স্ক্রিনশট পাঠান",
+        "show_this_screen": "এই স্ক্রিনটি দেখান",
+        "start_a_new_critique_anything_already_running_ke": "নতুন একটি ক্রিটিক শুরু করুন — চলমান যেকোনো কিছু চলতে থাকবে",
+        "switch_critique": "ক্রিটিক পাল্টান",
+        "what_i_d_tighten": "যা আমি আরও নিখুঁত করতাম",
+        "what_s_working": "যা কাজ করছে",
+        "what_you_ll_get": "আপনি যা পাবেন",
+        "your_critiques": "আপনার ক্রিটিকগুলো",
+        "your_question_click_to_see_the_answer": "আপনার প্রশ্ন — উত্তর দেখতে ক্লিক করুন"
+      },
+      "findingRow": {
+        "based_on": "যার ভিত্তিতে",
+        "what_i_saw": "আমি যা দেখেছি",
+        "where": "কোথায়"
+      },
+      "scopingPicker": {
+        "drag_to_reorder": "ক্রম পাল্টাতে টেনে আনুন",
+        "move_earlier": "আগে সরান",
+        "move_later": "পরে সরান",
+        "optional_brief_who_is_it_for_and_what_is_the_mai": "ঐচ্ছিক ব্রিফ: এটি কার জন্য, এবং মূল কাজটি কী?",
+        "optional_who_is_it_for_and_what_s_the_main_task": "ঐচ্ছিক: এটি কার জন্য, এবং মূল কাজটি কী?",
+        "screens": "স্ক্রিন",
+        "start_over": "আবার শুরু করুন",
+        "suggested_flows": "প্রস্তাবিত ফ্লো",
+        "what_should_i_audit": "আমি কী অডিট করব?"
+      },
+      "waitingScreen": {
+        "cancel_this_run": "এই রানটি বাতিল করুন",
+        "stop_this_run_and_discard_it": "এই রান থামিয়ে বাতিল করুন"
+      }
     }
   },
   "components": {

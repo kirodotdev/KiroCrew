@@ -341,6 +341,76 @@
         "usually_means": "обычно означает"
       }
     },
+    "designCritique": {
+      "askLayer": {
+        "ask": "Спросить",
+        "ask_about_this": "Спросить об этом",
+        "close": "Закрыть",
+        "remove_this_annotation": "Удалить эту пометку",
+        "thinking": "Думаю…"
+      },
+      "composer": {
+        "add_screens": "Добавить экраны",
+        "clear_all": "Очистить всё",
+        "drop_screenshots_or_click_to_browse": "Перетащите скриншоты — или нажмите для выбора",
+        "fix_the_link": "Исправить ссылку",
+        "move_earlier": "Переместить раньше",
+        "move_later": "Переместить позже",
+        "one_screen_or_several_in_order_for_a_flow_png_jp": "один экран или несколько по порядку для сценария · PNG, JPG, WebP",
+        "remove": "Удалить",
+        "send_screenshots": "Отправить скриншоты",
+        "try_again": "Повторить",
+        "use_a_local_folder_instead": "Использовать локальную папку"
+      },
+      "designCritiquePage": {
+        "a_critique_is_still_running_click_to_watch_it": "Разбор ещё выполняется — нажмите, чтобы посмотреть",
+        "across_the_flow": "По всему сценарию",
+        "close_esc": "Закрыть (Esc)",
+        "couldn_t_see": "Не удалось увидеть",
+        "critique_ready": "разбор готов",
+        "design_critique": "Design Critique",
+        "enlarge": "Увеличить",
+        "full_size": "полный размер",
+        "full_size_view": "Просмотр в полном размере",
+        "new": "Новый",
+        "no_screens_to_show_the_critic_couldn_t_get_pixel": "Нет экранов для показа — критик не получил пиксели для этого. См. «Не удалось увидеть» на панели.",
+        "nothing_major": "ничего серьёзного",
+        "on_screen": "● на экране",
+        "point_me_at_a_running_url": "Укажите работающий URL",
+        "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "Укажите экран — или целый сценарий — и я разберу его как друг-дизайнер: что работает, что стоит доработать и почему.",
+        "running": "выполняется",
+        "see_an_example": "Посмотреть пример",
+        "send_screenshots": "Отправить скриншоты",
+        "show_this_screen": "Показать этот экран",
+        "start_a_new_critique_anything_already_running_ke": "Начать новый разбор — уже запущенные продолжат работу",
+        "switch_critique": "Переключить разбор",
+        "what_i_d_tighten": "Что стоит доработать",
+        "what_s_working": "Что работает",
+        "what_you_ll_get": "Что вы получите",
+        "your_critiques": "Ваши разборы",
+        "your_question_click_to_see_the_answer": "Ваш вопрос — нажмите, чтобы увидеть ответ"
+      },
+      "findingRow": {
+        "based_on": "На основе",
+        "what_i_saw": "Что я увидел",
+        "where": "Где"
+      },
+      "scopingPicker": {
+        "drag_to_reorder": "Перетащите для изменения порядка",
+        "move_earlier": "Переместить раньше",
+        "move_later": "Переместить позже",
+        "optional_brief_who_is_it_for_and_what_is_the_mai": "Необязательное описание: для кого это и какая основная задача?",
+        "optional_who_is_it_for_and_what_s_the_main_task": "Необязательно: для кого это и какая основная задача?",
+        "screens": "Экраны",
+        "start_over": "Начать заново",
+        "suggested_flows": "Предлагаемые сценарии",
+        "what_should_i_audit": "Что мне проанализировать?"
+      },
+      "waitingScreen": {
+        "cancel_this_run": "Отменить этот запуск",
+        "stop_this_run_and_discard_it": "Остановить запуск и отменить его"
+      }
+    },
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Бэкенд недоступен:",

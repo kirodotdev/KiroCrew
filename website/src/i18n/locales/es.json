@@ -103,6 +103,76 @@
     }
   },
   "apps": {
+    "designCritique": {
+      "askLayer": {
+        "ask": "Preguntar",
+        "ask_about_this": "Preguntar sobre esto",
+        "close": "Cerrar",
+        "remove_this_annotation": "Eliminar esta anotación",
+        "thinking": "Pensando…"
+      },
+      "composer": {
+        "add_screens": "Añadir pantallas",
+        "clear_all": "Borrar todo",
+        "drop_screenshots_or_click_to_browse": "Suelta capturas — o haz clic para explorar",
+        "fix_the_link": "Corregir el enlace",
+        "move_earlier": "Mover antes",
+        "move_later": "Mover después",
+        "one_screen_or_several_in_order_for_a_flow_png_jp": "una pantalla, o varias en orden para un flujo · PNG, JPG, WebP",
+        "remove": "Eliminar",
+        "send_screenshots": "Enviar capturas",
+        "try_again": "Reintentar",
+        "use_a_local_folder_instead": "Usar una carpeta local en su lugar"
+      },
+      "designCritiquePage": {
+        "a_critique_is_still_running_click_to_watch_it": "Una crítica sigue en marcha — haz clic para verla",
+        "across_the_flow": "En todo el flujo",
+        "close_esc": "Cerrar (Esc)",
+        "couldn_t_see": "No se pudo ver",
+        "critique_ready": "crítica lista",
+        "design_critique": "Design Critique",
+        "enlarge": "Ampliar",
+        "full_size": "tamaño completo",
+        "full_size_view": "Vista a tamaño completo",
+        "new": "Nueva",
+        "no_screens_to_show_the_critic_couldn_t_get_pixel": "No hay pantallas que mostrar — el crítico no pudo obtener los píxeles de esta. Consulta \"No se pudo ver\" en el panel.",
+        "nothing_major": "nada grave",
+        "on_screen": "● en pantalla",
+        "point_me_at_a_running_url": "Indícame una URL en ejecución",
+        "point_me_at_a_screen_or_a_whole_flow_and_i_ll_re": "Muéstrame una pantalla — o un flujo completo — y lo leeré como lo haría un colega diseñador: qué funciona, qué conviene ajustar y por qué.",
+        "running": "en ejecución",
+        "see_an_example": "Ver un ejemplo",
+        "send_screenshots": "Enviar capturas",
+        "show_this_screen": "Mostrar esta pantalla",
+        "start_a_new_critique_anything_already_running_ke": "Inicia una nueva crítica — lo que ya esté en marcha continúa",
+        "switch_critique": "Cambiar de crítica",
+        "what_i_d_tighten": "Qué ajustaría",
+        "what_s_working": "Qué funciona",
+        "what_you_ll_get": "Qué obtendrás",
+        "your_critiques": "Tus críticas",
+        "your_question_click_to_see_the_answer": "Tu pregunta — haz clic para ver la respuesta"
+      },
+      "findingRow": {
+        "based_on": "Basado en",
+        "what_i_saw": "Qué vi",
+        "where": "Dónde"
+      },
+      "scopingPicker": {
+        "drag_to_reorder": "Arrastra para reordenar",
+        "move_earlier": "Mover antes",
+        "move_later": "Mover después",
+        "optional_brief_who_is_it_for_and_what_is_the_mai": "Resumen opcional: ¿para quién es y cuál es la tarea principal?",
+        "optional_who_is_it_for_and_what_s_the_main_task": "Opcional: ¿para quién es y cuál es la tarea principal?",
+        "screens": "Pantallas",
+        "start_over": "Empezar de nuevo",
+        "suggested_flows": "Flujos sugeridos",
+        "what_should_i_audit": "¿Qué debo revisar?"
+      },
+      "waitingScreen": {
+        "cancel_this_run": "Cancelar esta ejecución",
+        "stop_this_run_and_discard_it": "Detener esta ejecución y descartarla"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "accept": "aceptar",
