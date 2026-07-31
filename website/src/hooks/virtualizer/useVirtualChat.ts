@@ -119,6 +119,20 @@ const SCROLL_SETTLE_MS = 150
 // feedback loop instead of re-rendering every frame.
 const HEIGHT_SYNC_DEBOUNCE_MS = 120
 
+// After the caller stops naming a row via `streamingIndex` (the turn closed —
+// `isStreaming` flipped false), keep that row on the IMMEDIATE height-sync path
+// for this long. A diff/code block wrapped in <SmoothResize> keeps easing its
+// height toward the content height via a `height .32s` CSS transition, and the
+// stream→complete flip is one more height change — all of which fire AFTER the
+// last content byte streamed in. Without this grace those trailing resizes fall
+// back to the debounce and re-create the very spacer lurch `streamingIndex`
+// exists to prevent, at end-of-stream. Sized to comfortably cover SmoothResize's
+// 320ms ease plus the completion snap. It is a FIXED window from the transition
+// (never re-armed per resize), so an oscillating post-stream widget cannot hold
+// the row on the immediate path indefinitely — after this window the row reverts
+// to the debounced path and its render-storm protection is restored.
+const STREAMING_SETTLE_GRACE_MS = 400
+
 // Rows must drift this many items BEYOND the computed window before a
 // SCROLL-path recompute will UNMOUNT them (mounting stays eager — no
 // hysteresis). This deadband breaks a feedback loop seen when a widget sits at
@@ -160,6 +174,48 @@ export function useVirtualChat<T>(
   // force the ResizeObserver to be torn down and reattached.
   const streamingIndexRef = useRef(streamingIndex)
   streamingIndexRef.current = streamingIndex
+
+  // ---- Streaming-settle grace (gap #3) ----
+  // When `streamingIndex` goes undefined (the turn closed — `isStreaming`
+  // flipped false), the row it named often keeps resizing for a short while:
+  // a diff/code <SmoothResize> wrapper eases its height toward the content
+  // height (`height .32s`) and the stream→complete flip is one more change.
+  // Keep that row on the IMMEDIATE-sync path for STREAMING_SETTLE_GRACE_MS so
+  // those trailing resizes don't fall back to the debounce and lurch the
+  // spacer under a scrolled-up user.
+  const graceIndexRef = useRef<number | undefined>(undefined)
+  const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearStreamingGrace = useCallback(() => {
+    if (graceTimerRef.current) {
+      clearTimeout(graceTimerRef.current)
+      graceTimerRef.current = null
+    }
+    graceIndexRef.current = undefined
+  }, [])
+  const armStreamingGrace = useCallback((idx: number) => {
+    graceIndexRef.current = idx
+    if (graceTimerRef.current) clearTimeout(graceTimerRef.current)
+    graceTimerRef.current = setTimeout(() => {
+      graceTimerRef.current = null
+      graceIndexRef.current = undefined
+    }, STREAMING_SETTLE_GRACE_MS)
+  }, [])
+  // Detect the streaming→idle transition: arm the grace when streaming stops,
+  // and clear it while streaming is active (the streamingIndexRef path covers
+  // that case directly). A LAYOUT effect (not passive) so grace is armed
+  // synchronously at the transition commit — before the ResizeObserver delivers
+  // the completion resize for that same frame, which would otherwise be
+  // debounced (arriving before a passive effect ran) and preserve the lurch.
+  const prevStreamingIndexRef = useRef(streamingIndex)
+  useLayoutEffect(() => {
+    const prev = prevStreamingIndexRef.current
+    prevStreamingIndexRef.current = streamingIndex
+    if (streamingIndex !== undefined) {
+      clearStreamingGrace()
+    } else if (prev !== undefined) {
+      armStreamingGrace(prev)
+    }
+  }, [streamingIndex, armStreamingGrace, clearStreamingGrace])
 
   // ---- DOM refs ----
   const internalScrollerRef = useRef<HTMLDivElement | null>(null)
@@ -811,7 +867,15 @@ export function useVirtualChat<T>(
           // EXCEPT while actively following (see below).
           if (prevH !== undefined) {
             genuineResize = true
-            if (idx === streamingIndexRef.current) streamingRowResized = true
+            // Immediate (non-debounced) sync for the actively-streaming row OR
+            // the row still inside its post-stream settle grace (gap #3). The
+            // grace is a FIXED window from stream completion and is deliberately
+            // NOT re-armed here: re-arming per resize would let an oscillating
+            // auto-height widget in a just-ended message keep the row immediate
+            // forever, defeating the debounce's render-storm protection.
+            if (idx === streamingIndexRef.current || idx === graceIndexRef.current) {
+              streamingRowResized = true
+            }
           } else {
             firstMount = true
           }
@@ -1329,6 +1393,7 @@ export function useVirtualChat<T>(
     return () => {
       detachSmoothAbort()
       if (heightSyncTimerRef.current) clearTimeout(heightSyncTimerRef.current)
+      if (graceTimerRef.current) clearTimeout(graceTimerRef.current)
       cacheRef.current?.flush()
     }
   }, [detachSmoothAbort])

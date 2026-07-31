@@ -269,6 +269,7 @@ function ImgWithFallback({
   ...props
 }: React.ImgHTMLAttributes<HTMLImageElement> & ExtraProps) {
   const [errored, setErrored] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const basePath = useContext(BasePathCtx)
   if (!src) return null
   const isLocal = src.startsWith('/') || src.startsWith('~') || src.startsWith('.')
@@ -298,6 +299,25 @@ function ImgWithFallback({
   // happen to declare width/height. Give SVGs a definite width basis; the
   // viewBox aspect ratio then derives the height, clamped by max-h.
   const isSvg = /\.svg([?#]|$)/i.test(src)
+  // Reserve vertical layout space BEFORE the bytes decode. A markdown image has
+  // no intrinsic dimensions in the source, so without this it lays out at ~0px
+  // until the network/decode completes, then snaps to its natural height —
+  // shoving every sibling below it (still-streaming text, the next block) down
+  // in one discrete jump. For a user reading a streaming message (or lazily
+  // loading an image below the fold) that reads as a "flash". Holding a
+  // min-height placeholder until `onLoad` reserves the space up front and
+  // bounds the on-load shift; the placeholder is released once loaded so the
+  // final layout is pixel-exact and history/completed images carry no floor.
+  // The floor is a heuristic (markdown gives us no aspect ratio): 120px sits
+  // below the common screenshot/diagram case (which then benefits) but above
+  // small icons/badges — for a sub-120px raster image the on-load change is a
+  // bounded (<=120px) collapse, an accepted residual since such images are
+  // uncommon in markdown. SVGs already get a definite width basis (their viewBox
+  // derives the height), so they need no placeholder. See
+  // MarkdownRenderer.streamingImageShift.test.tsx.
+  const imgStyle: React.CSSProperties | undefined = isSvg
+    ? { width: '760px', height: 'auto' }
+    : (loaded ? undefined : { minHeight: '120px' })
   return (
     <span className="block my-2">
       {/* The <img> is the lightbox trigger; dispatchLightbox needs the image
@@ -309,10 +329,11 @@ function ImgWithFallback({
       <img
         src={url} alt={alt || ''} loading="lazy"
         className="max-w-[min(100%,760px)] max-h-[60vh] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity"
-        style={isSvg ? { width: '760px', height: 'auto' } : undefined}
+        style={imgStyle}
         onClick={(e) => dispatchLightbox(e.currentTarget)}
         data-lightbox-image=""
         title={alt || src}
+        onLoad={() => setLoaded(true)}
         onError={() => setErrored(true)}
         {...props}
       />
@@ -945,11 +966,62 @@ function stripStrayTags(content: string, openMarker: string, stripRe: RegExp): s
 const stripStrayWidgetTags = (content: string) => stripStrayTags(content, '<mcwidget', MCWIDGET_STRIP_RE)
 const stripStrayToolUseTags = (content: string) => stripStrayTags(content, '<tool_use', TOOL_USE_STRIP_RE)
 
+// A GFM table delimiter row, e.g. `| --- | :--: |` or `---|---`. remark-gfm
+// only promotes the preceding header line to a <table> once this row is present.
+const TABLE_DELIM_RE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
+
+/**
+ * While STREAMING, withhold an incomplete trailing table so it never paints as
+ * literal pipe text that later reflows into a <table>.
+ *
+ * remark-gfm needs BOTH a header row and a `|---|` delimiter row to recognize a
+ * table. Mid-stream the header arrives first and renders as a <p> containing
+ * literal "| A | B |"; when the delimiter row streams in, that paragraph
+ * RESTRUCTURES into a bordered table — a visible structural snap of
+ * already-shown content (see MarkdownRenderer.streamingTableSnap.test.tsx).
+ * This defers the trailing header run (mirroring how an incomplete fenced code
+ * block is held) until the delimiter arrives, so the transition the user sees
+ * is the standard "content appears", not "paragraph morphs into a table".
+ *
+ * Scoped narrowly to avoid hiding ordinary prose: only a run of trailing
+ * non-blank lines whose FIRST line is a bordered table header (starts with `|`)
+ * is a candidate, and only when that run does NOT yet contain a delimiter row
+ * (a `---` row that actually carries a `|`). A run that already has such a
+ * delimiter is a real (possibly still growing) table and is left to render.
+ *
+ * Scoping choices (both close reviewer-flagged edges):
+ *  - Require the first line to START with `|`. A looser "≥2 pipes" test also
+ *    matched ordinary prose (e.g. a line with an inline `` `cmd | grep | wc` ``)
+ *    and would withhold that whole paragraph for the rest of the stream. Models
+ *    emit bordered tables (`| a | b |`), so start-with-`|` keeps the real case
+ *    while excluding prose; a borderless table simply isn't deferred (it never
+ *    regressed anything — it just renders as before).
+ *  - The delimiter must contain a `|`. A bare `---` is a thematic break / setext
+ *    underline, NOT a GFM table delimiter (which needs matching pipe-separated
+ *    cells), so counting it as "already a table" would wrongly skip deferral and
+ *    let the snap happen.
+ */
+function deferIncompleteStreamingTable(content: string): string {
+  const lines = content.split('\n')
+  let start = lines.length
+  while (start > 0 && lines[start - 1].trim() !== '') start--
+  if (start >= lines.length) return content // trailing blank line / nothing to defer
+  const run = lines.slice(start)
+  if (!/^\s*\|/.test(run[0])) return content // not a bordered table header
+  // A real GFM delimiter row carries at least one pipe; a bare `---` does not.
+  if (run.some((l) => l.includes('|') && TABLE_DELIM_RE.test(l))) return content
+  return lines.slice(0, start).join('\n')
+}
+
 const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean }) {
   // Strip any <mcwidget> or <tool_use> tags that leak through during
   // streaming transitions or when the agent emits protocol markup as text.
   // Both passes preserve mentions inside inline-code spans.
-  const clean = stripStrayToolUseTags(stripStrayWidgetTags(content))
+  let clean = stripStrayToolUseTags(stripStrayWidgetTags(content))
+  // `glow` marks the live streaming tail block: while streaming, hold back an
+  // incomplete trailing table so it doesn't paint as pipe text then snap into a
+  // <table> when the delimiter row arrives.
+  if (glow) clean = deferIncompleteStreamingTable(clean)
   if (!clean.trim()) return null
   const baseRehype = sourcePos ? REHYPE_PLUGINS_WITH_SOURCEPOS : REHYPE_PLUGINS
   // Streaming tail block only (see MarkdownRenderer's `glow` prop):
