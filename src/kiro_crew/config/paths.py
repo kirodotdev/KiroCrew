@@ -85,9 +85,7 @@ def preserved_entries(home: Path) -> list[str]:
     nothing rather than raising into a boot path.
     """
     try:
-        return sorted(
-            name for name in PRESERVED_VENV_DIR_NAMES if (home / name).is_dir()
-        )
+        return sorted(name for name in PRESERVED_VENV_DIR_NAMES if (home / name).is_dir())
     except OSError:  # pragma: no cover - defensive
         return []
 
@@ -247,7 +245,8 @@ def _maybe_migrate_legacy_home() -> Path:
                     "debris). Any data written there is ignored. Investigate and "
                     "remove it manually once confirmed stale (kirocrew doctor "
                     "surfaces this).",
-                    new_home, legacy,
+                    new_home,
+                    legacy,
                 )
         except OSError:
             pass  # best-effort probe — never block resolution
@@ -375,6 +374,36 @@ def _finalize_fresh_home(new_home: Path, marker: Path) -> Path:
     return new_home
 
 
+# System directory trees no resolved home may live under, matched on the first
+# two path components.
+_UNSAFE_HOME_PREFIXES = frozenset(
+    {
+        ("/", "usr"),
+        ("/", "System"),
+        ("/", "etc"),
+    }
+)
+
+# macOS resolves ``/etc`` to ``/private/etc``, so an override spelled ``/etc``
+# reaches the guard already resolved and would otherwise miss the check above.
+#
+# Matched as a THREE-component prefix, so the whole ``/private/etc`` TREE is
+# refused — not just the bare directory. ``("/", "etc")`` above is a prefix on
+# Linux and refuses ``/etc/anything``; an exact match here would have left
+# ``KIROCREW_HOME=/etc/kirocrew`` accepted on macOS only, so the two platforms
+# would disagree about the same path.
+#
+# Deliberately scoped to ``/private/etc`` rather than all of ``/private``:
+# ``tempfile.gettempdir()`` resolves under ``/private/var/folders/<...>/T`` on
+# macOS, so refusing that tree would reject every legitimate temp-dir data home
+# that tests, pods and worktree previews rely on.
+_UNSAFE_RESOLVED_PREFIXES = frozenset(
+    {
+        ("/", "private", "etc"),
+    }
+)
+
+
 def _is_unsafe_home(p: Path) -> bool:
     """Whether *p* is too dangerous to use as a resolved home directory.
 
@@ -382,10 +411,30 @@ def _is_unsafe_home(p: Path) -> bool:
     Windows drive root is its own parent (``/`` -> ``/``, ``C:\\`` -> ``C:\\``),
     so this refuses a bare "/" on every OS (not just POSIX).
 
+    Both system-directory checks are PREFIX matches, so a system directory and
+    everything under it are refused together. That symmetry is the point: the
+    ``("/", "etc")`` entry already refuses ``/etc/anything`` on Linux, so the
+    macOS-resolved form has to cover ``/private/etc/anything`` too, or the same
+    override would be rejected on one platform and accepted on the other.
+
+    The macOS case exists because callers pass an already-``resolve()``d path:
+    ``KIRO_HOME=/etc`` arrives here as ``/private/etc``, whose ``parts[:2]`` is
+    ``("/", "private")``. A check that knew only the unresolved spelling let it
+    through, and KiroCrew would then create agent JSON inside ``/etc``.
+
+    Deliberately NOT refusing the whole ``/private`` tree: on macOS
+    ``tempfile.gettempdir()`` resolves under ``/private/var/folders/...``, so a
+    prefix match there would reject every temp-dir data home — which tests, pods
+    and worktree previews legitimately use.
+
     Shared by :func:`_valid_override_home` (``KIROCREW_HOME``) and
     :func:`kiro_home` (``KIRO_HOME``) so both overrides refuse the same targets.
     """
-    return p == p.parent or p.parts[:2] in (("/", "usr"), ("/", "System"), ("/", "etc"))
+    if p == p.parent:
+        return True
+    if p.parts[:2] in _UNSAFE_HOME_PREFIXES:
+        return True
+    return p.parts[:3] in _UNSAFE_RESOLVED_PREFIXES
 
 
 def _valid_override_home() -> Path | None:

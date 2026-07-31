@@ -9,6 +9,7 @@ worktree's credential while still calling the live gateway, so every managed MCP
 call returned HTTP 403 — and once the worktree was removed those specs pointed at
 paths that no longer existed.
 """
+
 from __future__ import annotations
 
 import re
@@ -92,6 +93,44 @@ def test_kiro_home_matches_kirocrew_home_safety_rules():
     assert not _is_unsafe_home(Path.home() / ".kiro")
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="/etc -> /private/etc is a macOS symlink")
+def test_macos_private_etc_is_refused():
+    """The RESOLVED spelling of /etc must be refused, not just the literal one.
+
+    Regression test: callers resolve() the override before handing it here, and
+    on macOS ``/etc`` resolves to ``/private/etc`` — whose first two components
+    are ``("/", "private")``. A guard that only knew ``("/", "etc")`` therefore
+    accepted ``KIRO_HOME=/etc`` and would create agent JSON inside a system
+    directory.
+    """
+    from kiro_crew.config.paths import _is_unsafe_home
+
+    assert _is_unsafe_home(Path("/etc").resolve())
+    assert _is_unsafe_home(Path("/private/etc"))
+    # The whole TREE, not just the bare directory: ("/", "etc") is already a
+    # prefix match on Linux, so refusing only the exact resolved path would let
+    # KIROCREW_HOME=/etc/kirocrew through on macOS alone — the two platforms
+    # would disagree about the same override.
+    assert _is_unsafe_home(Path("/etc/kirocrew").resolve())
+    assert _is_unsafe_home(Path("/private/etc/kirocrew"))
+    assert _is_unsafe_home(Path("/private/etc/foo/bar"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX tempdir layout")
+def test_temp_dir_home_is_still_allowed():
+    """The /etc fix must not refuse a temp-dir home.
+
+    On macOS ``tempfile.gettempdir()`` resolves under ``/private/var/folders/...``,
+    so refusing the whole ``/private`` tree would reject every temp-dir data home
+    — which tests, pods and worktree previews all rely on.
+    """
+    import tempfile
+
+    from kiro_crew.config.paths import _is_unsafe_home
+
+    assert not _is_unsafe_home(Path(tempfile.gettempdir()).resolve())
+
+
 # --------------------------------------------------------------------------
 # The worktree decline guard
 # --------------------------------------------------------------------------
@@ -136,9 +175,7 @@ def test_private_target_is_never_declined(monkeypatch, tmp_path):
     assert agent._decline_shared_agent_home() is None
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="symlink creation needs elevation on Windows"
-)
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs elevation on Windows")
 def test_symlinked_shared_home_still_declines(monkeypatch, tmp_path):
     """A symlinked shared home must NOT be mistaken for a private target.
 
@@ -161,9 +198,9 @@ def test_symlinked_shared_home_still_declines(monkeypatch, tmp_path):
     monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", link / "agents")
     monkeypatch.setattr(agent, "kiro_agents_dir", lambda: real)
 
-    assert agent._decline_shared_agent_home() is not None, (
-        "symlinked shared home was treated as private — guard bypassed"
-    )
+    assert (
+        agent._decline_shared_agent_home() is not None
+    ), "symlinked shared home was treated as private — guard bypassed"
 
 
 def test_declines_when_running_from_worktree_without_kiro_home(monkeypatch, tmp_path):
@@ -201,9 +238,7 @@ def test_agent_home_inside_own_data_home_is_private(monkeypatch, tmp_path):
     assert agent._decline_shared_agent_home() is None
 
 
-def test_data_home_that_is_an_ancestor_does_not_make_shared_private(
-    monkeypatch, tmp_path
-):
+def test_data_home_that_is_an_ancestor_does_not_make_shared_private(monkeypatch, tmp_path):
     """Closed bypass: an ANCESTOR data home must not make the shared dir private.
 
     Regression: the privacy test was ``target.is_relative_to(own_home)``. With
@@ -226,9 +261,9 @@ def test_data_home_that_is_an_ancestor_does_not_make_shared_private(
     monkeypatch.setenv("KIROCREW_HOME", str(fake_home))
     _pretend_target_is_shared(monkeypatch, agent, shared)
 
-    assert agent._decline_shared_agent_home() is not None, (
-        "an ancestor data home made the shared agent home look private"
-    )
+    assert (
+        agent._decline_shared_agent_home() is not None
+    ), "an ancestor data home made the shared agent home look private"
 
 
 def test_global_kiro_home_in_a_worktree_still_declines(monkeypatch, tmp_path):
@@ -246,9 +281,9 @@ def test_global_kiro_home_in_a_worktree_still_declines(monkeypatch, tmp_path):
     monkeypatch.setattr(agent, "__file__", str(wt / "src" / "kiro_crew" / "agent.py"))
     _pretend_target_is_shared(monkeypatch, agent, tmp_path / "kiro-alt" / "agents")
 
-    assert agent._decline_shared_agent_home() is not None, (
-        "a globally exported KIRO_HOME bypassed the guard"
-    )
+    assert (
+        agent._decline_shared_agent_home() is not None
+    ), "a globally exported KIRO_HOME bypassed the guard"
 
 
 def test_does_not_decline_from_an_ordinary_clone(monkeypatch, tmp_path):
@@ -260,9 +295,7 @@ def test_does_not_decline_from_an_ordinary_clone(monkeypatch, tmp_path):
     clone = tmp_path / "KiroCrew"
     (clone / "src" / "kiro_crew").mkdir(parents=True)
     (clone / ".git").mkdir()  # a DIRECTORY -> ordinary clone
-    monkeypatch.setattr(
-        agent, "__file__", str(clone / "src" / "kiro_crew" / "agent.py")
-    )
+    monkeypatch.setattr(agent, "__file__", str(clone / "src" / "kiro_crew" / "agent.py"))
     _pretend_target_is_shared(monkeypatch, agent, tmp_path / "agents")
 
     assert agent._decline_shared_agent_home() is None
@@ -338,9 +371,7 @@ def test_allowed_shared_home_write_is_audited(monkeypatch, tmp_path):
     clone = tmp_path / "KiroCrew"
     (clone / "src" / "kiro_crew").mkdir(parents=True)
     (clone / ".git").mkdir()
-    monkeypatch.setattr(
-        agent, "__file__", str(clone / "src" / "kiro_crew" / "agent.py")
-    )
+    monkeypatch.setattr(agent, "__file__", str(clone / "src" / "kiro_crew" / "agent.py"))
     _pretend_target_is_shared(monkeypatch, agent, tmp_path / "agents")
 
     assert agent._decline_shared_agent_home() is None
@@ -463,8 +494,8 @@ def test_no_hardcoded_transcripts_dir():
             if line.strip().startswith("#") or not pat.search(line):
                 continue
             offenders.append(f"{rel}:{i}: {line.strip()}")
-    assert not offenders, (
-        "hard-coded transcripts dir -- use kiro_sessions_dir():\n" + "\n".join(offenders)
+    assert not offenders, "hard-coded transcripts dir -- use kiro_sessions_dir():\n" + "\n".join(
+        offenders
     )
 
 
@@ -501,10 +532,9 @@ def test_no_new_hardcoded_global_agents_dir():
             if "user_home" in line:
                 continue
             offenders.append(f"{rel}:{i}: {stripped}")
-    assert not offenders, (
-        "hard-coded global agents dir — use kiro_agents_dir() instead:\n"
-        + "\n".join(offenders)
-    )
+    assert (
+        not offenders
+    ), "hard-coded global agents dir — use kiro_agents_dir() instead:\n" + "\n".join(offenders)
 
 
 def test_repo_has_no_python_syntax_regression():

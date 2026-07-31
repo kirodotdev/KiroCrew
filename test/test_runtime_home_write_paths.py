@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -73,11 +74,32 @@ SKIP_DIR_PARTS = frozenset({"node_modules", "_vendor", ".venv", "build", "dist",
 
 
 def _shell_scripts() -> list[Path]:
-    """Every shell script in the repo, vendored/generated trees excluded."""
+    """Every TRACKED shell script in the repo, vendored/generated trees excluded.
+
+    Asks git for the file list rather than walking the filesystem: a bare
+    ``rglob`` also descends GITIGNORED directories, so a developer's local data
+    home (``.kirocrew-dev/``, which legitimately contains installed skill
+    scripts naming the legacy path) or any scratch checkout would fail this gate
+    on their machine while CI stayed green. Only committed files can actually
+    ship, so only committed files are in scope.
+
+    Falls back to the filesystem walk when git is unavailable (e.g. an sdist
+    with no ``.git``), preserving the original behavior there.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "*.sh"],
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+        paths = [REPO_ROOT / n for n in out.stdout.decode().split("\0") if n]
+    except (OSError, subprocess.SubprocessError):
+        paths = sorted(REPO_ROOT.rglob("*.sh"))
     return [
         p
-        for p in sorted(REPO_ROOT.rglob("*.sh"))
-        if not SKIP_DIR_PARTS.intersection(p.relative_to(REPO_ROOT).parts)
+        for p in sorted(paths)
+        if p.is_file() and not SKIP_DIR_PARTS.intersection(p.relative_to(REPO_ROOT).parts)
     ]
 
 
@@ -111,9 +133,9 @@ def test_default_audit_hook_writes_to_the_current_data_home() -> None:
             "baked into every generated agent spec, so this regresses on each "
             f"launch: {command}"
         )
-        assert CURRENT_HOME in command, (
-            f"the audit hook should target {CURRENT_HOME}, got: {command}"
-        )
+        assert (
+            CURRENT_HOME in command
+        ), f"the audit hook should target {CURRENT_HOME}, got: {command}"
 
 
 def test_stub_wrapper_log_dir_targets_the_current_data_home() -> None:
@@ -124,7 +146,8 @@ def test_stub_wrapper_log_dir_targets_the_current_data_home() -> None:
     is why the pre-move literal made this a writer rather than a dormant default.
     """
     lines = [
-        ln for ln in STUB_WRAPPER.read_text(encoding="utf-8").splitlines()
+        ln
+        for ln in STUB_WRAPPER.read_text(encoding="utf-8").splitlines()
         if ln.startswith("_LOG_DIR=")
     ]
     assert len(lines) == 1, f"expected one _LOG_DIR assignment, got {lines}"
@@ -226,7 +249,6 @@ def test_no_python_expands_a_hardcoded_legacy_home() -> None:
             if pattern.search(line):
                 offenders.append(f"{rel}:{lineno}: {line.strip()}")
 
-    assert not offenders, (
-        "Python expands a hardcoded legacy home into a real path:\n  "
-        + "\n  ".join(offenders)
-    )
+    assert (
+        not offenders
+    ), "Python expands a hardcoded legacy home into a real path:\n  " + "\n  ".join(offenders)

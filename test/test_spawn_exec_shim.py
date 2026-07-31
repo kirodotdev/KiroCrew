@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sys
 import threading
 from unittest.mock import AsyncMock, patch
@@ -125,7 +126,11 @@ class TestShimArgvContract:
         with (
             patch.object(shim, "_apply_rlimits", lambda _p: order.append("limits")),
             patch.object(shim, "_bias_oom_score", lambda: order.append("oom")),
-            patch.object(shim.os, "execv", lambda *_a: order.append("exec") or (_ for _ in ()).throw(OSError(2, "x"))),
+            patch.object(
+                shim.os,
+                "execv",
+                lambda *_a: order.append("exec") or (_ for _ in ()).throw(OSError(2, "x")),
+            ),
         ):
             shim.main(["--rlimits=RLIMIT_NOFILE:1024", "--oom-bias", "--", "/bin/true"])
         assert order == ["limits", "oom", "exec"]
@@ -208,9 +213,17 @@ class TestCreateSubprocessLimited:
 
     @pytest.mark.asyncio
     async def test_bare_name_is_resolved_against_the_child_path(self):
+        # Discover where `true` actually lives instead of assuming /bin/true:
+        # this is the one test in the class that performs a REAL PATH lookup
+        # (the others mock the spawn, so their path never has to exist), and
+        # `true` is /usr/bin/true on macOS — the hardcoded /bin/true made this
+        # fail there with FileNotFoundError.
+        true_path = shutil.which("true")
+        if not true_path:
+            pytest.skip("no `true` binary on PATH")
         spawn = AsyncMock()
         with patch("asyncio.create_subprocess_exec", spawn):
-            await create_subprocess_limited("true", env={"PATH": os.path.dirname("/bin/true")})
+            await create_subprocess_limited("true", env={"PATH": os.path.dirname(true_path)})
         # The shim execs without a PATH search, so the parent must hand it a path.
         assert strip_spawn_shim(spawn.await_args.args)[0].endswith("/true")
 
@@ -266,9 +279,7 @@ class TestCreateSubprocessLimited:
         exe = tools / "mytool"
         exe.write_text("#!/bin/sh\n")
         exe.chmod(0o755)
-        resolved = sandbox._resolve_spawn_target(
-            ["mytool"], {"PATH": "tools"}, cwd=str(tmp_path)
-        )
+        resolved = sandbox._resolve_spawn_target(["mytool"], {"PATH": "tools"}, cwd=str(tmp_path))
         assert resolved == str(exe)
         with pytest.raises(FileNotFoundError):
             sandbox._resolve_spawn_target(["mytool"], {"PATH": "tools"}, cwd=None)
@@ -352,6 +363,15 @@ class TestRealChild:
             stdout=asyncio.subprocess.PIPE,
         )
         out, _ = await proc.communicate()
-        gateway_hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
-        expected = 65536 if gateway_hard == resource.RLIM_INFINITY else gateway_hard
+        gateway_soft, gateway_hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if gateway_hard == resource.RLIM_INFINITY:
+            # The shim raises the soft limit to the 65536 floor but must never
+            # LOWER an already-higher inherited soft limit (`max(soft, floor)`),
+            # so on a host whose soft limit already exceeds the floor the child
+            # keeps that value. Asserting a flat 65536 here failed on exactly
+            # such a host (macOS with `ulimit -Sn 1048576`) even though the shim
+            # behaved correctly.
+            expected = max(gateway_soft, 65536)
+        else:
+            expected = gateway_hard
         assert int(out.decode().strip()) == expected
