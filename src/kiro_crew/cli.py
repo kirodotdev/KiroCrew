@@ -1123,6 +1123,16 @@ Examples:
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
 
     # policy — governance model inspection (read-only; MCP-safe)
+    tel_parser = sub.add_parser(
+        "telemetry", help="Inspect or disable anonymous usage telemetry"
+    )
+    tel_sub = tel_parser.add_subparsers(dest="telemetry_action")
+    tel_sub.add_parser(
+        "status", help="Show exactly what the anonymous beacon sends (and whether it will)"
+    )
+    tel_sub.add_parser("disable", help="Turn the anonymous beacon off permanently")
+    tel_sub.add_parser("enable", help="Turn the anonymous beacon back on")
+
     policy_parser = sub.add_parser(
         "policy", help="Inspect the governance security policy + profiles"
     )
@@ -1994,6 +2004,8 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         asyncio.run(_run_eval(args))
     elif args.command == "security":
         _security(args)
+    elif args.command == "telemetry":
+        _telemetry(args)
     elif args.command == "policy":
         from kiro_crew.cli_commands import _policy
 
@@ -2065,6 +2077,7 @@ from kiro_crew.cli_commands import (  # noqa: E402
     _run_eval,
     _security,
     _spawn,
+    _telemetry,
 )
 from kiro_crew.cli_config import _config_cmd  # noqa: E402
 from kiro_crew.cli_doctor import _doctor  # noqa: E402

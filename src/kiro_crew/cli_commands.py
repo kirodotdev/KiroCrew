@@ -9,6 +9,7 @@ import inspect
 import json
 import os
 import shutil
+import stat
 import sys
 import time as _time
 import traceback
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kiro_crew import __version__, beacon, platform_compat
 from kiro_crew.apps.bridges import (
     deregister_app,
     deregister_app_crons_from_service,
@@ -33,6 +35,7 @@ from kiro_crew.apps.manager import (
     uninstall_app,
 )
 from kiro_crew.apps.scaffold import scaffold_app
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import (
     DASHBOARD_PORT,
@@ -40,6 +43,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     WorkspaceConfig,
     build_provider_factory,
+    config_path,
 )
 from kiro_crew.cron import CronSchedule, CronService, format_schedule
 from kiro_crew.cron_trigger import trigger_cron_job
@@ -1584,3 +1588,114 @@ def _pod(args: argparse.Namespace) -> None:
     from kiro_crew.pod.cli import dispatch
 
     dispatch(args)
+
+
+def _telemetry(args: argparse.Namespace) -> None:
+    """Inspect or toggle the anonymous usage beacon (``kirocrew telemetry``).
+
+    ``status`` is read-only and never materializes an install id. ``disable`` /
+    ``enable`` persist ``telemetry.beacon_enabled`` to config.json, so the choice
+    survives restarts and upgrades — an env-var-only opt-out would silently lapse
+    the next time the user launched from a different shell.
+    """
+    action = getattr(args, "telemetry_action", None) or "status"
+    cfg = KiroCrewConfig.load()
+
+    if action == "status":
+        print(
+            beacon.format_status(
+                beacon.status(
+                    cfg.telemetry.beacon_endpoint,
+                    enabled=cfg.telemetry.beacon_enabled,
+                    app_version=__version__,
+                )
+            )
+        )
+        return
+
+    if action not in ("disable", "enable"):
+        print(f"❌ Unknown telemetry action: {action}", file=sys.stderr)
+        sys.exit(1)
+
+    want = action == "enable"
+    path = config_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"❌ Could not read {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(data, dict):
+        # Refuse rather than replace. Coercing to {} would make this toggle
+        # silently overwrite the whole file (a JSON array, string, or number is
+        # not a config we can merge into) and then print success — destroying
+        # whatever the user had. A toggle must never be a data-loss path.
+        print(
+            f"❌ {path} is not a JSON object ({type(data).__name__}); refusing to "
+            "overwrite it. Fix or move the file, then retry.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    section = data.get("telemetry")
+    if not isinstance(section, dict):
+        section = {}
+    section["beacon_enabled"] = want
+    data["telemetry"] = section
+    # Preserve the existing permissions. atomic_write creates a NEW file and
+    # renames it over the old one, so without this an operator's tightened mode
+    # is silently replaced by the umask default (0600 -> 0644 on a typical host).
+    # config.json can hold inline credentials, so a telemetry toggle must never
+    # widen who can read it. Default 0o600 for a file we are creating.
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+    except OSError:
+        mode = 0o600
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # atomic_write, never path.write_text: this rewrites the user's WHOLE
+        # config.json, so a disk-full or interrupted write would truncate it and
+        # every later load would silently discard their configuration. Temp file
+        # + rename means the old file survives any failure. fsync so the rename
+        # is durable across a power loss.
+        atomic_write(path, json.dumps(data, indent=2) + "\n", fsync=True, mode=mode)
+        # atomic_write's `mode` is POSIX-only — it routes through fchmod_safe,
+        # which is a documented NO-OP on Windows. So on Windows the replacement
+        # file inherits the DIRECTORY's ACL, and a permissive data home would make
+        # a config.json holding inline credentials readable by other local users.
+        # restrict_to_owner applies an owner-only DACL there (and 0600 on POSIX),
+        # and is fail-loud, so a lockdown that cannot be applied surfaces below
+        # rather than silently leaving the file wide open.
+        if not platform_compat.IS_POSIX or mode == 0o600:
+            platform_compat.restrict_to_owner(path)
+    except OSError as exc:
+        print(f"❌ Could not write {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Verify the write actually took EFFECT before claiming success.
+    # config.local.json deep-merges OVER config.json at load, so a host that
+    # previously set this key locally would keep sending while this command
+    # printed "DISABLED" — a false promise on a privacy control is worse than an
+    # error, so re-read the effective config and report the shadowing file.
+    try:
+        effective = KiroCrewConfig.load().telemetry.beacon_enabled
+    except Exception:  # noqa: BLE001 - diagnostics must not mask the write
+        effective = want
+    if effective != want:
+        state = "ENABLED" if effective else "DISABLED"
+        print(
+            f"⚠️  Wrote {path.name}, but the beacon is still {state}: an overlay "
+            "in config.local.json takes precedence.",
+            file=sys.stderr,
+        )
+        print(
+            "   Edit telemetry.beacon_enabled there too, or export "
+            f"{beacon.DISABLE_ENV}=1 to override everything.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if want:
+        print("✅ Anonymous usage beacon ENABLED (one heartbeat per day).")
+        print("   Run 'kirocrew telemetry status' to see exactly what is sent.")
+    else:
+        print("✅ Anonymous usage beacon DISABLED. Nothing will be sent.")
+        print(f"   You can also delete {beacon.INSTALL_ID_FILE} from the data home.")

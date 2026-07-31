@@ -767,7 +767,7 @@
       "merge_only_setup_credentials_stay_where_they_are": "仅合并配置 · 凭证保持原处不动",
       "no_supported_setup_found": "未找到受支持的配置",
       "not_imported": "未导入",
-      "nothing_was_changed_import_the_new_copy_alongsid": "未做任何更改。你可以在保留自己版本的同时导入新副本，或替换自己的版本（网关上会保留一份可恢复的副本）。",
+      "nothing_was_changed_import_the_new_copy_alongsid": "未做任何更改。可以保留现有版本并同时导入新副本，或直接替换（网关会保留一份副本供恢复）。",
       "one_item_already_exists_with_different_content": "有 1 个条目已存在且内容不同。",
       "replace_mine": "替换我的",
       "scanning_for_agent_setup": "正在扫描代理配置",
@@ -778,12 +778,7 @@
       "skipped": "已跳过",
       "try_again": "重试",
       "we_could_not_scan_agent_setup": "我们无法扫描代理配置",
-      "your_existing_kirocrew_setup_will_not_be_affecte": "你已有的 Kiro Crew 设置不会受到影响。",
-      "keep_both": "两者都保留",
-      "replace_mine": "替换我的",
-      "nothing_was_changed_import_the_new_copy_alongsid": "未做任何更改。可以保留现有版本并同时导入新副本，或直接替换（网关会保留一份副本供恢复）。",
-      "one_item_already_exists_with_different_content": "有 1 个条目已存在且内容不同。",
-      "items_already_exist_with_different_content": "个条目已存在且内容不同。"
+      "your_existing_kirocrew_setup_will_not_be_affecte": "你已有的 Kiro Crew 设置不会受到影响。"
     },
     "agentSelector": {
       "agent_list": "代理列表",
@@ -879,7 +874,6 @@
         "min_version": "最低版本：",
         "open": "打开",
         "origin": "安装来源：",
-        "page": "页面",
         "registry": "注册表",
         "remote_environment_detected": "检测到远程环境",
         "resources": "| 资源：",
@@ -894,7 +888,8 @@
         "ui_pages": "UI 页面：",
         "uninstall": "卸载",
         "update": "更新",
-        "v": "v"
+        "v": "v",
+        "page_other": "{{count}} 个页面"
       },
       "sourcesPopover": {
         "developer_install_of_a_local_app_directory_equiv": "以开发者方式安装本地应用目录（等同于",
@@ -1061,7 +1056,6 @@
     },
     "commentThreadPopover": {
       "close": "关闭",
-      "comment": "评论",
       "comment_thread": "评论话题",
       "comment_other": "{{count}} 条评论",
       "reply": "回复…",
@@ -1119,7 +1113,6 @@
       "clear_search": "清除搜索",
       "found_for": "匹配“",
       "no": "否",
-      "result": "个结果",
       "searching": "搜索中…",
       "result_other": "{{count}} 个结果",
       "type_at_least_2_characters_to_search": "至少输入 2 个字符以搜索"
@@ -1547,7 +1540,6 @@
       "confirm_publish": "确认并发布",
       "credential_security_findings_cannot_be_overridde": "凭据/安全类问题无法忽略。发布前请从工件中\n                移除检测到的密钥。",
       "done": "已完成",
-      "finding": "个问题",
       "finding_other": "{{count}} 个问题",
       "kb": "KB",
       "no_publish_providers_available_for_this_artifact": "此类工件没有可用的发布渠道。",
@@ -2674,7 +2666,7 @@
         "n_tool_calls_blocked": "{{count}} 个工具调用被阻止",
         "safety_policy_continuing": "安全策略 · 正在自动继续",
         "n_patterns": "{{count}} 条规则",
-        "turn_stalled": "回合停滞",
+        "turn_stalled": "轮次停滞",
         "recovered_continuing": "已恢复 · 继续中",
         "tool_stopped_responding": "工具停止响应",
         "cancelled_continuing": "已取消 · 继续中"
@@ -3839,12 +3831,13 @@
       "start_from_a_pre_made_schedule": "从预设计划开始",
       "status": "状态",
       "strict": "严格",
-      "this_permanently_removes_the_selected_job": "会永久删除所选任务",
       "this_will_permanently_remove_the_scheduled_job_t": "将永久删除此定时任务，操作无法撤销。此操作无法撤销。",
       "to_confirm": "以确认",
       "try_remind_me_to_check_my_pipeline_every_morning": "— 试试“提醒我每天早上检查流水线”",
-      "type": "输入",
-      "you_can_also_create_schedules_by_chatting_try": "你也可以通过聊天创建计划 — 试试"
+      "type": "类型",
+      "you_can_also_create_schedules_by_chatting_try": "你也可以通过聊天创建计划 — 试试",
+      "this_permanently_removes_the_selected_job_other": "会永久删除所选任务",
+      "type_verb_to_confirm": "请输入"
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "模糊筛选（子串匹配）",
@@ -4479,7 +4472,7 @@
       "local_only_no_egress": "· 仅本地，无外发",
       "mcp_backend_acquire": "MCP 后端获取",
       "mcp_cold_load_first_use": "MCP 冷加载（首次使用）",
-      "measured_from_token_records": "基于最近 {{days}} 天的本地每回合用量记录统计 · 与遥测开关无关，始终记录",
+      "measured_from_token_records": "基于最近 {{days}} 天的本地每轮次用量记录统计 · 与遥测开关无关，始终记录",
       "metrics_stay_local": "。指标仅保留在本地（",
       "n": "· n=",
       "no_acquisitions_yet": "尚无获取记录",
@@ -4501,7 +4494,7 @@
       "throughput": "吞吐量",
       "timeout": "超时",
       "turn_latency_p50": "轮次延迟（p50）",
-      "turns_measured_other": "已统计 {{count}} 个回合",
+      "turns_measured_other": "已统计 {{count}} 个轮次",
       "typ_p90": "典型 · p90",
       "warm_pool_efficiency": "预热池效率",
       "warm_start_p50": "热启动（p50）",

@@ -357,6 +357,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "taskrunner.py",
         "transcribe.py",
         "metrics/schema.py",
+        # Egresses, but carries NO redactable content: the payload is a fixed
+        # seven-key allowlist built by beacon.payload() (random install id,
+        # version, OS, arch, Python minor, distribution channel, first-run bit).
+        # There is no free-form field and no caller-supplied pass-through, so
+        # there is nothing for a redactor to scrub — the allowlist IS the
+        # control. It matches the drift scanner only because its module
+        # docstring explains why it does NOT route through metrics/schema.py's
+        # redact() (that guardrail would replace the install id with
+        # "[REDACTED]" and make DAU compute as 1).
+        "beacon.py",
         "cron_script.py",
         "eval/runner.py",
         "kiro_prerequisite.py",

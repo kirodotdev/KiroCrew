@@ -42,6 +42,14 @@ EXPORT_EXCLUDE = frozenset({
     ".local_secret",
     "sel_hmac.key",
     "telemetry_salt",
+    # NOTE: the beacon's per-install identity files (beacon_install_id /
+    # beacon_last_sent) are deliberately NOT listed here. This set is matched by
+    # BASENAME and `_is_excluded` runs over the workspace/, plan_memory/ and
+    # skills/ trees, so an entry here would silently drop any USER file that
+    # happens to share the name. They need no entry: root-level export is a
+    # hard-coded allowlist (config.json, hooks.json, crons.json,
+    # notifications.jsonl, project_dir, workspace_dir), so a root beacon file is
+    # never selected in the first place.
     "session_map.json",
     "kiro_session_pids.txt",
     "kiro_pids.txt",

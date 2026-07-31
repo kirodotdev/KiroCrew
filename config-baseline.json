@@ -1625,7 +1625,9 @@
         "export_interval_seconds": 60,
         "retention_days": 0,
         "max_total_mb": 0,
-        "otlp_endpoint": ""
+        "otlp_endpoint": "",
+        "beacon_enabled": true,
+        "beacon_endpoint": "https://d175o3ylxqum0e.cloudfront.net"
       }
     },
     {
@@ -1711,6 +1713,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "telemetry.beacon_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Anonymous Usage Beacon",
+      "help": "Anonymous daily heartbeat so maintainers can see how many copies are actively running, which versions are in use, and which platforms and distribution channels they run on. Sends EXACTLY seven fields, at most once per day: a random installation id, app version, OS, CPU architecture, Python minor version, distribution channel, and a first-run bit. NEVER sends prompts, model output, file contents, paths, repo names, credentials, hostname, username, or IP address. Automatically suppressed in CI and for a non-default KIROCREW_HOME. Opt out with KIROCREW_TELEMETRY_DISABLED=1 or by turning this off. Independent of the 'enabled' switch above, which is local-only metrics collection and still never egresses.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "telemetry.beacon_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Beacon Endpoint",
+      "help": "HTTPS base URL that receives the anonymous heartbeat. EMPTY = no beacon is ever sent, regardless of the toggle above. Must be https:// (a plaintext heartbeat would reveal which hosts run this software to any on-path observer); a non-https value is cleared.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "https://d175o3ylxqum0e.cloudfront.net"
     },
     {
       "path": "stt",
