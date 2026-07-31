@@ -47,7 +47,7 @@ from kiro_crew.config.loader import (
     build_provider_factory,
 )
 from kiro_crew.config.paths import _default_home, _legacy_home
-from kiro_crew.constants import env_flag_enabled
+from kiro_crew.constants import BANNER, env_flag_enabled
 from kiro_crew.crash_guard import install as _install_crash_guard
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.dashboard.state import set_build_info
@@ -69,15 +69,6 @@ from kiro_crew.session import SessionManager
 from kiro_crew.skills import SkillsLoader
 
 logger = logging.getLogger(__name__)
-
-BANNER = r"""
-   _  ___          ___ _
-  | |/ (_)_ _ ___ / __| |__ ___ __ __
-  | ' <| | '_/ _ \ (__| / _` \ V  V /
-  |_|\_\_|_| \___/\___|_\__,_|\_/\_/
-
-  👻 Your personal AI agent
-"""
 
 # Markers that uniquely identify the KiroCrew repo root for project-dir
 # auto-detection. The project-level ``agents/`` dir was removed when agent
@@ -1068,7 +1059,12 @@ Examples:
     # update
     # snapshot / restore
     snap_parser = sub.add_parser("snapshot", help="Create a portable backup of Kiro Crew state")
-    snap_parser.add_argument("output_dir", nargs="?", default=None)
+    snap_parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default=None,
+        help="Directory to write the snapshot into (default: the data home's snapshots dir)",
+    )
     snap_parser.add_argument("--keep", type=int, default=7, help="Keep N most recent snapshots")
     snap_parser.add_argument(
         "--list", action="store_true", dest="list_snapshots", help="List existing snapshots"
@@ -1076,10 +1072,18 @@ Examples:
 
     rest_parser = sub.add_parser("restore", help="Restore Kiro Crew state from a snapshot")
     rest_parser.add_argument("snapshot", nargs="?", help="Path to snapshot .tar.gz")
-    rest_parser.add_argument("--mode", choices=("replace", "merge"))
-    rest_parser.add_argument("--dry-run", action="store_true")
+    rest_parser.add_argument(
+        "--mode",
+        choices=("replace", "merge"),
+        help="replace = overwrite existing state, merge = keep it and add (default: auto-detect)",
+    )
+    rest_parser.add_argument(
+        "--dry-run", action="store_true", help="Preview what would be restored, write nothing"
+    )
     rest_parser.add_argument("--components", help="Comma-separated components to restore")
-    rest_parser.add_argument("--list-components", action="store_true")
+    rest_parser.add_argument(
+        "--list-components", action="store_true", help="List restorable component names and exit"
+    )
     rest_parser.add_argument(
         "--force", action="store_true", help="Restore even if gateway is running"
     )
@@ -1279,17 +1283,22 @@ Examples:
         formatter_class=_fmt,
     )
 
-    def _cloud_common(p: "argparse.ArgumentParser") -> None:
+    # --profile/--region are universal; --tag only applies to verbs that address ONE
+    # instance. `list`, `iam-policy`, `iam-boundary`, and `doctor` are account-wide,
+    # so they take the pair WITHOUT --tag via _cloud_creds_opts.
+    def _cloud_creds_opts(p: "argparse.ArgumentParser") -> None:
         p.add_argument(
             "--profile", default="", help="AWS profile name (default: saved / CLI default)"
         )
         p.add_argument("--region", default="", help="AWS region (default: saved / us-east-1)")
+
+    def _cloud_common(p: "argparse.ArgumentParser") -> None:
+        _cloud_creds_opts(p)
         p.add_argument("--tag", default="", help="Instance tag (default: last launched)")
 
     cloud_sub = cloud_parser.add_subparsers(dest="cloud_action")
     _c_launch = cloud_sub.add_parser("launch", help="Provision + configure an instance")
-    _c_launch.add_argument("--profile", default="", help="AWS profile name")
-    _c_launch.add_argument("--region", default="", help="AWS region (default: us-east-1)")
+    _cloud_creds_opts(_c_launch)
     _c_launch.add_argument(
         "--size",
         default="",
@@ -1309,8 +1318,7 @@ Examples:
     )
 
     _c_list = cloud_sub.add_parser("list", help="List your Kiro Crew cloud instances")
-    _c_list.add_argument("--profile", default="")
-    _c_list.add_argument("--region", default="")
+    _cloud_creds_opts(_c_list)
 
     _c_status = cloud_sub.add_parser("status", help="Show one instance's state")
     _cloud_common(_c_status)
@@ -1361,17 +1369,14 @@ Examples:
     _c_iam = cloud_sub.add_parser(
         "iam-policy", help="Print the least-privilege IAM policy to apply"
     )
-    _c_iam.add_argument("--profile", default="")
-    _c_iam.add_argument("--region", default="")
+    _cloud_creds_opts(_c_iam)
     _c_boundary = cloud_sub.add_parser(
         "iam-boundary",
         help="Pre-create the immutable instance permissions boundary (admin, one-time)",
     )
-    _c_boundary.add_argument("--profile", default="")
-    _c_boundary.add_argument("--region", default="")
+    _cloud_creds_opts(_c_boundary)
     _c_doctor = cloud_sub.add_parser("doctor", help="Check cloud prerequisites + AWS reachability")
-    _c_doctor.add_argument("--profile", default="")
-    _c_doctor.add_argument("--region", default="")
+    _cloud_creds_opts(_c_doctor)
 
     # logs — tail the gateway log. Reads from the systemd journal when running
     # as a service on Linux, the launchd stdout file on macOS, or the
@@ -1631,11 +1636,25 @@ Examples:
     ws_sub.add_parser("list", help="List workspaces")
     ws_create = ws_sub.add_parser("create", help="Create a workspace")
     ws_create.add_argument("--name", required=True, help="Workspace name")
-    ws_create.add_argument("--dir", default=None, help="Workspace directory path")
+    ws_create.add_argument(
+        "--dir",
+        default=None,
+        help=(
+            "Workspace directory NAME, relative to the KiroCrew data home "
+            "(default: workspace-<name>). Any path resolving outside the data "
+            "home is rejected."
+        ),
+    )
     ws_create.add_argument("--copy-from", help="Copy dir from an existing workspace")
     ws_update = ws_sub.add_parser("update", help="Update a workspace")
     ws_update.add_argument("name", help="Workspace name to update")
-    ws_update.add_argument("--dir", help="New directory path")
+    ws_update.add_argument(
+        "--dir",
+        help=(
+            "New workspace directory NAME, relative to the KiroCrew data home. "
+            "Any path resolving outside the data home is rejected."
+        ),
+    )
     ws_delete = ws_sub.add_parser("delete", help="Delete a workspace")
     ws_delete.add_argument("name", help="Workspace name to delete")
 

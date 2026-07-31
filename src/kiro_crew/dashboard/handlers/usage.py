@@ -86,6 +86,155 @@ def _shards_in_window(days: int) -> list[Path]:
     return paths
 
 
+_CONTEXT_TOP_SESSIONS = 8
+# Fingerprint + TTL cache, same contract as _TOKEN_CACHE: the Telemetry panel
+# polls every 5s, and the shards are append-only, so (name, mtime, size) over
+# the window invalidates exactly when a turn lands.
+_CONTEXT_CACHE: dict[str, Any] | None = None
+_CONTEXT_CACHE_KEY: tuple[Any, ...] | None = None
+_CONTEXT_CACHE_TS: float = 0.0
+_CONTEXT_CACHE_TTL = 30.0
+
+
+def context_occupancy(days: int = 14) -> dict[str, Any]:
+    """Aggregate per-turn context-window occupancy from the token row store.
+
+    ``persist_token_record`` writes ``context_used`` / ``context_window`` on
+    every turn across all nine dispatch surfaces, but nothing read them — the
+    fields were write-only, so the session-death early warning they exist for
+    was invisible. This is their read side.
+
+    Occupancy is a per-turn ratio, so it is aggregated here rather than in the
+    OTEL pipeline: the useful question is "which SESSION is close to its
+    window", and slot keys are unbounded-cardinality labels that do not belong
+    on a metric. Returns the turn-level percentile spread plus the hottest
+    sessions by peak occupancy, newest first on ties.
+
+    Rows predating the field, or any row whose window is missing/zero, are
+    skipped — an unknown window cannot yield a ratio, and defaulting one would
+    invent a number.
+    """
+    per_session: dict[str, dict[str, Any]] = {}
+    pcts: list[float] = []
+    cutoff = time.time() - (days * 86400)
+
+    shard_paths = _shards_in_window(days)
+    try:
+        cache_key: tuple[Any, ...] | None = (
+            days,
+            tuple(sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shard_paths)),
+        )
+    except OSError:
+        cache_key = None
+    now = time.time()
+    if (
+        cache_key is not None
+        and _CONTEXT_CACHE_KEY == cache_key
+        and _CONTEXT_CACHE is not None
+        and (now - _CONTEXT_CACHE_TS) < _CONTEXT_CACHE_TTL
+    ):
+        return _CONTEXT_CACHE
+
+    for shard_path in shard_paths:
+        try:
+            with shard_path.open() as fh:
+                for line in fh:
+                    try:
+                        obj = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(obj, dict) or obj.get("_type") != "tokens":
+                        continue
+                    used = _coerce_int(obj.get("context_used"))
+                    window = _coerce_int(obj.get("context_window"))
+                    if used <= 0 or window <= 0:
+                        continue
+                    ts_epoch = 0.0
+                    ts_raw = obj.get("ts") or ""
+                    try:
+                        ts_str = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
+                        ts_epoch = datetime.fromisoformat(ts_str).timestamp()
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+                    if ts_epoch < cutoff:
+                        continue
+                    p = (used / window) * 100.0
+                    pcts.append(p)
+                    slot = str(obj.get("slot") or "unknown")
+                    cur = per_session.get(slot)
+                    if cur is None:
+                        cur = {
+                            "slot": slot,
+                            "turns": 0,
+                            "peak_pct": 0.0,
+                            "used": 0,
+                            "window": window,
+                            "agent": "",
+                            "model": "",
+                            "surface": "",
+                            "ts": "",
+                            "_ts_epoch": 0.0,
+                        }
+                        per_session[slot] = cur
+                    cur["turns"] = int(cur["turns"]) + 1
+                    if p > float(cur["peak_pct"]):
+                        cur["peak_pct"] = p
+                    # Identity + absolute numbers describe the LATEST turn, so a
+                    # session that switched model or agent mid-life is reported
+                    # as what it is now, not what it once was.
+                    if ts_epoch >= float(cur["_ts_epoch"]):
+                        cur.update(
+                            {
+                                "_ts_epoch": ts_epoch,
+                                "ts": str(ts_raw),
+                                "used": used,
+                                "window": window,
+                                "agent": str(obj.get("agent") or ""),
+                                "model": str(obj.get("model") or ""),
+                                "surface": str(obj.get("surface") or ""),
+                            }
+                        )
+        except (OSError, UnicodeDecodeError):
+            continue
+
+    def _store(result: dict[str, Any]) -> dict[str, Any]:
+        global _CONTEXT_CACHE, _CONTEXT_CACHE_KEY, _CONTEXT_CACHE_TS
+        if cache_key is not None:
+            _CONTEXT_CACHE, _CONTEXT_CACHE_KEY, _CONTEXT_CACHE_TS = result, cache_key, now
+        return result
+
+    if not pcts:
+        return _store({"turns": 0, "sessions": [], "window_days": days})
+
+    pcts.sort()
+
+    def _q(q: float) -> float:
+        # Nearest-rank on the sorted samples: these are exact per-turn values,
+        # not histogram buckets, so no interpolation is warranted.
+        idx = min(len(pcts) - 1, max(0, int(round(q * (len(pcts) - 1)))))
+        return round(pcts[idx], 1)
+
+    sessions = sorted(
+        per_session.values(),
+        key=lambda s: (float(s["peak_pct"]), float(s["_ts_epoch"])),
+        reverse=True,
+    )[:_CONTEXT_TOP_SESSIONS]
+    for s in sessions:
+        s.pop("_ts_epoch", None)
+        s["peak_pct"] = round(float(s["peak_pct"]), 1)
+
+    return _store(
+        {
+            "turns": len(pcts),
+            "p50_pct": _q(0.50),
+            "p90_pct": _q(0.90),
+            "max_pct": round(pcts[-1], 1),
+            "sessions": sessions,
+            "window_days": days,
+        }
+    )
+
+
 def read_context_tokens(source: object) -> tuple[int, int]:
     """Return ``(context_used, context_window)`` from a provider/client.
 

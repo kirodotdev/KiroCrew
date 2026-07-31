@@ -15,11 +15,13 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from kiro_crew.platform_compat import IS_LINUX
 from kiro_crew.pod.config import PodConfig
 
 # Pod names become systemd instance names and path segments; keep them strict.
@@ -207,7 +209,29 @@ def _run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
     )
 
 
+def require_systemd() -> None:
+    """Raise :class:`PodError` unless this host can run ``systemctl --user``.
+
+    Pods are Linux ``systemd --user`` only (see ``pod/README.md`` → Platform).
+    Without this gate the first ``subprocess.run(["systemctl", ...])`` raises a
+    bare ``FileNotFoundError`` and every verb dumps a traceback on macOS /
+    Windows instead of the documented "report the failure" one-liner. Checked
+    here — the single chokepoint every systemd call funnels through — so no verb
+    can forget it.
+    """
+    if not IS_LINUX:
+        raise PodError(
+            f"pods require Linux `systemctl --user`; this host is {sys.platform}. "
+            "Use `./dev-backend.sh` to preview a worktree on this platform."
+        )
+    if shutil.which("systemctl") is None:
+        raise PodError(
+            "pods require `systemctl --user`, but no `systemctl` was found on PATH."
+        )
+
+
 def systemctl(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
+    require_systemd()
     return _run(["systemctl", "--user", *args], timeout=timeout)
 
 
@@ -238,6 +262,9 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
 
 def recent_journal(cfg: PodConfig, name: str, lines: int = 30) -> str:
     """Tail the pod unit's journal — used to surface a boot failure's real cause."""
+    # journalctl is a sibling of systemctl, not routed through it — gate it too,
+    # or this one call still raises a bare FileNotFoundError off-Linux.
+    require_systemd()
     cp = subprocess.run(
         ["journalctl", "--user", "-u", pod_unit(cfg, name), "-n", str(lines), "--no-pager"],
         capture_output=True,

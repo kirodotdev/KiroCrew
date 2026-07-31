@@ -50,6 +50,73 @@ def _write_shard(tmp_path: Path, metrics: list) -> Path:
     return p
 
 
+def _startup_dp(attrs: dict, count: int = 1, bucket: int = 1) -> dict:
+    counts = [0] * (len(_BOUNDS) + 1)
+    counts[bucket] = count
+    return {
+        "attributes": attrs,
+        "count": count,
+        "sum": float(count * 15),
+        "min": 15.0,
+        "max": 15.0,
+        "bucket_counts": counts,
+        "explicit_bounds": _BOUNDS,
+    }
+
+
+def test_aggregate_counts_only_the_end_to_end_startup_point(tmp_path: Path):
+    """Per-phase points are components of one startup, not startups.
+
+    The kiro backend emits phase=total PLUS one point per internal phase. Before
+    the fix all four were summed, inflating the startup count ~4x and stacking
+    four unrelated latency distributions into one set of buckets.
+    """
+    ready = {"outcome": "ready", "backend": "kiro", "spawned": True}
+    startup = {"name": "kirocrew.session.startup.duration", "data": {"data_points": [
+        _startup_dp({**ready, "phase": "total"}, bucket=4),
+        _startup_dp({**ready, "phase": "spawn_init"}, bucket=2),
+        _startup_dp({**ready, "phase": "session_new"}, bucket=3),
+        _startup_dp({**ready, "phase": "set_model"}, bucket=0),
+    ]}}
+
+    s = _aggregate([_write_shard(tmp_path, [startup])])["startup"]
+
+    # One startup, not four.
+    assert s["overall"]["count"] == 1
+    assert s["outcome"] == {"ready": 1}
+    assert s["daily"][0]["count"] == 1
+    # ...and the distribution holds only the end-to-end sample.
+    assert sum(s["distribution"]["buckets"]) == 1
+    # The phase detail is preserved, just kept out of the startup totals.
+    assert [p["name"] for p in s["phases"]] == ["session_new", "set_model", "spawn_init"]
+    assert all(p["count"] == 1 for p in s["phases"])
+
+
+def test_aggregate_kiro_startup_counts_as_cold(tmp_path: Path):
+    """spawned=True on the kiro path must land in cold, not warm.
+
+    Regression guard: the kiro emit previously carried no ``spawned`` attribute,
+    so bool(None) filed every cold start as warm and cold read as empty forever.
+    """
+    startup = {"name": "kirocrew.session.startup.duration", "data": {"data_points": [
+        _startup_dp({"outcome": "ready", "backend": "kiro", "phase": "total", "spawned": True}),
+    ]}}
+    s = _aggregate([_write_shard(tmp_path, [startup])])["startup"]
+    assert s["cold"]["count"] == 1
+    assert s["warm"]["count"] == 0
+
+
+def test_aggregate_treats_missing_phase_as_the_total(tmp_path: Path):
+    """The claude path emits no phase attribute at all — still one startup."""
+    startup = {"name": "kirocrew.session.startup.duration", "data": {"data_points": [
+        _startup_dp({"outcome": "ready", "spawned": False}),
+    ]}}
+    s = _aggregate([_write_shard(tmp_path, [startup])])["startup"]
+    assert s["overall"]["count"] == 1
+    assert s["warm"]["count"] == 1
+    assert s["phases"] == []
+
+
 def test_aggregate_startup_turn_and_other(tmp_path: Path):
     startup = {"name": "kirocrew.session.startup.duration", "data": {"data_points": [
         {"attributes": {"outcome": "ready", "spawned": True}, "count": 3, "sum": 45.0,

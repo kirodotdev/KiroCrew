@@ -44,6 +44,9 @@ import { useTheme } from '../hooks/useTheme'
 import CollapsibleToolGroup from './chat/CollapsibleToolGroup'
 import ThinkingBlock from './chat/ThinkingBlock'
 import type { DisplayItem, TurnItem } from './chat/types'
+import McpToolsPanel from './chat/McpToolsPanel'
+import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
+import type { McpServer } from '../types'
 import { useScrollManager } from './chat/useScrollManager'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, findUnreferencedAttachments } from '../utils/fileTokens'
@@ -191,6 +194,31 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
     queryFn: () => api.mcpActive(agent || undefined),
     enabled: mcpOpen,
   })
+  // Tool Search mode for this session's MCP tools (shared ['kirocrewConfig']
+  // cache). When on, tool specs are deferred (search-and-call), so every server
+  // shows as connected but its tools load only when used; when off, every spec
+  // is sent each turn. Explains the "why are they all loaded?" question.
+  const { data: toolSearchOn = true } = useQuery<{ agent?: { tool_search?: boolean } }, Error, boolean>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    select: (c) => c.agent?.tool_search ?? true,
+    enabled: mcpOpen,
+  })
+  // Per-tool loaded/deferred state is derived client-side (no endpoint): the
+  // full server list carries each server's tool names + disabledTools, and the
+  // "loaded this session" set comes from scanning this slot's tool_search
+  // results in the chat store. See deriveLoadedMcpTools for the caveats.
+  const { data: fullServers = [] } = useQuery<McpServer[]>({
+    queryKey: ['mcp-servers-full'],
+    queryFn: () => api.mcpServers(),
+    enabled: mcpOpen,
+  })
+  const toolsByServer = useMemo(
+    () => Object.fromEntries(fullServers.map(s => [s.name, { tools: s.tools, disabledTools: s.disabledTools }])),
+    [fullServers],
+  )
+  const sessionMessages = useAppSelector(s => s.chat.messages)
+  const loadedTools = useMemo(() => deriveLoadedMcpTools(sessionMessages), [sessionMessages])
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -214,14 +242,14 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
                 <span className="flex-1">{i18nT('pages.chatPage.mcp_servers')}</span>
                 <ChevronRight size={12} className="text-muted" />
               </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="min-w-[220px] max-w-[280px] max-h-[300px] overflow-y-auto px-3 py-2">
-                <div className="text-[11px] uppercase tracking-wider text-muted font-semibold mb-1.5">{i18nT('pages.chatPage.mcp_servers_2')} {servers.length > 0 && `(${servers.filter((s: {enabled?: boolean}) => s.enabled !== false).length}/${servers.length})`}</div>
-                {servers.length === 0 ? <div className="text-muted text-[12px] italic">{i18nT('pages.chatPage.loading')}</div> : servers.map((s: {name: string; enabled?: boolean}) => (
-                  <div key={s.name} className={`flex items-center gap-2 py-0.5 text-[12px] ${s.enabled === false ? 'opacity-40' : ''}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.enabled === false ? 'bg-muted' : 'bg-ok'}`} />
-                    <code className="text-text">{s.name}</code>
-                  </div>
-                ))}
+              <DropdownMenuSubContent className="min-w-[240px] max-w-[300px] max-h-[340px] overflow-y-auto px-3 py-2">
+                <McpToolsPanel
+                  servers={servers}
+                  toolsByServer={toolsByServer}
+                  loaded={loadedTools}
+                  toolSearchOn={toolSearchOn}
+                  loading={servers.length === 0}
+                />
               </DropdownMenuSubContent>
             </DropdownMenuSub>,
           ]}

@@ -105,6 +105,11 @@
       "origin": "Origin",
       "post_reminder": "Post reminder in {{label}}",
       "stop_mirroring": "Stop mirroring to {{label}}"
+    },
+    "markdownRenderer": {
+      "reset_zoom": "Reset zoom (0)",
+      "zoom_in": "Zoom in (+)",
+      "zoom_out": "Zoom out (-)"
     }
   },
   "pages": {
@@ -126,6 +131,16 @@
     },
     "chatSidebar": {
       "mirroring_to": "Mirroring to {{label}}"
+    },
+    "chatPage": {
+      "no_tools": "No tools",
+      "tool_search_deferred": "Tool Search · Deferred",
+      "tool_search_deferred_hint": "Tool specs load on demand — not sent to the model every turn.",
+      "tool_search_full": "Tool Search · Fully loaded",
+      "tool_search_full_hint": "Every MCP tool spec is sent to the model each turn.",
+      "tool_status_deferred": "Deferred",
+      "tool_status_disabled": "Disabled",
+      "tool_status_loaded": "Loaded this session"
     },
     "settings": {
       "aboutPanel": {

@@ -897,6 +897,54 @@ cancellation, or exception. A matched live identity file that cannot be captured
 under the bounded regular-file rules aborts that staging path before the command
 runs; it is never omitted as though absent. No production caller currently
 selects the isolated mode, since the readiness probe also runs real-home.
+
+The Kiro CLI identity database (`data.sqlite3`) is **projected, never
+byte-copied**, and is therefore deliberately exempt from the
+`_MAX_AUTH_STORE_FILE_BYTES` (64 MB) cap that governs every other staged
+identity file. That database is the CLI's main store: identity occupies two
+small tables (`auth_kv`, `migrations`), while `history` / `conversations*` hold
+chat transcripts and grow without bound — a real user's store reached ~429 MB.
+Byte-copying it both aborted sign-in for those users (with a message naming
+neither size nor cause) and read the whole file into memory to write it straight
+back out. Projection copies every table/index **DDL** plus the **rows** of the
+identity tables only, so the staged file is bounded by the identity data alone
+however large the source grows, and the sandboxed CLI receives no transcript
+content. `state` is a mixed key/value table — a few rows describe *which*
+identity is signed in (Identity Center region + start URL, CodeWhisperer
+profile) and the rest is unrelated local state (telemetry ids, onboarding flags,
+prompt counters) — so its rows are carried **selectively by key prefix**
+(`auth.`, `api.codewhisperer.`), letting `whoami` render its full profile block
+without handing the sandboxed CLI the user's telemetry identifiers. The match is
+by prefix rather than an exact key list so a newly added `auth.idc.*` key is
+carried automatically instead of being silently dropped; `state` itself is
+optional, so an older schema without it still stages. The full schema is copied rather than just the identity tables because
+`migrations` is projected with its rows: the CLI then treats the schema as
+already current and runs no migration, so a store holding only identity tables
+would fail with `no such table: history` on first use. Projection keeps the byte
+path's defenses — reject a symlink, require a regular file, open read-only — and
+creates the destination `0o600` before writing, so identity rows are never
+briefly world-readable. A source that is unreadable, is not a database, or
+is missing **any** required identity table fails closed and aborts staging,
+rather than handing the CLI an empty store it would read as signed-out. The
+all-or-nothing table check is deliberate: a future Kiro CLI that renamed one
+identity table while keeping the other would satisfy an any-of check and stage a
+store whose schema is present but whose identity rows are absent — silently
+producing the signed-out outcome the check exists to prevent. Requiring all of
+them turns a schema change into a loud abort instead. Consequently the SQLite
+sidecar filenames are no longer staged: reading through SQLite already applies
+any pending WAL/journal state.
+
+The source is opened `mode=ro` **without** `immutable=1`, deliberately.
+`immutable=1` would guarantee no sidecar is ever touched beside the user's live
+database, but it also asserts the file cannot change, which makes SQLite **ignore
+the `-wal`**: against a store in WAL mode whose newest commits are still
+WAL-resident, the token row reads as missing and the staged store presents as
+*signed out* — a worse failure than the size abort this projection replaces.
+Plain `mode=ro` applies the WAL, so the staged identity always matches what the
+CLI itself would read. The accepted cost is that SQLite may create or refresh the
+`-shm` shared-memory index beside the live database exactly as any other reader
+does; `-shm` carries no identity data, and no bytes are ever written back to the
+user's store. A regression test pins the WAL-resident case.
 Candidate discovery spans the inherited `PATH`, interpreterScripts directory, and explicit operator override on every OS — a runnable
 candidate from any of these is eligible, since trust is "it runs". Status
 requests never mutate `KIROCREW_KIRO_BIN`. Electron delegates entirely to this

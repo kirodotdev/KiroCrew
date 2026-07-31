@@ -18,7 +18,7 @@ describe('MarkdownRenderer SVG preview sizing', () => {
     const imgs = container.querySelectorAll('img')
     expect(imgs.length).toBe(3)
     imgs.forEach(img => {
-      expect((img as HTMLImageElement).style.width).toBe('240px')
+      expect((img as HTMLImageElement).style.width).toBe('760px')
     })
   })
 

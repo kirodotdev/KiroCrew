@@ -62,15 +62,30 @@ class TestTrackUntrack:
         _untrack_pid(999)  # should not crash
         assert "111" in pid_file.read_text(encoding="utf-8")
 
-    def test_untrack_session_pid(self, session_pid_file: Path) -> None:
+    @pytest.mark.parametrize("token", [None, "tok123"])
+    def test_untrack_session_pid(
+        self,
+        session_pid_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        token: str | None,
+    ) -> None:
+        """Untrack removes only the named PID's entry, in either record format.
+
+        Pin the start token instead of inheriting it from the host: PIDs 111
+        and 222 are live kernel threads on some machines (so _track writes the
+        3-field ``gw:pid:token``) and absent on others (2-field ``gw:pid``),
+        which would otherwise make the expected value host-dependent.
+        """
         from kiro_crew.session_pid import _track_session_pid, _untrack_session_pid
 
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: token)
         _track_session_pid(111)
         _track_session_pid(222)
         _untrack_session_pid(111)
         gw = os.getpid()
+        suffix = f":{token}" if token else ""
         lines = session_pid_file.read_text(encoding="utf-8").strip().splitlines()
-        assert lines == [f"{gw}:222"]
+        assert lines == [f"{gw}:222{suffix}"]
 
     def test_untrack_session_pid_missing_file(self, session_pid_file: Path) -> None:
         from kiro_crew.session_pid import _untrack_session_pid
@@ -389,6 +404,81 @@ class TestFindOrphanMcpCandidates:
             result = find_orphan_mcp_candidates(active_pids={100, 200})
 
         assert result == []
+
+    def test_vanished_pid_logs_one_line_without_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A PID that exits between snapshot and probe logs no stack trace.
+
+        The candidate is already gone, which is what the sweep wants, so the
+        expected TOCTOU race must not emit exc_info.
+        """
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[22620]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(
+                Path,
+                "read_bytes",
+                side_effect=FileNotFoundError(2, "No such file or directory"),
+            ),
+            patch("os.getpid", return_value=1),
+            caplog.at_level("DEBUG", logger="kiro_crew.session_pid"),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == []
+        records = [r for r in caplog.records if "22620" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+        assert "vanished before probe" in records[0].getMessage()
+
+    def test_vanished_pid_on_macos_ps_exit_logs_no_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`ps -p <dead-pid>` exits non-zero — same race, same quiet handling."""
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[9140]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch(
+                "kiro_crew.session_pid.subprocess.check_output",
+                side_effect=subprocess.CalledProcessError(1, "ps"),
+            ),
+            patch("os.getpid", return_value=1),
+            caplog.at_level("DEBUG", logger="kiro_crew.session_pid"),
+        ):
+            mock_sys.platform = "darwin"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == []
+        records = [r for r in caplog.records if "9140" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+
+    def test_unexpected_probe_error_keeps_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A genuinely unexpected probe failure still logs exc_info."""
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[555]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", side_effect=PermissionError(13, "denied")),
+            patch("os.getpid", return_value=1),
+            caplog.at_level("DEBUG", logger="kiro_crew.session_pid"),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == []
+        records = [r for r in caplog.records if "555" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].exc_info is not None
 
     def test_excludes_non_kirocrew_processes(self) -> None:
         """Orphans without known MCP entrypoint markers are skipped."""

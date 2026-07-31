@@ -126,6 +126,7 @@ Credentials: `~/.kiro/crew/.env` — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIRO
 | [docs/features.md](docs/features.md) | Complete feature reference |
 | [docs/project-architecture.md](docs/project-architecture.md) | System architecture with diagrams |
 | [docs/install.md](docs/install.md) | All build/install methods (source, wheel, desktop app) |
+| [docs/release-process.md](docs/release-process.md) | How releases are cut: branches, channels, versions |
 | [docs/security-deep-dive.md](docs/security-deep-dive.md) | Security architecture |
 | [docs/memory-architecture.md](docs/memory-architecture.md) | Memory system design |
 | [docs/mcp-architecture.md](docs/mcp-architecture.md) | MCP server management |

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -579,3 +580,346 @@ class TestSetupTunnelThroughProvider:
 
         assert result is None
         assert provider.started == 0
+
+
+# ── Shutdown wiring: the dashboard must tear the tunnel down on exit ──
+
+
+_CLEANUP_REGISTRARS = (
+    "_wire_tunnel_shutdown(app",
+    "_wire_status_delta_sink(app",
+    "_register_instances_hooks(app",
+    "app.on_cleanup.append(",
+)
+
+
+def _cleanup_registration_order() -> list[str]:
+    """Every ``on_cleanup`` registration in ``start_dashboard``, in source order.
+
+    Read out of the production function itself rather than hardcoded, so moving a
+    registration in ``server.py`` moves it here too — which is what lets the
+    ordering test replay the REAL sequence instead of one the test invented. Only
+    call forms are matched (``name(app``), so the surrounding prose that names the
+    same helpers in backticks is not picked up.
+    """
+    import inspect
+
+    from kiro_crew.dashboard import server
+
+    src = inspect.getsource(server.start_dashboard)
+    hits: list[tuple[int, str]] = []
+    for token in _CLEANUP_REGISTRARS:
+        start = 0
+        while (idx := src.find(token, start)) != -1:
+            hits.append((idx, token))
+            start = idx + 1
+    return [token for _, token in sorted(hits)]
+
+
+class TestTunnelShutdownWiring:
+    """``TunnelManager.stop()`` MUST be reached from the gateway shutdown path.
+
+    Regression for a production-wiring gap: ``stop()`` existed but had ZERO
+    production callers, so a started tunnel outlived its gateway even on a clean
+    Ctrl+C — a companion provider's supervised child reparented to PID 1 and the
+    next start collided on the tunnel name. These tests drive the real wiring
+    helper (``dashboard.server._wire_tunnel_shutdown``) rather than the manager
+    in isolation, so they fail if the hook is dropped again.
+    """
+
+    @staticmethod
+    def _state(tunnel_manager=None):
+        from kiro_crew.dashboard.state import DashboardState
+
+        state = DashboardState(
+            sessions=MagicMock(), crons=MagicMock(), lessons=MagicMock(), start_time=0.0
+        )
+        state.tunnel_manager = tunnel_manager
+        return state
+
+    @staticmethod
+    def _frozen_app(state, extra_cleanup=None):
+        """Wire the shutdown hook onto a frozen app, mirroring start_dashboard.
+
+        ``_wire_tunnel_shutdown`` is called before ``runner.setup()``; freezing
+        here reproduces that freeze so ``on_cleanup.send()`` runs the hooks with
+        real aiohttp signal semantics (sequential, abort-on-raise).
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard import server
+
+        app = web.Application()
+        server._wire_tunnel_shutdown(app, state)
+        if extra_cleanup is not None:
+            app.on_cleanup.append(extra_cleanup)
+        app.freeze()
+        return app
+
+    @pytest.mark.asyncio
+    async def test_shutdown_stops_tunnel_exactly_once(self):
+        """App shutdown drives the manager's stop through to the provider once."""
+        provider = _install_tunnel_provider(_FakeTunnelProvider())
+        mgr = TunnelManager(port=5476)
+        await mgr.start()
+        app = self._frozen_app(self._state(mgr))
+
+        await app.on_cleanup.send(app)
+
+        assert provider.stopped == 1
+
+    @pytest.mark.asyncio
+    async def test_shutdown_pins_status_stopped(self):
+        """On the success path the tunnel reports STOPPED with no public URL."""
+        _install_tunnel_provider(_FakeTunnelProvider())
+        mgr = TunnelManager(port=5476)
+        await mgr.start()
+        assert mgr.status.state == TunnelState.CONNECTED
+        app = self._frozen_app(self._state(mgr))
+
+        await app.on_cleanup.send(app)
+
+        assert mgr.status.state == TunnelState.STOPPED
+        assert mgr.public_url == ""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_without_tunnel_manager_does_not_raise(self):
+        """Tunnel disabled / never started (``tunnel_manager is None``) is a no-op."""
+        app = self._frozen_app(self._state(None))
+
+        await app.on_cleanup.send(app)  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_raising_stop_does_not_abort_remaining_shutdown(self):
+        """A manager whose stop() raises must not skip later cleanup hooks.
+
+        aiohttp runs ``on_cleanup`` handlers in sequence and a propagating
+        exception aborts the rest, so the tunnel teardown has to swallow its own
+        failures — otherwise one broken provider strands every subsystem
+        registered after it.
+        """
+        ran = []
+
+        async def _later_hook(_app):
+            ran.append("later")
+
+        mgr = MagicMock()
+        mgr.stop = AsyncMock(side_effect=RuntimeError("provider stop boom"))
+        app = self._frozen_app(self._state(mgr), extra_cleanup=_later_hook)
+
+        await app.on_cleanup.send(app)
+
+        mgr.stop.assert_awaited_once()
+        assert ran == ["later"]
+
+    @staticmethod
+    def _never_completing():
+        """A stop coroutine factory that parks until the test releases it.
+
+        The hang is driven by an event the TEST owns, not a wall-clock sleep, so
+        the bounded-teardown assertions never depend on runner speed. Callers
+        release the event afterwards so nothing is left parked at loop close.
+        """
+        release = asyncio.Event()
+
+        async def _stop() -> None:
+            await release.wait()
+
+        return _stop, release
+
+    @pytest.mark.asyncio
+    async def test_hanging_stop_does_not_block_remaining_shutdown(self):
+        """A provider that never returns is abandoned at the bounded timeout.
+
+        The bound is patched to ``0``, which takes ``asyncio.wait_for``'s
+        cancel-and-await branch: same timeout path, zero wall-clock dependence
+        (no slow-runner race), and the abandoned awaitable is awaited to
+        completion rather than left pending.
+        """
+        from kiro_crew.dashboard import server
+
+        ran = []
+
+        async def _later_hook(_app):
+            ran.append("later")
+
+        stop, release = self._never_completing()
+        mgr = MagicMock()
+        mgr.stop = MagicMock(side_effect=stop)
+        app = self._frozen_app(self._state(mgr), extra_cleanup=_later_hook)
+
+        try:
+            with patch.object(server, "_TUNNEL_STOP_TIMEOUT_SECS", 0):
+                await app.on_cleanup.send(app)
+        finally:
+            release.set()
+
+        assert ran == ["later"]
+
+    @pytest.mark.asyncio
+    async def test_second_shutdown_is_harmless(self):
+        """Shutdown paths can run twice; the repeat stop must not raise or unpin."""
+        _install_tunnel_provider(_FakeTunnelProvider())
+        mgr = TunnelManager(port=5476)
+        await mgr.start()
+        app = self._frozen_app(self._state(mgr))
+
+        await app.on_cleanup.send(app)
+        await app.on_cleanup.send(app)
+
+        assert mgr.status.state == TunnelState.STOPPED
+        assert mgr.public_url == ""
+
+    # ── No-manager path: the on-demand tunnel must be torn down too ──────────
+
+    @pytest.mark.asyncio
+    async def test_shutdown_stops_context_tunnel_when_no_manager(self):
+        """No manager does NOT mean no tunnel — the provider still has to be stopped.
+
+        The on-demand link path (``slack.use_tunnel_url`` →
+        ``current_context().tunnel.ensure_available()`` in ``slack/allowlist.py``)
+        provisions and starts a tunnel straight on the provider and never
+        constructs a ``TunnelManager``, so ``state.tunnel_manager`` stays None
+        while the provider owns a running tunnel. Bailing out on ``mgr is None``
+        left exactly the orphan this hook exists to prevent.
+        """
+        provider = _install_tunnel_provider(_FakeTunnelProvider())
+        app = self._frozen_app(self._state(None))
+
+        await app.on_cleanup.send(app)
+
+        assert provider.stopped == 1
+
+    @pytest.mark.asyncio
+    async def test_second_shutdown_without_manager_is_harmless(self):
+        """Firing the no-manager path twice must not raise (provider stop is idempotent)."""
+        provider = _install_tunnel_provider(_FakeTunnelProvider())
+        app = self._frozen_app(self._state(None))
+
+        await app.on_cleanup.send(app)
+        await app.on_cleanup.send(app)
+
+        assert provider.stopped == 2
+
+    @pytest.mark.asyncio
+    async def test_raising_context_tunnel_does_not_abort_remaining_shutdown(self):
+        """The no-manager path gets the SAME swallow-all containment as the manager path."""
+        ran = []
+
+        async def _later_hook(_app):
+            ran.append("later")
+
+        class _BoomProvider(_FakeTunnelProvider):
+            async def stop(self) -> None:
+                self.stopped += 1
+                raise RuntimeError("provider stop boom")
+
+        provider = _install_tunnel_provider(_BoomProvider())
+        app = self._frozen_app(self._state(None), extra_cleanup=_later_hook)
+
+        await app.on_cleanup.send(app)
+
+        assert provider.stopped == 1
+        assert ran == ["later"]
+
+    @pytest.mark.asyncio
+    async def test_unavailable_context_does_not_abort_remaining_shutdown(self):
+        """A fail-closed ``current_context()`` is contained, not propagated.
+
+        The provider lookup happens INSIDE the guard, so a composition failure at
+        shutdown cannot abort the remaining ``on_cleanup`` handlers either.
+        """
+        from kiro_crew.dashboard import server
+
+        ran = []
+
+        async def _later_hook(_app):
+            ran.append("later")
+
+        app = self._frozen_app(self._state(None), extra_cleanup=_later_hook)
+
+        with patch.object(
+            server, "current_context", side_effect=RuntimeError("no platform context")
+        ) as ctx:
+            await app.on_cleanup.send(app)
+
+        ctx.assert_called_once()
+        assert ran == ["later"]
+
+    @pytest.mark.asyncio
+    async def test_hanging_context_tunnel_does_not_block_remaining_shutdown(self):
+        """The no-manager path is bounded by the same ``_TUNNEL_STOP_TIMEOUT_SECS``."""
+        from kiro_crew.dashboard import server
+
+        ran = []
+
+        async def _later_hook(_app):
+            ran.append("later")
+
+        stop, release = self._never_completing()
+
+        class _HangProvider(_FakeTunnelProvider):
+            # Sync def returning the awaitable so the "was asked to stop" count
+            # is recorded at call time — with the bound at 0 the coroutine is
+            # cancelled before its first step, so counting inside it would be
+            # unobservable (same shape as the manager-path hang test's MagicMock).
+            def stop(self):  # type: ignore[override]
+                self.stopped += 1
+                return stop()
+
+        provider = _install_tunnel_provider(_HangProvider())
+        app = self._frozen_app(self._state(None), extra_cleanup=_later_hook)
+
+        try:
+            with patch.object(server, "_TUNNEL_STOP_TIMEOUT_SECS", 0):
+                await app.on_cleanup.send(app)
+        finally:
+            release.set()
+
+        assert provider.stopped == 1
+        assert ran == ["later"]
+
+    # ── Dispatch ordering ────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_tunnel_teardown_dispatches_before_other_cleanup_hooks(self):
+        """The tunnel hook must FIRE first, not merely be registered somewhere.
+
+        aiohttp dispatches ``on_cleanup`` in registration order and gateway
+        shutdown has a hard deadline, so a tunnel hook queued behind the other
+        subsystems can be starved: instances cleanup waiting on SSH children that
+        ignore SIGTERM eats the deadline, the gateway force-exits, and the tunnel
+        is never stopped. Replay ``start_dashboard``'s real registration order
+        onto a live frozen app and assert the recorded dispatch order, so this
+        fails if the registration slides back down the function.
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard import server
+
+        order = _cleanup_registration_order()
+        assert len(order) > 1, "expected several on_cleanup registrations to order against"
+
+        ran: list[str] = []
+        mgr = MagicMock()
+        mgr.stop = AsyncMock(side_effect=lambda: ran.append("tunnel"))
+
+        def _recorder(label: str):
+            async def _hook(_app) -> None:
+                ran.append(label)
+
+            return _hook
+
+        app = web.Application()
+        for position, token in enumerate(order):
+            if token.startswith("_wire_tunnel_shutdown"):
+                server._wire_tunnel_shutdown(app, self._state(mgr))
+            else:
+                app.on_cleanup.append(_recorder(f"other-{position}"))
+        app.freeze()
+
+        await app.on_cleanup.send(app)
+
+        assert ran, "no cleanup hook ran"
+        assert ran[0] == "tunnel", f"tunnel teardown must dispatch first, got {ran}"
+        assert len(ran) == len(order)

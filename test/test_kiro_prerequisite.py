@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -1384,12 +1385,11 @@ class TestKiroPrerequisiteWorkflow:
         _make_executable(executable)
         live = tmp_path / ".local" / "share" / "kiro-cli" / "data.sqlite3"
         live.parent.mkdir(parents=True)
-        with contextlib.closing(sqlite3.connect(live)) as db:
-            db.execute("create table identity(value text)")
-            db.execute("insert into identity values ('original')")
-            db.commit()
+        # Not a database at all: projection cannot read it, so staging aborts.
+        # (Size is deliberately NOT the trigger — the identity DB is projected,
+        # not byte-copied, so a large store must no longer abort sign-in.)
+        live.write_bytes(b"this is not a sqlite database")
         original = live.read_bytes()
-        monkeypatch.setattr(prerequisite_module, "_MAX_AUTH_STORE_FILE_BYTES", 1)
         probe = AsyncMock(return_value=ProcessResult(ok=True))
 
         service = KiroPrerequisiteService(
@@ -1413,6 +1413,248 @@ class TestKiroPrerequisiteWorkflow:
         assert live.read_bytes() == original
         staging = tmp_path / ".kiro" / "crew-auth-staging"
         assert list(staging.glob("auth-*")) == []
+
+    @staticmethod
+    def _write_kiro_identity_db(path: Path, *, transcript_rows: int = 0) -> None:
+        """Build a realistic kiro-cli store: identity tables + transcript tables."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.closing(sqlite3.connect(path)) as db:
+            db.execute("create table auth_kv (key text primary key, value text)")
+            db.execute(
+                "create table migrations (id integer primary key, "
+                "version integer not null, migration_time integer not null)"
+            )
+            db.execute("create table history (id integer primary key, content text)")
+            db.execute(
+                "create table conversations_v2 (key text primary key, value text)"
+            )
+            db.execute("create index idx_conv_v2_key on conversations_v2(key)")
+            db.execute("create table state (key text primary key, value blob)")
+            db.execute("insert into auth_kv values ('kirocli:odic:token', 'tok-secret')")
+            db.execute(
+                "insert into auth_kv values ('kirocli:odic:device-registration', 'reg')"
+            )
+            db.execute("insert into migrations values (1, 11, 0)")
+            # Identity-describing state rows (must project) …
+            db.execute("insert into state values ('auth.idc.region', 'us-east-1')")
+            db.execute(
+                "insert into state values ('auth.idc.start-url', 'https://example')"
+            )
+            db.execute("insert into state values ('api.codewhisperer.profile', 'arn')")
+            # … alongside unrelated local state (must NOT project).
+            db.execute("insert into state values ('telemetryClientId', 'tele-id')")
+            db.execute("insert into state values ('desktop.completedOnboarding', '1')")
+            for index in range(transcript_rows):
+                db.execute(
+                    "insert into history values (?, ?)", (index, f"chat-{index}" * 64)
+                )
+                db.execute(
+                    "insert into conversations_v2 values (?, ?)",
+                    (f"c{index}", f"transcript-{index}" * 64),
+                )
+            db.commit()
+
+    @pytest.mark.asyncio
+    async def test_oversized_identity_store_is_projected_not_rejected(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A store far past the byte cap still stages: only identity tables copy.
+
+        Regression: the identity DB used to be byte-copied under
+        ``_MAX_AUTH_STORE_FILE_BYTES`` (64 MB). A real user's store had grown to
+        ~429 MB of chat history, so staging aborted and sign-in failed with a
+        message naming neither size nor cause. Projection must make the source
+        file's size irrelevant.
+        """
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        live = tmp_path / ".local" / "share" / "kiro-cli" / "data.sqlite3"
+        self._write_kiro_identity_db(live, transcript_rows=200)
+        # Force the old byte path to reject this store outright.
+        monkeypatch.setattr(prerequisite_module, "_MAX_AUTH_STORE_FILE_BYTES", 1)
+
+        staged_env: dict[str, str] = {}
+
+        async def capture(*args: Any, **kwargs: Any) -> ProcessResult:
+            staged_env.update(kwargs.get("env") or {})
+            return ProcessResult(ok=True)
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            process_runner=capture,
+            audit_writer=_no_audit,
+        )
+        service._attest_candidate(str(executable))
+
+        result = await service._run_auth_command(
+            str(executable), ["whoami"], base_env={}, timeout_secs=5
+        )
+
+        assert result.ok is True, "oversized identity store must not abort staging"
+        assert staged_env["HOME"] != str(tmp_path), "probe must run in a staged home"
+
+    def test_projection_carries_identity_and_drops_transcripts(
+        self, tmp_path: Path
+    ) -> None:
+        """Identity rows transfer; transcript tables exist but arrive EMPTY.
+
+        The schema must be complete even for withheld tables: ``migrations`` is
+        projected with its rows, so kiro-cli treats the schema as current and
+        runs no migration — a store missing ``history`` would then fail with
+        "no such table".
+        """
+        source = tmp_path / "data.sqlite3"
+        self._write_kiro_identity_db(source, transcript_rows=50)
+        destination = tmp_path / "staged" / "data.sqlite3"
+
+        assert prerequisite_module._project_identity_database(source, destination)
+
+        with contextlib.closing(sqlite3.connect(destination)) as db:
+            assert db.execute("pragma integrity_check").fetchone()[0] == "ok"
+            identity = dict(db.execute("select key, value from auth_kv").fetchall())
+            assert identity["kirocli:odic:token"] == "tok-secret"
+            assert db.execute("select count(*) from migrations").fetchone()[0] == 1
+            # Transcript tables must be present-but-empty, not absent.
+            assert db.execute("select count(*) from history").fetchone()[0] == 0
+            assert (
+                db.execute("select count(*) from conversations_v2").fetchone()[0] == 0
+            )
+            # `state` carries the identity-describing keys so `whoami` can render
+            # its profile/region block — and NOT the telemetry identifiers.
+            state = dict(db.execute("select key, value from state").fetchall())
+            assert state["auth.idc.region"] == "us-east-1"
+            assert state["auth.idc.start-url"] == "https://example"
+            assert state["api.codewhisperer.profile"] == "arn"
+            assert "telemetryClientId" not in state
+            assert "desktop.completedOnboarding" not in state
+        assert destination.stat().st_size < source.stat().st_size
+        if platform_compat.IS_POSIX:
+            assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+
+    def test_projection_reads_wal_resident_identity_rows(self, tmp_path: Path) -> None:
+        """A store in WAL mode must project the rows the CLI itself would read.
+
+        Regression: opening the source with ``immutable=1`` tells SQLite the file
+        cannot change, so the ``-wal`` is IGNORED. Against a kiro-cli store whose
+        newest commits are still in ``data.sqlite3-wal``, the token row reads as
+        missing and the staged store looks SIGNED OUT — a worse failure than the
+        size abort this projection replaces.
+        """
+        source = tmp_path / "data.sqlite3"
+        writer = sqlite3.connect(source)
+        try:
+            writer.execute("pragma journal_mode=WAL")
+            writer.execute("create table auth_kv (key text primary key, value text)")
+            writer.execute(
+                "create table migrations (id integer primary key, "
+                "version integer not null, migration_time integer not null)"
+            )
+            writer.execute("create table history (id integer primary key, content text)")
+            writer.execute("insert into auth_kv values ('kirocli:odic:token', 'wal-tok')")
+            writer.execute("insert into migrations values (1, 11, 0)")
+            writer.commit()
+            # Writer stays OPEN, so the commits are still WAL-resident (not yet
+            # checkpointed into the main database file).
+            assert (source.parent / "data.sqlite3-wal").exists()
+
+            destination = tmp_path / "staged" / "data.sqlite3"
+            assert prerequisite_module._project_identity_database(source, destination)
+        finally:
+            writer.close()
+
+        with contextlib.closing(sqlite3.connect(destination)) as db:
+            identity = dict(db.execute("select key, value from auth_kv").fetchall())
+        assert identity.get("kirocli:odic:token") == "wal-tok", (
+            "WAL-resident identity must be projected, not read as signed-out"
+        )
+
+    def test_projection_refuses_symlinked_and_non_database_sources(
+        self, tmp_path: Path
+    ) -> None:
+        """Path defenses match the byte path: no symlink, and a real DB only."""
+        real = tmp_path / "real.sqlite3"
+        self._write_kiro_identity_db(real)
+        link = tmp_path / "link.sqlite3"
+        link.symlink_to(real)
+        assert not prerequisite_module._project_identity_database(
+            link, tmp_path / "out-link.sqlite3"
+        )
+
+        junk = tmp_path / "junk.sqlite3"
+        junk.write_bytes(b"not a database")
+        assert not prerequisite_module._project_identity_database(
+            junk, tmp_path / "out-junk.sqlite3"
+        )
+
+        missing = tmp_path / "absent.sqlite3"
+        assert not prerequisite_module._project_identity_database(
+            missing, tmp_path / "out-missing.sqlite3"
+        )
+
+    def test_projection_refuses_a_store_with_no_identity_table(
+        self, tmp_path: Path
+    ) -> None:
+        """Fail closed: never hand the CLI a store it would read as signed-out."""
+        source = tmp_path / "data.sqlite3"
+        with contextlib.closing(sqlite3.connect(source)) as db:
+            db.execute("create table history (id integer primary key)")
+            db.commit()
+        destination = tmp_path / "staged" / "data.sqlite3"
+
+        assert not prerequisite_module._project_identity_database(source, destination)
+        assert not destination.exists()
+
+    def test_projection_refuses_when_only_some_identity_tables_exist(
+        self, tmp_path: Path
+    ) -> None:
+        """A PARTIAL identity schema must abort, not stage an empty identity.
+
+        Guards the `all` (not `any`) gate: a future kiro-cli that renames
+        ``auth_kv`` while keeping ``migrations`` would otherwise pass the gate and
+        stage a store whose schema is present but whose identity rows are absent —
+        silently producing the "signed out" outcome the gate exists to prevent.
+        """
+        source = tmp_path / "data.sqlite3"
+        with contextlib.closing(sqlite3.connect(source)) as db:
+            # migrations present, auth_kv renamed away (simulating a schema bump).
+            db.execute(
+                "create table migrations (id integer primary key, "
+                "version integer not null, migration_time integer not null)"
+            )
+            db.execute("create table auth_kv_v2 (key text primary key, value text)")
+            db.execute("insert into migrations values (1, 12, 0)")
+            db.execute("insert into auth_kv_v2 values ('kirocli:odic:token', 'tok')")
+            db.commit()
+        destination = tmp_path / "staged" / "data.sqlite3"
+
+        assert not prerequisite_module._project_identity_database(source, destination)
+        assert not destination.exists()
+
+    def test_projection_stages_a_store_without_the_state_table(
+        self, tmp_path: Path
+    ) -> None:
+        """`state` is optional: an older schema without it must still stage."""
+        source = tmp_path / "data.sqlite3"
+        with contextlib.closing(sqlite3.connect(source)) as db:
+            db.execute("create table auth_kv (key text primary key, value text)")
+            db.execute(
+                "create table migrations (id integer primary key, "
+                "version integer not null, migration_time integer not null)"
+            )
+            db.execute("insert into auth_kv values ('kirocli:odic:token', 'tok')")
+            db.execute("insert into migrations values (1, 11, 0)")
+            db.commit()
+        destination = tmp_path / "staged" / "data.sqlite3"
+
+        assert prerequisite_module._project_identity_database(source, destination)
+        with contextlib.closing(sqlite3.connect(destination)) as db:
+            assert dict(db.execute("select key, value from auth_kv").fetchall()) == {
+                "kirocli:odic:token": "tok"
+            }
 
     @pytest.mark.asyncio
     async def test_cancelled_isolated_probe_removes_staging_home(self, tmp_path: Path) -> None:

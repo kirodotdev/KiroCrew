@@ -65,7 +65,7 @@ Plus two out-of-band layers not on the PR path:
 
 Two structural facts that explain everything else:
 - **`main` has ZERO required status checks.** Every gate can go red, but nothing GitHub-*blocks* a merge. The real gate is **human approval + armed auto-merge**. Red checks are strong signals a human can override.
-- **Fork PRs run no secret-bearing workflow.** The AI reviewers + CodeQL need OIDC/Bedrock creds, so fork PRs fail closed on those and readiness rests on CI + Build + Code Review only.
+- **Fork PRs run no secret-bearing workflow.** The AI reviewers + CodeQL need OIDC/Bedrock creds, so fork PRs fail closed on those. Because CI + Build + Code Review alone are not full validation, a fork PR does **not** pass readiness — it terminates at a dedicated red `readiness: maintainer review` (`PR Readiness` = failure), which (as a required check) blocks an accidental merge until a maintainer reviews manually or re-runs validation from a trusted in-repo branch.
 
 ---
 

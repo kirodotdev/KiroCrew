@@ -1826,7 +1826,7 @@ class TestRestart:
 
     @pytest.fixture(autouse=True)
     def _fast_restart_ready(self, monkeypatch):
-        """Collapse the post-spawn readiness poll so these tests don't spin.
+        """Collapse the post-spawn readiness work so these tests don't spin.
 
         These tests mock the gateway lifecycle (``_spawn_detached_gateway`` /
         ``restart_service``); with no real gateway, ``_print_token_url()``'s
@@ -1835,8 +1835,26 @@ class TestRestart:
         tests assert restart/spawn/stop dispatch, not token-URL readiness, so
         pin the timeout to 0 (loop is skipped, function returns immediately).
         Production default is unchanged.
+
+        For the same reason the post-spawn readiness VERDICT is pinned to
+        ``_READY_OK``: nothing here can actually become ready, so the real
+        verdict would (correctly) fail every dispatch test and mask what they
+        assert. The verdict itself is covered by
+        :class:`TestRestartReadinessVerdict` and :class:`TestWaitGatewayReady`,
+        which deliberately do NOT inherit this fixture.
         """
+        from kiro_crew import cli_server
+
         monkeypatch.setattr("kiro_crew.cli_server._RESTART_READY_TIMEOUT", 0)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._wait_gateway_ready",
+            lambda *a, **kw: (cli_server._READY_OK, None),
+        )
+
+    @staticmethod
+    def _fake_proc(pid: int) -> MagicMock:
+        """A ``Popen``-shaped stand-in: ``_restart`` reads ``.pid`` and polls it."""
+        return MagicMock(pid=pid, poll=MagicMock(return_value=None))
 
     @pytest.fixture(autouse=True)
     def _tool_available(self):
@@ -1891,7 +1909,10 @@ class TestRestart:
                 "kiro_crew.cli_server.platform_compat.find_listening_pids",
                 return_value=[],
             ),
-            patch("kiro_crew.cli_server._spawn_detached_gateway", return_value=4321) as mock_spawn,
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(4321),
+            ) as mock_spawn,
             patch("kiro_crew.cli_server._stop") as mock_stop,
         ):
             _restart(None)
@@ -1915,7 +1936,10 @@ class TestRestart:
                 return_value=[1234],
             ),
             patch("kiro_crew.cli_server._stop") as mock_stop,
-            patch("kiro_crew.cli_server._spawn_detached_gateway", return_value=5678) as mock_spawn,
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(5678),
+            ) as mock_spawn,
         ):
             _restart(None)
         # Order matters: stop first, then spawn — otherwise the new
@@ -1944,7 +1968,10 @@ class TestRestart:
                 return_value=[1234],
             ),
             patch("kiro_crew.cli_server._stop", side_effect=SystemExit(1)) as mock_stop,
-            patch("kiro_crew.cli_server._spawn_detached_gateway", return_value=9999) as mock_spawn,
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(9999),
+            ) as mock_spawn,
         ):
             _restart(None)
         mock_stop.assert_called_once_with(None)
@@ -1985,7 +2012,10 @@ class TestRestart:
             patch("kiro_crew.cli_server._stop"),
             patch("kiro_crew.cli_server._pid_exited", side_effect=fake_pid_exited),
             patch("kiro_crew.cli_server._print_token_url"),
-            patch("kiro_crew.cli_server._spawn_detached_gateway", return_value=5678) as mock_spawn,
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(5678),
+            ) as mock_spawn,
         ):
             cli_server._restart(None)
 
@@ -2051,7 +2081,10 @@ class TestRestart:
             patch("kiro_crew.cli_server._stop") as mock_stop,
             patch("kiro_crew.cli_server._pid_exited", return_value=False) as mock_exited,
             patch("kiro_crew.cli_server._print_token_url"),
-            patch("kiro_crew.cli_server._spawn_detached_gateway", return_value=5678) as mock_spawn,
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(5678),
+            ) as mock_spawn,
         ):
             cli_server._restart(None)
 
@@ -2099,7 +2132,10 @@ class TestRestart:
                 "kiro_crew.cli_server.platform_compat.listening_pid_tool_available",
                 return_value=True,
             ),
-            patch("kiro_crew.cli_server._spawn_detached_gateway", return_value=1234) as mock_spawn,
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(1234),
+            ) as mock_spawn,
             patch("kiro_crew.cli_server._print_token_url"),
         ):
             cli_server._restart(None)
@@ -2117,8 +2153,12 @@ class TestRestart:
             patch("shutil.which", return_value="/usr/local/bin/kirocrew"),
             patch("kiro_crew.cli_server.subprocess.Popen", return_value=proc) as mock_popen,
         ):
-            pid = _spawn_detached_gateway()
-        assert pid == 9999
+            spawned = _spawn_detached_gateway()
+        # The Popen HANDLE is returned, not a bare pid: restart must be able to
+        # poll the child for early death (and its exit status) before it reports
+        # success.
+        assert spawned is proc
+        assert spawned.pid == 9999
         argv = mock_popen.call_args.args[0]
         assert argv == ["/usr/local/bin/kirocrew", "gateway"]
         # Must detach from the controlling terminal — otherwise the detached
@@ -2258,7 +2298,10 @@ class TestRestart:
                 "kiro_crew.cli_server.service_controller.restart_service",
                 return_value=True,
             ) as mock_restart_service,
-            patch("kiro_crew.cli_server._spawn_detached_gateway", return_value=4321) as mock_spawn,
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(4321),
+            ) as mock_spawn,
             patch(
                 "kiro_crew.cli_server.platform_compat.find_listening_pids",
                 return_value=[],
@@ -2270,6 +2313,150 @@ class TestRestart:
         # And we should have fallen through to the spawn path.
         mock_spawn.assert_called_once()
         assert "Started detached gateway" in capsys.readouterr().out
+
+
+class TestRestartReadinessVerdict:
+    """`restart` must report success only once the REPLACEMENT is serving.
+
+    Deliberately a separate class from :class:`TestRestart`: that class's autouse
+    ``_fast_restart_ready`` fixture pins ``_wait_gateway_ready`` to ``ready`` (and
+    ``_RESTART_READY_TIMEOUT`` to 0) so its dispatch assertions don't need a live
+    gateway — which is exactly the behaviour under test here, so inheriting it
+    would mask every one of these tests.
+
+    Before this verdict existed, ``restart`` printed "✅ Started detached gateway
+    (pid N)" straight off the ``Popen`` pid and exited 0, so a replacement that
+    the ``KIROCREW_HOME`` ownership guard refused (exit 1, milliseconds later)
+    reported success with NO gateway running.
+    """
+
+    def _drive(self, *, poll, ready_status, marker_pid, timeout=None):
+        """Drive ``_restart``'s fork path with a scripted replacement gateway.
+
+        Returns ``(exit_code, mock_sel, mock_token_url)`` — ``exit_code`` is
+        ``None`` when ``_restart`` returned normally — so both the happy and the
+        failing path can assert the audited outcome.
+
+        Nothing here ever sleeps for real: the timeout is collapsed, and the wait
+        loop checks its deadline only AFTER probing, so every case resolves on the
+        first pass.
+        """
+        from kiro_crew import cli_server
+
+        mock_sel = MagicMock()
+        stack = [
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.cli_server.platform_compat.find_listening_pids",
+                return_value=[],
+            ),
+            patch(
+                "kiro_crew.cli_server.platform_compat.listening_pid_tool_available",
+                return_value=True,
+            ),
+            patch("kiro_crew.cli_server.run_marker.read_pid", side_effect=marker_pid),
+            patch("kiro_crew.cli_server._gateway_owns_port", return_value=True),
+            patch("kiro_crew.cli_server._probe_gateway_ready", return_value=ready_status),
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=MagicMock(pid=4321, poll=MagicMock(return_value=poll)),
+            ),
+            patch("kiro_crew.cli_server._print_token_url"),
+            patch("kiro_crew.cli_server._RESTART_READY_TIMEOUT", 0 if timeout is None else timeout),
+        ]
+        with contextlib.ExitStack() as es:
+            patched = [es.enter_context(p) for p in stack]
+            code = None
+            try:
+                cli_server._restart(None)
+            except SystemExit as exc:
+                code = exc.code
+        return code, mock_sel, patched[-2]
+
+    @staticmethod
+    def _outcomes(mock_sel):
+        return [c.kwargs["outcome"] for c in mock_sel.log_api_access.call_args_list]
+
+    def test_replacement_that_dies_is_reported_as_a_failure(self, capsys):
+        """An immediately-exiting replacement must exit non-zero, not print ✅."""
+        code, mock_sel, mock_token_url = self._drive(
+            poll=1, ready_status=0, marker_pid=[None, None]
+        )
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "✅" not in out
+        assert "died immediately" in out
+        # The exit status is the diagnosis (1 == refused by the ownership guard),
+        # and the log is where the reason is.
+        assert "exit status 1" in out
+        assert "4321" in out
+        assert "kirocrew logs -f" in out
+        # The audit must record what actually happened, not an optimistic
+        # "allowed" logged before any verdict existed.
+        assert self._outcomes(mock_sel) == ["denied"]
+        resources = mock_sel.log_api_access.call_args.kwargs["resources"]
+        assert "reason=replacement_died exit=1" in resources
+        # No point chasing a token for a gateway that is not there.
+        mock_token_url.assert_not_called()
+
+    def test_replacement_that_never_becomes_ready_is_reported_as_a_failure(self, capsys):
+        """A live-but-not-serving replacement must exit non-zero with timeout wording."""
+        code, mock_sel, mock_token_url = self._drive(
+            poll=None, ready_status=503, marker_pid=[None, None]
+        )
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "✅" not in out
+        assert "did not become ready" in out
+        assert "4321" in out
+        assert self._outcomes(mock_sel) == ["denied"]
+        assert "reason=replacement_not_ready_within=" in (
+            mock_sel.log_api_access.call_args.kwargs["resources"]
+        )
+        mock_token_url.assert_not_called()
+
+    def test_ready_replacement_reports_success_and_audits_allowed(self, capsys):
+        """The success line survives verbatim — it just has to wait for the verdict."""
+        code, mock_sel, mock_token_url = self._drive(
+            poll=None,
+            ready_status=200,
+            # No marker before the stop; the replacement records pid 4321.
+            marker_pid=[None, 4321],
+        )
+
+        assert code is None
+        assert "✅ Started detached gateway (pid 4321)" in capsys.readouterr().out
+        assert self._outcomes(mock_sel) == ["allowed"]
+        mock_token_url.assert_called_once()
+
+    def test_old_gateway_answering_the_port_is_not_the_replacement(self, capsys):
+        """A 200 from the OUTGOING gateway must not be read as the new one.
+
+        The incumbent keeps serving until its socket closes, so during the
+        handover the port can answer 200 while the run-marker still names the old
+        pid. Accepting that would report success for the process we just asked to
+        die — the failure mode the ``_gateway_start_id`` handshake in dev-fleet
+        exists to avoid.
+        """
+        code, _mock_sel, mock_token_url = self._drive(
+            poll=None,
+            ready_status=200,
+            # 1234 before the stop AND still 1234 while polling: the marker never
+            # changed hands, so this is the old gateway.
+            marker_pid=[1234, 1234, 1234],
+        )
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "✅" not in out
+        assert "did not become ready" in out
+        mock_token_url.assert_not_called()
 
 
 class TestResolveClientPort:
@@ -3714,6 +3901,217 @@ class TestDoctorEmbeddings:
         assert "Check network connectivity" in out
 
 
+class TestWaitGatewayReady:
+    """Unit tests for the post-spawn readiness wait (`_wait_gateway_ready`).
+
+    The integration-level behaviour lives in
+    :class:`TestRestartReadinessVerdict`; this class pins the loop's own rules:
+    early-death short-circuit, the changed-marker-pid discriminator, and the
+    documented degradation on hosts where `_gateway_owns_port` cannot pass.
+    """
+
+    @staticmethod
+    def _proc(poll_values):
+        return MagicMock(pid=4321, poll=MagicMock(side_effect=list(poll_values)))
+
+    def test_dead_child_short_circuits_with_its_exit_status(self):
+        """A refused replacement must be reported at once, not waited out."""
+        from kiro_crew import cli_server
+
+        probe = MagicMock(return_value=0)
+        with (
+            patch("kiro_crew.cli_server._probe_gateway_ready", probe),
+            patch("kiro_crew.cli_server.time.sleep") as mock_sleep,
+        ):
+            verdict = cli_server._wait_gateway_ready(
+                self._proc([1]), 7777, None, timeout=999
+            )
+
+        assert verdict == (cli_server._READY_DIED, 1)
+        # Straight out of the loop: no probe, no sleep, no 999s stall.
+        probe.assert_not_called()
+        mock_sleep.assert_not_called()
+
+    def test_zero_timeout_still_probes_once(self):
+        """A collapsed timeout must report what is there, not a reflex failure."""
+        from kiro_crew import cli_server
+
+        probe = MagicMock(return_value=200)
+        with (
+            patch("kiro_crew.cli_server._probe_gateway_ready", probe),
+            patch("kiro_crew.cli_server._replacement_is_serving", return_value=True),
+        ):
+            verdict = cli_server._wait_gateway_ready(self._proc([None]), 7777, None, timeout=0)
+
+        assert verdict == (cli_server._READY_OK, None)
+        probe.assert_called_once_with(7777)
+
+    def test_not_ready_within_deadline_is_a_timeout(self):
+        from kiro_crew import cli_server
+
+        # Two polls: the loop's entry poll and the re-poll taken at the deadline
+        # before the timeout verdict. Alive for both, so the verdict is TIMEOUT.
+        with patch("kiro_crew.cli_server._probe_gateway_ready", return_value=503):
+            verdict = cli_server._wait_gateway_ready(
+                self._proc([None, None]), 7777, None, timeout=0
+            )
+
+        assert verdict == (cli_server._READY_TIMEOUT, None)
+
+    def test_polls_until_the_replacement_answers(self):
+        """A slow-booting gateway is waited for rather than failed."""
+        from kiro_crew import cli_server
+
+        with (
+            patch("kiro_crew.cli_server._probe_gateway_ready", side_effect=[0, 503, 200]),
+            patch("kiro_crew.cli_server._replacement_is_serving", return_value=True),
+            patch("kiro_crew.cli_server.time.sleep") as mock_sleep,
+        ):
+            verdict = cli_server._wait_gateway_ready(
+                self._proc([None, None, None]), 7777, None, timeout=999
+            )
+
+        assert verdict == (cli_server._READY_OK, None)
+        assert mock_sleep.call_count == 2
+
+    def test_probe_reports_zero_for_a_listener_that_does_not_speak_http(self):
+        """A wedged fork holding the port must yield "not ready", not a traceback.
+
+        ``http.client.BadStatusLine`` is neither an ``OSError`` nor a
+        ``URLError``, so it escapes the connection-failure handler unless caught
+        explicitly -- and a non-HTTP listener on the port is precisely the
+        situation restart is being run to clear.
+        """
+        import http.client
+
+        from kiro_crew import cli_server
+
+        with patch(
+            "kiro_crew.cli_server.urllib.request.urlopen",
+            side_effect=http.client.BadStatusLine("garbage"),
+        ):
+            assert cli_server._probe_gateway_ready(7777) == 0
+
+    def test_child_that_exits_during_the_last_probe_is_reported_as_died(self):
+        """Exiting on the final probe must not be reported as "still running".
+
+        Otherwise the operator is sent looking for a live process that no longer
+        exists, with no exit status to explain it.
+        """
+        from kiro_crew import cli_server
+
+        proc = MagicMock()
+        # Alive for the loop's entry poll, exited by the deadline re-poll.
+        proc.poll.side_effect = [None, 3]
+
+        with (
+            patch("kiro_crew.cli_server._probe_gateway_ready", return_value=503),
+            patch("kiro_crew.cli_server.time.monotonic", side_effect=[0.0, 100.0]),
+        ):
+            verdict, status = cli_server._wait_gateway_ready(proc, 7777, None, 0.0)
+
+        assert verdict == cli_server._READY_DIED
+        assert status == 3
+
+    def test_missing_marker_is_never_the_replacement(self):
+        """An absent marker is the handover's own state, not proof of a new gateway.
+
+        ``clear_marker`` runs on graceful shutdown before the outgoing gateway's
+        ``_shutdown()``, so mid-restart there is a window with no marker and the
+        old socket still answering. Accepting that as the replacement would
+        report the outgoing gateway's 200 as the new one's — and with no listener
+        lookup available, nothing downstream would catch it.
+        """
+        from kiro_crew import cli_server
+
+        with (
+            patch("kiro_crew.cli_server.run_marker.read_pid", return_value=None),
+            patch("kiro_crew.cli_server.platform_compat.IS_POSIX", False),
+        ):
+            assert cli_server._replacement_is_serving(7777, 1234) is False
+            # Also unproven when there was no prior identity to exclude.
+            assert cli_server._replacement_is_serving(7777, None) is False
+
+    def test_unchanged_marker_pid_is_the_old_gateway(self):
+        """The discriminator: same recorded pid as before the stop == not the new one."""
+        from kiro_crew import cli_server
+
+        with patch("kiro_crew.cli_server.run_marker.read_pid", return_value=1234):
+            assert cli_server._replacement_is_serving(7777, 1234) is False
+
+    def test_changed_marker_pid_that_owns_the_port_is_the_replacement(self):
+        from kiro_crew import cli_server
+
+        with (
+            patch("kiro_crew.cli_server.run_marker.read_pid", return_value=4321),
+            patch("kiro_crew.cli_server.platform_compat.IS_POSIX", True),
+            patch(
+                "kiro_crew.cli_server.platform_compat.listening_pid_tool_available",
+                return_value=True,
+            ),
+            patch("kiro_crew.cli_server._gateway_owns_port", return_value=True) as mock_owns,
+        ):
+            assert cli_server._replacement_is_serving(7777, 1234) is True
+        mock_owns.assert_called_once_with(7777)
+
+    def test_non_posix_degrades_to_the_marker_comparison(self):
+        """Windows must not fail restart: `_gateway_owns_port` denies outright there.
+
+        Requiring it would make every Windows restart report "never became ready"
+        for a perfectly healthy gateway, so the ownership proof is only applied
+        where it can pass and the marker comparison stands alone elsewhere.
+        """
+        from kiro_crew import cli_server
+
+        with (
+            patch("kiro_crew.cli_server.run_marker.read_pid", return_value=4321),
+            patch("kiro_crew.cli_server.platform_compat.IS_POSIX", False),
+            patch("kiro_crew.cli_server._gateway_owns_port", return_value=False) as mock_owns,
+        ):
+            assert cli_server._replacement_is_serving(7777, 1234) is True
+        mock_owns.assert_not_called()
+
+    def test_posix_without_a_listener_lookup_degrades_too(self):
+        """No lsof/netstat means `_gateway_owns_port` can never pass — degrade."""
+        from kiro_crew import cli_server
+
+        with (
+            patch("kiro_crew.cli_server.run_marker.read_pid", return_value=4321),
+            patch("kiro_crew.cli_server.platform_compat.IS_POSIX", True),
+            patch(
+                "kiro_crew.cli_server.platform_compat.listening_pid_tool_available",
+                return_value=False,
+            ),
+            patch("kiro_crew.cli_server._gateway_owns_port", return_value=False) as mock_owns,
+        ):
+            assert cli_server._replacement_is_serving(7777, None) is True
+        mock_owns.assert_not_called()
+
+    def test_probe_targets_api_ready_not_api_health(self):
+        """Readiness, not liveness: a bound socket is not a serving gateway."""
+        from kiro_crew import cli_server
+
+        resp = MagicMock(status=200)
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            assert cli_server._probe_gateway_ready(7777) == 200
+        assert mock_open.call_args.args[0] == "http://127.0.0.1:7777/api/ready"
+
+    def test_probe_reports_zero_when_unreachable(self):
+        from kiro_crew import cli_server
+
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+            assert cli_server._probe_gateway_ready(7777) == 0
+
+    def test_probe_reports_the_http_status_of_a_not_ready_gateway(self):
+        from kiro_crew import cli_server
+
+        err = urllib.error.HTTPError("u", 503, "not ready", {}, None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            assert cli_server._probe_gateway_ready(7777) == 503
+
+
 class TestPrintTokenUrl:
     """Tests for _print_token_url (auto-token after restart)."""
 
@@ -4172,3 +4570,67 @@ class TestTokenCommand:
         for line in lines:
             assert line.lstrip().startswith("http"), f"non-URL text on stdout: {line!r}"
         assert "token=eyJa.b" in captured.out
+
+
+class TestBannerBranding:
+    """The ASCII banners must spell the product's real name.
+
+    All three were figlet-`small` renderings of "KiroClaw"/"KiroClaw Cloud" — a
+    pre-rename name that reached users on `kirocrew` with no args, in the chat
+    REPL, and at the top of every `kirocrew cloud` run.
+    """
+
+    def _letters(self, banner: str) -> str:
+        """Collapse the ASCII art to comparable letter-ish content."""
+        return "".join(banner.split())
+
+    def test_main_banner_is_kiro_crew(self):
+        from kiro_crew.cli import BANNER
+
+        # figlet 'small' renders "Crew" with the distinctive `-_)` in the 'e' row
+        # and `_ _` in the 'r'/'C' row; "Claw" instead carries `/ _` + `\ V  V /`.
+        assert "-_)" in BANNER, "banner does not render 'Crew'"
+        assert "|__ ___" not in BANNER, "banner still renders 'Claw'"
+
+    def test_banner_is_single_sourced(self):
+        """One definition, not two pinned copies — the duplication WAS the bug.
+
+        cli.py and cli_chat.py each held a hand-copied banner, so a rename left
+        both stale. They now re-export the one in constants.py; identity (`is`)
+        proves there is no second literal to drift.
+        """
+        from kiro_crew.cli import BANNER as MAIN
+        from kiro_crew.cli_chat import BANNER as CHAT
+        from kiro_crew.constants import BANNER as CANON
+
+        assert MAIN is CANON
+        assert CHAT is CANON
+
+    def test_no_reinlined_banner_literal(self):
+        """Guard the fix: neither module may re-inline the art."""
+        from pathlib import Path
+
+        import kiro_crew.cli as cli_mod
+        import kiro_crew.cli_chat as chat_mod
+
+        for mod in (cli_mod, chat_mod):
+            src = Path(mod.__file__).read_text(encoding="utf-8")
+            assert "BANNER = r" not in src, f"{mod.__name__} re-inlined the banner literal"
+
+    def test_cloud_banner_is_kiro_crew_cloud(self):
+        from kiro_crew.cloud.ui import BANNER
+
+        assert "-_)" in BANNER, "cloud banner does not render 'Crew'"
+        assert "|__ ___" not in BANNER, "cloud banner still renders 'Claw'"
+        # The 'Cloud' half must survive the edit.
+        assert "\\___/\\_,_\\__,_|" in BANNER
+
+    def test_no_kiroclaw_spelling_anywhere_in_banners(self):
+        from kiro_crew.cloud.ui import BANNER as CLOUD
+        from kiro_crew.constants import BANNER as MAIN
+
+        CHAT = MAIN
+
+        # The 'Cl' of Claw is `/ __| |` + `(__| / _`; Crew is `/ __|_ _` + `(__| '_/`.
+        for name, b in (("cli", MAIN), ("cli_chat", CHAT), ("cloud", CLOUD)):
+            assert "(__| / _`" not in b, f"{name} banner still spells Claw"

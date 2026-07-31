@@ -370,3 +370,237 @@ class TestWorkspaceDelete:
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "not found" in err
+
+
+class TestWorkspaceDirContainmentMessage:
+    """`--dir` is confined to the data home; the refusal must say WHY and WHAT to pass.
+
+    The containment itself is a deliberate boundary (a workspace is agent-writable
+    state, so it must not be aimable at ``~/.ssh`` / the keystone policy files).
+    What was wrong was the diagnostics: help text advertised ``--dir /path/to/dir``
+    and the refusal printed a bare "invalid directory path", so a user following
+    the docs got a dead end with no way to tell what was acceptable.
+    """
+
+    @pytest.mark.parametrize("bad_dir", ["/tmp/outside", "../../etc", "~/elsewhere"])
+    def test_create_rejects_escaping_dir_with_actionable_message(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], bad_dir: str
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "ws1", "--dir", bad_dir],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        # Names the boundary, echoes the rejected value, and shows the accepted shape.
+        assert "data home" in err
+        assert bad_dir in err
+        assert "relative directory name" in err
+
+    def test_update_rejects_escaping_dir_with_actionable_message(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "update", "staging", "--dir", "/etc"],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "data home" in err and "/etc" in err
+
+    def test_relative_dir_still_accepted(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The fix is diagnostics-only — a legitimate relative name must still work."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "ws2", "--dir", "workspace-ws2"],
+            ),
+        ):
+            main()
+
+        assert "Created workspace: ws2" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("bad_dir", ["~nosuchuser12345/x", "~nosuchuser12345"])
+    def test_unknown_tilde_user_refuses_instead_of_crashing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], bad_dir: str
+    ) -> None:
+        """`~unknownuser/...` must refuse, not raise.
+
+        `Path.expanduser()` raises RuntimeError when the tilde names a user with
+        no resolvable home. Since this PR's whole point is replacing tracebacks
+        with clean refusals, the containment guard itself must fail closed.
+        """
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "tildews", "--dir", bad_dir],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "data home" in err
+        assert "Traceback" not in err and "RuntimeError" not in err
+
+    def test_data_home_root_refused_in_both_forms(self, monkeypatch, tmp_path: Path) -> None:
+        """The root is refused whether written absolute OR as a tilde path.
+
+        Regression: the per-call-site "cannot use config root" checks compare
+        ``config_dir() / ws_dir`` WITHOUT expanding ``~``, so `~/.kiro/crew`
+        became `<home>/~/.kiro/crew` there — unequal to the root, so it slipped
+        through while the plain absolute form was refused. Containment is now a
+        STRICT descendant test, decided in the one place that expands.
+        """
+        from kiro_crew import cli_commands as cc
+
+        monkeypatch.setattr(cc, "config_dir", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path.parent))
+
+        # Absolute form of the root.
+        assert cc._ws_dir_resolves_inside_home(str(tmp_path)) is False
+        # Tilde form resolving to the same root (the bypass).
+        assert cc._ws_dir_resolves_inside_home(f"~/{tmp_path.name}") is False
+        # Self-referential relative forms that also land on the root.
+        assert cc._ws_dir_resolves_inside_home(".") is False
+        assert cc._ws_dir_resolves_inside_home("") is False
+        # A real descendant is still fine.
+        assert cc._ws_dir_resolves_inside_home("workspace-ok") is True
+        assert cc._ws_dir_resolves_inside_home("ws/nested/ok") is True
+
+    def test_root_dir_cli_refuses_with_message(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `--dir <data-home root>` exits 1, no traceback."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "rootws", "--dir", str(tmp_path)],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+
+    @pytest.mark.parametrize(
+        "keystone",
+        [
+            "profiles",
+            "profiles/nested",
+            "security_policy.json",
+            "admission_policy.json",
+            "denied_commands.json",
+            "computer_use.json",
+            ".env",
+            "sel_hmac.key",
+        ],
+    )
+    def test_keystone_paths_refused_as_workspace_dir(self, monkeypatch, keystone: str) -> None:
+        """Inside the data home is NOT automatically safe.
+
+        ``--copy-from`` uses ``copytree(dirs_exist_ok=True)``, so a workspace dir
+        of ``profiles`` would OVERWRITE the governance ceiling the agent must never
+        write — the mechanism that makes that ceiling un-disableable. Verified
+        exploitable before the fix: a planted ``workspace/locked.json`` replaced
+        ``profiles/locked.json``.
+
+        Uses the REAL default home shape because ``is_sensitive_path()`` matches
+        the literal ``~/.kiro/crew`` / ``~/.kirocrew`` prefixes rather than
+        ``config_dir()``, so a tmp_path home would not exercise the gate at all.
+        """
+        from kiro_crew import cli_commands as cc
+
+        home = Path.home() / ".kiro" / "crew"
+        monkeypatch.setattr(cc, "config_dir", lambda: home)
+        assert cc._ws_dir_resolves_inside_home(keystone) is False
+
+    @pytest.mark.parametrize("ok_dir", ["workspace", "workspace-ok", "ws/nested/ok"])
+    def test_ordinary_workspace_dirs_still_allowed(self, monkeypatch, ok_dir: str) -> None:
+        """The keystone screen must not block legitimate workspace dirs."""
+        from kiro_crew import cli_commands as cc
+
+        home = Path.home() / ".kiro" / "crew"
+        monkeypatch.setattr(cc, "config_dir", lambda: home)
+        assert cc._ws_dir_resolves_inside_home(ok_dir) is True
+
+    def test_guard_fails_closed_on_unresolvable_path(self, monkeypatch, tmp_path: Path) -> None:
+        """Any resolution failure returns False (deny), never propagates."""
+        from kiro_crew import cli_commands as cc
+
+        monkeypatch.setattr(cc, "config_dir", lambda: tmp_path)
+
+        class _Boom:
+            def expanduser(self):
+                raise RuntimeError("Could not determine home directory.")
+
+        monkeypatch.setattr(cc, "Path", lambda _s: _Boom())
+        assert cc._ws_dir_resolves_inside_home("~whoever/x") is False
+
+    def test_absolute_dir_inside_home_is_accepted(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The rule is CONTAINMENT, not an absolute-path ban.
+
+        An absolute path landing inside the data home resolves exactly where the
+        relative form would, so there is nothing to refuse. Locked in so the
+        message/help wording keeps describing containment rather than claiming
+        "absolute paths are rejected".
+        """
+        cfg_path = _write_config(tmp_path, _base_config())
+        inside = str(tmp_path / "ws-inside")
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "insidews", "--dir", inside],
+            ),
+        ):
+            main()
+
+        assert "Created workspace: insidews" in capsys.readouterr().out
+
+    def test_help_does_not_advertise_absolute_paths(self) -> None:
+        """The help text must not tell users to pass `/path/to/dir` when that is refused."""
+        with (
+            unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "create", "--help"]),
+            pytest.raises(SystemExit),
+        ):
+            main()

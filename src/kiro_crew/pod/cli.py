@@ -268,6 +268,9 @@ def _exec(cfg: PodConfig, args: argparse.Namespace) -> None:
 
 def _logs(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
+    # Gate before exec'ing journalctl — off-Linux this would raise a bare
+    # FileNotFoundError instead of the documented one-line refusal.
+    rt.require_systemd()
     subprocess.run(
         ["journalctl", "--user", "-u", rt.pod_unit(cfg, name), "-n", str(args.lines), "--no-pager"],
         env=rt._systemctl_env(),
@@ -277,6 +280,9 @@ def _logs(cfg: PodConfig, args: argparse.Namespace) -> None:
 def _install(cfg: PodConfig, args: argparse.Namespace) -> None:
     # Writing the systemd unit (which defines how pods boot + what they exec) and
     # reloading the daemon is a security-relevant system modification → audit it.
+    # Gate FIRST: install_unit() writes to ~/.config/systemd/user, so without
+    # this an off-Linux run leaves an unusable unit file behind before failing.
+    rt.require_systemd()
     dst = unit_mod.install_unit(cfg)
     print(f"installed pod template unit → {dst}")
     cp = rt.systemctl("daemon-reload")
