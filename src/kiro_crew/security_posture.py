@@ -348,6 +348,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "mcp_gateway/backend.py",
         "workflows/agent_exec.py",
         "workflows/agent_pool.py",
+        "workflows/runner.py",
         "workflows/store.py",
         "apps/event_bus.py",
         "sync_bridge.py",

@@ -1517,7 +1517,22 @@ async def start_dashboard(
             except Exception:
                 logger.debug("workflow on_done injection failed", exc_info=True)
 
+        # Workflow agent concurrency stays at this fixed cap ON PURPOSE. Sizing it
+        # from resolve_max_subagents() looks tempting (it is the sizing authority
+        # in mcp_core / slack gateway / context), but the warm pool keeps a
+        # SEPARATE sub-pool per agent/model/CWD identity and its own documented
+        # aggregate bound is ``(max_identities + 1) * max_workers`` — 9 * this
+        # value (see workflows/agent_pool.py). Feeding an auto-sized cap in here
+        # would raise the worst-case resident kiro-cli workers from 9*4=36 to
+        # 9*subagent_auto_max=288 and OOM the gateway on a large host. Revisit
+        # only once the pool enforces ONE aggregate worker limit.
         _wf_concurrency = 4
+        # The run ceiling is unaffected by that and IS config-driven.
+        _wf_timeout_secs: int | None = None
+        try:
+            _wf_timeout_secs = int(KiroCrewConfig.load().agent.workflow_run_timeout_secs)
+        except Exception:
+            logger.debug("workflow run-ceiling config unavailable; using default", exc_info=True)
 
         async def _wf_nudge_authorizer(
             *, slot_key: str, message: str, idle_secs: int, max_cycles: int
@@ -1548,9 +1563,12 @@ async def start_dashboard(
             now_fn=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             concurrency=_wf_concurrency,
             nudge_authorizer=_wf_nudge_authorizer,
+            timeout_secs=_wf_timeout_secs,
         )
         logger.info(
-            "WorkflowService ready (dynamic workflows, max parallel agents=%s)", _wf_concurrency
+            "WorkflowService ready (dynamic workflows, max parallel agents=%s, run ceiling=%ss)",
+            _wf_concurrency,
+            state.workflow_service.timeout_secs,
         )
     except Exception:
         state.workflow_service = None

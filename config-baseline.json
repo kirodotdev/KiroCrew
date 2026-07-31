@@ -33,6 +33,7 @@
         "session_sharing": true,
         "max_subagents": 0,
         "spawn_min_memory_gb": 4.0,
+        "workflow_run_timeout_secs": 3600,
         "subagent_mem_buffer_pct": 20,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
@@ -340,6 +341,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4.0
+    },
+    {
+      "path": "agent.workflow_run_timeout_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Workflow Run Timeout (secs)",
+      "help": "Wall-clock ceiling for one dynamic-workflow run. This is a runaway backstop, so it is clamped to 60s..21600s (6h) — raise it for long multi-phase investigations, but it can never be disabled. Reaching the ceiling is no longer a data-loss event: every agent result completed before the cutoff is preserved on the run record.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 3600
     },
     {
       "path": "agent.subagent_mem_buffer_pct",

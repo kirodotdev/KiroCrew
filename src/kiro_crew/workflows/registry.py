@@ -53,6 +53,16 @@ def _int_key(k: Any) -> Any:
         return k
 
 
+def _str_keyed(mapping: dict) -> dict:
+    """JSON-safe view of a call_index-keyed map, ordered by key.
+
+    Keys are stringified (JSON object keys must be strings) and sorted as strings
+    rather than ints, so a restored handle whose key failed int-coercion (see
+    ``_int_key``) can't raise on a mixed-type sort.
+    """
+    return {str(k): v for k, v in sorted(mapping.items(), key=lambda kv: str(kv[0]))}
+
+
 @dataclass
 class RunHandle:
     """Live state of one background workflow run."""
@@ -69,6 +79,9 @@ class RunHandle:
     source: str = ""  # the script (so a resume/restart can re-run it)
     args: dict = field(default_factory=dict)
     agent_results: dict = field(default_factory=dict)  # call_index → result (resume cache)
+    # call_index → bounded reason that call failed. Kept next to agent_results so a
+    # missing payload always comes with an explanation instead of a bare ok=False.
+    agent_errors: dict = field(default_factory=dict)
 
     def snapshot(self, *, include_events: bool = True) -> dict:
         """JSON-serializable view of this run (never leaks the asyncio.Task)."""
@@ -87,12 +100,30 @@ class RunHandle:
             "phase": self._current_phase(),
             "last_log": self._last_log(),
         }
+        # Work that outlived a run which ENDED WITHOUT a usable return value
+        # (ceiling / cancel / crash). Keyed on STATUS, not on ``result is None``:
+        # a run can finish and legitimately return None (a script with no return,
+        # or whose last statement is a failed agent call), and a still-running run
+        # has no result yet — neither lost anything, so reporting partials for them
+        # would both mislead the reader and re-send every payload on every poll.
+        # The COUNTS ride in the compact view so a completion message can say the
+        # work survived; the payloads themselves ride only in the detail view.
+        ended_without_result = self.status not in (STATUS_RUNNING, STATUS_FINISHED)
+        partials = self.agent_results if ended_without_result else {}
+        if partials:
+            snap["partial_result_count"] = len(partials)
+        if self.agent_errors:
+            snap["agent_error_count"] = len(self.agent_errors)
         if include_events:
             snap["events"] = [e.to_json() for e in self.events]
             # The authored/executed script — included only in the FULL snapshot
             # (detail view) so the UI can show "View source", edit, and rerun. Kept
             # out of the compact list to keep that payload small.
             snap["source"] = self.source
+            if partials:
+                snap["partial_results"] = _str_keyed(partials)
+            if self.agent_errors:
+                snap["agent_errors"] = _str_keyed(self.agent_errors)
         return snap
 
     def _current_phase(self) -> str:
@@ -125,6 +156,7 @@ class RunHandle:
             "source": self.source,
             "args": self.args,
             "agent_results": {str(k): v for k, v in self.agent_results.items()},
+            "agent_errors": {str(k): v for k, v in self.agent_errors.items()},
             "events": [e.to_json() for e in self.events],
         }
 
@@ -151,6 +183,7 @@ class RunHandle:
             source=obj.get("source", ""),
             args=obj.get("args") or {},
             agent_results={_int_key(k): v for k, v in (obj.get("agent_results") or {}).items()},
+            agent_errors={_int_key(k): v for k, v in (obj.get("agent_errors") or {}).items()},
         )
 
 
@@ -225,6 +258,41 @@ class RunRegistry:
         # most of the event stream (and the authored source, recorded at start).
         if self._store is not None and len(h.events) % self._save_every == 0:
             self._persist(h)
+
+    def record_agent_result(
+        self,
+        run_id: str,
+        call_index: int,
+        *,
+        result: Any,
+        ok: bool = True,
+        error: str = "",
+    ) -> None:
+        """Checkpoint ONE settled agent call onto the handle, as the call returns.
+
+        Called by the runner after each ``ctx.agent()`` call. Previously the results
+        reached the handle only in ``_drive``, AFTER the whole run finished, so a run
+        killed by the wall-clock ceiling wrote an empty ``agent_results`` and
+        discarded every payload it had already paid for. Landing them on the handle
+        here is what makes the ceiling survivable: the terminal paths read them back
+        and ``mark_terminal`` flushes the completed record to disk.
+
+        Deliberately does NOT force a store write of its own. ``store.save``
+        re-serializes and re-redacts the ENTIRE run record synchronously on the
+        gateway event loop, so writing once per agent call would add an O(N) stall
+        per call over a record that grows with every payload. Disk durability
+        instead rides the write this module already performs — ``record_event``
+        flushes every ``_save_every`` events, and each agent call emits two events —
+        plus the guaranteed flush at ``mark_terminal``. The trade is explicit: a
+        hard gateway kill can lose the newest payloads that no flush has covered
+        yet, exactly as it can already lose the newest events.
+        """
+        h = self._runs.get(run_id)
+        if h is None:
+            return
+        h.agent_results[call_index] = result
+        if error or not ok:
+            h.agent_errors[call_index] = error or "agent call failed (no reason recorded)"
 
     def mark_terminal(
         self, run_id: str, status: str, *, result: Any = None, error: Optional[str] = None
@@ -334,7 +402,11 @@ async def start_background_run(
     async def _drive() -> None:
         try:
             result, status, error, agent_results = await run_coro_factory(record)
-            handle.agent_results = agent_results or {}
+            # MERGE, never replace: per-call checkpoints already landed on the handle
+            # while the run was executing, and a terminal path that hands back a
+            # partial (or empty) map must not erase them.
+            if agent_results:
+                handle.agent_results.update(agent_results)
             registry.mark_terminal(run_id, status, result=result, error=error)
         except asyncio.CancelledError:
             registry.mark_terminal(run_id, STATUS_CANCELLED, error="cancelled")

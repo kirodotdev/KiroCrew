@@ -1861,7 +1861,10 @@ def _list_tools() -> list[dict[str, Any]]:
             "name": "workflow_result",
             "description": (
                 "Get a workflow run's full result + event stream by run_id "
-                "(phases, per-agent outcomes, logs, final result)."
+                "(phases, per-agent outcomes, logs, final result). For a run that "
+                "ended without a usable return value, also returns the agent "
+                "payloads that completed first as `partial_results` and any "
+                "per-agent failure reasons as `agent_errors`."
             ),
             "inputSchema": {
                 "type": "object",
@@ -5226,7 +5229,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         )
 
     def _redact_obj(obj: Any) -> Any:
-        """Recursively redact credentials + exfiltration URLs from a response."""
+        """Recursively redact credentials + exfiltration URLs from a response.
+
+        Keys are redacted too: agent output is parsed into these structures, so a
+        credential can arrive as a mapping key and a values-only walk would let it
+        through (see dashboard/handlers/workflows.py::_redact_obj).
+        """
         if isinstance(obj, str):
             s, _ = redact_exfiltration_urls(obj)
             s, _ = redact_credentials(s)
@@ -5234,7 +5242,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if isinstance(obj, list):
             return [_redact_obj(x) for x in obj]
         if isinstance(obj, dict):
-            return {k: _redact_obj(v) for k, v in obj.items()}
+            return {_redact_obj(k): _redact_obj(v) for k, v in obj.items()}
         return obj
 
     # --- Dynamic workflows (M6): author / run / monitor from chat ---
@@ -5353,19 +5361,25 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # ``result`` / ``error`` / ``events`` are LLM-derived (agent outputs, log
         # lines) — recursively redact credentials + exfiltration URLs before
         # returning them through this MCP tool to the dashboard/chat surface.
+        # ``partial_results`` / ``agent_errors`` carry the same class of content and
+        # MUST be projected here: when a run ends without a usable return value they
+        # are the only surviving output, and the completion message points the reader
+        # at this tool to read them. Omitting them made that instruction a dead end.
+        # Oversize payloads are handled by the MCP gateway's existing result spill.
+        wf_payload: dict[str, Any] = {
+            "run_id": d.get("run_id"),
+            "status": d.get("status"),
+            "result": _redact_obj(d.get("result")),
+            "error": _redact_obj(d.get("error")),
+            "events": _redact_obj(d.get("events", [])),
+        }
+        if d.get("partial_results"):
+            wf_payload["partial_results"] = _redact_obj(d.get("partial_results"))
+        if d.get("agent_errors"):
+            wf_payload["agent_errors"] = _redact_obj(d.get("agent_errors"))
         return _wf_return(
             "workflow_result",
-            json.dumps(
-                {
-                    "run_id": d.get("run_id"),
-                    "status": d.get("status"),
-                    "result": _redact_obj(d.get("result")),
-                    "error": _redact_obj(d.get("error")),
-                    "events": _redact_obj(d.get("events", [])),
-                },
-                indent=2,
-                default=str,
-            ),
+            json.dumps(wf_payload, indent=2, default=str),
         )
 
     if name == "workflow_list":

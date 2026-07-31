@@ -71,6 +71,20 @@ def _summarize(snapshot: dict) -> str:
                 lines.append(f"- … and {len(artifacts) - 20} more")
     elif snapshot.get("error"):
         lines.append(f"\nError: {snapshot['error']}")
+    # A failed run is not necessarily an empty one: every agent call that completed
+    # before the ceiling / cancel / crash is preserved on the record. Say so
+    # explicitly — otherwise the reader assumes the whole run was lost and either
+    # redoes the work or goes digging through the run JSON by hand.
+    partial_count = snapshot.get("partial_result_count") or 0
+    error_count = snapshot.get("agent_error_count") or 0
+    if partial_count:
+        lines.append(
+            f"\n{partial_count} agent result(s) finished before the run ended and were "
+            f"preserved — read them with `workflow_result('{run_id}')` under "
+            "`partial_results` (keyed by agent call index)."
+        )
+    if error_count:
+        lines.append(f"{error_count} agent call(s) failed; each reason is under `agent_errors`.")
     lines.append(
         f"\nUse workflow_result('{run_id}') for the full event stream, or "
         f"workflow_rerun_subtree('{run_id}', …) to restart from a step."

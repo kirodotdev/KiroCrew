@@ -27,8 +27,9 @@ async def test_agent_defect() -> None:
         source="META = {}\nasync def workflow(ctx):\n    return 1\n",
     )
     service.registry.register(handle)
-    # Replace the runner with a no-op so no agents are spawned.
-    service._runner = lambda run_id: _FakeRunner()  # type: ignore[assignment,method-assign]
+    # Replace the runner with a no-op so no agents are spawned. ``**kw`` absorbs
+    # the keyword-only options _runner takes (e.g. timeout_secs).
+    service._runner = lambda run_id, **kw: _FakeRunner()  # type: ignore[assignment,method-assign]
 
     result = await service.rerun_subtree("wf_000001", source="   ")
 

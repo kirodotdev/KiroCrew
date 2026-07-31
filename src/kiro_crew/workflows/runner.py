@@ -8,7 +8,10 @@ Gates closed here:
 
 * A7 — emits the full documented event stream (``run_started`` … ``run_finished`` /
   ``run_failed`` / ``run_cancelled``), in order, via ``EventStream``.
-* B5 — a wall-clock timeout terminates a runaway script (``asyncio.wait_for``).
+* B5 — a wall-clock timeout terminates a runaway script (``asyncio.wait``; see the
+  comment at the guard for why NOT ``wait_for``). The ceiling is a backstop, not a
+  data-loss event: every terminal path carries the per-agent results collected so
+  far, and each call is checkpointed to the run record as it completes.
 * (consumes A4/B6 from ``context``: ``Budget`` ceiling, ``AgentCounter`` cap.)
 
 Agent execution is injected as ``agent_fn`` so the runner is testable against a
@@ -30,8 +33,9 @@ import asyncio
 import hashlib
 import json
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from . import BudgetExceeded, WorkflowEvent
 from .context import DEFAULT_MAX_AGENTS_PER_RUN, AgentCounter, Budget, build_safe_globals
@@ -57,8 +61,87 @@ try:
 except ImportError:  # pragma: no cover - SEL is app-layer optional for the engine
     _sel = None  # type: ignore[assignment]
 
+# Optional dependency (gate F1, same rationale as ``_sel``): credential / exfil
+# redaction lives in the app layer. Applied to captured agent-failure text before
+# it is persisted, because a transport-level error can echo back a URL carrying a
+# token. Absent (standalone engine) → the text is stored as-is, still truncated.
+try:
+    from kiro_crew.security import redact_credentials as _redact_credentials
+    from kiro_crew.security import redact_exfiltration_urls as _redact_exfil
+except ImportError:  # pragma: no cover - security is app-layer optional
+    _redact_credentials = None  # type: ignore[assignment]
+    _redact_exfil = None  # type: ignore[assignment]
+
 # Wall-clock ceiling per run (matches ``_RUN_TIMEOUT_SECS`` in the spec).
 DEFAULT_RUN_TIMEOUT_SECS = 3600
+
+# Bounds on a caller-supplied per-run ceiling. The ceiling is the runaway
+# backstop, so a caller may LENGTHEN it for a genuinely long investigation but can
+# never disable it — and can't set one so short the run cannot even author itself.
+MIN_RUN_TIMEOUT_SECS = 60
+MAX_RUN_TIMEOUT_SECS = 6 * 3600
+
+# Cap on a persisted per-agent failure description: enough to identify the fault,
+# short enough that a wide fan-out of failures can't bloat the run record.
+MAX_AGENT_ERROR_CHARS = 500
+
+
+def clamp_run_timeout(
+    value: Optional[int], *, default: int = DEFAULT_RUN_TIMEOUT_SECS
+) -> int:
+    """Clamp a caller-supplied run ceiling into ``[MIN, MAX]``.
+
+    ``None``, non-numeric, or non-positive input falls back to ``default`` — so a
+    bad value can never remove the ceiling, only decline to change it.
+    """
+    try:
+        secs = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if secs <= 0:
+        return default
+    return max(MIN_RUN_TIMEOUT_SECS, min(secs, MAX_RUN_TIMEOUT_SECS))
+
+
+def describe_agent_error(exc: BaseException) -> str:
+    """Bounded, redacted one-liner explaining why an agent call failed.
+
+    A failed call used to record ``ok=False`` and nothing else, which makes a
+    post-mortem impossible — you cannot tell a throttle from a bad prompt from a
+    crashed backend. Type + message is the smallest thing that answers that.
+
+    No traceback on purpose: the frames add bulk without saying more than the
+    type does, and they are the part most likely to carry local filesystem detail
+    into a run record that is later surfaced over HTTP and into chat.
+
+    Recognized credential formats are scrubbed here as defense in depth (the HTTP
+    and chat surfaces redact again on the way out); this is not a guarantee about
+    arbitrary secret-looking text.
+    """
+    text = f"{type(exc).__name__}: {exc}".strip()
+    # Redact BEFORE truncating. Truncating first can slice a token in half, which
+    # destroys the pattern the redactors match on — and the surviving prefix is
+    # still real key material (see the note in security.redact_credentials about
+    # never emitting even a short prefix). Order matters more than cost here:
+    # the text is one exception message, not a stream.
+    if _redact_exfil is not None:
+        text, _ = _redact_exfil(text)
+    if _redact_credentials is not None:
+        text, _ = _redact_credentials(text)
+    if len(text) > MAX_AGENT_ERROR_CHARS:
+        text = text[:MAX_AGENT_ERROR_CHARS] + "…"
+    return text
+
+
+@asynccontextmanager
+async def _optional_slot(sem: Optional["asyncio.Semaphore"]) -> AsyncIterator[None]:
+    """Hold ``sem`` for the duration of the block; a no-op when there is no cap."""
+    if sem is None:
+        yield
+        return
+    async with sem:
+        yield
+
 
 # Signature of the injected agent executor: (prompt, options) -> result string/dict.
 AgentFn = Callable[[str, dict], Awaitable[Any]]
@@ -130,8 +213,15 @@ class RunResult:
     events: list[WorkflowEvent]
     error: Optional[str] = None
     # Per-agent-call results (call_index → result), so a resume/restart-subtree
-    # can replay the unchanged prefix (M6.6).
+    # can replay the unchanged prefix (M6.6). Populated on EVERY terminal path —
+    # success, ceiling, cancel, budget, and script crash — so an interrupted run
+    # still hands back the work it already finished. ``result`` is the script's own
+    # return value and stays None when the script never got to return one; these
+    # are the parts, not the whole.
     agent_results: dict = field(default_factory=dict)
+    # call_index → bounded, redacted reason a call failed (see
+    # ``describe_agent_error``). Empty for runs where every call succeeded.
+    agent_errors: dict = field(default_factory=dict)
     # The script actually executed. Equals the input ``source`` unless the run
     # authored it from an ``intent`` (M6.7) — surfaced so a background run can
     # store the authored script on its handle for rerun/restart.
@@ -143,6 +233,14 @@ class RunResult:
 # runner stays at the top of the layering and authoring uses the host's model
 # plumbing. ``on_progress(msg)`` lets authoring stream human-readable progress.
 AuthorFn = Callable[..., Awaitable[dict]]
+
+# Signature of the per-call checkpoint hook, mirroring how ``on_source`` publishes
+# the authored script mid-run:
+#   on_agent_result(call_index: int, *, result: Any, ok: bool, error: str) -> None
+# Called as soon as EACH agent call settles, so the host can persist that payload
+# before the run reaches a terminal state. Without it, results lived only in
+# process memory until the run finished, and any interruption threw them away.
+AgentResultFn = Callable[..., None]
 
 
 class _NoOpContextManager:
@@ -192,6 +290,7 @@ class _RunContext:
         on_event: Optional[Callable[[WorkflowEvent], None]] = None,
         replay_results: Optional[dict] = None,
         replay_before: int = 0,
+        on_agent_result: Optional[AgentResultFn] = None,
     ) -> None:
         self.args = args
         self.now = now
@@ -232,6 +331,21 @@ class _RunContext:
         self._replay_results: dict[int, Any] = replay_results or {}
         self._replay_before = replay_before
         self.agent_results: dict[int, Any] = {}
+        # call_index → why that call failed (bounded/redacted). Kept alongside
+        # agent_results so "no result" is always accompanied by a reason.
+        self.agent_errors: dict[int, str] = {}
+        # Per-call durable checkpoint sink (see ``AgentResultFn``).
+        self._on_agent_result = on_agent_result
+        # RUN-GLOBAL agent concurrency. ``parallel``/``pipeline`` each build their
+        # OWN semaphore, so they bound one fan-out but not the run: nested or
+        # sequentially overlapping combinators could exceed the configured cap, and
+        # agent calls made outside any combinator were never bounded at all. This
+        # semaphore lives on the context, so every ``ctx.agent()`` in the run queues
+        # on the same slots. Held only across the model call itself, so no thunk
+        # ever holds a slot while waiting for another thunk to release one.
+        self._agent_slots: Optional[asyncio.Semaphore] = (
+            asyncio.Semaphore(concurrency) if (concurrency and concurrency > 0) else None
+        )
 
     # --- event sink (shared with the runner) ---
     def _record(self, event: WorkflowEvent) -> None:
@@ -287,6 +401,7 @@ class _RunContext:
             "session": session,
             "nudge": nudge,
         }
+        error = ""
         try:
             if call_index < self._replay_before and call_index in self._replay_results:
                 # Resume (M6.6): replay the cached result from the prior run instead
@@ -294,6 +409,8 @@ class _RunContext:
                 # call_index) makes this sound — same script+args ⇒ same call order.
                 result = self._replay_results[call_index]
                 ok = result is not None
+                if not ok:
+                    error = "replayed a call that had already failed in the prior run"
             elif schema is not None:
                 # Structured output (C1–C3): re-ask until the model yields
                 # schema-valid JSON, or None after bounded retries. The producer
@@ -302,23 +419,46 @@ class _RunContext:
                     out = await self._agent_fn(p, opts)
                     return out if isinstance(out, str) else json.dumps(out)
 
-                result = await run_with_schema(_produce, prompt, schema)
+                async with _optional_slot(self._agent_slots):
+                    result = await run_with_schema(_produce, prompt, schema)
                 ok = result is not None
+                if not ok:
+                    # Distinguishing this from an exception matters: it means the
+                    # model answered but never matched the schema, which is a
+                    # prompt/schema problem, not an infrastructure one.
+                    error = "no schema-valid result after bounded re-asks"
             else:
-                result = await self._agent_fn(prompt, opts)
+                async with _optional_slot(self._agent_slots):
+                    result = await self._agent_fn(prompt, opts)
                 ok = result is not None
+                if not ok:
+                    error = "agent returned no result"
         except BudgetExceeded:
             raise
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - captured per call, never fails the run
             result, ok = None, False
+            error = describe_agent_error(exc)
         # Record this call's result so a future resume can replay the prefix.
         self.agent_results[call_index] = result
+        if error:
+            self.agent_errors[call_index] = error
+        # Checkpoint: hand the settled call to the host NOW so a later ceiling /
+        # cancel / crash cannot discard work already paid for. The host records it
+        # in memory; it reaches DISK on the record's existing write cadence, not
+        # synchronously here (see RunRegistry.record_agent_result for why).
+        # Best-effort — a failing sink never breaks a run.
+        if self._on_agent_result is not None:
+            try:
+                self._on_agent_result(call_index, result=result, ok=ok, error=error)
+            except Exception:  # noqa: BLE001 - checkpointing must not break a run
+                pass
         self._record(
             self._stream.agent_finished(
                 self.now,
                 agent_id=agent_id,
                 result_summary=("" if result is None else str(result)[:120]),
                 ok=ok,
+                error=error,
             )
         )
         # B10: audit each agent call (author/runner/args carried at run level).
@@ -332,11 +472,16 @@ class _RunContext:
                 "call_index": call_index,
                 "outcome": "ok" if ok else "failed",
                 "has_schema": schema is not None,
+                "error": error,
             },
         )
         return result
 
     # --- scheduling (delegate to the dsl combinators with the run's cap) ---
+    # Each combinator bounds ITS OWN fan-out (which also covers non-agent thunks);
+    # ``agent()`` additionally holds a run-global slot. Both are needed: the
+    # combinator limit preserves per-fan-out shape, the global slot is what stops
+    # overlapping combinators from exceeding the cap in aggregate.
     async def parallel(self, thunks: list) -> list:
         return await _parallel(thunks, limit=self._concurrency)
 
@@ -418,8 +563,10 @@ class WorkflowRunner:
     """Validates, executes, and streams events for one workflow script.
 
     ``agent_fn`` is the injected agent executor (stub in tests). ``timeout_secs``
-    is the B5 wall-clock ceiling. ``concurrency`` bounds ``parallel``/``pipeline``
-    fan-out (the caller passes ``resolve_max_subagents()`` in prod).
+    is the B5 wall-clock ceiling — a runaway backstop, not a data-loss event: every
+    terminal path returns the agent results collected so far. ``concurrency`` bounds
+    agent calls RUN-GLOBALLY (and each ``parallel``/``pipeline`` fan-out); the caller
+    passes ``resolve_max_subagents()`` in prod, ``None`` for no limit.
     """
 
     def __init__(
@@ -469,6 +616,7 @@ class WorkflowRunner:
         intent: str = "",
         author_fn: Optional[AuthorFn] = None,
         on_source: Optional[Callable[[str], None]] = None,
+        on_agent_result: Optional[AgentResultFn] = None,
     ) -> RunResult:
         """Execute a workflow script end-to-end, returning result + event stream.
 
@@ -580,6 +728,7 @@ class WorkflowRunner:
                 stream=stream,
                 events=events,
                 emit=emit,
+                on_agent_result=on_agent_result,
             )
 
         # 1. Validate (B-group static). A bad script fails before any exec.
@@ -616,6 +765,7 @@ class WorkflowRunner:
             stream=stream,
             events=events,
             emit=emit,
+            on_agent_result=on_agent_result,
         )
 
     async def _exec_validated(
@@ -635,6 +785,7 @@ class WorkflowRunner:
         stream: EventStream,
         events: list[WorkflowEvent],
         emit: Callable[[WorkflowEvent], WorkflowEvent],
+        on_agent_result: Optional[AgentResultFn] = None,
     ) -> RunResult:
         """Build the run context, exec the (already validated) script under the
         wall-clock guard, and emit the terminal event. Shared by the source-given
@@ -693,6 +844,7 @@ class WorkflowRunner:
             on_event=on_event,
             replay_results=replay_results,
             replay_before=replay_before,
+            on_agent_result=on_agent_result,
         )
         ctx._events = events  # share the sink so phase/log/agent events land in order
         safe_globals = build_safe_globals(ctx)
@@ -741,7 +893,14 @@ class WorkflowRunner:
                     )
                 )
                 return RunResult(
-                    run_id, ok=False, result=None, events=events, error="timeout", source=source
+                    run_id,
+                    ok=False,
+                    result=None,
+                    events=events,
+                    error="timeout",
+                    agent_results=dict(ctx.agent_results),
+                    agent_errors=dict(ctx.agent_errors),
+                    source=source,
                 )
             result = run_task.result()  # re-raises the script's own exception, if any
         except asyncio.CancelledError:
@@ -752,19 +911,40 @@ class WorkflowRunner:
             await _pre_terminal()
             emit(stream.run_cancelled(now, reason="cancelled"))
             return RunResult(
-                run_id, ok=False, result=None, events=events, error="cancelled", source=source
+                run_id,
+                ok=False,
+                result=None,
+                events=events,
+                error="cancelled",
+                agent_results=dict(ctx.agent_results),
+                agent_errors=dict(ctx.agent_errors),
+                source=source,
             )
         except BudgetExceeded as exc:
             await _pre_terminal()
             emit(stream.run_failed(now, error=str(exc), where="ceiling"))
             return RunResult(
-                run_id, ok=False, result=None, events=events, error=str(exc), source=source
+                run_id,
+                ok=False,
+                result=None,
+                events=events,
+                error=str(exc),
+                agent_results=dict(ctx.agent_results),
+                agent_errors=dict(ctx.agent_errors),
+                source=source,
             )
         except Exception as exc:  # script raised — captured, not propagated
             await _pre_terminal()
             emit(stream.run_failed(now, error=repr(exc), where="exec"))
             return RunResult(
-                run_id, ok=False, result=None, events=events, error=repr(exc), source=source
+                run_id,
+                ok=False,
+                result=None,
+                events=events,
+                error=repr(exc),
+                agent_results=dict(ctx.agent_results),
+                agent_errors=dict(ctx.agent_errors),
+                source=source,
             )
 
         duration = time.monotonic() - started
@@ -788,6 +968,7 @@ class WorkflowRunner:
             result=result,
             events=events,
             agent_results=dict(ctx.agent_results),
+            agent_errors=dict(ctx.agent_errors),
             source=source,
         )
 
@@ -841,6 +1022,26 @@ class WorkflowRunner:
                     except Exception:  # noqa: BLE001
                         pass
 
+        def _checkpoint_agent_result(
+            call_index: int, *, result: Any, ok: bool = True, error: str = ""
+        ) -> None:
+            """Record ONE settled agent call on the run handle the moment it lands.
+
+            This is what makes the wall-clock ceiling survivable: results used to
+            reach the handle only after the whole run finished, so a run killed at
+            the ceiling wrote ``agent_results: {}`` and silently threw away every
+            payload it had already produced. The terminal paths now read them back
+            and the terminal transition flushes them to disk. A hard kill of the
+            gateway mid-run can still lose whatever no write has covered yet.
+            """
+            record = getattr(registry, "record_agent_result", None)
+            if record is None:  # pragma: no cover - registry always provides it
+                return
+            try:
+                record(run_id, call_index, result=result, ok=ok, error=error)
+            except Exception:  # noqa: BLE001 - checkpointing must never break a run
+                pass
+
         async def _factory(
             record: Callable[[WorkflowEvent], None],
         ) -> tuple[Any, str, Optional[str], dict]:
@@ -861,6 +1062,7 @@ class WorkflowRunner:
                     intent=intent,
                     author_fn=author_fn,
                     on_source=_publish_source,
+                    on_agent_result=_checkpoint_agent_result,
                 )
             finally:
                 # Fire per-run teardown (e.g. warm-pool shutdown) on EVERY exit —

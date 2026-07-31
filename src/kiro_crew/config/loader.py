@@ -738,6 +738,17 @@ class AgentConfig:
             "Minimum available memory (GB) required to spawn a subagent. 0 disables the check.",
         ),
     )
+    workflow_run_timeout_secs: int = field(
+        default=3600,
+        metadata=_meta(
+            "Workflow Run Timeout (secs)",
+            "Wall-clock ceiling for one dynamic-workflow run. This is a runaway "
+            "backstop, so it is clamped to 60s..21600s (6h) — raise it for long "
+            "multi-phase investigations, but it can never be disabled. Reaching "
+            "the ceiling is no longer a data-loss event: every agent result "
+            "completed before the cutoff is preserved on the run record.",
+        ),
+    )
     subagent_mem_buffer_pct: int = field(
         default=20,
         metadata=_meta(
@@ -3910,6 +3921,9 @@ class KiroCrewConfig:
                 ),
                 subagent_result_ttl_secs=_safe_int(
                     agent_data.get("subagent_result_ttl_secs", 3600), 3600
+                ),
+                workflow_run_timeout_secs=_safe_int(
+                    agent_data.get("workflow_run_timeout_secs", 3600), 3600
                 ),
                 subagent_cwd_allowed_roots=(
                     [r for r in _roots if isinstance(r, str)]

@@ -227,6 +227,10 @@ async def test_failed_agent_resolves_to_none_not_run_failure() -> None:
     assert res.result == {"r": None}
     finished = [e for e in res.events if e.type == "agent_finished"][0]
     assert finished.data["ok"] is False
+    # ...and it says WHY. A bare ok=False made post-mortems impossible: you could
+    # not tell a throttle from a bad prompt from a crashed backend.
+    assert finished.data["error"] == "RuntimeError: agent died"
+    assert res.agent_errors == {0: "RuntimeError: agent died"}
 
 
 # --------------------------------------------------------------------------- #
