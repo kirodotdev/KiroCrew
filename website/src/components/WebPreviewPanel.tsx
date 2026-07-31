@@ -121,6 +121,40 @@ export function normalizeUrl(raw: string): string | null {
   }
 }
 
+/** Query param carrying the reload counter (see `withCacheBuster`). Deliberately
+ *  namespaced so setting it can't clobber a param the previewed app owns. */
+const RELOAD_PARAM = '_kcreload'
+
+/**
+ * Return `url` with the reload counter appended as a query param, so each
+ * panel-initiated load is a distinct URL.
+ *
+ * Remounting the iframe (bumping its React key) re-navigates to the SAME URL,
+ * which the browser may satisfy from its HTTP cache — a remount is not a
+ * revalidation. Dev servers that send `Last-Modified` with no `Cache-Control`
+ * (`python -m http.server`, many static servers) get *heuristic* freshness, so
+ * the browser can skip even the conditional request and Reload would re-show the
+ * pre-edit page. Varying the URL is what makes it a genuinely new request.
+ *
+ * Scope, deliberately narrow: this forces a fresh **top-level document** only.
+ * Subresources that document references (bundles, CSS) are requested at their
+ * own unchanged URLs and can still be served from cache — a parent frame cannot
+ * tell a cross-origin iframe to bypass its cache, so that half isn't reachable
+ * from here.
+ */
+export function withCacheBuster(url: string, key: number): string {
+  if (!url || !key) return url
+  try {
+    const u = new URL(url)
+    u.searchParams.set(RELOAD_PARAM, String(key))
+    return u.toString()
+  } catch {
+    // Unparseable (shouldn't happen — everything is normalized first). Load it
+    // as-is rather than not at all.
+    return url
+  }
+}
+
 /** Loopback hostnames that share cookies by host (port-agnostic). */
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1'])
 
@@ -244,8 +278,10 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // cross-origin iframe keeps showing its last document after its server dies,
   // so we probe liveness and unmount it here instead of showing a stale page.
   const [unreachable, setUnreachable] = useState(false)
-  // Bumping this key remounts the iframe — a hard reload that works even for
-  // static servers with no HMR.
+  // Reload counter. Bumping it remounts the iframe AND varies its src (see
+  // `withCacheBuster`) — the remount alone would re-request the same URL and the
+  // browser could answer from cache, which is no reload at all for a static
+  // server with no HMR. 0 = the initial mount-restored load, kept pristine.
   const [reloadKey, setReloadKey] = useState(0)
   // Preview "focus" (expand) mode — reflected in the toggle icon; broadcast to
   // App/ChatPage which collapse the surrounding chrome.
@@ -437,6 +473,11 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     if (!active && expanded) { setExpanded(false); broadcastFocus(false) }
   }, [active, expanded, broadcastFocus])
   useEffect(() => () => { broadcastFocus(false) }, [broadcastFocus])
+
+  // What the iframe actually loads: the nav URL, varied per reload so a remount
+  // is a real request. `url` itself stays pristine everywhere it's user-visible
+  // (URL bar, "Open in browser", persistence) and is what the liveness probe hits.
+  const frameSrc = useMemo(() => withCacheBuster(url, reloadKey), [url, reloadKey])
 
   // An http:// frame inside an https:// dashboard (remote/tunnel) is blocked by
   // the browser as mixed content — detect it so we can explain + offer the
@@ -741,7 +782,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           <div className="absolute inset-0 overflow-auto bg-bg-elevated flex items-start justify-center p-4">
             <iframe
               key={reloadKey}
-              src={url}
+              src={frameSrc}
               title={i18nT('components.webPreviewPanel.web_preview')}
               style={{ width: device.w, height: device.h }}
               className="shrink-0 border border-border rounded-lg bg-white shadow-sm"
@@ -751,7 +792,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         ) : (
           <iframe
             key={reloadKey}
-            src={url}
+            src={frameSrc}
             title={i18nT('components.webPreviewPanel.web_preview')}
             className="absolute inset-0 w-full h-full border-0 bg-white"
             sandbox={SANDBOX}

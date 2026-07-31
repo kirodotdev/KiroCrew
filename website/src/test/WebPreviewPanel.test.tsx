@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
 
 import { renderWithProviders } from './helpers'
-import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
+import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, withCacheBuster, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
 
 // The crop button is gated on snip support (getDisplayMedia). Force it on so
 // the button renders under happy-dom (which has no mediaDevices.getDisplayMedia).
@@ -16,6 +16,15 @@ vi.mock('../hooks/useScreenSnip', async (importOriginal) => {
 // assertions don't depend on the test env's window.location.hostname.
 const iso = (h: string): string =>
   window.location.hostname === h ? (h === 'localhost' ? '127.0.0.1' : 'localhost') : h
+
+/** The iframe's navigation TARGET, with the reload cache-buster stripped, so
+ *  URL assertions stay about where the panel navigated rather than how many
+ *  times it has reloaded. */
+const targetOf = (frame: HTMLIFrameElement): string => {
+  const u = new URL(frame.src)
+  u.searchParams.delete('_kcreload')
+  return u.toString()
+}
 
 describe('normalizeUrl', () => {
   it('adds an http scheme to a bare host:port', () => {
@@ -53,6 +62,29 @@ describe('isolatePreviewHost', () => {
   })
 })
 
+
+describe('withCacheBuster', () => {
+  it('appends the reload counter for any non-initial load', () => {
+    expect(withCacheBuster('http://localhost:8080/', 1)).toBe('http://localhost:8080/?_kcreload=1')
+    expect(withCacheBuster('http://localhost:8080/', 7)).toBe('http://localhost:8080/?_kcreload=7')
+  })
+  it('leaves the URL pristine for the initial load (key 0) and for an empty URL', () => {
+    expect(withCacheBuster('http://localhost:8080/', 0)).toBe('http://localhost:8080/')
+    expect(withCacheBuster('', 3)).toBe('')
+  })
+  it('preserves an existing query and fragment, inserting the param before the hash', () => {
+    expect(withCacheBuster('http://localhost:5173/app?tab=logs#section-2', 2))
+      .toBe('http://localhost:5173/app?tab=logs&_kcreload=2#section-2')
+  })
+  it('replaces its own param instead of stacking copies across reloads', () => {
+    const once = withCacheBuster('http://localhost:5173/', 1)
+    expect(withCacheBuster(once, 2)).toBe('http://localhost:5173/?_kcreload=2')
+  })
+  it('returns the input unchanged when it cannot be parsed', () => {
+    expect(withCacheBuster('not a url', 1)).toBe('not a url')
+  })
+})
+
 describe('WebPreviewPanel', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -78,7 +110,7 @@ describe('WebPreviewPanel', () => {
     fireEvent.change(input, { target: { value: 'localhost:8080' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
-    expect(frame.src).toBe(`http://${iso('localhost')}:8080/`)
+    expect(targetOf(frame)).toBe(`http://${iso('localhost')}:8080/`)
   })
 
   it('enables back only after navigating to a second URL, and steps back', () => {
@@ -93,7 +125,7 @@ describe('WebPreviewPanel', () => {
     expect(back).not.toBeDisabled()
     fireEvent.click(back)
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
-    expect(frame.src).toBe(`http://${iso('localhost')}:3000/`)
+    expect(targetOf(frame)).toBe(`http://${iso('localhost')}:3000/`)
     expect(screen.getByLabelText('Forward')).not.toBeDisabled()
   })
 
@@ -101,14 +133,14 @@ describe('WebPreviewPanel', () => {
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     fireEvent.click(screen.getByText(':3000'))
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
-    expect(frame.src).toBe(`http://${iso('localhost')}:3000/`)
+    expect(targetOf(frame)).toBe(`http://${iso('localhost')}:3000/`)
   })
 
   it('persists the URL per session and restores it on mount', () => {
     localStorage.setItem('mc-webpreview-url:sess-1', 'http://localhost:4321/')
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
-    expect(frame.src).toBe(`http://${iso('localhost')}:4321/`)
+    expect(targetOf(frame)).toBe(`http://${iso('localhost')}:4321/`)
     renderWithProviders(<WebPreviewPanel sessionKey="sess-2" />)
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
   })
@@ -118,7 +150,7 @@ describe('WebPreviewPanel', () => {
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
     act(() => { setSessionPreviewUrl('sess-1', 'localhost:8080') })
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
-    expect(frame.src).toBe(`http://${iso('localhost')}:8080/`)
+    expect(targetOf(frame)).toBe(`http://${iso('localhost')}:8080/`)
   })
 
   it('does not live-load an external feed when open=false (offer only)', () => {
@@ -145,7 +177,7 @@ describe('WebPreviewPanel', () => {
     // Explicit click is what fires the load.
     fireEvent.click(screen.getByText('Load preview'))
     const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
-    expect(frame.src).toBe(`http://${iso('localhost')}:8080/`)
+    expect(targetOf(frame)).toBe(`http://${iso('localhost')}:8080/`)
   })
 
   it('rejects a NON-loopback chat-fed URL (loopback-only channel)', () => {
@@ -194,6 +226,49 @@ describe('WebPreviewPanel', () => {
       vi.useRealTimers()
       vi.unstubAllGlobals()
     }
+  })
+
+
+  it('varies the iframe src on Reload so the remount is a new request, not a cache hit', () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(screen.getByText(':3000'))
+    const before = (screen.getByTitle('Web preview') as HTMLIFrameElement).src
+    fireEvent.click(screen.getByLabelText('Reload preview'))
+    const after = (screen.getByTitle('Web preview') as HTMLIFrameElement).src
+    // A remount alone re-requests an identical URL, which the browser may answer
+    // from cache — the src must actually differ for Reload to mean anything.
+    expect(after).not.toBe(before)
+    // ...while still pointing at the same server/page.
+    expect(targetOf(screen.getByTitle('Web preview') as HTMLIFrameElement))
+      .toBe(`http://${iso('localhost')}:3000/`)
+  })
+
+  it('keeps the URL pristine on the initial mount-restored load (no stray param)', () => {
+    localStorage.setItem('mc-webpreview-url:sess-1', 'http://localhost:4321/')
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
+    expect(frame.src).toBe(`http://${iso('localhost')}:4321/`)
+    expect(frame.src).not.toContain('_kcreload')
+  })
+
+  it('leaves the URL bar and the open-in-browser link on the clean URL', () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(screen.getByText(':3000'))
+    fireEvent.click(screen.getByLabelText('Reload preview'))
+    const clean = `http://${iso('localhost')}:3000/`
+    // The cache-buster is an implementation detail of the frame load: it must not
+    // leak into what the user sees, copies, or opens externally.
+    expect((screen.getByLabelText('Preview URL') as HTMLInputElement).value).toBe(clean)
+    expect((screen.getByLabelText('Open in browser') as HTMLAnchorElement).href).toBe(clean)
+  })
+
+  it('probes liveness against the clean URL, not the cache-busted one', () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(screen.getByText(':3000'))
+    fireEvent.click(screen.getByLabelText('Reload preview'))
+    const probed = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(c => c[0])
+    expect(probed.length).toBeGreaterThan(0)
+    for (const u of probed) expect(String(u)).not.toContain('_kcreload')
   })
 
   it('constrains the iframe to a device size when a mobile preset is picked', () => {
