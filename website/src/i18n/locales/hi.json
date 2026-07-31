@@ -2730,6 +2730,11 @@
       "nudgeCard": {
         "loop": "लूप"
       },
+      "pinnedPrompt": {
+        "collapse_pinned_prompt": "पिन किया गया संदेश संक्षिप्त करें",
+        "expand_pinned_prompt": "पिन किया गया संदेश विस्तृत करें",
+        "jump_to_this_prompt": "इस संदेश पर जाएँ"
+      },
       "recoveryCard": {
         "cancelled_continuing": "रद्द · जारी",
         "n_patterns": "{{count}} पैटर्न",
@@ -2864,7 +2869,6 @@
       "return_to_main_window": "मुख्य विंडो में वापस लाएँ",
       "return_to_split_view": "स्प्लिट व्यू में वापस जाएँ",
       "scroll_to_bottom": "नीचे तक स्क्रॉल करें",
-      "scroll_to_previous_user_message": "पिछले उपयोगकर्ता संदेश पर स्क्रॉल करें",
       "session_options": "सत्र विकल्प",
       "split_view_d": "स्प्लिट व्यू (⌘D)",
       "start_a_new_chat": "नई चैट शुरू करें",
@@ -4069,6 +4073,8 @@
         "model": "मॉडल",
         "multiline_wraps_suggestions_onto_multiple_rows_s": "मल्टीलाइन सुझावों को कई पंक्तियों में लपेटता है। सिंगल लाइन उन्हें एक क्षैतिज रूप से स्क्रॉल होने वाली पंक्ति में रखता है।",
         "new_sessions_start_in_autopilot_mode_plan_approv": "नए सेशन ऑटोपायलट मोड में शुरू होते हैं (योजना → अनुमोदन → निष्पादन)। आप अलग-अलग सेशन के लिए इसे बदल भी सकते हैं।",
+        "pin_last_prompt": "नवीनतम संदेश पिन करें",
+        "pin_last_prompt_desc": "सबसे हाल के संदेश को ऊपर स्क्रॉल हो जाने पर स्थिर बैनर के रूप में दृश्यमान रखें।",
         "quick_send": "त्वरित भेजें",
         "re_open_recently_active_sessions_on_startup": "स्टार्टअप पर हाल ही में सक्रिय रहे सेशन फिर से खोलें",
         "restore_sessions": "सेशन पुनर्स्थापित करें",

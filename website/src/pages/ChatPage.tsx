@@ -101,7 +101,7 @@ import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
 import { useVoiceInput, voiceInputSupported } from '../hooks/useVoiceInput'
 import VoiceDisabledModal from '../components/VoiceDisabledModal'
-import { ChatFooter, AssistantMessage, UserMessage } from './chat'
+import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
 import type { TurnStats } from './chat/AssistantMessage'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
@@ -118,7 +118,7 @@ import { toSlug } from '../utils/shareUrl'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
-import { findPrevUserMsgDisplayIdx } from '../utils/findPrevUserMsgDisplayIdx'
+import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview } from '../utils/pinnedPrompt'
 import {
   loadSeenPullRequestLinks,
   partitionSourceLinks,
@@ -131,7 +131,7 @@ import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { BookOpen, EyeOff, Loader, PanelLeftOpen, PanelLeftClose, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, ArrowUp, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, PanelRight, Paperclip } from 'lucide-react'
+import { BookOpen, EyeOff, Loader, PanelLeftOpen, PanelLeftClose, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, PanelRight, Paperclip } from 'lucide-react'
 
 import InfoTip from '../components/InfoTip'
 import { FileCard } from '../components/FileCard'
@@ -1902,61 +1902,103 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     cancelAnimationFrame(navScrollRafRef.current)
   }, [])
 
-  // "Scroll to previous user message" pill — tracks topmost visible item
-  const topmostIdxRef = useRef(0)
-  const [hasUserMsgAbove, setHasUserMsgAbove] = useState(false)
   const displayItemsRef = useRef<DisplayItem[]>([])
-  // Update topmost index from scroll position (replaces Virtuoso rangeChanged)
-  const updateTopmostIdx = useCallback(() => {
+  // Pinned-prompt banner. `pinFoldRef` is a zero-height sentinel sitting
+  // directly under the title row: its top edge is the fold line the banner
+  // sticks to, and it is always mounted so the fold stays measurable even when
+  // nothing is pinned yet. `pinCardRef` is measured for the push geometry.
+  const pinFoldRef = useRef<HTMLDivElement | null>(null)
+  const pinCardRef = useRef<HTMLDivElement | null>(null)
+  const pinEnabledRef = useRef(true)
+  const [pinned, setPinned] = useState<{ idx: number; text: string; full: string; push: number; bannerH: number } | null>(null)
+  const [pinExpanded, setPinExpanded] = useState(false)
+  // Recompute which prompt is pinned, and how far the incoming prompt has
+  // pushed it out, from the current scroll position.
+  const updatePinnedPrompt = useCallback(() => {
     const el = scrollerRef.current
     if (!el) return
-    // First item whose bottom is still below the scroller's top edge = the
-    // topmost item not yet fully scrolled past the fold. Measure with
-    // getBoundingClientRect (viewport-relative) so the origin matches the
-    // scroller regardless of which ancestor is the items' offsetParent —
-    // consistent with useScrollManager, which also deliberately avoids offsetTop.
+    // Measure with getBoundingClientRect (viewport-relative) so the origin
+    // matches the scroller regardless of which ancestor is the items'
+    // offsetParent — consistent with useScrollManager, which also deliberately
+    // avoids offsetTop. The fold sits BELOW the scroller's top edge (under the
+    // title row), which is what the sentinel gives us.
     const items = el.querySelectorAll('[data-display-index]')
-    const cTop = el.getBoundingClientRect().top
+    const foldY = pinFoldRef.current?.getBoundingClientRect().top
+      ?? el.getBoundingClientRect().top
+    // First row whose bottom is still below the fold = the topmost row not yet
+    // fully scrolled past it.
+    let foldIdx = -1
+    let foldRowTop = 0
     for (const item of items) {
       const htmlItem = item as HTMLElement
-      if (htmlItem.getBoundingClientRect().bottom > cTop) {
-        const idx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
-        topmostIdxRef.current = idx
-        setHasUserMsgAbove(findPrevUserMsgDisplayIdx(displayItemsRef.current, idx) >= 0)
+      const rect = htmlItem.getBoundingClientRect()
+      if (rect.bottom > foldY) {
+        foldIdx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
+        foldRowTop = rect.top
         break
       }
     }
+
+    if (!pinEnabledRef.current || foldIdx < 0) { setPinned(null); return }
+    const list = displayItemsRef.current
+    const pinIdx = findPinnedPromptIdx(list, foldIdx, foldRowTop < foldY)
+    const pinItem = pinIdx >= 0 ? list[pinIdx] : undefined
+    if (!pinItem || pinItem.kind !== 'single') { setPinned(null); return }
+    // The incoming prompt pushes the banner out; when its row is not mounted it
+    // is still far below the fold, so there is nothing to push against yet.
+    const nextIdx = findNextPromptIdx(list, pinIdx)
+    const nextEl = nextIdx >= 0
+      ? el.querySelector(`[data-display-index="${nextIdx}"]`) as HTMLElement | null
+      : null
+    const nextTop = nextEl ? nextEl.getBoundingClientRect().top : null
+    const bannerH = pinCardRef.current?.getBoundingClientRect().height ?? 0
+    const push = computePinPush(bannerH, foldY, nextTop)
+    const full = pinItem.msg.content
+    const text = promptPreview(full)
+    setPinned(prev => (prev && prev.idx === pinIdx && prev.push === push
+      && prev.text === text && prev.bannerH === bannerH)
+      ? prev
+      : { idx: pinIdx, text, full, push, bannerH })
   }, [scrollerRef])
-  // rAF-throttle the per-scroll topmost recompute: updateTopmostIdx does a
+  // rAF-throttle the per-scroll recompute: updatePinnedPrompt does a
   // querySelectorAll + getBoundingClientRect loop (a forced layout read), and a
   // fling fires scroll dozens of times/sec. Coalesce to at most once per frame,
   // mirroring the virtualizer's own scroll-listener throttle so this handler
-  // doesn't reintroduce the scroll-time main-thread cost this CR removes.
-  const topmostRafRef = useRef(false)
-  const onScrollTopmost = useCallback(() => {
-    if (topmostRafRef.current) return
-    topmostRafRef.current = true
+  // doesn't reintroduce scroll-time main-thread cost.
+  const pinRafRef = useRef(false)
+  const onScrollPin = useCallback(() => {
+    if (pinRafRef.current) return
+    pinRafRef.current = true
     requestAnimationFrame(() => {
-      topmostRafRef.current = false
-      updateTopmostIdx()
+      pinRafRef.current = false
+      updatePinnedPrompt()
     })
-  }, [updateTopmostIdx])
-  const scrollToPrevUserMessage = useCallback(() => {
-    const target = findPrevUserMsgDisplayIdx(displayItemsRef.current, topmostIdxRef.current)
-    if (target < 0) return
+  }, [updatePinnedPrompt])
+  /** Jump the transcript back to the pinned prompt, landing it just below the
+   *  banner so the prompt is read in context — which also un-pins the banner,
+   *  since its prompt is no longer above the fold. */
+  const scrollToPinnedPrompt = useCallback((target: number) => {
     // Signal WidgetFrames that a programmatic jump is starting so any widget
     // the smooth scroll sweeps PAST defers building its (expensive) Tailwind
     // iframe until the glide settles (see PROGRAMMATIC_BUILD_DELAY_MS in
     // WidgetFrame). Without this, the native smooth scroll crosses the span
     // fast enough to mount+build several widget iframes synchronously mid-glide
-    // — the ↑-button jank (a 100ms+ 'message' handler stall). navToDisplayIndex
-    // already emits this for its mountIndex path; the smooth path had dropped it.
+    // — a 100ms+ 'message' handler stall. navToDisplayIndex already emits this
+    // for its mountIndex path; the smooth path had dropped it.
     window.dispatchEvent(new Event('mc-chat-scroll-jump'))
+    // Clear the header chrome the row would otherwise land behind: the fold
+    // inset plus the banner's own height plus a small gap. Measured rather
+    // than hardcoded so it tracks a wrapped title row or a taller banner.
+    const el = scrollerRef.current
+    const foldTop = pinFoldRef.current?.getBoundingClientRect().top
+    const srTop = el?.getBoundingClientRect().top
+    const bannerH = pinCardRef.current?.getBoundingClientRect().height ?? 0
+    const chrome = (foldTop != null && srTop != null) ? (foldTop - srTop) + bannerH + 8 : 72
     // Human-like smooth scroll (no wide window pre-mount) — see
     // scrollToIndexSmooth. Avoids leaving a broad span of animated widgets
     // mounted+oscillating after the jump.
-    scrollToIndexSmoothRef.current(target, { align: 'start', offset: -72 })
-  }, [])
+    scrollToIndexSmoothRef.current(target, { align: 'start', offset: -chrome })
+  }, [scrollerRef])
 
   // Sticky-bottom scroll state is owned by the virtualizer (`virt.isAtBottom`,
   // wired below). No local mirror — a single source of truth avoids the
@@ -3285,12 +3327,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return turns
   }, [messages, slotRunning])
 
-  // Keep the ref in sync so handleRangeChanged / scrollToPrevUserMessage
+  // Keep the ref in sync so handleRangeChanged / updatePinnedPrompt
   // read the latest displayItems. useEffect rather than render-body
   // mutation keeps us in line with React's rules of render (no side
   // effects) — the one-tick lag is irrelevant because callbacks fire
   // after commit, by which point the ref has caught up.
   useEffect(() => { displayItemsRef.current = displayItems }, [displayItems])
+
+  // Pinned prompt: keep the enablement ref in sync (updatePinnedPrompt is declared
+  // above chatConfig and reads it through a ref), and recompute after the list
+  // changes — a new turn shifts geometry with no scroll event of its own.
+  useEffect(() => {
+    pinEnabledRef.current = chatConfig.pinLastPrompt
+    if (!chatConfig.pinLastPrompt) setPinned(null)
+  }, [chatConfig.pinLastPrompt])
+  useEffect(() => { updatePinnedPrompt() }, [displayItems, updatePinnedPrompt])
+  // Expanded state PERSISTS as the pinned prompt is replaced by the next one
+  // while scrolling — the user asked for a sticky "keep it open" behaviour, so we
+  // do NOT collapse on `pinned.idx` change. It still resets on slot switch below
+  // (a different session should start collapsed).
 
   // Virtualized display — only mounts items in the viewport window. The
   // virtualizer shares `scrollerRef` with useScrollManager so the legacy
@@ -3387,8 +3442,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   // Reset scroll-navigation state on slot switch.
   useEffect(() => {
-    setHasUserMsgAbove(false)
-    topmostIdxRef.current = 0
+    setPinned(null)
+    setPinExpanded(false)
   }, [activeSlot])
 
   const allQueuedMessages = useMemo(() => messages.filter(m => m.role === 'queued'), [messages])
@@ -3991,7 +4046,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 in index.css) so the overlay never paints over the scroller's scrollbar
                 track — otherwise the thumb is hidden/un-grabbable when scrolled to top. */}
             <div className="absolute top-0 left-0 right-1.5 z-10 pointer-events-none" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-              <div className={`pr-5 pt-1 pb-2 flex items-center gap-2 bg-bg pointer-events-none ${!sidebarOpen && !isMobile ? 'pl-14' : 'pl-5'}`}>
+              <div className={`relative pr-5 pt-1 pb-2 flex items-center gap-2 bg-bg pointer-events-none ${!sidebarOpen && !isMobile ? 'pl-14' : 'pl-5'}`}>
                 {embedMode !== 'chat' && isMobile && (
                   <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto" onClick={() => setMobileSessions(p => !p)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
                     {effectiveMode === 'orchestrator' ? <MessageSquareDot size={16} /> : <MessageSquare size={16} />}
@@ -4078,20 +4133,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               </Clickable>
               ))}
               </div>
+              {/* Header fade — softens content passing up into the opaque title
+                  row, so it hangs off that row's bottom edge. Absolutely
+                  positioned rather than in flow: as an in-flow sibling its 24px
+                  consumed layout and pushed the pinned card that far off the
+                  header. Out of flow it overlays the transcript instead, and the
+                  pinned card (painted later, and positioned) sits above it. */}
+              <div aria-hidden className="absolute top-full inset-x-0 h-6 bg-gradient-to-b from-bg to-transparent" />
               </div>
-              <div className="h-6 bg-gradient-to-b from-bg to-transparent" />
+              {/* Fold sentinel — zero-height, always mounted. Its top edge is the
+                  line the pinned prompt sticks to (see updatePinnedPrompt). */}
+              <div ref={pinFoldRef} aria-hidden className="h-0" />
+              {pinned && (
+                <PinnedPrompt
+                  text={pinned.text}
+                  fullText={pinned.full}
+                  pushUp={pinned.push}
+                  bannerH={pinned.bannerH}
+                  expanded={pinExpanded}
+                  onToggleExpanded={() => setPinExpanded(p => !p)}
+                  onJump={() => scrollToPinnedPrompt(pinned.idx)}
+                  cardRef={pinCardRef}
+                />
+              )}
             </div>
-            {!isAtBottom && hasUserMsgAbove && (
-              <div className="absolute top-16 inset-x-0 z-10 pointer-events-none flex justify-center">
-                <button
-                  type="button"
-                  className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 bg-bg-elevated border border-border-strong text-text hover:bg-bg-hover hover:border-accent hover:scale-[1.06] active:scale-95 active:duration-75 shadow-md"
-                  onClick={scrollToPrevUserMessage}
-                  aria-label={i18nT('pages.chatPage.scroll_to_previous_user_message')}
-                  title={i18nT('pages.chatPage.scroll_to_previous_user_message')}
-                ><ArrowUp size={14} strokeWidth={2.5} /></button>
-              </div>
-            )}
             {slotLoading && (
               <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
                 <Loader size={20} className="animate-spin text-muted" />
@@ -4179,7 +4244,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               } as React.CSSProperties}
               aria-label={i18nT('pages.chatPage.chat_messages')}
               aria-live="polite"
-              onScroll={onScrollTopmost}
+              onScroll={onScrollPin}
             >
               {/* Header spacer */}
               <div className="h-16" />
@@ -4226,7 +4291,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   }
                   return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx}><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} /></div>
                 }
-                return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-5 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>{item.kind === 'group' ? (() => {
+                return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-5 mx-auto w-full py-1`} style={{
+                  maxWidth: 'var(--mc-content-width, 900px)',
+                  // The pinned banner is styled as this row's own bubble and sits
+                  // at the exact position and width the bubble had when it crossed
+                  // the fold, so leaving both visible is what betrays them as two
+                  // containers. Hide the real one (visibility, NOT display — the
+                  // virtualizer must keep measuring its height or the transcript
+                  // would reflow under the reader) and the bubble appears to simply
+                  // stop travelling and stick.
+                  visibility: pinned?.idx === displayIdx ? 'hidden' : undefined,
+                }}>{item.kind === 'group' ? (() => {
                 const unresolvedGroupPerms = item.msgs.filter(m => m.role === 'permission' && !m.meta?.resolved)
                 if (item.msgs.every(m => m.role === 'permission')) return null
                 return (

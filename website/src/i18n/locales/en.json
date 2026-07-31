@@ -2659,6 +2659,11 @@
       "nudgeCard": {
         "loop": "Loop"
       },
+      "pinnedPrompt": {
+        "collapse_pinned_prompt": "Collapse pinned prompt",
+        "expand_pinned_prompt": "Expand pinned prompt",
+        "jump_to_this_prompt": "Jump to this prompt"
+      },
       "recoveryCard": {
         "tool_call_blocked": "Tool call blocked",
         "n_tool_calls_blocked": "{{count}} tool calls blocked",
@@ -2792,7 +2797,6 @@
       "return_to_main_window": "Return to main window",
       "return_to_split_view": "Return to split view",
       "scroll_to_bottom": "Scroll to bottom",
-      "scroll_to_previous_user_message": "Scroll to previous user message",
       "session_options": "Session options",
       "split_view_d": "Split view (⌘D)",
       "start_a_new_chat": "Start a new chat",
@@ -3971,6 +3975,8 @@
         "model": "Model",
         "multiline_wraps_suggestions_onto_multiple_rows_s": "Multiline wraps suggestions onto multiple rows. Single line keeps them on one horizontally-scrollable row.",
         "new_sessions_start_in_autopilot_mode_plan_approv": "New sessions start in autopilot mode (plan → approve → execute). You can still toggle individual sessions.",
+        "pin_last_prompt": "Pin the latest prompt",
+        "pin_last_prompt_desc": "Keep the most recent prompt visible as a sticky banner once it scrolls above the fold.",
         "quick_send": "Quick Send",
         "re_open_recently_active_sessions_on_startup": "Re-open recently active sessions on startup",
         "restore_sessions": "Restore Sessions",

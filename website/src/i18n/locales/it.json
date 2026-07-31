@@ -2763,6 +2763,11 @@
       "nudgeCard": {
         "loop": "Ciclo"
       },
+      "pinnedPrompt": {
+        "collapse_pinned_prompt": "Comprimi messaggio fissato",
+        "expand_pinned_prompt": "Espandi messaggio fissato",
+        "jump_to_this_prompt": "Vai a questo messaggio"
+      },
       "recoveryCard": {
         "cancelled_continuing": "annullato · continua",
         "n_patterns": "{{count}} pattern",
@@ -2898,7 +2903,6 @@
       "return_to_main_window": "Torna alla finestra principale",
       "return_to_split_view": "Torna alla vista divisa",
       "scroll_to_bottom": "Scorri in fondo",
-      "scroll_to_previous_user_message": "Scorri al messaggio utente precedente",
       "session_options": "Opzioni della sessione",
       "split_view_d": "Vista divisa (⌘D)",
       "start_a_new_chat": "Avvia una nuova chat",
@@ -4111,6 +4115,8 @@
         "model": "Modello",
         "multiline_wraps_suggestions_onto_multiple_rows_s": "La modalità multiriga distribuisce i suggerimenti su più righe. La modalità a riga singola li mantiene su un'unica riga scorrevole orizzontalmente.",
         "new_sessions_start_in_autopilot_mode_plan_approv": "Le nuove sessioni si avviano in modalità pilota automatico (pianifica → approva → esegui). Puoi comunque modificare le singole sessioni.",
+        "pin_last_prompt": "Fissa l’ultimo messaggio",
+        "pin_last_prompt_desc": "Mantieni visibile il messaggio più recente come banner fisso quando scorre oltre l’area visibile.",
         "quick_send": "Invio rapido",
         "re_open_recently_active_sessions_on_startup": "Riapri all'avvio le sessioni attive di recente",
         "restore_sessions": "Ripristina le sessioni",

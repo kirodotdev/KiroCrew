@@ -37,6 +37,8 @@ export interface ChatConfig {
   streamMode: StreamMode
   showContextPct: boolean
   defaultAutopilot: boolean
+  /** Pin the most recent prompt above the fold as a sticky banner. */
+  pinLastPrompt: boolean
 }
 
 export type FileChipStyle = 'expanded' | 'minimal'
@@ -46,7 +48,7 @@ export type FollowUpLayout = 'multiline' | 'scroll'
 export type StreamMode = 'immediate' | 'smooth'
 
 const LS_KEY = 'mc-chat-config'
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: true, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, defaultAutopilot: false }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: true, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, defaultAutopilot: false, pinLastPrompt: true }
 
 const VALID_FILE_CHIP_STYLES: ReadonlySet<FileChipStyle> = new Set(['expanded', 'minimal'])
 const VALID_FOLLOW_UP_LAYOUTS: ReadonlySet<FollowUpLayout> = new Set(['multiline', 'scroll'])
@@ -78,6 +80,7 @@ export function loadChatConfig(): ChatConfig {
     if (!VALID_STREAM_MODES.has(cfg.streamMode)) cfg.streamMode = 'smooth'
     if (typeof cfg.showContextPct !== 'boolean') cfg.showContextPct = false
     if (typeof cfg.showTurnStats !== 'boolean') cfg.showTurnStats = true
+    if (typeof cfg.pinLastPrompt !== 'boolean') cfg.pinLastPrompt = true
     return cfg
   }
   catch { return { ...DEFAULTS } }

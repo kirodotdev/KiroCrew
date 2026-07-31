@@ -2698,6 +2698,11 @@
       "nudgeCard": {
         "loop": "循环"
       },
+      "pinnedPrompt": {
+        "collapse_pinned_prompt": "收起置顶提示",
+        "expand_pinned_prompt": "展开置顶提示",
+        "jump_to_this_prompt": "跳转到此提示"
+      },
       "recoveryCard": {
         "tool_call_blocked": "工具调用被阻止",
         "n_tool_calls_blocked": "{{count}} 个工具调用被阻止",
@@ -2838,7 +2843,6 @@
       "return_to_main_window": "返回主窗口",
       "return_to_split_view": "返回分屏视图",
       "scroll_to_bottom": "滚动到底部",
-      "scroll_to_previous_user_message": "滚动到上一条用户消息",
       "session_options": "会话选项",
       "split_view_d": "分屏视图 (⌘D)",
       "start_a_new_chat": "开始新聊天",
@@ -4030,6 +4034,8 @@
         "model": "模型",
         "multiline_wraps_suggestions_onto_multiple_rows_s": "多行会将建议换行显示。单行会让它们保持在一行内横向滚动。",
         "new_sessions_start_in_autopilot_mode_plan_approv": "新会话以自动驾驶模式启动（规划 → 审批 → 执行）。你仍可单独切换各个会话。",
+        "pin_last_prompt": "置顶最新提示",
+        "pin_last_prompt_desc": "当最新提示滚动出视野上方时，将其固定为顶部横幅保持可见。",
         "quick_send": "快速发送",
         "re_open_recently_active_sessions_on_startup": "启动时重新打开近期活动的会话",
         "restore_sessions": "恢复会话",

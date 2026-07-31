@@ -2730,6 +2730,11 @@
       "nudgeCard": {
         "loop": "লুপ"
       },
+      "pinnedPrompt": {
+        "collapse_pinned_prompt": "পিন করা মেসেজ সংকুচিত করুন",
+        "expand_pinned_prompt": "পিন করা মেসেজ প্রসারিত করুন",
+        "jump_to_this_prompt": "এই মেসেজে যান"
+      },
       "recoveryCard": {
         "cancelled_continuing": "বাতিল · চলছে",
         "n_patterns": "{{count}}টি প্যাটার্ন",
@@ -2864,7 +2869,6 @@
       "return_to_main_window": "মূল উইন্ডোতে ফিরিয়ে আনুন",
       "return_to_split_view": "স্প্লিট ভিউতে ফিরে যান",
       "scroll_to_bottom": "একদম নিচে যান",
-      "scroll_to_previous_user_message": "আগের ব্যবহারকারী-মেসেজে যান",
       "session_options": "সেশন অপশন",
       "split_view_d": "স্প্লিট ভিউ (⌘D)",
       "start_a_new_chat": "নতুন চ্যাট শুরু করুন",
@@ -4069,6 +4073,8 @@
         "model": "মডেল",
         "multiline_wraps_suggestions_onto_multiple_rows_s": "মাল্টিলাইন সাজেশনগুলিকে একাধিক সারিতে সাজায়। সিঙ্গেল লাইন সেগুলিকে অনুভূমিকভাবে স্ক্রলযোগ্য একটি সারিতেই রাখে।",
         "new_sessions_start_in_autopilot_mode_plan_approv": "নতুন সেশন অটোপাইলট মোডে শুরু হয় (পরিকল্পনা → অনুমোদন → সম্পাদন)। আপনি চাইলে আলাদা সেশন টগল করতে পারেন।",
+        "pin_last_prompt": "সর্বশেষ মেসেজ পিন করুন",
+        "pin_last_prompt_desc": "সবচেয়ে সাম্প্রতিক মেসেজটি উপরে স্ক্রল হয়ে গেলে একটি স্থির ব্যানার হিসেবে দৃশ্যমান রাখুন।",
         "quick_send": "কুইক সেন্ড",
         "re_open_recently_active_sessions_on_startup": "চালু হওয়ার সময় সম্প্রতি সক্রিয় সেশনগুলি আবার খুলুন",
         "restore_sessions": "সেশন পুনরুদ্ধার",

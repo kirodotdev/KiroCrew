@@ -2796,6 +2796,11 @@
       "nudgeCard": {
         "loop": "Цикл"
       },
+      "pinnedPrompt": {
+        "collapse_pinned_prompt": "Свернуть закреплённое сообщение",
+        "expand_pinned_prompt": "Развернуть закреплённое сообщение",
+        "jump_to_this_prompt": "Перейти к этому сообщению"
+      },
       "recoveryCard": {
         "cancelled_continuing": "отменено · продолжение",
         "n_patterns": "шаблонов: {{count}}",
@@ -2932,7 +2937,6 @@
       "return_to_main_window": "Вернуть в главное окно",
       "return_to_split_view": "Вернуться к разделённому виду",
       "scroll_to_bottom": "Прокрутить вниз",
-      "scroll_to_previous_user_message": "Прокрутить к предыдущему сообщению пользователя",
       "session_options": "Параметры сессии",
       "split_view_d": "Разделённый вид (⌘D)",
       "start_a_new_chat": "Начать новый чат",
@@ -4153,6 +4157,8 @@
         "model": "Модель",
         "multiline_wraps_suggestions_onto_multiple_rows_s": "«Много строк» переносит подсказки на несколько строк. «Одна строка» оставляет их в одной строке с горизонтальной прокруткой.",
         "new_sessions_start_in_autopilot_mode_plan_approv": "Новые сессии начинаются в режиме автопилота (план → одобрение → выполнение). Отдельные сессии по-прежнему можно переключать.",
+        "pin_last_prompt": "Закрепить последнее сообщение",
+        "pin_last_prompt_desc": "Держите последнее сообщение на виду в виде закреплённого баннера, когда оно прокручивается выше видимой области.",
         "quick_send": "Быстрая отправка",
         "re_open_recently_active_sessions_on_startup": "Заново открывать недавно активные сессии при запуске",
         "restore_sessions": "Восстановление сессий",

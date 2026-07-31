@@ -176,6 +176,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.pin-the-latest-prompt",
+    "label": "Pin the latest prompt",
+    "description": "Keep the most recent prompt visible as a sticky banner once it scrolls above the fold.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.quick-send",
     "label": "Quick Send",
     "tab": "chat",

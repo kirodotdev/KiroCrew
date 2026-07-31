@@ -2730,6 +2730,11 @@
       "nudgeCard": {
         "loop": "Schleife"
       },
+      "pinnedPrompt": {
+        "collapse_pinned_prompt": "Angeheftete Nachricht einklappen",
+        "expand_pinned_prompt": "Angeheftete Nachricht ausklappen",
+        "jump_to_this_prompt": "Zu dieser Nachricht springen"
+      },
       "recoveryCard": {
         "cancelled_continuing": "abgebrochen · wird fortgesetzt",
         "n_patterns": "{{count}} Muster",
@@ -2864,7 +2869,6 @@
       "return_to_main_window": "Zum Hauptfenster zurückkehren",
       "return_to_split_view": "Zur geteilten Ansicht zurückkehren",
       "scroll_to_bottom": "Nach unten scrollen",
-      "scroll_to_previous_user_message": "Zur vorherigen Benutzernachricht scrollen",
       "session_options": "Sitzungsoptionen",
       "split_view_d": "Geteilte Ansicht (⌘D)",
       "start_a_new_chat": "Einen neuen Chat starten",
@@ -4069,6 +4073,8 @@
         "model": "Modell",
         "multiline_wraps_suggestions_onto_multiple_rows_s": "„Mehrzeilig“ verteilt Vorschläge auf mehrere Zeilen. „Einzeilig“ behält sie in einer horizontal scrollbaren Zeile.",
         "new_sessions_start_in_autopilot_mode_plan_approv": "Neue Sitzungen starten im Autopilot-Modus (planen → genehmigen → ausführen). Einzelne Sitzungen können Sie weiterhin umschalten.",
+        "pin_last_prompt": "Neueste Nachricht anheften",
+        "pin_last_prompt_desc": "Halte die neueste Nachricht als fixiertes Banner sichtbar, sobald sie über den sichtbaren Bereich hinausscrollt.",
         "quick_send": "Schnell senden",
         "re_open_recently_active_sessions_on_startup": "Kürzlich aktive Sitzungen beim Start erneut öffnen",
         "restore_sessions": "Sitzungen wiederherstellen",

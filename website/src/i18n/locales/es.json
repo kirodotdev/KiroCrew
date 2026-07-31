@@ -2763,6 +2763,11 @@
       "nudgeCard": {
         "loop": "Bucle"
       },
+      "pinnedPrompt": {
+        "collapse_pinned_prompt": "Contraer mensaje fijado",
+        "expand_pinned_prompt": "Expandir mensaje fijado",
+        "jump_to_this_prompt": "Ir a este mensaje"
+      },
       "recoveryCard": {
         "cancelled_continuing": "cancelado · continuando",
         "n_patterns": "{{count}} patrones",
@@ -2898,7 +2903,6 @@
       "return_to_main_window": "Volver a la ventana principal",
       "return_to_split_view": "Volver a la vista dividida",
       "scroll_to_bottom": "Ir al final",
-      "scroll_to_previous_user_message": "Ir al mensaje anterior del usuario",
       "session_options": "Opciones de la sesión",
       "split_view_d": "Vista dividida (⌘D)",
       "start_a_new_chat": "Iniciar un chat nuevo",
@@ -4111,6 +4115,8 @@
         "model": "Modelo",
         "multiline_wraps_suggestions_onto_multiple_rows_s": "Multilínea distribuye las sugerencias en varias filas. Una sola línea las mantiene en una fila con desplazamiento horizontal.",
         "new_sessions_start_in_autopilot_mode_plan_approv": "Las sesiones nuevas empiezan en modo piloto automático (planificar → aprobar → ejecutar). Puedes seguir cambiándolo en cada sesión.",
+        "pin_last_prompt": "Fijar el último mensaje",
+        "pin_last_prompt_desc": "Mantén visible el mensaje más reciente como un banner fijo cuando se desplace por encima del área visible.",
         "quick_send": "Envío rápido",
         "re_open_recently_active_sessions_on_startup": "Volver a abrir las sesiones activas recientemente al iniciar",
         "restore_sessions": "Restaurar sesiones",
