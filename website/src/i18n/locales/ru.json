@@ -4362,6 +4362,7 @@
         "cancel": "Отмена",
         "close": "Закрыть",
         "continue": "Продолжить",
+        "not_available_on_windows": "Недоступно в Windows — общему шлюзу требуются Unix-сокеты. Поддерживается в macOS и Linux.",
         "roll_back_disable": "Откатить (отключить)",
         "shared_mcp_gateway": "Общий MCP-шлюз",
         "the_gateway_did_not_reach_the_expected_state": "Шлюз не перешёл в ожидаемое состояние.",

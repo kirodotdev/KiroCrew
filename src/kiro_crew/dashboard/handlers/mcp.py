@@ -15,6 +15,7 @@ from aiohttp import web
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.mcp_gateway import is_gateway_supported
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -1687,6 +1688,10 @@ async def api_mcp_gateway_status(request: web.Request) -> web.Response:
             "enabled": KiroCrewConfig.load().mcp_gateway.enabled,
             "running": bool(running),
             "ping_ok": bool(ping_ok),
+            # Whether the broker can run on this OS at all. The UI reads this to
+            # disable the toggle (and explain why) on unsupported platforms
+            # (Windows) instead of surfacing a generic "could not apply" failure.
+            "supported": is_gateway_supported(),
         }
     )
 
@@ -1734,6 +1739,19 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
         return web.json_response({"error": "enabled must be a boolean"}, status=400)
+
+    # Fail closed on platforms the broker can't run on (Windows): never persist
+    # enabled=true where the broker will never start — that would leave config
+    # diverged from reality and surface as a generic apply failure. Disabling
+    # is always allowed.
+    if enabled and not is_gateway_supported():
+        return web.json_response(
+            {
+                "error": "The shared MCP gateway is not supported on this platform.",
+                "code": "mcp_gateway_platform_unsupported",
+            },
+            status=400,
+        )
 
     path = config_path()
     state: DashboardState = request.app["state"]

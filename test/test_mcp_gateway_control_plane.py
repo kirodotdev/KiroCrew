@@ -56,6 +56,7 @@ async def test_enable_503_when_apply_unwired(monkeypatch: pytest.MonkeyPatch) ->
     the handler must 503 — this is the test that would have caught the dead
     control plane."""
     monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+    monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
     state = SimpleNamespace()  # no _mcp_gateway_apply attribute
     resp = await mcp_mod.api_mcp_gateway_enable(
         _make_request(state, {"enabled": True})
@@ -68,6 +69,9 @@ async def test_enable_invokes_wired_apply(monkeypatch: pytest.MonkeyPatch) -> No
     """When wired, the handler persists the flag and returns the apply
     result (200, no 503)."""
     monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+    # Enabling is gated on platform support; pin it True so this wiring test is
+    # deterministic on the Windows CI shard (where the broker is unsupported).
+    monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
     apply_cb = AsyncMock(
         return_value={"enabled": True, "running": True, "ping_ok": True}
     )
@@ -94,3 +98,85 @@ async def test_enable_rejects_non_bool(monkeypatch: pytest.MonkeyPatch) -> None:
         _make_request(state, {"enabled": "yes"})
     )
     assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_status_reports_supported_true_when_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The status payload mirrors the platform-support helper so the UI knows
+    whether to offer the toggle. Pin the helper True so this is deterministic
+    on every CI OS (incl. the Windows shard)."""
+    monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+    state = SimpleNamespace()  # no manager attr -> running/ping_ok false
+    resp = await mcp_mod.api_mcp_gateway_status(_make_request(state, {}))
+    assert resp.status == 200
+    payload = json.loads(resp.body)
+    assert payload["supported"] is True
+    assert payload["running"] is False
+    assert payload["ping_ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_status_reports_supported_false_when_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On an unsupported platform (Windows) the status flag flips to false so
+    the UI can disable the control instead of letting it fail on apply."""
+    monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: False)
+    state = SimpleNamespace()
+    resp = await mcp_mod.api_mcp_gateway_status(_make_request(state, {}))
+    assert resp.status == 200
+    assert json.loads(resp.body)["supported"] is False
+
+
+@pytest.mark.asyncio
+async def test_enable_rejected_on_unsupported_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enabling where the broker can't run (Windows) must fail closed with a
+    clear error and MUST NOT invoke apply or persist enabled=true."""
+    monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+    monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: False)
+    apply_cb = AsyncMock()
+    state = SimpleNamespace(_mcp_gateway_apply=apply_cb)
+    resp = await mcp_mod.api_mcp_gateway_enable(
+        _make_request(state, {"enabled": True})
+    )
+    assert resp.status == 400
+    assert "not supported" in json.loads(resp.body)["error"].lower()
+    apply_cb.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_disable_allowed_on_unsupported_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disabling is always permitted, even on an unsupported platform, so a
+    stale enabled=true from a config restore can always be turned off."""
+    monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+    monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: False)
+    apply_cb = AsyncMock(
+        return_value={"enabled": False, "running": False, "ping_ok": False}
+    )
+    state = SimpleNamespace(_mcp_gateway_apply=apply_cb)
+    resp = await mcp_mod.api_mcp_gateway_enable(
+        _make_request(state, {"enabled": False})
+    )
+    assert resp.status == 200
+    apply_cb.assert_awaited_once_with(False)
+
+
+@pytest.mark.parametrize(
+    "platform,expected",
+    [("linux", True), ("darwin", True), ("win32", False), ("cygwin", False)],
+)
+def test_is_gateway_supported_platform_matrix(
+    monkeypatch: pytest.MonkeyPatch, platform: str, expected: bool
+) -> None:
+    """The single source of truth: POSIX-with-AF_UNIX (linux + darwin) yes,
+    Windows no."""
+    import kiro_crew.mcp_gateway as gw
+
+    monkeypatch.setattr(gw.sys, "platform", platform)
+    assert gw.is_gateway_supported() is expected

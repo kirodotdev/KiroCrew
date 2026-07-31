@@ -4278,6 +4278,7 @@
         "cancel": "रद्द करें",
         "close": "बंद करें",
         "continue": "जारी रखें",
+        "not_available_on_windows": "Windows पर उपलब्ध नहीं — साझा गेटवे को Unix-डोमेन सॉकेट की आवश्यकता होती है। macOS और Linux पर समर्थित।",
         "roll_back_disable": "रोल बैक करें (अक्षम करें)",
         "shared_mcp_gateway": "साझा MCP गेटवे",
         "the_gateway_did_not_reach_the_expected_state": "गेटवे अपेक्षित स्थिति तक नहीं पहुँचा।",

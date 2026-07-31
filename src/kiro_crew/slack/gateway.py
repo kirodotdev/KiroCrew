@@ -128,6 +128,7 @@ from kiro_crew.llm_helpers import (
     save_conversation_turn,
     stream_and_collect,
 )
+from kiro_crew.mcp_gateway import is_gateway_supported
 from kiro_crew.mcp_gateway.manager import (
     GatewayManager,
     GatewaySpec,
@@ -4737,7 +4738,11 @@ class GatewayOrchestrator:
         cfg_gw = self._cfg.mcp_gateway
         if not cfg_gw.enabled:
             return
-        if sys.platform != "linux":
+        # Runs on any platform with an AF_UNIX broker socket (Linux + macOS);
+        # stub delivery is ACP session/new injection, not a bind-mount, so no
+        # mount namespace is needed. Windows lacks AF_UNIX in the proactor loop
+        # and is excluded until a loopback/named-pipe transport exists.
+        if not is_gateway_supported():
             return
 
         overlay_dir = Path(cfg_gw.overlay_dir) if cfg_gw.overlay_dir else default_overlay_dir()

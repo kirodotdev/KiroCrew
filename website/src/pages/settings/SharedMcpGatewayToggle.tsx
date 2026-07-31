@@ -7,7 +7,7 @@ import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/
 import { api } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
-type GatewayStatus = { enabled: boolean; running: boolean; ping_ok: boolean }
+type GatewayStatus = { enabled: boolean; running: boolean; ping_ok: boolean; supported: boolean }
 
 type Phase = 'idle' | 'confirm' | 'applying' | 'done' | 'failed'
 
@@ -17,6 +17,9 @@ export function SharedMcpGatewayToggle() {
   const statusQ = useQuery<GatewayStatus>({ queryKey: ['mcpGatewayStatus'], queryFn: () => api.mcpGatewayStatus() })
   const enabled = statusQ.data?.enabled ?? false
   const pingOk = statusQ.data?.ping_ok ?? false
+  // Default true so a still-loading status (or an older backend that predates
+  // the field) never disables the control; only a definite `false` gates it.
+  const supported = statusQ.data?.supported ?? true
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [target, setTarget] = useState(false)
@@ -41,7 +44,8 @@ export function SharedMcpGatewayToggle() {
     }
   }
 
-  const subStatus = !enabled ? 'Disabled — each session spawns its own MCP backends.'
+  const subStatus = !supported ? i18nT('pages.settings.sharedMcpGatewayToggle.not_available_on_windows')
+    : !enabled ? 'Disabled — each session spawns its own MCP backends.'
     : pingOk ? 'Active — sessions share pooled MCP backends. See the live pool under Developer > System.'
     : 'Enabled — broker not reachable; toggle off and on to re-apply.'
 
@@ -54,8 +58,8 @@ export function SharedMcpGatewayToggle() {
           label={i18nT('pages.settings.sharedMcpGatewayToggle.shared_mcp_gateway')}
           description={subStatus}
           checked={enabled}
-          disabled={statusQ.isLoading || busy}
-          onChange={next => { setTarget(next); setPhase('confirm') }}
+          disabled={statusQ.isLoading || busy || (!supported && !enabled)}
+          onChange={next => { if (!supported && next) return; setTarget(next); setPhase('confirm') }}
         />
       </SettingsCard>
 

@@ -4180,6 +4180,7 @@
         "cancel": "Cancel",
         "close": "Close",
         "continue": "Continue",
+        "not_available_on_windows": "Not available on Windows — the shared gateway needs Unix-domain sockets. Supported on macOS and Linux.",
         "roll_back_disable": "Roll back (disable)",
         "shared_mcp_gateway": "Shared MCP gateway",
         "the_gateway_did_not_reach_the_expected_state": "The gateway did not reach the expected state.",

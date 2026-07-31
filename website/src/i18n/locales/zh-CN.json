@@ -4239,6 +4239,7 @@
         "cancel": "取消",
         "close": "关闭",
         "continue": "继续",
+        "not_available_on_windows": "在 Windows 上不可用 — 共享网关需要 Unix 域套接字。支持 macOS 和 Linux。",
         "roll_back_disable": "回滚（禁用）",
         "shared_mcp_gateway": "共享 MCP 网关",
         "the_gateway_did_not_reach_the_expected_state": "网关未达到预期状态。",

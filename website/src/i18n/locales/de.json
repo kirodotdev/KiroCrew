@@ -4278,6 +4278,7 @@
         "cancel": "Abbrechen",
         "close": "Schließen",
         "continue": "Weiter",
+        "not_available_on_windows": "Unter Windows nicht verfügbar — das gemeinsame Gateway benötigt Unix-Domain-Sockets. Unterstützt unter macOS und Linux.",
         "roll_back_disable": "Zurückrollen (deaktivieren)",
         "shared_mcp_gateway": "Gemeinsames MCP-Gateway",
         "the_gateway_did_not_reach_the_expected_state": "Das Gateway hat den erwarteten Zustand nicht erreicht.",

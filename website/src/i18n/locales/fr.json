@@ -4320,6 +4320,7 @@
         "cancel": "Annuler",
         "close": "Fermer",
         "continue": "Continuer",
+        "not_available_on_windows": "Non disponible sous Windows — la passerelle partagée nécessite des sockets de domaine Unix. Prise en charge sous macOS et Linux.",
         "roll_back_disable": "Revenir en arrière (désactiver)",
         "shared_mcp_gateway": "Passerelle MCP partagée",
         "the_gateway_did_not_reach_the_expected_state": "La passerelle n'a pas atteint l'état attendu.",

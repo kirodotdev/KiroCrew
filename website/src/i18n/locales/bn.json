@@ -4278,6 +4278,7 @@
         "cancel": "বাতিল",
         "close": "বন্ধ করুন",
         "continue": "চালিয়ে যান",
+        "not_available_on_windows": "Windows-এ উপলব্ধ নয় — শেয়ার্ড গেটওয়ের জন্য Unix-ডোমেন সকেট প্রয়োজন। macOS এবং Linux-এ সমর্থিত।",
         "roll_back_disable": "রোল ব্যাক (নিষ্ক্রিয় করুন)",
         "shared_mcp_gateway": "শেয়ারড MCP গেটওয়ে",
         "the_gateway_did_not_reach_the_expected_state": "গেটওয়ে প্রত্যাশিত অবস্থায় পৌঁছায়নি।",

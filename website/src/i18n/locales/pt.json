@@ -4320,6 +4320,7 @@
         "cancel": "Cancelar",
         "close": "Fechar",
         "continue": "Continuar",
+        "not_available_on_windows": "Indisponível no Windows — o gateway compartilhado precisa de sockets de domínio Unix. Compatível com macOS e Linux.",
         "roll_back_disable": "Reverter (desativar)",
         "shared_mcp_gateway": "Gateway MCP compartilhado",
         "the_gateway_did_not_reach_the_expected_state": "O gateway não atingiu o estado esperado.",

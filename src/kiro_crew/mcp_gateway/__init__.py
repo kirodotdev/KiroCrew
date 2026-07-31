@@ -19,7 +19,29 @@ for the full design.
 """
 
 import importlib
+import sys
 from typing import TYPE_CHECKING
+
+#: Platforms where the sidecar broker can run. The broker listens on an
+#: ``AF_UNIX`` socket (``asyncio.start_unix_server``) and delivers each
+#: session's poolable stubs over ACP ``session/new`` injection (no bind-mount,
+#: no privileged operation), so it runs on any POSIX platform with
+#: unix-domain sockets. Windows is excluded: its asyncio proactor loop has no
+#: ``AF_UNIX`` support, so ``gatewayd`` cannot bind its listening socket there
+#: until a loopback/named-pipe transport is added.
+GATEWAY_SUPPORTED_PLATFORMS = ("linux", "darwin")
+
+
+def is_gateway_supported() -> bool:
+    """Return ``True`` if the shared MCP gateway broker can run on this OS.
+
+    Single source of truth shared by the boot path
+    (``GatewayOrchestrator._init_mcp_gateway``) and the dashboard status/enable
+    handlers, so the UI's "supported" signal never disagrees with whether the
+    broker will actually start.
+    """
+    return sys.platform in GATEWAY_SUPPORTED_PLATFORMS
+
 
 # Lazy attribute access (PEP 562) so importing this
 # package — e.g. config.loader importing the rewriter path helpers at module
@@ -68,11 +90,13 @@ if TYPE_CHECKING:  # names for static type checkers only
 __all__ = [
     "Backend",
     "BackendPool",
+    "GATEWAY_SUPPORTED_PLATFORMS",
     "GatewayManager",
     "GatewaySpec",
     "PoolKey",
     "UNPOOLABLE_SERVERS",
     "default_socket_path",
+    "is_gateway_supported",
     "rewrite_agents",
     "run_gatewayd",
     "send_initialize",
