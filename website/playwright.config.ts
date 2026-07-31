@@ -18,8 +18,10 @@ export default defineConfig({
   // turn the credential-less CI gateway lacks). The default run is therefore
   // the credential-less green set. PLAYWRIGHT_RUN_AGENT_SPECS=1 (set
   // by a harness that wires a fake ACP backend) re-includes the @needs-agent
-  // specs. @needs-live-agent (soft-stop interruption) needs true live-agent
-  // semantics a fake can't model yet, so it stays excluded either way.
+  // specs. @needs-live-agent currently tags nothing: the last holder was the
+  // budget-expiry soft-stop, which the fake does model ([[SLOW_NOACK]] withholds
+  // the cancel ack), so it moved to @needs-agent. The tag stays wired as the
+  // seam for a spec that genuinely needs real model semantics.
   grepInvert: process.env.PLAYWRIGHT_RUN_AGENT_SPECS
     ? /@needs-live-agent/
     : /@needs-agent|@needs-live-agent/,

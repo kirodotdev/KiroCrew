@@ -783,6 +783,7 @@ class _ChatSlot:
         "_has_reader",
         "_stop_state",
         "_stop_event_id",
+        "_stop_escalated_card_id",
         "_pending_reset_history_key",
         "_dirty",
         "_orch_tracker",
@@ -903,6 +904,16 @@ class _ChatSlot:
         self._has_reader: bool = False  # True when HTTP SSE stream is draining
         self._stop_state: str = "idle"  # 'idle' | 'soft_pending' | 'killing'
         self._stop_event_id: str | None = None  # transcript message id for in-flight stop
+        # Id of the stop card the user escalated to a hard kill, or None. Kept
+        # separate from `_stop_state` because turn teardown resets that back to
+        # "idle" (see the `_stopping` setter below), which would erase the
+        # escalation and let a late cooperative ack relabel the card as a clean
+        # stop. Holds an id rather than a bool so the marker cannot leak onto a
+        # later card: a boolean left set would make the NEXT card's cooperative
+        # ack defer to a hard callback that never fires, stranding it at
+        # "stopping". Every card has a fresh uuid, so a stale id simply stops
+        # matching and no card-open path has to remember to clear it.
+        self._stop_escalated_card_id: str | None = None
         # Set by api_chat_slot_project; consumed in _run_chat instead of
         # inline because the endpoint can be reached from inside the kiro-cli
         # process group via the set_project MCP tool.

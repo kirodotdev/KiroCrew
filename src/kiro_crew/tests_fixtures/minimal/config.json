@@ -8,7 +8,8 @@
     "streaming": true,
     "bot_name": "kirocrew",
     "default_agent": "kirocrew",
-    "sandbox": "off"
+    "sandbox": "off",
+    "soft_stop_budget_secs": 5.0
   },
   "session": {
     "idle_timeout_secs": 1800,

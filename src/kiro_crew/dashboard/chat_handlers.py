@@ -10,6 +10,7 @@ import os
 import tempfile
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -862,6 +863,91 @@ def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
     slot._stop_event_id = None
 
 
+def _make_stop_resolver(
+    state: DashboardState, slot: _ChatSlot, outcome: str, card_id: str | None
+) -> Callable[[], Awaitable[None]]:
+    """Build the stop_turn on_soft/on_hard callback that settles the stop card.
+
+    Key the guard on `_stop_event_id`, not on `_stop_state`. The card id is
+    already the idempotency token: `_resolve_stop_event` no-ops when it is None
+    and clears it once it has settled the card, so a state gate buys nothing
+    there. What the state gate did buy was a bug. A turn tearing down
+    concurrently drives `_stop_state` back to "idle" (`_finish_queue_cycle` in
+    chat_runner.py, through the `_stopping` setter in state.py), and that
+    teardown races the escalation. When teardown won, the hard callback bailed,
+    `_resolve_stop_event` never ran, and the card pulsed at "stopping" for the
+    rest of the session instead of settling to "stop_failed_reset". Reproduced
+    against a live gateway on 2026-07-31: the gateway logged
+    `stop_turn outcome=hard-done` and then `_on_hard: state not
+    soft_pending/killing, bail` 30ms later.
+
+    Precedence needs its own non-racy marker. A cooperative ack that arrives
+    after the user escalated must not relabel a hard kill as a clean stop, and
+    `_stop_state` cannot carry that fact because the same teardown resets it to
+    "idle" from `killing` just as readily as from `soft_pending`. Reading it
+    here would reproduce the bug one dimension over: teardown erases the
+    escalation, the late soft callback sees a neutral state, and the card
+    settles as "stopped" for a session that was killed. So the escalation path
+    sets `slot._stop_escalated_card_id`, which teardown never touches, and only
+    the soft callback defers on it. `hard` is terminal and nothing outranks it.
+    The marker holds an id rather than a flag so it cannot leak onto a later
+    card: a bare boolean left set would make the NEXT card's cooperative ack
+    defer to a hard callback that never fires, stranding that card at
+    "stopping", which is the failure this change exists to remove.
+
+    Bind to `card_id`, the specific card this callback was created for, and not
+    to whatever card happens to be in flight when it fires. `stop_turn` awaits
+    these callbacks, so one can still be pending when teardown resets the stop
+    posture, a new turn starts, and a second stop opens a NEW card. Reading
+    `slot._stop_event_id` at call time would then settle that newer card with
+    this older outcome and clear its posture, so the newer stop's own callback
+    would find nothing left to settle. Callers pass the id they just assigned.
+
+    `card_id` may be None, for a stop that escalated before any card existed.
+    Such a callback still releases the stop posture; it simply has no card to
+    label. Only a mismatching non-None current id means "someone else owns
+    this", so only that case returns without touching the slot.
+    """
+
+    async def _resolve() -> None:
+        logger.debug(
+            "stop resolver (%s): card_id=%r current=%r stop_state=%r escalated=%r",
+            outcome,
+            card_id,
+            slot._stop_event_id,
+            slot._stop_state,
+            slot._stop_escalated_card_id,
+        )
+        # Bail only when a DIFFERENT card is genuinely in flight, because that
+        # card belongs to a later stop that owns the posture. Do not bail merely
+        # because this attempt has no card: settling a card and releasing the
+        # stop posture are separate jobs, and the posture must be released even
+        # when there was never a card to settle. A stop can reach a callback
+        # with `card_id` None: `api_chat_slot_interrupt` claims
+        # `_stop_state = "soft_pending"` before it awaits the request body and
+        # only then opens its card, so a concurrent `/stop` escalates against a
+        # slot that has none yet. Skipping the reset there strands `_stop_state`
+        # at "killing", which permanently suppresses re-queue
+        # (`_should_suppress_requeue`) and rejects every later interrupt. That
+        # wedges the slot, which is worse than the mislabel this guard prevents.
+        if slot._stop_event_id is not None and slot._stop_event_id != card_id:
+            return
+        # `card_id is None` cannot mean "escalated": the marker holds a real
+        # card id, so comparing None to None would defer a callback that no
+        # hard kill will ever follow, and the posture would never be released.
+        if outcome == "soft" and card_id is not None and slot._stop_escalated_card_id == card_id:
+            logger.debug("stop resolver (soft): escalated to hard kill, deferring to hard")
+            return
+        # No-ops when there is no card, which is exactly the case above.
+        _resolve_stop_event(slot, outcome)
+        slot._stop_state = "idle"
+        if card_id is not None and slot._stop_escalated_card_id == card_id:
+            slot._stop_escalated_card_id = None
+        state.push_slots_update()
+
+    return _resolve
+
+
 async def api_chat_slot_stop(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/stop — cooperative stop with kill fallback.
 
@@ -883,6 +969,11 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     # "already soft_pending" signal, so a second press always means "kill it".
     if slot._stop_state == "soft_pending":
         slot._stop_state = "killing"
+        # Survives turn teardown, which resets _stop_state to "idle". Without
+        # it a cooperative ack from the first press could still land and label
+        # this hard kill a clean stop. Scoped to this card so it cannot defer
+        # a later card's ack.
+        slot._stop_escalated_card_id = slot._stop_event_id
         slot._queue.clear()
         # Hard kill = "discard everything": drop unconsumed steers too, so the
         # end-of-turn requeue (chat_runner finally) has nothing to resurrect.
@@ -891,12 +982,8 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
 
-        async def _on_hard_force() -> None:
-            if slot._stop_state != "killing":
-                return
-            _resolve_stop_event(slot, "hard")
-            slot._stop_state = "idle"
-            state.push_slots_update()
+        # Escalation reuses the card the first press opened, so bind to it.
+        _on_hard_force = _make_stop_resolver(state, slot, "hard", slot._stop_event_id)
 
         # Unblock chat runner if it's suspended waiting for tool approval or on
         # a pending ask_question card.
@@ -978,25 +1065,8 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     state.push_slots_update()
     logger.info("Stop: cooperative cancel for slot %s (queue=%d)", name, len(slot._queue))
 
-    async def _on_soft() -> None:
-        logger.debug(
-            "_on_soft called: stop_state=%r stop_event_id=%r", slot._stop_state, slot._stop_event_id
-        )
-        if slot._stop_state != "soft_pending":
-            logger.debug("_on_soft: state not soft_pending, bail")
-            return
-        _resolve_stop_event(slot, "soft")
-        slot._stop_state = "idle"
-        state.push_slots_update()
-
-    async def _on_hard() -> None:
-        logger.debug("_on_hard called: stop_state=%r", slot._stop_state)
-        if slot._stop_state not in ("soft_pending", "killing"):
-            logger.debug("_on_hard: state not soft_pending/killing, bail")
-            return
-        _resolve_stop_event(slot, "hard")
-        slot._stop_state = "idle"
-        state.push_slots_update()
+    _on_soft = _make_stop_resolver(state, slot, "soft", stop_id)
+    _on_hard = _make_stop_resolver(state, slot, "hard", stop_id)
 
     # Unblock chat runner if it's suspended waiting for tool approval or on a
     # pending ask_question card.
@@ -1079,20 +1149,6 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
                 break
 
     # Stop current turn but preserve the queue so dequeue loop fires
-    async def _on_soft() -> None:
-        if slot._stop_state != "soft_pending":
-            return
-        _resolve_stop_event(slot, "soft")
-        slot._stop_state = "idle"
-        state.push_slots_update()
-
-    async def _on_hard() -> None:
-        if slot._stop_state not in ("soft_pending", "killing"):
-            return
-        _resolve_stop_event(slot, "hard")
-        slot._stop_state = "idle"
-        state.push_slots_update()
-
     # (soft_pending already claimed above, before the request-body await)
 
     # Defensive stale-card sweep
@@ -1113,6 +1169,10 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     stop_msg = json.dumps(stop_data)
     slot.append("system", stop_msg, stop_msg)
     state.push_slots_update()
+
+    # Built after the card exists so each resolver is bound to this card.
+    _on_soft = _make_stop_resolver(state, slot, "soft", stop_id)
+    _on_hard = _make_stop_resolver(state, slot, "hard", stop_id)
 
     # Unblock chat runner if it's suspended waiting for tool approval or on a
     # pending ask_question card.

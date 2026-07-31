@@ -186,22 +186,30 @@ test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
 })
 
 /**
- * Budget-expiry soft-stop, still excluded.
+ * Budget-expiry soft-stop.
  *
- * The stub CAN withhold the cancel ack ([[SLOW_NOACK]] streams a long turn and
- * ignores session/cancel), which is the agent half of this scenario. What blocks
- * it is the host half: `agent.soft_stop_budget_secs` is read server-side in
- * session.py stop_turn(), so the `page.route('**\/api/config')` override this
- * test used to carry never changed the enforced budget. Observed behaviour with
- * the default budget is that the card stays in `stopping` well past Playwright's
- * 30s per-test timeout, so the run fails on timeout rather than on the assertion.
+ * The agent half is [[SLOW_NOACK]]: fake_acp_backend streams SLOW_CHUNKS=30
+ * chunks at SLOW_CHUNK_DELAY_SECS=0.5 (15s) and, unlike [[SLOW]], never checks
+ * for the cancel. So the host's soft-stop budget always expires first and the
+ * stop escalates to a hard kill.
  *
- * To enable: give the harness gateway a small `agent.soft_stop_budget_secs`
- * (config, not a client-side route intercept), then retag to @needs-agent and
- * assert on data-state="stop_failed_reset". Left dark rather than shipped with a
- * long sleep or a raised timeout that would only mask the timing question.
+ * The host half is `agent.soft_stop_budget_secs`, read server-side in
+ * session.py stop_turn(). A client-side `page.route` override cannot reach it,
+ * which is why this spec was dark. The harness fixture now declares 5.0
+ * (src/kiro_crew/tests_fixtures/minimal/config.json), comfortably inside the
+ * 15s stream, so escalation fires around 5s. The 10.0 default would also
+ * escalate before the stream ends, but it leaves only ~4s of headroom against
+ * the assertion timeout on a loaded runner. Pinning it makes the dependency
+ * explicit rather than a property of the default.
+ *
+ * What this covers that the two soft-ack specs above do not: the escalation
+ * path settling the card. That path shipped broken, and nothing caught it
+ * because this spec was dark. A turn tearing
+ * down concurrently reset `_stop_state` to "idle", the hard callback's state
+ * gate bailed, and the card pulsed at "stopping" for the rest of the session.
+ * See TestStopCardTeardownRace in test/test_stop_handler_idempotent.py.
  */
-test.describe('Soft-Stop budget expiry', { tag: '@needs-live-agent' }, () => {
+test.describe('Soft-Stop budget expiry', { tag: '@needs-agent' }, () => {
   test('stop resolves to Stop Failed on budget expiry', async ({ page }) => {
     await page.goto('/chat', { waitUntil: 'domcontentloaded' })
     await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
