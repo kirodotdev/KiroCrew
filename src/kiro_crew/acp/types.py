@@ -122,19 +122,21 @@ UPDATE_USAGE = "usage_update"
 
 # Updates we recognise but don't yet surface (plumbing-only). Listed here so the
 # "unhandled session update" log doesn't fire for them.
-KNOWN_SESSION_UPDATES = frozenset({
-    UPDATE_USER_MESSAGE_CHUNK,
-    UPDATE_AGENT_MESSAGE_CHUNK,
-    UPDATE_AGENT_THOUGHT_CHUNK,
-    UPDATE_TOOL_CALL,
-    UPDATE_TOOL_CALL_UPDATE,
-    UPDATE_PLAN,
-    UPDATE_AVAILABLE_COMMANDS,
-    UPDATE_CURRENT_MODE,
-    UPDATE_CONFIG_OPTION,
-    UPDATE_SESSION_INFO,
-    UPDATE_USAGE,
-})
+KNOWN_SESSION_UPDATES = frozenset(
+    {
+        UPDATE_USER_MESSAGE_CHUNK,
+        UPDATE_AGENT_MESSAGE_CHUNK,
+        UPDATE_AGENT_THOUGHT_CHUNK,
+        UPDATE_TOOL_CALL,
+        UPDATE_TOOL_CALL_UPDATE,
+        UPDATE_PLAN,
+        UPDATE_AVAILABLE_COMMANDS,
+        UPDATE_CURRENT_MODE,
+        UPDATE_CONFIG_OPTION,
+        UPDATE_SESSION_INFO,
+        UPDATE_USAGE,
+    }
+)
 
 # ── ACP Permission Outcomes ──
 
@@ -260,7 +262,9 @@ class AcpEvent:
     tool_output: str = ""
     tool_final: bool = False  # True when this tool_result is the final (status=completed) update
     usage: TurnUsage = field(default_factory=TurnUsage)
-    raw_tool_params: dict | None = None  # original tool params before diff conversion (for file-chip snapshots)
+    raw_tool_params: dict | None = (
+        None  # original tool params before diff conversion (for file-chip snapshots)
+    )
     # MCP OAuth notification fields (EVENT_MCP_OAUTH_REQUEST):
     server_name: str = ""
     oauth_url: str = ""
@@ -280,6 +284,14 @@ class AcpEvent:
     # provider-specific tool_kind literals (which silently re-break on every
     # engine migration / tool rename).
     is_shell: bool = False
+    # Diff content block fields — authoritative before/after text from kiro-cli
+    # for write tools. Used by chat_runner to derive the "before" snapshot
+    # without a racy disk read (the write has already landed by the time the
+    # event is processed). ``diff_old_text`` is None when no diff block was
+    # present (fallback to disk read); empty string means "file was created"
+    # (no previous content). ``diff_path`` is the path from the content block.
+    diff_old_text: str | None = None
+    diff_path: str = ""
 
     @property
     def shell_command(self) -> str | None:

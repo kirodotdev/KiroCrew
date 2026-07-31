@@ -488,6 +488,8 @@ Cross-tab context: **removed** (budget redistributed to other caps). Previously 
 
 Streaming chunks are cleaned up after each response (only final assistant message kept). Transient roles (`chunk`, `done`, `queued`, `permission`) are excluded from history saves.
 
+**File-change snapshots** (`chat_runner.py::_snapshot_write_target`): captures before/after content for write-tool invocations, attached as `file_changes` meta on the last assistant message by `_flush_file_changes`. The 'before' content is sourced in priority order: (1) ACP diff content block `oldText` carried on the tool-call event (`AcpEvent.diff_old_text`, threaded from `acp/_dispatch.py::_build_tool_call_event`) — authoritative and race-free; for a create operation `oldText` is absent → before = `''`. (2) Disk read fallback — used only when no diff content block exists (e.g. the blocking `session/request_permission` path where the write has NOT yet executed). No-op entries (before == after) are dropped in `_flush_file_changes` so a genuine no-op write does not render a contentless file-change card. Security invariants apply equally to content-block-sourced text: `validate_file_path` refuses sensitive paths, `_truncate_snapshot` caps content length, and credential/exfil-URL redaction in `_flush_file_changes` covers both sources.
+
 **Agent Config**: PUT saves to `~/.kiro/agents/kirocrew.json` and auto-restarts all kiro-cli sessions so changes take effect immediately.
 
 ### Tool-Approval Resolution Persistence

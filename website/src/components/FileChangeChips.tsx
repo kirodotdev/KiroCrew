@@ -61,6 +61,9 @@ export function countLines(before: string, after: string): { added: number; remo
 const basename = (p: string) => p.split('/').pop() || p
 
 function Stats({ added, removed }: { added: number; removed: number }) {
+  if (added === 0 && removed === 0) {
+    return <span className="text-muted text-[11px] italic">{i18nT('components.fileChangeChips.no_changes')}</span>
+  }
   return <>
     {added > 0 && <span className="text-ok font-mono">+{added}</span>}
     {removed > 0 && <span className="text-danger font-mono">-{removed}</span>}
@@ -73,12 +76,11 @@ function Stats({ added, removed }: { added: number; removed: number }) {
 function DiffStatBar({ added, removed }: { added: number; removed: number }) {
   const CELLS = 5
   const total = added + removed
-  let g = 0, r = 0
-  if (total > 0) {
-    g = added > 0 ? Math.max(1, Math.round((added / total) * CELLS)) : 0
-    r = removed > 0 ? Math.max(1, Math.round((removed / total) * CELLS)) : 0
-    while (g + r > CELLS) { if (g >= r) g--; else r-- }
-  }
+  // No-op: hide the bar entirely — 5 neutral cells carry no signal.
+  if (total === 0) return null
+  let g = added > 0 ? Math.max(1, Math.round((added / total) * CELLS)) : 0
+  let r = removed > 0 ? Math.max(1, Math.round((removed / total) * CELLS)) : 0
+  while (g + r > CELLS) { if (g >= r) g--; else r-- }
   const neutral = CELLS - g - r
   const cell = (cls: string, key: string) => <span key={key} className={`w-[7px] h-[7px] rounded-[2px] ${cls}`} />
   return (

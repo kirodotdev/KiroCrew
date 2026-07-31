@@ -46,13 +46,16 @@ from kiro_crew.validation import (
 # Content-Type header correct for the most common Word/Excel/PowerPoint
 # downloads (the Stores Discovery docx case that motivated this CR).
 mimetypes.add_type(
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".docx",
 )
 mimetypes.add_type(
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsx",
 )
 mimetypes.add_type(
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".pptx",
 )
 
 _INLINE_DISPOSITION_PREFIXES = frozenset({"audio/", "video/", "image/", "application/pdf"})
@@ -64,6 +67,7 @@ logger = logging.getLogger(__name__)
 def _sel():
     """Late-binding _sel() for test monkeypatch compatibility."""
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811
+
     return _pkg.sel()
 
 
@@ -83,9 +87,14 @@ async def api_reveal_path(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid path"}, status=400)
     if is_sensitive_path(path):
         _sel().log_tool_invocation(
-            session_key="api", source="api", tool_name="reveal_path",
-            outcome="denied", error="sensitive_path",
-            resources=path, metadata={"action": action})
+            session_key="api",
+            source="api",
+            tool_name="reveal_path",
+            outcome="denied",
+            error="sensitive_path",
+            resources=path,
+            metadata={"action": action},
+        )
         return web.json_response({"error": "access denied"}, status=403)
     if action == "open":
         if not os.path.isfile(path):
@@ -104,8 +113,13 @@ async def api_reveal_path(request: web.Request) -> web.Response:
         else:
             return web.json_response({"ok": True, "copy": path})
     _sel().log_tool_invocation(
-        session_key="api", source="api", tool_name="reveal_path",
-        outcome="success", resources=path, metadata={"action": action})
+        session_key="api",
+        source="api",
+        tool_name="reveal_path",
+        outcome="success",
+        resources=path,
+        metadata={"action": action},
+    )
     return web.json_response({"ok": True})
 
 
@@ -249,12 +263,15 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
             # Only broadcast explicitly when _has_reader suppresses append's
             # built-in _on_message callback. Avoids duplicate file cards.
             if getattr(active, "_has_reader", False):
-                state.broadcast_ws("chat_message", {
-                    "slot": active.key,
-                    "role": "file",
-                    "content": redacted_file_json,
-                    "ts": active.messages[-1]["ts"],
-                })
+                state.broadcast_ws(
+                    "chat_message",
+                    {
+                        "slot": active.key,
+                        "role": "file",
+                        "content": redacted_file_json,
+                        "ts": active.messages[-1]["ts"],
+                    },
+                )
 
     _sel().log_tool_invocation(
         session_key="api",
@@ -347,7 +364,11 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
             {"error": f"Binary file type not allowed: {content_type}"}, status=403
         )
     # Inline disposition for media types the browser can render
-    disposition = "inline" if any(content_type.startswith(t) for t in _INLINE_DISPOSITION_PREFIXES) else "attachment"
+    disposition = (
+        "inline"
+        if any(content_type.startswith(t) for t in _INLINE_DISPOSITION_PREFIXES)
+        else "attachment"
+    )
     # SVG can contain scripts — never serve inline on the dashboard origin
     if content_type == "image/svg+xml":
         disposition = "attachment"
@@ -560,9 +581,7 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     channel = ""
     if target_channel:
         try:
-            validate_tool_args(
-                {"path": "x", "channel": target_channel}, FILE_SEND_SCHEMA
-            )
+            validate_tool_args({"path": "x", "channel": target_channel}, FILE_SEND_SCHEMA)
         except ValidationError:
             _sel().log_tool_invocation(
                 session_key="api",
@@ -573,9 +592,7 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
                 downstream_service="slack",
                 error="channel_validation_failed",
             )
-            return web.json_response(
-                {"error": "invalid channel value"}, status=400
-            )
+            return web.json_response({"error": "invalid channel value"}, status=400)
         # Session-map-sourced channels are trusted (system created the link).
         # Only enforce tracking check for user-supplied channels.
         # Defense-in-depth: session-map channels must be DMs (D-prefix) or tracked.
@@ -594,9 +611,7 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
                     downstream_service="slack",
                     error=f"channel_not_tracked: {target_channel}",
                 )
-                return web.json_response(
-                    {"error": "channel not in tracked channels"}, status=403
-                )
+                return web.json_response({"error": "channel not in tracked channels"}, status=403)
         else:
             try:
                 allowed = target_channel.startswith("D") or is_tracked_channel(target_channel)
@@ -612,9 +627,7 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
                     downstream_service="slack",
                     error=f"session_map_channel_not_authorized: {target_channel}",
                 )
-                return web.json_response(
-                    {"error": "channel not authorized"}, status=403
-                )
+                return web.json_response({"error": "channel not authorized"}, status=403)
         channel = target_channel
     else:
         try:
@@ -1203,7 +1216,9 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
         from kiro_crew.security import is_sensitive_path as _isp  # noqa: F811
 
         _abs = Path(new_dir).expanduser().is_absolute()
-        resolved = Path(new_dir).expanduser().resolve() if _abs else (config_dir() / new_dir).resolve()
+        resolved = (
+            Path(new_dir).expanduser().resolve() if _abs else (config_dir() / new_dir).resolve()
+        )
         if _isp(str(resolved)):
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
@@ -1234,10 +1249,13 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
                 {"error": "Cannot use config root as workspace directory"}, status=400
             )
         existing_dirs = {
-            (config_dir() / ws.dir).resolve()
-            if not Path(ws.dir).expanduser().is_absolute()
-            else Path(ws.dir).expanduser().resolve()
-            for n, ws in cfg.workspaces.items() if n != name
+            (
+                (config_dir() / ws.dir).resolve()
+                if not Path(ws.dir).expanduser().is_absolute()
+                else Path(ws.dir).expanduser().resolve()
+            )
+            for n, ws in cfg.workspaces.items()
+            if n != name
         }
         if resolved in existing_dirs:
             return web.json_response(
@@ -1525,14 +1543,16 @@ async def api_file_download(request: web.Request) -> web.Response:
         proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
         if not proj:
             return web.json_response(
-                {"error": "cannot resolve: no project dir configured"}, status=400,
+                {"error": "cannot resolve: no project dir configured"},
+                status=400,
             )
         raw_path = os.path.join(proj, raw_path)
         resolved = os.path.realpath(raw_path)
         resolved_proj = os.path.realpath(proj)
         if not (resolved == resolved_proj or resolved.startswith(resolved_proj + os.sep)):
             return web.json_response(
-                {"error": "path outside project directory"}, status=400,
+                {"error": "path outside project directory"},
+                status=400,
             )
         raw_path = resolved
 
@@ -1540,28 +1560,37 @@ async def api_file_download(request: web.Request) -> web.Response:
         validate_tool_args({"path": raw_path}, FILE_READ_SCHEMA)
     except ValidationError:
         _sel().log_tool_invocation(
-            session_key="dashboard", tool_name="file_download",
-            outcome="denied", resources=raw_path,
+            session_key="dashboard",
+            tool_name="file_download",
+            outcome="denied",
+            resources=raw_path,
         )
         return web.json_response({"error": "invalid input"}, status=400)
 
     path = _h._validate_dashboard_path(raw_path)
     if not path:
         _sel().log_tool_invocation(
-            session_key="dashboard", tool_name="file_download",
-            outcome="denied", resources=raw_path,
+            session_key="dashboard",
+            tool_name="file_download",
+            outcome="denied",
+            resources=raw_path,
         )
         return web.json_response({"error": "invalid or forbidden path"}, status=400)
     if is_sensitive_path(path):
         _sel().log_tool_invocation(
-            session_key="dashboard", tool_name="file_download",
-            outcome="denied", resources=path, error="sensitive_path",
+            session_key="dashboard",
+            tool_name="file_download",
+            outcome="denied",
+            resources=path,
+            error="sensitive_path",
         )
         return web.json_response({"error": "sensitive path blocked"}, status=403)
     if not os.path.isfile(path):
         _sel().log_tool_invocation(
-            session_key="dashboard", tool_name="file_download",
-            outcome="not_found", resources=path,
+            session_key="dashboard",
+            tool_name="file_download",
+            outcome="not_found",
+            resources=path,
         )
         return web.json_response({"error": "not found"}, status=404)
 
@@ -1572,22 +1601,30 @@ async def api_file_download(request: web.Request) -> web.Response:
             st = os.fstat(f.fileno())
             if st.st_size > _MAX_UPLOAD_BYTES:
                 _sel().log_tool_invocation(
-                    session_key="dashboard", tool_name="file_download",
-                    outcome="denied", resources=path, error="file_too_large",
+                    session_key="dashboard",
+                    tool_name="file_download",
+                    outcome="denied",
+                    resources=path,
+                    error="file_too_large",
                 )
                 return web.json_response({"error": "file too large"}, status=413)
             data = f.read()
     except OSError as exc:
         if exc.errno == errno.ELOOP:  # symlink with O_NOFOLLOW
             _sel().log_tool_invocation(
-                session_key="dashboard", tool_name="file_download",
-                outcome="denied", resources=path, error="symlink_rejected",
+                session_key="dashboard",
+                tool_name="file_download",
+                outcome="denied",
+                resources=path,
+                error="symlink_rejected",
             )
             return web.json_response({"error": "symlinks not allowed"}, status=403)
         logger.exception("file_download read failed for %s", path)
         _sel().log_tool_invocation(
-            session_key="dashboard", tool_name="file_download",
-            outcome="failure", resources=path,
+            session_key="dashboard",
+            tool_name="file_download",
+            outcome="failure",
+            resources=path,
         )
         return web.json_response({"error": "cannot read file"}, status=500)
 
@@ -1612,11 +1649,15 @@ async def api_file_download(request: web.Request) -> web.Response:
     scrubbed = redact(text)
     if scrubbed != text:
         _sel().log_tool_invocation(
-            session_key="dashboard", tool_name="file_download",
-            outcome="denied", resources=path, error="content_redacted",
+            session_key="dashboard",
+            tool_name="file_download",
+            outcome="denied",
+            resources=path,
+            error="content_redacted",
         )
         return web.json_response(
-            {"error": "file content was redacted; download aborted"}, status=400,
+            {"error": "file content was redacted; download aborted"},
+            status=400,
         )
 
     safe_name = urllib.parse.quote(os.path.basename(path), safe="")
@@ -1625,8 +1666,10 @@ async def api_file_download(request: web.Request) -> web.Response:
         content_type = "application/octet-stream"
 
     _sel().log_tool_invocation(
-        session_key="dashboard", tool_name="file_download",
-        outcome="success", resources=path,
+        session_key="dashboard",
+        tool_name="file_download",
+        outcome="success",
+        resources=path,
     )
     return web.Response(
         body=data,
@@ -1646,7 +1689,10 @@ async def api_file_raw(request: web.Request) -> web.Response:
 
     def _log(outcome: str, res: str) -> None:
         _sel().log_tool_invocation(
-            session_key="dashboard", tool_name="file_raw", outcome=outcome, resources=res,
+            session_key="dashboard",
+            tool_name="file_raw",
+            outcome=outcome,
+            resources=res,
         )
 
     raw_path = request.query.get("path", "")
@@ -1655,6 +1701,7 @@ async def api_file_raw(request: web.Request) -> web.Response:
         _log("denied", raw_path)
         return web.json_response({"error": "invalid or forbidden path"}, status=400)
     from kiro_crew.security import is_sensitive_path as _isp  # noqa: F811
+
     if _isp(path):
         _log("denied", path)
         return web.json_response({"error": "sensitive path blocked"}, status=403)
@@ -1872,7 +1919,13 @@ async def api_file_search(request: web.Request) -> web.Response:
     if project:
         project = os.path.realpath(os.path.expanduser(project))
         if is_sensitive_path(project):
-            _sel().log_api_access(caller=caller, operation="file_search", outcome="denied", resources=project, error="sensitive path")
+            _sel().log_api_access(
+                caller=caller,
+                operation="file_search",
+                outcome="denied",
+                resources=project,
+                error="sensitive path",
+            )
             return web.json_response({"error": "Access denied"}, status=403)
         if os.path.isdir(project):
             search_roots.append(project)
@@ -1882,6 +1935,7 @@ async def api_file_search(request: web.Request) -> web.Response:
             )
     elif ws_name:
         from kiro_crew.config.loader import workspace_dir_for  # noqa: F811
+
         ws_path = str(workspace_dir_for(ws_name))
         if os.path.isdir(ws_path):
             search_roots.append(ws_path)
@@ -1904,7 +1958,13 @@ async def api_file_search(request: web.Request) -> web.Response:
     safe_roots: list[str] = []
     for r in search_roots:
         if is_sensitive_path(r):
-            _sel().log_api_access(caller=caller, operation="file_search", outcome="denied", resources=r, error="sensitive path")
+            _sel().log_api_access(
+                caller=caller,
+                operation="file_search",
+                outcome="denied",
+                resources=r,
+                error="sensitive path",
+            )
         else:
             safe_roots.append(r)
 
@@ -1915,14 +1975,28 @@ async def api_file_search(request: web.Request) -> web.Response:
         if idx and idx.is_ready and not idx.truncated:
             results = await asyncio.to_thread(idx.search, query, _fuzzy_score, max_results)
             trimmed = [{k: v for k, v in r.items() if k != "_score"} for r in results]
-            _sel().log_api_access(caller=caller, operation="file_search", outcome="allowed", resources=f"q={query} indexed=true entries={idx.entry_count} results={len(trimmed)}")
+            _sel().log_api_access(
+                caller=caller,
+                operation="file_search",
+                outcome="allowed",
+                resources=f"q={query} indexed=true entries={idx.entry_count} results={len(trimmed)}",
+            )
             return web.json_response({"results": trimmed, "root": safe_roots[0]})
 
     # Fallback: walk filesystem per request
-    # Dot-prefixed dirs (.kirocrew, .kiro, .aim) excluded by startswith(".") guard below.
+    # Dot-prefixed dirs (.kirocrew, .kiro, etc.) excluded by startswith(".") guard below.
     skip_dirs = {
-        ".git", "node_modules", "__pycache__", ".cache", ".venv", "venv",
-        "dist", "build", "env", "out", "target",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".cache",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "env",
+        "out",
+        "target",
     }
 
     max_scan = 50_000 if scoped else 5_000
@@ -1941,12 +2015,12 @@ async def api_file_search(request: web.Request) -> web.Response:
             # ``scoped`` means the user NAMED this root (?project= / ?workspace=),
             # so even ``project=$HOME`` is deliberate and is searched in full.
             tcc_skip = (
-                frozenset() if scoped
-                else platform_compat.tcc_protected_dirs_for_walk(root_dir)
+                frozenset() if scoped else platform_compat.tcc_protected_dirs_for_walk(root_dir)
             )
             for dirpath, dirnames, filenames in os.walk(root_dir):
                 dirnames[:] = [
-                    d for d in dirnames
+                    d
+                    for d in dirnames
                     if not d.startswith(".")
                     and d not in skip_dirs
                     and not (dirpath == root_dir and d in tcc_skip)
@@ -1968,7 +2042,15 @@ async def api_file_search(request: web.Request) -> web.Response:
                         st = os.stat(fpath)
                     except OSError:
                         continue
-                    results.append({"path": fpath, "name": fname, "size": st.st_size, "mtime": int(st.st_mtime), "_score": sc})
+                    results.append(
+                        {
+                            "path": fpath,
+                            "name": fname,
+                            "size": st.st_size,
+                            "mtime": int(st.st_mtime),
+                            "_score": sc,
+                        }
+                    )
                 if walked >= max_scan or len(results) >= max_collect:
                     break
         return results
@@ -1982,25 +2064,49 @@ async def api_file_search(request: web.Request) -> web.Response:
     # Strip internal scoring field before response
     trimmed = [{k: v for k, v in r.items() if k != "_score"} for r in results[:max_results]]
 
-    _sel().log_api_access(caller=caller, operation="file_search", outcome="allowed", resources=f"q={query} roots={len(safe_roots)} results={len(trimmed)}")
-    return web.json_response({
-        "results": trimmed,
-        "root": safe_roots[0] if scoped and safe_roots else "",
-    })
+    _sel().log_api_access(
+        caller=caller,
+        operation="file_search",
+        outcome="allowed",
+        resources=f"q={query} roots={len(safe_roots)} results={len(trimmed)}",
+    )
+    return web.json_response(
+        {
+            "results": trimmed,
+            "root": safe_roots[0] if scoped and safe_roots else "",
+        }
+    )
 
 
 async def api_file_diff(request: web.Request) -> web.Response:
     """GET /api/file-diff?path=... — returns git diff and HEAD content for a file."""
     raw_path = request.query.get("path", "").strip()
     if not raw_path:
-        _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="allowed", resources="empty_path")
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="file_diff",
+            outcome="allowed",
+            resources="empty_path",
+        )
         return web.json_response({"diff": "", "original": ""})
     raw_path = os.path.realpath(os.path.expanduser(raw_path))
     if not os.path.isfile(raw_path):
-        _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="allowed", resources=f"path={raw_path}", error="not_found")
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="file_diff",
+            outcome="allowed",
+            resources=f"path={raw_path}",
+            error="not_found",
+        )
         return web.json_response({"diff": "", "original": ""})
     if is_sensitive_path(raw_path):
-        _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="denied", resources=raw_path, error="sensitive path")
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="file_diff",
+            outcome="denied",
+            resources=raw_path,
+            error="sensitive path",
+        )
         return web.json_response({"error": "Access denied"}, status=403)
 
     dirpath = os.path.dirname(raw_path)
@@ -2008,50 +2114,100 @@ async def api_file_diff(request: web.Request) -> web.Response:
     def _run() -> dict:
         # Disable textconv/filter drivers and fsmonitor to prevent code execution
         # via .gitattributes or .git/config in untrusted repos.
-        _git = ["git", "-c", "diff.textconv=", "-c", "core.attributesFile=/dev/null", "-c", "core.fsmonitor="]
+        _git = [
+            "git",
+            "-c",
+            "diff.textconv=",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "-c",
+            "core.fsmonitor=",
+        ]
         _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
         try:
             subprocess.run(
                 [*_git, "rev-parse", "--git-dir"],
-                cwd=dirpath, capture_output=True, timeout=5, check=True, env=_env,
+                cwd=dirpath,
+                capture_output=True,
+                timeout=5,
+                check=True,
+                env=_env,
             )
             # Get HEAD content
             root = subprocess.run(
                 [*_git, "rev-parse", "--show-toplevel"],
-                cwd=dirpath, capture_output=True, text=True, timeout=5, env=_env,
+                cwd=dirpath,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=_env,
             ).stdout.strip()
             rel = os.path.relpath(raw_path, root)
             head = subprocess.run(
                 [*_git, "show", "--no-textconv", f"HEAD:{rel}"],
-                cwd=dirpath, capture_output=True, text=True, timeout=10, env=_env,
+                cwd=dirpath,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=_env,
             )
             original = head.stdout if head.returncode == 0 else ""
             # Get diff
             r = subprocess.run(
                 [*_git, "diff", "--no-textconv", "--no-ext-diff", "HEAD", "--", raw_path],
-                cwd=dirpath, capture_output=True, text=True, timeout=10, env=_env,
+                cwd=dirpath,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=_env,
             )
             diff = r.stdout.strip() if r.returncode == 0 else ""
             if not diff:
                 # Check for untracked file
                 r2 = subprocess.run(
                     [*_git, "status", "--porcelain", "--", raw_path],
-                    cwd=dirpath, capture_output=True, text=True, timeout=5, env=_env,
+                    cwd=dirpath,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    env=_env,
                 )
                 if r2.returncode == 0 and r2.stdout.strip().startswith("??"):
                     r3 = subprocess.run(
-                        [*_git, "diff", "--no-textconv", "--no-ext-diff", "--no-index", "/dev/null", raw_path],
-                        cwd=dirpath, capture_output=True, text=True, timeout=10, env=_env,
+                        [
+                            *_git,
+                            "diff",
+                            "--no-textconv",
+                            "--no-ext-diff",
+                            "--no-index",
+                            "/dev/null",
+                            raw_path,
+                        ],
+                        cwd=dirpath,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        env=_env,
                     )
                     diff = r3.stdout if r3.stdout else ""
                     return {"diff": diff, "original": "", "status": "untracked"}
             status = "modified" if diff else "clean"
             return {"diff": diff, "original": original, "status": status}
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError, UnicodeDecodeError):
+        except (
+            subprocess.TimeoutExpired,
+            subprocess.CalledProcessError,
+            FileNotFoundError,
+            UnicodeDecodeError,
+        ):
             return {"diff": "", "original": "", "status": "not_git"}
 
     result = await asyncio.to_thread(_run)
-    _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="allowed", resources=f"path={raw_path}")
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="file_diff",
+        outcome="allowed",
+        resources=f"path={raw_path}",
+    )
     return web.json_response(result)
 
 
@@ -2063,17 +2219,41 @@ async def api_browse_dirs(request: web.Request) -> web.Response:
 
     caller = request.get("user", "dashboard")
     raw = request.query.get("path", "").strip()
-    base = os.path.realpath(os.path.expanduser(raw)) if raw else os.path.realpath(os.path.expanduser("~"))
+    base = (
+        os.path.realpath(os.path.expanduser(raw))
+        if raw
+        else os.path.realpath(os.path.expanduser("~"))
+    )
     if not os.path.isdir(base):
         return web.json_response({"error": "Not a directory", "path": base}, status=400)
     if is_sensitive_path(base):
-        _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="denied", resources=base, error="sensitive path")
+        _sel().log_api_access(
+            caller=caller,
+            operation="browse_dirs",
+            outcome="denied",
+            resources=base,
+            error="sensitive path",
+        )
         return web.json_response({"error": "Access denied"}, status=403)
-    skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim"}
+    skip = {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".cache",
+        ".venv",
+        "venv",
+        "env",
+        ".kirocrew",
+        ".kiro",
+    }
     dirs: list[dict] = []
     try:
         for entry in sorted(os.scandir(base), key=lambda e: e.name.lower()):
-            if entry.is_dir(follow_symlinks=True) and entry.name not in skip and not entry.name.startswith("."):
+            if (
+                entry.is_dir(follow_symlinks=True)
+                and entry.name not in skip
+                and not entry.name.startswith(".")
+            ):
                 # Resolve symlinks before the sensitivity check — a symlink in
                 # a benign dir pointing at ~/.aws would otherwise pass through.
                 if is_sensitive_path(os.path.realpath(entry.path)):
@@ -2333,18 +2513,43 @@ async def api_browse_files(request: web.Request) -> web.Response:
     """
     caller = request.get("user", "dashboard")
     raw = request.query.get("path", "").strip()
-    base = os.path.realpath(os.path.expanduser(raw)) if raw else os.path.realpath(os.path.expanduser("~"))
+    base = (
+        os.path.realpath(os.path.expanduser(raw))
+        if raw
+        else os.path.realpath(os.path.expanduser("~"))
+    )
     if not os.path.isdir(base):
         return web.json_response({"error": "Not a directory", "path": base}, status=400)
     if is_sensitive_path(base):
-        _sel().log_api_access(caller=caller, operation="browse_files", outcome="denied", resources=base, error="sensitive path")
+        _sel().log_api_access(
+            caller=caller,
+            operation="browse_files",
+            outcome="denied",
+            resources=base,
+            error="sensitive path",
+        )
         return web.json_response({"error": "Access denied"}, status=403)
-    skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim", "build", "dist", ".next"}
+    skip = {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".cache",
+        ".venv",
+        "venv",
+        "env",
+        ".kirocrew",
+        ".kiro",
+        "build",
+        "dist",
+        ".next",
+    }
     dirs: list[dict] = []
     files: list[dict] = []
     try:
         # Sort: dirs before files, then alphabetical
-        for entry in sorted(os.scandir(base), key=lambda e: (not e.is_dir(follow_symlinks=True), e.name.lower())):
+        for entry in sorted(
+            os.scandir(base), key=lambda e: (not e.is_dir(follow_symlinks=True), e.name.lower())
+        ):
             if entry.name.startswith("."):
                 continue
             # Resolve symlinks before the sensitivity check — a symlink in a
@@ -2365,8 +2570,12 @@ async def api_browse_files(request: web.Request) -> web.Response:
                 files.append({"name": entry.name, "path": entry.path, "mtime": mtime})
     except PermissionError:
         pass
-    _sel().log_api_access(caller=caller, operation="browse_files", outcome="allowed", resources=base)
-    return web.json_response({"path": base, "parent": os.path.dirname(base), "dirs": dirs, "files": files})
+    _sel().log_api_access(
+        caller=caller, operation="browse_files", outcome="allowed", resources=base
+    )
+    return web.json_response(
+        {"path": base, "parent": os.path.dirname(base), "dirs": dirs, "files": files}
+    )
 
 
 async def api_dashboard_config(request: web.Request) -> web.Response:
@@ -2408,7 +2617,16 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                 session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
             )
             return web.json_response({"error": "request body must be a JSON object"}, status=400)
-        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "widget_density", "verbosity", "quick_send", "session_grid", "tail_fork_enabled"}
+        _allowed = {
+            "restore_sessions",
+            "restore_window_minutes",
+            "merge_queued_messages",
+            "widget_density",
+            "verbosity",
+            "quick_send",
+            "session_grid",
+            "tail_fork_enabled",
+        }
         # One-release backward-compat shim for removed key; delete after all clients update.
         deprecated_ignored_keys = {"tail_fork_head_handling"}
         # Read-only keys the GET exposes: both settings surfaces save with
@@ -2496,9 +2714,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                 _sel().log_tool_invocation(
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
-                return web.json_response(
-                    {"error": "quick_send must be a boolean"}, status=400
-                )
+                return web.json_response({"error": "quick_send must be a boolean"}, status=400)
             cfg.dashboard.quick_send = val
         if "session_grid" in body:
             val = body["session_grid"]
@@ -2506,9 +2722,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                 _sel().log_tool_invocation(
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
-                return web.json_response(
-                    {"error": "session_grid must be a boolean"}, status=400
-                )
+                return web.json_response({"error": "session_grid must be a boolean"}, status=400)
             cfg.dashboard.session_grid = val
         cfg.save()
         _sel().log_tool_invocation(

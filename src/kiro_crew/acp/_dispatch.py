@@ -192,12 +192,8 @@ def classify_notification(msg: JsonRpcMessage) -> str:
 
 def make_unified_diff(old: str, new: str, path: str, max_len: int = 6000) -> str:
     """Generate a unified diff string from old/new text, handling empty inputs."""
-    old_lines = (
-        (old if old.endswith("\n") else old + "\n").splitlines(keepends=True) if old else []
-    )
-    new_lines = (
-        (new if new.endswith("\n") else new + "\n").splitlines(keepends=True) if new else []
-    )
+    old_lines = (old if old.endswith("\n") else old + "\n").splitlines(keepends=True) if old else []
+    new_lines = (new if new.endswith("\n") else new + "\n").splitlines(keepends=True) if new else []
     udiff = difflib.unified_diff(old_lines, new_lines, fromfile=path, tofile=path, n=3)
     return "".join(udiff).rstrip()[:max_len]
 
@@ -406,7 +402,9 @@ def build_permission_event(
     if cached_shell is None and tool_input:
         logger.info(
             "Permission event resolved tool_input but missed is_shell cache "
-            "(req=%s tool_call_id=%s)", request_id, tool_call_id,
+            "(req=%s tool_call_id=%s)",
+            request_id,
+            tool_call_id,
         )
 
     # Resolve the STRUCTURED raw params for governance enforcement. The keystone
@@ -470,13 +468,19 @@ def _build_tool_call_event(
             else str(raw_input)
         )
     # Edit tools with diff content blocks → render a unified diff instead.
+    # Also capture oldText/path for the file-change snapshot (race-free source).
     found_diff = False
+    _diff_old_text: str | None = None
+    _diff_path: str = ""
     content_blocks = update.get("content", [])
     if isinstance(content_blocks, list):
         for cb in content_blocks:
             if isinstance(cb, dict) and cb.get("type") == "diff":
+                _cb_old = cb.get("oldText")
+                _diff_old_text = _cb_old if isinstance(_cb_old, str) else (_cb_old or "")
+                _diff_path = cb.get("path") or ""
                 diff_str = make_unified_diff(
-                    cb.get("oldText") or "", cb.get("newText") or "", cb.get("path", "")
+                    _diff_old_text or "", cb.get("newText") or "", _diff_path
                 )
                 if diff_str:
                     input_str = diff_str
@@ -510,6 +514,8 @@ def _build_tool_call_event(
         tool_call_id=tool_call_id,
         raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
         is_shell=is_shell,
+        diff_old_text=_diff_old_text,
+        diff_path=_diff_path,
     )
 
 
@@ -686,11 +692,16 @@ def _build_tool_refinement_event(
     elif isinstance(raw_input, str):
         input_str = raw_input
     content_blocks = update.get("content", [])
+    _diff_old_text: str | None = None
+    _diff_path: str = ""
     if isinstance(content_blocks, list):
         for cb in content_blocks:
             if isinstance(cb, dict) and cb.get("type") == "diff":
+                _cb_old = cb.get("oldText")
+                _diff_old_text = _cb_old if isinstance(_cb_old, str) else (_cb_old or "")
+                _diff_path = cb.get("path") or ""
                 diff_str = make_unified_diff(
-                    cb.get("oldText") or "", cb.get("newText") or "", cb.get("path", "")
+                    _diff_old_text or "", cb.get("newText") or "", _diff_path
                 )
                 if diff_str:
                     input_str = diff_str
@@ -719,6 +730,8 @@ def _build_tool_refinement_event(
         tool_call_id=tool_use_id,
         raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
         is_shell=is_shell,
+        diff_old_text=_diff_old_text,
+        diff_path=_diff_path,
     )
 
 

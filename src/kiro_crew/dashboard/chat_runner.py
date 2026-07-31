@@ -414,8 +414,22 @@ def _safe_read_snapshot(path: str) -> str | None:
         return None
 
 
-def _snapshot_write_target(raw_params: dict | None) -> dict | None:
-    """If raw_params describes a write tool, return {"path", "content"} of the file before modification.
+def _snapshot_write_target(
+    raw_params: dict | None,
+    diff_old_text: str | None = None,
+    diff_path: str = "",
+) -> dict | None:
+    """Return {"path", "content"} of a file before modification for write tools.
+
+    Prefers the authoritative ``diff_old_text`` from the ACP diff content block
+    (kiro-cli's in-band before-text) over a disk read, because by the time we
+    process the event the write has already landed on disk (the auto-approved
+    path is a one-way notification — kiro-cli does NOT wait for the dashboard
+    to drain its asyncio.Queue before executing the write).
+
+    Falls back to a disk read only when no content block is present
+    (``diff_old_text is None``), which is the correct path for the
+    blocking permission-request flow where the file hasn't been written yet.
 
     Returns None for non-write tools or when a path can't be resolved. Failures
     (file not found, permission, decode errors) yield empty content rather than
@@ -425,7 +439,7 @@ def _snapshot_write_target(raw_params: dict | None) -> dict | None:
     if not isinstance(raw_params, dict):
         return None
     cmd = raw_params.get("command", "")
-    path = raw_params.get("path", "")
+    path = raw_params.get("path", "") or diff_path
     if not path or cmd not in _WRITE_COMMANDS:
         return None
     # Refuse sensitive paths even before the write executes (the file may not
@@ -434,6 +448,17 @@ def _snapshot_write_target(raw_params: dict | None) -> dict | None:
     # by the LLM-tool intercept layer, so the security boundary is identical.
     if validate_file_path(path) is None:
         return None
+
+    # Prefer authoritative content-block before-text when available.
+    if diff_old_text is not None:
+        # diff_old_text == "" means "file was created" (no previous content).
+        # Apply truncation so content-block-sourced text obeys the same cap as
+        # disk-sourced text (security + message-meta size invariant).
+        before = _truncate_snapshot(diff_old_text) if diff_old_text else ""
+        return {"path": path, "content": before}
+
+    # Fallback: read from disk (correct on the blocking permission-request path
+    # where the write has NOT yet executed).
     content = _safe_read_snapshot(path)
     if content is None:
         # File doesn't exist yet (`create` on a new file is the common case)
@@ -487,7 +512,15 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
         if entry["after"]:
             entry["after"], _ = redact_credentials(entry["after"])
             entry["after"], _ = redact_exfiltration_urls(entry["after"])
-    fc_list = list(deduped.values())
+    # Drop no-op entries where before == after (the write was a semantic
+    # no-op, e.g. an idempotent format-on-save or a tool that re-wrote
+    # identical content). Compared AFTER redaction so masked text is treated
+    # consistently. This filter must land WITH or after the race-fix — with
+    # the old racy disk read both sides were always equal, so filtering alone
+    # would suppress every chip.
+    fc_list = [e for e in deduped.values() if e["before"] != e["after"]]
+    if not fc_list:
+        return
     # Attach to the most recent assistant message; if none exists (turn
     # aborted before any text), create a synthetic message so the chips
     # still surface.
@@ -2981,7 +3014,13 @@ async def _run_chat(
                 _kind, _ = redact_credentials(_kind)
                 # Snapshot file BEFORE write tools execute. Accumulates per-turn,
                 # flushed to assistant message meta in _flush_file_changes on turn end.
-                _file_snapshot = _snapshot_write_target(event.raw_tool_params)
+                # Prefer the in-band diff_old_text from the ACP content block
+                # (authoritative) over a disk read which races with the write.
+                _file_snapshot = _snapshot_write_target(
+                    event.raw_tool_params,
+                    diff_old_text=event.diff_old_text,
+                    diff_path=event.diff_path,
+                )
                 if _file_snapshot:
                     slot._file_changes.append(_file_snapshot)
                 state.broadcast_ws(
@@ -3108,7 +3147,14 @@ async def _run_chat(
                     # Snapshot file BEFORE the write tool actually executes.
                     # Initial tool_call had empty rawInput so no snapshot was
                     # taken there; this is the first event with the file path.
-                    _file_snapshot_upd = _snapshot_write_target(event.raw_tool_params)
+                    # Prefer the in-band diff_old_text from the ACP content
+                    # block (authoritative) over a disk read which races with
+                    # the write.
+                    _file_snapshot_upd = _snapshot_write_target(
+                        event.raw_tool_params,
+                        diff_old_text=event.diff_old_text,
+                        diff_path=event.diff_path,
+                    )
                     if _file_snapshot_upd:
                         slot._file_changes.append(_file_snapshot_upd)
                     # Refresh the toolLog entry (sseToolActivity merges by id).
