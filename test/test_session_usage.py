@@ -16,6 +16,7 @@ from kiro_crew.dashboard.handlers.sessions import (
     _normalize_text_usage,
     _parse_usage,
     _redact_strings,
+    _text_scrape_regresses_api_value,
 )
 
 SAMPLE_USAGE = (
@@ -211,6 +212,97 @@ class TestFetchUsageBg:
         assert sessions_mod._usage_cache["credits_plan"] == 10000.0
 
     @pytest.mark.asyncio
+    async def test_text_scrape_does_not_clobber_richer_api_value(self):
+        # Regression: on a refresh where the API call transiently fails and we
+        # fall back to the overage-blind text scrape, the scrape must NOT
+        # overwrite a fresher, richer API value for THE SAME account — the bug
+        # that flipped the pill from the true 41,336/10,000 (413%) to a
+        # misleading 10,000/10,000 (100%, overage hidden). Seed an API value
+        # that shows overage and carries this account's email, then run a
+        # refresh that falls through to the scrape (fixture stubs the API to
+        # return None); whoami reports the SAME email. SAMPLE_USAGE scrapes to
+        # total=3164, far below 41,336.
+        sessions_mod._usage_cache = {
+            "credits_used": 41336.0,
+            "credits_plan": 10000.0,
+            "credits_overage": 31336.0,
+            "percentage": 413.4,
+            "plan": "KIRO POWER",
+            "resets": "2026-07-01",
+            "email": "cttong@amazon.com",
+            "start_url": "https://amzn.awsapps.com/start",
+            "source": "api",
+        }
+        whoami = AsyncMock(return_value={"email": "cttong@amazon.com",
+                                         "start_url": "https://amzn.awsapps.com/start"})
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "_fetch_whoami", whoami), \
+             patch("asyncio.create_subprocess_exec",
+                   AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))):
+            await sessions_mod._fetch_usage_bg()
+        # The richer API value is kept (not the scrape's 3164) and dimmed stale.
+        assert sessions_mod._usage_cache["credits_used"] == 41336.0
+        assert sessions_mod._usage_cache["credits_overage"] == 31336.0
+        assert sessions_mod._usage_cache["source"] == "api"
+        assert sessions_mod._usage_cache["stale"] is True
+        # whoami is fetched twice: once at the top of the refresh (credential
+        # anchor) and once ADJACENT to the scrape — the guard judges against the
+        # adjacent one so a mid-fallback account switch can't be preserved.
+        assert whoami.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_billing_cycle_reset_lets_lower_scrape_win(self):
+        # New billing cycle + API down: the cached (old-cycle) high value must
+        # NOT be preserved just because it's numerically larger — the reset date
+        # differs, so the lower scrape is the real new-cycle usage.
+        sessions_mod._usage_cache = {
+            "credits_used": 41336.0,
+            "credits_plan": 10000.0,
+            "credits_overage": 31336.0,
+            "plan": "KIRO POWER",
+            "resets": "2026-08-01",
+            "email": "cttong@amazon.com",
+            "start_url": "https://amzn.awsapps.com/start",
+            "source": "api",
+        }
+        whoami = AsyncMock(return_value={"email": "cttong@amazon.com",
+                                         "start_url": "https://amzn.awsapps.com/start"})
+        # SAMPLE_USAGE carries resets "2026-07-01" — a different cycle from the
+        # cached "2026-08-01".
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "_fetch_whoami", whoami), \
+             patch("asyncio.create_subprocess_exec",
+                   AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))):
+            await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache["credits_used"] == 3164.0
+        assert sessions_mod._usage_cache["source"] == "text"
+
+    @pytest.mark.asyncio
+    async def test_account_switch_does_not_preserve_prior_accounts_value(self):
+        # Cross-account safety: cached value belongs to account A (higher
+        # usage); the current identity is account B and its API call fails.
+        # The prior A value must NOT be preserved — otherwise A's usage AND
+        # email leak onto B's dashboard. The B scrape wins instead.
+        sessions_mod._usage_cache = {
+            "credits_used": 41336.0,
+            "credits_plan": 10000.0,
+            "credits_overage": 31336.0,
+            "plan": "KIRO POWER",
+            "email": "alice@amazon.com",
+            "source": "api",
+        }
+        whoami = AsyncMock(return_value={"email": "bob@amazon.com"})
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "_fetch_whoami", whoami), \
+             patch("asyncio.create_subprocess_exec",
+                   AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))):
+            await sessions_mod._fetch_usage_bg()
+        # B's fresh scrape replaced A's value (3164 = covered 3044 + overage 120).
+        assert sessions_mod._usage_cache["credits_used"] == 3164.0
+        assert sessions_mod._usage_cache["source"] == "text"
+        assert sessions_mod._usage_cache.get("email") == "bob@amazon.com"
+
+    @pytest.mark.asyncio
     async def test_reentrancy_guard_skips_when_already_fetching(self):
         sessions_mod._usage_fetching = True
         with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn") as resolve:
@@ -272,6 +364,90 @@ class TestNormalizeTextUsage:
 
     def test_no_plan_preserved_untouched(self):
         assert _normalize_text_usage({"raw": ""}) == {"raw": ""}
+
+
+class TestTextScrapeRegressesApiValue:
+    """The overage-blind text scrape must not clobber a richer API value."""
+
+    ID = {"email": "cttong@amazon.com"}
+
+    ID = {"email": "cttong@amazon.com", "start_url": "https://amzn.awsapps.com/start"}
+    CYCLE = {"resets": "2026-08-01"}
+
+    def test_api_prior_with_more_usage_blocks_scrape(self):
+        prev = {"credits_used": 41336.0, "source": "api", **self.ID, **self.CYCLE}
+        new = {"credits_used": 3164.0, **self.CYCLE}
+        assert _text_scrape_regresses_api_value(prev, new, self.ID) is True
+
+    def test_api_prior_with_equal_or_less_usage_allows_scrape(self):
+        prev = {"credits_used": 3164.0, "source": "api", **self.ID, **self.CYCLE}
+        assert _text_scrape_regresses_api_value(prev, {"credits_used": 3164.0, **self.CYCLE}, self.ID) is False
+        assert _text_scrape_regresses_api_value(prev, {"credits_used": 9000.0, **self.CYCLE}, self.ID) is False
+
+    def test_missing_reset_date_never_preserved(self):
+        # GetUsageLimits omitting nextDateReset -> cached value has no `resets`;
+        # a rollover must not be pinned, so preserve only with both dates present.
+        prev_no_reset = {"credits_used": 41336.0, "source": "api", **self.ID}
+        assert _text_scrape_regresses_api_value(prev_no_reset, {"credits_used": 100.0, **self.CYCLE}, self.ID) is False
+        prev = {"credits_used": 41336.0, "source": "api", **self.ID, **self.CYCLE}
+        assert _text_scrape_regresses_api_value(prev, {"credits_used": 100.0}, self.ID) is False
+
+    def test_different_identity_never_preserved(self):
+        # Account switch A->B: cached A value (higher usage) must NOT be kept
+        # when the current identity is B — otherwise A's usage + email leak.
+        prev = {"credits_used": 41336.0, "source": "api",
+                "email": "alice@amazon.com", "start_url": "https://a.awsapps.com/start"}
+        new = {"credits_used": 100.0}
+        assert _text_scrape_regresses_api_value(
+            prev, new, {"email": "bob@amazon.com", "start_url": "https://b.awsapps.com/start"}
+        ) is False
+
+    def test_same_email_different_org_never_preserved(self):
+        # Same human email across two Identity Center orgs (different start_url)
+        # is NOT the same account — must not preserve.
+        prev = {"credits_used": 41336.0, "source": "api",
+                "email": "cttong@amazon.com", "start_url": "https://orgA.awsapps.com/start"}
+        new = {"credits_used": 100.0}
+        assert _text_scrape_regresses_api_value(
+            prev, new, {"email": "cttong@amazon.com", "start_url": "https://orgB.awsapps.com/start"}
+        ) is False
+
+    def test_different_reset_date_allows_scrape(self):
+        # New billing cycle (reset date changed): the lower scrape is a
+        # legitimate rollover, not the overage-blind cap — let it win.
+        prev = {"credits_used": 41336.0, "source": "api", "resets": "2026-08-01", **self.ID}
+        new = {"credits_used": 200.0, "resets": "2026-09-01"}
+        assert _text_scrape_regresses_api_value(prev, new, self.ID) is False
+
+    def test_same_reset_date_still_blocks(self):
+        prev = {"credits_used": 41336.0, "source": "api", "resets": "2026-08-01", **self.ID}
+        new = {"credits_used": 3164.0, "resets": "2026-08-01"}
+        assert _text_scrape_regresses_api_value(prev, new, self.ID) is True
+
+    def test_missing_email_on_either_side_never_preserved(self):
+        prev_no_email = {"credits_used": 41336.0, "source": "api"}
+        assert _text_scrape_regresses_api_value(prev_no_email, {"credits_used": 1.0}, self.ID) is False
+        prev = {"credits_used": 41336.0, "source": "api", **self.ID}
+        assert _text_scrape_regresses_api_value(prev, {"credits_used": 1.0}, {}) is False
+
+    def test_text_sourced_prior_never_protected(self):
+        # Only an authoritative API prior is worth protecting; a prior text
+        # value (itself capped) must not pin the pill.
+        prev = {"credits_used": 10000.0, "source": "text", **self.ID}
+        assert _text_scrape_regresses_api_value(prev, {"credits_used": 3164.0}, self.ID) is False
+
+    def test_missing_or_non_dict_prior_allows_scrape(self):
+        assert _text_scrape_regresses_api_value(None, {"credits_used": 1.0}, self.ID) is False
+        assert _text_scrape_regresses_api_value({}, {"credits_used": 1.0}, self.ID) is False
+        assert _text_scrape_regresses_api_value(
+            {"available": False}, {"credits_used": 1.0}, self.ID
+        ) is False
+
+    def test_non_numeric_usage_allows_scrape(self):
+        prev = {"credits_used": None, "source": "api", **self.ID, **self.CYCLE}
+        assert _text_scrape_regresses_api_value(prev, {"credits_used": 1.0, **self.CYCLE}, self.ID) is False
+        prev2 = {"credits_used": 5.0, "source": "api", **self.ID, **self.CYCLE}
+        assert _text_scrape_regresses_api_value(prev2, {"credits_used": None, **self.CYCLE}, self.ID) is False
 
 
 class TestFetchUsageBgApi:

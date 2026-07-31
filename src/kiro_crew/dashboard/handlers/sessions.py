@@ -213,6 +213,85 @@ def _normalize_text_usage(parsed: dict[str, object]) -> dict[str, object]:
     return out
 
 
+def _same_identity(cached: dict[str, object], identity: dict[str, object]) -> bool:
+    """True only when ``cached`` provably belongs to the current ``identity``.
+
+    Matches on BOTH the account email AND the SSO ``start_url`` (the IAM
+    Identity Center instance): the same human email can appear across different
+    Identity Center orgs, so email alone does not prove the same account —
+    pairing it with the issuer URL does. Every compared field must be a
+    non-empty string and equal; anything missing or mismatched is UNPROVEN
+    (``False``). The current identity's values are routed through the same
+    redaction the cached copy went through so the two are compared in the same
+    form.
+
+    This is the gate that stops an account switch A->B (with the API failing on
+    B's refresh) from keeping A's usage AND A's email on screen — including the
+    same-email-different-org case — without it, preserving the prior cache would
+    leak the previous account's data.
+    """
+    def _red(v: object) -> object:
+        return _redact_strings(v) if isinstance(v, str) else v
+
+    for key in ("email", "start_url"):
+        a = cached.get(key)
+        b = _red(identity.get(key))
+        if not (isinstance(a, str) and isinstance(b, str) and a and a == b):
+            return False
+    return True
+
+
+def _text_scrape_regresses_api_value(
+    prev: object, new: dict[str, object], identity: dict[str, object]
+) -> bool:
+    """True when a fresh text-scrape would clobber a richer API-sourced value.
+
+    The text scrape is overage-blind for org-managed accounts: recent kiro-cli
+    dropped the overage line from ``/usage`` stdout, so ``_normalize_text_usage``
+    caps ``credits_used`` at the plan (``covered + 0``) and reports zero overage.
+    The API path (``GetUsageLimits``) still returns the true total. When the API
+    call transiently fails and we fall back to the scrape, accepting that capped
+    value would overwrite the good API number and flip the pill from the real
+    figure (e.g. 41,336/10,000 = 413%) to a misleading 10,000/10,000 = 100%,
+    hiding all overage — the observed oscillation bug.
+
+    Guard against exactly that, but ONLY when it is safe to keep the prior value:
+      * the cached value is ``source == "api"`` (authoritative), AND
+      * it provably belongs to the CURRENT identity (``_same_identity``) — so an
+        account switch never pins the previous account's usage/email, AND
+      * it is the SAME billing cycle — BOTH ``resets`` dates present, non-empty
+        and equal; a missing or changed date lets the lower scrape win, AND
+      * it reports strictly more usage than the overage-blind scrape can see.
+    Text-only environments (no API prior) update normally, and a genuine
+    billing-cycle reset is reported by the primary API path, which runs first
+    every cycle, so this never pins a stale-high value once the API recovers.
+    """
+    if not isinstance(prev, dict) or prev.get("source") != "api":
+        return False
+    if not _same_identity(prev, identity):
+        return False
+    # Preserve ONLY within the same, provable billing cycle: both reset dates
+    # must be present, non-empty, and equal. A missing date on either side
+    # (e.g. GetUsageLimits omitting nextDateReset) is unprovable, so let the
+    # lower scrape win — a cycle rollover must never pin last cycle's total.
+    # Both sources emit `resets` as "%Y-%m-%d", so equality is apples-to-apples.
+    prev_resets = prev.get("resets")
+    new_resets = new.get("resets")
+    if not (
+        isinstance(prev_resets, str) and prev_resets
+        and isinstance(new_resets, str) and new_resets
+        and prev_resets == new_resets
+    ):
+        return False
+    prev_used = prev.get("credits_used")
+    new_used = new.get("credits_used")
+    if not isinstance(prev_used, (int, float)) or not isinstance(
+        new_used, (int, float)
+    ):
+        return False
+    return prev_used > new_used
+
+
 def _redact_strings(value: object) -> object:
     """Recursively redact credentials / exfil URLs from every string leaf.
 
@@ -457,24 +536,39 @@ async def _fetch_usage_bg() -> None:
             # redact credentials / exfil URLs from every string leaf before the
             # dict is cached and served (kiro-cli output is untrusted).
             parsed = _normalize_text_usage(parsed)
+            # Re-resolve identity ADJACENT to the scrape, BEFORE any decision
+            # that consumes it. A profile switch can land in the window between
+            # the top-of-refresh whoami and now (the API attempt ≤30s + this
+            # scrape ≤60s), so the top identity may already be stale. This fresh
+            # value gates the preservation guard below AND labels the scrape if
+            # we proceed — both must judge against the same, adjacent identity,
+            # else an account switch mid-fallback could keep the previous
+            # account's usage/email on screen. whoami costs no credits.
+            fresh_identity = await _fetch_whoami(kiro_bin)
+            if _text_scrape_regresses_api_value(_usage_cache, parsed, fresh_identity):
+                # The overage-blind text scrape reports less usage than a richer
+                # API value we already hold (the API call just transiently
+                # failed) that belongs to THIS account AND THIS billing cycle.
+                # Overwriting it would flip the pill from the true overage to a
+                # capped 100%, so keep the API figure and only dim it as stale.
+                _usage_cache = {**_usage_cache, "stale": True}
+                _usage_cache_ts = time.time()
+                logger.info(
+                    "Kiro usage: kept API value (%s credits) over "
+                    "overage-blind text scrape (%s)",
+                    _usage_cache.get("credits_used", "?"),
+                    parsed.get("credits_used", "?"),
+                )
+                return
             parsed = {k: _redact_strings(v) for k, v in parsed.items()}
             # No ARN coupling check here: this scrape IS kiro-cli's own `/usage`
-            # output, so it and `whoami` describe the same account by construction.
-            #
-            # But that argument only holds if the two are read ADJACENTLY, so the
-            # identity is re-resolved HERE rather than reusing the one fetched at
-            # the top of this refresh. Between them sit a whoami (≤30s), the API
-            # attempt (≤30s) and this scrape (≤60s) — a profile switch landing in
-            # that window would pair the OLD account's email with the NEW
-            # account's credits, which is the misattribution this whole path
-            # exists to prevent. whoami costs no credits, so a second spawn is
-            # the cheap side of that trade.
-            #
-            # The API branch above does not need this: it gates the merge on
-            # `_identity_matches_account`, so a mid-refresh switch makes the
-            # stale identity's ARN mismatch the accepted credential's and the
-            # email is simply dropped.
-            fresh_identity = await _fetch_whoami(kiro_bin)
+            # output, so it and `fresh_identity` describe the same account by
+            # construction — because `fresh_identity` was resolved ADJACENTLY
+            # just above, not reused from the top of this refresh. The API branch
+            # above does not need this: it gates its merge on
+            # `_identity_matches_account`, so a mid-refresh switch makes the stale
+            # identity's ARN mismatch the accepted credential's and the email is
+            # simply dropped.
             parsed.update(
                 {
                     k: _redact_strings(v)
