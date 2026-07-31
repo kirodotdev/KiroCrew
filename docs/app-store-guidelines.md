@@ -334,6 +334,35 @@ Teams can host their own app registries without requiring KiroCrew team review f
 
 **Trust model:** user explicitly opts in by adding the registry to their config. The repo must be accessible via git.
 
+**Credential posture and the same-repo carve-out:**
+
+By default, apps listed in an external registry index are cloned **credential-free** (anonymous env + strict sandbox hiding `~/.ssh`) — a confused-deputy defense preventing an untrusted index from reading private sibling repos on the owner's trusted forge. This means private-forge registries whose apps live in *separate* repos require each app repo to be independently accessible (typically only works with public forges).
+
+The **same-repo carve-out** relaxes this for the common **monorepo layout**: when an index entry's effective clone URL is **byte-identical** to the owner-configured registry repo URL (the URL the owner typed when adding the registry), the confused-deputy argument does not apply — the owner explicitly designated that exact URL. Such entries use owner credentials (`minimal_env` + context sandbox mode) for both manifest fetches and installs. The comparison is exact string equality with no URL normalization; sibling repos on the same host remain anonymous+strict.
+
+**Private-forge recipe (e.g. Amazon GitFarm):**
+
+For credential-only forges (SSH-key auth, no anonymous access), use the monorepo `apps/*` layout so all apps are inside the registry repo:
+
+1. Create a single registry package/repo containing:
+   ```
+   app-registry.json          # or just use apps/*/ auto-discovery
+   apps/
+     my-tool/app.json
+     my-tool/src/...
+     other-app/app.json
+     other-app/src/...
+   ```
+
+2. Add the registry with the SSH URL:
+   ```json
+   {"name": "my-team", "repo": "ssh://git.amazon.com/pkg/MyTeamApps", "branch": "main"}
+   ```
+
+3. Because every app's clone URL matches the registry repo URL (the monorepo layout ensures this), the same-repo carve-out applies and all manifest fetches + installs succeed with the owner's SSH credentials.
+
+**Important:** apps in *separate* repos on the same private forge will NOT benefit from the carve-out (their URLs differ from the registry URL) and will fail to clone. Keep apps inside the registry repo for private forges.
+
 **Management API** (`/api/apps/registries`):
 
 | Method | Purpose |

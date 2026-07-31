@@ -259,6 +259,97 @@ describe('RegistryManager', () => {
     })
   })
 
+  // --- SSH URL parity tests: frontend isValidRepo must accept the same forms
+  // as the backend _SAFE_SSH_URL_RE (which now allows userless ssh://).
+  describe('ssh URL validation parity', () => {
+    it('accepts userless ssh:// URL (e.g. ssh://git.example.com/pkg/Name)', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [] })
+      mockUpdateRegistries.mockResolvedValue({ ok: true, registries: [] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Add Registry'))
+      fireEvent.click(screen.getByText('Add Registry'))
+      fireEvent.change(screen.getByPlaceholderText(/app-registry/), {
+        target: { value: 'ssh://git.example.com/pkg/MyApps' },
+      })
+      const buttons = screen.getAllByText('Add Registry')
+      fireEvent.click(buttons[buttons.length - 1])
+      await waitFor(() => {
+        expect(mockUpdateRegistries).toHaveBeenCalledWith([
+          { name: '', repo: 'ssh://git.example.com/pkg/MyApps', branch: '' },
+        ])
+      })
+    })
+
+    it('accepts ssh:// URL with user@ (e.g. ssh://user@git.example.com/pkg/Name)', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [] })
+      mockUpdateRegistries.mockResolvedValue({ ok: true, registries: [] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Add Registry'))
+      fireEvent.click(screen.getByText('Add Registry'))
+      fireEvent.change(screen.getByPlaceholderText(/app-registry/), {
+        target: { value: 'ssh://user@git.example.com/pkg/MyApps' },
+      })
+      const buttons = screen.getAllByText('Add Registry')
+      fireEvent.click(buttons[buttons.length - 1])
+      await waitFor(() => {
+        expect(mockUpdateRegistries).toHaveBeenCalledWith([
+          { name: '', repo: 'ssh://user@git.example.com/pkg/MyApps', branch: '' },
+        ])
+      })
+    })
+
+    it('accepts ssh:// URL with port (e.g. ssh://git.example.com:22/pkg/Name)', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [] })
+      mockUpdateRegistries.mockResolvedValue({ ok: true, registries: [] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Add Registry'))
+      fireEvent.click(screen.getByText('Add Registry'))
+      fireEvent.change(screen.getByPlaceholderText(/app-registry/), {
+        target: { value: 'ssh://git.example.com:22/pkg/MyApps' },
+      })
+      const buttons = screen.getAllByText('Add Registry')
+      fireEvent.click(buttons[buttons.length - 1])
+      await waitFor(() => {
+        expect(mockUpdateRegistries).toHaveBeenCalledWith([
+          { name: '', repo: 'ssh://git.example.com:22/pkg/MyApps', branch: '' },
+        ])
+      })
+    })
+
+    it('rejects plaintext http:// URL (mirrors backend MITM defense)', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Add Registry'))
+      fireEvent.click(screen.getByText('Add Registry'))
+      fireEvent.change(screen.getByPlaceholderText(/app-registry/), {
+        target: { value: 'http://github.com/org/app-registry' },
+      })
+      fireEvent.click(screen.getAllByText('Add Registry').pop()!)
+      await waitFor(() => {
+        expect(screen.getByText(/git URL or an alphanumeric name/)).toBeInTheDocument()
+      })
+      expect(mockUpdateRegistries).not.toHaveBeenCalled()
+    })
+
+    it('accepts scp-style git@host:path form', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [] })
+      mockUpdateRegistries.mockResolvedValue({ ok: true, registries: [] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Add Registry'))
+      fireEvent.click(screen.getByText('Add Registry'))
+      fireEvent.change(screen.getByPlaceholderText(/app-registry/), {
+        target: { value: 'git@github.com:org/app-registry.git' },
+      })
+      const buttons = screen.getAllByText('Add Registry')
+      fireEvent.click(buttons[buttons.length - 1])
+      await waitFor(() => {
+        expect(mockUpdateRegistries).toHaveBeenCalledWith([
+          { name: '', repo: 'git@github.com:org/app-registry.git', branch: '' },
+        ])
+      })
+    })
+  })
+
   it('renders pending state while syncing', async () => {
     mockListRegistries.mockResolvedValue({
       registries: [{ name: 'Identity', repo: 'IdentityApps', branch: 'main' }],

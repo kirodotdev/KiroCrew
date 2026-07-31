@@ -153,7 +153,9 @@ def minimal_env(**extra: str) -> dict[str, str]:
 # Env keys that let git present the gateway's *ambient* identity to a remote:
 # the SSH agent socket, and any GIT_SSH / GIT_SSH_COMMAND override that could
 # route auth through the owner's keys. Stripped for index-originated clones.
-_GIT_CREDENTIAL_ENV_KEYS = frozenset({"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND"})
+_GIT_CREDENTIAL_ENV_KEYS = frozenset(
+    {"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND"}
+)
 
 
 def anonymous_git_env(**extra: str) -> dict[str, str]:
@@ -237,6 +239,50 @@ def _entry_git_url(entry: dict[str, Any]) -> str:
     """
     url = (entry.get("gitUrl") or entry.get("repo") or "").strip()
     return url
+
+
+def _is_owner_designated_repo(entry: dict[str, Any]) -> bool:
+    """True when an index entry's clone URL is the owner-configured registry repo.
+
+    Same-repo credential carve-out: the confused-deputy defense (anonymous env +
+    strict sandbox) exists because an *untrusted index* can point at a private
+    sibling repo on the owner's trusted forge. When the entry's effective clone
+    URL is **byte-identical** to the owner-typed ``ExternalRegistryConfig.repo``,
+    the confused-deputy argument does not apply — the owner explicitly designated
+    exactly that URL by adding the registry. Such entries may use owner
+    credentials (``minimal_env`` + context sandbox mode) instead of the
+    anonymous+strict posture.
+
+    Security boundary:
+      - Compares against the **config-stored** repo URL, never against
+        index-supplied fields — the index can ``setdefault`` the repo field,
+        but an explicit override by the index will NOT match the config URL.
+      - Exact string equality only; no normalization, no host-level matching
+        (host-granular trust is exactly the confused-deputy hole this defense
+        exists for).
+      - ``subdirectory`` remains untrusted: ``_contained_join`` containment
+        checks are unaffected by this predicate.
+    """
+    registry_name = entry.get("_registry")
+    if not registry_name:
+        # Not from an external index — bundled entries are already
+        # owner-designated via the absence of ``_registry``.
+        return False
+
+    effective_url = _entry_git_url(entry)
+    if not effective_url:
+        return False
+
+    # Look up the owner-configured registry repo URL from config.
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    config = KiroCrewConfig.load()
+    for reg in config.registries or []:
+        reg_key = reg.name or reg.repo
+        if reg_key == registry_name:
+            # Byte-identical comparison — the security contract.
+            return effective_url == reg.repo
+    return False
 
 
 def _looks_like_git_url(url: str) -> bool:
@@ -553,6 +599,8 @@ async def _fetch_app_manifest(
     subdirectory: str = "",
     app_name: str = "",
     git_url: str = "",
+    *,
+    owner_designated: bool = False,
 ) -> dict[str, Any] | None:
     """Fetch app.json for an app from its source repo (lightweight).
 
@@ -567,6 +615,11 @@ async def _fetch_app_manifest(
     listing path on a vanilla machine. *subdirectory* is an untrusted
     index-controlled value; it is joined via :func:`_contained_join` so an
     absolute/``..``/symlink value can never read outside the clone root.
+
+    *owner_designated*: when True (same-repo credential carve-out), the
+    clone uses ``minimal_env()`` + context sandbox mode instead of the
+    default anonymous+strict posture. Only set when the entry's effective
+    clone URL is byte-identical to the owner-configured registry repo URL.
     """
     # Try persistent clone first (already installed)
     if app_name:
@@ -613,17 +666,24 @@ async def _fetch_app_manifest(
             git_url,
             tmp_root,
         ]
-        # Index-originated automatic clone: force strict sandbox (~/.ssh hidden)
-        # and a credential-free env so a trusted-host repo injected by an
-        # untrusted index can't be cloned with the gateway's ambient identity
-        # (confused-deputy defense — see anonymous_git_env).
-        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode="strict")
+        # Credential posture for the manifest clone. Default: anonymous+strict
+        # (confused-deputy defense — see anonymous_git_env). Same-repo
+        # carve-out: when owner_designated is True the clone URL is the
+        # owner-configured registry repo itself, so the confused-deputy
+        # argument does not apply — use owner credentials + context sandbox.
+        if owner_designated:
+            clone_env = minimal_env()
+            sandbox_mode = _context_clone_sandbox_mode(git_url)
+        else:
+            clone_env = anonymous_git_env()
+            sandbox_mode = "strict"
+        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=sandbox_mode)
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await asyncio.create_subprocess_exec(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=anonymous_git_env(),
+            env=clone_env,
             preexec_fn=resource_limit_preexec(),
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
@@ -676,8 +736,17 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
         return _merge_manifest(entry, cached)
 
     # Fetch from repo
+    # Same-repo credential carve-out: if the entry's clone URL matches the
+    # owner-configured registry repo, use owner credentials for the manifest
+    # fetch (the confused-deputy defense does not apply to the owner's own URL).
+    is_owner_repo = await asyncio.to_thread(_is_owner_designated_repo, entry)
     manifest = await _fetch_app_manifest(
-        repo, branch, subdirectory, app_name=name, git_url=git_url
+        repo,
+        branch,
+        subdirectory,
+        app_name=name,
+        git_url=git_url,
+        owner_designated=is_owner_repo,
     )
     if manifest:
         await asyncio.to_thread(_write_manifest_cache, name, manifest)
@@ -750,7 +819,9 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     # Screenshots dark — convert repo-relative paths to blob proxy URLs
     screenshots_dark = manifest.get("screenshotsDark", [])
     if screenshots_dark and repo:
-        result["screenshotsDark"] = [f"/api/apps/blob?repo={repo}&path={p}" for p in screenshots_dark]
+        result["screenshotsDark"] = [
+            f"/api/apps/blob?repo={repo}&path={p}" for p in screenshots_dark
+        ]
 
     # Hero images — convert repo-relative paths to blob proxy URLs
     hero = manifest.get("heroImage", "")
@@ -957,9 +1028,7 @@ async def _communicate_with_timeout(
         return await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         try:
-            await platform_compat.kill_process_tree_async(
-                proc.pid, platform_compat.SIGKILL
-            )
+            await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
         except OSError:
             proc.kill()
         await proc.wait()
@@ -1299,9 +1368,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
         # Read the (possibly stale) prior index up front so we know which
         # per-app manifest caches this registry contributed, even if the
         # refetch changes/removes some entries.
-        prior = await asyncio.to_thread(
-            _read_external_registry_cache, name, ignore_ttl=True
-        )
+        prior = await asyncio.to_thread(_read_external_registry_cache, name, ignore_ttl=True)
         # Fetch-then-swap: the cache is overwritten only on a successful fetch.
         entries = await _fetch_and_cache_external_registry(reg)
         if entries is None:
@@ -1316,9 +1383,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
             if isinstance(entry_name, str) and entry_name:
                 manifest_names.add(entry_name)
         for entry_name in manifest_names:
-            await asyncio.to_thread(
-                _expire_cache_file, _manifest_cache_path(entry_name)
-            )
+            await asyncio.to_thread(_expire_cache_file, _manifest_cache_path(entry_name))
         refreshed.append(name)
         results.append({"name": name, "ok": True})
 
@@ -1546,18 +1611,14 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
     # The build timeout path never blocks the event loop on taskkill.exe.
     # POSIX branch stays inline (os.killpg is non-blocking).
     try:
-        await platform_compat.kill_process_tree_async(
-            proc.pid, platform_compat.SIGTERM
-        )
+        await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGTERM)
     except OSError:
         pass
     try:
         await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_PERIOD)
     except asyncio.TimeoutError:
         try:
-            await platform_compat.kill_process_tree_async(
-                proc.pid, platform_compat.SIGKILL
-            )
+            await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
         except OSError:
             proc.kill()
         await proc.wait()
@@ -1883,22 +1944,39 @@ async def install_from_registry(
     # index-originated install clones credential-free + strict-sandboxed too.
     # Bundled (curated, KiroCrew-shipped) entries have no ``_registry`` marker
     # and remain owner-designated → full credentials.
+    #
+    # Same-repo credential carve-out: when the entry's effective clone URL is
+    # byte-identical to the owner-configured registry repo URL, the
+    # confused-deputy argument does not apply — the owner explicitly designated
+    # exactly that URL by adding the registry. The carve-out flips BOTH env
+    # AND sandbox mode together (the strict sandbox hiding ~/.ssh is the
+    # load-bearing enforcement on credential-helper setups, not the env alone).
+    # Sibling repos on the same host remain anonymous+strict.
     index_originated = bool(entry.get("_registry"))
+    if index_originated and await asyncio.to_thread(_is_owner_designated_repo, entry):
+        index_originated = False
 
     # Fetch the app's manifest for platform info and install script. This is a
     # read-only metadata fetch (git archive of app.json), safe to do before the
     # admission gate so a correctly-signed manifest can be passed to it.
+    # Same-repo carve-out: if the entry is from an external index but its clone
+    # URL matches the owner-configured registry repo (index_originated was
+    # flipped to False above), use owner credentials for the manifest fetch too.
+    manifest_owner_designated = bool(entry.get("_registry")) and not index_originated
     manifest = await _fetch_app_manifest(
-        repo, branch, subdirectory, app_name=name, git_url=git_url
+        repo,
+        branch,
+        subdirectory,
+        app_name=name,
+        git_url=git_url,
+        owner_designated=manifest_owner_designated,
     )
 
     # Admission: gate AFTER the manifest fetch (so a signed manifest is verified)
     # but BEFORE the repo is cloned and setup.onInstall runs, so a banned /
     # non-allowlisted / unsigned app is never cloned nor its install script run.
     admission_manifest = AppManifest.from_dict(manifest) if manifest else None
-    denied = app_admission_denied(
-        name, manifest=admission_manifest, action="install_from_registry"
-    )
+    denied = app_admission_denied(name, manifest=admission_manifest, action="install_from_registry")
     if denied:
         sel().log_api_access(
             caller="app_install_from_registry",
