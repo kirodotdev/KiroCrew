@@ -4605,6 +4605,25 @@
         "widget_density": "Densidade de widgets",
         "your_role": "Sua função"
       },
+      "computerUsePanel": {
+        "accessibility": "Acessibilidade",
+        "advisory_only": "Apenas informativo",
+        "also_capture_the_target_window_and_pass_its_file": "Captura também a janela de destino e passa o caminho do arquivo da captura. A árvore de acessibilidade continua sendo o canal principal; janelas que contêm um campo de senha nunca são capturadas.",
+        "attach_screenshots": "Anexar capturas de tela",
+        "computer_use": "Uso do computador",
+        "could_not_load_computer_use_settings": "Não foi possível carregar as configurações de uso do computador.",
+        "could_not_save_computer_use_settings": "Não foi possível salvar as configurações de uso do computador.",
+        "enable_computer_use": "Ativar o uso do computador",
+        "let_the_agent_read_desktop_app_windows_through_a": "Permite que o agente leia janelas de apps de desktop pela acessibilidade e atue nos controles delas. Fica desativado até você ativar aqui — nenhum agente pode ativá-lo.",
+        "limits": "Limites",
+        "max_tree_nodes": "Máx. de nós da árvore",
+        "open_system_settings": "Abrir Ajustes do Sistema",
+        "permissions": "Permissões",
+        "retry": "Tentar novamente",
+        "screen_recording": "Gravação de Tela",
+        "screenshot_width": "Largura da captura de tela",
+        "show_cursor_motion": "Mostrar movimento do cursor"
+      },
       "developerPanel": {
         "developer_mode": "Modo desenvolvedor",
         "developer_tools": "Ferramentas de desenvolvedor",

@@ -4605,6 +4605,25 @@
         "widget_density": "Densité des widgets",
         "your_role": "Votre rôle"
       },
+      "computerUsePanel": {
+        "accessibility": "Accessibilité",
+        "advisory_only": "À titre indicatif",
+        "also_capture_the_target_window_and_pass_its_file": "Capture aussi la fenêtre cible et transmet son chemin de fichier. L’arborescence d’accessibilité reste le canal principal ; les fenêtres contenant un champ de mot de passe ne sont jamais capturées.",
+        "attach_screenshots": "Joindre les captures d’écran",
+        "computer_use": "Utilisation de l’ordinateur",
+        "could_not_load_computer_use_settings": "Impossible de charger les paramètres d’utilisation de l’ordinateur.",
+        "could_not_save_computer_use_settings": "Impossible d’enregistrer les paramètres d’utilisation de l’ordinateur.",
+        "enable_computer_use": "Activer l’utilisation de l’ordinateur",
+        "let_the_agent_read_desktop_app_windows_through_a": "Permet à l’agent de lire les fenêtres des applications de bureau via l’accessibilité et d’agir sur leurs contrôles. Désactivé jusqu’à ce que tu l’actives ici — un agent ne peut pas l’activer.",
+        "limits": "Limites",
+        "max_tree_nodes": "Nœuds max. de l’arborescence",
+        "open_system_settings": "Ouvrir Réglages Système",
+        "permissions": "Autorisations",
+        "retry": "Réessayer",
+        "screen_recording": "Enregistrement de l’écran",
+        "screenshot_width": "Largeur de la capture d’écran",
+        "show_cursor_motion": "Afficher le mouvement du curseur"
+      },
       "developerPanel": {
         "developer_mode": "Mode développeur",
         "developer_tools": "Outils de développement",

@@ -4521,6 +4521,25 @@
         "widget_density": "小组件密度",
         "your_role": "你的角色"
       },
+      "computerUsePanel": {
+        "accessibility": "辅助功能",
+        "advisory_only": "仅供参考",
+        "also_capture_the_target_window_and_pass_its_file": "同时截取目标窗口并传递其文件路径。辅助功能树仍是主要通道；包含密码字段的窗口从不截取。",
+        "attach_screenshots": "附带截图",
+        "computer_use": "电脑操作",
+        "could_not_load_computer_use_settings": "无法加载电脑操作设置。",
+        "could_not_save_computer_use_settings": "无法保存电脑操作设置。",
+        "enable_computer_use": "启用电脑操作",
+        "let_the_agent_read_desktop_app_windows_through_a": "让代理通过辅助功能读取桌面应用窗口并操作其中的控件。默认关闭，只能由你在此打开 — 代理无法自行启用。",
+        "limits": "限制",
+        "max_tree_nodes": "最大树节点数",
+        "open_system_settings": "打开系统设置",
+        "permissions": "权限",
+        "retry": "重试",
+        "screen_recording": "屏幕录制",
+        "screenshot_width": "截图宽度",
+        "show_cursor_motion": "显示光标移动轨迹"
+      },
       "developerPanel": {
         "developer_mode": "开发者模式",
         "developer_tools": "开发者工具",

@@ -707,6 +707,9 @@
         "update_error_server": "The update server returned an error.",
         "update_error_server_status": "The update server returned an error (HTTP {{status}}).",
         "update_error_unknown": "Something went wrong. Try checking for updates again."
+      },
+      "computerUsePanel": {
+        "could_not_save_computer_use_settings": "Could not save computer-use settings."
       }
     }
   },

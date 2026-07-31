@@ -7,6 +7,8 @@ import InfoTip from '../../components/InfoTip'
 import { api } from '../../api/client'
 import type { ComputerUseConfigData, ComputerUseConfigSave } from '../../api/client'
 
+import { i18nT } from '../../i18n/t'
+
 const QK = ['computer-use-config']
 
 /** macOS System Settings deep links for the two TCC grants (mirrors the
@@ -128,7 +130,7 @@ function PermRow({ label, state, pane }: { label: string; state: string; pane: s
         <Badge variant={variant}>{PERM_LABELS[state] ?? state}</Badge>
         {state !== GRANTED && (
           <Btn onClick={() => openSystemSettings(pane)} aria-label={`Open System Settings for ${label}`}>
-            Open System Settings <ExternalLink className="lucide-inline" />
+            {i18nT('pages.settings.computerUsePanel.open_system_settings')} <ExternalLink className="lucide-inline" />
           </Btn>
         )}
       </span>
@@ -198,7 +200,7 @@ export function ComputerUsePanel() {
     },
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData<ComputerUseConfigData>(QK, ctx.prev)
-      setSaveError('Could not save computer-use settings.')
+      setSaveError(i18nT('pages.settings.computerUsePanel.could_not_save_computer_use_settings'))
     },
     onSettled: () => qc.invalidateQueries({ queryKey: QK }),
   })
@@ -222,11 +224,11 @@ export function ComputerUsePanel() {
 
   if (cfgQ.isError) {
     return (
-      <SettingsSection title="Computer Use">
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
         <SettingsCard>
           <div className="text-[13px] text-danger">
-            Could not load computer-use settings.{' '}
-            <Btn onClick={() => cfgQ.refetch()}>Retry</Btn>
+            {i18nT('pages.settings.computerUsePanel.could_not_load_computer_use_settings')}{' '}
+            <Btn onClick={() => cfgQ.refetch()}>{i18nT('pages.settings.computerUsePanel.retry')}</Btn>
           </div>
         </SettingsCard>
       </SettingsSection>
@@ -235,7 +237,7 @@ export function ComputerUsePanel() {
 
   if (!cfg) {
     return (
-      <SettingsSection title="Computer Use">
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
         <SettingsCard><FormSkeleton rows={['toggle', 'field', 'field']} /></SettingsCard>
       </SettingsSection>
     )
@@ -243,7 +245,7 @@ export function ComputerUsePanel() {
 
   if (!cfg.supported) {
     return (
-      <SettingsSection title="Computer Use">
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
         <SettingsCard>
           <div className="text-[13px] text-muted">
             {cfg.reason || `Computer use is not available on ${cfg.platform}.`}
@@ -272,18 +274,18 @@ export function ComputerUsePanel() {
         </div>
       )}
 
-      <SettingsSection title="Computer Use">
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
         <SettingsCard>
           <SettingsToggle
-            label="Enable computer use"
-            description="Let the agent read desktop app windows through accessibility and act on their controls. Off until you turn it on here — an agent cannot enable it."
+            label={i18nT('pages.settings.computerUsePanel.enable_computer_use')}
+            description={i18nT('pages.settings.computerUsePanel.let_the_agent_read_desktop_app_windows_through_a')}
             checked={cfg.enabled}
             onChange={v => save({ enabled: v })}
             disabled={busy}
           />
           <SettingsToggle
-            label="Attach screenshots"
-            description="Also capture the target window and pass its file path. The accessibility tree stays the primary channel; windows containing a password field are never captured."
+            label={i18nT('pages.settings.computerUsePanel.attach_screenshots')}
+            description={i18nT('pages.settings.computerUsePanel.also_capture_the_target_window_and_pass_its_file')}
             checked={cfg.attach_screenshot}
             onChange={v => save({ attach_screenshot: v })}
             disabled={busy}
@@ -292,7 +294,7 @@ export function ComputerUsePanel() {
               actually draw (macOS). */}
           {cfg.enabled && cfg.cursor_motion_supported && (
             <SettingsToggle
-              label="Show cursor motion"
+              label={i18nT('pages.settings.computerUsePanel.show_cursor_motion')}
               description={CURSOR_MOTION_DESC}
               checked={cfg.cursor_motion}
               onChange={v => save({ cursor_motion: v })}
@@ -309,14 +311,14 @@ export function ComputerUsePanel() {
       </SettingsSection>
 
       {cfg.platform === DARWIN && (
-        <SettingsSection title="Permissions">
+        <SettingsSection title={i18nT('pages.settings.computerUsePanel.permissions')}>
           <SettingsCard>
             <div className="flex items-center gap-1.5 pb-1 text-[13px] text-muted">
-              <span>Advisory only</span>
+              <span>{i18nT('pages.settings.computerUsePanel.advisory_only')}</span>
               <InfoTip text={ADVISORY} />
             </div>
-            <PermRow label="Accessibility" state={cfg.permissions.accessibility} pane={PANE_ACCESSIBILITY} />
-            <PermRow label="Screen Recording" state={cfg.permissions.screen_recording} pane={PANE_SCREEN_RECORDING} />
+            <PermRow label={i18nT('pages.settings.computerUsePanel.accessibility')} state={cfg.permissions.accessibility} pane={PANE_ACCESSIBILITY} />
+            <PermRow label={i18nT('pages.settings.computerUsePanel.screen_recording')} state={cfg.permissions.screen_recording} pane={PANE_SCREEN_RECORDING} />
             {cfg.permissions.responsible_hint && (
               <div className="pt-1 text-[13px] text-muted">{cfg.permissions.responsible_hint}</div>
             )}
@@ -324,12 +326,12 @@ export function ComputerUsePanel() {
         </SettingsSection>
       )}
 
-      <SettingsSection title="Limits">
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.limits')}>
         <SettingsCard>
           <div className="pb-2 text-[13px] text-muted">{LIMITS_INTRO}</div>
           <SettingsInput
-            label="Max tree nodes"
-            aria-label="Max tree nodes"
+            label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
+            aria-label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
             description={NODES_DESC}
             type="number"
             value={draftNodes ?? String(cfg.max_tree_nodes)}
@@ -338,8 +340,8 @@ export function ComputerUsePanel() {
             disabled={busy}
           />
           <SettingsInput
-            label="Screenshot width"
-            aria-label="Screenshot width"
+            label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
+            aria-label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
             description={WIDTH_DESC}
             type="number"
             value={draftWidth ?? String(cfg.screenshot_max_px)}

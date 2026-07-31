@@ -4563,6 +4563,25 @@
         "widget_density": "উইজেট ঘনত্ব",
         "your_role": "আপনার ভূমিকা"
       },
+      "computerUsePanel": {
+        "accessibility": "অ্যাক্সেসিবিলিটি",
+        "advisory_only": "শুধু তথ্যের জন্য",
+        "also_capture_the_target_window_and_pass_its_file": "লক্ষ্য উইন্ডোটিও ক্যাপচার করে তার ফাইল পাথ পাঠানো হয়। অ্যাক্সেসিবিলিটি ট্রি-ই প্রধান চ্যানেল হিসেবে থাকে; পাসওয়ার্ড ফিল্ড আছে এমন উইন্ডো কখনোই ক্যাপচার করা হয় না।",
+        "attach_screenshots": "স্ক্রিনশট সংযুক্ত করুন",
+        "computer_use": "কম্পিউটার ব্যবহার",
+        "could_not_load_computer_use_settings": "কম্পিউটার ব্যবহারের সেটিংস লোড করা যায়নি।",
+        "could_not_save_computer_use_settings": "কম্পিউটার ব্যবহারের সেটিংস সংরক্ষণ করা যায়নি।",
+        "enable_computer_use": "কম্পিউটার ব্যবহার চালু করুন",
+        "let_the_agent_read_desktop_app_windows_through_a": "এজেন্টকে অ্যাক্সেসিবিলিটির মাধ্যমে ডেস্কটপ অ্যাপের উইন্ডো পড়তে ও সেগুলোর কন্ট্রোল পরিচালনা করতে দিন। এখানে চালু না করা পর্যন্ত এটি বন্ধ থাকে — কোনো এজেন্ট নিজে থেকে এটি চালু করতে পারে না।",
+        "limits": "সীমা",
+        "max_tree_nodes": "সর্বোচ্চ ট্রি নোড",
+        "open_system_settings": "সিস্টেম সেটিংস খুলুন",
+        "permissions": "অনুমতি",
+        "retry": "আবার চেষ্টা করুন",
+        "screen_recording": "স্ক্রিন রেকর্ডিং",
+        "screenshot_width": "স্ক্রিনশটের প্রস্থ",
+        "show_cursor_motion": "কার্সারের নড়াচড়া দেখান"
+      },
       "developerPanel": {
         "developer_mode": "ডেভেলপার মোড",
         "developer_tools": "ডেভেলপার টুল",

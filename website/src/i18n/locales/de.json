@@ -4563,6 +4563,25 @@
         "widget_density": "Widget-Dichte",
         "your_role": "Ihre Rolle"
       },
+      "computerUsePanel": {
+        "accessibility": "Bedienungshilfen",
+        "advisory_only": "Nur informativ",
+        "also_capture_the_target_window_and_pass_its_file": "Zusätzlich das Zielfenster aufnehmen und dessen Dateipfad übergeben. Der Baum der Bedienungshilfen bleibt der primäre Kanal; Fenster mit einem Passwortfeld werden nie aufgenommen.",
+        "attach_screenshots": "Screenshots anhängen",
+        "computer_use": "Computer-Nutzung",
+        "could_not_load_computer_use_settings": "Einstellungen für die Computer-Nutzung konnten nicht geladen werden.",
+        "could_not_save_computer_use_settings": "Einstellungen für die Computer-Nutzung konnten nicht gespeichert werden.",
+        "enable_computer_use": "Computer-Nutzung aktivieren",
+        "let_the_agent_read_desktop_app_windows_through_a": "Dem Agenten erlauben, Desktop-App-Fenster über die Bedienungshilfen zu lesen und deren Steuerelemente zu bedienen. Aus, bis du sie hier einschaltest — ein Agent kann sie nicht aktivieren.",
+        "limits": "Grenzwerte",
+        "max_tree_nodes": "Max. Baumknoten",
+        "open_system_settings": "Systemeinstellungen öffnen",
+        "permissions": "Berechtigungen",
+        "retry": "Wiederholen",
+        "screen_recording": "Bildschirmaufnahme",
+        "screenshot_width": "Screenshot-Breite",
+        "show_cursor_motion": "Cursorbewegung anzeigen"
+      },
       "developerPanel": {
         "developer_mode": "Entwicklermodus",
         "developer_tools": "Entwicklerwerkzeuge",
