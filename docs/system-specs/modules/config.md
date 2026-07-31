@@ -622,6 +622,40 @@ gateway, but it does not scale indefinitely — the documented next step is to k
 isolated to `website/src/i18n/index.ts` plus a `<Suspense>` boundary in
 `main.tsx`; no call site changes.
 
+#### The tag reaches the agent, too
+
+`context.py::_build_ui_language_section` injects the configured tag into session
+context as a `[UI LANGUAGE] <tag>` block (next to `[CURRENT AGENT]`/`[RUNTIME]`,
+and in `minimal_context` mode as well). It exists for one string: the tool-call
+purpose (`__tool_use_purpose`), which the dashboard paints as the tool-call pill
+label and the messaging renderers reuse as the task title. That is the only piece
+of model-generated prose rendered as *chrome*, and without the block the model
+has nothing to go on and mirrors the language the user typed in — an inferred
+signal that flips mid-session the moment the user pastes an English stack trace,
+and one that persists, since purposes are stored in session history.
+
+Three properties are load-bearing:
+
+- **`""` injects nothing.** Auto is resolved client-side by `detect.ts`; the
+  backend does not know the outcome, so there is no truthful value to inject and
+  un-configured installs keep byte-identical context.
+- **The raw tag is injected, not a display name.** A backend code→name table
+  would be a second list to keep in sync with `SUPPORTED_LANGUAGES` and would
+  degrade to the tag for anything missing from it regardless. Raw is not
+  unchecked: the builder re-validates the shape (`_UI_LANGUAGE_TAG_RE`, a
+  superset-safe local mirror of `_LANGUAGE_TAG_RE`) and drops anything that is
+  not tag-shaped. `PUT /api/config/theme` is not the only way a value reaches
+  the field — the loader coerces whatever the JSON holds into `str`, so a
+  hand-edited `"language": null` arrives as the literal `"None"` — and a value
+  that lands in the system prompt should not depend on its writer having
+  validated it.
+- **Scope is the purpose text only.** The block says so explicitly, because
+  widening it would collide with the base prompt's rule to reply in the user's
+  language.
+
+It is best-effort steering with no enforcement path: nothing validates the
+language a model actually emits.
+
 ### Foreign-agent import onboarding state
 
 `DashboardConfig.import_onboarded` is a separate workspace-persistent gate from

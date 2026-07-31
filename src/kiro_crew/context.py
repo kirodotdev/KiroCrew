@@ -680,6 +680,76 @@ def _build_user_profile_section(cfg: "KiroCrewConfig") -> str:
     )
 
 
+#: Shape a ``dashboard.language`` value must have before it is injected into the
+#: prompt. Deliberately a LOCAL check rather than an import of the dashboard
+#: handler's ``_LANGUAGE_TAG_RE`` (context.py must not depend on the aiohttp
+#: handler layer), and deliberately a superset-safe one: every tag that
+#: validator accepts matches this, so the two cannot disagree about a legitimate
+#: value. It exists because the writer's validation is not the only way a value
+#: reaches this field — the config loader coerces whatever JSON holds into
+#: ``str``, so a hand-edited ``"language": null`` arrives as the literal
+#: ``"None"`` and ``["zh-CN"]`` as ``"['zh-CN']"``. Anything that is not
+#: tag-shaped is dropped rather than pasted into the system prompt.
+_UI_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
+
+
+def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
+    """Build the [UI LANGUAGE] block from ``dashboard.language``.
+
+    Tool-call purpose text (``__tool_use_purpose``) is the one piece of
+    model-generated prose that renders as UI *chrome* rather than as a reply:
+    the dashboard shows it as the tool-call pill label, and the messaging
+    renderers (Slack/Discord/Telegram/...) reuse it as the task title. Every
+    string around it — "Show details", button labels, timestamps — is driven by
+    the UI language, so a purpose written in the conversation's language mixes
+    two languages on one line, and does so *durably*: purposes are persisted in
+    session history.
+
+    Without this block the model has no idea what the UI language is and simply
+    mirrors whatever language the user typed in — an inferred signal that flips
+    the moment the user pastes an English stack trace. An explicit preference
+    should win over inference, so we hand the model the configured tag.
+
+    Returns "" when ``dashboard.language`` is empty, which is the "follow the
+    browser" sentinel: the resolution happens in the SPA's ``resolveLanguage()``
+    and the backend genuinely does not know the answer, so there is nothing
+    truthful to inject. Installs that never picked a language therefore see
+    byte-identical context.
+
+    The raw BCP-47 tag is injected rather than a display name on purpose: the
+    frontend's ``SUPPORTED_LANGUAGES`` registry is documented as the single
+    source of truth where adding a language is a pure data change, and a
+    code→name table here would be a second list to keep in sync (and would
+    silently degrade to the tag for anything missing from it anyway).
+
+    Raw does not mean unchecked: the value is dropped unless it is genuinely a
+    ``str`` and tag-shaped (``_UI_LANGUAGE_TAG_RE``), so neither a malformed
+    config nor a stubbed one can paste arbitrary text into the system prompt or
+    raise from a prompt builder — this runs on the session-start path, where an
+    exception costs the whole turn.
+
+    This is best-effort steering, not enforcement — there is no fallback if the
+    model ignores it.
+    """
+    lang = cfg.dashboard.language
+    if not isinstance(lang, str):
+        return ""
+    lang = lang.strip()
+    if not lang or not _UI_LANGUAGE_TAG_RE.match(lang):
+        return ""
+    return (
+        f"[UI LANGUAGE] {lang}\n"
+        "The interface around your output is rendered in this language "
+        "(BCP-47 tag). Write the short purpose you attach to each tool call in "
+        "this language too, so the tool-call timeline and the task titles "
+        "derived from it read in one language instead of two.\n"
+        "This applies ONLY to that tool-call purpose text. Your replies to the "
+        "user keep following the language the user writes in, and code, "
+        "identifiers, paths, and log output stay verbatim.\n"
+        "[End of UI language]\n\n"
+    )
+
+
 def _load_steering_resources() -> str:
     """Load steering files from the agent config's resources array.
 
@@ -1316,6 +1386,12 @@ class ContextBuilder:
                 runtime = _runtime_display_name(session_key)
                 parts.append(f"[RUNTIME] {runtime}\n")
             parts.append("\n")
+            # Cron/minimal runs still render tool-call pills in the dashboard
+            # timeline, so the UI-language contract belongs here for the same
+            # reason [CURRENT AGENT]/[RUNTIME] do — it is chrome, not style.
+            # ~40 tokens against the 30-50k this mode saves, and nothing at all
+            # for installs on the default (auto) language.
+            parts.append(_build_ui_language_section(KiroCrewConfig.load()))
             logger.debug(
                 "Minimal session context: agent=%s, %d chars",
                 agent_label, sum(len(p) for p in parts),
@@ -1373,6 +1449,13 @@ class ContextBuilder:
         # the user skipped the questions. The load below is mtime-cached and
         # shared with the skills lazy-load gate further down.
         _cfg = KiroCrewConfig.load()
+
+        # UI language — a rendering contract like [RUNTIME] above, not a
+        # communication-style hint: it tells the model which language the
+        # chrome around its tool calls is in. Empty (no block) when the user
+        # never picked a language explicitly.
+        parts.append(_build_ui_language_section(_cfg))
+
         profile_ctx = _build_user_profile_section(_cfg)
         if profile_ctx:
             parts.append(profile_ctx)
