@@ -37,14 +37,14 @@ test.describe('Redirect contracts', () => {
     await page.goto('/tasks', { waitUntil: 'domcontentloaded' })
     // TasksRedirect: Navigate to="/projects" + search params
     await page.waitForURL('**/projects', { timeout: 10000 })
-    // ProjectsPage renders "Task Runner" heading
-    await expect(page.locator('text=Task Runner')).toBeVisible({ timeout: 10000 })
+    // ProjectsPage names the app in its run rail (no page-title heading)
+    await expect(page.locator('text=Task Runner').first()).toBeVisible({ timeout: 10000 })
   })
 
   test('/tasks preserves query params through redirect', async ({ page }) => {
     await page.goto('/tasks?run=abc123', { waitUntil: 'domcontentloaded' })
     await page.waitForURL('**/projects?run=abc123', { timeout: 10000 })
-    await expect(page.locator('text=Task Runner')).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('text=Task Runner').first()).toBeVisible({ timeout: 10000 })
   })
 
   test('/orchestrated redirects to /chat and renders chat UI', async ({ page }) => {

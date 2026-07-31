@@ -460,18 +460,14 @@ class TestValidateBuiltinApp:
         intentional default-on allowlist must set ``defaultEnabled: False``
         explicitly rather than relying on the field's backward-compat default of
         True. Adding an app to the allowlist is a deliberate product decision —
-        keep it small and update this test in the same change.
+        it is declared once in ``manager._DEFAULT_ON_BUILTINS`` and read from
+        there by both this test and the file-based-manifest test below.
         """
         import kiro_crew.apps.manager as mgr
 
-        # Core surfaces intentionally enabled on a fresh install. A default-on
-        # builtin still honors the ``apps`` governance allowlist at registration
-        # (see test_default_enabled_builtin_respects_governance_deny).
-        intentionally_default_on = {"projects"}  # Task Runner
-
         for app_data in mgr._BUILTIN_APPS:
             name = app_data["name"]
-            if name in intentionally_default_on:
+            if name in mgr._DEFAULT_ON_BUILTINS:
                 assert app_data.get("defaultEnabled") is True, (
                     f"{name} is on the intentional default-on allowlist but does "
                     f"not set defaultEnabled=True (got {app_data.get('defaultEnabled')!r})"
@@ -486,17 +482,45 @@ class TestValidateBuiltinApp:
         """File-based builtin apps (apps/builtins/*/app.json) also default to disabled.
 
         These manifests are merged with _BUILTIN_APPS by register_builtin_apps(),
-        so they follow the same opt-in policy. A manifest that omits defaultEnabled
-        (or sets it true) would surface the app on a fresh install, so require an
-        explicit False on every discovered manifest.
+        so they follow the same opt-in policy AND the same default-on exemption:
+        the allowlist is read from ``manager._DEFAULT_ON_BUILTINS`` rather than
+        restated here, so moving an app between the two registration paths cannot
+        silently change its fresh-install visibility. A manifest that omits
+        defaultEnabled (or sets it true without being on the allowlist) would
+        surface the app on a fresh install, so require an explicit False on every
+        other discovered manifest.
         """
+        import kiro_crew.apps.manager as mgr
         from kiro_crew.apps.discovery import discover_builtin_apps
 
         for app_data in discover_builtin_apps():
-            assert app_data.get("defaultEnabled") is False, (
-                f"{app_data['name']} (file-based builtin) must ship with "
-                f"defaultEnabled=False (got {app_data.get('defaultEnabled')!r})"
-            )
+            name = app_data["name"]
+            if name in mgr._DEFAULT_ON_BUILTINS:
+                assert app_data.get("defaultEnabled") is True, (
+                    f"{name} (file-based builtin) is on the intentional default-on "
+                    f"allowlist but does not set defaultEnabled=True "
+                    f"(got {app_data.get('defaultEnabled')!r})"
+                )
+            else:
+                assert app_data.get("defaultEnabled") is False, (
+                    f"{name} (file-based builtin) must ship with "
+                    f"defaultEnabled=False (got {app_data.get('defaultEnabled')!r})"
+                )
+
+    def test_default_on_allowlist_names_a_real_builtin(self):
+        """Every name on the default-on allowlist must resolve to a shipped builtin.
+
+        A typo or a rename would otherwise leave a dead entry that silently
+        exempts nothing, and the app it was meant to cover would fail the
+        default-disabled assertion above with a confusing message.
+        """
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.discovery import discover_builtin_apps
+
+        shipped = {a["name"] for a in mgr._BUILTIN_APPS}
+        shipped |= {a["name"] for a in discover_builtin_apps()}
+        unknown = set(mgr._DEFAULT_ON_BUILTINS) - shipped
+        assert not unknown, f"default-on allowlist names unknown builtin(s): {sorted(unknown)}"
 
     def test_default_enabled_builtin_respects_governance_deny(self, app_home, monkeypatch):
         """A default-enabled builtin still honors the ``apps`` allowlist.

@@ -50,7 +50,6 @@ import MarkdownRenderer, { Lightbox } from './components/MarkdownRenderer'
 import NotificationsPage from './pages/NotificationsPage'
 import NotificationDetailPanel from './components/notifications/NotificationDetailPanel'
 import NotificationFeed from './components/notifications/NotificationFeed'
-import ProjectsPage from './pages/ProjectsPage'
 import LogsPage from './pages/LogsPage'
 import HooksPage from './pages/HooksPage'
 import CapabilitiesPage from './pages/CapabilitiesPage'
@@ -2131,7 +2130,6 @@ export default function App() {
             <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/tasks" element={<TasksRedirect />} />
-            <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/hooks" element={<HooksPage />} />
             <Route path="/capabilities" element={<CapabilitiesPage />} />

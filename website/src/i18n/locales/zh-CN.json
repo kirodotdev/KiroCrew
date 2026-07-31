@@ -709,9 +709,6 @@
         "repoSwitcher": {
           "repositories": "仓库"
         },
-        "resizeHandle": {
-          "drag_to_resize": "拖动以调整大小"
-        },
         "reviewButton": {
           "review": "审查"
         },
@@ -2205,16 +2202,6 @@
       "expand_paste": "展开粘贴内容",
       "paste_lines_other": "[ 粘贴 #{{seq}} · {{count}} 行 ]"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "代理活动动画"
-    },
-    "pixelCanvasWidget": {
-      "agent_other": "{{count}} 个代理",
-      "close": "关闭",
-      "open_workspace_animation": "打开工作区动画",
-      "project": "项目",
-      "workspace": "— 工作区"
-    },
     "projectPicker": {
       "back": "返回",
       "browse": "浏览",
@@ -2386,6 +2373,9 @@
       "fork_failed": "分叉失败",
       "fork_into_your_local_artifacts_your_own_divergen": "复刻到你的本地工件 — 独立分叉的副本",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "拖动以调整大小"
     },
     "restartButton": {
       "apply_restart": "应用并重启",
@@ -5128,7 +5118,6 @@
       "agent": "代理：",
       "analyzing_task_and_building_step_by_step_plan": "正在分析任务并制定分步计划",
       "auto_approve_tool_calls": "自动批准工具调用",
-      "autonomous_multi_step_task_execution": "自主执行多步任务",
       "cancel": "取消",
       "chat": "聊天",
       "compose": "撰写",
@@ -5140,12 +5129,14 @@
       "discard": "放弃",
       "error": "错误：",
       "execute": "执行",
+      "expand_sidebar": "展开侧边栏",
       "failed_to_generate_plan": "生成计划失败",
       "from_spec": "从规格",
       "from_yaml": "从 YAML",
       "generating_execution_plan": "正在生成执行计划",
       "is_enforced_as_a_hard_dag_constraint": "会作为强制的 DAG 约束执行。",
       "new_task": "新建任务",
+      "no_runs_yet": "暂无运行记录",
       "no_spec_idea_to_schedule": "没有可排期的规格/想法",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "此处仅接受 .yaml/.yml 文件。其他格式请使用“From Spec”标签页。",
       "paste_spec_content_or_upload_a_file": "粘贴规格内容或上传文件…",
@@ -5162,6 +5153,7 @@
       "refined_spec": "细化后的规格",
       "refining": "细化中…",
       "rename_project": "重命名项目",
+      "resize_sidebar": "调整侧边栏大小",
       "restart": "重启",
       "resume": "恢复",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "新计划的根目录。留空则使用默认的每次运行工作区；输入路径可指定特定文件夹。在制定计划时即固定 — 恢复已有运行时仍沿用其原始文件夹。",

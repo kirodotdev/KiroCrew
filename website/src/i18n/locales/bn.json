@@ -643,9 +643,6 @@
         "repoSwitcher": {
           "repositories": "রিপোজিটরি"
         },
-        "resizeHandle": {
-          "drag_to_resize": "আকার বদলাতে টানুন"
-        },
         "reviewButton": {
           "review": "পর্যালোচনা করুন"
         },
@@ -2236,17 +2233,6 @@
       "paste_lines_one": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "এজেন্ট কার্যকলাপের অ্যানিমেশন"
-    },
-    "pixelCanvasWidget": {
-      "agent_one": "{{count}}টি এজেন্ট",
-      "agent_other": "{{count}}টি এজেন্ট",
-      "close": "বন্ধ করুন",
-      "open_workspace_animation": "ওয়ার্কস্পেস অ্যানিমেশন খুলুন",
-      "project": "প্রজেক্ট",
-      "workspace": "— ওয়ার্কস্পেস"
-    },
     "projectPicker": {
       "back": "পেছনে",
       "browse": "ব্রাউজ করুন",
@@ -2421,6 +2407,9 @@
       "fork_failed": "ফর্ক ব্যর্থ",
       "fork_into_your_local_artifacts_your_own_divergen": "আপনার লোকাল আর্টিফ্যাক্টে ফর্ক করুন — আপনার নিজের আলাদা কপি",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "আকার বদলাতে টানুন"
     },
     "restartButton": {
       "apply_restart": "প্রয়োগ ও রিস্টার্ট",
@@ -5189,7 +5178,6 @@
       "agent": "এজেন্ট:",
       "analyzing_task_and_building_step_by_step_plan": "টাস্ক বিশ্লেষণ করে ধাপে ধাপে পরিকল্পনা তৈরি হচ্ছে",
       "auto_approve_tool_calls": "টুল কল স্বয়ংক্রিয়ভাবে অনুমোদন করুন",
-      "autonomous_multi_step_task_execution": "স্বয়ংক্রিয় বহু-ধাপের টাস্ক এক্সিকিউশন",
       "cancel": "বাতিল",
       "chat": "চ্যাট",
       "compose": "রচনা",
@@ -5201,12 +5189,14 @@
       "discard": "বাদ দিন",
       "error": "ত্রুটি:",
       "execute": "এক্সিকিউট করুন",
+      "expand_sidebar": "সাইডবার প্রসারিত করুন",
       "failed_to_generate_plan": "পরিকল্পনা তৈরি করা যায়নি",
       "from_spec": "স্পেক থেকে",
       "from_yaml": "YAML থেকে",
       "generating_execution_plan": "এক্সিকিউশন পরিকল্পনা তৈরি হচ্ছে",
       "is_enforced_as_a_hard_dag_constraint": "কঠোর DAG শর্ত হিসেবে বলবৎ হয়।",
       "new_task": "নতুন টাস্ক",
+      "no_runs_yet": "এখনও কোনও রান নেই",
       "no_spec_idea_to_schedule": "সময়সূচি করার মতো কোনো স্পেক/আইডিয়া নেই",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "এখানে শুধু .yaml/.yml ফাইল গ্রহণযোগ্য। অন্য ফরম্যাটের জন্য \"স্পেক থেকে\" ট্যাব ব্যবহার করুন।",
       "paste_spec_content_or_upload_a_file": "স্পেক বিষয়বস্তু পেস্ট করুন বা একটি ফাইল আপলোড করুন...",
@@ -5223,6 +5213,7 @@
       "refined_spec": "পরিমার্জিত স্পেক",
       "refining": "পরিমার্জন হচ্ছে…",
       "rename_project": "প্রজেক্টের নাম বদলান",
+      "resize_sidebar": "সাইডবারের আকার পরিবর্তন করুন",
       "restart": "রিস্টার্ট",
       "resume": "পুনরায় শুরু করুন",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "নতুন পরিকল্পনার রুট ফোল্ডার। খালি রাখলে প্রতি রানের ডিফল্ট ওয়ার্কস্পেস ব্যবহার হয়; নির্দিষ্ট ফোল্ডার লক্ষ্য করতে একটি পাথ লিখুন। পরিকল্পনার সময়েই নির্ধারিত হয় — বিদ্যমান রান পুনরায় শুরু করলে তার আসল ফোল্ডারই থাকে।",

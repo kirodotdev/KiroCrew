@@ -750,9 +750,6 @@
       "paste_lines_one": "[ Paste #{{seq}} · {{count}} line ]",
       "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]"
     },
-    "pixelCanvasWidget": {
-      "project": "Project"
-    },
     "publishHub": {
       "checking": "Checking…",
       "content_changed_since_preview_re_run_publish_to": "Content changed since preview — re-run publish to confirm with the current version.",

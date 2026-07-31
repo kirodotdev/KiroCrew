@@ -717,9 +717,6 @@
         "repoSwitcher": {
           "repositories": "Repositórios"
         },
-        "resizeHandle": {
-          "drag_to_resize": "Arraste para redimensionar"
-        },
         "reviewButton": {
           "review": "Revisar"
         },
@@ -2267,18 +2264,6 @@
       "paste_lines_one": "[ Colado #{{seq}} · {{count}} linha ]",
       "paste_lines_other": "[ Colado #{{seq}} · {{count}} linhas ]"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "Animação de atividade do agente"
-    },
-    "pixelCanvasWidget": {
-      "agent_many": "{{count}} agentes",
-      "agent_one": "{{count}} agente",
-      "agent_other": "{{count}} agentes",
-      "close": "Fechar",
-      "open_workspace_animation": "Abrir animação do espaço de trabalho",
-      "project": "Projeto",
-      "workspace": "— Espaço de trabalho"
-    },
     "projectPicker": {
       "back": "Voltar",
       "browse": "Procurar",
@@ -2456,6 +2441,9 @@
       "fork_failed": "Falha ao criar o fork",
       "fork_into_your_local_artifacts_your_own_divergen": "Fork para os seus artefatos locais — sua própria cópia divergente",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "Arraste para redimensionar"
     },
     "restartButton": {
       "apply_restart": "Aplicar e reiniciar",
@@ -5250,7 +5238,6 @@
       "agent": "Agente:",
       "analyzing_task_and_building_step_by_step_plan": "Analisando a tarefa e criando o plano passo a passo",
       "auto_approve_tool_calls": "Aprovar automaticamente as chamadas de ferramentas",
-      "autonomous_multi_step_task_execution": "Execução autônoma de tarefas de várias etapas",
       "cancel": "Cancelar",
       "chat": "Chat",
       "compose": "Compor",
@@ -5262,12 +5249,14 @@
       "discard": "Descartar",
       "error": "Erro:",
       "execute": "Executar",
+      "expand_sidebar": "Expandir barra lateral",
       "failed_to_generate_plan": "Falha ao gerar o plano",
       "from_spec": "De spec",
       "from_yaml": "De YAML",
       "generating_execution_plan": "Gerando o plano de execução",
       "is_enforced_as_a_hard_dag_constraint": "é aplicado como uma restrição rígida do DAG.",
       "new_task": "Nova tarefa",
+      "no_runs_yet": "Ainda não há execuções",
       "no_spec_idea_to_schedule": "Nenhuma spec/ideia para agendar",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "Somente arquivos .yaml/.yml são aceitos aqui. Use a aba \"De spec\" para outros formatos.",
       "paste_spec_content_or_upload_a_file": "Cole o conteúdo da spec ou envie um arquivo...",
@@ -5284,6 +5273,7 @@
       "refined_spec": "Spec refinada",
       "refining": "Refinando…",
       "rename_project": "Renomear projeto",
+      "resize_sidebar": "Redimensionar barra lateral",
       "restart": "Reiniciar",
       "resume": "Retomar",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "Pasta raiz para um NOVO plano. Deixe em branco para usar o workspace padrão de cada execução; digite um caminho para direcionar a uma pasta específica. Definida no momento do planejamento — retomar uma execução existente mantém a pasta original.",

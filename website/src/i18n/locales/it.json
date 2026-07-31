@@ -717,9 +717,6 @@
         "repoSwitcher": {
           "repositories": "Repository"
         },
-        "resizeHandle": {
-          "drag_to_resize": "Trascina per ridimensionare"
-        },
         "reviewButton": {
           "review": "Revisiona"
         },
@@ -2267,18 +2264,6 @@
       "paste_lines_one": "[ Incolla #{{seq}} · {{count}} riga ]",
       "paste_lines_other": "[ Incolla #{{seq}} · {{count}} righe ]"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "Animazione dell'attività dell'agente"
-    },
-    "pixelCanvasWidget": {
-      "agent_many": "{{count}} agenti",
-      "agent_one": "{{count}} agente",
-      "agent_other": "{{count}} agenti",
-      "close": "Chiudi",
-      "open_workspace_animation": "Animazione di apertura del workspace",
-      "project": "Progetto",
-      "workspace": "— Workspace"
-    },
     "projectPicker": {
       "back": "Indietro",
       "browse": "Sfoglia",
@@ -2456,6 +2441,9 @@
       "fork_failed": "Fork non riuscito",
       "fork_into_your_local_artifacts_your_own_divergen": "Dirama nei tuoi artefatti locali — la tua copia divergente",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "Trascina per ridimensionare"
     },
     "restartButton": {
       "apply_restart": "Applica e riavvia",
@@ -5250,7 +5238,6 @@
       "agent": "Agente:",
       "analyzing_task_and_building_step_by_step_plan": "Analisi dell'attività e creazione del piano passo a passo",
       "auto_approve_tool_calls": "Approva automaticamente le chiamate agli strumenti",
-      "autonomous_multi_step_task_execution": "Esecuzione autonoma di attività in più passaggi",
       "cancel": "Annulla",
       "chat": "Chat",
       "compose": "Componi",
@@ -5262,12 +5249,14 @@
       "discard": "Scarta",
       "error": "Errore:",
       "execute": "Esegui",
+      "expand_sidebar": "Espandi barra laterale",
       "failed_to_generate_plan": "Generazione del piano non riuscita",
       "from_spec": "Da specifica",
       "from_yaml": "Da YAML",
       "generating_execution_plan": "Generazione del piano di esecuzione",
       "is_enforced_as_a_hard_dag_constraint": "viene applicato come vincolo rigido del DAG.",
       "new_task": "Nuova attività",
+      "no_runs_yet": "Nessuna esecuzione ancora",
       "no_spec_idea_to_schedule": "Nessuna specifica/idea da pianificare",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "Qui sono accettati solo file .yaml/.yml. Usa la scheda \"Da specifica\" per gli altri formati.",
       "paste_spec_content_or_upload_a_file": "Incolla il contenuto della specifica o carica un file...",
@@ -5284,6 +5273,7 @@
       "refined_spec": "Specifica affinata",
       "refining": "Affinamento in corso…",
       "rename_project": "Rinomina il progetto",
+      "resize_sidebar": "Ridimensiona barra laterale",
       "restart": "Riavvia",
       "resume": "Riprendi",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "Cartella radice per un NUOVO piano. Lascia vuoto per usare il workspace predefinito per esecuzione; digita un percorso per puntare a una cartella specifica. Fissata al momento della pianificazione — riprendendo un'esecuzione esistente si mantiene la cartella originale.",

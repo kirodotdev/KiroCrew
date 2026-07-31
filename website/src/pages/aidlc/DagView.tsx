@@ -146,7 +146,7 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
         })}
       </svg>
       </div>
-      <div className="flex gap-4 mt-2 px-2 flex-wrap" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+      <div className="flex gap-4 mt-2 px-2 flex-wrap" style={{ fontSize: 11, color: 'var(--muted)' }}>
         {Object.values(STATUS_DOT).map(d => <span key={d.key}>{d.label}</span>)}
       </div>
     </div>

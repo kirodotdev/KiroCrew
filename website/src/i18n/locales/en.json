@@ -590,9 +590,6 @@
         "repoSwitcher": {
           "repositories": "Repositories"
         },
-        "resizeHandle": {
-          "drag_to_resize": "Drag to resize"
-        },
         "reviewButton": {
           "review": "Review"
         },
@@ -1628,16 +1625,6 @@
       "tell_kiro_about_you": "Tell Kiro about you",
       "your_role": "Your role"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "Agent activity animation"
-    },
-    "pixelCanvasWidget": {
-      "agent_one": "{{count}} agent",
-      "agent_other": "{{count}} agents",
-      "close": "Close",
-      "open_workspace_animation": "Open workspace animation",
-      "workspace": "— Workspace"
-    },
     "projectPicker": {
       "back": "Back",
       "browse": "Browse",
@@ -1752,6 +1739,9 @@
       "fork": "Fork",
       "fork_into_your_local_artifacts_your_own_divergen": "Fork into your local artifacts — your own divergent copy",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "Drag to resize"
     },
     "restartButton": {
       "apply_restart": "Apply & Restart",
@@ -3810,7 +3800,6 @@
       "agent": "Agent:",
       "analyzing_task_and_building_step_by_step_plan": "Analyzing task and building step-by-step plan",
       "auto_approve_tool_calls": "Auto-approve tool calls",
-      "autonomous_multi_step_task_execution": "Autonomous multi-step task execution",
       "cancel": "Cancel",
       "chat": "Chat",
       "compose": "Compose",
@@ -3820,11 +3809,13 @@
       "discard": "Discard",
       "error": "Error:",
       "execute": "Execute",
+      "expand_sidebar": "Expand sidebar",
       "from_spec": "From Spec",
       "from_yaml": "From YAML",
       "generating_execution_plan": "Generating execution plan",
       "is_enforced_as_a_hard_dag_constraint": "is enforced as a hard DAG constraint.",
       "new_task": "New Task",
+      "no_runs_yet": "No runs yet",
       "no_spec_idea_to_schedule": "No spec/idea to schedule",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "Only .yaml/.yml files are accepted here. Use the \"From Spec\" tab for other formats.",
       "paste_spec_content_or_upload_a_file": "Paste spec content or upload a file...",
@@ -3838,6 +3829,7 @@
       "refined_spec": "Refined spec",
       "refining": "Refining…",
       "rename_project": "Rename project",
+      "resize_sidebar": "Resize sidebar",
       "restart": "Restart",
       "resume": "Resume",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "Root folder for a NEW plan. Leave blank to use the default per-run workspace; type a path to target a specific folder. Fixed at plan time — resuming an existing run keeps its original folder.",

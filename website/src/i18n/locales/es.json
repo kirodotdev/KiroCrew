@@ -717,9 +717,6 @@
         "repoSwitcher": {
           "repositories": "Repositorios"
         },
-        "resizeHandle": {
-          "drag_to_resize": "Arrastra para redimensionar"
-        },
         "reviewButton": {
           "review": "Revisar"
         },
@@ -2267,18 +2264,6 @@
       "paste_lines_one": "[ Pegado #{{seq}} · {{count}} línea ]",
       "paste_lines_other": "[ Pegado #{{seq}} · {{count}} líneas ]"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "Animación de actividad del agente"
-    },
-    "pixelCanvasWidget": {
-      "agent_many": "{{count}} agentes",
-      "agent_one": "{{count}} agente",
-      "agent_other": "{{count}} agentes",
-      "close": "Cerrar",
-      "open_workspace_animation": "Abrir la animación del espacio de trabajo",
-      "project": "Proyecto",
-      "workspace": "— Espacio de trabajo"
-    },
     "projectPicker": {
       "back": "Atrás",
       "browse": "Examinar",
@@ -2456,6 +2441,9 @@
       "fork_failed": "Error al bifurcar",
       "fork_into_your_local_artifacts_your_own_divergen": "Crear un fork en tus artefactos locales: tu propia copia divergente",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "Arrastra para redimensionar"
     },
     "restartButton": {
       "apply_restart": "Aplicar y reiniciar",
@@ -5250,7 +5238,6 @@
       "agent": "Agente:",
       "analyzing_task_and_building_step_by_step_plan": "Analizando la tarea y creando un plan paso a paso",
       "auto_approve_tool_calls": "Aprobar automáticamente las llamadas a herramientas",
-      "autonomous_multi_step_task_execution": "Ejecución autónoma de tareas de varios pasos",
       "cancel": "Cancelar",
       "chat": "Chat",
       "compose": "Redactar",
@@ -5262,12 +5249,14 @@
       "discard": "Descartar",
       "error": "Error:",
       "execute": "Ejecutar",
+      "expand_sidebar": "Expandir barra lateral",
       "failed_to_generate_plan": "No se pudo generar el plan",
       "from_spec": "Desde especificación",
       "from_yaml": "Desde YAML",
       "generating_execution_plan": "Generando el plan de ejecución",
       "is_enforced_as_a_hard_dag_constraint": "se aplica como una restricción estricta del DAG.",
       "new_task": "Nueva tarea",
+      "no_runs_yet": "Aún no hay ejecuciones",
       "no_spec_idea_to_schedule": "No hay especificación/idea que programar",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "Aquí solo se aceptan archivos .yaml/.yml. Usa la pestaña \"Desde especificación\" para otros formatos.",
       "paste_spec_content_or_upload_a_file": "Pega el contenido de la especificación o sube un archivo...",
@@ -5284,6 +5273,7 @@
       "refined_spec": "Especificación refinada",
       "refining": "Refinando…",
       "rename_project": "Cambiar el nombre del proyecto",
+      "resize_sidebar": "Redimensionar barra lateral",
       "restart": "Reiniciar",
       "resume": "Reanudar",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "Carpeta raíz de un plan NUEVO. Déjala en blanco para usar el espacio de trabajo predeterminado de cada ejecución; escribe una ruta para apuntar a una carpeta concreta. Se fija al planificar — al reanudar una ejecución existente se conserva su carpeta original.",

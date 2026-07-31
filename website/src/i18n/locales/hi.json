@@ -643,9 +643,6 @@
         "repoSwitcher": {
           "repositories": "रिपॉज़िटरी"
         },
-        "resizeHandle": {
-          "drag_to_resize": "आकार बदलने के लिए खींचें"
-        },
         "reviewButton": {
           "review": "समीक्षा करें"
         },
@@ -2236,17 +2233,6 @@
       "paste_lines_one": "[ पेस्ट #{{seq}} · {{count}} पंक्ति ]",
       "paste_lines_other": "[ पेस्ट #{{seq}} · {{count}} पंक्तियाँ ]"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "एजेंट गतिविधि एनिमेशन"
-    },
-    "pixelCanvasWidget": {
-      "agent_one": "{{count}} एजेंट",
-      "agent_other": "{{count}} एजेंट",
-      "close": "बंद करें",
-      "open_workspace_animation": "वर्कस्पेस खोलने का एनिमेशन",
-      "project": "प्रोजेक्ट",
-      "workspace": "— वर्कस्पेस"
-    },
     "projectPicker": {
       "back": "वापस",
       "browse": "ब्राउज़ करें",
@@ -2421,6 +2407,9 @@
       "fork_failed": "फ़ोर्क विफल",
       "fork_into_your_local_artifacts_your_own_divergen": "अपने स्थानीय आर्टिफैक्ट्स में फ़ोर्क करें — आपकी अपनी अलग प्रति",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "आकार बदलने के लिए खींचें"
     },
     "restartButton": {
       "apply_restart": "लागू करें और पुनः आरंभ करें",
@@ -5189,7 +5178,6 @@
       "agent": "एजेंट:",
       "analyzing_task_and_building_step_by_step_plan": "कार्य का विश्लेषण और चरण-दर-चरण प्लान तैयार किया जा रहा है",
       "auto_approve_tool_calls": "टूल कॉल स्वतः स्वीकृत करें",
-      "autonomous_multi_step_task_execution": "स्वायत्त बहु-चरणीय कार्य निष्पादन",
       "cancel": "रद्द करें",
       "chat": "चैट",
       "compose": "लिखें",
@@ -5201,12 +5189,14 @@
       "discard": "छोड़ दें",
       "error": "त्रुटि:",
       "execute": "निष्पादित करें",
+      "expand_sidebar": "साइडबार विस्तृत करें",
       "failed_to_generate_plan": "योजना नहीं बन सकी",
       "from_spec": "स्पेक से",
       "from_yaml": "YAML से",
       "generating_execution_plan": "एक्ज़ीक्यूशन प्लान बनाया जा रहा है",
       "is_enforced_as_a_hard_dag_constraint": "एक सख़्त DAG कंस्ट्रेंट के रूप में लागू किया जाता है।",
       "new_task": "नया कार्य",
+      "no_runs_yet": "अभी कोई रन नहीं",
       "no_spec_idea_to_schedule": "शेड्यूल करने के लिए कोई स्पेक/आइडिया नहीं",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "यहाँ केवल .yaml/.yml फ़ाइलें स्वीकार की जाती हैं। अन्य फ़ॉर्मैट के लिए \"स्पेक से\" टैब उपयोग करें।",
       "paste_spec_content_or_upload_a_file": "स्पेक सामग्री पेस्ट करें या फ़ाइल अपलोड करें...",
@@ -5223,6 +5213,7 @@
       "refined_spec": "परिष्कृत स्पेक",
       "refining": "परिष्कृत हो रहा है…",
       "rename_project": "प्रोजेक्ट का नाम बदलें",
+      "resize_sidebar": "साइडबार का आकार बदलें",
       "restart": "पुनः आरंभ करें",
       "resume": "फिर से शुरू करें",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "नए प्लान के लिए रूट फ़ोल्डर। डिफ़ॉल्ट प्रति-रन वर्कस्पेस उपयोग करने के लिए खाली छोड़ें; किसी खास फ़ोल्डर के लिए पथ लिखें। यह प्लान बनाते समय तय हो जाता है — मौजूदा रन फिर से शुरू करने पर उसका मूल फ़ोल्डर बना रहता है।",

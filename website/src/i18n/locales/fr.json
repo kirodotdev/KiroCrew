@@ -871,9 +871,6 @@
         "repoSwitcher": {
           "repositories": "Dépôts"
         },
-        "resizeHandle": {
-          "drag_to_resize": "Faire glisser pour redimensionner"
-        },
         "reviewButton": {
           "review": "Relire"
         },
@@ -2267,18 +2264,6 @@
       "paste_lines_one": "[ Collage n°{{seq}} · {{count}} ligne ]",
       "paste_lines_other": "[ Collage n°{{seq}} · {{count}} lignes ]"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "Animation d'activité de l'agent"
-    },
-    "pixelCanvasWidget": {
-      "agent_many": "{{count}} agents",
-      "agent_one": "{{count}} agent",
-      "agent_other": "{{count}} agents",
-      "close": "Fermer",
-      "open_workspace_animation": "Ouvrir l'animation de l'espace de travail",
-      "project": "Projet",
-      "workspace": "— Espace de travail"
-    },
     "projectPicker": {
       "back": "Retour",
       "browse": "Parcourir",
@@ -2456,6 +2441,9 @@
       "fork_failed": "Échec du fork",
       "fork_into_your_local_artifacts_your_own_divergen": "Forker dans vos artefacts locaux — votre propre copie divergente",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "Faire glisser pour redimensionner"
     },
     "restartButton": {
       "apply_restart": "Appliquer et redémarrer",
@@ -5250,7 +5238,6 @@
       "agent": "Agent :",
       "analyzing_task_and_building_step_by_step_plan": "Analyse de la tâche et construction du plan étape par étape",
       "auto_approve_tool_calls": "Approuver automatiquement les appels d'outils",
-      "autonomous_multi_step_task_execution": "Exécution autonome de tâches en plusieurs étapes",
       "cancel": "Annuler",
       "chat": "Conversation",
       "compose": "Composer",
@@ -5262,12 +5249,14 @@
       "discard": "Abandonner",
       "error": "Erreur :",
       "execute": "Exécuter",
+      "expand_sidebar": "Développer la barre latérale",
       "failed_to_generate_plan": "Échec de la génération du plan",
       "from_spec": "Depuis une spécification",
       "from_yaml": "Depuis YAML",
       "generating_execution_plan": "Génération du plan d'exécution",
       "is_enforced_as_a_hard_dag_constraint": "est appliqué comme une contrainte DAG stricte.",
       "new_task": "Nouvelle tâche",
+      "no_runs_yet": "Aucune exécution pour le moment",
       "no_spec_idea_to_schedule": "Aucune spécification/idée à planifier",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "Seuls les fichiers .yaml/.yml sont acceptés ici. Utilisez l'onglet « Depuis une spécification » pour les autres formats.",
       "paste_spec_content_or_upload_a_file": "Collez le contenu de la spécification ou importez un fichier...",
@@ -5284,6 +5273,7 @@
       "refined_spec": "Spécification affinée",
       "refining": "Affinage…",
       "rename_project": "Renommer le projet",
+      "resize_sidebar": "Redimensionner la barre latérale",
       "restart": "Redémarrer",
       "resume": "Reprendre",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "Dossier racine d'un NOUVEAU plan. Laissez vide pour utiliser l'espace de travail par défaut de chaque exécution ; saisissez un chemin pour cibler un dossier précis. Fixé au moment de la planification — la reprise d'une exécution existante conserve son dossier d'origine.",

@@ -1,16 +1,17 @@
-// Drag-to-resize behaviour shared by Issue Radar's fixed-width columns (the
-// left rail and the issue / PR list). Every column behaves the same way — the
-// handle sits on its right edge, dragging right widens it, the width is clamped
-// while dragging and persisted to localStorage on release — so the logic lives
-// here once instead of being duplicated per column.
+// Drag-to-resize behaviour shared by the dashboard's fixed-width workspace
+// columns (Issue Radar's left rail and issue / PR lists, Task Runner's run
+// rail). Every column behaves the same way — the handle sits on its right edge,
+// dragging right widens it, the width is clamped while dragging and persisted to
+// localStorage on release — so the logic lives here once instead of being
+// duplicated per column.
 //
-// A column may also opt into COLLAPSING (the left rail does): drag far enough
+// A column may also opt into COLLAPSING (the rails do): drag far enough
 // past the minimum and the column snaps to a narrow icon strip instead of
 // stopping dead at the minimum. Expanding again requires dragging a comparable
 // distance back out, so the snap has hysteresis and doesn't flicker around the
 // boundary.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { usePointerDrag } from '../../../hooks/usePointerDrag'
+import { usePointerDrag } from './usePointerDrag'
 
 export interface CollapseConfig {
   /** Width of the collapsed strip, in px. */
@@ -35,6 +36,9 @@ export interface ColumnResize {
   dragging: boolean
   /** Re-open a collapsed column at the width the user last dragged it to. */
   expand: () => void
+  /** Move the column by `dx` px and persist, clamping / collapsing the same way
+   *  a drag of that distance would. Drives the handle's arrow keys. */
+  nudge: (dx: number) => void
   /** Spread onto the drag handle element (see components/ResizeHandle). */
   handleProps: ReturnType<typeof usePointerDrag>
 }
@@ -144,5 +148,36 @@ export function useColumnResize(
     persist({ openWidth: liveRef.current.openWidth, collapsed: false })
   }, [persist])
 
-  return { width, collapsed: !!collapse && collapsed, dragging, expand, handleProps }
+  // Keyboard counterpart to the drag. A pointer-only handle leaves keyboard
+  // users with no way to resize — or, once the rail can collapse, no way back
+  // out of a collapsed rail except the strip's own expand button. Steps are
+  // resolved from the CURRENT width rather than a drag origin, so repeated
+  // presses accumulate the way held-arrow behaviour is expected to.
+  const nudge = useCallback((dx: number) => {
+    const live = liveRef.current
+    const clamp = (v: number) => Math.min(max, Math.max(min, v))
+    // Collapsed and growing: reopen at the remembered width instead of the
+    // minimum, mirroring how the drag resolver treats an outward pull.
+    if (collapse && live.collapsed) {
+      if (dx <= 0) return
+      const next = { openWidth: clamp(live.openWidth), collapsed: false }
+      setCollapsed(false)
+      setOpenWidth(next.openWidth)
+      persist(next)
+      return
+    }
+    const raw = live.openWidth + dx
+    // Shrinking past the minimum collapses, matching the drag's snap rather
+    // than stopping dead at a wall the keyboard can never get past.
+    const next = collapse && raw < min
+      ? { openWidth: live.openWidth, collapsed: true }
+      : { openWidth: clamp(raw), collapsed: false }
+    setCollapsed(next.collapsed)
+    setOpenWidth(next.openWidth)
+    persist(next)
+  }, [min, max, collapse, persist])
+
+  return {
+    width, collapsed: !!collapse && collapsed, dragging, expand, nudge, handleProps,
+  }
 }

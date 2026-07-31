@@ -859,9 +859,6 @@
         "repoSwitcher": {
           "repositories": "Repositories"
         },
-        "resizeHandle": {
-          "drag_to_resize": "Ziehen zum Ändern der Größe"
-        },
         "reviewButton": {
           "review": "Überprüfen"
         },
@@ -2236,17 +2233,6 @@
       "paste_lines_one": "[ Einfügen #{{seq}} · {{count}} Zeile ]",
       "paste_lines_other": "[ Einfügen #{{seq}} · {{count}} Zeilen ]"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "Animation der Agenten-Aktivität"
-    },
-    "pixelCanvasWidget": {
-      "agent_one": "{{count}} Agent",
-      "agent_other": "{{count}} Agenten",
-      "close": "Schließen",
-      "open_workspace_animation": "Workspace-Animation öffnen",
-      "project": "Projekt",
-      "workspace": "— Workspace"
-    },
     "projectPicker": {
       "back": "Zurück",
       "browse": "Durchsuchen",
@@ -2421,6 +2407,9 @@
       "fork_failed": "Verzweigen fehlgeschlagen",
       "fork_into_your_local_artifacts_your_own_divergen": "In Ihre lokalen Artefakte verzweigen — Ihre eigene abweichende Kopie",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "Ziehen zum Ändern der Größe"
     },
     "restartButton": {
       "apply_restart": "Anwenden & neu starten",
@@ -5189,7 +5178,6 @@
       "agent": "Agent:",
       "analyzing_task_and_building_step_by_step_plan": "Aufgabe wird analysiert und Schritt-für-Schritt-Plan erstellt",
       "auto_approve_tool_calls": "Werkzeugaufrufe automatisch genehmigen",
-      "autonomous_multi_step_task_execution": "Autonome mehrstufige Aufgabenausführung",
       "cancel": "Abbrechen",
       "chat": "Chat",
       "compose": "Verfassen",
@@ -5201,12 +5189,14 @@
       "discard": "Verwerfen",
       "error": "Fehler:",
       "execute": "Ausführen",
+      "expand_sidebar": "Seitenleiste ausklappen",
       "failed_to_generate_plan": "Plan konnte nicht erstellt werden",
       "from_spec": "Aus Spezifikation",
       "from_yaml": "Aus YAML",
       "generating_execution_plan": "Ausführungsplan wird erstellt",
       "is_enforced_as_a_hard_dag_constraint": "wird als harte DAG-Bedingung erzwungen.",
       "new_task": "Neue Aufgabe",
+      "no_runs_yet": "Noch keine Durchläufe",
       "no_spec_idea_to_schedule": "Keine Spezifikation/Idee zum Planen",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "Hier werden nur .yaml/.yml-Dateien akzeptiert. Verwenden Sie für andere Formate den Tab „Aus Spezifikation“.",
       "paste_spec_content_or_upload_a_file": "Spezifikationsinhalt einfügen oder eine Datei hochladen…",
@@ -5223,6 +5213,7 @@
       "refined_spec": "Verfeinerte Spezifikation",
       "refining": "Wird verfeinert…",
       "rename_project": "Projekt umbenennen",
+      "resize_sidebar": "Größe der Seitenleiste ändern",
       "restart": "Neu starten",
       "resume": "Fortsetzen",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "Wurzelordner für einen NEUEN Plan. Leer lassen, um den standardmäßigen Workspace pro Ausführung zu verwenden; geben Sie einen Pfad ein, um einen bestimmten Ordner anzusprechen. Wird zur Planungszeit festgelegt — beim Fortsetzen einer bestehenden Ausführung bleibt der ursprüngliche Ordner erhalten.",
