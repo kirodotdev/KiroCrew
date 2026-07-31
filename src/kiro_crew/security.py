@@ -142,11 +142,137 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="credential-exfil-kirocrew-token",
-        pattern=".*kirocrew.*token",
+        # Enforced by BOTH the regex tier and the argv-structural floor
+        # (``_is_credential_mint``) -- a union, so neither can fail open alone.
+        # This pattern is the raw-text half: it still sees inside a nested shell
+        # payload (``bash -c "… token"``) and covers the case where tokenizing
+        # fails outright.  The name must be in COMMAND POSITION -- start of input or
+        # after a separator, optionally quoted or path-qualified -- so the word
+        # merely APPEARING in another command's arguments (``echo kirocrew token``,
+        # ``git commit -m '… token …'``) is not a mint.  The gap then accepts
+        # anything up to a command separator (``; & |``), a comment (``#``), a
+        # redirect (``>``), a path separator (``/``) or a glob (``*``); the last two
+        # keep an ordinary product-named path, and a regex LITERAL quoting this very
+        # rule, from reading as a mint.  ``\btoken\b`` keeps ``tokens`` and
+        # ``token_auth.py`` from matching at all.  The forms this half misses on
+        # purpose (a redirect between name and verb, a quoted verb) are the floor's.
+        pattern=(
+            "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*"
+            "[\\w.:/\\\\-]*kiro[-.]?crew\\b[^|;&#>/*]*\\btoken\\b"
+        ),
         category="credential-exfil",
         description=(
-            "Blocks the `kirocrew ... token` CLI, which mints a signed dashboard access token "
-            "an attacker could use to authenticate to the gateway."
+            "Blocks the `kirocrew token` CLI, which mints a signed dashboard access token an "
+            "attacker could use to authenticate to the gateway. Matches the CLI name and the "
+            "token verb within one command segment -- including nested forms such as `kirocrew "
+            "pod token` and the hyphenated `kiro-crew` spelling -- so an incidental mention of "
+            "the word in a later command, a comment, or a file path is not a mint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-kirocrew-token-argv",
+        # Companion to the rule above, for the case a command-text matcher cannot
+        # otherwise reach: an INTERPRETER payload that spawns the CLI through a
+        # library call rather than as a shell word --
+        # ``python -c "subprocess.run(['kirocrew','token'])"``,
+        # ``node -e 'execFileSync("kirocrew",["token"])'``,
+        # ``perl -e 'system("kirocrew","token")'``.  The floor cannot help here: the
+        # payload is one opaque token to the shell tokenizer and its contents are
+        # Python/JS, not shell.
+        #
+        # Scoped to the two words as ADJACENT QUOTED ARGUMENTS, which is what every
+        # such argv literal looks like.  The separator class admits only the
+        # punctuation that appears BETWEEN argv elements (quote, comma, whitespace,
+        # an opening bracket or paren) PLUS the characters an intervening quoted FLAG
+        # is made of, since an argv literal may carry global options between the
+        # program and the verb -- deliberately NOT ``.``, ``*``, ``/`` or
+        # ``>``.  That is what keeps a regex LITERAL quoting this very rule
+        # (``re.search(r'.*kirocrew.*token', cmd)``) and prose mentioning both words
+        # from matching, both of which are recorded false positives.
+        #
+        # Accepted over-block from that widening: a quoted LIST that merely contains
+        # both words as data (``print(['kirocrew', 'x', 'token'])``) also matches.
+        # That direction is the safe one -- a visible refusal, not a silent bypass.
+        # Residual limit, stated rather than implied: an interpreter that ASSEMBLES the
+        # name at runtime (string concatenation, a base64 blob, an HTTP call to the
+        # gateway) never contains it for any pattern to find.  The un-disableable
+        # guarantee for this credential remains the sensitive-path floor over the
+        # signing key, not this rule.
+        pattern=(
+            "(?:"
+            # (a) argv literal: the two words as adjacent QUOTED arguments.
+            "['\"][\\w.:/\\\\-]*kiro[-.]?crew[\\w.]*['\"][\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"]token['\"]"
+            # (b) SINK-QUALIFIED single string: the two words inside ONE quoted
+            # string, but only as the argument of a call that EXECUTES it.  The
+            # sink prefix is what makes this safe -- it is precisely what a regex
+            # literal (``re.search(...)``), a commit message and prose lack, so
+            # they stay allowed while ``os.system(\"... token\")`` does not.
+            "|" "(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*"
+            "|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)"
+            "|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open"
+            "|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*"
+            "|kernel\\.system|io\\.popen)"
+            "\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b"
+            "[^'\"]*\\btoken\\b"
+            ")"
+        ),
+        category="credential-exfil",
+        description=(
+            "Blocks an interpreter payload that spawns the `kirocrew token` credential mint "
+            "through a library call rather than as a shell command -- the CLI name and the "
+            "token verb as adjacent QUOTED arguments, as in "
+            "`python -c \"subprocess.run(['kirocrew','token'])\"`. Scoped to the argv-literal "
+            "shape so a regex literal or prose mentioning both words is not a mint; a "
+            "single-string spelling is out of reach of command-text matching and is covered by "
+            "the sensitive-path floor over the signing key instead."
+        ),
+    ),
+    DeniedCommandRule(
+        id="self-protection-kill-interpreter",
+        # Companion to ``self-protection-kill`` for the shape a shell-command matcher
+        # cannot reach: an INTERPRETER payload that terminates the gateway through a
+        # library call -- ``os.system("pkill -f kirocrew")``,
+        # ``execSync("pkill -f kirocrew")``.  The argv floor cannot help; the payload is
+        # one opaque token to the shell tokenizer and its contents are Python/JS.
+        #
+        # SINK-QUALIFIED on purpose: the two words are matched inside ONE quoted string
+        # only when that string is the argument of a call that EXECUTES it.  The sink
+        # prefix is what keeps this from becoming the co-occurrence rule this PR
+        # removed -- prose, a commit message and a regex literal have no sink, so they
+        # stay allowed.
+        pattern=(
+            "(?:"
+            # --- sink-qualified: a shell command handed to a call that EXECUTES it ---
+            "(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*"
+            "|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)"
+            "|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open"
+            "|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*"
+            "|kernel\\.system|io\\.popen)"
+            "(?:"
+            # (a) the command as a single quoted string.
+            "\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:pkill|killall)\\b"
+            "[^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b"
+            # (b) the command as an argv LIST -- verb and target as separate quoted
+            # elements (``run(['pkill','-f','kirocrew'])``), list concatenation included.
+            "|[\\s\\(\\[]*['\"][\\w.:/\\\\-]*(?:pkill|killall)['\"]"
+            "[\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"][^'\"]*(?:kiro[-.]?crew|irocrew)"
+            ")"
+            # --- a DIRECT process-kill API, which IS the sink and therefore stands on
+            # its own rather than behind the list above: ``os.kill(pid_from("[k]irocrew
+            # gateway"), 9)``.  The signal is the kill API and the product name in the
+            # same call.  Matched on ``irocrew`` rather than the full name so the
+            # standard "don't match my own lookup" bracket idiom (``[k]irocrew``), which
+            # still resolves to the gateway, is not a free pass.
+            "|(?:os\\.kill(?:pg)?|process\\.kill|\\bkillpg)\\s*\\([^)]*irocrew"
+            ")"
+        ),
+        category="self-protection",
+        description=(
+            "Blocks an interpreter payload that terminates a kirocrew process through a "
+            "library call rather than as a shell command -- a pkill/killall command and the "
+            "product name inside one quoted string passed to an executing sink such as "
+            "`os.system(...)` or `execSync(...)`. Sink-qualified so prose, a commit message "
+            "or a regex literal naming both is not a kill."
         ),
     ),
     DeniedCommandRule(
@@ -1251,11 +1377,45 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="self-protection-kill",
-        pattern=".*\\b(kill|pkill|killall)\\b.*\\bkiro[-.]?crew\\b.*",
+        # Scoped to the KILL TARGET, not to co-occurrence anywhere in the command.
+        # The alternation is wrapped in a non-capturing group deliberately: a
+        # TOP-LEVEL ``|`` fails ``is_safe_user_regex``, which would DISABLE this
+        # rule outright (``_DenyMatcher`` skips unsafe patterns) rather than
+        # narrow it.
+        #
+        # Each gap stops at a command separator (``; &``), a comment (``#``) or a
+        # redirect (``>``), which is what the false positives this replaced always
+        # crossed -- a bare ``kill <pid>`` followed by an unrelated command that
+        # merely mentions the product, or a trailing comment naming it.  ``|`` and
+        # ``/`` stay INSIDE the gap on purpose: ``pkill -f 'x|kirocrew'`` and
+        # ``pkill -f /usr/local/bin/kirocrew`` are both real by-name kills, and
+        # treating those characters as boundaries would let them through.
+        pattern=(
+            "(?:"
+            # pkill/killall select processes BY NAME, so the product name as an
+            # argument in the same segment IS the kill target.  The verb must be in
+            # COMMAND POSITION -- start of input or after a separator, optionally
+            # quoted or path-qualified -- so the word merely appearing in another
+            # command's arguments (``echo pkill kirocrew``) is not a kill.
+            "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*[\\w.:/\\\\-]*"
+            "(?:pkill|killall)\\b[^;&#>]*\\bkiro[-.]?crew\\b"
+            # Bare ``kill`` takes PIDs, so it can only aim at the product through
+            # a command substitution that resolves the name to one.  The gap after
+            # the opener is deliberately NOT stopped at ``)``: a nested
+            # substitution (``$(pgrep -f "$(printf '')kirocrew")``) closes an inner
+            # paren first, and stopping there would let that form through.
+            "|(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*[\\w.:/\\\\-]*"
+            "kill\\b[^;&#>]*(?:\\$\\(|`)[^;&#>]*\\bkiro[-.]?crew\\b"
+            ")"
+        ),
         category="self-protection",
         description=(
-            "Blocks kill/pkill/killall targeting a kirocrew process so the agent cannot "
-            "terminate its own gateway or supervisor and disable the controls governing it."
+            "Blocks pkill/killall naming a kirocrew process, and a bare kill whose PID comes "
+            "from a command substitution that resolves the kirocrew name, so the agent cannot "
+            "terminate its own gateway or supervisor and disable the controls governing it. "
+            "Scoped to the kill target within one command segment: an incidental mention of the "
+            "product in a later command or a comment (a file being restored, a log path) is not "
+            "a kill."
         ),
     ),
     # ── Legacy security.py deny globs (converted to regex) ──
@@ -1350,6 +1510,32 @@ _GIT_PUBLISH_RULE_CATEGORY = "git-publish"
 _GIT_PUBLISH_RULE_PATTERNS: frozenset[str] = frozenset(
     r.pattern for r in BUILTIN_DENIED_RULES if r.category == _GIT_PUBLISH_RULE_CATEGORY
 )
+
+# The two self-protection rules whose enforcement lives in the argv-structural
+# floor (``_is_credential_mint`` / ``_is_self_kill``) rather than in the regex
+# tier.  Their ``pattern`` is retained as the catalog-visible, human-auditable
+# statement of intent -- and it is a correct SUBSET of the floor -- but it is not
+# fed to ``re`` because a raw-string match cannot resolve shell quoting or
+# redirection, and a pattern loose enough to try would re-block ordinary paths.
+_SELF_PROTECTION_FLOOR_RULE_IDS: frozenset[str] = frozenset(
+    {"credential-exfil-kirocrew-token", "self-protection-kill"}
+)
+_SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
+    r.id: r.pattern for r in BUILTIN_DENIED_RULES if r.id in _SELF_PROTECTION_FLOOR_RULE_IDS
+}
+_SELF_PROTECTION_FLOOR_PATTERNS: frozenset[str] = frozenset(_SELF_PROTECTION_FLOOR_BY_ID.values())
+
+# The two INTERPRETER-payload rules.  They are ordinary regex-tier rules, but an
+# interpreter CONCATENATES adjacent string literals, so they are additionally matched
+# against a copy of the text with those joins collapsed.
+_INTERPRETER_RULE_IDS: frozenset[str] = frozenset(
+    {"credential-exfil-kirocrew-token-argv", "self-protection-kill-interpreter"}
+)
+_INTERPRETER_RULE_PATTERNS: frozenset[str] = frozenset(
+    r.pattern for r in BUILTIN_DENIED_RULES if r.id in _INTERPRETER_RULE_IDS
+)
+# ``'p' + 'kill'`` is ONE string by the time the interpreter runs it.
+_LITERAL_CONCAT_RE = re.compile(r"""['"]\s*\+\s*['"]""")
 
 # ── Back-compat alias ──
 # Retained as a DERIVED flat string list so ``platform/security_authority`` and
@@ -2063,6 +2249,1136 @@ _GIT_PUBLISH_SUBST_PROGRAM_RE = re.compile(
 # Human-readable label recorded in the denial reason + SEL audit event when
 # a git-publish invocation is blocked (the regexes above are the mechanism).
 _GIT_PUBLISH_DENY_LABEL = "git push"
+
+
+# ── Self-protection floor (argv-structural, not a regex) ──
+# The two self-protection rules below are enforced by TOKENIZING the command
+# rather than by matching its raw text.  A raw-string regex cannot decide these:
+# the gap between the product name and the verb has to step over ordinary shell
+# noise (a quoted verb, global flags, a redirect), but every character class wide
+# enough to do that also steps over a filesystem path -- and "a path that
+# contains the product name" is exactly the false positive these rules exist to
+# stop.  Tokenizing resolves quoting and redirection BEFORE matching, so both
+# sides can be exact.  See ``_is_credential_mint`` / ``_is_self_kill``.
+_SELF_NAME_RE = re.compile(r"kiro[-.]?crew")
+# ``[k]irocrew`` -- a one-character bracket class expands to that character, so it names
+# the protected program.  Collapsed before comparison rather than folded into every name
+# pattern, so a single rule covers the idiom wherever it appears in the word.
+_ONE_CHAR_CLASS_RE = re.compile(r"\[(\w)\]")
+
+
+def _debracket(text: str) -> str:
+    """Collapse one-character bracket classes (``[k]irocrew`` -> ``kirocrew``)."""
+    return _ONE_CHAR_CLASS_RE.sub(r"\1", text)
+# The product name as a WHOLE program name (bare or the tail of a path), which is
+# what distinguishes ``bin/kirocrew token`` from ``cd kirocrew-wt-x``.
+
+
+_SELF_PROGRAM_RE = re.compile(r"\Akiro[-.]?crew(?:\.(?:exe|cmd|bat|sh|py))?\Z")
+# Shell glob metacharacters, and the concrete spellings a glob could expand to.  A
+# glob in the program name (``kiro[c]rew``) is resolved by the shell BEFORE exec, so
+# it has to be tested for expandability rather than compared literally.
+_GLOB_CHARS_RE = re.compile(r"[\[\]?*{}]")
+_SELF_PROGRAM_SPELLINGS = ("kirocrew", "kiro-crew", "kiro.crew")
+# The kill programs that select their target BY NAME.  Bare ``kill`` takes PIDs
+# and is handled separately (it can only reach the product through a command
+# substitution that resolves the name), and both verbs are matched on TOKENS via
+# ``_program_basename`` so a path-qualified or expansion-produced spelling counts.
+_KILL_BY_NAME_PROGRAMS = frozenset({"pkill", "killall"})
+
+
+# Characters a shell uses to WRAP a program name rather than to spell it: the
+# quote marks and the parentheses of a command substitution.  Peeled to a fixed
+# point in ``_program_basename`` so no interleaving with a redirect hides a name.
+_SHELL_WRAPPER_CHARS = "`\"'()"
+
+
+def _strip_redirect(token: str) -> str:
+    """The token with any ATTACHED redirection suffix removed.
+
+    ``shlex`` keeps a redirect glued to its neighbour as one token, so
+    ``kirocrew>/tmp/out`` arrives as a single word and a program comparison against
+    it fails.  bash splits the redirect off before exec, so the program is the part
+    before the first ``>``/``<``; the same applies to an operand
+    (``token>/tmp/out``).  A leading fd number (``2>``) leaves an empty program,
+    which no comparison matches -- correct, since that word is not a program.
+    """
+    for op in (">", "<"):
+        if op in token:
+            token = token.split(op, 1)[0]
+    return token
+
+
+def _substitution_program(token: str) -> str:
+    """The program a command-substitution body resolves to.
+
+    A substitution in program position is a RESOLVER -- ``$(which pkill)``,
+    ``$(command -v bash)``, ``$(type -p kirocrew)`` -- and the program it resolves to
+    is the resolver's final argument.  ``shlex`` splits an UNQUOTED body on its
+    own spaces, so ``$(which pkill)`` already arrives as two words; a QUOTED body
+    (``"$(command -v pkill)"``) arrives as one multi-word token instead.  Taking the
+    last word makes both spellings compare as the same program.
+    """
+    return token.rsplit(None, 1)[-1] if token.split() else token
+
+
+def _program_basename(token: str) -> str:
+    """The program name a token invokes, with shell wrappers stripped.
+
+    Strips quoting, command-substitution wrappers and any attached redirection
+    before taking the basename, so an expansion-produced program name
+    (``$(which pkill)``, ``"$(command -v bash)"``) or a redirect-glued one
+    (``kirocrew>/tmp/out``) is compared as the program it resolves to rather than as
+    literal punctuation.  Every program check goes through this -- comparing a raw
+    ``os.path.basename`` lets ``$(which pkill) -f <name>`` past the kill rule.
+
+    The layers are peeled to a FIXED POINT rather than once in a fixed order.
+    A wrapper and a redirect interleave freely, and any single ordering leaves a
+    hole for the interleavings it does not match: ``$(which kirocrew)>/tmp/out`` needs
+    the redirect gone before its closing paren reaches the end of the word, while
+    ``kirocrew)`` needs the paren gone with no redirect in play at all.  Looping until
+    nothing changes makes the peel order-independent, which closes the class
+    instead of whichever spelling a fixed order happened to cover.
+    """
+    if not token:
+        return ""
+    previous = ""
+    substituted = False
+    while token != previous:
+        previous = token
+        token = _strip_redirect(token)
+        token = _resolve_param_defaults(token)
+        token = _EMPTY_SUBST_RE.sub("", token)
+        if token.startswith("$(") or token.startswith("`"):
+            substituted = True
+        token = token.removeprefix("$(").strip(_SHELL_WRAPPER_CHARS)
+        # ANSI-C / locale quoting: ``$'name'`` and ``$"name"`` are just quoting
+        # forms, so the ``$`` left behind after the quotes come off is not part of
+        # the program name.  ``$(`` and ``${`` are handled above and below.
+        if token.startswith("$") and not token.startswith(("$(", "${")):
+            token = token[1:]
+    if substituted:
+        token = _substitution_program(token)
+    # A control operator GLUED to the name (``true;kirocrew``, ``x&&kirocrew``)
+    # means the program that actually runs is what follows the LAST operator --
+    # ``shlex`` splits on whitespace only, so it hands the whole run over as one
+    # word and a comparison against it matches nothing.  Taking the trailing
+    # segment is what bash does; a trailing operator leaves an empty tail, so the
+    # last NON-EMPTY segment is the one that names a program.
+    segments = [s for s in _CONTROL_OPERATOR_RE.split(token) if s]
+    if segments:
+        token = segments[-1]
+    return os.path.basename(token.rstrip("/"))
+
+
+def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") -> bool:
+    """True if *base* carries a shell glob that could expand to one of *names*.
+
+    A glob in the program name is resolved by the shell BEFORE exec, so it has to be
+    tested for expandability rather than compared literally.  ``[...]`` and ``?`` stand
+    for one character and ``*`` for any run, so only a pattern that CAN name the target
+    counts -- ``kiro[x]few`` still does not.
+    """
+    if not _GLOB_CHARS_RE.search(base):
+        return False
+    try:
+        expandable = re.compile(_glob_to_regex(base), re.IGNORECASE)
+    except re.error:
+        return False
+    return any(expandable.fullmatch(name) for name in names)
+
+
+def _is_self_program(token: str) -> bool:
+    """True if *token* names the KiroCrew CLI itself, bare or via a path.
+
+    Also true when the name carries a shell GLOB the shell would expand to the
+    executable -- ``./bin/kiro[c]rew``, ``kiro?rew``, ``kiro*rew``.
+    """
+    base = _program_basename(token)
+    if _SELF_PROGRAM_RE.match(base):
+        return True
+    return _glob_could_expand_to(base, _SELF_PROGRAM_SPELLINGS)
+
+
+def _is_kill_by_name_program(token: str) -> bool:
+    """True if *token* invokes ``pkill``/``killall``, including a globbed spelling."""
+    base = _program_basename(token)
+    if base in _KILL_BY_NAME_PROGRAMS:
+        return True
+    return _glob_could_expand_to(base, _KILL_BY_NAME_PROGRAMS)
+
+
+def _glob_to_regex(pattern: str) -> str:
+    """Translate a shell glob into a regex that matches what it could expand to."""
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "[":
+            close = pattern.find("]", i + 1)
+            if close == -1:
+                out.append(re.escape(ch))
+                i += 1
+                continue
+            out.append(".")
+            i = close + 1
+            continue
+        if ch == "{":
+            # ``kiro{c..c}rew`` expands to the real name, so a brace group stands for
+            # whatever it can produce -- same treatment as a bracket class.
+            close = pattern.find("}", i + 1)
+            if close == -1:
+                out.append(re.escape(ch))
+                i += 1
+                continue
+            out.append(".*")
+            i = close + 1
+            continue
+        if ch == "?":
+            out.append(".")
+        elif ch == "*":
+            out.append(".*")
+        else:
+            out.append(re.escape(ch))
+        i += 1
+    return "".join(out)
+
+
+def _self_tokens(text_lower: str) -> "list[str]":
+    """Tokenize the WHOLE command, resolving quoting before any splitting.
+
+    Splitting the raw text into segments first (as the pattern passes do) is
+    unsafe for these rules: it cuts on a ``;`` or ``|`` that is INSIDE a quoted
+    argument, so ``pkill -f '[;]*kirocrew'`` loses its own target. ``shlex``
+    resolves the quotes first, so a quoted separator stays part of one token.
+    """
+    try:
+        return _resolve_function_aliases(
+            _resolve_local_assignments(normalize_shell_command(text_lower))
+        )
+    except Exception:
+        return []
+
+
+# Programs whose ``-c`` argument is a shell script: its text is a COMMAND, so a
+# self-protection check has to look inside it rather than treat it as an operand.
+_NESTED_SHELL_PROGRAMS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash", "busybox"})
+_NESTED_SHELL_VERBS = frozenset({"eval", "source", "."})
+# ``env -S`` splits its argument into a command and execs it.
+_ENV_SPLIT_PROGRAMS = frozenset({"env"})
+# Programs that treat their arguments as DATA rather than executing them, so the
+# product name appearing in their argv is a mention, not an invocation:
+# ``echo kirocrew token`` prints two words.
+#
+# This list is deliberately a DENYLIST of data consumers rather than an ALLOWLIST
+# of executors, because the two fail in opposite directions.  Many commands pass
+# their remaining argv to an executor -- ``ssh host …``, ``docker exec c …``,
+# ``sudo``, ``env``, ``nohup``, ``timeout``, ``runuser``, ``chroot``, ``pkexec``,
+# ``systemd-run``, ``nice``, ``xargs`` -- and enumerating THOSE means a forgotten
+# entry is a silent BYPASS.  Enumerating data consumers instead means a forgotten
+# entry is a false positive: annoying, visible, and safe.  So the default for an
+# unrecognised program is "this could execute the name".
+_DATA_CONSUMER_PROGRAMS = frozenset(
+    {
+        "echo", "printf", "print", "cat", "tac", "tee", "head", "tail", "less", "more",
+        "grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "cut", "tr", "sort",
+        "uniq", "wc", "nl", "fold", "column", "comm", "diff", "strings", "jq", "yq",
+        "base64", "md5sum", "sha256sum", "xxd", "od",
+    }
+)
+# Control operators that end one command and begin another.  Used to find the
+# program in a run that ``shlex`` handed over as a single word.
+_CONTROL_OPERATOR_RE = re.compile(r"[;&|\n]+")
+# ``VAR=value`` prefixes a command rather than being the command.
+_ENV_ASSIGN_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
+# An EMPTY substitution expands to nothing, so ``p$()kill`` runs ``pkill`` -- the
+# same glue-evasion as the empty-quote form (``ca""t`` -> ``cat``) that
+# ``normalize_shell_command`` already undoes, but spelled with a substitution and
+# placed MID-WORD, where a prefix-only strip never sees it.
+_EMPTY_SUBST_RE = re.compile(r"\$\(\s*\)|`\s*`|\$\{\s*\}")
+# ``X=kirocrew; $X token`` assigns the program name to a variable and invokes it
+# through the expansion, so neither the literal name nor the expansion alone looks
+# dangerous.  The assignment and the use are in the SAME command text, so the
+# literal can be substituted back before any comparison.
+_LOCAL_ASSIGN_RE = re.compile(r"\A([A-Za-z_][A-Za-z0-9_]*)=(.*)\Z", re.DOTALL)
+_VAR_USE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+_COMPUTED_VALUE_RE = re.compile(r"\$\(|`|\$\{[^}]*\}")
+
+
+def _is_computed_value(value: str) -> bool:
+    """True if an assignment's right-hand side is produced by a substitution."""
+    return bool(_COMPUTED_VALUE_RE.search(value))
+
+
+def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:
+    """The protected program name a substitution starting at *start* could produce.
+
+    Scans forward until the substitution closes (``shlex`` splits it across tokens
+    because it splits on whitespace only) and returns the product name, or a
+    by-name kill program, if either appears inside it.  Returns "" when neither does.
+    """
+    depth = 0
+    for token in tokens[start:]:
+        depth += token.count("(") - token.count(")")
+        m = _SELF_NAME_RE.search(token)
+        if m:
+            return m.group(0)
+        for verb in _KILL_BY_NAME_PROGRAMS:
+            if verb in token:
+                return verb
+        if depth <= 0 and token is not tokens[start]:
+            break
+    return ""
+
+
+def _split_glued_operators(tokens: "list[str]") -> "list[str]":
+    """Split tokens on control operators glued to their neighbours.
+
+    ``shlex`` splits on whitespace only, so ``X=<name>;$X`` arrives as one token and an
+    assignment glued to the command that uses it is invisible to both.  Splitting keeps
+    the operator itself as a token so argv-boundary logic still sees it.
+    """
+    out: list[str] = []
+    for token in tokens:
+        # ONLY split a token that begins with an assignment.  Splitting any token
+        # carrying a separator would destroy a QUOTED target -- ``shlex`` has already
+        # removed the quotes, so ``pkill -f '[;]*<name>'`` arrives as the single token
+        # ``[;]*<name>`` and is indistinguishable from a real separator at this point.
+        # The reported evasion is specifically an assignment glued to its use, so that
+        # is the only shape split here.
+        if not _LOCAL_ASSIGN_RE.match(token) or not _CONTROL_OPERATOR_RE.search(token):
+            out.append(token)
+            continue
+        for piece in _CONTROL_OPERATOR_RE.split(token):
+            if piece:
+                out.append(piece)
+            out.append(";")
+        if out and out[-1] == ";":
+            out.pop()
+    return out
+
+
+_FUNC_DEF_RE = re.compile(r"\A(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\)")
+
+
+def _resolve_function_aliases(tokens: "list[str]") -> "list[str]":
+    """Substitute a shell FUNCTION name with the protected program it forwards to.
+
+    ``x(){ <name> "$@";}; x <verb>`` never puts the program and the verb in one argv --
+    the function body holds the program and the call site holds the verb.  A function
+    whose body invokes a protected program is therefore treated as an alias for it, so
+    the ordinary argv checks see ``<name> <verb>`` at the call site.
+
+    Only a LITERAL body is inspected, and only the program it invokes is carried over;
+    no attempt is made to model parameter positions.  Over-approximating is the safe
+    direction -- the alias only matters where the function is called as a program.
+    """
+    aliases: dict[str, str] = {}
+    i = 0
+    while i < len(tokens):
+        # ``alias x=<name>`` then ``x <verb>`` is the same evasion as a function
+        # wrapper: the definition holds the program and the call site holds the verb.
+        if tokens[i] == "alias" and i + 1 < len(tokens):
+            spec = _LOCAL_ASSIGN_RE.match(tokens[i + 1])
+            if spec and spec.group(2):
+                target = _normalize_operand(spec.group(2))
+                if _is_self_program(target):
+                    aliases[spec.group(1)] = "kirocrew"
+                elif _program_basename(target) in _KILL_BY_NAME_PROGRAMS:
+                    aliases[spec.group(1)] = _program_basename(target)
+        m = _FUNC_DEF_RE.match(tokens[i])
+        if m:
+            # Walk the body until the closing brace, taking the first protected program.
+            for body_token in tokens[i + 1 :]:
+                base = _program_basename(body_token)
+                if _is_self_program(body_token):
+                    aliases[m.group(1)] = "kirocrew"
+                    break
+                if base in _KILL_BY_NAME_PROGRAMS:
+                    aliases[m.group(1)] = base
+                    break
+                if "}" in body_token:
+                    break
+        i += 1
+    if not aliases:
+        return tokens
+    return [aliases.get(tk, tk) for tk in tokens]
+
+
+# ``${VAR:0}`` / ``${VAR^^}`` / ``${VAR/x/y}`` and friends TRANSFORM a variable's own
+# value.  The ``:-``/``:+``/``:=``/``:?`` default forms are deliberately NOT matched here --
+# those carry a literal of their own and are handled by ``_resolve_param_defaults``.
+_PARAM_TRANSFORM_RE = re.compile(
+    r"\$\{([A-Za-z_]\w*)(?::(?![-+=?])[^}]*|[#%^,/@][^}]*)\}"
+)
+
+
+# ``${!VAR}`` expands to the value of the variable NAMED by ``VAR`` -- one more hop
+# than ``${VAR}``, through the same table.
+_INDIRECT_VAR_USE_RE = re.compile(r"\$\{!([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _mint_verb_in_substitution(tokens: "list[str]", idx: int) -> bool:
+    """True if the substitution starting at *idx* prints the credential-minting verb.
+
+    The program-name twin of this check answers "does this compute a protected
+    PROGRAM?".  This one answers "does it compute the VERB?", for the spelling that
+    hides that half instead (``T=$(printf <verb>); <name> $T``).
+    """
+    joined = " ".join(tokens[idx:])
+    for body in _substitution_bodies(joined):
+        if any(_is_mint_verb(word) for word in body.split()):
+            return True
+    return False
+
+
+def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
+    """Substitute ``$VAR`` uses with a literal assigned earlier in the same command.
+
+    Only LITERAL right-hand sides are tracked, and only assignments that appear in
+    this same command text -- there is no attempt to model the ambient environment.
+    That is enough for the evasion it closes, where the attacker must supply both
+    halves themselves.
+
+    A value that REFERENCES an already-tracked variable is expanded before it is
+    classified, so a name assembled across several assignments still resolves to the
+    literal the shell will run.
+    """
+    values: dict[str, str] = {}
+    out: list[str] = []
+    # ``X=<name>;$X <verb>`` glues the assignment and the next command into ONE token,
+    # because ``shlex`` splits on whitespace only.  Split on top-level control operators
+    # first so the assignment is seen as an assignment and the use as a use.
+    tokens = _split_glued_operators(tokens)
+    for idx, token in enumerate(tokens):
+        assign = _LOCAL_ASSIGN_RE.match(token)
+        if assign and values and "$" in (assign.group(2) or ""):
+            # A new value may be built FROM a variable already tracked
+            # (``x=p; x=${x}kill``).  Expanding before classifying is what makes the
+            # result a literal at all: left unexpanded it looks computed, the earlier
+            # binding stays in place, and the reassignment is silently ignored.
+            expanded = _VAR_USE_RE.sub(
+                lambda m: values.get(m.group(1) or m.group(2), m.group(0)),
+                assign.group(2),
+            )
+            if expanded != assign.group(2):
+                token = f"{assign.group(1)}={expanded}"
+                assign = _LOCAL_ASSIGN_RE.match(token)
+        if assign and _is_computed_value(assign.group(2)):
+            # ``X=$(printf <name>); $X <verb>`` COMPUTES the value, so there is no
+            # literal to carry forward.  Resolve it conservatively instead: if the
+            # substitution that produces it names a protected program anywhere, treat
+            # the variable as holding that name.  Over-approximating here is the safe
+            # direction -- the value only matters when ``$X`` is later used as a
+            # program, and a wrong guess there is a refusal, not a bypass.
+            produced = _protected_name_in_substitution(tokens, idx)
+            if produced:
+                values[assign.group(1)] = produced
+            elif _mint_verb_in_substitution(tokens, idx):
+                # ``T=$(printf <verb>); <name> $T`` computes the VERB rather than the
+                # program.  Same reasoning as the program case: the value only matters
+                # where it is later used, so binding it to the verb is the safe
+                # over-approximation.
+                values[assign.group(1)] = "token"
+            out.append(token)
+            continue
+        if assign and assign.group(2):
+            # A trailing ``;``/``&&`` belongs to the command structure, not the
+            # value: ``shlex`` splits on whitespace only, so ``X=name;`` arrives
+            # with the operator attached.
+            value = assign.group(2).strip("\"'").rstrip(";&|")
+            if value:
+                values[assign.group(1)] = value
+            out.append(token)
+            continue
+        if values and "$" in token:
+            # ``${!V}`` is INDIRECT: it expands to the value of the variable NAMED by
+            # ``V``, so resolving it takes two hops through the same table.  Done before
+            # the ordinary substitution so what remains afterwards is a plain literal.
+            # A TRANSFORMATION on a tracked variable (``${K:0}``, ``${K^^}``, ``${K/x/y}``)
+            # still expands to something derived from the tracked value, but none of those
+            # spellings are a plain ``${K}``.  Resolved to the value itself: the
+            # transformation is not modelled, and over-approximating here is the safe
+            # direction for the same reason it is for a computed value -- the result only
+            # matters where it is used as a program or verb, and a wrong guess there is a
+            # refusal, not a bypass.  The ``:-``/``:+``/``:=``/``:?`` DEFAULT forms are
+            # excluded: they carry their own literal and are resolved separately.
+            token = _PARAM_TRANSFORM_RE.sub(
+                lambda m: values.get(m.group(1), m.group(0)), token
+            )
+            token = _INDIRECT_VAR_USE_RE.sub(
+                lambda m: values.get(values.get(m.group(1), ""), m.group(0)), token
+            )
+            token = _VAR_USE_RE.sub(
+                lambda m: values.get(m.group(1) or m.group(2), m.group(0)), token
+            )
+        out.append(token)
+    return out
+
+
+# ``${VAR:-kirocrew}`` / ``${VAR:+kirocrew}`` / ``${VAR-kirocrew}`` carry a LITERAL
+# program name that the shell substitutes in.  The literal is the program that can
+# actually run, so it is what the comparison must see.
+_PARAM_DEFAULT_RE = re.compile(r"\$\{[^{}:+=?-]*(?::?[-+=?])([^{}]*)\}")
+
+
+def _resolve_param_defaults(token: str) -> str:
+    """Replace ``${VAR:-literal}`` style expansions with their literal text.
+
+    Only the LITERAL branch is resolved -- that is the spelling that hands the shell
+    a runnable program name without the name appearing bare in the command.  A
+    variable-only expansion (``$X``, ``${X}``) carries no literal and is left alone;
+    that case is covered by the raw-text half of the union, not here.
+    """
+    previous = ""
+    while token != previous:
+        previous = token
+        token = _PARAM_DEFAULT_RE.sub(lambda m: m.group(1), token)
+    return token
+
+
+# NO depth cap.  A cap is a bypass: whatever number is chosen, one more nesting
+# level defeats it.  Termination is guaranteed structurally instead -- a payload is
+# a proper substring of the token that carried it, so it is STRICTLY SHORTER than
+# its parent's source text, and a chain of strictly shorter strings is finite.  A
+# visited set stops sibling wrappers re-walking the same payload.
+# ``-c`` may arrive inside a COMBINED short-flag cluster: ``bash -xc '<script>'``
+# and ``sh -ec '<script>'`` both run the next token as a script.  Matching only
+# the exact spellings ``-c``/``-lc`` leaves every other cluster as a bypass.
+_SHELL_COMMAND_FLAG_RE = re.compile(r"\A-[a-z]*c[a-z]*\Z")
+
+
+# Variables that conventionally hold a shell (or the running script) path.  Piping
+# into ``$SHELL`` runs the piped text exactly as piping into ``bash`` does, and the
+# expansion hides the program name from any basename comparison.
+_SHELL_VAR_NAMES = frozenset({"shell", "bash", "zsh", "ksh", "0", "bash_execution_string"})
+_SHELL_VAR_RE = re.compile(r"\A\$\{?([A-Za-z_0-9]+)\}?\Z")
+
+
+def _is_shell_variable_reference(token: str) -> bool:
+    """True if *token* is a variable that conventionally expands to a shell."""
+    m = _SHELL_VAR_RE.match(token.strip(_SHELL_WRAPPER_CHARS))
+    if m is None:
+        return False
+    return m.group(1).lower() in _SHELL_VAR_NAMES
+
+
+def _pipes_into_evaluator(tokens: "list[str]") -> bool:
+    """True if this command pipes into a shell or evaluator.
+
+    ``echo <name> <verb> | sh`` produces the dangerous command as TEXT and then
+    hands it to something that runs it, so the "arguments are just data" reasoning
+    does not hold: the data IS the command.
+    """
+    seen_pipe = False
+    for token in tokens:
+        if "|" in token:
+            seen_pipe = True
+        if seen_pipe and (
+            _program_basename(token) in _NESTED_SHELL_PROGRAMS
+            or _program_basename(token) in _NESTED_SHELL_VERBS
+            or _program_basename(token) == "xargs"
+            or _is_shell_variable_reference(token)
+        ):
+            return True
+    return False
+
+
+# Constructs by which a text-processing tool RUNS a command rather than printing it:
+# ``awk``'s ``system()`` and pipe-to-command, and GNU ``sed``'s ``e`` flag.
+_SCRIPT_EXECUTES_RE = re.compile(
+    r"system\s*\(|\|\s*[\"']|\|&|print\s*\||\bclose\s*\(|/e\b|\be\s*$"
+)
+
+
+def _data_consumer_exempt(index: int, token: str, programs: "list[str]", tokens: "list[str]") -> bool:
+    """True if *token* is an ARGUMENT of a command that treats arguments as data.
+
+    ``echo <name> <verb>`` prints two words -- a mention, not an invocation.
+
+    The exemption is refused in two cases:
+
+    * the token itself carries a control operator (``echo foo;kirocrew>/tmp/x``).
+      ``shlex`` splits on whitespace only, so such a token is attributed to the
+      PRECEDING command while the part after the operator is a new command that
+      really runs.
+    * the command pipes into a shell or evaluator (``echo … | sh``), where the
+      printed text is executed rather than displayed.
+
+    Inheriting the exemption in either case would turn a precision fix into a
+    bypass.
+    """
+    if index <= 0:
+        return False
+    if _CONTROL_OPERATOR_RE.search(token):
+        return False
+    if _pipes_into_evaluator(tokens):
+        return False
+    # ``$(printf <name>) <verb>`` puts the consumer INSIDE a substitution that occupies
+    # program position, so its OUTPUT is what runs -- the words are not inert data.
+    if tokens and tokens[0].lstrip("\"'").startswith("$(") or (
+        tokens and tokens[0].lstrip("\"'").startswith("`")
+    ):
+        return False
+    # A "data consumer" that can EXECUTE is not one for this command.  ``awk`` has
+    # ``system()`` and pipe-to-command; GNU ``sed`` has the ``e`` flag.  The exemption is
+    # withdrawn per-command when the script text carries such a construct, rather than
+    # dropping ``awk`` from the list entirely -- that would also refuse ordinary
+    # ``awk '{print $1}' <file>``, and the list is deliberately a denylist of consumers so
+    # that a mistake here costs a false positive, never a bypass.
+    if any(_SCRIPT_EXECUTES_RE.search(tok) for tok in tokens):
+        return False
+    return programs[index] in _DATA_CONSUMER_PROGRAMS
+
+
+def _argv_programs(tokens: "list[str]") -> "list[str]":
+    """For each token, the program name of the command that token belongs to.
+
+    Walks the argv tracking command boundaries (``_ends_argv``) and skipping
+    leading ``VAR=value`` assignments, which precede the program rather than being
+    it.  Used to ask "what command is this name an argument OF?" -- the difference
+    between ``echo <name> <verb>`` (data) and ``ssh host <name> <verb>`` (executed).
+    """
+    programs: list[str] = []
+    current = ""
+    expect_program = True
+    for token in tokens:
+        if expect_program and token and not _ENV_ASSIGN_RE.match(token):
+            current = _program_basename(token)
+            expect_program = False
+        programs.append(current)
+        if _ends_argv(token):
+            current = ""
+            expect_program = True
+    return programs
+
+
+def _is_shell_command_flag(token: str) -> bool:
+    """True if *token* is the shell flag whose next argument is a script."""
+    return token == "--command" or bool(_SHELL_COMMAND_FLAG_RE.match(token))
+
+
+def _nested_shell_payloads(tokens: "list[str]") -> "list[str]":
+    """Literal shell-script payloads carried as an argument inside *tokens*.
+
+    Covers ``sh -c '<script>'`` / ``bash -c '<script>'`` (the payload is the
+    first non-flag token after ``-c``) and ``eval '<script>'``.  Only LITERAL
+    payloads are returned -- ``eval "$CMD"`` carries no visible script, and that
+    case is covered by the regex tier running alongside this floor rather than by
+    this function.
+    """
+    payloads: list[str] = []
+    for i, token in enumerate(tokens):
+        base = _program_basename(token)
+        # A shell reached through a VARIABLE (``$SHELL -c '<payload>'``) runs the
+        # payload exactly as a named shell does.  The recognizer already used for the
+        # ``| $SHELL`` evaluator sink applies here too.
+        if base in _NESTED_SHELL_PROGRAMS or _is_shell_variable_reference(token):
+            for j in range(i + 1, len(tokens)):
+                if _is_shell_command_flag(tokens[j]):
+                    # ``bash -c -- '<script>'`` is legal: ``--`` ends option parsing
+                    # and the script is the token AFTER it.  Skip any run of them.
+                    k = j + 1
+                    while k < len(tokens) and tokens[k] == "--":
+                        k += 1
+                    if k < len(tokens):
+                        payloads.append(tokens[k])
+                    break
+                # A HERESTRING feeds the script on stdin instead of as an argument
+                # (``bash <<< '<script>'``), so its text is a command just the same.
+                # Both the spaced and glued spellings arrive here.
+                if tokens[j] == "<<<":
+                    if j + 1 < len(tokens):
+                        payloads.append(tokens[j + 1])
+                    break
+                if tokens[j].startswith("<<<"):
+                    payloads.append(tokens[j][3:])
+                    break
+        elif base in _ENV_SPLIT_PROGRAMS:
+            # ``env -S '<script>'`` / ``env --split-string '<script>'`` splits the
+            # payload into a command and runs it, so its text is a command line.
+            for j in range(i + 1, len(tokens)):
+                # ``is_denied`` lowercases its input, so compare case-insensitively:
+                # the real flag is ``-S`` but it arrives here as ``-s``.
+                flag = tokens[j].lower()
+                if flag in {"-s", "--split-string"}:
+                    if j + 1 < len(tokens):
+                        payloads.append(tokens[j + 1])
+                    break
+                if flag.startswith("-s") and len(tokens[j]) > 2:
+                    payloads.append(tokens[j][2:])
+                    break
+                if flag.startswith("--split-string="):
+                    payloads.append(tokens[j].split("=", 1)[1])
+                    break
+        elif base in _NESTED_SHELL_VERBS or token in _NESTED_SHELL_VERBS:
+            if i + 1 < len(tokens):
+                payloads.append(tokens[i + 1])
+    # ``bash<<<'<payload>'`` glues the program, the operator and the payload into ONE
+    # token, so the program never appears as a token of its own for the walk above to
+    # recognise.  Split on the operator and check the left half.
+    for token in tokens:
+        if "<<<" not in token:
+            continue
+        head, _, tail = token.partition("<<<")
+        if tail and _program_basename(head) in _NESTED_SHELL_PROGRAMS:
+            payloads.append(tail)
+    # ``a=(<name> <verb>); "${a[@]}"`` runs the array's elements AS a command line.  The
+    # expansion is one token, so the argv checks have no adjacent operands to compare --
+    # the joined elements are handed to the payload walk instead, which re-tokenizes them.
+    arrays = _array_assignments(tokens)
+    if arrays:
+        programs = _argv_programs(tokens)
+        for index, token in enumerate(tokens):
+            # Only an expansion in COMMAND position runs the elements.  As an ARGUMENT
+            # they are just words -- ``echo ${a[@]}`` prints them -- so requiring the
+            # expansion to be its own command's program keeps the data cases inert.
+            if index >= len(programs) or programs[index] != token:
+                continue
+            for match in _ARRAY_EXPAND_RE.finditer(token):
+                value = arrays.get(match.group(1))
+                if value:
+                    payloads.append(value)
+    # GNU ``sed`` runs the REPLACEMENT of an ``s///e`` command as a shell command, so
+    # that text is a payload.  It lives INSIDE one token, which is why withdrawing the
+    # data-consumer exemption is not enough on its own: there are no two adjacent
+    # operands for the argv checks to compare.
+    for token in tokens:
+        replacement = _sed_exec_replacement(token)
+        if replacement:
+            payloads.append(replacement)
+    # A MULTIWORD alias replacement is a whole command line, not just a program name
+    # (``alias x='kirocrew token'`` then ``x``), so hand it to the payload walk.
+    for i, token in enumerate(tokens):
+        if token == "alias" and i + 1 < len(tokens):
+            spec = _LOCAL_ASSIGN_RE.match(tokens[i + 1])
+            if spec and spec.group(2) and " " in spec.group(2).strip():
+                payloads.append(spec.group(2))
+    # A payload only matters if it looks like a command line rather than a bare
+    # operand; a single word is already covered by the direct token scan.
+    if _pipes_into_evaluator(tokens):
+        # ``echo '<script>' | sh`` produces the command as TEXT and then hands it to
+        # something that runs it, so the printed text is a payload exactly as a
+        # ``-c`` argument is.
+        # An escape can stand in for the separator (``printf '<name>\\040<verb>'``),
+        # so the "is this a command line?" test is applied to the DECODED text -- otherwise
+        # the token still looks like a single word and is never recognised as a payload at
+        # all.  Splitting on any whitespace (not just a space) also admits a tab escape.
+        for token in tokens:
+            decoded = _decode_printf_escapes(token)
+            if len(decoded.split()) > 1:
+                payloads.append(decoded)
+        # ``xargs`` is different in shape: it does not read a whole script, it APPENDS
+        # the piped words to its own command.  ``echo <verb> | xargs <name>`` therefore
+        # runs ``<name> <verb>`` even though neither half contains a space.  Reconstruct
+        # what it will run: the xargs command line plus the producer's literal words.
+        reconstructed = _xargs_reconstructed_command(tokens)
+        if reconstructed:
+            payloads.append(reconstructed)
+    return [p for p in payloads if p.strip()]
+
+
+def _sed_exec_replacement(token: str) -> str:
+    """The replacement text of a ``sed`` ``s///e`` command, which GNU sed EXECUTES.
+
+    ``sed 's/x/<name> <verb>/e'`` runs the replacement as a shell command.  Returns an
+    empty string for any token that is not such a command, including an ordinary
+    substitution without the ``e`` flag.
+    """
+    body = token.strip("\"'")
+    if not body.startswith("s") or len(body) < 2:
+        return ""
+    delim = body[1]
+    if delim.isalnum() or delim.isspace():
+        return ""
+    parts = body[2:].split(delim)
+    if len(parts) < 3:
+        return ""
+    flags = parts[2]
+    if "e" not in flags:
+        return ""
+    return parts[1]
+
+
+# ``a=(<name> <verb>)`` -- a literal array assignment.  ``shlex`` splits on whitespace
+# only, so the elements arrive as separate tokens with the parens glued on.
+_ARRAY_ASSIGN_RE = re.compile(r"\A([A-Za-z_]\w*)=\((.*)\Z", re.DOTALL)
+# ``${a[@]}`` / ``${a[*]}`` / ``$a[@]`` -- the whole array as separate words.
+_ARRAY_EXPAND_RE = re.compile(r"\$\{?([A-Za-z_]\w*)\[[@*]\]\}?")
+
+
+def _array_assignments(tokens: "list[str]") -> "dict[str, str]":
+    """Literal array assignments in *tokens*, as name -> the elements joined by a space.
+
+    ``a=(<name> <verb>)`` tokenizes to ``['a=(<name>', '<verb>)']``, so the elements are
+    gathered from the opening token up to the one that closes the paren.
+    """
+    arrays: dict[str, str] = {}
+    i = 0
+    while i < len(tokens):
+        match = _ARRAY_ASSIGN_RE.match(tokens[i])
+        if not match:
+            i += 1
+            continue
+        name, first = match.group(1), match.group(2)
+        elements: list[str] = []
+        closed = False
+        for part in [first] + tokens[i + 1 :]:
+            # The closing paren usually arrives with the next control operator glued on
+            # (``<verb>);``), so split at the paren rather than testing the token's end.
+            if ")" in part:
+                stripped = part[: part.index(")")]
+                if stripped:
+                    elements.append(stripped)
+                closed = True
+                break
+            if part:
+                elements.append(part)
+        if closed and elements:
+            arrays.setdefault(name, " ".join(elements))
+        i += 1
+    return arrays
+
+
+def _xargs_reconstructed_command(tokens: "list[str]") -> str:
+    """The command ``xargs`` will run, rebuilt from its argv plus the piped words.
+
+    ``xargs`` appends the words it reads on stdin to the command given as its own
+    arguments, so ``echo <verb> | xargs <name>`` executes ``<name> <verb>``.  Neither
+    side contains a space, so the whole-token payload scan cannot see it; rebuilding the
+    effective command line makes it visible to the ordinary argv checks.
+    """
+    pipe = next((i for i, tk in enumerate(tokens) if "|" in tk), -1)
+    if pipe <= 0:
+        return ""
+    xargs_at = next(
+        (i for i in range(pipe + 1, len(tokens)) if _program_basename(tokens[i]) == "xargs"),
+        -1,
+    )
+    if xargs_at == -1:
+        return ""
+    # Skip xargs' own options; everything after them is the command it runs.
+    command = [tk for tk in tokens[xargs_at + 1 :] if not tk.startswith("-")]
+    # The producer's literal words (its program name is not piped through).
+    piped = [tk for tk in tokens[1:pipe] if not tk.startswith("-")]
+    if not command:
+        return ""
+    return " ".join(command + piped)
+
+
+_PRINTF_ESCAPES = (("\\n", " "), ("\\t", " "), ("\\r", " "), ("\\v", " "), ("\\f", " "))
+
+
+# ``printf`` numeric escapes: octal (``\\NNN``, ``\\0NNN``) and hex (``\\xHH``).
+_NUMERIC_ESCAPE_RE = re.compile(r"\\(?:x([0-9a-f]{1,2})|0?([0-7]{1,3}))", re.IGNORECASE)
+
+
+def _numeric_escape_char(match: "re.Match[str]") -> str:
+    """One decoded character for an octal or hex ``printf`` escape."""
+    hex_digits, octal_digits = match.group(1), match.group(2)
+    try:
+        code = int(hex_digits, 16) if hex_digits else int(octal_digits, 8)
+    except (TypeError, ValueError):  # pragma: no cover - the pattern admits only digits
+        return match.group(0)
+    if code == 0 or code > 0x10FFFF:
+        # A NUL cannot appear in an argv the shell builds, so leave it inert.
+        return match.group(0)
+    return chr(code)
+
+
+def _decode_printf_escapes(text: str) -> str:
+    """Turn literal ``\\n``-style escapes into whitespace.
+
+    ``printf 'kirocrew token\\n' | bash`` carries the newline as two characters, so
+    re-tokenizing the payload glues the escape onto the verb and the comparison misses.
+    ``printf`` (and ``echo -e``) expand these before the shell sees them, so the payload
+    is decoded the same way first.
+
+    Numeric escapes are decoded too, not just the named ones: ``\\040`` and ``\\x20`` are
+    both a SPACE, so leaving them literal reopens exactly the separator gap the named
+    escapes closed, and ``\\x6b`` can spell a character of the program name itself.  What
+    the shell will actually run is the decoded text, so the comparison is made against
+    that.
+    """
+    for esc, sub in _PRINTF_ESCAPES:
+        text = text.replace(esc, sub)
+    return _NUMERIC_ESCAPE_RE.sub(_numeric_escape_char, text)
+
+
+def _self_token_frames(text_lower: str) -> "list[list[str]]":
+    """The command's own argv plus the argv of every nested shell payload.
+
+    ``bash -c "kirocrew token"`` tokenizes to ``['bash', '-c', 'kirocrew token']``
+    -- the dangerous command is a single opaque token, so the direct scan cannot
+    see it.  Re-tokenizing the payload and checking that argv too closes the
+    class rather than one spelling of it.
+
+    Descends to ANY depth.  A numeric depth cap is itself a bypass -- whatever the
+    number, one more wrapper defeats it -- so the walk is bounded structurally: a
+    payload lives inside one token of its parent and is therefore strictly shorter
+    than the parent's source text, and a chain of strictly shorter strings is
+    finite.
+    """
+    frames: list[list[str]] = []
+    seen: set[str] = set()
+    pending: list[tuple[str, int]] = [(text_lower, len(text_lower) + 1)]
+    while pending:
+        source, parent_len = pending.pop()
+        tokens = _self_tokens(source)
+        if not tokens:
+            continue
+        frames.append(tokens)
+        # Every substitution body is itself a command line -- command substitution
+        # (``$( )``, backticks) and PROCESS substitution (``<( )``, ``>( )``) alike, since
+        # bash runs the inner command in all of them.  Walking them here means the
+        # ordinary argv checks see ``cat <(kirocrew token)`` as the inner invocation.
+        for payload in list(_nested_shell_payloads(tokens)) + _substitution_bodies(source):
+            # Descend through EVERY literal payload, to any depth.  Termination is
+            # structural, not a cap: a payload is carried inside one token of its
+            # parent, so it is strictly shorter than the parent's source text.
+            payload = _decode_printf_escapes(payload)
+            if len(payload) >= parent_len or payload in seen:
+                continue
+            seen.add(payload)
+            pending.append((payload, len(source)))
+    return frames
+
+
+def _substitution_depth_delta(token: str) -> int:
+    """Net change in command-substitution nesting contributed by *token*.
+
+    Used so a separator INSIDE ``$( … )`` is not mistaken for the end of the argv
+    being scanned -- ``<name> $(true; echo <verb>)`` is one command, not two.
+    """
+    return token.count("$(") + token.count("`") // 2 - token.count(")")
+
+
+def _ends_argv(token: str) -> bool:
+    """True if *token* ends the current command's argv.
+
+    ``|`` and ``;`` always separate commands.  ``&`` only does so as a token of
+    its own -- ``2>&1`` is a redirection, and a redirection does not end an argv
+    (bash accepts one anywhere in a simple command).  A ``#`` comment ends the
+    argv too: everything after it is prose, not arguments.
+
+    A function-body opener (``x(){`` or a bare ``{``) is a boundary as well: the words
+    after it are a NEW command, not arguments to the definition.  Without that,
+    ``x(){ echo <name> <verb>;}`` attributes the body to ``x(){`` instead of to ``echo``,
+    and the data-consumer exemption that makes ``echo`` inert never applies.
+    """
+    if token.startswith("#"):
+        return True
+    if token.rstrip("{") in {"", "("} or token.rstrip("{").endswith("()"):
+        return True
+    if token in {"&", "&&", "||", ";", ";;", "\n"}:
+        return True
+    return "|" in token or ";" in token
+
+
+def _substitution_bodies(text: str) -> "list[str]":
+    """The body of each command substitution in *text*.
+
+    ``$(...)`` is scanned with paren nesting so a nested substitution closing
+    first does not truncate the outer body; backticks are taken pairwise.  Only
+    the BODY is returned -- a bare ``kill`` must not be attributed a name that
+    merely appears in a LATER, unrelated command of the same line.
+    """
+    bodies: list[str] = []
+    i = 0
+    while i < len(text):
+        # PROCESS substitutions run their body as a command just as a command
+        # substitution does -- ``cat <(kirocrew token)`` executes the inner command and
+        # feeds its output through a pipe.  Same paren-nesting walk.
+        if text.startswith("<(", i) or text.startswith(">(", i):
+            depth = 1
+            j = i + 2
+            while j < len(text) and depth:
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    depth -= 1
+                j += 1
+            bodies.append(text[i + 2 : j - 1 if depth == 0 else len(text)])
+            i = j
+            continue
+        if text.startswith("$(", i):
+            depth = 1
+            j = i + 2
+            while j < len(text) and depth:
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    depth -= 1
+                j += 1
+            bodies.append(text[i + 2 : j - 1 if depth == 0 else len(text)])
+            i = j
+        elif text[i] == "`":
+            j = text.find("`", i + 1)
+            bodies.append(text[i + 1 : j if j != -1 else len(text)])
+            i = len(text) if j == -1 else j + 1
+        else:
+            i += 1
+    return bodies
+
+
+def _is_credential_mint(text_lower: str) -> bool:
+    """True if *text_lower* invokes the ``kirocrew token`` credential mint.
+
+    The mint prints a signed dashboard access URL, so it is the escalation path
+    this rule exists to close.  Matched on argv, which is what makes the
+    ordinary shell forms unbypassable: ``kirocrew "token"`` (quoted verb),
+    ``kiro""crew token`` (empty-string concatenation), ``kirocrew -v --no-jail
+    token`` (global flags) and ``kirocrew >/tmp/out token`` (bash accepts a
+    redirection anywhere in a simple command) all tokenize to an argv whose
+    program is the product CLI and one of whose words is exactly ``token``.
+
+    Does NOT match the word appearing in a path or another program's arguments:
+    ``cd /workplace/nrb/kirocrew-wt-x && pytest test/test_token_auth.py`` has no
+    argv whose PROGRAM is the CLI, and ``kirocrew doctor | grep token`` puts the
+    word in ``grep``'s argv, not the CLI's.
+    """
+    for tokens in _self_token_frames(text_lower):
+        programs = _argv_programs(tokens)
+        for i, token in enumerate(tokens):
+            if not _is_self_program(token):
+                continue
+            # The name is an ARGUMENT of a command that treats arguments as data
+            # (``echo <name> <verb>`` prints two words) -- a mention, not a mint.
+            if _data_consumer_exempt(i, token, programs, tokens):
+                continue
+            # Check each argument for the verb BEFORE testing whether it ends the
+            # argv, then stop.  Order matters for the same reason it does in the kill
+            # scan: ``if true; then <name> <verb>; fi`` hands the verb over as
+            # ``<verb>;`` -- one token that both IS the verb and carries the boundary,
+            # so testing the boundary first discards the very argument that names it.
+            depth = 0
+            for later in tokens[i + 1 :]:
+                if _is_mint_verb(later):
+                    return True
+                # A separator NESTED in a command substitution is part of that
+                # substitution, not the end of this argv: ``<name> $(true; echo <verb>)``
+                # is still one command.  Only a top-level separator ends the scan.
+                depth += _substitution_depth_delta(later)
+                if depth <= 0 and _ends_argv(later):
+                    break
+                depth = max(depth, 0)
+    return False
+
+
+def _normalize_operand(token: str) -> str:
+    """A token reduced to the text the shell will actually pass along.
+
+    Removes quoting, an attached redirection and empty substitutions, and truncates at
+    the first control operator -- every wrapper that can sit on an operand without
+    changing what the shell hands to the program.  Used for both the credential verb and
+    the kill target, so a wrapper closed in one place cannot reopen in the other.
+
+    The operator is a boundary, not a trailing nuisance: in ``<verb>;echo ok`` the shell
+    passes ``<verb>`` and starts a new command, so stripping only from the END leaves the
+    operand unrecognisable while the shell still runs it.
+    """
+    token = _resolve_param_defaults(token.strip(_SHELL_WRAPPER_CHARS))
+    token = _EMPTY_SUBST_RE.sub("", token)
+    token = _debracket(_strip_redirect(token).strip(_SHELL_WRAPPER_CHARS))
+    return _CONTROL_OPERATOR_RE.split(token, 1)[0].strip(_SHELL_WRAPPER_CHARS)
+
+
+def _is_mint_verb(token: str) -> bool:
+    """True if *token* is the credential-minting verb, however it is dressed."""
+    return _normalize_operand(token) == "token"
+
+
+def _is_self_kill(text_lower: str) -> bool:
+    """True if *text_lower* terminates a KiroCrew process.
+
+    Two shapes, matched separately because the two kill families take different
+    kinds of target:
+
+    * ``pkill``/``killall`` select processes BY NAME, so the product name in any
+      argument IS the target -- including inside a quoted pattern such as
+      ``pkill -f '[;]*kirocrew'``, where a raw-string regex mis-reads the quoted
+      ``;`` as a command separator and stops scanning short of the name.
+    * bare ``kill`` takes PIDs, so it can only aim at the product through a
+      command substitution that resolves the name to one (``kill $(pgrep -f
+      kirocrew)``, ``kill $(pidof kirocrew)``, ``kill $(cat /run/kirocrew.pid)``,
+      backticks).  A ``kill <pid>`` alongside a command that merely mentions a
+      product path is NOT a self-kill -- that is the false positive this
+      replaced.
+    """
+    for tokens in _self_token_frames(text_lower):
+        programs = _argv_programs(tokens)
+        for i, token in enumerate(tokens):
+            if not _is_kill_by_name_program(token):
+                continue
+            # ``echo pkill kirocrew`` prints two words; it does not kill anything.
+            if _data_consumer_exempt(i, token, programs, tokens):
+                continue
+            # Check each argument for the target BEFORE testing whether it ends the
+            # argv, then stop.  Order matters: the target is often a quoted pattern
+            # whose own characters look like separators (``pkill -f '[;]*kirocrew'``),
+            # so testing the boundary first would discard the very argument that
+            # names the target.  Stopping after it keeps an unrelated later command
+            # out of the match (``pkill other; echo kirocrew`` is not a self-kill).
+            depth = 0
+            for arg in tokens[i + 1 :]:
+                # Search the raw arg AND its normalized form.  Normalizing alone is
+                # not enough: a pkill pattern is an ERE, so a ``>`` inside it is part
+                # of the TARGET (``pkill -f '>kirocrew'``) and stripping it as a
+                # redirect would discard the name.  Raw alone is not enough either --
+                # an empty substitution (``kiro$()crew``) only reads as the name once
+                # removed.  Either match is a hit.
+                if _SELF_NAME_RE.search(_debracket(arg)) or _SELF_NAME_RE.search(
+                    _normalize_operand(arg)
+                ):
+                    return True
+                depth += _substitution_depth_delta(arg)
+                if depth <= 0 and _ends_argv(arg):
+                    break
+                depth = max(depth, 0)
+    # Bare ``kill`` whose PID comes out of a substitution naming the product.
+    # The VERB is matched on tokens (so ``/usr/bin/kill``, ``$(which kill)`` and a
+    # quoted spelling all count -- a raw-text pattern anchored on separators sees
+    # the ``/`` and misses the path-qualified form), while the substitution BODY is
+    # taken from the whole string: segment splitting cuts on ``$(`` and ``)``,
+    # which would separate the verb from its own substitution.
+    for frame in _self_token_frames(text_lower):
+        for i, token in enumerate(frame):
+            if _program_basename(token) != "kill":
+                continue
+            # Scan only the substitutions in THIS kill's own argv.  Scanning the whole
+            # command associated every substitution with any ``kill`` on the line, so
+            # ``kill 123; echo $(cat /tmp/kirocrew)`` was denied for a substitution
+            # belonging to a different command.
+            own = [token]
+            depth = 0
+            for later in frame[i + 1 :]:
+                own.append(later)
+                # A separator INSIDE a substitution belongs to the substitution, not to
+                # this command line: ``kill $(echo x; pgrep <name>)`` is ONE argument, so
+                # ending the scan at that ``;`` would drop the half naming the target.
+                depth += _substitution_depth_delta(later)
+                if depth <= 0 and _ends_argv(later):
+                    break
+            # An operand of THIS kill that resolves to the protected name is a self-kill.
+            # `kill` takes PIDs, so a bare name is not something a person types -- it gets
+            # there by expansion, and the expansion that produces it is a lookup of our own
+            # processes (``P=$(pgrep <name>); kill $P``).  Scoped to the kill's own argv by
+            # the same walk that keeps ``kill 8123 && cp /tmp/<name>.json ~/`` allowed:
+            # there the name is an operand of ``cp``, not of the kill.
+            for operand in own[1:]:
+                if _SELF_NAME_RE.search(_normalize_operand(operand)):
+                    return True
+            for body in _substitution_bodies(" ".join(own)):
+                # ``kill $(pgrep -f kiro${x:-crew})`` hides the name behind an
+                # expansion whose literal branch the shell substitutes back in, so
+                # resolve those defaults before searching.
+                if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
+                    _resolve_param_defaults(body)
+                ):
+                    return True
+    return False
 
 
 def _is_git_publish(text_lower: str) -> bool:
@@ -4262,6 +5578,58 @@ def _deny_pattern_matches(pattern: str, text: str, is_regex: bool) -> bool:
     return fnmatch.fnmatch(text, pattern.lower())
 
 
+# An interpreter binds the halves to its OWN variables
+# (``n = "<name>"; v = "<verb>"; run([n, v])``) and then uses the names.  Inlining those
+# bindings is the interpreter-side twin of the shell assignment resolution, and it is what
+# keeps the argv pattern TIGHT: the alternative -- admitting ``;`` into the separator class
+# so the two quoted strings may sit in different statements -- would also match
+# ``print('<name>'); log('<verb>')``, which mints nothing.
+_INTERP_BINDING_RE = re.compile(r"\b([a-z_]\w*)\s*=\s*('[^']*'|\"[^\"]*\")")
+_INTERP_IDENT_RE = re.compile(r"\b[a-z_]\w*\b")
+
+
+# ``"<name> %s" % "<verb>"`` -- printf-style formatting is the same evasion as adjacent
+# literal concatenation, one operator along.  The tuple spelling
+# (``"%s %s" % ("<name>", "<verb>")``) is covered by consuming the arguments in order.
+_PERCENT_FORMAT_RE = re.compile(
+    r"""(['"])([^'"]*)\1\s*%\s*\(?\s*((?:['"][^'"]*['"]\s*,?\s*)+)\)?"""
+)
+_QUOTED_FRAGMENT_RE = re.compile(r"""['"]([^'"]*)['"]""")
+_FORMAT_SPEC_RE = re.compile(r"%[-+ #0]*\d*(?:\.\d+)?[sridfge]")
+
+
+def _collapse_percent_format(text: str) -> str:
+    """Apply ``%`` formatting to a quoted template whose arguments are literals.
+
+    Only literal arguments are substituted -- the point is to see the string the
+    interpreter will hand to a sink, exactly as the concatenation collapse does.
+    """
+
+    def _apply(match: "re.Match[str]") -> str:
+        quote, template, arg_blob = match.group(1), match.group(2), match.group(3)
+        args = _QUOTED_FRAGMENT_RE.findall(arg_blob)
+        if not args:
+            return match.group(0)
+        remaining = list(args)
+
+        def _one(_spec: "re.Match[str]") -> str:
+            return remaining.pop(0) if remaining else _spec.group(0)
+
+        return f"{quote}{_FORMAT_SPEC_RE.sub(_one, template)}{quote}"
+
+    return _PERCENT_FORMAT_RE.sub(_apply, text)
+
+
+def _inline_interpreter_bindings(text: str) -> str:
+    """Replace identifiers bound to a quoted literal in *text* with that literal."""
+    bindings: dict[str, str] = {}
+    for match in _INTERP_BINDING_RE.finditer(text):
+        bindings.setdefault(match.group(1), match.group(2))
+    if not bindings:
+        return text
+    return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
+
+
 def is_denied(
     tool_name: str,
     extra_patterns: list[str] | None = None,
@@ -4343,6 +5711,38 @@ def is_denied(
     # under backtracking and are already enforced by the ``_is_git_publish`` floor
     # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
     regex_patterns = [p for p in regex_patterns if p not in _GIT_PUBLISH_RULE_PATTERNS]
+    # The two self-protection rules get an ADDITIONAL argv-structural floor
+    # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
+    # only a tokenized view can tell ``kirocrew "token"`` from
+    # ``kirocrew-wt-x/test_token_auth.py``.  The floor is a UNION with the regex
+    # tier, never a replacement -- the patterns deliberately stay in
+    # ``regex_patterns``.  Two independent reasons:
+    #   1. The regex still matches raw text, so a payload the tokenizer cannot
+    #      see into (``bash -c "kirocrew token"``, ``eval "$CMD"``) is caught.
+    #   2. The tokenizer can fail (unbalanced quotes, or a platform bug like the
+    #      one fixed in ``normalize_shell_command`` above), and a floor that
+    #      REPLACED the regex would then fail OPEN.
+    # A rule the operator has DISABLED must stay disabled, so the floor runs
+    # only for patterns still present in the effective set.
+    floor_enabled = {p for p in regex_patterns if p in _SELF_PROTECTION_FLOOR_PATTERNS}
+    # An interpreter CONCATENATES adjacent string literals, so ``'p'+'kill -f <name>'``
+    # is one command by the time it reaches the sink.  The two interpreter rules are
+    # therefore also matched against a copy with those joins collapsed.  Scoped to those
+    # two patterns on purpose: collapsing text for all the other rules would change
+    # inputs they were never measured against.
+    joined = _inline_interpreter_bindings(
+        _collapse_percent_format(_LITERAL_CONCAT_RE.sub("", lower))
+    )
+    if joined != lower:
+        for interpreter_pattern in regex_patterns:
+            if interpreter_pattern not in _INTERPRETER_RULE_PATTERNS:
+                continue
+            try:
+                if re.search(interpreter_pattern, joined, re.IGNORECASE):
+                    _emit_deny_event(tool_name, interpreter_pattern, lower)
+                    return f"Blocked by security policy: {interpreter_pattern}"
+            except re.error:  # pragma: no cover - patterns are validated at load
+                continue
     # Ordered (pattern, is_regex) pairs so the two passes share one code path;
     # regex tier first (the effective rule set), then the glob tier.
     all_patterns: list[tuple[str, bool]] = [(p, True) for p in regex_patterns] + [
@@ -4368,6 +5768,25 @@ def is_denied(
             _emit_deny_event(tool_name, _GIT_PUBLISH_DENY_LABEL, lower)
             return f"Blocked by security policy: {_GIT_PUBLISH_DENY_LABEL}"
         push_allow_pending = True
+
+    # ── Self-protection floor (argv-structural, not a glob) ──
+    # Runs before the pattern passes and on the WHOLE string, for the same reason
+    # the git-publish floor does: the evasions live in shell syntax that textual
+    # splitting scatters or mis-reads.  Each predicate is checked only if its
+    # rule is still in the effective set, so an operator-disabled rule stays
+    # disabled.
+    for rule_id, predicate in (
+        ("credential-exfil-kirocrew-token", _is_credential_mint),
+        ("self-protection-kill", _is_self_kill),
+    ):
+        pattern = _SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
+        if pattern is None or pattern not in floor_enabled:
+            continue
+        if predicate(lower):
+            # Report the rule's own pattern, exactly as the regex tier does, so
+            # the denial reason and the SEL event still map back to the rule id.
+            _emit_deny_event(tool_name, pattern, lower)
+            return f"Blocked by security policy: {pattern}"
 
     # ── Pass 1: whole-string deny ──
     # If any pattern matches the full input AND no exception matches the
@@ -4823,7 +6242,12 @@ def normalize_shell_command(cmd: str) -> list[str]:
     # Pre-process: expand $HOME/${HOME} BEFORE shlex splitting so that
     # expansion happens even inside quoted strings that shlex won't expand.
     home = os.path.expanduser("~")
-    preprocessed = _HOME_VAR_RE.sub(home, cmd)
+    # Replace via a FUNCTION, not a string template: on Windows the home path
+    # is ``C:\Users\<name>``, and ``re.sub`` parses a str replacement as a
+    # template eagerly -- ``\U`` is an invalid escape, so a string replacement
+    # raises ``re.error`` for EVERY input on that platform, not just ones
+    # containing ``$HOME``.  A callable is substituted literally.
+    preprocessed = _HOME_VAR_RE.sub(lambda _m: home, cmd)
 
     # Tokenize using POSIX shlex — handles quoting, escaping, etc.
     try:
