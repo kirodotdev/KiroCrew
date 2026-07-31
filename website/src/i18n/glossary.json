@@ -1,0 +1,24 @@
+{
+  "_comment": "Do-not-translate list. These proper nouns must appear verbatim in every language. Matching is word-boundary, not substring. Enforced by glossary.test.ts.",
+  "dnt": [
+    "AWS",
+    "Discord",
+    "Docker",
+    "Git",
+    "GitHub",
+    "GitLab",
+    "JSON",
+    "Kiro",
+    "KiroCrew",
+    "MCP",
+    "Markdown",
+    "Node.js",
+    "OAuth",
+    "Playwright",
+    "Python",
+    "Slack",
+    "TypeScript",
+    "YAML",
+    "npm"
+  ]
+}

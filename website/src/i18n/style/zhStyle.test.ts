@@ -7,14 +7,14 @@
  * calque word order, three renderings of one product noun, and ASCII commas
  * between CJK characters.
  *
- * These tests encode the normative rules in `STYLE-zh-CN.md` so that drift
+ * These tests encode the normative rules in `style/zh-CN.md` so that drift
  * fails CI instead of accumulating. Every assertion below corresponds to a
  * numbered rule in that document.
  */
 
 import { describe, it, expect } from 'vitest'
 
-import { CATALOGS as RUNTIME_CATALOGS } from './index'
+import { CATALOGS as RUNTIME_CATALOGS } from '../index'
 
 const CJK = /[\u4e00-\u9fff]/
 
@@ -41,7 +41,7 @@ const zh = bundle('zh-CN')
 /**
  * Blank out runs that are code rather than prose, so the punctuation and
  * spacing rules below cannot fire on a file path, a version number, a dotted
- * config key or a JSON sample. Mirrors the carve-out list in STYLE-zh-CN.md §1.
+ * config key or a JSON sample. Mirrors the carve-out list in style/zh-CN.md §1.
  */
 function stripCode(s: string): string {
   return s
@@ -87,7 +87,7 @@ describe('zh-CN plural forms', () => {
   })
 })
 
-describe('zh-CN terminology (STYLE-zh-CN.md §2)', () => {
+describe('zh-CN terminology (style/zh-CN.md §2)', () => {
   // One concept, one word. Each entry is [english cue, banned rendering,
   // canonical rendering]; the cue keeps the check context-sensitive, so a
   // banned string is only a violation where the English proves the sense.
@@ -116,7 +116,7 @@ describe('zh-CN terminology (STYLE-zh-CN.md §2)', () => {
   }
 })
 
-describe('zh-CN punctuation (STYLE-zh-CN.md §1)', () => {
+describe('zh-CN punctuation (style/zh-CN.md §1)', () => {
   it('uses full-width punctuation between CJK characters', () => {
     // `,` and `.` between Chinese characters is the single most obvious tell
     // that a string was translated by a tool and never read by a human.
@@ -158,7 +158,7 @@ describe('zh-CN punctuation (STYLE-zh-CN.md §1)', () => {
   })
 })
 
-describe('zh-CN tone (STYLE-zh-CN.md §3)', () => {
+describe('zh-CN tone (style/zh-CN.md §3)', () => {
   it('never uses the honorific 您', () => {
     // The catalog is written in neutral second person 你. Mixing registers
     // mid-product reads worse than either register consistently.
