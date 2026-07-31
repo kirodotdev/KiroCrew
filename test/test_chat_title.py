@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+from types import SimpleNamespace
+
+import pytest
+
+from kiro_crew.dashboard import chat_title
 from kiro_crew.dashboard.chat_title import (
     _TITLE_MAX_ATTACHMENT_FILES,
     _TITLE_MAX_ATTACHMENT_PATH_LENGTH,
     _TITLE_SOURCE_SCAN_LIMIT,
     _TITLE_TEXT_LIMIT,
     _build_title_prompt,
+    _looks_like_prose,
     _message_attachment_paths,
     _title_text,
 )
@@ -262,3 +269,135 @@ def test_prompt_none_for_attachment_only_message():
     assert (
         _build_title_prompt([{"role": "user", "content": "![image](/tmp/screenshot.jpg)"}]) is None
     )
+
+
+# ── Prose/refusal rejection (pasted URL made the model narrate its denial) ──
+
+
+def test_prompt_forbids_fetching_and_forbids_explaining():
+    """The naming agent must be told the transcript is data, links are not to be
+    opened, and a refusal sentence is never an acceptable reply."""
+    prompt = _build_title_prompt(
+        [{"role": "user", "content": "this is the launch blog https://example.com/Intro-Kiro-Crew"}]
+    )
+    assert prompt is not None
+    lowered = prompt.lower()
+    assert "do not use any tool" in lowered
+    assert "fetch" in lowered
+    assert "never explain" in lowered
+
+
+def test_refusal_reply_is_rejected_as_prose():
+    """The exact observed failure: a pasted Quip URL produced a refusal sentence
+    that was persisted as the session name."""
+    assert _looks_like_prose(
+        "I cannot access external URLs like Quip documents. Based solely on the message content"
+    )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I can't fetch that link",
+        "I'm unable to open the document",
+        "Sorry, I don't have access to that page",
+        "Unfortunately the URL is not reachable",
+        "As an AI I cannot browse",
+        "Unable to retrieve the blog post",
+        "Here's a title for your conversation",
+        "It looks like you shared a link",
+        "Kiro Crew launch blog. Review requested",
+        "A very long reply that keeps going and going well past any real session title length",
+    ],
+)
+def test_prose_replies_rejected(reply):
+    assert _looks_like_prose(reply)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "Kiro Crew launch blog",
+        "Node.js upgrade plan",
+        "Ship v1.2 to prod",
+        "Fix title generation bug",
+        "Quip doc review",
+        "Ideas for the roadmap",
+        "SKIP",
+    ],
+)
+def test_real_titles_accepted(reply):
+    assert not _looks_like_prose(reply)
+
+
+def test_empty_reply_is_not_treated_as_prose():
+    """Empty/whitespace replies are already handled by the SKIP branch; the
+    prose guard must not claim them."""
+    assert not _looks_like_prose("")
+    assert not _looks_like_prose("   ")
+
+
+@pytest.mark.asyncio
+async def test_generate_title_discards_prose_reply(monkeypatch):
+    """End-to-end on the generation path: a refusal reply must surface as "" so
+    the caller falls back instead of persisting the sentence as a title."""
+
+    async def _fake_oneliner(*_a, **_kw):
+        return "I cannot access external URLs like Quip documents. Based solely on the message"
+
+    monkeypatch.setattr(chat_title, "run_bg_oneliner", _fake_oneliner)
+    title = await chat_title._generate_title_via_kiro(
+        SimpleNamespace(sessions=SimpleNamespace()),
+        [{"role": "user", "content": "this is the launch blog https://example.com/Intro"}],
+    )
+    assert title == ""
+
+
+@pytest.mark.asyncio
+async def test_generate_title_keeps_real_reply(monkeypatch):
+    """Revert guard: the same path must still return a well-formed title."""
+
+    async def _fake_oneliner(*_a, **_kw):
+        return "Kiro Crew launch blog"
+
+    monkeypatch.setattr(chat_title, "run_bg_oneliner", _fake_oneliner)
+    title = await chat_title._generate_title_via_kiro(
+        SimpleNamespace(sessions=SimpleNamespace()),
+        [{"role": "user", "content": "this is the launch blog https://example.com/Intro"}],
+    )
+    assert title == "Kiro Crew launch blog"
+
+
+@pytest.mark.asyncio
+async def test_discarded_prose_is_redacted_before_it_is_logged(monkeypatch, caplog):
+    """A refusal can quote the user's message back, credentials included.
+
+    The discard path logs what it threw away, so both redactors must run BEFORE
+    that log line -- otherwise a pasted secret reaches the gateway log through
+    the model's own narration. Stubbing the redactors to a sentinel proves the
+    ordering rather than the redactors' own patterns.
+    """
+    secret = "AKIAIOSFODNN7EXAMPLE"
+
+    async def _fake_oneliner(*_a, **_kw):
+        return f"I cannot access that URL. The message contained {secret} so I stopped"
+
+    monkeypatch.setattr(chat_title, "run_bg_oneliner", _fake_oneliner)
+    monkeypatch.setattr(
+        chat_title, "redact_exfiltration_urls", lambda s: (s.replace(secret, "<URLRED>"), False)
+    )
+    monkeypatch.setattr(
+        chat_title, "redact_credentials", lambda s: (s.replace(secret, "<CREDRED>"), False)
+    )
+
+    with caplog.at_level(logging.INFO, logger=chat_title.logger.name):
+        title = await chat_title._generate_title_via_kiro(
+            SimpleNamespace(sessions=SimpleNamespace()),
+            [{"role": "user", "content": f"look at https://example.com/?k={secret}"}],
+        )
+
+    assert title == ""
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "discarding" in logged
+    assert secret not in logged
+    assert "<URLRED>" in logged
