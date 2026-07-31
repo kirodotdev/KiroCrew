@@ -1614,9 +1614,11 @@ class ConversationLog:
     ) -> list[dict]:
         """Return recent messages from sessions matching *source_prefix*.
 
-        Optimized: only scans the 5 most recently modified files and reads
-        only the last 50 lines from each, avoiding full-file I/O on large
-        session histories.
+        Considers at most 50 matching files (newest mtime first) and stops after
+        5 have contributed messages. Each contributing file costs a 5-line head
+        read (to detect incognito/temporary sessions, which are skipped) plus a
+        bounded tail read via :meth:`_read_tail_messages` — never a full-file
+        read, which on large transcripts dominated the call.
         """
         if not self._dir.exists():
             return []
@@ -1635,41 +1637,28 @@ class ConversationLog:
         for path in paths[:_max_scan]:
             if included >= 5:
                 break
-            # Single-pass read: check metadata head, then read remainder via same handle
+            # The memory_mode marker lives in the metadata line at the head of the
+            # file, so only the head is read here; the messages come from the tail.
             is_restricted = False
             try:
                 with open(path, encoding="utf-8") as f:
-                    head_lines = []
                     for _, line in zip(range(5), f):
-                        head_lines.append(line)
                         try:
                             d = json.loads(line.strip())
-                            if d.get("_type") == "metadata" and d.get("memory_mode") in (
-                                "incognito",
-                                "temporary",
-                            ):
-                                is_restricted = True
-                                break
                         except (json.JSONDecodeError, ValueError):
-                            pass
-                    if is_restricted:
-                        continue
-                    raw = "".join(head_lines) + f.read()
+                            continue
+                        if d.get("_type") == "metadata" and d.get("memory_mode") in (
+                            "incognito",
+                            "temporary",
+                        ):
+                            is_restricted = True
+                            break
             except OSError:
                 continue
+            if is_restricted:
+                continue
             included += 1
-            lines = raw.splitlines()
-            for line in lines[-50:]:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if data.get("_type") == "metadata":
-                    continue
-                candidates.append(data)
+            candidates.extend(self._read_tail_messages(path, 50, None))
         # Sort by timestamp and return most recent
         candidates.sort(key=lambda m: m.get("ts", ""))
         return [{"role": m["role"], "content": m["content"]} for m in candidates[-max_messages:]]

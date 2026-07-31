@@ -1639,9 +1639,12 @@ class ContextBuilder:
         # (skipped for temporary sessions)
         lessons_ctx = ""
         if not blocks_reads:
-            if memory.vector_store and memory.vector_store.get_lessons():
-                lessons_ctx = memory.vector_store.get_lessons_context()
-            else:
+            # One query, not two: get_lessons_context() already returns "" when the
+            # store holds no lessons, so the former get_lessons() existence probe
+            # was a duplicate SELECT * over the same rows (embedding blobs included)
+            # whose only use was an emptiness check.
+            lessons_ctx = memory.vector_store.get_lessons_context() if memory.vector_store else ""
+            if not lessons_ctx:
                 lessons_ctx = self.lessons.get_context()
             # Merge workspace-scoped lessons if workspace differs from default
             if workspace and workspace != "default":

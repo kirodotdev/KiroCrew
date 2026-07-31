@@ -369,6 +369,10 @@ class VectorMemoryStore:
         # write load. Without it, two writers can both observe embed_fn is None and
         # cooldown elapsed at the same instant, then both call the factory + probe.
         self._embed_fn_rebind_lock = threading.Lock()
+        # id -> time.monotonic() of the last last_accessed_at write for that
+        # episodic row. Backs the debounce in _touch_last_accessed; swept when it
+        # grows past _LAST_ACCESSED_CACHE_MAX.
+        self._last_accessed_touch: dict[str, float] = {}
 
     def init(self) -> None:
         """Create DB, apply migrations, set permissions."""
@@ -378,6 +382,13 @@ class VectorMemoryStore:
         )
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
+        # synchronous stays at the sqlite default (FULL). NORMAL would drop the
+        # per-commit fsync, but under WAL that only survives a process crash --
+        # an OS crash or power loss can still lose the unsynced WAL tail, and
+        # here that tail is acknowledged semantic memories, lessons and episodic
+        # rows. The write-volume problem it was meant to address is handled by
+        # debouncing the last_accessed_at touch instead, which removes the
+        # commits rather than weakening the ones that remain.
         self._db.execute("PRAGMA busy_timeout=5000")
         self._db.isolation_level = ""  # Restore implicit transaction handling
 
@@ -1305,16 +1316,25 @@ class VectorMemoryStore:
             with self._db_lock:
                 k = min(limit * 2, self._faiss_index.ntotal)  # type: ignore[attr-defined]
                 distances, indices = self._faiss_index.search(vec.reshape(1, -1), k)  # type: ignore[attr-defined]
+                # FAISS returns ids and distances only. The row bodies used to be
+                # fetched one "SELECT *" per hit — an N+1 that also dragged each
+                # row's embedding BLOB back out of the store even though the
+                # vectors are already resident in the index. Resolve every hit in
+                # a single IN (...) query over an explicit column list instead.
+                hits: list[tuple[str, float]] = []
                 for dist, idx in zip(distances[0], indices[0]):
                     if idx == -1:
                         break
-                    mem_id = self._faiss_id_map[int(idx)]
-                    mem = self._get_episodic(mem_id)
-                    if not mem or mem["is_deleted"]:
+                    hits.append((self._faiss_id_map[int(idx)], float(dist)))
+                rows_by_id = self._get_episodic_batch([mem_id for mem_id, _ in hits])
+                for mem_id, cosine_sim in hits:
+                    # Absent from the mapping == row missing or tombstoned; the
+                    # per-hit lookup treated both the same way.
+                    mem = rows_by_id.get(mem_id)
+                    if mem is None:
                         continue
                     if tag_filter and not self._matches_tags(mem, tag_filter):
                         continue
-                    cosine_sim = float(dist)
                     created = datetime.fromisoformat(mem["created_at"])
                     days_old = max(0, (now - created).days)
                     score = (
@@ -1334,14 +1354,8 @@ class VectorMemoryStore:
             # busy_timeout (set at connection init) waits out contention while the
             # lock keeps this metadata write consistent with the FAISS index. RLock
             # is reentrant, so re-acquiring here is safe regardless of caller.
-            if result:
-                with self._db_lock:
-                    for c in result:
-                        self.db.execute(
-                            "UPDATE episodic_memories SET last_accessed_at = ? WHERE id = ?",
-                            (_now_iso(), c["id"]),
-                        )
-                    self.db.commit()
+            # _touch_last_accessed does the locking and debouncing.
+            self._touch_last_accessed([c["id"] for c in result])
             return result
 
         # Fallback 1: stdlib cosine search over SQLite embeddings (no FAISS/numpy needed)
@@ -1431,15 +1445,8 @@ class VectorMemoryStore:
         # connection: two unsynchronized writers can both observe autocommit=1
         # and both issue BEGIN, and the loser raises "cannot start a transaction
         # within a transaction". RLock is reentrant, so re-acquiring here is safe
-        # regardless of caller.
-        if result:
-            with self._db_lock:
-                for c in result:
-                    self.db.execute(
-                        "UPDATE episodic_memories SET last_accessed_at = ? WHERE id = ?",
-                        (_now_iso(), c["id"]),
-                    )
-                self.db.commit()
+        # regardless of caller. _touch_last_accessed does the locking and debouncing.
+        self._touch_last_accessed([c["id"] for c in result])
         return result
 
     def get_episodic_list(
@@ -1556,6 +1563,72 @@ class VectorMemoryStore:
             "SELECT * FROM episodic_memories WHERE id = ? AND is_deleted = 0", (mem_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    #: Columns returned for episodic search hits. Deliberately omits the
+    #: ``embedding`` BLOB — search results never read it (FAISS already holds the
+    #: vectors) and it is by far the widest column in the row. Matches the column
+    #: set the stdlib fallback (_sqlite_vector_search) puts in its candidates.
+    _EPISODIC_SEARCH_COLUMNS = (
+        "id, conversation_id, text, tags, importance, created_at, last_accessed_at"
+    )
+
+    def _get_episodic_batch(self, mem_ids: list[str]) -> dict[str, dict]:
+        """Fetch several active episodic rows in one query, keyed by id.
+
+        Replaces a per-hit ``SELECT *`` on the FAISS search path. Missing or
+        tombstoned ids are simply absent from the returned mapping. The id list
+        is bounded by the FAISS ``k`` (2x the search limit), so it stays well
+        under sqlite's bound-parameter ceiling.
+        """
+        if not mem_ids:
+            return {}
+        placeholders = ",".join("?" * len(mem_ids))
+        rows = self.db.execute(
+            f"SELECT {self._EPISODIC_SEARCH_COLUMNS} FROM episodic_memories "
+            f"WHERE id IN ({placeholders}) AND is_deleted = 0",
+            tuple(mem_ids),
+        ).fetchall()
+        return {row["id"]: dict(row) for row in rows}
+
+    #: Minimum interval between last_accessed_at writes for the same episodic row.
+    _LAST_ACCESSED_DEBOUNCE_SECS = 60.0
+    #: Cap on the in-process debounce map before expired entries are swept.
+    _LAST_ACCESSED_CACHE_MAX = 4096
+
+    def _touch_last_accessed(self, mem_ids: list[str]) -> None:
+        """Record an access timestamp for episodic rows, debounced per row.
+
+        Every context assembly searches episodic memory, so an unconditional
+        UPDATE per hit turns each read into a write transaction (fsync included).
+        last_accessed_at only feeds recency reporting, so a row written within
+        ``_LAST_ACCESSED_DEBOUNCE_SECS`` is skipped and the rest go out in one
+        ``executemany``. Holds ``_db_lock`` for the whole body so the debounce
+        bookkeeping cannot interleave with a concurrent searcher's.
+        """
+        if not mem_ids:
+            return
+        with self._db_lock:
+            now = time.monotonic()
+            cutoff = now - self._LAST_ACCESSED_DEBOUNCE_SECS
+            due = [
+                m
+                for m in dict.fromkeys(mem_ids)
+                if self._last_accessed_touch.get(m, -1e18) < cutoff
+            ]
+            if not due:
+                return
+            stamp = _now_iso()
+            self.db.executemany(
+                "UPDATE episodic_memories SET last_accessed_at = ? WHERE id = ?",
+                [(stamp, m) for m in due],
+            )
+            self.db.commit()
+            for m in due:
+                self._last_accessed_touch[m] = now
+            if len(self._last_accessed_touch) > self._LAST_ACCESSED_CACHE_MAX:
+                self._last_accessed_touch = {
+                    k: v for k, v in self._last_accessed_touch.items() if v >= cutoff
+                }
 
     def _delete_episodic_row(self, mem_id: str) -> None:
         with self._db_lock:
