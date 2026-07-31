@@ -133,44 +133,155 @@ def _pct_from_buckets(
 
 
 class _Hist:
-    """Accumulator merging histogram data points that share a dimension key."""
+    """Accumulator merging histogram data points that share a dimension key.
 
-    __slots__ = ("count", "sum", "min", "max", "buckets", "bounds")
+    Data points are grouped by their EXACT ``explicit_bounds``, and every
+    reported statistic comes from a single group. This matters whenever bucket
+    boundaries change: a data point's bounds are baked in at record time, so a
+    14-day scan window straddling a boundary change holds two incompatible
+    generations of the same metric.
+
+    Merging them positionally fabricates values. Two generations with the same
+    bucket-count length would pass a naive length check while meaning entirely
+    different things — a pre-change sample sitting in the old ``+Inf`` bucket
+    would be added to the new ``+Inf`` bucket, and a 5s sample could be counted
+    into a 5-minute bucket, letting ``_pct_from_buckets`` report a p90 that no
+    turn ever took. Grouping also keeps ``count``/``sum``/``min``/``max``
+    consistent with the percentiles: accumulating those across generations while
+    only one generation's buckets survive would describe a mean over one
+    population and percentiles over another.
+
+    The reported group is the one holding the **newest** data point, not the
+    largest. Majority selection would let a stale generation keep winning for as
+    long as it out-counted the new one: right after a boundary change the window
+    still holds up to ``_WINDOW_DAYS`` of old samples against a handful of new
+    ones, so the OLD bounds would be reported — for the turn metric that means
+    continuing to serve the very ceiling-pinned percentiles this grouping exists
+    to eliminate, while omitting the new samples entirely. Recency makes the
+    change take effect on the first post-change sample. The reported population
+    is then small but truthful, and ``count`` says so; fuller-but-wrong is the
+    failure mode being fixed.
+
+    ``other_generations`` exposes how many groups were seen beyond the reported
+    one so a caller can surface a mixed window rather than silently trusting a
+    subset.
+    """
+
+    __slots__ = ("_groups",)
 
     def __init__(self) -> None:
-        self.count = 0
-        self.sum = 0.0
-        self.min: float | None = None
-        self.max: float | None = None
-        self.buckets: list[int] = []
-        self.bounds: list[float] = []
+        # bounds signature -> accumulated stats for that boundary generation
+        self._groups: dict[tuple[float, ...], dict[str, Any]] = {}
 
-    def add(self, dp: dict[str, Any]) -> None:
+    def add(self, dp: dict[str, Any], outcome: str = "") -> None:
         bc = dp.get("bucket_counts") or []
-        eb = dp.get("explicit_bounds") or []
-        self.count += int(dp.get("count", 0) or 0)
-        self.sum += float(dp.get("sum", 0.0) or 0.0)
+        try:
+            key = tuple(float(b) for b in (dp.get("explicit_bounds") or []))
+        except (TypeError, ValueError):
+            return
+        g = self._groups.get(key)
+        if g is None:
+            g = {
+                "count": 0,
+                "sum": 0.0,
+                "min": None,
+                "max": None,
+                "buckets": [0] * len(bc) if bc else [],
+                "bounds": list(key),
+                "outcomes": {},
+                "newest_ns": 0,
+            }
+            self._groups[key] = g
+        try:
+            ns = int(dp.get("time_unix_nano") or 0)
+        except (TypeError, ValueError):
+            ns = 0
+        if ns > int(g["newest_ns"]):
+            g["newest_ns"] = ns
+        n = int(dp.get("count", 0) or 0)
+        g["count"] += n
+        g["sum"] += float(dp.get("sum", 0.0) or 0.0)
+        if outcome:
+            # Outcome tallies MUST be grouped too. Scoping only the buckets and
+            # count would leave the outcome breakdown summing across generations
+            # while count reported one — the dashboard would show N turns beside
+            # an outcome bar totalling more than N, and a fault rate computed
+            # over a different population than the latency next to it.
+            g["outcomes"][outcome] = g["outcomes"].get(outcome, 0) + n
         mn, mx = dp.get("min"), dp.get("max")
         if mn is not None:
-            self.min = mn if self.min is None else min(self.min, mn)
+            g["min"] = mn if g["min"] is None else min(g["min"], mn)
         if mx is not None:
-            self.max = mx if self.max is None else max(self.max, mx)
+            g["max"] = mx if g["max"] is None else max(g["max"], mx)
         if bc:
-            if not self.buckets:
-                self.buckets = [0] * len(bc)
-                self.bounds = list(eb)
-            if len(bc) == len(self.buckets):
+            if not g["buckets"]:
+                g["buckets"] = [0] * len(bc)
+            # Same bounds signature implies same bucket length; the guard only
+            # defends against a malformed shard mixing lengths under one bounds
+            # list, which would otherwise raise IndexError.
+            if len(bc) == len(g["buckets"]):
                 for j, v in enumerate(bc):
-                    self.buckets[j] += int(v or 0)
+                    g["buckets"][j] += int(v or 0)
+
+    def _dominant(self) -> dict[str, Any] | None:
+        """The generation holding the newest sample.
+
+        ``count`` is only a tie-break, reached when data points carry no
+        ``time_unix_nano`` (synthetic or older shards) so every group ties at 0.
+        """
+        if not self._groups:
+            return None
+        return max(
+            self._groups.values(),
+            key=lambda g: (int(g["newest_ns"]), int(g["count"])),
+        )
+
+    @property
+    def count(self) -> int:
+        g = self._dominant()
+        return int(g["count"]) if g else 0
+
+    @property
+    def buckets(self) -> list[int]:
+        g = self._dominant()
+        return list(g["buckets"]) if g else []
+
+    @property
+    def bounds(self) -> list[float]:
+        g = self._dominant()
+        return list(g["bounds"]) if g else []
+
+    @property
+    def other_generations(self) -> int:
+        """Boundary generations present beyond the reported one (0 = clean)."""
+        return max(0, len(self._groups) - 1)
+
+    @property
+    def outcomes(self) -> dict[str, int]:
+        """Outcome tallies for the reported generation only.
+
+        Consistent by construction with ``count`` and the percentiles, so a
+        fault rate derived from this describes the same population as the
+        latency shown beside it.
+        """
+        g = self._dominant()
+        return dict(g["outcomes"]) if g else {}
 
     def stats(self) -> dict[str, Any]:
+        g = self._dominant()
+        if g is None:
+            return {
+                "count": 0, "mean_ms": 0.0, "p50_ms": 0.0,
+                "p90_ms": 0.0, "min_ms": 0.0, "max_ms": 0.0,
+            }
+        cnt = int(g["count"])
         return {
-            "count": self.count,
-            "mean_ms": round(self.sum / self.count, 1) if self.count else 0.0,
-            "p50_ms": round(_pct_from_buckets(self.buckets, self.bounds, 0.50), 1),
-            "p90_ms": round(_pct_from_buckets(self.buckets, self.bounds, 0.90), 1),
-            "min_ms": round(self.min, 1) if self.min is not None else 0.0,
-            "max_ms": round(self.max, 1) if self.max is not None else 0.0,
+            "count": cnt,
+            "mean_ms": round(float(g["sum"]) / cnt, 1) if cnt else 0.0,
+            "p50_ms": round(_pct_from_buckets(g["buckets"], g["bounds"], 0.50), 1),
+            "p90_ms": round(_pct_from_buckets(g["buckets"], g["bounds"], 0.90), 1),
+            "min_ms": round(g["min"], 1) if g["min"] is not None else 0.0,
+            "max_ms": round(g["max"], 1) if g["max"] is not None else 0.0,
         }
 
 
@@ -192,14 +303,12 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     overall = _Hist()
     cold = _Hist()  # spawned == True
     warm = _Hist()  # spawned == False
-    outcome: dict[str, int] = {}
     daily: dict[str, dict[str, _Hist]] = {}  # day -> {"cold"|"warm": _Hist}
     phases: dict[str, _Hist] = {}  # startup internal phase -> _Hist
     # generic surface for every other kirocrew.* metric
     other_hist: dict[str, _Hist] = {}
     other_ctr: dict[str, dict[str, Any]] = {}  # name -> {total, by_attr}
     turn = _Hist()
-    turn_outcome: dict[str, int] = {}  # kirocrew.turn.duration count by outcome
 
     for p in shard_paths:
         shard_day = "-".join(p.stem.split("-")[1:4])
@@ -236,23 +345,24 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
                                         if phase != _PHASE_TOTAL:
                                             phases.setdefault(phase, _Hist()).add(dp)
                                             continue
-                                        overall.add(dp)
                                         spawned = bool(attrs.get("spawned"))
-                                        (cold if spawned else warm).add(dp)
                                         oc = str(attrs.get("outcome", "unknown"))
-                                        outcome[oc] = outcome.get(oc, 0) + int(
-                                            dp.get("count", 0) or 0
-                                        )
+                                        (cold if spawned else warm).add(dp)
+                                        # Outcomes go through _Hist so they are
+                                        # scoped to the same bounds generation as
+                                        # the count and percentiles reported.
+                                        overall.add(dp, outcome=oc)
                                         day = _day_of(dp, shard_day)
                                         db = daily.setdefault(
                                             day, {"cold": _Hist(), "warm": _Hist()}
                                         )
                                         db["cold" if spawned else "warm"].add(dp)
                                     elif name == _TURN_METRIC and is_hist:
-                                        turn.add(dp)
-                                        oc = str(attrs.get("outcome", "unknown"))
-                                        turn_outcome[oc] = turn_outcome.get(oc, 0) + int(
-                                            dp.get("count", 0) or 0
+                                        turn.add(
+                                            dp,
+                                            outcome=str(
+                                                attrs.get("outcome", "unknown")
+                                            ),
                                         )
                                     elif is_hist:
                                         other_hist.setdefault(name, _Hist()).add(dp)
@@ -302,12 +412,16 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
             }
         )
 
+    turn_outcome = turn.outcomes
     turn_total = sum(turn_outcome.values())
     turn_faults = sum(v for k, v in turn_outcome.items() if k != "ok")
     turn_block = {
         **turn.stats(),
         "outcome": turn_outcome,
         "fault_rate": round(turn_faults / turn_total, 4) if turn_total else 0.0,
+        # >0 means the window straddles a bucket-boundary change and only the
+        # dominant generation is reported (see _Hist).
+        "other_generations": turn.other_generations,
     }
 
     return {
@@ -315,7 +429,8 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
             "overall": overall.stats(),
             "cold": cold.stats(),
             "warm": warm.stats(),
-            "outcome": outcome,
+            "outcome": overall.outcomes,
+            "other_generations": overall.other_generations,
             "daily": daily_out,
             "distribution": {"buckets": overall.buckets, "bounds": overall.bounds},
             # Internal phase split (kiro backend): spawn_init, session_new,

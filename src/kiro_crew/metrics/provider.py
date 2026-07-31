@@ -51,7 +51,7 @@ from kiro_crew.metrics.recorder import MetricsRecorder
 # import preserves the degrade contract. recorder.py is annotation-only on
 # OTel symbols (TYPE_CHECKING import) and stays loadable either way.
 try:
-    from opentelemetry.sdk.metrics import Histogram, MeterProvider
+    from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
     from opentelemetry.sdk.metrics.view import (
         ExplicitBucketHistogramAggregation,
@@ -63,7 +63,7 @@ try:
 
     _OTEL_AVAILABLE = True
 except ImportError:
-    Histogram = MeterProvider = PeriodicExportingMetricReader = None  # type: ignore[assignment,misc]
+    MeterProvider = PeriodicExportingMetricReader = None  # type: ignore[assignment,misc]
     ExplicitBucketHistogramAggregation = View = Resource = None  # type: ignore[assignment,misc]
     JsonlMetricExporter = None  # type: ignore[assignment,misc]
     _OTEL_AVAILABLE = False
@@ -73,17 +73,68 @@ logger = logging.getLogger(__name__)
 _SERVICE_NAME = "kirocrew"
 _SCOPE = "kiro_crew"
 
-# Explicit histogram bucket boundaries (milliseconds), applied to EVERY kirocrew
-# duration histogram via a MeterProvider View. OTEL's default boundaries top out
-# at 10s, so a cold session startup (15-25s) or a cold MCP lazy-load would fall
-# entirely into the +Inf overflow bucket and make bucket-derived p50/p90
-# meaningless. These boundaries span sub-ms acquire latencies through ~60s cold
-# starts so startup / backend.acquire / mcp.lazy_load / skill.lazy_load all get
-# usable percentiles from the exported bucket counts.
-_LATENCY_BUCKETS_MS = [
+# Explicit histogram bucket boundaries (milliseconds), applied PER INSTRUMENT via
+# MeterProvider Views. OTEL's default boundaries top out at 10s, so anything
+# slower lands entirely in the +Inf overflow bucket — and because
+# `_pct_from_buckets` can only report an overflow bucket's LOWER bound, the
+# derived p50/p90 then silently pin to the top boundary instead of reporting the
+# real value. A single shared array cannot serve every instrument: sub-ms MCP
+# acquires and multi-minute agent turns differ by six orders of magnitude, and
+# sizing one array for both costs either resolution at the fast end or truth at
+# the slow end.
+#
+# Three families, each sized to its instrument's MEASURED range:
+
+# Sub-ms through a minute — pooled acquires, skill loads, HTTP requests.
+# These are dominated by ~1ms values, so the fine end matters. The 60s ceiling
+# is retained from the historical shared array rather than tightened: request
+# duration excludes WebSocket upgrades and SSE streams, but ordinary slow
+# endpoints (installers, long provisioning calls) do run past 30s, and any
+# sample above the top bound has its percentile floored at that bound — the
+# exact artifact this change exists to remove.
+_FAST_BUCKETS_MS: list[float] = [
+    0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500,
+    1000, 2500, 5000, 10000, 30000, 60000,
+]
+
+# Milliseconds through ~1 minute — session startup and other cold-start work.
+# Unchanged from the historical shared array: startup spans a 0.5ms set_model
+# phase through 15-25s cold spawns, and this is the range it was sized for.
+_STARTUP_BUCKETS_MS: list[float] = [
     1, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 3000,
     5000, 7500, 10000, 15000, 20000, 30000, 45000, 60000,
 ]
+
+# One second through one hour — agent turns. A turn is an entire agent loop
+# (model calls plus every tool round-trip, and any wait on an interactive
+# approval prompt), so minutes are ordinary and the old 60s ceiling overflowed
+# on the very first sample ever recorded (227589ms). Resolution is deliberately
+# densest between 1 and 10 minutes, where turns actually land.
+_TURN_BUCKETS_MS: list[float] = [
+    1000, 2500, 5000, 10000, 20000, 30000, 45000, 60000, 90000,
+    120000, 180000, 300000, 450000, 600000, 900000, 1200000,
+    1800000, 2700000, 3600000,
+]
+
+# Instrument name -> boundaries. This map is the COMPLETE set of kirocrew
+# duration histograms: the Views below are built from it and there is no
+# catch-all, because the OTEL SDK applies EVERY matching View rather than the
+# first, so a per-instrument View plus a catch-all would emit two conflicting
+# streams under one metric name.
+#
+# Consequence: a new histogram missing from this map falls back to OTEL's
+# default 10s-ceiling boundaries. `test/metrics/test_provider_bucket_views.py`
+# fails when a histogram metric name in the source has no entry here — add the
+# instrument to this map when you add the metric.
+_HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
+    "kirocrew.gateway.request.duration": _FAST_BUCKETS_MS,
+    "kirocrew.mcp.backend.acquire.duration": _FAST_BUCKETS_MS,
+    "kirocrew.skill.lazy_load.duration": _FAST_BUCKETS_MS,
+    "kirocrew.session.startup.duration": _STARTUP_BUCKETS_MS,
+    "kirocrew.mcp.lazy_load.duration": _STARTUP_BUCKETS_MS,
+    "kirocrew.gateway.boot.duration": _STARTUP_BUCKETS_MS,
+    "kirocrew.turn.duration": _TURN_BUCKETS_MS,
+}
 
 _lock = threading.Lock()
 _recorder: Optional[MetricsRecorder] = None
@@ -163,16 +214,19 @@ def _build_recorder() -> MetricsRecorder:
         _provider = MeterProvider(
             metric_readers=readers,
             resource=Resource.create({"service.name": _SERVICE_NAME}),
-            # Apply the latency bucket set to every histogram so bucket-derived
-            # p50/p90 stay meaningful across the full startup / acquire /
-            # lazy-load range (OTEL's default histogram tops out at 10s).
+            # One View per instrument, from _HISTOGRAM_BUCKETS_MS. Deliberately
+            # NOT a catch-all `instrument_type=Histogram` View: the OTEL SDK
+            # applies every matching View, so a catch-all alongside these would
+            # publish each named instrument twice under one metric name with
+            # different bounds, and the telemetry aggregator merges same-length
+            # bucket arrays without comparing bounds — it would silently double
+            # the counts. See the completeness guard test.
             views=[
                 View(
-                    instrument_type=Histogram,
-                    aggregation=ExplicitBucketHistogramAggregation(
-                        _LATENCY_BUCKETS_MS
-                    ),
-                ),
+                    instrument_name=name,
+                    aggregation=ExplicitBucketHistogramAggregation(bounds),
+                )
+                for name, bounds in _HISTOGRAM_BUCKETS_MS.items()
             ],
         )
         logger.info(

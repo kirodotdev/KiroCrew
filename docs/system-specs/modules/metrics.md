@@ -20,7 +20,7 @@ Source: `src/kiro_crew/metrics/` — `schema.py`, `recorder.py`, `provider.py`,
 |------|---------|
 | `schema.py` | Namespace constants (`NS_CORE = "kirocrew."`, `NS_GENAI = "gen_ai."`, `NS_APP_PREFIX = "app."`) + `validate_name` / `validate_attrs` / `redact` guardrails. Documents the low-cardinality contract. |
 | `recorder.py` | `MetricsRecorder` — facade over the OTEL `Meter`. Every metric passes namespace + privacy guardrails BEFORE reaching an instrument. Instrument-cache creation is lock-guarded (atomic check-then-create). Best-effort: a telemetry failure never propagates to the caller. `meter=None` = no-op recorder. |
-| `provider.py` | Consent gate + process-global recorder (`get_recorder()`) + graceful `shutdown()` / `reset_for_testing()`. When enabled, wires a `PeriodicExportingMetricReader` to the local JSONL exporter. Installs a `View` applying `ExplicitBucketHistogramAggregation(_LATENCY_BUCKETS_MS)` (1ms–60s boundaries) to EVERY histogram so bucket-derived p50/p90 stay meaningful across the full startup / acquire / lazy-load range (OTEL's default buckets top out at 10s). |
+| `provider.py` | Consent gate + process-global recorder (`get_recorder()`) + graceful `shutdown()` / `reset_for_testing()`. When enabled, wires a `PeriodicExportingMetricReader` to the local JSONL exporter. Installs **one `View` per instrument** from `_HISTOGRAM_BUCKETS_MS`, each with its own `ExplicitBucketHistogramAggregation` boundaries (see below) — deliberately NOT a catch-all `instrument_type=Histogram` View. |
 | `local_exporter.py` | `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs. |
 | `http_metrics.py` | Gateway HTTP observability (rec #1): `record_boot_to_ready()` (boot-to-ready histogram) + `make_route_latency_middleware()` (per-route latency, wired as the outermost middleware on both `start_dashboard`/`start_api_server`). Bounds `route_template` cardinality via `collect_route_templates()` (build-time snapshot) + `route_template()` (`__unknown__` fallback); clamps `method` to a fixed allowlist and `status_class` to `1xx`..`5xx`/`other`. Upgraded WebSocket connections and `text/event-stream` SSE responses are excluded because their handler elapsed time is connection/turn lifetime, not HTTP request latency. Best-effort — a telemetry failure never alters a response. |
 
@@ -148,6 +148,75 @@ when extra missing), `test/metrics/test_schema.py` (redaction / namespace).
 | `kirocrew.skill.lazy_load.count` / `.duration` | counter + histogram (ms) | `hit` (bool) | `skills.py::SkillsLoader.load_skill` via `_emit_lazy_load_metric` (best-effort; never breaks skill loading). |
 | `kirocrew.gateway.boot.duration` | histogram (ms) | `server` (`dashboard` / `api`), `outcome` (`ready`) | `dashboard/server.py::start_dashboard` / `start_api_server` — boot-to-ready: wall-clock from the server's `start_time` until full init completes and it is about to accept traffic. Emitted via `metrics/http_metrics.py::record_boot_to_ready`. Best-effort; never blocks startup. |
 | `kirocrew.gateway.request.duration` | histogram (ms) | `method` (fixed HTTP-verb allowlist, else `OTHER`), `route_template` (matched aiohttp canonical TEMPLATE, e.g. `/api/artifacts/{slug}`, else `__unknown__`), `status_class` (`1xx`..`5xx` / `other`) | `metrics/http_metrics.py::make_route_latency_middleware` — outermost gateway middleware on BOTH `start_dashboard` and `start_api_server`. Times full in-gateway HTTP handling; upgraded WebSocket connections and `text/event-stream` SSE responses are excluded so connection/turn lifetime cannot pollute request latency. **Bounded cardinality** (see below). |
+
+### Histogram bucket boundaries: per instrument, not shared
+
+Boundaries live in `metrics/provider.py::_HISTOGRAM_BUCKETS_MS`, a metric-name →
+boundaries map from which one `View(instrument_name=…)` is built per instrument.
+Three families, each sized to its instrument's measured range:
+
+| Family | Range | Instruments |
+|---|---|---|
+| `_FAST_BUCKETS_MS` | 0.5ms – 60s | `gateway.request`, `mcp.backend.acquire`, `skill.lazy_load` |
+| `_STARTUP_BUCKETS_MS` | 1ms – 60s | `session.startup`, `mcp.lazy_load`, `gateway.boot` |
+| `_TURN_BUCKETS_MS` | 1s – 1h | `turn.duration` |
+
+**Why not one shared array.** A single 1ms–60s array previously served every
+histogram through a catch-all `View(instrument_type=Histogram)`. Its ceiling was
+sized for session startup, so the first `kirocrew.turn.duration` sample ever
+recorded (227589ms — an agent turn is a whole agent loop including tool
+round-trips and any wait on an interactive approval) landed in the `+Inf`
+overflow bucket. Since `_pct_from_buckets` can only report an overflow bucket's
+LOWER bound, the aggregator returned `p50 == p90 == 60000` — a ceiling artifact
+presented as a real latency, while `mean`/`max` (exact, from `sum`/`max`) stayed
+correct beside it. `p50 == p90` is the signature of this failure. Instruments in
+this system span six orders of magnitude (sub-ms pooled acquires to multi-minute
+agent turns), so one array must sacrifice either fast-end resolution or slow-end
+truth.
+
+**Why there is no catch-all fallback.** The OTEL SDK applies EVERY matching
+View, not the first. A per-instrument View plus a catch-all therefore publishes
+the same metric name twice with different bounds. The SDK offers no negation in
+View matching, so the catch-all had to be removed rather than narrowed.
+
+**Boundary generations never merge.** Bounds are baked into each data point at
+record time, so any boundary change makes the 14-day scan window straddle two
+incompatible generations of one metric. `handlers/telemetry.py::_Hist` therefore
+groups data points by their EXACT `explicit_bounds` and reports statistics from a
+single group — **the one holding the newest data point**. Selection is by recency,
+not volume: majority selection would let a stale generation keep winning while it
+out-counted the new one, so right after a boundary change the old bounds would be
+reported for up to the whole 14-day window — for `turn.duration` that means
+continuing to serve the ceiling-pinned percentiles this grouping exists to remove,
+while omitting the new samples. Recency makes the change take effect on the first
+post-change sample; the reported population is then small but truthful, and
+`count` says so. (`count` remains a tie-break for data points carrying no
+`time_unix_nano`.) **Outcome tallies
+are grouped too** — accumulated inside `_Hist` rather than alongside it, because
+scoping only the buckets and count would leave the outcome breakdown summing
+across generations: the page would show N turns beside an outcome bar totalling
+more than N, and a `fault_rate` computed over a different population than the
+latency next to it. Both the `startup` and `turn` blocks expose
+`other_generations` (0 = a clean window; >0 = the window straddles a boundary
+change and only the dominant generation is reported).
+
+This is load-bearing, not defensive: the historical shared array and
+`_TURN_BUCKETS_MS` have the SAME bucket-count length, so a length-only check
+would have merged them positionally — adding a pre-change sample from the old
+`+Inf` bucket into the new `+Inf` bucket and reporting **p90 = 3,600,000ms (one
+hour)**, while a 5s sample landed in a 5-minute bucket. Grouping also keeps
+`count`/`sum`/`min`/`max` consistent with the percentiles; accumulating those
+across generations while only one generation's buckets survived would describe a
+mean over one population and percentiles over another.
+
+**Completeness is therefore load-bearing.** With no catch-all, a histogram
+missing from the map silently falls back to OTEL's default 10s-ceiling
+boundaries — reintroducing the same class of bug. `test/metrics/
+test_provider_bucket_views.py` scans the source for `kirocrew.*.duration` metric
+names and fails when one has no map entry (and when a map entry has no emitting
+call site). It also pins the no-duplicate-streams property and asserts the
+227589ms regression sample no longer overflows. **When adding a duration
+histogram, add it to `_HISTOGRAM_BUCKETS_MS`.**
 
 ### Bounded cardinality of `kirocrew.gateway.request.duration` (rec #1)
 
