@@ -5,6 +5,7 @@ import { isKnownAgent, markAgentsKnown, pruneAgents } from '../../hooks/sceneSta
 import { sceneFont, drawLabel, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../hooks/sceneText'
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
+import { i18nT } from '../../i18n/t'
 
 const UNDERWATER_THEME: SceneTooltipTheme = { active: 'Exploring the deep', idle: 'Surfacing for air' }
 
@@ -532,9 +533,9 @@ export default function UnderwaterLabScene({ agents, visible = true }: Props) {
     const drawTitle = () => {
       T.fillStyle = COL.light; T.font = sceneFont('title', 'bold')
       T.textAlign = 'center'
-      T.fillText('Deep Sea Lab', (W / 2) * S, 20 * S)
+      T.fillText(i18nT('pages.scenes.underwaterLabScene.deep_sea_lab'), (W / 2) * S, 20 * S)
       T.fillStyle = '#446'; T.font = sceneFont('status')
-      T.fillText('research station', (W / 2) * S, 30 * S)
+      T.fillText(i18nT('pages.scenes.underwaterLabScene.research_station'), (W / 2) * S, 30 * S)
       T.textAlign = 'start'
       T.fillStyle = '#446'; T.font = sceneFont('label')
       T.fillText(`${diversRef.current.length}/${MAX_DOMES} divers`, 4 * S, (H - 4) * S)
@@ -630,8 +631,8 @@ export default function UnderwaterLabScene({ agents, visible = true }: Props) {
 
   return (
     <div style={SCENE_CONTAINER_STYLE(W, H)}>
-      <canvas ref={canvasRef} aria-label="Underwater lab scene" style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
-      <canvas ref={textRef} aria-label="Underwater lab scene labels" style={TEXT_CANVAS_STYLE} />
+      <canvas ref={canvasRef} aria-label={i18nT('pages.scenes.underwaterLabScene.underwater_lab_scene')} style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
+      <canvas ref={textRef} aria-label={i18nT('pages.scenes.underwaterLabScene.underwater_lab_scene_labels')} style={TEXT_CANVAS_STYLE} />
       {tooltipEl}
     </div>
   )

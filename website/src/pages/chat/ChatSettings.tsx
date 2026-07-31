@@ -176,7 +176,7 @@ export default function ChatSettings({ config, onChange }: { config: ChatConfig;
           <div className="flex items-center justify-between">
             <div className="flex flex-col gap-0.5">
               <span className="text-[13px] text-text">{i18nT('pages.chat.chatSettings.send_shortcut')}</span>
-              <span className="text-[11px] text-muted">{config.sendOnEnter === 'enter' ? 'Shift+Enter for newline' : config.sendOnEnter === 'ctrl-enter' ? 'Enter for newline' : `${navigator.platform?.includes('Mac') ? '⌘' : 'Ctrl'}+Enter for newline`}</span>
+              <span className="text-[11px] text-muted">{config.sendOnEnter === 'enter' ? i18nT('pages.chat.chatSettings.shift_enter_for_newline') : config.sendOnEnter === 'ctrl-enter' ? i18nT('pages.chat.chatSettings.enter_for_newline') : `${navigator.platform?.includes('Mac') ? '⌘' : 'Ctrl'}+Enter for newline`}</span>
             </div>
             <select className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-none cursor-pointer" value={config.sendOnEnter} onChange={e => set('sendOnEnter', e.target.value as SendMode)}>
               <option value="enter">{i18nT('pages.chat.chatSettings.enter_sends')}</option>

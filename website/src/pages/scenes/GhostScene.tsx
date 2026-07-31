@@ -5,6 +5,7 @@ import { isKnownAgent, markAgentsKnown, pruneAgents } from '../../hooks/sceneSta
 import { sceneFont, drawLabel, sceneLineHeight, drawSpeechBubble, SPEECH_BUBBLE_MS, KIRO_GHOST_PIXELS, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../hooks/sceneText'
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
+import { i18nT } from '../../i18n/t'
 
 const GHOST_THEME: SceneTooltipTheme = { active: 'Haunting the codebase', idle: 'Drifting through walls' }
 
@@ -406,8 +407,8 @@ export default function GhostScene({ agents, visible = true }: Props) {
 
   return (
     <div style={SCENE_CONTAINER_STYLE(W, H)}>
-      <canvas ref={canvasRef} aria-label="Kiro ghost haunt animation" style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
-      <canvas ref={textRef} aria-label="Kiro ghost haunt text overlay" style={TEXT_CANVAS_STYLE} />
+      <canvas ref={canvasRef} aria-label={i18nT('pages.scenes.ghostScene.kiro_ghost_haunt_animation')} style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
+      <canvas ref={textRef} aria-label={i18nT('pages.scenes.ghostScene.kiro_ghost_haunt_text_overlay')} style={TEXT_CANVAS_STYLE} />
       {tooltipEl}
     </div>
   )

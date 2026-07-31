@@ -38,7 +38,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot }: { slot: string |
   // `current` is the first not-completed task (server-derived). When everything
   // is done there is no current task, so the label reports completion instead.
   const current = sanitizeLlmOutput(todo.current || '')
-  const label = allDone ? 'All tasks complete' : current || 'Current task'
+  const label = allDone ? i18nT('pages.chat.taskProgressBar.all_tasks_complete') : current || i18nT('pages.chat.taskProgressBar.current_task')
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
 
   return (

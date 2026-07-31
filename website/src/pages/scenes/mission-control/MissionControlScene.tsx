@@ -6,6 +6,8 @@ import { drawCoffeeStation, drawVendingMachine, drawEquipmentRack, drawTrashCan,
 import { SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../../hooks/sceneText'
 import { useSceneInteraction } from '../../../hooks/useSceneInteraction'
 
+import { i18nT } from '../../../i18n/t'
+
 const MC_THEME = { active: 'Vibe coding', idle: 'Doomscrolling TikTok' }
 
 export default function MissionControlScene({ agents, visible = true }: { agents: AgentSource[]; visible?: boolean }) {
@@ -580,7 +582,7 @@ export default function MissionControlScene({ agents, visible = true }: { agents
 
   return (
     <div style={SCENE_CONTAINER_STYLE(W, H)}>
-      <canvas ref={canvasRef} aria-label="Mission control scene" style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }}
+      <canvas ref={canvasRef} aria-label={i18nT('pages.scenes.missionControl.missionControlScene.mission_control_scene')} style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }}
         onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
       {tooltipEl}
     </div>

@@ -40,7 +40,7 @@ function SideMessageBubble({ msg, isStreaming }: { msg: SideMessage; isStreaming
           <button
             className="text-muted hover:text-text p-0.5 rounded transition-colors"
             title={i18nT('pages.chat.sideChat.copy')}
-            aria-label={copied ? 'Copied!' : 'Copy'}
+            aria-label={copied ? i18nT('pages.chat.sideChat.copied') : i18nT('pages.chat.sideChat.copy')}
             onClick={() => {
               copyToClipboard(msg.content).then(() => {
                 setCopied(true)
@@ -247,7 +247,7 @@ export default function SideChat({ slot }: { slot: string }) {
           onChange={e => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
           aria-label={i18nT('pages.chat.sideChat.ask_a_side_question')}
-          placeholder="Ask a side question…"
+          placeholder={i18nT('pages.chat.sideChat.ask_a_side_question_2')}
           rows={2}
           disabled={sendMutation.isPending}
           style={{ maxHeight: MAX_INPUT_H }}

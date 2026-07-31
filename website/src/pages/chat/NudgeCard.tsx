@@ -70,7 +70,7 @@ export default memo(function NudgeCard({
   const [expanded, setExpanded] = useState(false)
   const { cycle, body } = parseNudgeMessage(message)
   const firstLine = body.split('\n').find(l => l.trim().length > 0)?.trim() ?? ''
-  const label = cycle !== null ? `Auto-nudge · cycle ${cycle}` : 'Auto-nudge'
+  const label = cycle !== null ? `Auto-nudge · cycle ${cycle}` : i18nT('pages.chat.nudgeCard.auto_nudge')
 
   return (
     <div
@@ -83,7 +83,7 @@ export default memo(function NudgeCard({
           type="button"
           onClick={() => setExpanded(v => !v)}
           aria-expanded={expanded}
-          aria-label={expanded ? 'Hide nudge instructions' : 'Show nudge instructions'}
+          aria-label={expanded ? i18nT('pages.chat.nudgeCard.hide_nudge_instructions') : i18nT('pages.chat.nudgeCard.show_nudge_instructions')}
           className="flex items-center gap-1.5 min-w-0 flex-1 text-left text-[13px] hover:text-fg transition-colors"
           data-testid="nudge-card-toggle"
         >

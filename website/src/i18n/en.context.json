@@ -44,6 +44,7 @@
     "pages.channelPage.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
     "pages.channelPage.ok": "Status value in a table or log line, meaning the operation succeeded. A state, not the confirmation button.",
     "pages.chat.activityViewer.resource_type_pr": "\"PR\" = pull request. Keep the abbreviation the target language's developers actually use; do not expand it if that would break the layout.",
+    "pages.chat.assistantMessage.raw": "Label on the toggle that switches an assistant message from its rendered markdown to the unformatted source text. The adjective \"raw\" as in raw/unprocessed output, not the verb and not \"rare\". Paired with the rendered view on the same control, so keep it as short as the target language allows.",
     "pages.chat.subagentProgressBar.s": "The unit \"s\" = seconds, rendered directly after a number (`30s`). Not a plural marker.",
     "pages.chatSidebar.min": "The unit \"min\" = minutes, rendered after a number. An abbreviation, not the word \"minimum\".",
     "pages.devFleetPage.mb": "The unit \"MB\" = megabytes, rendered after a numeric size.",

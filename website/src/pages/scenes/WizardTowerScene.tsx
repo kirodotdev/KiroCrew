@@ -5,6 +5,7 @@ import { isKnownAgent, markAgentsKnown, pruneAgents } from '../../hooks/sceneSta
 import { sceneFont, drawLabel, sceneLineHeight, drawSpeechBubble, SPEECH_BUBBLE_MS, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../hooks/sceneText'
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
+import { i18nT } from '../../i18n/t'
 
 const WIZARD_THEME: SceneTooltipTheme = { active: 'Casting spells', idle: 'Studying grimoire' }
 
@@ -225,7 +226,7 @@ export default function WizardTowerScene({ agents, visible = true }: Props) {
 
       // Nameplate
       if (!occupied) {
-        drawLabel(T, 'empty', (bx + 20) * S, (by + 4) * S, { role: 'label', color: '#555', bgColor: '#2a2030', align: 'center', scale: S })
+        drawLabel(T, i18nT('pages.scenes.wizardTowerScene.empty'), (bx + 20) * S, (by + 4) * S, { role: 'label', color: '#555', bgColor: '#2a2030', align: 'center', scale: S })
       }
     }
 
@@ -406,7 +407,7 @@ export default function WizardTowerScene({ agents, visible = true }: Props) {
       }
 
       // Status
-      drawLabel(T, w.running ? 'casting' : 'resting', (bx + 4) * S, (by - 18 + bob) * S, { role: 'status', color: w.running ? '#4f4' : '#888', bgColor: 'rgba(0,0,0,0.5)', align: 'center', scale: S })
+      drawLabel(T, w.running ? i18nT('pages.scenes.wizardTowerScene.casting') : i18nT('pages.scenes.wizardTowerScene.resting'), (bx + 4) * S, (by - 18 + bob) * S, { role: 'status', color: w.running ? '#4f4' : '#888', bgColor: 'rgba(0,0,0,0.5)', align: 'center', scale: S })
       // Real-message speech bubble — appears when the session's latest message changes
       if (w.lastMessage && Date.now() - w.msgAt < SPEECH_BUBBLE_MS) {
         const msgAge = Date.now() - w.msgAt
@@ -449,7 +450,7 @@ export default function WizardTowerScene({ agents, visible = true }: Props) {
     const drawTitle = () => {
       T.fillStyle = '#f90'; T.font = sceneFont('title', 'bold')
       T.textAlign = 'center'
-      T.fillText('Arcane Academy', (W / 2) * S, 20 * S)
+      T.fillText(i18nT('pages.scenes.wizardTowerScene.arcane_academy'), (W / 2) * S, 20 * S)
       T.textAlign = 'start'
       T.fillStyle = '#666'; T.font = sceneFont('status')
       T.fillText(`${wizardsRef.current.length}/${MAX_BENCHES} wizards`, 4 * S, (H - 4) * S)
@@ -480,7 +481,7 @@ export default function WizardTowerScene({ agents, visible = true }: Props) {
           if (w.activity === 'shelf') {
             w.castTimer++
             if (w.castTimer % 240 === 60 && (!spellRef.current || spellRef.current.life <= 0)) {
-              spellRef.current = { text: 'I see!', x: w.x, y: w.y - 20, life: 60 }
+              spellRef.current = { text: i18nT('pages.scenes.wizardTowerScene.i_see'), x: w.x, y: w.y - 20, life: 60 }
             }
             if (w.castTimer > 600) {
               const bp = BENCH_POSITIONS[w.benchIdx]
@@ -573,8 +574,8 @@ export default function WizardTowerScene({ agents, visible = true }: Props) {
 
   return (
     <div style={SCENE_CONTAINER_STYLE(W, H)}>
-      <canvas ref={canvasRef} aria-label="Wizard tower scene" style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
-      <canvas ref={textRef} aria-label="Wizard tower spell text" style={TEXT_CANVAS_STYLE} />
+      <canvas ref={canvasRef} aria-label={i18nT('pages.scenes.wizardTowerScene.wizard_tower_scene')} style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
+      <canvas ref={textRef} aria-label={i18nT('pages.scenes.wizardTowerScene.wizard_tower_spell_text')} style={TEXT_CANVAS_STYLE} />
       {tooltipEl}
     </div>
   )

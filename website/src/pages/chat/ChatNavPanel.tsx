@@ -61,7 +61,7 @@ export default function ChatNavContent({ links, sections, onScrollToSection, res
                 className="flex items-center gap-2 px-2 py-1 rounded hover:bg-bg-hover transition-colors no-underline group"
               >
                 <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${TYPE_COLORS[link.type] || TYPE_COLORS.other}`}>
-                  {TYPE_LABELS[link.type] || 'Link'}
+                  {TYPE_LABELS[link.type] || i18nT('pages.chat.chatNavPanel.link')}
                 </span>
                 <span className="text-[12px] text-text truncate group-hover:text-accent transition-colors">
                   {link.label}

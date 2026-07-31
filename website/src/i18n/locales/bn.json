@@ -1214,6 +1214,15 @@
       "suggested_follow_up_one": "প্রস্তাবিত ফলো-আপ",
       "suggested_follow_up_other": "প্রস্তাবিত ফলো-আপগুলো"
     },
+    "inboundLinkChip": {
+      "confirm_release": "এই সেশনটি {{label}} থেকে বিচ্ছিন্ন করবেন?\n\nসেখানে পাঠানো বার্তা আর এখানে আসবে না, এবং উত্তরও সেখানে পৌঁছাবে না। ওই চ্যানেল থেকে !sessions ব্যবহার করে আবার সংযুক্ত করতে পারবেন।",
+      "driven_from": "{{label}} থেকে পরিচালিত",
+      "release": "বিচ্ছিন্ন করুন",
+      "release_aria": "এই সেশনটি {{label}} থেকে বিচ্ছিন্ন করুন",
+      "release_failed": "সেশনটি বিচ্ছিন্ন করা যায়নি: {{reason}}",
+      "released": "{{label}} থেকে বিচ্ছিন্ন করা হয়েছে",
+      "tooltip": "এই সেশনটি {{label}}-এর সঙ্গে দ্বিমুখীভাবে সংযুক্ত: উত্তর সেখানে পৌঁছায়, আর সেখানে পাঠানো বার্তা এখানে আসে।"
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "কমেন্ট থ্রেড খুলুন"
     },
@@ -1315,15 +1324,6 @@
       "waiting_for_sign_in": "সাইন-ইনের অপেক্ষায়…",
       "we_could_not_check_kiro_cli": "আমরা Kiro CLI পরীক্ষা করতে পারিনি।",
       "your_crew_is_almost_ready": "আপনার ক্রু প্রায় প্রস্তুত।"
-    },
-    "inboundLinkChip": {
-      "confirm_release": "এই সেশনটি {{label}} থেকে বিচ্ছিন্ন করবেন?\n\nসেখানে পাঠানো বার্তা আর এখানে আসবে না, এবং উত্তরও সেখানে পৌঁছাবে না। ওই চ্যানেল থেকে !sessions ব্যবহার করে আবার সংযুক্ত করতে পারবেন।",
-      "driven_from": "{{label}} থেকে পরিচালিত",
-      "release": "বিচ্ছিন্ন করুন",
-      "release_aria": "এই সেশনটি {{label}} থেকে বিচ্ছিন্ন করুন",
-      "release_failed": "সেশনটি বিচ্ছিন্ন করা যায়নি: {{reason}}",
-      "released": "{{label}} থেকে বিচ্ছিন্ন করা হয়েছে",
-      "tooltip": "এই সেশনটি {{label}}-এর সঙ্গে দ্বিমুখীভাবে সংযুক্ত: উত্তর সেখানে পৌঁছায়, আর সেখানে পাঠানো বার্তা এখানে আসে।"
     },
     "linkedSurfacesSection": {
       "confirm_release": "এই সেশনটি {{label}} থেকে বিচ্ছিন্ন করবেন?\n\nসেখানে পাঠানো বার্তা আর এখানে আসবে না, এবং উত্তরও সেখানে পৌঁছাবে না। ওই চ্যানেল থেকে !sessions ব্যবহার করে আবার সংযুক্ত করতে পারবেন।",
@@ -2574,6 +2574,7 @@
     "chat": {
       "activityViewer": {
         "activity": "অ্যাক্টিভিটি",
+        "approval_needed": "অনুমোদন প্রয়োজন",
         "approve": "অনুমোদন করুন",
         "approved": "অনুমোদিত",
         "artifacts_empty": "এখনও কোনো আর্টিফ্যাক্ট নেই — আমাকে একটি তৈরি করতে বলুন, বা কোনো সেশন ফাইল তারকাচিহ্নিত করুন",
@@ -2582,10 +2583,13 @@
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "আমাকে বলুন \"একটি ডায়নামিক ওয়ার্কফ্লো ব্যবহার করে …\" — এই চ্যাট থেকে চালানো রানগুলো এখানে লাইভ দেখা যাবে।",
         "back_to_files": "ফাইলে ফিরে যান",
         "cancel": "বাতিল",
+        "cancelled": "বাতিল করা হয়েছে",
         "changed_files": "পরিবর্তিত ফাইল",
         "clear": "সাফ করুন",
+        "complete": "সম্পূর্ণ",
         "discard_unsaved_changes": "অসংরক্ষিত পরিবর্তন বাতিল করবেন?",
         "dismiss_done": "সম্পন্নগুলো বাদ দিন (",
+        "error": "ত্রুটি",
         "failed_click_to_retry": "ব্যর্থ — আবার চেষ্টা করতে ক্লিক করুন",
         "files": "ফাইল",
         "input": "ইনপুট",
@@ -2593,6 +2597,7 @@
         "load_output_from_disk": "ডিস্ক থেকে আউটপুট লোড করুন",
         "loading": "লোড হচ্ছে…",
         "no_files_changed_yet": "এখনও কোনো ফাইল পরিবর্তিত হয়নি",
+        "no_issues_in_this_session_yet_mention_a_github_o": "এই সেশনে এখনও কোনো ইস্যু নেই। কোনো GitHub বা GitLab ইস্যুর লিঙ্ক উল্লেখ করলে সেটি এখানে দেখা যাবে।",
         "no_matches": "কোনো মিল নেই",
         "no_pull_requests_yet": "এই সেশনে এখনও কোনো পুল রিকোয়েস্ট নেই",
         "no_subagents_running": "কোনো সাবএজেন্ট চলছে না",
@@ -2601,11 +2606,13 @@
         "open_in_side_panel": "সাইড প্যানেলে খুলুন",
         "output": "আউটপুট",
         "output_shown_in_chat": "(আউটপুট চ্যাটে দেখানো হয়েছে)",
+        "pending_approval": "অনুমোদনের অপেক্ষায়",
         "reject": "প্রত্যাখ্যান করুন",
         "rejected": "প্রত্যাখ্যাত",
         "remove": "সরান",
         "remove_file_from_list": "তালিকা থেকে ফাইল সরান",
         "remove_star": "তারকাচিহ্ন সরান",
+        "resolved": "সমাধান হয়েছে",
         "resolving": "রিজলভ হচ্ছে…",
         "resolving_2": "রিজলভ হচ্ছে...",
         "resource_type_issue": "ইস্যু",
@@ -2614,29 +2621,41 @@
         "resources": "রিসোর্স",
         "retry": "আবার চেষ্টা করুন",
         "retry_failed": "ব্যর্থগুলো আবার চালান (",
+        "running": "চলছে",
+        "running_tool": "চলমান টুল",
         "search_files": "ফাইলের নাম, ফোল্ডার বা লিঙ্ক দিয়ে খুঁজুন…",
         "show_all": "সব দেখান (",
         "star": "তারকাচিহ্ন",
+        "starting": "শুরু হচ্ছে…",
+        "stopped": "থামানো হয়েছে",
         "trusted": "বিশ্বস্ত",
         "trusted_base": "বিশ্বস্ত বেস",
         "trusted_command": "বিশ্বস্ত কমান্ড",
+        "unable_to_read_this_file": "এই ফাইলটি পড়া যাচ্ছে না।",
         "waiting_for_output": "আউটপুটের অপেক্ষায়…",
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে"
       },
       "assistantMessage": {
         "applied_to_tasks": "টাস্কে প্রয়োগ করা হয়েছে",
+        "copied": "কপি হয়েছে!",
         "copy": "কপি করুন",
         "copy_link_to_message": "মেসেজের লিঙ্ক কপি করুন",
         "fork_conversation_from_here": "এখান থেকে কথোপকথন ফর্ক করুন",
         "next_version": "পরবর্তী সংস্করণ",
         "plan_from_here": "এখান থেকে প্ল্যান করুন",
         "previous_version": "পূর্ববর্তী সংস্করণ",
+        "raw": "মূল",
+        "raw_markdown": "মূল markdown",
         "regenerate": "পুনরায় তৈরি করুন",
         "regenerate_response": "উত্তর পুনরায় তৈরি করুন",
+        "rendered": "রেন্ডার করা",
+        "rendered_view": "রেন্ডার করা ভিউ",
         "speak": "পড়ে শোনান",
         "speak_message": "মেসেজ পড়ে শোনান",
         "steered": "স্টিয়ার করা হয়েছে",
         "steps": "ধাপ)",
+        "switch_to_raw_markdown_view": "মূল markdown ভিউতে যাও",
+        "switch_to_rendered_view": "রেন্ডার করা ভিউতে যাও",
         "use_as_plan": "প্ল্যান হিসেবে ব্যবহার করুন ("
       },
       "chatFooter": {
@@ -2645,6 +2664,7 @@
         "stopping": "থামানো হচ্ছে…"
       },
       "chatNavPanel": {
+        "link": "লিঙ্ক",
         "no_links_found": "কোনো লিঙ্ক পাওয়া যায়নি",
         "outline": "আউটলাইন",
         "resolving": "রিজলভ হচ্ছে…",
@@ -2663,6 +2683,7 @@
         "display_usage_percentage_next_to_the_context_bar": "কনটেক্সট বারের পাশে ব্যবহারের শতকরা হার দেখান",
         "enable_the_trello_style_column_strip_in_the_side": "সাইডবারে Trello-স্টাইল কলাম স্ট্রিপ চালু করুন। বন্ধ থাকলে সেশন তালিকা একটি সমতল লেন হিসেবে দেখানো হয়।",
         "engine": "ইঞ্জিন",
+        "enter_for_newline": "নতুন লাইনের জন্য Enter",
         "enter_newline": "+Enter নতুন লাইন",
         "enter_sends": "Enter পাঠায়",
         "enter_sends_2": "+Enter পাঠায়",
@@ -2678,6 +2699,7 @@
         "restore_window": "পুনরুদ্ধারের সময়সীমা",
         "send_shortcut": "পাঠানোর শর্টকাট",
         "session_tag_columns": "সেশন ট্যাগ কলাম",
+        "shift_enter_for_newline": "নতুন লাইনের জন্য Shift+Enter",
         "show_context_percentage": "কনটেক্সটের শতকরা হার দেখান",
         "show_elapsed_time_and_credits": "অতিবাহিত সময় ও ক্রেডিট দেখান",
         "show_message_timestamps": "মেসেজের টাইমস্ট্যাম্প দেখান",
@@ -2732,13 +2754,18 @@
         "authenticated": "প্রমাণীকৃত হয়েছে।",
         "authentication_failed": "প্রমাণীকরণ ব্যর্থ হয়েছে",
         "authorize": "অনুমোদন দিন",
+        "mcp_server": "MCP সার্ভার",
         "requires_authentication": "প্রমাণীকরণ প্রয়োজন।"
       },
       "notificationItem": {
+        "acknowledged": "স্বীকৃত",
         "delete": "মুছুন"
       },
       "nudgeCard": {
-        "loop": "লুপ"
+        "auto_nudge": "স্বয়ংক্রিয় নাজ",
+        "hide_nudge_instructions": "নাজের নির্দেশ লুকাও",
+        "loop": "লুপ",
+        "show_nudge_instructions": "নাজের নির্দেশ দেখাও"
       },
       "pinnedPrompt": {
         "collapse_pinned_prompt": "পিন করা মেসেজ সংকুচিত করুন",
@@ -2746,18 +2773,18 @@
         "jump_to_this_prompt": "এই মেসেজে যান"
       },
       "recoveryCard": {
+        "backend_error_continuing": "ব্যাকএন্ড ত্রুটি · স্বয়ংক্রিয়ভাবে চলছে",
         "cancelled_continuing": "বাতিল · চলছে",
+        "empty_output_continuing": "খালি আউটপুট · স্বয়ংক্রিয়ভাবে চলছে",
         "n_patterns": "{{count}}টি প্যাটার্ন",
         "n_tool_calls_blocked": "{{count}}টি টুল কল ব্লক করা হয়েছে",
+        "no_response_returned": "কোনো প্রতিক্রিয়া পাওয়া যায়নি",
         "recovered_continuing": "পুনরুদ্ধার হয়েছে · চলছে",
         "safety_policy_continuing": "নিরাপত্তা নীতি · স্বয়ংক্রিয়ভাবে চলছে",
         "tool_call_blocked": "টুল কল ব্লক করা হয়েছে",
         "tool_stopped_responding": "টুল সাড়া দেওয়া বন্ধ করেছে",
-        "turn_stalled": "টার্ন থেমে গেছে",
         "turn_interrupted": "টার্ন বাধাগ্রস্ত হয়েছে",
-        "backend_error_continuing": "ব্যাকএন্ড ত্রুটি · স্বয়ংক্রিয়ভাবে চলছে",
-        "no_response_returned": "কোনো প্রতিক্রিয়া পাওয়া যায়নি",
-        "empty_output_continuing": "খালি আউটপুট · স্বয়ংক্রিয়ভাবে চলছে"
+        "turn_stalled": "টার্ন থেমে গেছে"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "ডিসপ্লে সেটিংসে আপনার রঙের প্যালেট পরিবর্তন করুন",
@@ -2768,8 +2795,10 @@
       "sideChat": {
         "ago": "আগে",
         "ask_a_side_question": "একটি সাইড প্রশ্ন করুন",
+        "ask_a_side_question_2": "একটি সাইড প্রশ্ন করো…",
         "ask_a_side_question_main_agent_keeps_working": "একটি সাইড প্রশ্ন করুন — মূল এজেন্ট কাজ চালিয়ে যাবে",
         "context_from": "কনটেক্সটের উৎস",
+        "copied": "কপি হয়েছে!",
         "copy": "কপি করুন",
         "refresh_context": "কনটেক্সট রিফ্রেশ করুন",
         "send": "পাঠান",
@@ -2780,11 +2809,15 @@
       "sidePanel": {
         "close_panel": "প্যানেল বন্ধ করুন",
         "close_tab": "ট্যাব বন্ধ করুন",
+        "hide_line_numbers": "লাইন নম্বর লুকাও",
         "move_to_bottom_panel": "নিচের প্যানেলে সরান",
         "open_in_editor": "এডিটরে খুলুন",
         "open_side_panel_tab": "সাইড প্যানেল ট্যাব খুলুন",
         "pick_a_panel_to_view": "দেখার জন্য একটি প্যানেল বাছুন",
         "resize_panel": "প্যানেলের আকার বদলান",
+        "show_line_numbers": "লাইন নম্বর দেখাও",
+        "switch_to_split_view": "স্প্লিট ভিউতে যাও",
+        "switch_to_unified_view": "ইউনিফায়েড ভিউতে যাও",
         "turn_diff": "টার্ন ডিফ"
       },
       "stopEventCard": {
@@ -2804,6 +2837,8 @@
         "s": "s",
         "stalled": "থমকে গেছে",
         "stop": "থামান",
+        "stop_all_running_subagents": "চলমান সব সাবএজেন্ট থামাও",
+        "stop_running_subagent": "চলমান সাবএজেন্ট থামাও",
         "stop_this_subagent": "এই সাবএজেন্টটি থামান",
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে"
       },
@@ -2814,16 +2849,26 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে"
       },
       "taskProgressBar": {
+        "all_tasks_complete": "সব টাস্ক সম্পূর্ণ",
+        "current_task": "বর্তমান টাস্ক",
         "more": "আরও…",
         "of": "/",
         "task_completion": "টাস্ক সম্পন্নতা"
       },
       "thinkingBlock": {
+        "collapse_model_reasoning": "মডেলের রিজনিং সংকুচিত করো",
+        "expand_model_reasoning": "মডেলের রিজনিং প্রসারিত করো",
+        "hide_reasoning": "রিজনিং লুকাও",
+        "show_reasoning": "রিজনিং দেখাও",
         "thinking": "ভাবছে"
       },
       "toolDetails": {
         "auto": "স্বয়ংক্রিয়",
+        "details_unavailable_for_historical_tool_calls": "পুরোনো টুল কলের বিস্তারিত পাওয়া যায় না।",
+        "no_input_or_output_captured_for_this_tool_call": "এই টুল কলের কোনো ইনপুট বা আউটপুট রাখা হয়নি।",
         "null": "null",
+        "render_escaped_whitespace_as_real_line_breaks": "এস্কেপ করা হোয়াইটস্পেস সত্যিকারের লাইন ব্রেক হিসেবে দেখাও",
+        "show_the_exact_payload_escaping_preserved": "হুবহু পেলোড দেখাও, এস্কেপিং অপরিবর্তিত",
         "waiting_for_approval": "অনুমোদনের অপেক্ষায়"
       },
       "userMessage": {
@@ -2838,8 +2883,10 @@
         "steered_into_the_running_turn": "চলমান টার্নে স্টিয়ার করা হয়েছে"
       },
       "workflowCompletionCard": {
+        "hide_result": "ফলাফল লুকাও",
         "open_in_the_workflows_panel": "ওয়ার্কফ্লো প্যানেলে খুলুন",
-        "panel": "প্যানেল"
+        "panel": "প্যানেল",
+        "show_result": "ফলাফল দেখাও"
       },
       "workflowProgressBar": {
         "could_not_load_run_snapshot": "রান স্ন্যাপশট লোড করা যায়নি:"
@@ -3877,6 +3924,58 @@
       "remote_artifact": "রিমোট আর্টিফ্যাক্ট",
       "rendering": "রেন্ডার হচ্ছে…",
       "v": "v"
+    },
+    "scenes": {
+      "ghostScene": {
+        "kiro_ghost_haunt_animation": "Kiro ভূতের ভুতুড়ে অ্যানিমেশন",
+        "kiro_ghost_haunt_text_overlay": "Kiro ভূতের ভুতুড়ে টেক্সট ওভারলে"
+      },
+      "missionControl": {
+        "missionControlScene": {
+          "mission_control_scene": "মিশন কন্ট্রোল দৃশ্য"
+        }
+      },
+      "neuralConstellationScene": {
+        "active": "সক্রিয়",
+        "idle": "নিষ্ক্রিয়",
+        "neural_constellation_animation": "নিউরাল কনস্টেলেশন অ্যানিমেশন",
+        "neural_constellation_text_overlay": "নিউরাল কনস্টেলেশন টেক্সট ওভারলে",
+        "neural_network": "নিউরাল নেটওয়ার্ক"
+      },
+      "officeScene": {
+        "active": "সক্রিয়",
+        "agent_office": "এজেন্ট অফিস",
+        "done": "সম্পন্ন",
+        "headquarters": "সদর দপ্তর",
+        "no_tasks": "কোনো টাস্ক নেই",
+        "office_scene": "অফিস দৃশ্য",
+        "office_scene_labels": "অফিস দৃশ্যের লেবেল",
+        "to_do": "করতে হবে"
+      },
+      "pandaOfficeScene": {
+        "panda_office_scene": "পান্ডা অফিস দৃশ্য",
+        "panda_office_scene_labels": "পান্ডা অফিস দৃশ্যের লেবেল"
+      },
+      "underwaterLabScene": {
+        "deep_sea_lab": "গভীর সমুদ্র ল্যাব",
+        "research_station": "গবেষণা কেন্দ্র",
+        "underwater_lab_scene": "পানির নিচের ল্যাব দৃশ্য",
+        "underwater_lab_scene_labels": "পানির নিচের ল্যাব দৃশ্যের লেবেল"
+      },
+      "wateringHoleScene": {
+        "watering_hole": "জলাশয়",
+        "watering_hole_scene": "জলাশয় দৃশ্য",
+        "watering_hole_scene_labels": "জলাশয় দৃশ্যের লেবেল"
+      },
+      "wizardTowerScene": {
+        "arcane_academy": "জাদুবিদ্যা অ্যাকাডেমি",
+        "casting": "মন্ত্র পড়ছে",
+        "empty": "খালি",
+        "i_see": "বুঝলাম!",
+        "resting": "বিশ্রামে",
+        "wizard_tower_scene": "জাদুকরের টাওয়ার দৃশ্য",
+        "wizard_tower_spell_text": "জাদুকরের টাওয়ারের মন্ত্র টেক্সট"
+      }
     },
     "schedulePage": {
       "actions": "অ্যাকশন",

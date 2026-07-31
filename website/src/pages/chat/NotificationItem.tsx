@@ -16,7 +16,7 @@ export default function NotificationItem({ n, active, onOpen, onDelete }: { n: N
         <span className="break-words line-clamp-2 min-w-0 flex-1">{n.title}</span>
         <button type="button" className="opacity-0 group-hover:opacity-40 cursor-pointer text-[12px] shrink-0 mt-0.5 hover:!opacity-100 hover:text-danger transition-opacity bg-transparent border-none p-0" aria-label={i18nT('pages.chat.notificationItem.delete')} onClick={(e) => { e.stopPropagation(); onDelete(n.ts) }}><X className="lucide-inline" /></button>
       </div>
-      <div className="text-muted text-[12px] ml-[22px]">{acked ? 'Acknowledged' : (n.body || '').slice(0, 100)}{!acked && (n.body || '').length > 100 ? ' …' : ''}</div>
+      <div className="text-muted text-[12px] ml-[22px]">{acked ? i18nT('pages.chat.notificationItem.acknowledged') : (n.body || '').slice(0, 100)}{!acked && (n.body || '').length > 100 ? ' …' : ''}</div>
     </Clickable>
   )
 }

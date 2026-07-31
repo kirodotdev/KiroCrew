@@ -1,6 +1,6 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — regenerate with `node scripts/check-i18n-strings.mjs --update`. This is both the CI ratchet and the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 2884,
+  "_total": 2798,
   "files": {
     "api/client.ts": {
       "total": 39,
@@ -971,74 +971,49 @@
       "template": 1
     },
     "pages/chat/ActivityViewer.tsx": {
-      "total": 20,
-      "expression": 12,
-      "prose": 5,
+      "total": 8,
+      "expression": 2,
+      "prose": 3,
       "template": 3
     },
     "pages/chat/AssistantMessage.tsx": {
-      "total": 9,
-      "expression": 6,
+      "total": 3,
       "template": 3
     },
-    "pages/chat/ChatNavPanel.tsx": {
-      "total": 1,
-      "prose": 1
-    },
     "pages/chat/ChatSettings.tsx": {
-      "total": 28,
+      "total": 26,
       "array": 18,
       "expression": 3,
       "prose": 4,
-      "template": 3
+      "template": 1
     },
     "pages/chat/CollapsibleToolGroup.tsx": {
-      "total": 8,
-      "expression": 5,
-      "template": 3
+      "total": 2,
+      "expression": 2
     },
     "pages/chat/McpInfoButton.tsx": {
       "total": 2,
       "template": 2
     },
-    "pages/chat/McpOAuthBanner.tsx": {
-      "total": 1,
-      "prose": 1
-    },
-    "pages/chat/NotificationItem.tsx": {
-      "total": 1,
-      "expression": 1
-    },
     "pages/chat/NudgeCard.tsx": {
-      "total": 4,
-      "expression": 2,
-      "template": 2
+      "total": 1,
+      "template": 1
     },
     "pages/chat/SideChat.tsx": {
-      "total": 6,
-      "attribute": 1,
-      "expression": 2,
+      "total": 3,
       "template": 3
     },
     "pages/chat/SidePanel.tsx": {
-      "total": 9,
-      "expression": 8,
+      "total": 1,
       "template": 1
     },
     "pages/chat/SubagentProgressBar.tsx": {
-      "total": 6,
-      "expression": 2,
+      "total": 4,
       "template": 4
     },
     "pages/chat/TaskProgressBar.tsx": {
-      "total": 5,
-      "expression": 3,
-      "prose": 1,
-      "template": 1
-    },
-    "pages/chat/ThinkingBlock.tsx": {
-      "total": 5,
-      "expression": 4,
+      "total": 3,
+      "expression": 2,
       "template": 1
     },
     "pages/chat/ToolCallLine.tsx": {
@@ -1047,8 +1022,7 @@
       "template": 4
     },
     "pages/chat/ToolDetails.tsx": {
-      "total": 9,
-      "expression": 4,
+      "total": 5,
       "object-prop": 4,
       "template": 1
     },
@@ -1059,10 +1033,6 @@
     "pages/chat/useKnowledgeFetch.ts": {
       "total": 3,
       "template": 3
-    },
-    "pages/chat/WorkflowCompletionCard.tsx": {
-      "total": 4,
-      "expression": 4
     },
     "pages/ChatPage.tsx": {
       "total": 56,
@@ -1269,15 +1239,13 @@
       "template": 2
     },
     "pages/scenes/GhostScene.tsx": {
-      "total": 9,
-      "attribute": 2,
+      "total": 7,
       "prose": 4,
       "template": 3
     },
     "pages/scenes/mission-control/MissionControlScene.tsx": {
-      "total": 20,
+      "total": 19,
       "array": 2,
-      "attribute": 1,
       "prose": 13,
       "template": 4
     },
@@ -1286,42 +1254,34 @@
       "prose": 3
     },
     "pages/scenes/NeuralConstellationScene.tsx": {
-      "total": 17,
+      "total": 14,
       "array": 4,
-      "attribute": 2,
-      "prose": 4,
+      "prose": 3,
       "template": 7
     },
     "pages/scenes/OfficeScene.tsx": {
-      "total": 18,
-      "array": 4,
-      "attribute": 2,
-      "prose": 10,
+      "total": 11,
+      "prose": 9,
       "template": 2
     },
     "pages/scenes/PandaOfficeScene.tsx": {
-      "total": 19,
+      "total": 17,
       "array": 4,
-      "attribute": 2,
       "prose": 11,
       "template": 2
     },
     "pages/scenes/UnderwaterLabScene.tsx": {
-      "total": 13,
-      "attribute": 2,
-      "prose": 10,
+      "total": 9,
+      "prose": 8,
       "template": 1
     },
     "pages/scenes/WateringHoleScene.tsx": {
-      "total": 5,
-      "attribute": 2,
-      "prose": 1,
+      "total": 2,
       "template": 2
     },
     "pages/scenes/WizardTowerScene.tsx": {
-      "total": 15,
-      "attribute": 2,
-      "prose": 12,
+      "total": 11,
+      "prose": 10,
       "template": 1
     },
     "pages/SchedulePage.tsx": {

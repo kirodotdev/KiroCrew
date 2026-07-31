@@ -144,7 +144,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               <button
                 className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent"
                 onClick={stopAll}
-                aria-label={stoppableCount > 1 ? 'Stop all running subagents' : 'Stop running subagent'}
+                aria-label={stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all_running_subagents') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
               >
                 <X size={11} /> {i18nT('pages.chat.subagentProgressBar.stop')}{stoppableCount > 1 ? ' all' : ''}
               </button>

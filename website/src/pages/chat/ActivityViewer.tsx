@@ -162,12 +162,12 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   // narrow rail it was the part that survived truncation while the actual
   // status got clipped. Show the status; keep the full phrase as the tooltip.
   const statusLabel = isPending
-    ? 'Pending Approval'
-    : a.status === 'tool' ? 'Running Tool'
-      : a.status === 'running' ? (a.streaming ? 'Running' : 'Starting…')
-        : a.status === 'done' ? 'Complete'
-          : a.status === 'stopped' ? 'Stopped'
-            : a.error?.includes('Cancelled') ? 'Cancelled' : 'Error'
+    ? i18nT('pages.chat.activityViewer.pending_approval')
+    : a.status === 'tool' ? i18nT('pages.chat.activityViewer.running_tool')
+      : a.status === 'running' ? (a.streaming ? i18nT('pages.chat.activityViewer.running') : i18nT('pages.chat.activityViewer.starting'))
+        : a.status === 'done' ? i18nT('pages.chat.activityViewer.complete')
+          : a.status === 'stopped' ? i18nT('pages.chat.activityViewer.stopped')
+            : a.error?.includes('Cancelled') ? i18nT('pages.chat.activityViewer.cancelled') : i18nT('pages.chat.activityViewer.error')
 
   return (
     // Card-level mouse convenience that selects the subagent; it wraps its own
@@ -275,7 +275,7 @@ function ApprovalEntry({ entry, slot }: { entry: ToolActivity; slot: string }) {
     <div className={`mx-2 mb-2 rounded-lg border overflow-hidden shadow-sm transition-all ${isResolved ? 'border-ok/40 bg-card' : 'border-warn/40 bg-warn/5'}`}>
       <div className="flex items-center gap-2 px-3 py-2">
         <span className="shrink-0 flex items-center">{isResolved ? <CheckCircle size={15} className="text-green-400" /> : <Lock size={15} className="text-muted" />}</span>
-        <span className="text-[13px] font-semibold text-text truncate min-w-0">{isResolved ? (decisionLabel[localDecision || ''] || 'Resolved') : 'Approval Needed'}</span>
+        <span className="text-[13px] font-semibold text-text truncate min-w-0">{isResolved ? (decisionLabel[localDecision || ''] || i18nT('pages.chat.activityViewer.resolved')) : i18nT('pages.chat.activityViewer.approval_needed')}</span>
         <span className="text-[11px] text-muted/40 font-mono ml-auto shrink-0">{fmtTime(entry.ts)}</span>
       </div>
       {!isResolved && <div className="px-3 pb-2 text-[13px] text-muted/70">{entry.text}</div>}
@@ -434,7 +434,7 @@ function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
           // over the real (or temporarily-unreadable) file. Offer a retry.
           <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
             <span className="text-[13px] text-muted">
-              {data?.text ? data.text.replace(/^_|_$/g, '') : 'Unable to read this file.'}
+              {data?.text ? data.text.replace(/^_|_$/g, '') : i18nT('pages.chat.activityViewer.unable_to_read_this_file')}
             </span>
             <button
               onClick={() => refetch()}
@@ -1212,7 +1212,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
             />
           ) : (
             <div className="flex-1 flex items-center justify-center h-full text-muted text-[13px] py-8 px-6 text-center">
-              No issues in this session yet. Mention a GitHub or GitLab issue link and it will appear here.
+              {i18nT('pages.chat.activityViewer.no_issues_in_this_session_yet_mention_a_github_o')}
             </div>
           )}
         </div>

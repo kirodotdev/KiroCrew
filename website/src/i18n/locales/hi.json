@@ -1214,6 +1214,15 @@
       "suggested_follow_up_one": "सुझाया गया फ़ॉलो-अप",
       "suggested_follow_up_other": "सुझाए गए फ़ॉलो-अप"
     },
+    "inboundLinkChip": {
+      "confirm_release": "इस सेशन को {{label}} से अलग करें?\n\nवहाँ भेजे गए संदेश अब यहाँ नहीं आएँगे, और जवाब वहाँ नहीं पहुँचेंगे। आप उस चैनल से !sessions का उपयोग करके इसे फिर से जोड़ सकते हैं।",
+      "driven_from": "{{label}} से संचालित",
+      "release": "अलग करें",
+      "release_aria": "इस सेशन को {{label}} से अलग करें",
+      "release_failed": "सेशन को अलग नहीं किया जा सका: {{reason}}",
+      "released": "{{label}} से अलग किया गया",
+      "tooltip": "यह सेशन {{label}} के साथ दो-तरफ़ा जुड़ा है: जवाब वहाँ पहुँचते हैं और वहाँ भेजे गए संदेश यहाँ आते हैं।"
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "कमेंट थ्रेड खोलें"
     },
@@ -1315,15 +1324,6 @@
       "waiting_for_sign_in": "साइन-इन की प्रतीक्षा…",
       "we_could_not_check_kiro_cli": "हम Kiro CLI की जाँच नहीं कर सके।",
       "your_crew_is_almost_ready": "आपका क्रू लगभग तैयार है।"
-    },
-    "inboundLinkChip": {
-      "confirm_release": "इस सेशन को {{label}} से अलग करें?\n\nवहाँ भेजे गए संदेश अब यहाँ नहीं आएँगे, और जवाब वहाँ नहीं पहुँचेंगे। आप उस चैनल से !sessions का उपयोग करके इसे फिर से जोड़ सकते हैं।",
-      "driven_from": "{{label}} से संचालित",
-      "release": "अलग करें",
-      "release_aria": "इस सेशन को {{label}} से अलग करें",
-      "release_failed": "सेशन को अलग नहीं किया जा सका: {{reason}}",
-      "released": "{{label}} से अलग किया गया",
-      "tooltip": "यह सेशन {{label}} के साथ दो-तरफ़ा जुड़ा है: जवाब वहाँ पहुँचते हैं और वहाँ भेजे गए संदेश यहाँ आते हैं।"
     },
     "linkedSurfacesSection": {
       "confirm_release": "इस सेशन को {{label}} से अलग करें?\n\nवहाँ भेजे गए संदेश अब यहाँ नहीं आएँगे, और जवाब वहाँ नहीं पहुँचेंगे। आप उस चैनल से !sessions का उपयोग करके इसे फिर से जोड़ सकते हैं।",
@@ -2574,6 +2574,7 @@
     "chat": {
       "activityViewer": {
         "activity": "गतिविधि",
+        "approval_needed": "स्वीकृति आवश्यक",
         "approve": "स्वीकृत करें",
         "approved": "स्वीकृत",
         "artifacts_empty": "अभी कोई आर्टिफ़ैक्ट नहीं — मुझसे एक बनाने को कहें, या किसी सत्र फ़ाइल को तारांकित करें",
@@ -2582,10 +2583,13 @@
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "मुझसे कहें \"डायनामिक वर्कफ़्लो का उपयोग करके …\" — इस चैट से चले रन यहाँ लाइव दिखेंगे।",
         "back_to_files": "फ़ाइलों पर वापस",
         "cancel": "रद्द करें",
+        "cancelled": "रद्द किया गया",
         "changed_files": "बदली गई फ़ाइलें",
         "clear": "साफ़ करें",
+        "complete": "पूर्ण",
         "discard_unsaved_changes": "बिना सहेजे बदलाव रद्द करें?",
         "dismiss_done": "पूर्ण को खारिज करें (",
+        "error": "त्रुटि",
         "failed_click_to_retry": "विफल — पुनः प्रयास के लिए क्लिक करें",
         "files": "फ़ाइलें",
         "input": "इनपुट",
@@ -2593,6 +2597,7 @@
         "load_output_from_disk": "डिस्क से आउटपुट लोड करें",
         "loading": "लोड हो रहा है…",
         "no_files_changed_yet": "अभी कोई फ़ाइल नहीं बदली",
+        "no_issues_in_this_session_yet_mention_a_github_o": "इस सेशन में अभी कोई इश्यू नहीं है। GitHub या GitLab के किसी इश्यू लिंक का ज़िक्र करें और वह यहाँ दिख जाएगा।",
         "no_matches": "कोई मेल नहीं",
         "no_pull_requests_yet": "इस सत्र में अभी तक कोई पुल रिक्वेस्ट नहीं है",
         "no_subagents_running": "कोई सबएजेंट नहीं चल रहा",
@@ -2601,11 +2606,13 @@
         "open_in_side_panel": "साइड पैनल में खोलें",
         "output": "आउटपुट",
         "output_shown_in_chat": "(आउटपुट चैट में दिखाया गया)",
+        "pending_approval": "स्वीकृति लंबित",
         "reject": "अस्वीकार करें",
         "rejected": "अस्वीकृत",
         "remove": "निकालें",
         "remove_file_from_list": "सूची से फ़ाइल निकालें",
         "remove_star": "तारा हटाएँ",
+        "resolved": "हल हो गया",
         "resolving": "हल किया जा रहा है…",
         "resolving_2": "हल किया जा रहा है...",
         "resource_type_issue": "इश्यू",
@@ -2614,29 +2621,41 @@
         "resources": "संसाधन",
         "retry": "पुनः प्रयास",
         "retry_failed": "विफल पुनः प्रयास करें (",
+        "running": "चल रहा है",
+        "running_tool": "चल रहा टूल",
         "search_files": "फ़ाइल नाम, फ़ोल्डर या लिंक से खोजें…",
         "show_all": "सभी दिखाएँ (",
         "star": "तारांकित करें",
+        "starting": "शुरू हो रहा है…",
+        "stopped": "रुका हुआ",
         "trusted": "विश्वसनीय",
         "trusted_base": "विश्वसनीय आधार",
         "trusted_command": "विश्वसनीय कमांड",
+        "unable_to_read_this_file": "यह फ़ाइल पढ़ी नहीं जा सकी।",
         "waiting_for_output": "आउटपुट की प्रतीक्षा…",
         "waiting_to_start_queued_behind_the_concurrency_l": "शुरू होने की प्रतीक्षा — समांतरता सीमा के कारण कतार में"
       },
       "assistantMessage": {
         "applied_to_tasks": "कार्यों पर लागू",
+        "copied": "कॉपी किया गया!",
         "copy": "कॉपी करें",
         "copy_link_to_message": "संदेश का लिंक कॉपी करें",
         "fork_conversation_from_here": "यहाँ से बातचीत फ़ोर्क करें",
         "next_version": "अगला संस्करण",
         "plan_from_here": "यहाँ से योजना बनाएँ",
         "previous_version": "पिछला संस्करण",
+        "raw": "रॉ",
+        "raw_markdown": "रॉ markdown",
         "regenerate": "पुनः बनाएँ",
         "regenerate_response": "प्रतिक्रिया पुनः बनाएँ",
+        "rendered": "रेंडर",
+        "rendered_view": "रेंडर किया गया व्यू",
         "speak": "बोलें",
         "speak_message": "संदेश बोलें",
         "steered": "निर्देशित",
         "steps": "चरण)",
+        "switch_to_raw_markdown_view": "रॉ markdown व्यू पर स्विच करें",
+        "switch_to_rendered_view": "रेंडर किए गए व्यू पर स्विच करें",
         "use_as_plan": "योजना के रूप में उपयोग करें ("
       },
       "chatFooter": {
@@ -2645,6 +2664,7 @@
         "stopping": "रोका जा रहा है…"
       },
       "chatNavPanel": {
+        "link": "लिंक",
         "no_links_found": "कोई लिंक नहीं मिला",
         "outline": "रूपरेखा",
         "resolving": "हल किया जा रहा है…",
@@ -2663,6 +2683,7 @@
         "display_usage_percentage_next_to_the_context_bar": "संदर्भ बार के पास उपयोग प्रतिशत दिखाएँ",
         "enable_the_trello_style_column_strip_in_the_side": "साइडबार में Trello-शैली की कॉलम पट्टी चालू करें। बंद होने पर सत्र सूची एक सपाट लेन होती है।",
         "engine": "इंजन",
+        "enter_for_newline": "नई पंक्ति के लिए Enter",
         "enter_newline": "+Enter नई पंक्ति",
         "enter_sends": "Enter भेजता है",
         "enter_sends_2": "+Enter भेजता है",
@@ -2678,6 +2699,7 @@
         "restore_window": "पुनर्स्थापन अवधि",
         "send_shortcut": "भेजने का शॉर्टकट",
         "session_tag_columns": "सत्र टैग कॉलम",
+        "shift_enter_for_newline": "नई पंक्ति के लिए Shift+Enter",
         "show_context_percentage": "संदर्भ प्रतिशत दिखाएँ",
         "show_elapsed_time_and_credits": "बीता समय और क्रेडिट दिखाएँ",
         "show_message_timestamps": "संदेश टाइमस्टैम्प दिखाएँ",
@@ -2732,13 +2754,18 @@
         "authenticated": "प्रमाणित हो गया।",
         "authentication_failed": "प्रमाणीकरण विफल",
         "authorize": "अधिकृत करें",
+        "mcp_server": "MCP सर्वर",
         "requires_authentication": "के लिए प्रमाणीकरण आवश्यक है।"
       },
       "notificationItem": {
+        "acknowledged": "स्वीकार किया गया",
         "delete": "हटाएँ"
       },
       "nudgeCard": {
-        "loop": "लूप"
+        "auto_nudge": "ऑटो-नज",
+        "hide_nudge_instructions": "नज निर्देश छिपाएँ",
+        "loop": "लूप",
+        "show_nudge_instructions": "नज निर्देश दिखाएँ"
       },
       "pinnedPrompt": {
         "collapse_pinned_prompt": "पिन किया गया संदेश संक्षिप्त करें",
@@ -2746,18 +2773,18 @@
         "jump_to_this_prompt": "इस संदेश पर जाएँ"
       },
       "recoveryCard": {
+        "backend_error_continuing": "बैकएंड त्रुटि · स्वतः जारी",
         "cancelled_continuing": "रद्द · जारी",
+        "empty_output_continuing": "खाली आउटपुट · स्वतः जारी",
         "n_patterns": "{{count}} पैटर्न",
         "n_tool_calls_blocked": "{{count}} टूल कॉल अवरुद्ध",
+        "no_response_returned": "कोई प्रतिक्रिया नहीं मिली",
         "recovered_continuing": "पुनर्प्राप्त · जारी",
         "safety_policy_continuing": "सुरक्षा नीति · स्वतः जारी",
         "tool_call_blocked": "टूल कॉल अवरुद्ध",
         "tool_stopped_responding": "टूल ने प्रतिक्रिया देना बंद कर दिया",
-        "turn_stalled": "टर्न रुक गया",
         "turn_interrupted": "टर्न बाधित हुआ",
-        "backend_error_continuing": "बैकएंड त्रुटि · स्वतः जारी",
-        "no_response_returned": "कोई प्रतिक्रिया नहीं मिली",
-        "empty_output_continuing": "खाली आउटपुट · स्वतः जारी"
+        "turn_stalled": "टर्न रुक गया"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "अपना रंग पैलेट प्रदर्शन सेटिंग्स में बदलें",
@@ -2768,8 +2795,10 @@
       "sideChat": {
         "ago": "पहले",
         "ask_a_side_question": "एक साइड प्रश्न पूछें",
+        "ask_a_side_question_2": "एक साइड प्रश्न पूछें…",
         "ask_a_side_question_main_agent_keeps_working": "एक साइड प्रश्न पूछें — मुख्य एजेंट काम करता रहेगा",
         "context_from": "संदर्भ:",
+        "copied": "कॉपी किया गया!",
         "copy": "कॉपी करें",
         "refresh_context": "संदर्भ ताज़ा करें",
         "send": "भेजें",
@@ -2780,11 +2809,15 @@
       "sidePanel": {
         "close_panel": "पैनल बंद करें",
         "close_tab": "टैब बंद करें",
+        "hide_line_numbers": "पंक्ति संख्याएँ छिपाएँ",
         "move_to_bottom_panel": "नीचे के पैनल में ले जाएँ",
         "open_in_editor": "एडिटर में खोलें",
         "open_side_panel_tab": "साइड पैनल टैब खोलें",
         "pick_a_panel_to_view": "देखने के लिए एक पैनल चुनें",
         "resize_panel": "पैनल का आकार बदलें",
+        "show_line_numbers": "पंक्ति संख्याएँ दिखाएँ",
+        "switch_to_split_view": "स्प्लिट व्यू पर स्विच करें",
+        "switch_to_unified_view": "यूनिफ़ाइड व्यू पर स्विच करें",
         "turn_diff": "टर्न डिफ़"
       },
       "stopEventCard": {
@@ -2804,6 +2837,8 @@
         "s": "s",
         "stalled": "अटका हुआ",
         "stop": "रोकें",
+        "stop_all_running_subagents": "सभी चल रहे सब-एजेंट रोकें",
+        "stop_running_subagent": "चल रहा सब-एजेंट रोकें",
         "stop_this_subagent": "इस सबएजेंट को रोकें",
         "waiting_to_start_queued_behind_the_concurrency_l": "शुरू होने की प्रतीक्षा — समांतरता सीमा के कारण कतार में"
       },
@@ -2814,16 +2849,26 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "शुरू होने की प्रतीक्षा — समांतरता सीमा के कारण कतार में"
       },
       "taskProgressBar": {
+        "all_tasks_complete": "सभी टास्क पूर्ण",
+        "current_task": "मौजूदा टास्क",
         "more": "और…",
         "of": "में से",
         "task_completion": "कार्य पूर्णता"
       },
       "thinkingBlock": {
+        "collapse_model_reasoning": "मॉडल की रीज़निंग समेटें",
+        "expand_model_reasoning": "मॉडल की रीज़निंग विस्तृत करें",
+        "hide_reasoning": "रीज़निंग छिपाएँ",
+        "show_reasoning": "रीज़निंग दिखाएँ",
         "thinking": "सोच रहा है"
       },
       "toolDetails": {
         "auto": "स्वतः",
+        "details_unavailable_for_historical_tool_calls": "पुराने टूल कॉल के लिए विवरण उपलब्ध नहीं है।",
+        "no_input_or_output_captured_for_this_tool_call": "इस टूल कॉल के लिए कोई इनपुट या आउटपुट कैप्चर नहीं हुआ।",
         "null": "null",
+        "render_escaped_whitespace_as_real_line_breaks": "एस्केप किए गए व्हाइटस्पेस को असली लाइन ब्रेक के रूप में रेंडर करें",
+        "show_the_exact_payload_escaping_preserved": "पेलोड बिलकुल वैसा ही दिखाएँ, एस्केपिंग बनी रहेगी",
         "waiting_for_approval": "स्वीकृति की प्रतीक्षा"
       },
       "userMessage": {
@@ -2838,8 +2883,10 @@
         "steered_into_the_running_turn": "चल रहे टर्न में निर्देशित किया गया"
       },
       "workflowCompletionCard": {
+        "hide_result": "परिणाम छिपाएँ",
         "open_in_the_workflows_panel": "वर्कफ़्लो पैनल में खोलें",
-        "panel": "पैनल"
+        "panel": "पैनल",
+        "show_result": "परिणाम दिखाएँ"
       },
       "workflowProgressBar": {
         "could_not_load_run_snapshot": "रन स्नैपशॉट लोड नहीं हो सका:"
@@ -3877,6 +3924,58 @@
       "remote_artifact": "रिमोट आर्टिफ़ैक्ट",
       "rendering": "रेंडर हो रहा है…",
       "v": "v"
+    },
+    "scenes": {
+      "ghostScene": {
+        "kiro_ghost_haunt_animation": "Kiro भूत एनिमेशन",
+        "kiro_ghost_haunt_text_overlay": "Kiro भूत टेक्स्ट ओवरले"
+      },
+      "missionControl": {
+        "missionControlScene": {
+          "mission_control_scene": "मिशन कंट्रोल दृश्य"
+        }
+      },
+      "neuralConstellationScene": {
+        "active": "सक्रिय",
+        "idle": "निष्क्रिय",
+        "neural_constellation_animation": "न्यूरल तारामंडल एनिमेशन",
+        "neural_constellation_text_overlay": "न्यूरल तारामंडल टेक्स्ट ओवरले",
+        "neural_network": "न्यूरल नेटवर्क"
+      },
+      "officeScene": {
+        "active": "सक्रिय",
+        "agent_office": "एजेंट ऑफ़िस",
+        "done": "पूर्ण",
+        "headquarters": "मुख्यालय",
+        "no_tasks": "कोई टास्क नहीं",
+        "office_scene": "ऑफ़िस दृश्य",
+        "office_scene_labels": "ऑफ़िस दृश्य के लेबल",
+        "to_do": "बाकी"
+      },
+      "pandaOfficeScene": {
+        "panda_office_scene": "पांडा ऑफ़िस दृश्य",
+        "panda_office_scene_labels": "पांडा ऑफ़िस दृश्य के लेबल"
+      },
+      "underwaterLabScene": {
+        "deep_sea_lab": "गहरे समुद्र की लैब",
+        "research_station": "शोध केंद्र",
+        "underwater_lab_scene": "अंडरवाटर लैब दृश्य",
+        "underwater_lab_scene_labels": "अंडरवाटर लैब दृश्य के लेबल"
+      },
+      "wateringHoleScene": {
+        "watering_hole": "पानी का ठिकाना",
+        "watering_hole_scene": "पानी के ठिकाने का दृश्य",
+        "watering_hole_scene_labels": "पानी के ठिकाने के दृश्य के लेबल"
+      },
+      "wizardTowerScene": {
+        "arcane_academy": "जादुई अकादमी",
+        "casting": "जादू कर रहा है",
+        "empty": "खाली",
+        "i_see": "समझ गया!",
+        "resting": "आराम कर रहा है",
+        "wizard_tower_scene": "जादूगर की मीनार का दृश्य",
+        "wizard_tower_spell_text": "जादूगर की मीनार का मंत्र टेक्स्ट"
+      }
     },
     "schedulePage": {
       "actions": "कार्रवाई",

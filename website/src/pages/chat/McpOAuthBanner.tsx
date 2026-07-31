@@ -45,7 +45,7 @@ export default function McpOAuthBanner({
   failed?: boolean
   error?: string
 }) {
-  const label = serverName || 'MCP server'
+  const label = serverName || i18nT('pages.chat.mcpOAuthBanner.mcp_server')
 
   if (failed) {
     return (

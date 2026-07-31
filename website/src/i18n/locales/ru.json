@@ -1248,6 +1248,15 @@
       "suggested_follow_up_one": "Предложение дальнейшего шага",
       "suggested_follow_up_other": "Предложения дальнейших шагов"
     },
+    "inboundLinkChip": {
+      "confirm_release": "Отвязать эту сессию от {{label}}?\n\nСообщения, отправленные туда, перестанут поступать сюда, а ответы — доставляться туда. Вы сможете снова привязать её командой !sessions из того канала.",
+      "driven_from": "Управляется из {{label}}",
+      "release": "Отвязать",
+      "release_aria": "Отвязать эту сессию от {{label}}",
+      "release_failed": "Не удалось отвязать сессию: {{reason}}",
+      "released": "Сессия отвязана от {{label}}",
+      "tooltip": "Эта сессия имеет двустороннюю связь с {{label}}: ответы доставляются туда, а отправленные туда сообщения поступают сюда."
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "Открыть ветку комментариев"
     },
@@ -1349,15 +1358,6 @@
       "waiting_for_sign_in": "Ожидание входа…",
       "we_could_not_check_kiro_cli": "Нам не удалось проверить Kiro CLI.",
       "your_crew_is_almost_ready": "Ваш экипаж почти готов."
-    },
-    "inboundLinkChip": {
-      "confirm_release": "Отвязать эту сессию от {{label}}?\n\nСообщения, отправленные туда, перестанут поступать сюда, а ответы — доставляться туда. Вы сможете снова привязать её командой !sessions из того канала.",
-      "driven_from": "Управляется из {{label}}",
-      "release": "Отвязать",
-      "release_aria": "Отвязать эту сессию от {{label}}",
-      "release_failed": "Не удалось отвязать сессию: {{reason}}",
-      "released": "Сессия отвязана от {{label}}",
-      "tooltip": "Эта сессия имеет двустороннюю связь с {{label}}: ответы доставляются туда, а отправленные туда сообщения поступают сюда."
     },
     "linkedSurfacesSection": {
       "confirm_release": "Отвязать эту сессию от {{label}}?\n\nСообщения, отправленные туда, перестанут поступать сюда, а ответы — доставляться туда. Вы сможете снова привязать её командой !sessions из того канала.",
@@ -2638,6 +2638,7 @@
     "chat": {
       "activityViewer": {
         "activity": "Активность",
+        "approval_needed": "Требуется подтверждение",
         "approve": "Разрешить",
         "approved": "Разрешено",
         "artifacts_empty": "Артефактов пока нет — попросите меня создать его или отметьте файл сессии",
@@ -2646,10 +2647,13 @@
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "Попросите меня «использовать динамический рабочий процесс, чтобы …» — запуски из этого чата появляются здесь в реальном времени.",
         "back_to_files": "Назад к файлам",
         "cancel": "Отмена",
+        "cancelled": "Отменено",
         "changed_files": "Изменённые файлы",
         "clear": "Очистить",
+        "complete": "Завершено",
         "discard_unsaved_changes": "Отменить несохранённые изменения?",
         "dismiss_done": "Скрыть завершённые (",
+        "error": "Ошибка",
         "failed_click_to_retry": "Ошибка — нажмите, чтобы повторить",
         "files": "Файлы",
         "input": "Ввод",
@@ -2657,6 +2661,7 @@
         "load_output_from_disk": "Загрузить вывод с диска",
         "loading": "Загрузка…",
         "no_files_changed_yet": "Изменённых файлов пока нет",
+        "no_issues_in_this_session_yet_mention_a_github_o": "В этой сессии пока нет задач. Упомяни ссылку на задачу в GitHub или GitLab, и она появится здесь.",
         "no_matches": "Нет совпадений",
         "no_pull_requests_yet": "В этом сеансе пока нет пул-реквестов",
         "no_subagents_running": "Нет запущенных субагентов",
@@ -2665,11 +2670,13 @@
         "open_in_side_panel": "Открыть в боковой панели",
         "output": "Вывод",
         "output_shown_in_chat": "(вывод показан в чате)",
+        "pending_approval": "Ожидает подтверждения",
         "reject": "Отклонить",
         "rejected": "Отклонено",
         "remove": "Удалить",
         "remove_file_from_list": "Удалить файл из списка",
         "remove_star": "Снять отметку",
+        "resolved": "Обработано",
         "resolving": "Разрешение…",
         "resolving_2": "разрешение...",
         "resource_type_issue": "Задача",
@@ -2678,29 +2685,41 @@
         "resources": "Ресурсы",
         "retry": "Повторить",
         "retry_failed": "Повторить неудачные (",
+        "running": "Выполняется",
+        "running_tool": "Выполняется инструмент",
         "search_files": "Поиск по имени файла, папке или ссылке…",
         "show_all": "Показать все (",
         "star": "Отметить",
+        "starting": "Запуск...",
+        "stopped": "Остановлено",
         "trusted": "Доверено",
         "trusted_base": "Доверенная базовая команда",
         "trusted_command": "Доверенная команда",
+        "unable_to_read_this_file": "Не удалось прочитать этот файл.",
         "waiting_for_output": "Ожидание вывода…",
         "waiting_to_start_queued_behind_the_concurrency_l": "ожидает запуска — в очереди из-за лимита одновременных запусков"
       },
       "assistantMessage": {
         "applied_to_tasks": "Применено к задачам",
+        "copied": "Скопировано!",
         "copy": "Копировать",
         "copy_link_to_message": "Копировать ссылку на сообщение",
         "fork_conversation_from_here": "Создать ответвление диалога отсюда",
         "next_version": "Следующая версия",
         "plan_from_here": "Составить план отсюда",
         "previous_version": "Предыдущая версия",
+        "raw": "исходник",
+        "raw_markdown": "Исходный markdown",
         "regenerate": "Сгенерировать заново",
         "regenerate_response": "Сгенерировать ответ заново",
+        "rendered": "отрисовка",
+        "rendered_view": "Отрисованный вид",
         "speak": "Озвучить",
         "speak_message": "Озвучить сообщение",
         "steered": "Скорректировано",
         "steps": "шагов)",
+        "switch_to_raw_markdown_view": "Переключиться на исходный markdown",
+        "switch_to_rendered_view": "Переключиться на отрисованный вид",
         "use_as_plan": "Использовать как план ("
       },
       "chatFooter": {
@@ -2709,6 +2728,7 @@
         "stopping": "Остановка…"
       },
       "chatNavPanel": {
+        "link": "Ссылка",
         "no_links_found": "Ссылки не найдены",
         "outline": "Структура",
         "resolving": "разрешение…",
@@ -2727,6 +2747,7 @@
         "display_usage_percentage_next_to_the_context_bar": "Показывать процент использования рядом с полосой контекста",
         "enable_the_trello_style_column_strip_in_the_side": "Включить полосу колонок в стиле Trello на боковой панели. Если выключено, список сессий — одна плоская дорожка.",
         "engine": "Движок",
+        "enter_for_newline": "Enter — новая строка",
         "enter_newline": "+Enter — новая строка",
         "enter_sends": "Enter отправляет",
         "enter_sends_2": "+Enter отправляет",
@@ -2742,6 +2763,7 @@
         "restore_window": "Окно восстановления",
         "send_shortcut": "Комбинация для отправки",
         "session_tag_columns": "Колонки тегов сессий",
+        "shift_enter_for_newline": "Shift+Enter — новая строка",
         "show_context_percentage": "Показывать процент контекста",
         "show_elapsed_time_and_credits": "Показывать затраченное время и кредиты",
         "show_message_timestamps": "Показывать время сообщений",
@@ -2798,13 +2820,18 @@
         "authenticated": "аутентифицирован.",
         "authentication_failed": "ошибка аутентификации",
         "authorize": "Авторизовать",
+        "mcp_server": "MCP-сервер",
         "requires_authentication": "требует аутентификации."
       },
       "notificationItem": {
+        "acknowledged": "Подтверждено",
         "delete": "Удалить"
       },
       "nudgeCard": {
-        "loop": "Цикл"
+        "auto_nudge": "Автоподталкивание",
+        "hide_nudge_instructions": "Скрыть инструкции подталкивания",
+        "loop": "Цикл",
+        "show_nudge_instructions": "Показать инструкции подталкивания"
       },
       "pinnedPrompt": {
         "collapse_pinned_prompt": "Свернуть закреплённое сообщение",
@@ -2812,18 +2839,18 @@
         "jump_to_this_prompt": "Перейти к этому сообщению"
       },
       "recoveryCard": {
+        "backend_error_continuing": "ошибка бэкенда · продолжение автоматически",
         "cancelled_continuing": "отменено · продолжение",
+        "empty_output_continuing": "пустой вывод · продолжение автоматически",
         "n_patterns": "шаблонов: {{count}}",
         "n_tool_calls_blocked": "Заблокировано вызовов инструментов: {{count}}",
+        "no_response_returned": "Ответ не получен",
         "recovered_continuing": "восстановлено · продолжение",
         "safety_policy_continuing": "политика безопасности · продолжение автоматически",
         "tool_call_blocked": "Вызов инструмента заблокирован",
         "tool_stopped_responding": "Инструмент перестал отвечать",
-        "turn_stalled": "Ход застопорился",
         "turn_interrupted": "Ход прерван",
-        "backend_error_continuing": "ошибка бэкенда · продолжение автоматически",
-        "no_response_returned": "Ответ не получен",
-        "empty_output_continuing": "пустой вывод · продолжение автоматически"
+        "turn_stalled": "Ход застопорился"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Измените цветовую палитру в настройках отображения",
@@ -2834,8 +2861,10 @@
       "sideChat": {
         "ago": "назад",
         "ask_a_side_question": "Задать дополнительный вопрос",
+        "ask_a_side_question_2": "Задать дополнительный вопрос...",
         "ask_a_side_question_main_agent_keeps_working": "Задать дополнительный вопрос — основной агент продолжает работу",
         "context_from": "Контекст из",
+        "copied": "Скопировано!",
         "copy": "Копировать",
         "refresh_context": "Обновить контекст",
         "send": "Отправить",
@@ -2848,11 +2877,15 @@
       "sidePanel": {
         "close_panel": "Закрыть панель",
         "close_tab": "Закрыть вкладку",
+        "hide_line_numbers": "Скрыть номера строк",
         "move_to_bottom_panel": "Переместить в нижнюю панель",
         "open_in_editor": "Открыть в редакторе",
         "open_side_panel_tab": "Открыть вкладку боковой панели",
         "pick_a_panel_to_view": "Выберите панель для просмотра",
         "resize_panel": "Изменить размер панели",
+        "show_line_numbers": "Показать номера строк",
+        "switch_to_split_view": "Переключиться на раздельный вид",
+        "switch_to_unified_view": "Переключиться на единый вид",
         "turn_diff": "Изменения за ход"
       },
       "stopEventCard": {
@@ -2872,6 +2905,8 @@
         "s": "s",
         "stalled": "застряло",
         "stop": "Остановить",
+        "stop_all_running_subagents": "Остановить все запущенные субагенты",
+        "stop_running_subagent": "Остановить запущенный субагент",
         "stop_this_subagent": "Остановить этот субагент",
         "waiting_to_start_queued_behind_the_concurrency_l": "Ожидает запуска — в очереди из-за лимита параллельности"
       },
@@ -2882,16 +2917,26 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Ожидает запуска — в очереди из-за лимита параллельности"
       },
       "taskProgressBar": {
+        "all_tasks_complete": "Все задачи выполнены",
+        "current_task": "Текущая задача",
         "more": "ещё…",
         "of": "из",
         "task_completion": "Выполнение задачи"
       },
       "thinkingBlock": {
+        "collapse_model_reasoning": "Свернуть рассуждения модели",
+        "expand_model_reasoning": "Развернуть рассуждения модели",
+        "hide_reasoning": "Скрыть рассуждения",
+        "show_reasoning": "Показать рассуждения",
         "thinking": "Размышление"
       },
       "toolDetails": {
         "auto": "Авто",
+        "details_unavailable_for_historical_tool_calls": "Подробности недоступны для прошлых вызовов инструментов.",
+        "no_input_or_output_captured_for_this_tool_call": "Для этого вызова инструмента не записаны входные и выходные данные.",
         "null": "null",
+        "render_escaped_whitespace_as_real_line_breaks": "Отображать экранированные пробелы как настоящие переводы строк",
+        "show_the_exact_payload_escaping_preserved": "Показать точные данные, экранирование сохранено",
         "waiting_for_approval": "Ожидает подтверждения"
       },
       "userMessage": {
@@ -2906,8 +2951,10 @@
         "steered_into_the_running_turn": "Направлено в выполняющийся ход"
       },
       "workflowCompletionCard": {
+        "hide_result": "Скрыть результат",
         "open_in_the_workflows_panel": "Открыть на панели «Рабочие процессы»",
-        "panel": "Панель"
+        "panel": "Панель",
+        "show_result": "Показать результат"
       },
       "workflowProgressBar": {
         "could_not_load_run_snapshot": "Не удалось загрузить снимок запуска:"
@@ -3957,6 +4004,58 @@
       "remote_artifact": "Удалённый артефакт",
       "rendering": "Отрисовка…",
       "v": "v"
+    },
+    "scenes": {
+      "ghostScene": {
+        "kiro_ghost_haunt_animation": "Анимация призрака Kiro",
+        "kiro_ghost_haunt_text_overlay": "Текстовый слой анимации призрака Kiro"
+      },
+      "missionControl": {
+        "missionControlScene": {
+          "mission_control_scene": "Сцена центра управления"
+        }
+      },
+      "neuralConstellationScene": {
+        "active": "активно",
+        "idle": "простой",
+        "neural_constellation_animation": "Анимация нейронного созвездия",
+        "neural_constellation_text_overlay": "Текстовый слой нейронного созвездия",
+        "neural_network": "Нейросеть"
+      },
+      "officeScene": {
+        "active": "Активно",
+        "agent_office": "Офис агентов",
+        "done": "Готово",
+        "headquarters": "штаб",
+        "no_tasks": "Нет задач",
+        "office_scene": "Сцена офиса",
+        "office_scene_labels": "Подписи сцены офиса",
+        "to_do": "К выполнению"
+      },
+      "pandaOfficeScene": {
+        "panda_office_scene": "Сцена офиса панд",
+        "panda_office_scene_labels": "Подписи сцены офиса панд"
+      },
+      "underwaterLabScene": {
+        "deep_sea_lab": "Глубоководная лаборатория",
+        "research_station": "исследовательская станция",
+        "underwater_lab_scene": "Сцена подводной лаборатории",
+        "underwater_lab_scene_labels": "Подписи сцены подводной лаборатории"
+      },
+      "wateringHoleScene": {
+        "watering_hole": "Водопой",
+        "watering_hole_scene": "Сцена водопоя",
+        "watering_hole_scene_labels": "Подписи сцены водопоя"
+      },
+      "wizardTowerScene": {
+        "arcane_academy": "Академия магии",
+        "casting": "колдует",
+        "empty": "пусто",
+        "i_see": "Понятно!",
+        "resting": "отдыхает",
+        "wizard_tower_scene": "Сцена башни волшебника",
+        "wizard_tower_spell_text": "Текст заклинания в башне волшебника"
+      }
     },
     "schedulePage": {
       "actions": "Действия",

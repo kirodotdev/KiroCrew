@@ -5,6 +5,7 @@ import { isKnownAgent, markAgentsKnown, pruneAgents } from '../../hooks/sceneSta
 import { sceneFont, drawLabel, sceneLineHeight, drawSpeechBubble, SPEECH_BUBBLE_MS, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../hooks/sceneText'
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
+import { i18nT } from '../../i18n/t'
 
 const OFFICE_THEME: SceneTooltipTheme = { active: 'Grinding PRs', idle: 'Waiting for CR approval' }
 
@@ -143,7 +144,7 @@ export default function OfficeScene({ agents, visible = true }: { agents: AgentS
     })
 
     kanbanRef.current = capped.filter(s => s.running).map(s => s.name).slice(0, 4)
-    if (kanbanRef.current.length === 0) kanbanRef.current = ['No tasks']
+    if (kanbanRef.current.length === 0) kanbanRef.current = [i18nT('pages.scenes.officeScene.no_tasks')]
 
     agentsRef.current = newAgents
     setAgentCount(newAgents.length)
@@ -236,7 +237,7 @@ export default function OfficeScene({ agents, visible = true }: { agents: AgentS
       const { x, y, w, h } = WHITEBOARD
       d(x - 1, y - 1, w + 2, h + 2, COL.whiteboardFrame)
       d(x, y, w, h, COL.whiteboard)
-      const cols = ['To Do', 'Active', 'Done']
+      const cols = [i18nT('pages.scenes.officeScene.to_do'), i18nT('pages.scenes.officeScene.active'), i18nT('pages.scenes.officeScene.done')]
       const cw = w / 3
       cols.forEach((label, i) => {
         if (i > 0) d(x + cw * i, y, 0.5, h, '#bbb')
@@ -316,10 +317,10 @@ export default function OfficeScene({ agents, visible = true }: { agents: AgentS
 
     const drawLogo = () => {
       T.fillStyle = '#f90'; T.font = sceneFont('title', 'bold')
-      T.fillText('Agent Office', (W / 2 - 26) * S, 32 * S)
+      T.fillText(i18nT('pages.scenes.officeScene.agent_office'), (W / 2 - 26) * S, 32 * S)
       d(W / 2 - 28, 34, 56, 1, '#f90')
       T.fillStyle = '#c70'; T.font = sceneFont('detail')
-      T.fillText('headquarters', (W / 2 - 16) * S, 40 * S)
+      T.fillText(i18nT('pages.scenes.officeScene.headquarters'), (W / 2 - 16) * S, 40 * S)
     }
 
     /* ── Draw: desk with cubicle + items ── */
@@ -688,8 +689,8 @@ export default function OfficeScene({ agents, visible = true }: { agents: AgentS
 
   return (
     <div style={SCENE_CONTAINER_STYLE(W, H)}>
-      <canvas ref={canvasRef} aria-label="Office scene" style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
-      <canvas ref={textRef} aria-label="Office scene labels" style={TEXT_CANVAS_STYLE} />
+      <canvas ref={canvasRef} aria-label={i18nT('pages.scenes.officeScene.office_scene')} style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
+      <canvas ref={textRef} aria-label={i18nT('pages.scenes.officeScene.office_scene_labels')} style={TEXT_CANVAS_STYLE} />
       {tooltipEl}
     </div>
   )

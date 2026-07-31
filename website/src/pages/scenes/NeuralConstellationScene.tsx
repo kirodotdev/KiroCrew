@@ -5,6 +5,7 @@ import { isKnownAgent, markAgentsKnown, pruneAgents } from '../../hooks/sceneSta
 import { sceneFont, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../hooks/sceneText'
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
+import { i18nT } from '../../i18n/t'
 
 const NEURAL_THEME: SceneTooltipTheme = { active: 'Processing neural pathways', idle: 'Awaiting signal' }
 
@@ -406,7 +407,7 @@ export default function NeuralConstellationScene({ agents, visible = true }: Pro
       T.fillStyle = running ? '#4f4' : '#556'
       T.font = sceneFont('status')
       T.textAlign = 'center'
-      T.fillText(running ? 'active' : 'idle', (x - 5) * S, (y + r + 12) * S)
+      T.fillText(running ? i18nT('pages.scenes.neuralConstellationScene.active') : i18nT('pages.scenes.neuralConstellationScene.idle'), (x - 5) * S, (y + r + 12) * S)
 
       if (detail) {
         T.fillStyle = '#667'
@@ -466,7 +467,7 @@ export default function NeuralConstellationScene({ agents, visible = true }: Pro
       T.fillStyle = '#f90'
       T.font = sceneFont('title', 'bold')
       T.textAlign = 'center'
-      T.fillText('Neural Network', CENTER.x * S, (CENTER.y + 1.5) * S)
+      T.fillText(i18nT('pages.scenes.neuralConstellationScene.neural_network'), CENTER.x * S, (CENTER.y + 1.5) * S)
       T.shadowBlur = 0
 
       T.fillStyle = '#998'
@@ -545,8 +546,8 @@ export default function NeuralConstellationScene({ agents, visible = true }: Pro
 
   return (
     <div style={SCENE_CONTAINER_STYLE(W, H)}>
-      <canvas ref={canvasRef} aria-label="Neural constellation animation" style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
-      <canvas ref={textRef} aria-label="Neural constellation text overlay" style={TEXT_CANVAS_STYLE} />
+      <canvas ref={canvasRef} aria-label={i18nT('pages.scenes.neuralConstellationScene.neural_constellation_animation')} style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
+      <canvas ref={textRef} aria-label={i18nT('pages.scenes.neuralConstellationScene.neural_constellation_text_overlay')} style={TEXT_CANVAS_STYLE} />
       {tooltipEl}
     </div>
   )

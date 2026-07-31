@@ -118,10 +118,10 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
                 type="button"
                 onClick={() => setExpanded(e => !e)}
                 aria-expanded={expanded}
-                title={expanded ? 'Hide result' : 'Show result'}
+                title={expanded ? i18nT('pages.chat.workflowCompletionCard.hide_result') : i18nT('pages.chat.workflowCompletionCard.show_result')}
                 className="flex items-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
               >
-                {expanded ? 'Hide result' : 'Show result'}
+                {expanded ? i18nT('pages.chat.workflowCompletionCard.hide_result') : i18nT('pages.chat.workflowCompletionCard.show_result')}
                 <ChevronDown size={13} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
               </button>
             )}

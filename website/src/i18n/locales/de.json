@@ -1214,6 +1214,15 @@
       "suggested_follow_up_one": "Vorgeschlagene Folgefrage",
       "suggested_follow_up_other": "Vorgeschlagene Folgefragen"
     },
+    "inboundLinkChip": {
+      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Sie können sie mit !sessions aus diesem Kanal erneut verbinden.",
+      "driven_from": "Gesteuert von {{label}}",
+      "release": "Lösen",
+      "release_aria": "Diese Sitzung von {{label}} lösen",
+      "release_failed": "Sitzung konnte nicht gelöst werden: {{reason}}",
+      "released": "Von {{label}} gelöst",
+      "tooltip": "Diese Sitzung ist bidirektional mit {{label}} verbunden: Antworten werden dorthin geliefert, und dort gesendete Nachrichten kommen hier an."
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "Kommentar-Thread öffnen"
     },
@@ -1315,15 +1324,6 @@
       "waiting_for_sign_in": "Warten auf Anmeldung…",
       "we_could_not_check_kiro_cli": "Wir konnten Kiro CLI nicht prüfen.",
       "your_crew_is_almost_ready": "Ihre Crew ist fast bereit."
-    },
-    "inboundLinkChip": {
-      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Sie können sie mit !sessions aus diesem Kanal erneut verbinden.",
-      "driven_from": "Gesteuert von {{label}}",
-      "release": "Lösen",
-      "release_aria": "Diese Sitzung von {{label}} lösen",
-      "release_failed": "Sitzung konnte nicht gelöst werden: {{reason}}",
-      "released": "Von {{label}} gelöst",
-      "tooltip": "Diese Sitzung ist bidirektional mit {{label}} verbunden: Antworten werden dorthin geliefert, und dort gesendete Nachrichten kommen hier an."
     },
     "linkedSurfacesSection": {
       "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Sie können sie mit !sessions aus diesem Kanal erneut verbinden.",
@@ -2574,6 +2574,7 @@
     "chat": {
       "activityViewer": {
         "activity": "Aktivität",
+        "approval_needed": "Genehmigung erforderlich",
         "approve": "Genehmigen",
         "approved": "Genehmigt",
         "artifacts_empty": "Noch keine Artefakte – bitte mich, eines zu erstellen, oder markiere eine Sitzungsdatei",
@@ -2582,10 +2583,13 @@
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "Bitten Sie mich, „einen dynamischen Workflow zu verwenden, um …“ — Ausführungen aus diesem Chat erscheinen hier live.",
         "back_to_files": "Zurück zu Dateien",
         "cancel": "Abbrechen",
+        "cancelled": "Abgebrochen",
         "changed_files": "Geänderte Dateien",
         "clear": "Leeren",
+        "complete": "Abgeschlossen",
         "discard_unsaved_changes": "Nicht gespeicherte Änderungen verwerfen?",
         "dismiss_done": "Abgeschlossene schließen (",
+        "error": "Fehler",
         "failed_click_to_retry": "Fehlgeschlagen — klicken zum Wiederholen",
         "files": "Dateien",
         "input": "Eingabe",
@@ -2593,6 +2597,7 @@
         "load_output_from_disk": "Ausgabe vom Datenträger laden",
         "loading": "Wird geladen…",
         "no_files_changed_yet": "Noch keine Dateien geändert",
+        "no_issues_in_this_session_yet_mention_a_github_o": "Noch keine Issues in dieser Sitzung. Erwähne einen GitHub- oder GitLab-Issue-Link, dann erscheint er hier.",
         "no_matches": "Keine Treffer",
         "no_pull_requests_yet": "Noch keine Pull Requests in dieser Sitzung",
         "no_subagents_running": "Keine Subagenten laufen",
@@ -2601,11 +2606,13 @@
         "open_in_side_panel": "Im Seitenbereich öffnen",
         "output": "Ausgabe",
         "output_shown_in_chat": "(Ausgabe im Chat angezeigt)",
+        "pending_approval": "Genehmigung ausstehend",
         "reject": "Ablehnen",
         "rejected": "Abgelehnt",
         "remove": "Entfernen",
         "remove_file_from_list": "Datei aus der Liste entfernen",
         "remove_star": "Markierung entfernen",
+        "resolved": "Aufgelöst",
         "resolving": "Wird aufgelöst…",
         "resolving_2": "wird aufgelöst…",
         "resource_type_issue": "Issue",
@@ -2614,29 +2621,41 @@
         "resources": "Ressourcen",
         "retry": "Wiederholen",
         "retry_failed": "Fehlgeschlagene wiederholen (",
+        "running": "Läuft",
+        "running_tool": "Werkzeug läuft",
         "search_files": "Nach Dateiname, Ordner oder Link suchen…",
         "show_all": "Alle anzeigen (",
         "star": "Markieren",
+        "starting": "Wird gestartet…",
+        "stopped": "Gestoppt",
         "trusted": "Vertrauenswürdig",
         "trusted_base": "Vertrauenswürdige Basis",
         "trusted_command": "Vertrauenswürdiger Befehl",
+        "unable_to_read_this_file": "Diese Datei kann nicht gelesen werden.",
         "waiting_for_output": "Warten auf Ausgabe…",
         "waiting_to_start_queued_behind_the_concurrency_l": "wartet auf den Start — in der Warteschlange hinter der Parallelitätsgrenze"
       },
       "assistantMessage": {
         "applied_to_tasks": "Auf Aufgaben angewendet",
+        "copied": "Kopiert!",
         "copy": "Kopieren",
         "copy_link_to_message": "Link zur Nachricht kopieren",
         "fork_conversation_from_here": "Unterhaltung ab hier verzweigen",
         "next_version": "Nächste Version",
         "plan_from_here": "Ab hier planen",
         "previous_version": "Vorherige Version",
+        "raw": "roh",
+        "raw_markdown": "Rohes Markdown",
         "regenerate": "Neu erstellen",
         "regenerate_response": "Antwort neu erstellen",
+        "rendered": "gerendert",
+        "rendered_view": "Gerenderte Ansicht",
         "speak": "Vorlesen",
         "speak_message": "Nachricht vorlesen",
         "steered": "Gesteuert",
         "steps": "Schritte)",
+        "switch_to_raw_markdown_view": "Zur Roh-Markdown-Ansicht wechseln",
+        "switch_to_rendered_view": "Zur gerenderten Ansicht wechseln",
         "use_as_plan": "Als Plan verwenden ("
       },
       "chatFooter": {
@@ -2645,6 +2664,7 @@
         "stopping": "Wird gestoppt…"
       },
       "chatNavPanel": {
+        "link": "Link",
         "no_links_found": "Keine Links gefunden",
         "outline": "Gliederung",
         "resolving": "wird aufgelöst…",
@@ -2663,6 +2683,7 @@
         "display_usage_percentage_next_to_the_context_bar": "Verbrauchsprozentsatz neben der Kontextleiste anzeigen",
         "enable_the_trello_style_column_strip_in_the_side": "Den Spaltenstreifen im Trello-Stil in der Seitenleiste aktivieren. Wenn deaktiviert, ist die Sitzungsliste eine einzelne flache Spur.",
         "engine": "Engine",
+        "enter_for_newline": "Enter für Zeilenumbruch",
         "enter_newline": "+Enter neue Zeile",
         "enter_sends": "Enter sendet",
         "enter_sends_2": "+Enter sendet",
@@ -2678,6 +2699,7 @@
         "restore_window": "Fenster wiederherstellen",
         "send_shortcut": "Tastenkürzel zum Senden",
         "session_tag_columns": "Sitzungs-Tag-Spalten",
+        "shift_enter_for_newline": "Shift+Enter für Zeilenumbruch",
         "show_context_percentage": "Kontextprozentsatz anzeigen",
         "show_elapsed_time_and_credits": "Verstrichene Zeit und Credits anzeigen",
         "show_message_timestamps": "Zeitstempel der Nachrichten anzeigen",
@@ -2732,13 +2754,18 @@
         "authenticated": "authentifiziert.",
         "authentication_failed": "Authentifizierung fehlgeschlagen",
         "authorize": "Autorisieren",
+        "mcp_server": "MCP-Server",
         "requires_authentication": "erfordert Authentifizierung."
       },
       "notificationItem": {
+        "acknowledged": "Bestätigt",
         "delete": "Löschen"
       },
       "nudgeCard": {
-        "loop": "Schleife"
+        "auto_nudge": "Auto-Anstoß",
+        "hide_nudge_instructions": "Anstoß-Anweisungen ausblenden",
+        "loop": "Schleife",
+        "show_nudge_instructions": "Anstoß-Anweisungen anzeigen"
       },
       "pinnedPrompt": {
         "collapse_pinned_prompt": "Angeheftete Nachricht einklappen",
@@ -2746,18 +2773,18 @@
         "jump_to_this_prompt": "Zu dieser Nachricht springen"
       },
       "recoveryCard": {
+        "backend_error_continuing": "Backend-Fehler · wird automatisch fortgesetzt",
         "cancelled_continuing": "abgebrochen · wird fortgesetzt",
+        "empty_output_continuing": "leere Ausgabe · wird automatisch fortgesetzt",
         "n_patterns": "{{count}} Muster",
         "n_tool_calls_blocked": "{{count}} Werkzeugaufrufe blockiert",
+        "no_response_returned": "Keine Antwort",
         "recovered_continuing": "wiederhergestellt · wird fortgesetzt",
         "safety_policy_continuing": "Sicherheitsrichtlinie · wird automatisch fortgesetzt",
         "tool_call_blocked": "Werkzeugaufruf blockiert",
         "tool_stopped_responding": "Werkzeug antwortet nicht mehr",
-        "turn_stalled": "Zug blockiert",
         "turn_interrupted": "Zug unterbrochen",
-        "backend_error_continuing": "Backend-Fehler · wird automatisch fortgesetzt",
-        "no_response_returned": "Keine Antwort",
-        "empty_output_continuing": "leere Ausgabe · wird automatisch fortgesetzt"
+        "turn_stalled": "Zug blockiert"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Ändern Sie Ihre Farbpalette in den Anzeigeeinstellungen",
@@ -2768,8 +2795,10 @@
       "sideChat": {
         "ago": "her",
         "ask_a_side_question": "Nebenfrage stellen",
+        "ask_a_side_question_2": "Stelle eine Nebenfrage…",
         "ask_a_side_question_main_agent_keeps_working": "Nebenfrage stellen — der Hauptagent arbeitet weiter",
         "context_from": "Kontext von",
+        "copied": "Kopiert!",
         "copy": "Kopieren",
         "refresh_context": "Kontext aktualisieren",
         "send": "Senden",
@@ -2780,11 +2809,15 @@
       "sidePanel": {
         "close_panel": "Panel schließen",
         "close_tab": "Tab schließen",
+        "hide_line_numbers": "Zeilennummern ausblenden",
         "move_to_bottom_panel": "In das untere Panel verschieben",
         "open_in_editor": "Im Editor öffnen",
         "open_side_panel_tab": "Seitenpanel-Tab öffnen",
         "pick_a_panel_to_view": "Wählen Sie ein Panel zur Anzeige",
         "resize_panel": "Größe des Panels ändern",
+        "show_line_numbers": "Zeilennummern anzeigen",
+        "switch_to_split_view": "Zur geteilten Ansicht wechseln",
+        "switch_to_unified_view": "Zur einheitlichen Ansicht wechseln",
         "turn_diff": "Zug-Diff"
       },
       "stopEventCard": {
@@ -2804,6 +2837,8 @@
         "s": "s",
         "stalled": "blockiert",
         "stop": "Stoppen",
+        "stop_all_running_subagents": "Alle laufenden Subagenten stoppen",
+        "stop_running_subagent": "Laufenden Subagenten stoppen",
         "stop_this_subagent": "Diesen Subagenten stoppen",
         "waiting_to_start_queued_behind_the_concurrency_l": "Warten auf den Start — in der Warteschlange hinter der Parallelitätsgrenze"
       },
@@ -2814,16 +2849,26 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Warten auf den Start — in der Warteschlange hinter der Parallelitätsgrenze"
       },
       "taskProgressBar": {
+        "all_tasks_complete": "Alle Aufgaben abgeschlossen",
+        "current_task": "Aktuelle Aufgabe",
         "more": "mehr…",
         "of": "von",
         "task_completion": "Aufgabenabschluss"
       },
       "thinkingBlock": {
+        "collapse_model_reasoning": "Denkprozess des Modells einklappen",
+        "expand_model_reasoning": "Denkprozess des Modells aufklappen",
+        "hide_reasoning": "Denkprozess ausblenden",
+        "show_reasoning": "Denkprozess anzeigen",
         "thinking": "Denkt nach"
       },
       "toolDetails": {
         "auto": "Automatisch",
+        "details_unavailable_for_historical_tool_calls": "Details für frühere Werkzeugaufrufe nicht verfügbar.",
+        "no_input_or_output_captured_for_this_tool_call": "Keine Ein- oder Ausgabe für diesen Werkzeugaufruf erfasst.",
         "null": "null",
+        "render_escaped_whitespace_as_real_line_breaks": "Maskierte Leerzeichen als echte Zeilenumbrüche darstellen",
+        "show_the_exact_payload_escaping_preserved": "Exakte Payload anzeigen, Maskierung beibehalten",
         "waiting_for_approval": "Warten auf Genehmigung"
       },
       "userMessage": {
@@ -2838,8 +2883,10 @@
         "steered_into_the_running_turn": "In den laufenden Zug eingesteuert"
       },
       "workflowCompletionCard": {
+        "hide_result": "Ergebnis ausblenden",
         "open_in_the_workflows_panel": "Im Workflows-Panel öffnen",
-        "panel": "Panel"
+        "panel": "Panel",
+        "show_result": "Ergebnis anzeigen"
       },
       "workflowProgressBar": {
         "could_not_load_run_snapshot": "Ausführungs-Snapshot konnte nicht geladen werden:"
@@ -3877,6 +3924,58 @@
       "remote_artifact": "Remote-Artefakt",
       "rendering": "Wird gerendert…",
       "v": "v"
+    },
+    "scenes": {
+      "ghostScene": {
+        "kiro_ghost_haunt_animation": "Animation des Kiro-Geisterspuks",
+        "kiro_ghost_haunt_text_overlay": "Text-Overlay des Kiro-Geisterspuks"
+      },
+      "missionControl": {
+        "missionControlScene": {
+          "mission_control_scene": "Kontrollzentrum-Szene"
+        }
+      },
+      "neuralConstellationScene": {
+        "active": "aktiv",
+        "idle": "inaktiv",
+        "neural_constellation_animation": "Animation der neuronalen Konstellation",
+        "neural_constellation_text_overlay": "Text-Overlay der neuronalen Konstellation",
+        "neural_network": "Neuronales Netz"
+      },
+      "officeScene": {
+        "active": "Aktiv",
+        "agent_office": "Agentenbüro",
+        "done": "Fertig",
+        "headquarters": "Hauptquartier",
+        "no_tasks": "Keine Aufgaben",
+        "office_scene": "Büroszene",
+        "office_scene_labels": "Beschriftungen der Büroszene",
+        "to_do": "Zu erledigen"
+      },
+      "pandaOfficeScene": {
+        "panda_office_scene": "Panda-Büroszene",
+        "panda_office_scene_labels": "Beschriftungen der Panda-Büroszene"
+      },
+      "underwaterLabScene": {
+        "deep_sea_lab": "Tiefseelabor",
+        "research_station": "Forschungsstation",
+        "underwater_lab_scene": "Unterwasserlabor-Szene",
+        "underwater_lab_scene_labels": "Beschriftungen der Unterwasserlabor-Szene"
+      },
+      "wateringHoleScene": {
+        "watering_hole": "Wasserloch",
+        "watering_hole_scene": "Wasserloch-Szene",
+        "watering_hole_scene_labels": "Beschriftungen der Wasserloch-Szene"
+      },
+      "wizardTowerScene": {
+        "arcane_academy": "Arkane Akademie",
+        "casting": "zaubert",
+        "empty": "leer",
+        "i_see": "Aha!",
+        "resting": "ruht",
+        "wizard_tower_scene": "Zauberturm-Szene",
+        "wizard_tower_spell_text": "Zauberspruchtext des Zauberturms"
+      }
     },
     "schedulePage": {
       "actions": "Aktionen",

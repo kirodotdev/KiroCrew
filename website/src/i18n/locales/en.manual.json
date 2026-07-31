@@ -160,13 +160,86 @@
     },
     "chat": {
       "activityViewer": {
+        "approval_needed": "Approval Needed",
+        "cancelled": "Cancelled",
         "clear": "Clear",
+        "complete": "Complete",
+        "error": "Error",
+        "no_issues_in_this_session_yet_mention_a_github_o": "No issues in this session yet. Mention a GitHub or GitLab issue link and it will appear here.",
         "no_matches": "No matches",
         "no_pull_requests_yet": "No pull requests in this session yet",
+        "pending_approval": "Pending Approval",
+        "resolved": "Resolved",
         "resource_type_issue": "Issue",
         "resource_type_link": "Link",
         "resource_type_pr": "PR",
-        "search_files": "Search by file name, folder, or link…"
+        "running": "Running",
+        "running_tool": "Running Tool",
+        "search_files": "Search by file name, folder, or link…",
+        "starting": "Starting…",
+        "stopped": "Stopped",
+        "unable_to_read_this_file": "Unable to read this file."
+      },
+      "assistantMessage": {
+        "copied": "Copied!",
+        "raw": "raw",
+        "raw_markdown": "Raw markdown",
+        "rendered": "rendered",
+        "rendered_view": "Rendered view",
+        "switch_to_raw_markdown_view": "Switch to raw markdown view",
+        "switch_to_rendered_view": "Switch to rendered view"
+      },
+      "chatNavPanel": {
+        "link": "Link"
+      },
+      "chatSettings": {
+        "enter_for_newline": "Enter for newline",
+        "shift_enter_for_newline": "Shift+Enter for newline"
+      },
+      "mcpOAuthBanner": {
+        "mcp_server": "MCP server"
+      },
+      "notificationItem": {
+        "acknowledged": "Acknowledged"
+      },
+      "nudgeCard": {
+        "auto_nudge": "Auto-nudge",
+        "hide_nudge_instructions": "Hide nudge instructions",
+        "show_nudge_instructions": "Show nudge instructions"
+      },
+      "sideChat": {
+        "ask_a_side_question_2": "Ask a side question…",
+        "copied": "Copied!"
+      },
+      "sidePanel": {
+        "hide_line_numbers": "Hide line numbers",
+        "show_line_numbers": "Show line numbers",
+        "switch_to_split_view": "Switch to split view",
+        "switch_to_unified_view": "Switch to unified view"
+      },
+      "subagentProgressBar": {
+        "stop_all_running_subagents": "Stop all running subagents",
+        "stop_running_subagent": "Stop running subagent"
+      },
+      "taskProgressBar": {
+        "all_tasks_complete": "All tasks complete",
+        "current_task": "Current task"
+      },
+      "thinkingBlock": {
+        "collapse_model_reasoning": "Collapse model reasoning",
+        "expand_model_reasoning": "Expand model reasoning",
+        "hide_reasoning": "Hide reasoning",
+        "show_reasoning": "Show reasoning"
+      },
+      "toolDetails": {
+        "details_unavailable_for_historical_tool_calls": "Details unavailable for historical tool calls.",
+        "no_input_or_output_captured_for_this_tool_call": "No input or output captured for this tool call.",
+        "render_escaped_whitespace_as_real_line_breaks": "Render escaped whitespace as real line breaks",
+        "show_the_exact_payload_escaping_preserved": "Show the exact payload, escaping preserved"
+      },
+      "workflowCompletionCard": {
+        "hide_result": "Hide result",
+        "show_result": "Show result"
       }
     },
     "chatSidebar": {
@@ -181,6 +254,58 @@
       "tool_status_deferred": "Deferred",
       "tool_status_disabled": "Disabled",
       "tool_status_loaded": "Loaded this session"
+    },
+    "scenes": {
+      "ghostScene": {
+        "kiro_ghost_haunt_animation": "Kiro ghost haunt animation",
+        "kiro_ghost_haunt_text_overlay": "Kiro ghost haunt text overlay"
+      },
+      "missionControl": {
+        "missionControlScene": {
+          "mission_control_scene": "Mission control scene"
+        }
+      },
+      "neuralConstellationScene": {
+        "active": "active",
+        "idle": "idle",
+        "neural_constellation_animation": "Neural constellation animation",
+        "neural_constellation_text_overlay": "Neural constellation text overlay",
+        "neural_network": "Neural Network"
+      },
+      "officeScene": {
+        "active": "Active",
+        "agent_office": "Agent Office",
+        "done": "Done",
+        "headquarters": "headquarters",
+        "no_tasks": "No tasks",
+        "office_scene": "Office scene",
+        "office_scene_labels": "Office scene labels",
+        "to_do": "To Do"
+      },
+      "pandaOfficeScene": {
+        "panda_office_scene": "Panda office scene",
+        "panda_office_scene_labels": "Panda office scene labels"
+      },
+      "underwaterLabScene": {
+        "deep_sea_lab": "Deep Sea Lab",
+        "research_station": "research station",
+        "underwater_lab_scene": "Underwater lab scene",
+        "underwater_lab_scene_labels": "Underwater lab scene labels"
+      },
+      "wateringHoleScene": {
+        "watering_hole": "Watering Hole",
+        "watering_hole_scene": "Watering hole scene",
+        "watering_hole_scene_labels": "Watering hole scene labels"
+      },
+      "wizardTowerScene": {
+        "arcane_academy": "Arcane Academy",
+        "casting": "casting",
+        "empty": "empty",
+        "i_see": "I see!",
+        "resting": "resting",
+        "wizard_tower_scene": "Wizard tower scene",
+        "wizard_tower_spell_text": "Wizard tower spell text"
+      }
     },
     "settings": {
       "aboutPanel": {

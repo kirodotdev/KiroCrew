@@ -165,7 +165,7 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
       )}
       {reallyEmpty && (
         <div className="text-[12px] text-muted/60 italic">
-          {hasEntry ? 'No input or output captured for this tool call.' : 'Details unavailable for historical tool calls.'}
+          {hasEntry ? i18nT('pages.chat.toolDetails.no_input_or_output_captured_for_this_tool_call') : i18nT('pages.chat.toolDetails.details_unavailable_for_historical_tool_calls')}
         </div>
       )}
     </div>
@@ -254,7 +254,7 @@ function ViewModeToggle({ mode, onChange, layoutId }: {
               key={s.key}
               layout
               type="button"
-              title={s.key === 'raw' ? 'Show the exact payload, escaping preserved' : 'Render escaped whitespace as real line breaks'}
+              title={s.key === 'raw' ? i18nT('pages.chat.toolDetails.show_the_exact_payload_escaping_preserved') : i18nT('pages.chat.toolDetails.render_escaped_whitespace_as_real_line_breaks')}
               onClick={() => onChange(s.key)}
               whileTap={isActive ? { scale: 0.95 } : undefined}
               transition={{ duration: 0.15 }}

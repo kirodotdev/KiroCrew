@@ -18,6 +18,7 @@ import { isKnownAgent, markAgentsKnown, pruneAgents } from '../../hooks/sceneSta
 import { sceneFont, drawLabel, sceneLineHeight, drawSpeechBubble, SPEECH_BUBBLE_MS, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_CANVAS_STYLE } from '../../hooks/sceneText'
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
+import { i18nT } from '../../i18n/t'
 
 const SERENGETI_THEME: SceneTooltipTheme = { active: 'On the move', idle: 'Resting' }
 
@@ -691,7 +692,7 @@ export default function WateringHoleScene({ agents, visible = true }: Props) {
       T.fillStyle = '#5e3a1d'
       T.font = sceneFont('title', 'bold')
       T.textAlign = 'center'
-      T.fillText('Watering Hole', (W / 2) * S, 22 * S)
+      T.fillText(i18nT('pages.scenes.wateringHoleScene.watering_hole'), (W / 2) * S, 22 * S)
       T.textAlign = 'start'
       T.fillStyle = '#5e3a1d'
       T.font = sceneFont('status')
@@ -707,8 +708,8 @@ export default function WateringHoleScene({ agents, visible = true }: Props) {
 
   return (
     <div style={SCENE_CONTAINER_STYLE(W, H)}>
-      <canvas ref={canvasRef} aria-label="Watering hole scene" style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
-      <canvas ref={textRef} aria-label="Watering hole scene labels" style={TEXT_CANVAS_STYLE} />
+      <canvas ref={canvasRef} aria-label={i18nT('pages.scenes.wateringHoleScene.watering_hole_scene')} style={{ ...PIXEL_CANVAS_STYLE, ...canvasProps.style }} onMouseMove={canvasProps.onMouseMove} onMouseLeave={canvasProps.onMouseLeave} onClick={canvasProps.onClick} />
+      <canvas ref={textRef} aria-label={i18nT('pages.scenes.wateringHoleScene.watering_hole_scene_labels')} style={TEXT_CANVAS_STYLE} />
       {tooltipEl}
     </div>
   )
