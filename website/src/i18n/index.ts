@@ -125,10 +125,6 @@ export function initI18n(initialLanguage?: string): typeof i18next {
     // label like 'Ratio: 4:3') is never mistaken for a namespace reference.
     nsSeparator: false,
     debug: false,
-    // Suppress i18next's vendor promo banner, which it otherwise prints to
-    // stdout on every init — once per dev boot and once per test FILE, which
-    // buries real output in CI logs.
-    showSupportNotice: false,
     react: {
       // All catalogs are preloaded, so nothing suspends. Explicit for clarity
       // and so flipping to a lazy backend is a single-line change here.
