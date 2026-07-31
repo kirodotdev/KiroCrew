@@ -2534,7 +2534,7 @@
         "approve": "批准",
         "approved": "已批准",
         "artifacts_empty": "暂无工件 — 让我创建一个，或为会话文件加星标",
-        "artifacts_library": "其他工件",
+        "artifacts_library": "工件库",
         "artifacts_this_session": "本次会话",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "让我“用动态工作流来 …” — 此聊天中的运行会实时显示在这里。",
         "back_to_files": "返回文件",

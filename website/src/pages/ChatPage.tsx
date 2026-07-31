@@ -141,7 +141,7 @@ import { TagPopoverProvider } from '../hooks/useTagPopover'
 import { AnimatePresence, motion } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
 
-import type { ChatMessage } from '../types'
+import type { ChatMessage, Artifact } from '../types'
 
 import ToolCallLine from './chat/ToolCallLine'
 import WorkflowRunCard, { extractWorkflowRunId } from './chat/WorkflowRunCard'
@@ -1532,6 +1532,55 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // this callback and re-render its consumers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryClient, tabsCtl, dispatch, search.close, touchedFiles])
+
+  // Open an artifact as a side-panel tab — the artifact twin of
+  // handleFileOpen, and the single entry point every in-chat artifact
+  // affordance routes through (the Artifacts tab's rows and `/artifacts/<slug>`
+  // links inside messages). Before this existed those surfaces hard-navigated
+  // to the standalone detail page, which tore down the chat to show a document
+  // the panel can render inline and made artifacts the only panel-capable
+  // content that could not be flipped between like files.
+  const handleArtifactOpen = useCallback(async (slug: string) => {
+    if (!slug) return
+    const slot = activeSlotRef.current ?? null
+    // Opening an artifact is an act of session involvement: record the
+    // `referenced` breadcrumb so a merely-read (or merely-linked) artifact
+    // joins "This session" instead of sitting in the library section forever.
+    // Deliberately fire-and-forget and deliberately NOT awaited — the panel
+    // must open at click speed, and the store already enforces
+    // one-breadcrumb-per-session so a double click cannot spam the event log.
+    // The 403 an incognito slot returns is expected, not an error to surface.
+    if (slot) {
+      api.recordArtifactReference(slug, slot)
+        .then(() => {
+          // Re-run the involvement scan so the row moves sections live.
+          queryClient.invalidateQueries({ queryKey: ['session-artifact-records', slot] })
+        })
+        .catch(() => { /* best-effort breadcrumb */ })
+    }
+    // Seed the tab from the artifact list cache when it is already warm so the
+    // body paints immediately; ArtifactPanel's own query is authoritative and
+    // overrides kind/content once it resolves, so a miss here costs a spinner,
+    // not correctness.
+    let kind: Artifact['kind'] = 'markdown'
+    let content = ''
+    try {
+      const art = await queryClient.fetchQuery<Artifact>({
+        queryKey: ['artifact', slug],
+        queryFn: () => api.artifact(slug),
+        staleTime: 10_000,
+      })
+      kind = art.kind
+      content = art.content ?? ''
+    } catch { /* fall through — the panel's own query renders the error state */ }
+    tabsCtl.openArtifact({ slug, kind }, content, slot)
+    dispatch(openActivityPanel())
+    // Same single-slot constraint as handleFileOpen: the right-hand dock is
+    // render-gated behind !search.isOpen, so an open find pane would silently
+    // swallow the tab we just focused.
+    search.close()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryClient, tabsCtl, dispatch, search.close])
 
   // Open the Monaco diff panel from a file-change chip click. Closes the
   // markdown viewer and the activity panel so panels stay mutually exclusive.
@@ -3659,7 +3708,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} showFooter={(() => {
+              <AssistantMessage content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onArtifactOpen={handleArtifactOpen} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -3691,7 +3740,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop])
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop])
 
   const [mobileSessions, setMobileSessions] = useState(false)
   // Close mobile sessions panel when a session is selected
@@ -4555,6 +4604,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               tabsCtl={tabsCtl}
               subagents={subagents} toolLog={toolLog} slot={activeSlot || ''}
               files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
+              onArtifactOpen={handleArtifactOpen}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
               sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl}
               issues={issueLinks} selectedIssueUrl={selectedIssueUrl} onSelectIssue={setSelectedIssueUrl}
@@ -4589,6 +4639,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 tabsCtl={tabsCtl}
                 subagents={subagents} toolLog={toolLog} slot={activeSlot || ''}
                 files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
+                onArtifactOpen={handleArtifactOpen}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
                 sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl}
               issues={issueLinks} selectedIssueUrl={selectedIssueUrl} onSelectIssue={setSelectedIssueUrl}

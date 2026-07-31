@@ -202,10 +202,16 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
   // chat. Only rendered when the host actually supplies a submit channel.
   const showSubmitBar = !!onSubmitComments && humanComments.length > 0
 
+  // `flush` drops the native body's card chrome so a markdown artifact in the
+  // side panel looks like a markdown FILE in the side panel — same edge-to-edge
+  // text, padded once by DetailPanel's own `px-5 py-4` instead of twice by a
+  // nested bordered card. Fullscreen keeps the card: there the artifact floats
+  // on a full-viewport backdrop and the border is what bounds the document.
   const renderBody = (
     bodyScrollRef: React.RefObject<HTMLDivElement>,
     bodyPreviewRef: React.RefObject<HTMLDivElement>,
     layer: typeof fa,
+    flush = false,
   ) => (
     <div ref={bodyScrollRef} className="relative h-full overflow-auto pr-2">
       {isHydrating ? (
@@ -242,6 +248,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
           activeCommentId={layer.activeCommentId}
           scrollNonce={layer.scrollNonce}
           unreadRootIds={layer.unreadRootIds}
+          flush={flush}
         />
       )}
     </div>
@@ -310,7 +317,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
     >
       <div className="flex-1 overflow-hidden -mx-5 -my-4 py-4 flex flex-col pl-4 pr-0 min-h-0">
         <div className="relative flex-1 min-w-0 min-h-0">
-          {renderBody(scrollRef, previewRef, fa)}
+          {renderBody(scrollRef, previewRef, fa, true)}
         </div>
         {/* Sidebar stacks below content (height-capped) so content stays primary. */}
         {fa.sidebarOpen && (

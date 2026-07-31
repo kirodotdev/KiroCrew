@@ -67,7 +67,7 @@ export function isEditableKind(kind: Artifact['kind']): boolean {
 export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   kind, content, editing, onChange, previewRef,
   comments, activeCommentId, scrollNonce, onActivateComment, unreadRootIds,
-  heightStyle,
+  heightStyle, flush,
 }: {
   kind: Artifact['kind']
   content: string
@@ -82,6 +82,16 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   /** Override the body height/min-height (CR-B: the side panel fills its
    *  flex container instead of the full-page `calc(100vh - 240px)`). */
   heightStyle?: React.CSSProperties
+  /** Drop the card chrome (border + rounding + reading padding) and render
+   *  edge-to-edge, matching how `MarkdownPanel` renders a FILE in the chat side
+   *  panel. The full-page route keeps the card, because there the artifact is a
+   *  document floating on the page background and the border is what bounds it;
+   *  inside the panel that same border is a redundant box drawn just inside the
+   *  panel's own border, and it made a markdown artifact look nothing like the
+   *  markdown file rendered by the tab next to it. Also forwarded to
+   *  `ContentRenderer`, whose non-markdown paths draw a second border of their
+   *  own unless told to run flush. */
+  flush?: boolean
 }) {
   const fileType = fileTypeForKind(kind)
   const ext = extForKind(kind)
@@ -102,10 +112,10 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   return (
     <div
       ref={scrollerRef}
-      className="relative rounded-xl border border-border bg-card overflow-auto"
+      className={`relative overflow-auto ${flush ? '' : 'rounded-xl border border-border bg-card'}`}
       style={heightStyle ?? { minHeight: 480, height: 'calc(100vh - 240px)' }}
     >
-      <div className="p-5 h-full">
+      <div className={flush ? 'h-full' : 'p-5 h-full'}>
         <ContentRenderer
           isRichType={isRichType}
           fileType={fileType}
@@ -120,6 +130,7 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
           displayContent={displayContent}
           isMarkdown={isMarkdown}
           highlightedHtml={highlightedHtml}
+          flush={flush}
           markdownClassName="msg-content text-sm leading-relaxed"
         />
       </div>

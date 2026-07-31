@@ -2597,7 +2597,7 @@
         "approve": "Aprobar",
         "approved": "Aprobado",
         "artifacts_empty": "Aún no hay artefactos: pídeme que cree uno o marca un archivo de la sesión",
-        "artifacts_library": "Otros artefactos",
+        "artifacts_library": "Biblioteca de artefactos",
         "artifacts_this_session": "Esta sesión",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "Pídeme que \"use un flujo de trabajo dinámico para …\" — las ejecuciones de este chat aparecen aquí en vivo.",
         "back_to_files": "Volver a los archivos",

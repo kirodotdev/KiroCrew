@@ -733,11 +733,12 @@ type SessionArtifactRow =
  *  view does rather than mounting hundreds of rows nobody scrolls to. */
 const ARTIFACT_LIBRARY_CAP = 50
 
-function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: (path: string) => void }) {
+function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: string; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void }) {
   const qc = useQueryClient()
-  // Artifact rows have no filesystem path, so `onFileOpen` can't serve them.
-  // Route to the standalone artifact page, matching the command palette's
-  // Artifacts provider.
+  // Artifact rows have no filesystem path, so `onFileOpen` can't serve them;
+  // `onArtifactOpen` is their twin and opens an artifact tab in this same
+  // panel. It is optional because this tab also renders outside a chat (no
+  // panel to open into), where the standalone detail page stays the target.
   const navigate = useNavigate()
   const { data, isFetching } = useQuery<{ docs: SessionDoc[] }>({
     queryKey: ['session-artifacts', slot],
@@ -866,9 +867,15 @@ function SessionArtifactsTab({ slot, onFileOpen }: { slot: string; onFileOpen?: 
   const cappedLibrary = libraryRows.length - visibleLibrary.length
 
   const openRow = useCallback((r: SessionArtifactRow) => {
-    if (r.kind === 'doc') onFileOpen?.(r.path)
+    // A doc row addresses a file on disk, so it opens as a file tab even when
+    // it also has an artifact twin — only the file tab can edit/save the path.
+    if (r.kind === 'doc') { onFileOpen?.(r.path); return }
+    if (!r.slug) return
+    // Panel tab when a host provided one (the chat case); otherwise fall back
+    // to the standalone page so this row is never a dead click.
+    if (onArtifactOpen) onArtifactOpen(r.slug)
     else navigate(`/artifacts/${r.slug}`)
-  }, [onFileOpen, navigate])
+  }, [onFileOpen, onArtifactOpen, navigate])
   const toggleStar = useCallback((r: SessionArtifactRow) => {
     // A doc with no slug isn't persisted yet — starring it materializes it.
     // Everything else is a metadata pin flip.
@@ -979,9 +986,9 @@ function ArtifactListRow({ row, busy, onOpen, onToggleStar }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, issues, selectedIssueUrl, onSelectIssue, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onArtifactOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, issues, selectedIssueUrl, onSelectIssue, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
-  files?: TouchedFile[]; onFileOpen?: (path: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
+  files?: TouchedFile[]; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
   navLinks?: ExtractedLink[]; navResolving?: boolean
   sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onAddToChat?: (text: string) => void
@@ -1332,7 +1339,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       )}
 
       {/* Artifacts tab (in-session documents) */}
-      {effectiveTab === 'artifacts' && <SessionArtifactsTab slot={slot} onFileOpen={onFileOpen} />}
+      {effectiveTab === 'artifacts' && <SessionArtifactsTab slot={slot} onFileOpen={onFileOpen} onArtifactOpen={onArtifactOpen} />}
 
       {/* Side tab */}
       {effectiveTab === 'side' && <SideChat slot={slot} />}

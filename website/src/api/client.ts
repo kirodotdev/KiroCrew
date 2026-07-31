@@ -1503,6 +1503,27 @@ export const api = {
     get(`/api/artifacts/${encodeURIComponent(slug)}/versions`).then(j),
   artifactEvents: (slug: string) =>
     get(`/api/artifacts/${encodeURIComponent(slug)}/events`).then(j),
+  /** Record a `referenced` breadcrumb so a chat session that merely OPENED an
+   *  artifact still counts as having touched it (the "This session" section
+   *  reads the same event log via `touched_by`).
+   *
+   *  Unlike every other method here this cannot use the shared `post` helper:
+   *  that helper hardcodes `X-Session-Key: dashboard:ui`, which the events
+   *  handler deliberately maps to "no session" — the breadcrumb would be
+   *  recorded against nothing and never surface in the panel. The real slot
+   *  key is therefore sent scope-qualified (`dashboard:<slot>`), the same form
+   *  MCP callers send and the one the store's `_strip_session_scope` normalizes
+   *  to the bare slot that `touched_by` compares against.
+   *
+   *  Rejects on a non-2xx like the other methods (notably 403 for an incognito
+   *  slot, which is correct deny-by-default) — callers treat a breadcrumb as
+   *  best-effort and swallow the failure rather than failing the user's click. */
+  recordArtifactReference: (slug: string, slot: string, metadata?: { message_ts?: string; widget_index?: number }) =>
+    fetch(`/api/artifacts/${encodeURIComponent(slug)}/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Session-Key': `dashboard:${slot}` },
+      body: JSON.stringify({ type: 'referenced', ...(metadata ? { metadata } : {}) }),
+    }).then(j),
   createArtifact: (body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string; folder?: string }) =>
     post('/api/artifacts', body).then(j),
   updateArtifact: (slug: string, body: { content?: string; name?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 
 // jsdom polyfill: SegmentedControl uses ResizeObserver
 if (typeof globalThis.ResizeObserver === 'undefined') {
@@ -649,7 +649,7 @@ describe('ActivityViewer — Artifacts tab', () => {
     // The doc-twin exclusion must join on the session's own doc paths, not on
     // "has a source_path at all". A file-backed artifact the agent merely read
     // is not one of this session's documents, so a blanket exclusion would
-    // banish it to "Other artifacts" — dropping the consumed-artifact case the
+    // banish it to "Artifact library" — dropping the consumed-artifact case the
     // touched_by scan exists to surface.
     vi.mocked(api.artifacts).mockResolvedValue({
       artifacts: [{ slug: 'spec-md', name: 'spec.md', kind: 'markdown', pinned: false, source_path: '/p/spec.md' }],
@@ -660,7 +660,7 @@ describe('ActivityViewer — Artifacts tab', () => {
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
     // Renders once, under the session header — not duplicated into the library.
     await waitFor(() => { expect(screen.getAllByText('spec.md')).toHaveLength(1) })
-    expect(screen.queryByText(/Other artifacts/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Artifact library/)).not.toBeInTheDocument()
   })
 
   /* ── Library section (section B) ──────────────────────────────────────────
@@ -689,7 +689,7 @@ describe('ActivityViewer — Artifacts tab', () => {
     expect(await screen.findByText('This session (1)')).toBeInTheDocument()
     // The library section excludes the session's own artifact, so it counts 1,
     // not 2 — the de-dup is visible in the header count, not just the rows.
-    expect(await screen.findByText('Other artifacts (1)')).toBeInTheDocument()
+    expect(await screen.findByText('Artifact library (1)')).toBeInTheDocument()
     expect(screen.getByText('From Last Week')).toBeInTheDocument()
     // 'Made Here' appears exactly once, in the session section.
     expect(screen.getAllByText('Made Here')).toHaveLength(1)
@@ -698,7 +698,7 @@ describe('ActivityViewer — Artifacts tab', () => {
   it('hides the session header entirely when the session touched nothing', async () => {
     mockArtifactQueries([], [{ slug: 'older', name: 'From Last Week', kind: 'markdown', pinned: true }])
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    expect(await screen.findByText('Other artifacts (1)')).toBeInTheDocument()
+    expect(await screen.findByText('Artifact library (1)')).toBeInTheDocument()
     // A fresh session shows the library alone, not an empty "This session" heading.
     expect(screen.queryByText(/^This session/)).not.toBeInTheDocument()
   })
@@ -725,7 +725,7 @@ describe('ActivityViewer — Artifacts tab', () => {
     }))
     mockArtifactQueries([], many)
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    expect(await screen.findByText('Other artifacts (55)')).toBeInTheDocument()
+    expect(await screen.findByText('Artifact library (55)')).toBeInTheDocument()
     // 50 rendered, 5 held back — the panel is ~460px wide, so the DOM is capped.
     expect(screen.queryByText('Artifact 54')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText(/Show all \(5\)/))
@@ -761,7 +761,7 @@ describe('ActivityViewer — Artifacts tab', () => {
     expect(await screen.findByText('This session (1)')).toBeInTheDocument()
     expect(screen.getAllByText('CR Queue')).toHaveLength(1)
     // Pulled up into the session section, so the library section is now empty.
-    expect(screen.queryByText(/^Other artifacts/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Artifact library/)).not.toBeInTheDocument()
   })
 
   it('does not double-list a bound artifact the session also touched', async () => {
@@ -780,6 +780,80 @@ describe('ActivityViewer — Artifacts tab', () => {
     mockArtifactQueries([], [])
     renderWithSlots([{ key: 'test-slot', title: 'Artifact: Gone', messages: 1, running: false, artifact: 'deleted-slug' }])
     expect(await screen.findByText(/No artifacts yet/)).toBeInTheDocument()
+  })
+
+  // ── Row click routes into the side panel, not a full-page navigation ───────
+  //
+  // The whole point of the panel tab: clicking an artifact used to hard-navigate
+  // to /artifacts/<slug>, tearing down the chat to show a document the panel can
+  // render inline. Files never did that, so artifacts were the only
+  // panel-capable content you could not flip between like a file.
+  it('opens an artifact row through onArtifactOpen instead of navigating', async () => {
+    const onArtifactOpen = vi.fn()
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{ slug: 'cr-queue', name: 'CR Queue', kind: 'widget', pinned: false }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} onArtifactOpen={onArtifactOpen} />, { wrapper: routerWrapper })
+    fireEvent.click(await screen.findByText('CR Queue'))
+    expect(onArtifactOpen).toHaveBeenCalledWith('cr-queue')
+  })
+
+  it('routes a library-section row through onArtifactOpen too', async () => {
+    // Section B rows are the same artifact rows, so they must not keep the old
+    // navigate() behavior just because they came from the unscoped query.
+    const onArtifactOpen = vi.fn()
+    mockArtifactQueries([], [{ slug: 'old-doc', name: 'Old Doc', kind: 'markdown', pinned: false }])
+    render(<ActivityViewer {...artifactProps} onArtifactOpen={onArtifactOpen} />, { wrapper: routerWrapper })
+    expect(await screen.findByText('Artifact library (1)')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Old Doc'))
+    expect(onArtifactOpen).toHaveBeenCalledWith('old-doc')
+  })
+
+  it('still opens a DOC row as a file, not an artifact tab', async () => {
+    // A doc row addresses a path on disk; only the file tab can edit/save it,
+    // so it must keep routing to onFileOpen even though it has an artifact twin.
+    const onArtifactOpen = vi.fn()
+    const onFileOpen = vi.fn()
+    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
+      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: 'notes-md', saved: true, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
+    } as never)
+    render(
+      <ActivityViewer {...artifactProps} onFileOpen={onFileOpen} onArtifactOpen={onArtifactOpen} />,
+      { wrapper: routerWrapper },
+    )
+    fireEvent.click(await screen.findByText('notes.md'))
+    expect(onFileOpen).toHaveBeenCalledWith('/p/notes.md')
+    expect(onArtifactOpen).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the detail page when no panel host is supplied', async () => {
+    // The tab can render outside a chat, where there is no panel to open into.
+    // Without a fallback the row would be a dead click. MemoryRouter never
+    // touches window.location, so the routed path is read from the router.
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{ slug: 'cr-queue', name: 'CR Queue', kind: 'widget', pinned: false }],
+    } as never)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    function LocationProbe() {
+      return <span data-testid="path">{useLocation().pathname}</span>
+    }
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <ActivityViewer {...artifactProps} />
+            <LocationProbe />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    fireEvent.click(await screen.findByText('CR Queue'))
+    await waitFor(() => {
+      expect(screen.getByTestId('path')).toHaveTextContent('/artifacts/cr-queue')
+    })
   })
 
   // Layout regression: in the narrow activity rail every header item used to be

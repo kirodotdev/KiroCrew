@@ -53,6 +53,10 @@ interface SidePanelProps {
   slot: string
   files?: TouchedFile[]
   onFileOpen?: (path: string, opts?: { replaceId?: string }) => void
+  /** Open an artifact as a panel tab (the artifact twin of onFileOpen).
+   *  Threaded to the Artifacts tab so its rows open here instead of
+   *  hard-navigating to the standalone detail page. */
+  onArtifactOpen?: (slug: string) => void
   onFileRemove?: (path: string) => void
   onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
@@ -178,7 +182,7 @@ export function measureSidePanelReservedW(): number {
 }
 
 export default function SidePanel({
-  tabsCtl, subagents, toolLog, slot, files, onFileOpen, onFileRemove, onFilesClear,
+  tabsCtl, subagents, toolLog, slot, files, onFileOpen, onArtifactOpen, onFileRemove, onFilesClear,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource,
   issues, selectedIssueUrl, onSelectIssue,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
@@ -487,9 +491,11 @@ export default function SidePanel({
                   onAddToChat={onAddSourceToChat}
                   // The Files/Artifacts/Changes tabs are permanent (pinned).
                   // Files opens its file inline (kept in the Files tab, with a
-                  // back button); the Artifacts tab still opens document tabs
-                  // via onFileOpen.
+                  // back button); the Artifacts tab opens document rows as file
+                  // tabs via onFileOpen and artifact rows as artifact tabs via
+                  // onArtifactOpen.
                   onFileOpen={onFileOpen}
+                  onArtifactOpen={onArtifactOpen}
                   onFileRemove={onFileRemove} onFilesClear={onFilesClear}
                   onFileSave={onFileSave} onSubmitComments={onSubmitComments}
                   openDocPaths={openDocPaths}
