@@ -61,7 +61,7 @@ export default function AgentSessionButton({
         {busy
           ? <Loader2 size={13} className="animate-spin" />
           : <Icon size={13} />}
-        {hasSession ? 'Resume' : label}
+        {hasSession ? i18nT('apps.issueRadar.components.agentSessionButton.resume') : label}
       </button>
 
       {showStatus && record && (

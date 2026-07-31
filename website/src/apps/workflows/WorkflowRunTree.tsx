@@ -192,9 +192,9 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
               <XCircle size={12} />
             )}
             {status === 'finished'
-              ? 'Result'
+              ? i18nT('apps.workflows.workflowRunTree.result')
               : status === 'cancelled'
-                ? 'Cancelled'
+                ? i18nT('apps.workflows.workflowRunTree.cancelled')
                 : `Failed: ${sanitizeLlmOutput(error || 'unknown error').slice(0, 200)}`}
           </div>
           {status === 'finished' && result !== undefined && (

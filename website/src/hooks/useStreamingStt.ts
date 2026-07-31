@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { micAudioConstraints, humanizeMicError, createLevelMeter } from './mic'
 import type { AudioSample } from './mic'
+import { i18nT } from '../i18n/t'
 
 /**
  * Streaming STT over `/api/ws/stt`.
@@ -121,7 +122,7 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
           // follow-up partial arrives (e.g. user stops mid-silence).
           onPartialRef.current(finalsRef.current.join(' '))
         } else if (msg.type === 'error') {
-          onErrorRef.current?.(msg.message || 'stt error')
+          onErrorRef.current?.(msg.message || i18nT('hooks.useStreamingStt.stt_error'))
           rejectReady(new Error(msg.message || 'stt error'))
         }
       } catch { /* ignore */ }
@@ -146,7 +147,7 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     try {
       await new Promise<void>((resolve, reject) => {
         ws.onerror = () => {
-          onErrorRef.current?.('stt connection error')
+          onErrorRef.current?.(i18nT('hooks.useStreamingStt.stt_connection_error'))
           reject(new Error('ws open failed'))
         }
         ws.onopen = () => resolve()
@@ -157,14 +158,14 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     }
     // Reassign onerror so mid-session transport failures surface to the
     // user — the promise-reject handler above is dead once resolved.
-    ws.onerror = () => { onErrorRef.current?.('stt connection lost') }
+    ws.onerror = () => { onErrorRef.current?.(i18nT('hooks.useStreamingStt.stt_connection_lost')) }
 
     const ctx = new AudioContext()
     ctxRef.current = ctx
     try {
       await ctx.audioWorklet.addModule('/pcm-worklet.js')
     } catch {
-      onErrorRef.current?.('audio worklet unavailable')
+      onErrorRef.current?.(i18nT('hooks.useStreamingStt.audio_worklet_unavailable'))
       cleanup()
       return
     }

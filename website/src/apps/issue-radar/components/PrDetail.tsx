@@ -188,7 +188,7 @@ function CommentCard({
         <span className="font-semibold text-text-strong">{author ?? 'ghost'}</span>
         <MemberBadge role={role} assoc={assoc} />
         <span className="text-muted">
-          {opening ? `opened this ${terms.changeRequestTitle}` : 'commented'}
+          {opening ? `opened this ${terms.changeRequestTitle}` : i18nT('apps.issueRadar.components.prDetail.commented')}
         </span>
         <span className="text-muted">· {when ? <RelTime iso={when} /> : ''}</span>
       </div>
@@ -426,7 +426,7 @@ function AutoReviewChecks(
           would hide failing CI behind a reassuring sentence. */}
       {!loading && checks.length === 0 && (
         <span className={failed ? 'text-warn' : 'text-muted'}>
-          {failed ? 'Check status unavailable' : 'No automated checks'}
+          {failed ? i18nT('apps.issueRadar.components.prDetail.check_status_unavailable') : i18nT('apps.issueRadar.components.prDetail.no_automated_checks')}
         </span>
       )}
 
@@ -674,7 +674,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               <span className="inline-flex items-center gap-1">
                 <button
                   onClick={copyLink}
-                  title={copied ? 'Link copied' : `Copy link to this ${terms.changeRequestTitle}`}
+                  title={copied ? i18nT('apps.issueRadar.components.prDetail.link_copied') : `Copy link to this ${terms.changeRequestTitle}`}
                   aria-label={`Copy link to this ${terms.changeRequestTitle}`}
                   className="inline-flex items-center -ml-0.5 p-0.5 cursor-pointer bg-transparent text-muted hover:text-accent"
                 >

@@ -93,7 +93,7 @@ export default function GrillTree({ tree, dispatch, onExpand }: Props) {
            className={depth ? 'border-l border-dashed border-border pl-3 mt-1.5' : 'mt-1.5'}>
         <div className="flex items-start gap-1.5 text-sm">
           {kids.length > 0 ? (
-            <button onClick={() => toggleCollapse(node.id)} className="text-muted mt-0.5" aria-label={isCollapsed ? 'Expand' : 'Collapse'}>
+            <button onClick={() => toggleCollapse(node.id)} className="text-muted mt-0.5" aria-label={isCollapsed ? i18nT('apps.autoResearch.grillTree.expand_2') : i18nT('apps.autoResearch.grillTree.collapse')}>
               {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
             </button>
           ) : <span className="w-[13px]" />}
@@ -101,7 +101,7 @@ export default function GrillTree({ tree, dispatch, onExpand }: Props) {
           {node.kind === 'research' ? (
             <button onClick={() => dispatch({ type: 'togglePromote', id: node.id })}
                     className={node.status === 'promoted' ? 'text-ok mt-0.5' : 'text-muted mt-0.5'}
-                    aria-label={node.status === 'promoted' ? 'Included' : 'Excluded'}>
+                    aria-label={node.status === 'promoted' ? i18nT('apps.autoResearch.grillTree.included') : i18nT('apps.autoResearch.grillTree.excluded')}>
               {node.status === 'promoted' ? <Check size={14} /> : <Circle size={14} />}
             </button>
           ) : <span className="text-warn mt-0.5">◆</span>}

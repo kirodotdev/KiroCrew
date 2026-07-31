@@ -76,7 +76,7 @@ export default function FiltersSection() {
             label={i18nT('apps.issueRadar.components.filtersSection.created_by_member')}
             active={createdByMember}
             disabled={!hasMemberIssues}
-            disabledHint="No repo members found among these issues"
+            disabledHint={i18nT('apps.issueRadar.components.filtersSection.no_repo_members_found_among_these_issues')}
             onToggle={toggleCreatedByMember}
           />
         </div>

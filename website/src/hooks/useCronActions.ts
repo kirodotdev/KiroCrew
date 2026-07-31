@@ -2,6 +2,7 @@
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
+import { i18nT } from '../i18n/t'
 
 export function useCronActions(load: () => void) {
   const navigate = useNavigate()
@@ -15,7 +16,7 @@ export function useCronActions(load: () => void) {
       if (res.error) { setActionError({ id, msg: res.error }); return }
       load()
     } catch (e: unknown) {
-      setActionError({ id, msg: e instanceof Error ? e.message : 'Failed to run job' })
+      setActionError({ id, msg: e instanceof Error ? e.message : i18nT('hooks.useCronActions.failed_to_run_job') })
     } finally { setRunning(prev => { const s = new Set(prev); s.delete(id); return s }) }
   }, [load])
 
@@ -27,7 +28,7 @@ export function useCronActions(load: () => void) {
       if (res.error) { setActionError({ id, msg: res.error }); return }
       load()
     } catch (e: unknown) {
-      setActionError({ id, msg: e instanceof Error ? e.message : 'Failed to cancel job' })
+      setActionError({ id, msg: e instanceof Error ? e.message : i18nT('hooks.useCronActions.failed_to_cancel_job') })
     } finally { setCancelling(prev => { const s = new Set(prev); s.delete(id); return s }) }
   }, [load])
 
@@ -37,7 +38,7 @@ export function useCronActions(load: () => void) {
       const res = await api.cronToChat(id)
       if (res.error) { setActionError({ id, msg: res.error }); return }
       if (res.slot) navigate('/chat?slot=' + res.slot)
-    } catch { setActionError({ id, msg: 'Failed to open in chat' }) }
+    } catch { setActionError({ id, msg: i18nT('hooks.useCronActions.failed_to_open_in_chat') }) }
   }, [navigate])
 
   return { running, setRunning, actionError, setActionError, runNow, openInChat, cancelling, cancelRun }

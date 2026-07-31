@@ -149,7 +149,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
       {/* Footer — count on the left, last-refresh time + refresh on the right.
           The gradient fade above (see card list) replaces the old top border. */}
       <div className="flex-shrink-0 flex items-center gap-2 px-3 pt-2 pb-4 text-[12px] text-muted">
-        <span title={stateFilter === 'closed' && issues.length >= 100 ? 'Closed issues are capped at the 100 most recently updated' : undefined}>
+        <span title={stateFilter === 'closed' && issues.length >= 100 ? i18nT('apps.issueRadar.components.issueList.closed_issues_are_capped_at_the_100_most_recentl') : undefined}>
           {i18nT('apps.issueRadar.components.issueList.issue', { count: filteredIssues.length })}
         </span>
         <span className="ml-auto flex items-center gap-2">

@@ -1,27 +1,46 @@
 {
+  "api": {
+    "client": {
+      "paste_token_url_or_raw_token": "Вставьте URL с токеном или сам токен…",
+      "rate_limited_by_the_tunnel_edge_http_429_too_man": "Ограничение частоты на границе туннеля (HTTP 429) — слишком много запросов за короткое время. Панель повторяет запросы автоматически; если ошибка не исчезает, подождите несколько секунд и перезагрузите страницу.",
+      "session_expired": "Срок сессии истёк."
+    }
+  },
   "app": {
     "a_newer_version_is_available_no_changelog_entry": "Доступна более новая версия. Для этого выпуска не добавлена запись в журнал изменений.",
     "across_chat_agents_mcp_and_subagents": "— в чате, агентах, MCP и подагентах.",
     "apps": "Приложения",
     "auto_update_on_restart": "Автообновление при перезапуске",
+    "bonus_credits": "Бонусные кредиты",
     "breakdown": "Детализация",
+    "builder_id": "Builder ID",
     "cancel_update": "Отменить обновление",
     "changelog": "Журнал изменений",
+    "check_logs_for_details": "Подробности смотри в логах.",
     "checking_usage_running": "Проверка расхода — выполняется",
     "click_to_hide": "Нажмите, чтобы скрыть",
     "close": "Закрыть",
+    "collapse_sidebar": "Свернуть боковую панель",
     "contact_us": "Связаться с нами",
     "cpu": "CPU",
+    "cpu_unavailable": "CPU: недоступен",
     "credits": "кредитов",
     "credits_total": "кредитов всего",
     "developer": "Разработчик",
     "discord_community": "Сообщество Discord",
+    "disk_unavailable": "Диск: недоступен",
     "dismiss": "Скрыть",
     "dsk": "DSK",
     "est_overage_cost": "Ожид. стоимость перерасхода",
+    "expand_sidebar": "Развернуть боковую панель",
     "explore": "Обзор",
     "explore_apps": "Обзор приложений",
+    "gateway_connected": "Шлюз подключён",
+    "gateway_offline": "Шлюз офлайн",
     "github_repository": "Репозиторий GitHub",
+    "hide_full_changelog": "▾ Скрыть полный журнал изменений",
+    "i_d_like_to_request_a_feature": "Хочу предложить функцию!",
+    "iam_identity_center": "IAM Identity Center",
     "k_search_for_anything": "⌘K — Поиск по всему…",
     "kiro_cli_usage": "kiro-cli /usage",
     "kiro_credit_usage_checking": "Расход кредитов Kiro — проверка…",
@@ -34,6 +53,8 @@
     "main_navigation": "Основная навигация",
     "manage_account": "Управление аккаунтом",
     "mem": "MEM",
+    "memory_unavailable": "Память: недоступна",
+    "metrics_are_stale_latest_fetch_failed": "Метрики устарели, последний запрос не удался",
     "metrics_unavailable": "метрики недоступны",
     "monthly_kiro_credit_usage_from": "Месячный расход кредитов Kiro с",
     "notifications": "Уведомления",
@@ -50,7 +71,11 @@
     "resets": "Сброс",
     "search_everywhere_k": "Искать везде (⌘K)",
     "search_sessions_files_and_commands": "Поиск по сессиям, файлам и командам",
+    "show_fewer_apps": "Показать меньше приложений",
+    "show_less": "Показать меньше",
     "skip_to_content": "Перейти к содержимому",
+    "social_login": "Вход через соцсети",
+    "starting_update": "Запуск обновления...",
     "system_metrics": "Системные метрики",
     "terminal": "Терминал",
     "this_step_seems_to_be_taking_longer_than_expecte": "Похоже, этот шаг занимает больше времени, чем ожидалось.",
@@ -58,15 +83,19 @@
     "update_available_2": "доступно обновление",
     "update_error": "Ошибка обновления",
     "update_failed": "Обновление не удалось",
+    "update_failed_2": "Обновление не удалось",
     "update_now": "Обновить сейчас",
     "updating_kirocrew": "Обновление KiroCrew…",
     "v": "v",
+    "view_full_changelog": "▸ Показать полный журнал изменений",
     "what_s_new": "Что нового",
     "you_re_on_the_latest_version": "У вас последняя версия"
   },
   "appSdk": {
     "chatEmbed": {
+      "agent_is_working": "Агент работает...",
       "chat_message": "Сообщение чата",
+      "message": "Сообщение...",
       "send": "Отправить",
       "send_message": "Отправить сообщение",
       "session_ready_type_a_message_to_start": "Сессия готова. Введите сообщение, чтобы начать.",
@@ -80,7 +109,11 @@
         "answer": "ответить…",
         "answered": "ответ:",
         "clarifier_answer": "Ответ на уточнение",
+        "collapse": "Свернуть",
+        "excluded": "Исключено",
         "expand": "развернуть",
+        "expand_2": "Развернуть",
+        "included": "Включено",
         "investigate_instead": "исследовать вместо этого",
         "max_depth_add_research_manually_or_prune": "максимальная глубина — добавьте исследование вручную или обрежьте ветки",
         "no_suggestions_add_manually_or_retry": "нет предложений — добавьте вручную или повторите",
@@ -95,26 +128,34 @@
         "60s": "60s",
         "active": "АКТИВНО",
         "adaptive": "(адаптивный)",
+        "add": "Добавить",
         "add_guidance_or_a_sub_question": "Добавьте указание или подвопрос",
         "add_guidance_or_a_sub_question_enter_shift_enter": "Добавьте указание или подвопрос… (Enter; Shift+Enter — новая строка)",
         "add_sub_question_manually": "Добавить подвопрос вручную",
         "add_sub_question_manually_enter_shift_enter_for": "Добавить подвопрос вручную (Enter; Shift+Enter — новая строка)",
+        "add_to_knowledge": "Добавить в «Знания»",
         "add_your_own_sub_question_or_guidance": "Добавьте свой подвопрос или указание",
         "add_your_own_sub_question_or_guidance_enter_shif": "Добавьте свой подвопрос или указание (Enter; Shift+Enter — новая строка)",
         "added_to_knowledge": "Добавлено в Знания",
+        "adding": "Добавление...",
         "agent": "Агент",
         "agent_needs_input": "Агенту нужен ввод",
         "all_checks_passed": "Все проверки пройдены",
         "already_in_knowledge": "Уже в Знаниях",
         "answer_challenges_to_refine_or_just_pick_sub_que": "Ответьте на возражения, чтобы уточнить, или просто выберите подвопросы и создайте ответвление.",
         "answer_clarifiers_to_refine_or_just_pick_sub_que": "Ответьте на уточнения, чтобы уточнить запрос, или просто выберите подвопросы и продолжайте.",
+        "answer_resume": "Ответить и продолжить",
         "back": "← Назад",
         "cancel": "Отмена",
         "challenge_findings": "Оспорить выводы →",
         "challenge_the_findings_from": "Оспорить выводы из \"",
+        "challenging": "Оспаривание...",
         "continue": "Продолжить",
         "continue_research": "Продолжить исследование",
+        "copied": "Скопировано!",
+        "copy": "Копировать",
         "copy_this_section_s_markdown_to_paste_into_chat": "Скопировать markdown этого раздела для вставки в чат или автопилот",
+        "could_not_generate_challenges_please_try_again": "Не удалось сформировать возражения. Попробуй ещё раз.",
         "cycle": "Цикл",
         "cycles": "циклов,",
         "cycles_2": "циклов",
@@ -125,19 +166,31 @@
         "dynamic_workflow": "Динамический рабочий процесс",
         "dynamic_workflow_can_fan_out_to_many_sub_agents": "Динамический рабочий процесс может развернуть много подагентов, а при достижении лимита бюджета запуск жёстко останавливается (промежуточный синтез может быть потерян). Начните с осторожных лимитов циклов и воркеров.",
         "e_g_ai_code_review_finds_no_blocking_issues_and": "например: ИИ-проверка кода не находит блокирующих проблем и тестовая сборка проходит",
+        "emergent": "возникший",
+        "export_as_artifact": "Экспортировать как артефакт",
+        "exporting": "Экспорт...",
+        "failed_to_add_to_knowledge_library": "Не удалось добавить в библиотеку знаний",
         "failed_to_export_as_artifact": "Не удалось экспортировать как артефакт",
+        "failed_to_start_campaign_please_try_again": "Не удалось запустить кампанию — попробуй ещё раз.",
         "findings": "выводов",
         "findings_2": "Выводы (",
         "findings_so_far_are_preserved_below": "Полученные выводы сохранены ниже.",
         "first_cycle_in_progress": "Выполняется первый цикл...",
         "focus_on": "Сосредоточиться на...",
         "fork_challenge": "Ответвить и оспорить",
+        "fork_failed_no_campaign_was_created": "Не удалось ответвить: кампания не создана.",
+        "fork_failed_please_try_again": "Не удалось ответвить. Попробуй ещё раз.",
         "forked": "Ответвлено",
         "forked_from": "Ответвлено от:",
+        "forking": "Ответвление...",
         "free_form_a_sub_question_or_an_instruction_the_a": "Свободная форма — подвопрос или указание, которому агент последует в следующем цикле.",
         "give_direction": "Задать направление",
         "goal_met": "Цель достигнута",
+        "goal_not_yet": "Цель: пока нет",
+        "grill_me": "Опроси меня →",
         "grill_unavailable_add_sub_questions_manually_bel": "Опрос недоступен — добавьте подвопросы вручную ниже.",
+        "grilling": "Опрос...",
+        "hide_report": "Скрыть отчёт",
         "history": "ИСТОРИЯ",
         "how_do_other_teams_handle_api_rate_limiting": "Как другие команды решают ограничение частоты запросов к API?",
         "how_sub_agent_execution_is_orchestrated_both_han": "Как организуется выполнение подагентов. Оба варианта подходят для открытого исследования. Выбирается один раз при настройке.",
@@ -158,13 +211,16 @@
         "nudge": "Подтолкнуть",
         "nudge_direction": "Направление подсказки",
         "nudge_direction_2": "Направление подсказки",
+        "one_campaign_at_a_time": "По одной кампании за раз",
         "one_campaign_at_a_time_research_benefits_from_fo": "По одной кампании за раз — исследование выигрывает от сосредоточенной глубины.",
         "parallel_workers": "Параллельные воркеры:",
         "parallel_workers_2": "Параллельные воркеры",
         "pause": "Пауза",
         "pick_up_where_this_campaign_left_off": "Продолжить с того места, где кампания остановилась.",
         "pre_flight_check": "Предстартовая проверка:",
+        "regenerate": "Пересоздать",
         "regenerate_the_report_updates_the_same_artifact": "Пересоздать отчёт — обновляет тот же артефакт как новую версию",
+        "regenerating": "Пересоздание...",
         "remove_sub_question": "Удалить подвопрос",
         "research": "Исследовать “",
         "research_lab": "Лаборатория исследований",
@@ -178,9 +234,13 @@
         "s_idle": "с простоя. ~",
         "scripted": "(по скрипту)",
         "searched_empty": "Поиск (пусто):",
+        "send": "Отправить",
+        "sending": "Отправка...",
         "show_less": "Свернуть",
         "show_more": "Показать больше",
         "sources": "Источники:",
+        "start_campaign": "Запустить кампанию",
+        "starting": "Запуск...",
         "stop": "Остановить",
         "stops_at_the_cycle_cap_when_the_definition_of_do": "Останавливается по лимиту циклов, при выполнении критерия готовности, при застое или когда вы нажмёте «Остановить».",
         "strong": "Сильная",
@@ -188,22 +248,27 @@
         "sub_questions_2": "подвопросов",
         "sub_questions_guidance": "Подвопросы и указания (",
         "suggested_from": "предложено из",
+        "the_agent_is_waiting_for_your_direction": "Агент ждёт твоих указаний.",
         "the_ai_drives_every_round_itself_deciding_what_t": "ИИ сам ведёт каждый раунд — решает, что исследовать, управляет подагентами и следует новым зацепкам из выводов по мере их появления.",
         "the_ai_writes_an_orchestration_script_up_front_a": "ИИ заранее пишет скрипт оркестрации; детерминированный исполнитель управляет запуском подагентов, а ИИ только планирует, исследует и обобщает. Воспроизводимо, с лимитом бюджета.",
+        "the_campaign_stopped_unexpectedly": "Кампания неожиданно остановилась.",
         "then_fork_into_a_new_campaign": "…\", затем создайте ответвление в новую кампанию.",
         "up_to": "До",
         "validating": "Проверка...",
+        "validation_failed_check_your_connection_and_try": "Проверка не пройдена — проверь соединение и попробуй ещё раз.",
         "view_report": "Открыть отчёт",
         "weak": "Слабая",
         "what_do_you_want_to_research": "Что вы хотите исследовать?",
         "when_should_the_agent_stop": "Когда агент должен остановиться?",
         "your_answer": "Ваш ответ",
-        "your_answer_2": "Ваш ответ..."
+        "your_answer_2": "Ваш ответ...",
+        "your_guidance": "твои указания"
       }
     },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "active": "активно",
+        "active_loaded_during_reviews_uncheck_to_disable": "Активно — загружается при проверках (сними галочку, чтобы отключить)",
         "add": "Добавить",
         "cancel": "Отмена",
         "cli_authenticated_there_run": "CLI был аутентифицирован на нём: выполните",
@@ -224,6 +289,7 @@
         "github_pr_one_time_setup": "GitHub PR — однократная настройка.",
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "inactive": "неактивно",
+        "inactive_check_to_load_during_reviews": "Неактивно — отметь, чтобы загружать при проверках",
         "is_not_authenticated_on_the_gateway_host": "не аутентифицирован на хосте шлюза.",
         "learn_from_sage": "learn-from-sage",
         "list_open_prs": "Список открытых PR",
@@ -258,11 +324,13 @@
         "pending_consolidation": "Ожидает объединения",
         "re_review_every_open_pr_ignoring_the_reviewed_hi": "Проверить заново каждый открытый PR, игнорируя историю проверок",
         "repository_url": "URL репозитория",
+        "review": "Проверить",
         "review_a_whole_repository": "Проверить весь репозиторий",
         "reviewed": "проверен",
         "reviews_load_learned_patterns_from_the": "Проверки загружают изученные шаблоны из",
         "run": "Запустить",
         "run_the": "; выполните",
+        "running": "Выполнение...",
         "self_evolving_deep_reviewer_for_github_prs_findi": "Саморазвивающийся глубокий ревьюер для PR на GitHub. Замечания публикуются как отзыв в статусе PENDING (черновик),\n        который вы отправляете сами на GitHub.",
         "self_learning": "Самообучение",
         "showing": "Показано",
@@ -304,7 +372,9 @@
         "comma_separated_glob_patterns": "Glob-шаблоны через запятую",
         "glob_e_g_md": "glob (напр. *.md)",
         "glob_filter_comma_separated_patterns": "Glob-фильтр (шаблоны через запятую)",
-        "no_matches": "Совпадений нет"
+        "no_matches": "Совпадений нет",
+        "search_failed": "ошибка поиска",
+        "searching": "поиск..."
       },
       "tabStrip": {
         "close_file_tab": "Закрыть вкладку файла",
@@ -320,7 +390,8 @@
     "issueRadar": {
       "components": {
         "agentSessionButton": {
-          "couldn_t_start": "не удалось запустить"
+          "couldn_t_start": "не удалось запустить",
+          "resume": "Продолжить"
         },
         "aiSummaryCard": {
           "ai_summary": "ИИ-сводка",
@@ -333,22 +404,33 @@
           "regenerate_summary": "Пересоздать сводку",
           "retry": "Повторить"
         },
+        "filterRow": {
+          "sign_in_with_the_gh_cli_to_use_this_filter": "Войди через gh CLI, чтобы использовать этот фильтр"
+        },
         "filtersSection": {
           "assigned_to_me": "Назначено мне",
           "clear": "сбросить",
           "closed": "Закрытые",
           "created_by_member": "Создано участником",
           "filters": "Фильтры",
+          "no_repo_members_found_among_these_issues": "Среди этих задач нет участников репозитория",
           "open": "Открытые",
           "requested_by_me": "Запрошено мной",
           "sort": "Сортировка"
         },
         "investigateButton": {
-          "investigate": "Исследовать"
+          "could_not_check_for_an_existing_investigation_re": "Не удалось проверить наличие исследования — повтор при обновлении",
+          "investigate": "Исследовать",
+          "investigated": "Исследовано",
+          "investigating": "Исследование",
+          "open_an_ai_investigation_chat_session_for_this_i": "Открыть чат ИИ-исследования этой задачи",
+          "resume_the_ai_investigation_chat_session_for_thi": "Продолжить чат ИИ-исследования этой задачи"
         },
         "issueDetail": {
           "added_the": "добавил",
           "added_this_to_the": "добавил это в",
+          "as_completed": "как выполненную",
+          "as_not_planned": "как не запланированную",
           "assigned": "назначил",
           "assignees": "Исполнители",
           "by": "· автор",
@@ -360,6 +442,7 @@
           "closed": "Закрыта",
           "closed_as_not_planned": "Закрыта как незапланированная",
           "closed_this": "закрыл это",
+          "commented": "оставил комментарий",
           "copy_link_to_this_issue": "Копировать ссылку на задачу",
           "couldn_t_load_activity": "Не удалось загрузить активность:",
           "dates": "Даты",
@@ -368,9 +451,11 @@
           "edit": "Изменить",
           "finding_suggestions": "Поиск предложений…",
           "in": "в",
+          "issue": "Задача",
           "issues": "и задачи",
           "label": "метка",
           "labels": "Метки",
+          "link_copied": "Ссылка скопирована",
           "linked": "Связанные",
           "locked": "заблокировал",
           "milestone": "веха",
@@ -384,7 +469,9 @@
           "open": "Открыта",
           "opened": "открыл",
           "opened_2": "Открыта",
+          "opened_this_issue": "создал эту задачу",
           "read_only_connect_with_triage_push_access_to_app": "Только чтение — подключитесь с правами triage/push, чтобы применить.",
+          "read_only_connect_with_triage_push_access_to_app_2": "Только чтение — подключись с правами triage/push, чтобы применить",
           "referenced_this_in": "упомянул это в",
           "referenced_this_in_commit": "упомянул это в коммите",
           "refresh_issue_details": "Обновить сведения о задаче",
@@ -401,6 +488,7 @@
         },
         "issueList": {
           "clear_search": "Очистить поиск",
+          "closed_issues_are_capped_at_the_100_most_recentl": "Закрытые задачи ограничены 100 последними обновлёнными",
           "issue_few": "{{count}} задачи",
           "issue_many": "{{count}} задач",
           "issue_one": "{{count}} задача",
@@ -429,7 +517,8 @@
           "loading_labels": "Загрузка меток…",
           "remove_this_label_no_longer_exists_on_the_repo": "Удалить — этой метки больше нет в репозитории",
           "saved_but_no_longer_on_this_repo": "Сохранено, но больше нет в этом репозитории:",
-          "suggested": "предложено"
+          "suggested": "предложено",
+          "this_repo_has_no_labels": "В этом репозитории нет меток."
         },
         "leftRail": {
           "dashboards": "Дашборды",
@@ -455,9 +544,11 @@
           "branches": "Ветки",
           "changed_the_title": "изменил заголовок",
           "changes": "Изменения",
+          "check_status_unavailable": "Статус проверок недоступен",
           "click_to_expand": "Нажмите, чтобы развернуть",
           "closed": "Закрыт",
           "closed_this": "закрыл это",
+          "commented": "оставил комментарий",
           "commits": "Коммиты",
           "dates": "Даты",
           "diff": "Diff",
@@ -469,6 +560,7 @@
           "into": "в",
           "label": "метку",
           "labels": "Метки",
+          "link_copied": "Ссылка скопирована",
           "loading_checks": "Загрузка проверок…",
           "mergeable": "Готов к слиянию",
           "merged": "Объединён",
@@ -476,6 +568,7 @@
           "milestone_2": "Этап",
           "newest_first": "· сначала новые",
           "no_activity_yet": "Активности пока нет.",
+          "no_automated_checks": "Автоматических проверок нет",
           "no_description_provided": "Описание не указано.",
           "no_milestone": "Без этапа",
           "no_one_assigned": "Никто не назначен",
@@ -508,14 +601,17 @@
           "merged": "Объединённые",
           "open": "Открытые",
           "review_requested": "Запрошена проверка",
+          "sign_in_to_gh_to_filter_by_your_review_requests": "Войди в gh, чтобы фильтровать по своим запросам на проверку",
           "sort": "Сортировка"
         },
         "prList": {
           "clear_search": "Очистить поиск",
+          "closed_merged_prs_are_capped_at_the_100_most_rec": "Закрытые и влитые PR ограничены 100 последними обновлёнными — включи фильтр «я» для полного поиска по всему репозиторию",
           "pr_few": "{{count}} PR",
           "pr_many": "{{count}} PR",
           "pr_one": "{{count}} PR",
           "pr_other": "{{count}} PR",
+          "resolved_by_github_search_across_the_whole_repo": "Получено поиском GitHub по всему репозиторию — без ограничения в 100 последних",
           "time_since_the_pr_list_was_last_fetched_from_git": "Время с момента последней загрузки списка PR из GitHub",
           "updated": "Обновлено"
         },
@@ -523,7 +619,12 @@
           "read_only": "Только чтение"
         },
         "refLink": {
-          "could_not_load": "Не удалось загрузить #"
+          "closed": "Закрыт",
+          "closed_as_not_planned": "Закрыт как не запланированный",
+          "could_not_load": "Не удалось загрузить #",
+          "draft": "Черновик",
+          "merged": "Влит",
+          "open": "Открыт"
         },
         "refSheet": {
           "back": "Назад",
@@ -556,12 +657,15 @@
         "cli": "CLI",
         "connect_a_repo_nothing_runs_without_your_say": "Подключите репозиторий. Ничего не запускается без вашего согласия.",
         "connected": "Подключено",
+        "couldn_t_read_far_enough_back_through_your_activ": "Не удалось прочитать твою активность достаточно далеко назад — вставь URL ниже.",
         "details": "Подробности",
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar читает",
         "let_s_connect_a_repo": "Подключим репозиторий",
         "loading_your_repos": "Загрузка ваших репозиториев…",
+        "most_recent_activity": "последняя активность",
+        "no_contributions_in_the_last_month_paste_a_url_b": "За последний месяц нет вкладов — вставь URL ниже.",
         "or": "Или",
         "paste_a_url": "Вставьте URL",
         "please_set_up_the": "Настройте",
@@ -584,23 +688,41 @@
           "coming_soon": "Скоро"
         },
         "overviewView": {
+          "0_comments": "0 комментариев",
+          "1_4_weeks": "1–4 недели",
+          "1_6_months": "1–6 месяцев",
+          "1_week": "< 1 недели",
+          "30d_idle": "> 30 дн. простоя",
+          "6_months": "> 6 месяцев",
           "assigned_to_you": "Назначено вам",
           "backlog_age": "Возраст бэклога",
           "by_creation_date": "по дате создания",
           "discussion_hotspots": "Горячие обсуждения",
           "filter_the_list_to_issues_assigned_to_you": "Показать в списке только задачи, назначенные вам",
+          "first_timer": "новичок",
+          "good_first_issue": "хорошая первая задача",
           "label_distribution": "Распределение меток",
+          "last_7_days": "последние 7 дней",
           "loading_overview": "Загрузка обзора…",
           "most_comments_upvotes": "больше всего комментариев и голосов",
           "needs_attention": "Требует внимания",
+          "new_this_week": "Новые за неделю",
           "newest_issues_still_untriaged_or_unanswered": "новые задачи всё ещё без разбора или без ответа",
           "no_activity": "Нет активности.",
           "no_discussion_yet": "Обсуждений пока нет.",
           "no_labels_in_use": "Метки не используются.",
+          "no_owner": "без владельца",
+          "no_reply": "нет ответов",
           "nothing_needs_attention": "Ничего не требует внимания",
+          "open_issues": "Открытые задачи",
           "re_fetch_issues_labels_from_github": "Заново загрузить задачи и метки из GitHub",
           "recently_updated": "Недавно обновлённые",
-          "refresh_issues": "Обновить задачи"
+          "refresh_issues": "Обновить задачи",
+          "stale": "Устаревшие",
+          "unanswered": "Без ответа",
+          "unassigned": "Без исполнителя",
+          "untriaged": "Без разбора",
+          "untriaged_2": "без разбора"
         },
         "settings": {
           "generalSettings": {
@@ -626,10 +748,15 @@
             "auth_are_untouched_you_can_reconnect_anytime": "аутентификация не затрагиваются — вы можете подключиться заново в любой момент.",
             "cancel": "Отмена",
             "checks_about_once_a_minute_inside_kirocrew_no_cr": "Проверяет примерно раз в минуту внутри KiroCrew — без cron-задания. Работает только пока KiroCrew\n          открыт и ваш компьютер не спит, используя ваш существующий",
+            "confirm_disconnect": "Подтверди отключение",
             "couldn_t_load_members_right_now": "Сейчас не удалось загрузить участников.",
+            "couldn_t_load_saved_settings": "Не удалось загрузить сохранённые настройки.",
+            "couldn_t_save_your_changes": "Не удалось сохранить изменения.",
+            "counting_open_issues": "Подсчёт открытых задач...",
             "data_and": "данные и",
             "disconnect": "Отключить",
             "disconnect_repository": "Отключить репозиторий",
+            "disconnecting": "Отключение...",
             "from_issue_radar_and_deletes_its_local_cache_you": "из Issue Radar и удаляет его локальный кэш. Ваши",
             "good_first_issue_labels": "Метки «хорошая первая задача»",
             "is_opened_in": "открывается в",
@@ -641,6 +768,7 @@
             "membership_is_read_from": "Состав участников читается из",
             "new_issue": "новая задача",
             "no_labels": "без меток",
+            "no_members_found_for_this_repo": "Для этого репозитория участники не найдены.",
             "notifications": "Уведомления",
             "notify_me_when_a": "Уведомлять меня, когда",
             "of": "из",
@@ -649,6 +777,7 @@
             "open_on": "Открыть на",
             "open_tagging": "Открыть разметку",
             "organises_its_issues_and_are_never_written_back": "организует свои задачи, и никогда не записываются обратно в",
+            "proposing_new_labels_for_this_repo_now_lives_on": "Предложение НОВЫХ меток для этого репозитория теперь живёт на панели «Разметка» — рядом с задачами без меток, к которым эти метки применяются.",
             "recommending_a_taxonomy_and_applying_it_to_issue": "Рекомендация таксономии и её применение к задачам — две половины одной работы, поэтому у них общая\n          страница. Эта страница настроек хранит локальные определения выше — какие из",
             "refresh": "Обновить",
             "removes": "Удаляет",
@@ -658,14 +787,22 @@
             "sign_in_no_extra_credentials_no": "вход (без\n          дополнительных учётных данных, без",
             "this_is_an_approximate_list_inferred_from_issue": ", это приблизительный список, выведенный из авторов\n              задач. Полный состав и управление участниками находятся на",
             "triage_labels": "Метки разбора",
+            "watch_this_repo_in_the_background_and_post_a_kir": "Следить за этим репозиторием в фоне и отправлять уведомление KiroCrew, когда открывается новая задача.",
             "webhook": "webhook).",
+            "which_labels_mark_newcomer_friendly_work_so_issu": "Какие метки отмечают работу, подходящую новичкам, — чтобы Issue Radar показывал задачи для первых участников.",
+            "which_labels_mean_an_issue_still_needs_triage_dr": "Какие метки означают, что задача всё ещё требует разбора. Определяет счётчик «Без разбора» в обзоре и очередь задач, требующих внимания.",
             "without_push_access_to": "Без прав на запись в",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "ваши правки остаются здесь, но не сохранятся. Если вы только что обновили Issue Radar, перезапустите бэкенд, чтобы стал доступен API настроек."
           }
         },
         "tagging": {
           "labelsPanel": {
+            "analyzing": "Анализ...",
+            "couldn_t_read_this_repo_s_labels_retry_with_the": "Не удалось прочитать метки этого репозитория — повтори кнопкой обновления.",
+            "create": "Создать",
+            "create_this_label_on_github": "Создать эту метку в GitHub",
             "created": "Создано",
+            "creating": "Создание...",
             "creating_needs_write_access": "для создания нужны права на запись",
             "defined_by_open_issue_count": "определено · по числу открытых задач",
             "labels": "Метки",
@@ -673,30 +810,43 @@
             "none_the_repo_s_taxonomy_already_covers_what_its": "Ничего — таксономия репозитория уже покрывает потребности его открытых задач.",
             "propose_labels_this_repo_is_missing_from_its_ope": "Предложить метки, которых не хватает репозиторию, на основе его открытых задач",
             "re_fetch_this_repo_s_labels_from_github": "Заново загрузить метки этого репозитория из GitHub",
+            "read_only_repo_needs_triage_push_access": "Репозиторий только для чтения — нужен доступ triage/push",
+            "suggest_again": "Предложить снова",
+            "suggest_new_labels": "Предложить новые метки",
             "suggested_new_labels_not_created_until_you_say_s": "Предложенные новые метки — не создаются без вашего согласия"
           },
           "untaggedIssueCard": {
             "add": "Добавить",
+            "add_these_labels_on_github": "Добавить эти метки в GitHub",
             "added": "Добавлено",
-            "no_label_fits": "ни одна метка не подходит"
+            "click_to_remove": "Нажми, чтобы убрать",
+            "no_label_fits": "ни одна метка не подходит",
+            "read_only_repo_needs_triage_or_push_access": "Репозиторий только для чтения — нужен доступ triage или push"
           }
         },
         "taggingView": {
+          "analyzing": "Анализ...",
+          "applying": "Применение...",
           "applying_is_disabled_until_they_load_because_a_s": "применение отключено до их загрузки, потому что предложение с меткой,\n            которой в репозитории больше нет, будет отклонено вместе со всей партией.",
           "applying_needs_write_access": "для применения нужны права на запись",
+          "available_to_assign": "доступно для назначения",
           "carries_at_least_one_label_nothing_to_tag": "имеет хотя бы одну метку. Размечать нечего.",
+          "clear_selection": "Снять выделение",
           "couldn_t_load": "Не удалось загрузить",
           "couldn_t_reload_the_queue": "Не удалось перезагрузить очередь:",
           "defines_no_labels_yet_so_there_is_nothing_to_ass": "пока не содержит меток, поэтому назначать нечего. Предложите несколько выше,\n            создайте нужные, затем вернитесь и предложите метки здесь.",
           "every_open_issue_in": "Каждая открытая задача в",
           "loading_the_untagged_queue": "Загрузка очереди без меток…",
           "newest_first": "сначала новые",
+          "read_only_repo_needs_triage_or_push_access": "Репозиторий только для чтения — нужен доступ triage или push",
           "reload_the_untagged_queue": "Перезагрузить очередь без меток",
           "repo_labels": "Метки репозитория",
           "s_labels": "метки:",
+          "select_all": "Выбрать все",
           "untagged": "Без меток",
           "untagged_issues": "Задачи без меток",
-          "what_you_see_below_is_the_previous_result_not_th": "то, что вы видите ниже — предыдущий результат, а не текущее состояние."
+          "what_you_see_below_is_the_previous_result_not_th": "то, что вы видите ниже — предыдущий результат, а не текущее состояние.",
+          "write_every_staged_label_to_github": "Записать все подготовленные метки в GitHub"
         }
       },
       "welcomeCarousel": {
@@ -720,6 +870,8 @@
         "agent_one": "{{count}} агент",
         "agent_other": "{{count}} агента",
         "budget": "бюджет",
+        "cancelled": "Отменено",
+        "result": "Результат",
         "waiting_for_events": "Ожидание событий…"
       },
       "workflowSourcePanel": {
@@ -727,7 +879,11 @@
         "could_not_load_source": "Не удалось загрузить исходный код:",
         "edit": "Изменить",
         "invalid_fix_before_rerun": "Некорректно — исправьте перед повторным запуском:",
+        "invalid_script": "Некорректный скрипт",
+        "loading": "загрузка...",
         "no_source_captured_for_this_run": "Для этого запуска исходный код не сохранён.",
+        "rerun_with_edits": "Перезапустить с правками",
+        "rerunning": "Перезапуск...",
         "started_run": "Запуск начат",
         "view_source": "Показать исходный код"
       },
@@ -739,6 +895,7 @@
         "request_failed": "Запрос не выполнен:",
         "run": "Запустить",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "Запустите рабочий процесс, чтобы увидеть здесь его этапы, агентов и результат.",
+        "running": "Выполнение...",
         "validate": "Проверить",
         "workflow_script_python": "Скрипт рабочего процесса (Python)",
         "workflow_source": "исходный код рабочего процесса",
@@ -747,9 +904,12 @@
       "workflowsRuns": {
         "background_runs": "Фоновые запуски",
         "budget": "бюджет",
+        "cancel": "Отменить",
+        "cancelling": "Отмена...",
         "could_not_load_runs": "Не удалось загрузить запуски:",
         "events": "события",
         "no_background_runs_yet_runs_started_in_the_backg": "Фоновых запусков пока нет. Запуски, начатые в фоне, появятся здесь.",
+        "run_detail": "Подробности запуска",
         "select_a_run_to_see_its_phases_agents_and_result": "Выберите запуск, чтобы увидеть его этапы, агентов и результат."
       }
     }
@@ -1381,15 +1541,6 @@
       "suggested_follow_up_one": "Предложение дальнейшего шага",
       "suggested_follow_up_other": "Предложения дальнейших шагов",
       "this_session_has_no_project_directory_so_there_i": "У этой сессии нет каталога проекта, поэтому нет репозитория для создания ветки"
-    },
-    "inboundLinkChip": {
-      "confirm_release": "Отвязать эту сессию от {{label}}?\n\nСообщения, отправленные туда, перестанут поступать сюда, а ответы — доставляться туда. Вы сможете снова привязать её командой !sessions из того канала.",
-      "driven_from": "Управляется из {{label}}",
-      "release": "Отвязать",
-      "release_aria": "Отвязать эту сессию от {{label}}",
-      "release_failed": "Не удалось отвязать сессию: {{reason}}",
-      "released": "Сессия отвязана от {{label}}",
-      "tooltip": "Эта сессия имеет двустороннюю связь с {{label}}: ответы доставляются туда, а отправленные туда сообщения поступают сюда."
     },
     "inboundLinkChip": {
       "confirm_release": "Отвязать эту сессию от {{label}}?\n\nСообщения, отправленные туда, перестанут поступать сюда, а ответы — доставляться туда. Вы сможете снова привязать её командой !sessions из того канала.",
@@ -2448,19 +2599,66 @@
     }
   },
   "hooks": {
+    "mic": {
+      "could_not_start_the_microphone": "Не удалось включить микрофон.",
+      "microphone_is_unavailable_another_app_may_be_usi": "Микрофон недоступен — возможно, его использует другое приложение.",
+      "microphone_permission_denied_allow_mic_access_in": "Доступ к микрофону запрещён. Разреши доступ в настройках ОС и браузера.",
+      "no_microphone_found_connect_one_or_pick_a_differ": "Микрофон не найден. Подключи его или выбери другое устройство в настройках."
+    },
+    "useCronActions": {
+      "failed_to_cancel_job": "Не удалось отменить задание",
+      "failed_to_open_in_chat": "Не удалось открыть в чате",
+      "failed_to_run_job": "Не удалось запустить задание"
+    },
+    "useKeyboardShortcuts": {
+      "close_this_session": "Закрыть этот сеанс?"
+    },
     "useSceneInteraction": {
+      "all_slots_are_occupied": "Все слоты заняты",
       "approve": "Разрешить",
       "click_for_thread": "нажмите, чтобы открыть ветку",
       "close_thread_view": "Закрыть просмотр ветки",
       "couldn_t_load_messages": "Не удалось загрузить сообщения",
+      "create_a_new_chat_session_a_new_agent_joins_this": "Создать новый чат — в этот мир придёт новый агент",
+      "cron_running": "Cron · выполняется",
       "deny": "Запретить",
       "failed": "не удалось",
+      "idle": "Простой",
       "kiro_is_working": "kiro работает…",
       "loading_thread": "Загрузка ветки…",
+      "message_sent": "Сообщение отправлено",
+      "message_this_agent": "Написать этому агенту...",
       "needs_approval": "требуется разрешение:",
+      "new_session": "+ Новый сеанс",
       "no_messages_yet": "Сообщений пока нет",
       "open_chat": "Открыть чат",
-      "waiting_on_approval": "Ожидание разрешения:"
+      "retry": "Повторить",
+      "retry_sending_message": "Повторить отправку сообщения",
+      "send": "Отправить",
+      "send_message": "Отправить сообщение",
+      "sending_message": "Отправка сообщения",
+      "steer_this_agent": "Скорректировать этого агента...",
+      "summoning": "вызов...",
+      "waiting_on_approval": "Ожидание разрешения:",
+      "working": "Работает"
+    },
+    "useSessionActions": {
+      "close_this_session": "Закрыть этот сеанс?",
+      "switch_to_autopilot_mode_future_messages_will_us": "Переключиться в режим автопилота? Дальнейшие сообщения будут работать по схеме автопилота (план → подтверждение → выполнение).",
+      "switch_to_normal_chat_mode_future_messages_will": "Переключиться в обычный режим чата? Дальнейшие сообщения будут работать как обычный чат."
+    },
+    "useStreamingStt": {
+      "audio_worklet_unavailable": "audio worklet недоступен",
+      "stt_connection_error": "ошибка соединения stt",
+      "stt_connection_lost": "соединение stt потеряно",
+      "stt_error": "ошибка stt"
+    },
+    "useVoiceInput": {
+      "transcription_request_failed": "Запрос расшифровки не удался."
+    },
+    "useWebSocket": {
+      "a_task_needs_your_decision": "Задача требует твоего решения",
+      "approval_required": "Требуется подтверждение"
     }
   },
   "nav": {
@@ -5615,6 +5813,16 @@
         "description": "Настройки синтеза речи и распознавания речи (диктовки)",
         "label": "Голос"
       }
+    }
+  },
+  "utils": {
+    "cronUtils": {
+      "create": "Создать",
+      "save": "Сохранить",
+      "saving": "Сохранение..."
+    },
+    "popoutController": {
+      "your_browser_blocked_the_pop_out_window_allow_po": "Браузер заблокировал отдельное окно. Разреши всплывающие окна для этого сайта и попробуй снова."
     }
   }
 }

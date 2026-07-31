@@ -92,7 +92,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
       if (e instanceof Error) {
         setTopError(e.message)
       } else if (e.status === 400 && e.body && 'errors' in e.body) {
-        setErrors(e.body.errors ?? [e.body.error || 'Invalid script'])
+        setErrors(e.body.errors ?? [e.body.error || i18nT('apps.workflows.workflowSourcePanel.invalid_script')])
       } else {
         setTopError(`Rerun failed: ${e.status ?? 'error'}`)
       }
@@ -116,7 +116,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
         <FileCode size={12} className="text-muted shrink-0" />
         <span className="text-left">{i18nT('apps.workflows.workflowSourcePanel.view_source')}</span>
         <span className="ml-auto text-[10px] text-muted">
-          {source == null ? 'loading…' : `${source.split('\n').length} lines`}
+          {source == null ? i18nT('apps.workflows.workflowSourcePanel.loading') : `${source.split('\n').length} lines`}
         </span>
       </button>
       {open && (
@@ -181,7 +181,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
                   disabled={submitting}
                   className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-accent text-accent-fg disabled:opacity-50"
                 >
-                  <Play size={11} /> {submitting ? 'Rerunning…' : 'Rerun with edits'}
+                  <Play size={11} /> {submitting ? i18nT('apps.workflows.workflowSourcePanel.rerunning') : i18nT('apps.workflows.workflowSourcePanel.rerun_with_edits')}
                 </button>
                 <button
                   type="button"

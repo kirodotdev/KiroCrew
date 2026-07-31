@@ -205,7 +205,7 @@ function AiSuggestions({
           const color = colorByName.get(s.name) ?? '888888'
           const tip = canWrite
             ? (s.reason ? `Add “${s.name}” — ${s.reason}` : `Add “${s.name}”`)
-            : (s.reason || 'Read-only — connect with triage/push access to apply')
+            : (s.reason || i18nT('apps.issueRadar.components.issueDetail.read_only_connect_with_triage_push_access_to_app_2'))
           return (
             <motion.button
               key={s.name}
@@ -295,7 +295,7 @@ function CommentCard({
       <div className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-bg-elevated/60 text-[12.5px] flex-wrap">
         <span className="font-semibold text-text-strong">{author ?? 'ghost'}</span>
         <MemberBadge role={role} assoc={assoc} />
-        <span className="text-muted">{opening ? 'opened this issue' : 'commented'}</span>
+        <span className="text-muted">{opening ? i18nT('apps.issueRadar.components.issueDetail.opened_this_issue') : i18nT('apps.issueRadar.components.issueDetail.commented')}</span>
         <span className="text-muted">· {when ? <RelTime iso={when} /> : ''}</span>
       </div>
       <div className="px-3.5 py-3">
@@ -340,7 +340,7 @@ function eventVisual(
         color: notPlanned ? 'text-muted' : 'text-aim',
         body: (
           <>
-            {who} {i18nT('apps.issueRadar.components.issueDetail.closed_this')} {notPlanned ? 'as not planned' : 'as completed'}
+            {who} {i18nT('apps.issueRadar.components.issueDetail.closed_this')} {notPlanned ? i18nT('apps.issueRadar.components.issueDetail.as_not_planned') : i18nT('apps.issueRadar.components.issueDetail.as_completed')}
             {commitUrl && <> {i18nT('apps.issueRadar.components.issueDetail.in')} <a href={commitUrl} target="_blank" rel="noreferrer" className="font-mono text-accent hover:underline">{ev.commit_id!.slice(0, 7)}</a></>}
           </>
         ),
@@ -450,11 +450,11 @@ function RelatedLinks({ items }: { items: RelatedRef[] }) {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[13px] text-text group-hover:text-accent leading-snug line-clamp-2 break-words">
-                  {r.title || `${r.is_pr ? terms.changeRequestTitle : 'Issue'} ${sigil}${r.number}`}
+                  {r.title || `${r.is_pr ? terms.changeRequestTitle : i18nT('apps.issueRadar.components.issueDetail.issue')} ${sigil}${r.number}`}
                 </span>
                 <span className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[11.5px] text-muted">
                   <span className="font-mono">
-                    {r.is_pr ? terms.changeRequestShort : 'Issue'}{sigil}{r.number}
+                    {r.is_pr ? terms.changeRequestShort : i18nT('apps.issueRadar.components.issueDetail.issue')}{sigil}{r.number}
                   </span>
                   {r.state && <span>· {r.state}</span>}
                   {r.actor && <span>{i18nT('apps.issueRadar.components.issueDetail.by')} {r.actor}</span>}
@@ -725,7 +725,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               <span className="inline-flex items-center gap-1">
                 <button
                   onClick={copyLink}
-                  title={copied ? 'Link copied' : 'Copy link to this issue'}
+                  title={copied ? i18nT('apps.issueRadar.components.issueDetail.link_copied') : i18nT('apps.issueRadar.components.issueDetail.copy_link_to_this_issue')}
                   aria-label={i18nT('apps.issueRadar.components.issueDetail.copy_link_to_this_issue')}
                   className="inline-flex items-center -ml-0.5 p-0.5 cursor-pointer bg-transparent text-muted hover:text-accent"
                 >

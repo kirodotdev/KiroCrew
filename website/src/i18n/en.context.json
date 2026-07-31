@@ -7,6 +7,7 @@
     "app.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "apps.autoResearch.researchLabPage.30s": "A preset duration of 30 seconds. The number is data; only the unit letter is translatable, and most locales keep `s`.",
     "apps.autoResearch.researchLabPage.60s": "A preset duration of 60 seconds. The number is data; only the unit letter is translatable, and most locales keep `s`.",
+    "apps.autoResearch.researchLabPage.add": "Verb on the button that adds the typed sub-question to the research list beside it. If the target language needs an object, name the sub-question. Distinct from the \"Add\" on the Code Review Sage page, which adds a review pattern.",
     "apps.autoResearch.researchLabPage.min": "The unit \"min\" = minutes, rendered after a number. An abbreviation, not the word \"minimum\".",
     "apps.codeReviewSage.codeReviewSagePage.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
     "apps.codeReviewSage.codeReviewSagePage.gh": "The literal name of the GitHub CLI executable, `gh`. Do not translate: the user types it.",

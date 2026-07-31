@@ -65,8 +65,8 @@ export default function SearchPanel({ rootPath, onClose, onJump }: SearchPanelPr
         <button className="mc-fe-iconbtn" onClick={onClose} title={i18nT('apps.fileExplorer.searchPanel.close_esc')} aria-label={i18nT('apps.fileExplorer.searchPanel.close_search')}><X size={14} /></button>
       </div>
       <div className="mc-fe-search-status">
-        {searching ? 'searching...'
-          : error ? <span style={{ color: 'var(--danger)' }}>{(error as Error).message || 'search failed'}</span>
+        {searching ? i18nT('apps.fileExplorer.searchPanel.searching')
+          : error ? <span style={{ color: 'var(--danger)' }}>{(error as Error).message || i18nT('apps.fileExplorer.searchPanel.search_failed')}</span>
           : `${results.length} result${results.length !== 1 ? 's' : ''}${truncated ? ' (capped)' : ''}${engine ? ` · ${engine}` : ''}`}
       </div>
       <div className="mc-fe-search-results">

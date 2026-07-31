@@ -12,6 +12,7 @@ import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
 import type { StatusData, ChatSlot, Notification, PullRequestStatusBatch, TodoList } from '../types'
+import { i18nT } from '../i18n/t'
 
 type LogCallback = ((data: { level: string; msg: string }) => void) | null
 
@@ -547,7 +548,7 @@ export function useWebSocket() {
             queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
             // Browser notification when tab not focused (permission must be granted via UI interaction elsewhere)
             if (typeof Notification !== 'undefined' && document.hidden && Notification.permission === 'granted') {
-              new Notification('Approval Required', { body: data.tool || 'A task needs your decision', tag: 'kirocrew-approval' })
+              new Notification(i18nT('hooks.useWebSocket.approval_required'), { body: data.tool || i18nT('hooks.useWebSocket.a_task_needs_your_decision'), tag: 'kirocrew-approval' })
             }
             dispatch(addNotification({
               kind: 'approval',

@@ -1,12 +1,12 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — regenerate with `node scripts/check-i18n-strings.mjs --update`. This is both the CI ratchet and the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 1950,
+  "_total": 1747,
   "files": {
     "api/client.ts": {
-      "total": 39,
+      "total": 35,
       "expression": 2,
       "object-prop": 3,
-      "prose": 18,
+      "prose": 14,
       "template": 16
     },
     "api/helpers.ts": {
@@ -14,33 +14,21 @@
       "prose": 5,
       "template": 2
     },
-    "app-sdk/ChatEmbed.tsx": {
-      "total": 2,
-      "expression": 1,
-      "prose": 1
-    },
     "app-sdk/useChatSession.ts": {
       "total": 1,
       "prose": 1
     },
     "App.tsx": {
-      "total": 45,
-      "expression": 19,
+      "total": 19,
+      "expression": 3,
       "object-prop": 1,
-      "prose": 12,
-      "template": 13
-    },
-    "apps/auto-research/GrillTree.tsx": {
-      "total": 4,
-      "expression": 4
+      "prose": 8,
+      "template": 7
     },
     "apps/auto-research/ResearchLabPage.tsx": {
-      "total": 41,
+      "total": 7,
       "array": 3,
-      "expression": 25,
-      "prose": 3,
-      "status-call": 5,
-      "template": 5
+      "template": 4
     },
     "apps/builtinIcons.tsx": {
       "total": 1,
@@ -55,9 +43,8 @@
       "template": 1
     },
     "apps/code-review-sage/CodeReviewSagePage.tsx": {
-      "total": 13,
-      "expression": 4,
-      "template": 9
+      "total": 8,
+      "template": 8
     },
     "apps/file-explorer/api.ts": {
       "total": 7,
@@ -73,53 +60,21 @@
       "template": 2
     },
     "apps/file-explorer/SearchPanel.tsx": {
-      "total": 3,
-      "prose": 1,
+      "total": 2,
       "template": 2
     },
     "apps/issue-radar/api.ts": {
       "total": 2,
       "prose": 2
     },
-    "apps/issue-radar/components/AgentSessionButton.tsx": {
-      "total": 1,
-      "expression": 1
-    },
     "apps/issue-radar/components/AiSummaryCard.tsx": {
       "total": 4,
       "expression": 1,
       "template": 3
     },
-    "apps/issue-radar/components/FilterRow.tsx": {
-      "total": 1,
-      "prose": 1
-    },
-    "apps/issue-radar/components/FiltersSection.tsx": {
-      "total": 1,
-      "prose": 1
-    },
-    "apps/issue-radar/components/InvestigateButton.tsx": {
-      "total": 5,
-      "expression": 2,
-      "prose": 3
-    },
     "apps/issue-radar/components/IssueDetail.tsx": {
-      "total": 11,
-      "expression": 7,
-      "prose": 1,
+      "total": 3,
       "template": 3
-    },
-    "apps/issue-radar/components/IssueList.tsx": {
-      "total": 1,
-      "expression": 1
-    },
-    "apps/issue-radar/components/LabelPalette.tsx": {
-      "total": 2,
-      "expression": 2
-    },
-    "apps/issue-radar/components/LabelPicker.tsx": {
-      "total": 1,
-      "prose": 1
     },
     "apps/issue-radar/components/LeftRail.tsx": {
       "total": 2,
@@ -130,28 +85,24 @@
       "template": 2
     },
     "apps/issue-radar/components/PrDetail.tsx": {
-      "total": 10,
-      "expression": 2,
-      "template": 8
+      "total": 7,
+      "template": 7
     },
     "apps/issue-radar/components/PrFiltersSection.tsx": {
-      "total": 2,
-      "prose": 1,
+      "total": 1,
       "template": 1
     },
     "apps/issue-radar/components/PrList.tsx": {
-      "total": 14,
-      "expression": 1,
+      "total": 12,
       "object-prop": 7,
-      "template": 6
+      "template": 5
     },
     "apps/issue-radar/components/ProviderBadge.tsx": {
       "total": 1,
       "template": 1
     },
     "apps/issue-radar/components/RefLink.tsx": {
-      "total": 8,
-      "object-prop": 7,
+      "total": 1,
       "prose": 1
     },
     "apps/issue-radar/components/RefSheet.tsx": {
@@ -167,9 +118,8 @@
       "object-prop": 2
     },
     "apps/issue-radar/ConnectPanel.tsx": {
-      "total": 5,
-      "expression": 2,
-      "template": 3
+      "total": 2,
+      "template": 2
     },
     "apps/issue-radar/ConnectRepoModal.tsx": {
       "total": 3,
@@ -194,33 +144,26 @@
       "template": 3
     },
     "apps/issue-radar/views/OverviewView.tsx": {
-      "total": 15,
-      "object-prop": 10,
-      "prose": 4,
+      "total": 1,
       "template": 1
     },
     "apps/issue-radar/views/settings/RepoSettings.tsx": {
-      "total": 18,
-      "expression": 6,
-      "prose": 8,
-      "template": 4
+      "total": 7,
+      "prose": 4,
+      "template": 3
     },
     "apps/issue-radar/views/tagging/LabelsPanel.tsx": {
-      "total": 13,
-      "expression": 7,
+      "total": 5,
       "prose": 2,
-      "template": 4
+      "template": 3
     },
     "apps/issue-radar/views/tagging/UntaggedIssueCard.tsx": {
-      "total": 6,
-      "expression": 2,
-      "template": 4
+      "total": 3,
+      "template": 3
     },
     "apps/issue-radar/views/TaggingView.tsx": {
-      "total": 15,
-      "expression": 4,
-      "prose": 1,
-      "template": 10
+      "total": 8,
+      "template": 8
     },
     "apps/issue-radar/WelcomeCarousel.tsx": {
       "total": 4,
@@ -231,25 +174,22 @@
       "template": 1
     },
     "apps/workflows/WorkflowRunTree.tsx": {
-      "total": 4,
+      "total": 2,
       "prose": 1,
-      "template": 3
+      "template": 1
     },
     "apps/workflows/WorkflowSourcePanel.tsx": {
-      "total": 6,
-      "expression": 2,
-      "prose": 1,
-      "template": 3
+      "total": 2,
+      "template": 2
     },
     "apps/workflows/WorkflowsPage.tsx": {
-      "total": 5,
-      "expression": 2,
+      "total": 3,
       "object-prop": 2,
       "template": 1
     },
     "apps/workflows/WorkflowsRuns.tsx": {
-      "total": 9,
-      "expression": 4,
+      "total": 6,
+      "expression": 1,
       "object-prop": 4,
       "template": 1
     },
@@ -636,10 +576,6 @@
       "prose": 1,
       "template": 5
     },
-    "hooks/mic.ts": {
-      "total": 4,
-      "prose": 4
-    },
     "hooks/sceneText.ts": {
       "total": 1,
       "prose": 1
@@ -660,21 +596,15 @@
       "total": 1,
       "template": 1
     },
-    "hooks/useCronActions.ts": {
-      "total": 3,
-      "expression": 2,
-      "object-prop": 1
-    },
     "hooks/useFileWatch.ts": {
       "total": 1,
       "prose": 1
     },
     "hooks/useKeyboardShortcuts.ts": {
-      "total": 10,
+      "total": 9,
       "expression": 5,
       "object-prop": 1,
       "prose": 2,
-      "status-call": 1,
       "template": 1
     },
     "hooks/useNativeNotification.ts": {
@@ -700,18 +630,12 @@
       "prose": 1
     },
     "hooks/useSceneInteraction.tsx": {
-      "total": 19,
-      "expression": 14,
-      "template": 5
-    },
-    "hooks/useSessionActions.ts": {
-      "total": 3,
-      "expression": 2,
-      "status-call": 1
+      "total": 4,
+      "template": 4
     },
     "hooks/useStreamingStt.ts": {
-      "total": 5,
-      "prose": 5
+      "total": 1,
+      "prose": 1
     },
     "hooks/useTheme.tsx": {
       "total": 19,
@@ -719,14 +643,13 @@
       "template": 10
     },
     "hooks/useVoiceInput.ts": {
-      "total": 3,
+      "total": 2,
       "array": 1,
-      "status-call": 1,
       "template": 1
     },
     "hooks/useWebSocket.ts": {
-      "total": 20,
-      "prose": 16,
+      "total": 18,
+      "prose": 14,
       "template": 4
     },
     "hooks/virtualizer/HeightCache.ts": {
@@ -1270,10 +1193,6 @@
       "total": 1,
       "template": 1
     },
-    "utils/cronUtils.tsx": {
-      "total": 3,
-      "expression": 3
-    },
     "utils/extractChatLinks.ts": {
       "total": 1,
       "template": 1
@@ -1300,8 +1219,8 @@
       "prose": 1
     },
     "utils/popoutController.ts": {
-      "total": 12,
-      "prose": 6,
+      "total": 11,
+      "prose": 5,
       "template": 6
     },
     "utils/recencyTint.ts": {

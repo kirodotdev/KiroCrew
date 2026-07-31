@@ -56,12 +56,12 @@ export default function InvestigateButton({
       onClick={onClick}
       startHint={
         recordQuery.isError
-          ? 'Could not check for an existing investigation — retrying on refresh'
-          : 'Open an AI investigation chat session for this issue'
+          ? i18nT('apps.issueRadar.components.investigateButton.could_not_check_for_an_existing_investigation_re')
+          : i18nT('apps.issueRadar.components.investigateButton.open_an_ai_investigation_chat_session_for_this_i')
       }
-      resumeHint="Resume the AI investigation chat session for this issue"
-      pendingLabel="Investigating"
-      donePillLabel="Investigated"
+      resumeHint={i18nT('apps.issueRadar.components.investigateButton.resume_the_ai_investigation_chat_session_for_thi')}
+      pendingLabel={i18nT('apps.issueRadar.components.investigateButton.investigating')}
+      donePillLabel={i18nT('apps.issueRadar.components.investigateButton.investigated')}
     />
   )
 }

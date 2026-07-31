@@ -7,6 +7,7 @@ import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread } from '../stor
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
+import { i18nT } from '../i18n/t'
 
 /**
  * The surface-agnostic session actions — the ones that need only a slot key and
@@ -106,8 +107,8 @@ export function useSessionActions(mode?: string): SessionActions {
     const cur = store.getState().dashboard.slots.find(s => s.key === slotKey)?.mode ?? ''
     const newMode = cur === 'orchestrator' ? '' : 'orchestrator'
     if (confirm(newMode === 'orchestrator'
-      ? 'Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).'
-      : 'Switch to normal Chat mode? Future messages will use standard chat behavior.')) {
+      ? i18nT('hooks.useSessionActions.switch_to_autopilot_mode_future_messages_will_us')
+      : i18nT('hooks.useSessionActions.switch_to_normal_chat_mode_future_messages_will'))) {
       modeMutate({ key: slotKey, newMode })
     }
   }, [modeMutate])
@@ -122,7 +123,7 @@ export function useSessionActions(mode?: string): SessionActions {
   }, [moveSlotToFolder])
 
   const close = useCallback((slotKey: string) => {
-    if (!loadChatConfig().confirmCloseSession || confirm('Close this session?')) dispatch(deleteSlot(slotKey))
+    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
   return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, close }

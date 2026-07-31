@@ -1,4 +1,6 @@
 import { safeSetItem } from '../utils/safeStorage'
+import { i18nT } from '../i18n/t'
+
 // Shared microphone helpers for voice input.
 //
 // Centralizes the bits both capture paths (batch `useVoiceInput` and streaming
@@ -42,15 +44,15 @@ export function humanizeMicError(e: unknown): string {
   switch (name) {
     case 'NotAllowedError':
     case 'SecurityError':
-      return 'Microphone permission denied. Allow mic access in your OS and browser settings.'
+      return i18nT('hooks.mic.microphone_permission_denied_allow_mic_access_in')
     case 'NotFoundError':
     case 'OverconstrainedError':
-      return 'No microphone found. Connect one or pick a different device in Settings.'
+      return i18nT('hooks.mic.no_microphone_found_connect_one_or_pick_a_differ')
     case 'NotReadableError':
     case 'AbortError':
-      return 'Microphone is unavailable — another app may be using it.'
+      return i18nT('hooks.mic.microphone_is_unavailable_another_app_may_be_usi')
     default:
-      return 'Could not start the microphone.'
+      return i18nT('hooks.mic.could_not_start_the_microphone')
   }
 }
 

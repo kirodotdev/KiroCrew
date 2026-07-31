@@ -309,7 +309,7 @@ export default function WorkflowsRuns() {
                       className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-border disabled:opacity-50"
                       aria-label={`cancel ${row.name}`}
                     >
-                      <Ban size={12} /> {cancellingId === row.run_id ? 'Cancelling…' : 'Cancel'}
+                      <Ban size={12} /> {cancellingId === row.run_id ? i18nT('apps.workflows.workflowsRuns.cancelling') : i18nT('apps.workflows.workflowsRuns.cancel')}
                     </button>
                   )}
                 </div>
@@ -322,7 +322,7 @@ export default function WorkflowsRuns() {
       {/* ----- Selected run detail ----- */}
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2 text-[13px] text-muted">
-          <WorkflowIcon size={14} /> {detail ? detail.name || detail.run_id : 'Run detail'}
+          <WorkflowIcon size={14} /> {detail ? detail.name || detail.run_id : i18nT('apps.workflows.workflowsRuns.run_detail')}
           {budget && (
             <span className="ml-auto text-[11px] tabular-nums">
               {i18nT('apps.workflows.workflowsRuns.budget')} {budget.spent}

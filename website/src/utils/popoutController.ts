@@ -23,6 +23,8 @@
  * BroadcastChannel.
  */
 
+import { i18nT } from '../i18n/t'
+
 /** Heartbeat cadence (ms) for the main window's liveness ping. */
 export const HEARTBEAT_MS = 5_000
 /** A popout unseen for longer than this is considered gone and pruned. */
@@ -349,7 +351,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
       // leave an operator-diagnosable trail.
       logWarn(`window.open blocked for ${id} — pop-up blocker or browser policy`)
       try {
-        window.alert('Your browser blocked the pop-out window. Allow pop-ups for this site and try again.')
+        window.alert(i18nT('utils.popoutController.your_browser_blocked_the_pop_out_window_allow_po'))
       } catch { /* alert unavailable (e.g. sandboxed frame) — the warn above still records it */ }
       return
     }

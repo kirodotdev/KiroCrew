@@ -101,7 +101,7 @@ export default function PrFiltersSection() {
             label={i18nT('apps.issueRadar.components.prFiltersSection.review_requested')}
             active={prReviewRequestedByMe}
             disabled={!me}
-            disabledHint="Sign in to gh to filter by your review requests"
+            disabledHint={i18nT('apps.issueRadar.components.prFiltersSection.sign_in_to_gh_to_filter_by_your_review_requests')}
             onToggle={togglePrReviewRequestedByMe}
           />
           {/* Unlike the three above, this one is answered client-side: the row's

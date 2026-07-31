@@ -2,6 +2,7 @@
 import { Save, Plus } from 'lucide-react'
 import { fmtDateTime, fmtWeekday } from '../i18n/format'
 import type { CronJob } from '../types'
+import { i18nT } from '../i18n/t'
 
 export const PY_TO_CRON = [1, 2, 3, 4, 5, 6, 0]
 export const CRON_SEL = 'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring'
@@ -101,7 +102,7 @@ export function SaveCreateLabel({ isEdit, saving }: { isEdit: boolean; saving: b
   return (
     <span className="flex items-center gap-1.5">
       {isEdit ? <Save size={14} /> : <Plus size={14} />}
-      {saving ? 'Saving...' : (isEdit ? 'Save' : 'Create')}
+      {saving ? i18nT('utils.cronUtils.saving') : (isEdit ? i18nT('utils.cronUtils.save') : i18nT('utils.cronUtils.create'))}
     </span>
   )
 }

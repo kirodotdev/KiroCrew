@@ -4,6 +4,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { switchSlot, deleteSlot } from '../store/chatSlice'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { reportSeamCollision } from '../apps/seamCollision'
+import { i18nT } from '../i18n/t'
 
 export const SHORTCUTS_ENABLED_KEY = 'mc-keyboard-shortcuts'
 export const SHORTCUTS_ENABLED_EVENT = 'mc-keyboard-shortcuts-changed'
@@ -430,7 +431,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // close — gated by confirmCloseSession, dispatches deleteSlot)
     if (e.shiftKey && code === 'KeyW') {
       e.preventDefault()
-      if (activeSlot && (!loadChatConfig().confirmCloseSession || confirm('Close this session?'))) {
+      if (activeSlot && (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useKeyboardShortcuts.close_this_session')))) {
         dispatch(deleteSlot(activeSlot))
       }
       return

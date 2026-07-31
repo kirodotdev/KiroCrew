@@ -431,7 +431,7 @@ function TaggingDashboard() {
             ? `${Math.round((pending.length / taggingQuery.data.open_count) * 100)}% of open`
             : ''
         } />
-        <Stat value={repoLabels.length} label={i18nT('apps.issueRadar.views.taggingView.repo_labels')} sub="available to assign" />
+        <Stat value={repoLabels.length} label={i18nT('apps.issueRadar.views.taggingView.repo_labels')} sub={i18nT('apps.issueRadar.views.taggingView.available_to_assign')} />
       </div>
 
       {/* The repo's tag vocabulary — what it uses, and what it's missing. */}
@@ -460,7 +460,7 @@ function TaggingDashboard() {
                 onClick={() => setSelected(allSelected ? new Set() : new Set(queue.map((i) => i.number)))}
                 className="text-[12px] text-muted hover:text-text cursor-pointer bg-transparent px-1"
               >
-                {allSelected ? 'Clear selection' : 'Select all'}
+                {allSelected ? i18nT('apps.issueRadar.views.taggingView.clear_selection') : i18nT('apps.issueRadar.views.taggingView.select_all')}
               </button>
             )}
             {!canWrite && (
@@ -497,7 +497,7 @@ function TaggingDashboard() {
             >
               <Sparkles size={12} className={batchPending ? 'animate-pulse' : ''} />
               {batchPending
-                ? 'Analyzing…'
+                ? i18nT('apps.issueRadar.views.taggingView.analyzing')
                 : exhausted
                   ? `Suggest again (${nextSlice})`
                   : `Suggest labels (next ${nextSlice})`}
@@ -506,13 +506,13 @@ function TaggingDashboard() {
               onClick={() => applyAll.mutate(applicable)}
               disabled={!canWrite || applyBusy || applicable.length === 0}
               title={canWrite
-                ? 'Write every staged label to GitHub'
-                : 'Read-only repo — needs triage or push access'}
+                ? i18nT('apps.issueRadar.views.taggingView.write_every_staged_label_to_github')
+                : i18nT('apps.issueRadar.views.taggingView.read_only_repo_needs_triage_or_push_access')}
               className="inline-flex items-center gap-1.5 text-[13px] px-2.5 py-1 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40 cursor-pointer"
             >
               <Check size={12} />
               {applyAll.isPending
-                ? 'Applying…'
+                ? i18nT('apps.issueRadar.views.taggingView.applying')
                 : `Apply ${applicable.length} suggestion${applicable.length === 1 ? '' : 's'}`}
             </button>
           </div>

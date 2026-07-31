@@ -98,7 +98,7 @@ function ChatEmbed({ slotKey, agent, placeholder }: ChatEmbedProps) {
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && input.trim()) { e.preventDefault(); send() } }}
-          placeholder={running ? 'Agent is working...' : (placeholder || 'Message...')}
+          placeholder={running ? i18nT('appSdk.chatEmbed.agent_is_working') : (placeholder || i18nT('appSdk.chatEmbed.message'))}
           disabled={sendMutation.isPending}
         />
         <button

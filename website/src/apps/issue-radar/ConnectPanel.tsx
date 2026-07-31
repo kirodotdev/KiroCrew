@@ -643,7 +643,7 @@ function RecentRepoPicker({
   const countLabel = picked.size > 0
     ? `${picked.size} selected`
     : showList
-      ? (truncated ? 'most recent activity' : `${repos.length} found`)
+      ? (truncated ? i18nT('apps.issueRadar.connectPanel.most_recent_activity') : `${repos.length} found`)
       : ''
 
   return (
@@ -687,8 +687,8 @@ function RecentRepoPicker({
               * user's contributions may simply lie beyond the fetched window,
               * and telling them they did nothing is a plain falsehood. */}
             {truncated
-              ? 'Couldn\u2019t read far enough back through your activity \u2014 paste a URL below instead.'
-              : 'No contributions in the last month \u2014 paste a URL below instead.'}
+              ? i18nT('apps.issueRadar.connectPanel.couldn_t_read_far_enough_back_through_your_activ')
+              : i18nT('apps.issueRadar.connectPanel.no_contributions_in_the_last_month_paste_a_url_b')}
           </div>
         )}
         {showList && repos.map((r) => (

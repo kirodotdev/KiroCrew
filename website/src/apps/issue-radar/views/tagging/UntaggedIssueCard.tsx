@@ -123,7 +123,7 @@ export default function UntaggedIssueCard({
                 <button
                   key={name}
                   onClick={() => onStage(staged.filter((n) => n !== name))}
-                  title={reasonOf(name) ? `${reasonOf(name)} — click to remove` : 'Click to remove'}
+                  title={reasonOf(name) ? `${reasonOf(name)} — click to remove` : i18nT('apps.issueRadar.views.tagging.untaggedIssueCard.click_to_remove')}
                   className="inline-flex items-center gap-0.5 rounded-full pl-2 pr-1.5 py-1 text-[12px] font-medium cursor-pointer max-w-[140px]"
                   style={{ backgroundColor: `#${colorOf(name)}`, color: readableText(colorOf(name)) }}
                 >
@@ -159,7 +159,7 @@ export default function UntaggedIssueCard({
               // aria-label, not an sr-only span: every row's button reads "Add",
               // so the number is what makes each one identifiable.
               aria-label={`Add labels to #${issue.number}`}
-              title={canWrite ? 'Add these labels on GitHub' : 'Read-only repo — needs triage or push access'}
+              title={canWrite ? i18nT('apps.issueRadar.views.tagging.untaggedIssueCard.add_these_labels_on_github') : i18nT('apps.issueRadar.views.tagging.untaggedIssueCard.read_only_repo_needs_triage_or_push_access')}
               className="inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent-subtle disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer bg-transparent"
             >
               <Plus size={11} className={applying ? 'animate-pulse' : ''} /> {i18nT('apps.issueRadar.views.tagging.untaggedIssueCard.add')}

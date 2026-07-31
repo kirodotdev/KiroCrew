@@ -13,6 +13,7 @@ import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { installApiTransport } from './apiTransport'
 import { queryClient } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
+import { i18nT } from '../i18n/t'
 
 /**
  * Resolve the theme-consent token to transmit for an installed pack's chat.
@@ -504,13 +505,13 @@ function showSessionExpiredBanner(): void {
     'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b91c1c;color:#fff;' +
     'padding:12px 20px;text-align:center;font:14px/1.5 system-ui;'
   const b = document.createElement('b')
-  b.textContent = 'Session expired.'
+  b.textContent = i18nT('api.client.session_expired')
   const code = document.createElement('code')
   code.textContent = 'kirocrew token'
   code.style.cssText = 'background:#7f1d1d;padding:2px 6px;border-radius:4px'
   const input = document.createElement('input')
   input.type = 'text'
-  input.placeholder = 'Paste token URL or raw token…'
+  input.placeholder = i18nT('api.client.paste_token_url_or_raw_token')
   input.style.cssText =
     'margin-left:12px;padding:4px 8px;border-radius:4px;border:1px solid #fca5a5;' +
     'background:#7f1d1d;color:#fff;font-size:13px;width:280px;cursor:text;caret-color:#fff;' +
@@ -607,8 +608,7 @@ export class ApiError extends Error {
  */
 export const friendlyErrText = (status: number, body: string): string => {
   if (status === 429) {
-    return 'Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. '
-      + 'The dashboard retries automatically; if this persists, wait a few seconds and reload.'
+    return i18nT('api.client.rate_limited_by_the_tunnel_edge_http_429_too_man')
   }
   // Backends return errors as {"error": "…"} (or detail/message). Unwrap the
   // field so the UI shows the human message with its real newlines, not the

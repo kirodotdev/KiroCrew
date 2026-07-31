@@ -277,9 +277,9 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           prPersonFilterActive
             ? (prSearchTruncatedAt
               ? `Resolved by GitHub search across the whole repo, capped at the ${prSearchTruncatedAt} most recently updated matches`
-              : 'Resolved by GitHub search across the whole repo — not limited to the 100 most recent')
+              : i18nT('apps.issueRadar.components.prList.resolved_by_github_search_across_the_whole_repo'))
             : prStateFilter !== 'open'
-              ? 'Closed/merged PRs are capped at the 100 most recently updated — turn on a "me" filter for a complete, repo-wide search'
+              ? i18nT('apps.issueRadar.components.prList.closed_merged_prs_are_capped_at_the_100_most_rec')
               : undefined
         }>
           {i18nT('apps.issueRadar.components.prList.pr', { count: filteredPulls.length })}

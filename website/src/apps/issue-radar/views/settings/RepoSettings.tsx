@@ -325,7 +325,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
       {(settingsQuery.isError || saveMutation.isError) && (
         <div className="rounded-lg border border-danger/40 bg-danger/5 px-4 py-3 mb-6 text-[12px] text-danger">
           <div className="font-medium mb-0.5">
-            {settingsQuery.isError ? "Couldn't load saved settings." : "Couldn't save your changes."}
+            {settingsQuery.isError ? i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_load_saved_settings') : i18nT('apps.issueRadar.views.settings.repoSettings.couldn_t_save_your_changes')}
           </div>
           <div className="opacity-80">
             {((settingsQuery.error ?? saveMutation.error) as Error)?.message}
@@ -337,7 +337,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
       <Card
         icon={Bell}
         title={i18nT('apps.issueRadar.views.settings.repoSettings.notifications')}
-        desc="Watch this repo in the background and post a KiroCrew notification whenever a new issue is opened."
+        desc={i18nT('apps.issueRadar.views.settings.repoSettings.watch_this_repo_in_the_background_and_post_a_kir')}
       >
         <SettingToggle
           on={settings.notify_on_new_issue}
@@ -354,7 +354,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
       <Card
         icon={ListChecks}
         title={i18nT('apps.issueRadar.views.settings.repoSettings.triage_labels')}
-        desc="Which labels mean an issue still needs triage. Drives the Overview's “Untriaged” count and the needs-attention queue."
+        desc={i18nT('apps.issueRadar.views.settings.repoSettings.which_labels_mean_an_issue_still_needs_triage_dr')}
       >
         <SettingToggle
           on={settings.unlabeled_is_untriaged}
@@ -375,7 +375,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         />
         <StatLine>
           {issuesQuery.isLoading
-            ? 'Counting open issues…'
+            ? i18nT('apps.issueRadar.views.settings.repoSettings.counting_open_issues')
             : <><strong className="text-text">{triageCount}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.of')} {openIssues.length} {i18nT('apps.issueRadar.views.settings.repoSettings.open_issues_currently_need_triage')}</>}
         </StatLine>
       </Card>
@@ -383,7 +383,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
       <Card
         icon={Sparkles}
         title={i18nT('apps.issueRadar.views.settings.repoSettings.good_first_issue_labels')}
-        desc="Which labels mark newcomer-friendly work, so Issue Radar can surface issues to route to first-time contributors."
+        desc={i18nT('apps.issueRadar.views.settings.repoSettings.which_labels_mark_newcomer_friendly_work_so_issu')}
       >
         <LabelPicker
           labels={labels}
@@ -397,7 +397,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         />
         <StatLine>
           {issuesQuery.isLoading
-            ? 'Counting open issues…'
+            ? i18nT('apps.issueRadar.views.settings.repoSettings.counting_open_issues')
             : <><strong className="text-text">{gfiCount}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.open_issues_are_marked_first_issue_friendly')}</>}
         </StatLine>
       </Card>
@@ -405,7 +405,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
       <Card
         icon={Wand2}
         title={i18nT('apps.issueRadar.views.settings.repoSettings.ai_label_recommendations')}
-        desc="Proposing NEW labels for this repo now lives on the Tagging dashboard, next to the untagged issues those labels get applied to."
+        desc={i18nT('apps.issueRadar.views.settings.repoSettings.proposing_new_labels_for_this_repo_now_lives_on')}
       >
         <button
           onClick={() => {
@@ -444,7 +444,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           <div className="text-[13px] text-muted py-1">
             {memberSource === 'derived'
               ? `No members detected among ${repo}'s issues yet. Full roster access needs push permission on this repo.`
-              : 'No members found for this repo.'}
+              : i18nT('apps.issueRadar.views.settings.repoSettings.no_members_found_for_this_repo')}
           </div>
         ) : (
           <div className="flex flex-wrap gap-2">
@@ -507,7 +507,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
               disabled={disconnectMutation.isPending}
               className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md bg-danger text-white hover:opacity-90 disabled:opacity-40 cursor-pointer"
             >
-              <Trash2 size={13} /> {disconnectMutation.isPending ? 'Disconnecting…' : 'Confirm disconnect'}
+              <Trash2 size={13} /> {disconnectMutation.isPending ? i18nT('apps.issueRadar.views.settings.repoSettings.disconnecting') : i18nT('apps.issueRadar.views.settings.repoSettings.confirm_disconnect')}
             </button>
             <button
               onClick={() => setConfirmingDelete(false)}

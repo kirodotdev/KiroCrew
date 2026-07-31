@@ -58,11 +58,11 @@ export function agentStatusLine(agent: SceneAgent): string {
   const detail = agent.detail ? ` · ${agent.detail}` : ''
   switch (agent.kind) {
     case 'cron':
-      return agent.running ? `Cron · running` : `Cron${detail}`
+      return agent.running ? i18nT('hooks.useSceneInteraction.cron_running') : `Cron${detail}`
     case 'spawn':
       return `Subagent${detail}`
     default:
-      return (agent.running ? 'Working' : 'Idle') + detail
+      return (agent.running ? i18nT('hooks.useSceneInteraction.working') : i18nT('hooks.useSceneInteraction.idle')) + detail
   }
 }
 
@@ -333,7 +333,7 @@ export function useSceneInteraction(
     <button
       onClick={createSession}
       disabled={creating || worldFull}
-      title={worldFull ? 'All slots are occupied' : 'Create a new chat session — a new agent joins this world'}
+      title={worldFull ? i18nT('hooks.useSceneInteraction.all_slots_are_occupied') : i18nT('hooks.useSceneInteraction.create_a_new_chat_session_a_new_agent_joins_this')}
       style={{
         position: 'absolute', right: 10, bottom: 10, zIndex: 8,
         background: 'rgba(10,10,20,0.72)', border: '1.5px solid var(--accent, #f90)',
@@ -343,7 +343,7 @@ export function useSceneInteraction(
         fontFamily: 'var(--font-body, inherit)',
       }}
     >
-      {creating ? 'summoning…' : '+ New session'}
+      {creating ? i18nT('hooks.useSceneInteraction.summoning') : i18nT('hooks.useSceneInteraction.new_session')}
     </button>
   ) : null
 
@@ -446,17 +446,17 @@ export function useSceneInteraction(
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendToAgent(threadView.agent, draft) } }}
-          placeholder={sourceFor(threadView.agent)?.running ? 'Steer this agent…' : 'Message this agent…'}
+          placeholder={sourceFor(threadView.agent)?.running ? i18nT('hooks.useSceneInteraction.steer_this_agent') : i18nT('hooks.useSceneInteraction.message_this_agent')}
           aria-label={`Message ${threadView.agent.name}`}
           style={{ flex: 1, background: '#0d0d15', border: '1px solid #444', borderRadius: 4, color: '#ddd', fontSize: 11, padding: '4px 7px', outline: 'none' }}
         />
         <button
           onClick={() => sendToAgent(threadView.agent, draft)}
           disabled={sendState === 'sending' || !draft.trim()}
-          aria-label={sendState === 'sending' ? 'Sending message' : sendState === 'sent' ? 'Message sent' : sendState === 'failed' ? 'Retry sending message' : 'Send message'}
+          aria-label={sendState === 'sending' ? i18nT('hooks.useSceneInteraction.sending_message') : sendState === 'sent' ? i18nT('hooks.useSceneInteraction.message_sent') : sendState === 'failed' ? i18nT('hooks.useSceneInteraction.retry_sending_message') : i18nT('hooks.useSceneInteraction.send_message')}
           style={{ background: '#2a2a3a', border: '1px solid #555', borderRadius: 4, color: sendState === 'failed' ? '#f88' : '#ddd', fontSize: 10, padding: '2px 9px', cursor: 'pointer', opacity: draft.trim() ? 1 : 0.5 }}
         >
-          {sendState === 'sending' ? '…' : sendState === 'sent' ? <Check size={12} aria-hidden /> : sendState === 'failed' ? 'Retry' : 'Send'}
+          {sendState === 'sending' ? '…' : sendState === 'sent' ? <Check size={12} aria-hidden /> : sendState === 'failed' ? i18nT('hooks.useSceneInteraction.retry') : i18nT('hooks.useSceneInteraction.send')}
         </button>
       </div>
     </div>

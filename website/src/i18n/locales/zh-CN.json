@@ -1,27 +1,46 @@
 {
+  "api": {
+    "client": {
+      "paste_token_url_or_raw_token": "粘贴令牌 URL 或原始令牌…",
+      "rate_limited_by_the_tunnel_edge_http_429_too_man": "隧道边缘已限流（HTTP 429）— 短时间内请求过多。仪表板会自动重试；如果持续出现，等待几秒后重新加载。",
+      "session_expired": "会话已过期。"
+    }
+  },
   "app": {
     "a_newer_version_is_available_no_changelog_entry": "有新版本可用。本次发布未添加更新日志条目。",
     "across_chat_agents_mcp_and_subagents": "— 覆盖聊天、代理、MCP 和子代理。",
     "apps": "应用",
     "auto_update_on_restart": "重启时自动更新",
+    "bonus_credits": "赠送额度",
     "breakdown": "明细",
+    "builder_id": "Builder ID",
     "cancel_update": "取消更新",
     "changelog": "更新日志",
+    "check_logs_for_details": "查看日志了解详情。",
     "checking_usage_running": "正在检查用量 — 运行中",
     "click_to_hide": "点击隐藏",
     "close": "关闭",
+    "collapse_sidebar": "折叠侧边栏",
     "contact_us": "联系我们",
     "cpu": "CPU",
+    "cpu_unavailable": "CPU：不可用",
     "credits": "额度",
     "credits_total": "额度总计",
     "developer": "开发者",
     "discord_community": "Discord 社区",
+    "disk_unavailable": "磁盘：不可用",
     "dismiss": "忽略",
     "dsk": "DSK",
     "est_overage_cost": "预计超额费用",
+    "expand_sidebar": "展开侧边栏",
     "explore": "探索",
     "explore_apps": "探索应用",
+    "gateway_connected": "网关已连接",
+    "gateway_offline": "网关离线",
     "github_repository": "GitHub 仓库",
+    "hide_full_changelog": "▾ 隐藏完整更新日志",
+    "i_d_like_to_request_a_feature": "我想提一个功能建议！",
+    "iam_identity_center": "IAM Identity Center",
     "k_search_for_anything": "⌘K — 搜索任何内容…",
     "kiro_cli_usage": "kiro-cli /usage",
     "kiro_credit_usage_checking": "Kiro 额度用量 — 检查中…",
@@ -34,6 +53,8 @@
     "main_navigation": "主导航",
     "manage_account": "管理账户",
     "mem": "MEM",
+    "memory_unavailable": "内存：不可用",
+    "metrics_are_stale_latest_fetch_failed": "指标已过期，最近一次获取失败",
     "metrics_unavailable": "指标不可用",
     "monthly_kiro_credit_usage_from": "每月 Kiro 额度用量，自",
     "notifications": "通知",
@@ -50,7 +71,11 @@
     "resets": "重置时间",
     "search_everywhere_k": "全局搜索 (⌘K)",
     "search_sessions_files_and_commands": "搜索会话、文件和命令",
+    "show_fewer_apps": "显示更少应用",
+    "show_less": "收起",
     "skip_to_content": "跳到主内容",
+    "social_login": "社交账号登录",
+    "starting_update": "正在启动更新…",
     "system_metrics": "系统指标",
     "terminal": "终端",
     "this_step_seems_to_be_taking_longer_than_expecte": "此步骤耗时似乎超出预期。",
@@ -58,15 +83,19 @@
     "update_available_2": "有可用更新",
     "update_error": "更新出错",
     "update_failed": "更新失败",
+    "update_failed_2": "更新失败",
     "update_now": "立即更新",
     "updating_kirocrew": "正在更新 KiroCrew…",
     "v": "v",
+    "view_full_changelog": "▸ 查看完整更新日志",
     "what_s_new": "新增内容",
     "you_re_on_the_latest_version": "已是最新版本"
   },
   "appSdk": {
     "chatEmbed": {
+      "agent_is_working": "代理正在工作…",
       "chat_message": "聊天消息",
+      "message": "输入消息…",
       "send": "发送",
       "send_message": "发送消息",
       "session_ready_type_a_message_to_start": "会话已就绪。输入消息即可开始。",
@@ -80,7 +109,11 @@
         "answer": "回答…",
         "answered": "已回答：",
         "clarifier_answer": "澄清回答",
+        "collapse": "折叠",
+        "excluded": "已排除",
         "expand": "展开",
+        "expand_2": "展开",
+        "included": "已包含",
         "investigate_instead": "改为调查",
         "max_depth_add_research_manually_or_prune": "已达最大深度 — 手动添加研究或修剪",
         "no_suggestions_add_manually_or_retry": "无建议 — 手动添加或重试",
@@ -95,26 +128,34 @@
         "60s": "60s",
         "active": "进行中",
         "adaptive": "（自适应）",
+        "add": "添加",
         "add_guidance_or_a_sub_question": "添加指引或子问题",
         "add_guidance_or_a_sub_question_enter_shift_enter": "添加指引或子问题…（Enter 发送；Shift+Enter 换行）",
         "add_sub_question_manually": "手动添加子问题",
         "add_sub_question_manually_enter_shift_enter_for": "手动添加子问题（Enter 发送；Shift+Enter 换行）",
+        "add_to_knowledge": "添加到知识库",
         "add_your_own_sub_question_or_guidance": "添加你自己的子问题或指引",
         "add_your_own_sub_question_or_guidance_enter_shif": "添加你自己的子问题或指引（Enter 发送；Shift+Enter 换行）",
         "added_to_knowledge": "已加入知识库",
+        "adding": "正在添加…",
         "agent": "代理",
         "agent_needs_input": "代理需要输入",
         "all_checks_passed": "所有检查已通过",
         "already_in_knowledge": "已在知识库中",
         "answer_challenges_to_refine_or_just_pick_sub_que": "回答质疑以细化，或直接选择子问题并复刻。",
         "answer_clarifiers_to_refine_or_just_pick_sub_que": "回答澄清问题以细化，或直接选择子问题继续。",
+        "answer_resume": "回答并恢复",
         "back": "← 返回",
         "cancel": "取消",
         "challenge_findings": "质疑发现 →",
         "challenge_the_findings_from": "质疑来自 \"",
+        "challenging": "正在质疑…",
         "continue": "继续",
         "continue_research": "继续研究",
+        "copied": "已复制！",
+        "copy": "复制",
         "copy_this_section_s_markdown_to_paste_into_chat": "复制本节 Markdown，以粘贴到聊天或自动驾驶中",
+        "could_not_generate_challenges_please_try_again": "无法生成质疑。请重试。",
         "cycle": "轮次",
         "cycles": "轮，",
         "cycles_2": "轮",
@@ -125,19 +166,31 @@
         "dynamic_workflow": "动态工作流",
         "dynamic_workflow_can_fan_out_to_many_sub_agents": "动态工作流可扇出大量子代理，一旦触及预算上限就会硬性终止运行（中途的综合结果可能丢失）。请先设置保守的轮次/并发上限。",
         "e_g_ai_code_review_finds_no_blocking_issues_and": "例如：AI 代码审查未发现阻塞问题，且测试构建通过",
+        "emergent": "涌现",
+        "export_as_artifact": "导出为工件",
+        "exporting": "正在导出…",
+        "failed_to_add_to_knowledge_library": "添加到知识库失败",
         "failed_to_export_as_artifact": "导出为工件失败",
+        "failed_to_start_campaign_please_try_again": "启动战役失败 — 请重试。",
         "findings": "条结论",
         "findings_2": "结论（",
         "findings_so_far_are_preserved_below": "目前的结论保留在下方。",
         "first_cycle_in_progress": "第一轮进行中…",
         "focus_on": "聚焦于…",
         "fork_challenge": "分叉并质询",
+        "fork_failed_no_campaign_was_created": "分叉失败：未创建战役。",
+        "fork_failed_please_try_again": "分叉失败。请重试。",
         "forked": "已分叉",
         "forked_from": "分叉自：",
+        "forking": "正在分叉…",
         "free_form_a_sub_question_or_an_instruction_the_a": "自由格式 — 一个子问题，或代理下一轮应遵循的指令。",
         "give_direction": "给出方向",
         "goal_met": "已达成目标",
+        "goal_not_yet": "目标：尚未达成",
+        "grill_me": "质询我 →",
         "grill_unavailable_add_sub_questions_manually_bel": "质询不可用 — 请在下方手动添加子问题。",
+        "grilling": "正在质询…",
+        "hide_report": "隐藏报告",
         "history": "历史",
         "how_do_other_teams_handle_api_rate_limiting": "其他团队如何处理 API 限流？",
         "how_sub_agent_execution_is_orchestrated_both_han": "子代理执行的编排方式。两者都能处理开放式研究。设置时选定一次。",
@@ -158,13 +211,16 @@
         "nudge": "推动",
         "nudge_direction": "推动方向",
         "nudge_direction_2": "推动方向",
+        "one_campaign_at_a_time": "每次仅进行一个战役",
         "one_campaign_at_a_time_research_benefits_from_fo": "每次仅进行一个战役 — 研究更适合专注深挖。",
         "parallel_workers": "并行工作者：",
         "parallel_workers_2": "并行工作者",
         "pause": "暂停",
         "pick_up_where_this_campaign_left_off": "从此战役中断处继续。",
         "pre_flight_check": "启动前检查：",
+        "regenerate": "重新生成",
         "regenerate_the_report_updates_the_same_artifact": "重新生成报告 — 以新版本更新同一工件",
+        "regenerating": "正在重新生成…",
         "remove_sub_question": "移除子问题",
         "research": "研究 “",
         "research_lab": "研究实验室",
@@ -178,9 +234,13 @@
         "s_idle": "秒空闲。~",
         "scripted": "（脚本化）",
         "searched_empty": "已搜索（无结果）：",
+        "send": "发送",
+        "sending": "正在发送…",
         "show_less": "收起",
         "show_more": "展开更多",
         "sources": "引用来源：",
+        "start_campaign": "启动战役",
+        "starting": "正在启动…",
         "stop": "停止",
         "stops_at_the_cycle_cap_when_the_definition_of_do": "在达到轮次上限、满足完成标准、进展停滞或你手动停止时结束。",
         "strong": "强",
@@ -188,22 +248,27 @@
         "sub_questions_2": "个子问题",
         "sub_questions_guidance": "子问题与指引（",
         "suggested_from": "建议来自",
+        "the_agent_is_waiting_for_your_direction": "代理正在等待你的指示。",
         "the_ai_drives_every_round_itself_deciding_what_t": "AI 自行驱动每一轮 — 决定调查什么、管理子代理，并随着结论浮现跟进新线索。",
         "the_ai_writes_an_orchestration_script_up_front_a": "AI 先写好一份编排脚本；由确定性运行器管理子代理执行，AI 只负责规划、调查和综合。可重放，有预算上限。",
+        "the_campaign_stopped_unexpectedly": "战役意外停止。",
         "then_fork_into_a_new_campaign": "…\"，然后分叉为新战役。",
         "up_to": "最多",
         "validating": "校验中…",
+        "validation_failed_check_your_connection_and_try": "验证失败 — 检查网络连接后重试。",
         "view_report": "查看报告",
         "weak": "弱",
         "what_do_you_want_to_research": "你想研究什么？",
         "when_should_the_agent_stop": "代理应在何时停止？",
         "your_answer": "你的回答",
-        "your_answer_2": "你的回答…"
+        "your_answer_2": "你的回答…",
+        "your_guidance": "你的指导"
       }
     },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "active": "启用",
+        "active_loaded_during_reviews_uncheck_to_disable": "已启用 — 审查时加载（取消勾选可禁用）",
         "add": "添加",
         "cancel": "取消",
         "cli_authenticated_there_run": "CLI 需在此处完成认证：运行",
@@ -224,6 +289,7 @@
         "github_pr_one_time_setup": "GitHub PR — 一次性设置。",
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "inactive": "未启用",
+        "inactive_check_to_load_during_reviews": "未启用 — 勾选后在审查时加载",
         "is_not_authenticated_on_the_gateway_host": "未在网关主机上完成认证。",
         "learn_from_sage": "learn-from-sage",
         "list_open_prs": "列出待处理 PR",
@@ -252,11 +318,13 @@
         "pending_consolidation": "待整合",
         "re_review_every_open_pr_ignoring_the_reviewed_hi": "重新审查每个待处理 PR，忽略已审查历史",
         "repository_url": "仓库 URL",
+        "review": "审查",
         "review_a_whole_repository": "审查整个仓库",
         "reviewed": "已审查",
         "reviews_load_learned_patterns_from_the": "审查会从以下位置加载已学习的模式：",
         "run": "运行",
         "run_the": "；运行",
+        "running": "正在运行…",
         "self_evolving_deep_reviewer_for_github_prs_findi": "面向 GitHub PR 的自进化深度审查器。发现会以 PENDING（草稿）\n        审查提交，由你自行在 GitHub 上提交。",
         "self_learning": "自我学习",
         "showing": "正在显示",
@@ -298,7 +366,9 @@
         "comma_separated_glob_patterns": "以逗号分隔的 glob 模式",
         "glob_e_g_md": "glob（例如 *.md）",
         "glob_filter_comma_separated_patterns": "Glob 过滤（以逗号分隔的模式）",
-        "no_matches": "无匹配项"
+        "no_matches": "无匹配项",
+        "search_failed": "搜索失败",
+        "searching": "正在搜索…"
       },
       "tabStrip": {
         "close_file_tab": "关闭文件标签页",
@@ -314,7 +384,8 @@
     "issueRadar": {
       "components": {
         "agentSessionButton": {
-          "couldn_t_start": "无法启动"
+          "couldn_t_start": "无法启动",
+          "resume": "恢复"
         },
         "aiSummaryCard": {
           "ai_summary": "AI 摘要",
@@ -327,22 +398,33 @@
           "regenerate_summary": "重新生成摘要",
           "retry": "重试"
         },
+        "filterRow": {
+          "sign_in_with_the_gh_cli_to_use_this_filter": "使用 gh CLI 登录后才能使用此筛选条件"
+        },
         "filtersSection": {
           "assigned_to_me": "分配给我",
           "clear": "清除",
           "closed": "已关闭",
           "created_by_member": "由成员创建",
           "filters": "筛选",
+          "no_repo_members_found_among_these_issues": "这些 issue 中未找到仓库成员",
           "open": "待处理",
           "requested_by_me": "由我请求",
           "sort": "排序"
         },
         "investigateButton": {
-          "investigate": "调查"
+          "could_not_check_for_an_existing_investigation_re": "无法检查是否已有调查 — 刷新时会重试",
+          "investigate": "调查",
+          "investigated": "已调查",
+          "investigating": "正在调查",
+          "open_an_ai_investigation_chat_session_for_this_i": "为此 issue 打开 AI 调查聊天会话",
+          "resume_the_ai_investigation_chat_session_for_thi": "恢复此 issue 的 AI 调查聊天会话"
         },
         "issueDetail": {
           "added_the": "添加了",
           "added_this_to_the": "将此加入",
+          "as_completed": "标记为已完成",
+          "as_not_planned": "标记为不予计划",
           "assigned": "已分配",
           "assignees": "负责人",
           "by": "· 由",
@@ -354,6 +436,7 @@
           "closed": "已关闭",
           "closed_as_not_planned": "已按不计划关闭",
           "closed_this": "关闭了此项",
+          "commented": "发表了评论",
           "copy_link_to_this_issue": "复制此 issue 链接",
           "couldn_t_load_activity": "无法加载动态：",
           "dates": "日期",
@@ -362,9 +445,11 @@
           "edit": "编辑",
           "finding_suggestions": "正在查找建议…",
           "in": "于",
+          "issue": "Issue",
           "issues": "和 issue",
           "label": "标签",
           "labels": "标签",
+          "link_copied": "链接已复制",
           "linked": "已关联",
           "locked": "已锁定",
           "milestone": "里程碑",
@@ -378,7 +463,9 @@
           "open": "待处理",
           "opened": "创建了",
           "opened_2": "创建时间",
+          "opened_this_issue": "创建了此 issue",
           "read_only_connect_with_triage_push_access_to_app": "只读 — 需以具备 triage/push 权限的身份连接才能应用。",
+          "read_only_connect_with_triage_push_access_to_app_2": "只读 — 需以具备 triage/push 权限的身份连接才能应用",
           "referenced_this_in": "在以下位置引用了此项：",
           "referenced_this_in_commit": "在提交中引用了此项",
           "refresh_issue_details": "刷新 issue 详情",
@@ -395,6 +482,7 @@
         },
         "issueList": {
           "clear_search": "清除搜索",
+          "closed_issues_are_capped_at_the_100_most_recentl": "已关闭的 issue 最多显示最近更新的 100 个",
           "issue_other": "{{count}} 个 issue",
           "issues": "Issues",
           "re_fetch_issues_labels_from_github": "从 GitHub 重新获取 issue 与标签",
@@ -420,7 +508,8 @@
           "loading_labels": "正在加载标签…",
           "remove_this_label_no_longer_exists_on_the_repo": "移除 — 此标签在仓库中已不存在",
           "saved_but_no_longer_on_this_repo": "已保存但仓库中已不存在：",
-          "suggested": "建议"
+          "suggested": "建议",
+          "this_repo_has_no_labels": "此仓库没有标签。"
         },
         "leftRail": {
           "dashboards": "仪表板",
@@ -446,9 +535,11 @@
           "branches": "分支",
           "changed_the_title": "修改了标题",
           "changes": "变更",
+          "check_status_unavailable": "检查状态不可用",
           "click_to_expand": "点击展开",
           "closed": "已关闭",
           "closed_this": "关闭了此项",
+          "commented": "发表了评论",
           "commits": "提交",
           "dates": "日期",
           "diff": "差异",
@@ -460,6 +551,7 @@
           "into": "合入",
           "label": "标签",
           "labels": "标签",
+          "link_copied": "链接已复制",
           "loading_checks": "正在加载检查…",
           "mergeable": "可合并",
           "merged": "已合并",
@@ -467,6 +559,7 @@
           "milestone_2": "里程碑",
           "newest_first": "· 最新优先",
           "no_activity_yet": "暂无动态。",
+          "no_automated_checks": "没有自动化检查",
           "no_description_provided": "未提供描述。",
           "no_milestone": "无里程碑",
           "no_one_assigned": "未分配任何人",
@@ -499,11 +592,14 @@
           "merged": "已合并",
           "open": "待处理",
           "review_requested": "请求我审查",
+          "sign_in_to_gh_to_filter_by_your_review_requests": "登录 gh 后可按请求你审查的 PR 筛选",
           "sort": "排序"
         },
         "prList": {
           "clear_search": "清除搜索",
+          "closed_merged_prs_are_capped_at_the_100_most_rec": "已关闭/已合并的 PR 最多显示最近更新的 100 个 — 开启“me”筛选条件可在整个仓库范围内完整搜索",
           "pr_other": "{{count}} 个 PR",
+          "resolved_by_github_search_across_the_whole_repo": "通过 GitHub 搜索覆盖整个仓库 — 不限于最近的 100 个",
           "time_since_the_pr_list_was_last_fetched_from_git": "距上次从 GitHub 获取 PR 列表的时间",
           "updated": "更新时间"
         },
@@ -511,7 +607,12 @@
           "read_only": "只读"
         },
         "refLink": {
-          "could_not_load": "无法加载 #"
+          "closed": "已关闭",
+          "closed_as_not_planned": "已关闭（不予计划）",
+          "could_not_load": "无法加载 #",
+          "draft": "草稿",
+          "merged": "已合并",
+          "open": "待处理"
         },
         "refSheet": {
           "back": "返回",
@@ -544,12 +645,15 @@
         "cli": "CLI",
         "connect_a_repo_nothing_runs_without_your_say": "连接一个仓库。未经你同意不会执行任何操作。",
         "connected": "已连接",
+        "couldn_t_read_far_enough_back_through_your_activ": "无法回溯足够久的活动记录 — 改为在下方粘贴 URL。",
         "details": "详情",
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar 通过你自己的",
         "let_s_connect_a_repo": "先连接一个仓库",
         "loading_your_repos": "正在加载你的仓库…",
+        "most_recent_activity": "最近的活动",
+        "no_contributions_in_the_last_month_paste_a_url_b": "最近一个月没有贡献 — 改为在下方粘贴 URL。",
         "or": "或",
         "paste_a_url": "粘贴一个 URL",
         "please_set_up_the": "请先设置",
@@ -572,23 +676,41 @@
           "coming_soon": "即将推出"
         },
         "overviewView": {
+          "0_comments": "0 条评论",
+          "1_4_weeks": "1–4 周",
+          "1_6_months": "1–6 个月",
+          "1_week": "< 1 周",
+          "30d_idle": "> 30 天无活动",
+          "6_months": "> 6 个月",
           "assigned_to_you": "分配给你",
           "backlog_age": "积压时长",
           "by_creation_date": "按创建日期",
           "discussion_hotspots": "讨论热点",
           "filter_the_list_to_issues_assigned_to_you": "将列表筛选为分配给你的 issue",
+          "first_timer": "首次贡献者",
+          "good_first_issue": "新手友好 issue",
           "label_distribution": "标签分布",
+          "last_7_days": "最近 7 天",
           "loading_overview": "正在加载概览…",
           "most_comments_upvotes": "评论与点赞最多",
           "needs_attention": "需要关注",
+          "new_this_week": "本周新增",
           "newest_issues_still_untriaged_or_unanswered": "尚未分类或未回复的最新 issue",
           "no_activity": "暂无动态。",
           "no_discussion_yet": "暂无讨论。",
           "no_labels_in_use": "没有正在使用的标签。",
+          "no_owner": "无负责人",
+          "no_reply": "无回复",
           "nothing_needs_attention": "没有需要关注的事项",
+          "open_issues": "待处理 issue",
           "re_fetch_issues_labels_from_github": "从 GitHub 重新获取 issue 与标签",
           "recently_updated": "最近更新",
-          "refresh_issues": "刷新 issues"
+          "refresh_issues": "刷新 issues",
+          "stale": "已停滞",
+          "unanswered": "未回复",
+          "unassigned": "未分配",
+          "untriaged": "未分类",
+          "untriaged_2": "未分类"
         },
         "settings": {
           "generalSettings": {
@@ -614,10 +736,15 @@
             "auth_are_untouched_you_can_reconnect_anytime": "认证不受影响 — 你可以随时重新连接。",
             "cancel": "取消",
             "checks_about_once_a_minute_inside_kirocrew_no_cr": "大约每分钟在 KiroCrew 内部检查一次 — 不使用定时任务。仅当 KiroCrew\n          处于打开状态且你的机器未休眠时运行，使用你已有的",
+            "confirm_disconnect": "确认断开连接",
             "couldn_t_load_members_right_now": "目前无法加载成员。",
+            "couldn_t_load_saved_settings": "无法加载已保存的设置。",
+            "couldn_t_save_your_changes": "无法保存你的更改。",
+            "counting_open_issues": "正在统计待处理 issue…",
             "data_and": "数据以及",
             "disconnect": "断开连接",
             "disconnect_repository": "断开仓库连接",
+            "disconnecting": "正在断开连接…",
             "from_issue_radar_and_deletes_its_local_cache_you": "从 Issue Radar 中移除并删除其本地缓存。你的 GitHub 数据和",
             "good_first_issue_labels": "新手友好 issue 标签",
             "is_opened_in": "创建于",
@@ -629,6 +756,7 @@
             "membership_is_read_from": "成员信息读取自",
             "new_issue": "新 issue",
             "no_labels": "无标签",
+            "no_members_found_for_this_repo": "未找到此仓库的成员。",
             "notifications": "通知",
             "notify_me_when_a": "当有以下情况时通知我：",
             "of": "共",
@@ -637,6 +765,7 @@
             "open_on": "打开于",
             "open_tagging": "打开标记页",
             "organises_its_issues_and_are_never_written_back": "如何组织其 issue，且永不写回 GitHub",
+            "proposing_new_labels_for_this_repo_now_lives_on": "为此仓库提议新标签的入口已移至标记仪表板，紧邻这些标签将应用到的未标记 issue。",
             "recommending_a_taxonomy_and_applying_it_to_issue": "推荐分类体系与将其应用到 issue 是同一项工作的两半，因此共用一个\n          页面。此设置页保留上方的本地定义 — 即哪些",
             "refresh": "刷新",
             "removes": "移除",
@@ -646,14 +775,22 @@
             "sign_in_no_extra_credentials_no": "登录（无需\n          额外凭证，无",
             "this_is_an_approximate_list_inferred_from_issue": "，这是根据 issue 作者推断出的\n              近似名单。完整名册与成员管理位于",
             "triage_labels": "分类标签",
+            "watch_this_repo_in_the_background_and_post_a_kir": "在后台监控此仓库，每当有新 issue 创建时发送一条 KiroCrew 通知。",
             "webhook": "webhook）。",
+            "which_labels_mark_newcomer_friendly_work_so_issu": "哪些标签标记新手友好的工作，以便 Issue Radar 挑出可以分给首次贡献者的 issue。",
+            "which_labels_mean_an_issue_still_needs_triage_dr": "哪些标签表示 issue 仍需分类。它决定概览中的“未分类”计数和待关注队列。",
             "without_push_access_to": "若没有对以下仓库的 push 权限：",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "你的编辑会保留在此处但不会持久化。如果你刚更新了 Issue Radar，请重启后端以启用设置 API。"
           }
         },
         "tagging": {
           "labelsPanel": {
+            "analyzing": "正在分析…",
+            "couldn_t_read_this_repo_s_labels_retry_with_the": "无法读取此仓库的标签 — 用刷新按钮重试。",
+            "create": "创建",
+            "create_this_label_on_github": "在 GitHub 上创建此标签",
             "created": "已创建",
+            "creating": "创建中…",
             "creating_needs_write_access": "创建需要写入权限",
             "defined_by_open_issue_count": "已定义 · 按待处理 issue 数量",
             "labels": "标签",
@@ -661,30 +798,43 @@
             "none_the_repo_s_taxonomy_already_covers_what_its": "无 — 此仓库的分类体系已覆盖其待处理 issue 的需要。",
             "propose_labels_this_repo_is_missing_from_its_ope": "根据待处理 issue 提出此仓库缺失的标签",
             "re_fetch_this_repo_s_labels_from_github": "从 GitHub 重新获取此仓库的标签",
+            "read_only_repo_needs_triage_push_access": "仓库只读 — 需要 triage/push 权限",
+            "suggest_again": "再次建议",
+            "suggest_new_labels": "建议新标签",
             "suggested_new_labels_not_created_until_you_say_s": "建议的新标签 — 未经你确认不会创建"
           },
           "untaggedIssueCard": {
             "add": "添加",
+            "add_these_labels_on_github": "在 GitHub 上添加这些标签",
             "added": "已添加",
-            "no_label_fits": "没有合适的标签"
+            "click_to_remove": "点击移除",
+            "no_label_fits": "没有合适的标签",
+            "read_only_repo_needs_triage_or_push_access": "仓库只读 — 需要 triage 或 push 权限"
           }
         },
         "taggingView": {
+          "analyzing": "正在分析…",
+          "applying": "正在应用…",
           "applying_is_disabled_until_they_load_because_a_s": "在加载完成前无法应用，因为若建议指定了仓库已不存在的\n            标签，整批都会被拒绝。",
           "applying_needs_write_access": "应用需要写入权限",
+          "available_to_assign": "可分配",
           "carries_at_least_one_label_nothing_to_tag": "都至少有一个标签。无需标记。",
+          "clear_selection": "清除选择",
           "couldn_t_load": "无法加载",
           "couldn_t_reload_the_queue": "无法重新加载队列：",
           "defines_no_labels_yet_so_there_is_nothing_to_ass": "尚未定义任何标签，因此无可分配项。请先在上方提出几个建议，\n            创建你需要的标签，然后回到这里推荐标签。",
           "every_open_issue_in": "以下位置的每个待处理 issue：",
           "loading_the_untagged_queue": "正在加载未标记队列…",
           "newest_first": "最新优先",
+          "read_only_repo_needs_triage_or_push_access": "仓库只读 — 需要 triage 或 push 权限",
           "reload_the_untagged_queue": "重新加载未标记队列",
           "repo_labels": "仓库标签",
           "s_labels": "的标签：",
+          "select_all": "全选",
           "untagged": "未标记",
           "untagged_issues": "未标记的 issue",
-          "what_you_see_below_is_the_previous_result_not_th": "下方显示的是上一次的结果，而非当前状态。"
+          "what_you_see_below_is_the_previous_result_not_th": "下方显示的是上一次的结果，而非当前状态。",
+          "write_every_staged_label_to_github": "将所有暂存的标签写入 GitHub"
         }
       },
       "welcomeCarousel": {
@@ -705,6 +855,8 @@
       "workflowRunTree": {
         "agent_other": "{{count}} 个代理",
         "budget": "预算",
+        "cancelled": "已取消",
+        "result": "结果",
         "waiting_for_events": "等待事件…"
       },
       "workflowSourcePanel": {
@@ -712,7 +864,11 @@
         "could_not_load_source": "无法加载源码：",
         "edit": "编辑",
         "invalid_fix_before_rerun": "无效 — 重新运行前请先修复：",
+        "invalid_script": "脚本无效",
+        "loading": "正在加载…",
         "no_source_captured_for_this_run": "本次运行未捕获源码。",
+        "rerun_with_edits": "修改后重新运行",
+        "rerunning": "正在重新运行…",
         "started_run": "已启动运行",
         "view_source": "查看源码"
       },
@@ -724,6 +880,7 @@
         "request_failed": "请求失败：",
         "run": "运行",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "运行一个工作流即可在此查看其阶段、代理和结果。",
+        "running": "正在运行…",
         "validate": "校验",
         "workflow_script_python": "工作流脚本 (Python)",
         "workflow_source": "工作流源码",
@@ -732,9 +889,12 @@
       "workflowsRuns": {
         "background_runs": "后台运行",
         "budget": "预算",
+        "cancel": "取消",
+        "cancelling": "正在取消…",
         "could_not_load_runs": "无法加载运行记录：",
         "events": "事件",
         "no_background_runs_yet_runs_started_in_the_backg": "暂无后台运行。在后台启动的运行会显示在这里。",
+        "run_detail": "运行详情",
         "select_a_run_to_see_its_phases_agents_and_result": "选择一次运行以查看其阶段、代理和结果。"
       }
     }
@@ -1330,15 +1490,6 @@
       "start_in_new_worktree": "在新工作树中开始",
       "suggested_follow_up_other": "建议的后续操作",
       "this_session_has_no_project_directory_so_there_i": "此会话没有项目目录路径，因此没有可用于开分支的仓库"
-    },
-    "inboundLinkChip": {
-      "confirm_release": "解除此会话与 {{label}} 的关联？\n\n那里发送的消息将不再到达此处，回复也将不再发送到那里。你可以在该频道使用 !sessions 重新关联。",
-      "driven_from": "由 {{label}} 驱动",
-      "release": "解除",
-      "release_aria": "解除此会话与 {{label}} 的关联",
-      "release_failed": "无法解除会话关联：{{reason}}",
-      "released": "已解除与 {{label}} 的关联",
-      "tooltip": "此会话与 {{label}} 双向连接：回复会发送到那里，那里发送的消息也会到达此处。"
     },
     "inboundLinkChip": {
       "confirm_release": "解除此会话与 {{label}} 的关联？\n\n那里发送的消息将不再到达此处，回复也将不再发送到那里。你可以在该频道使用 !sessions 重新关联。",
@@ -2385,19 +2536,66 @@
     }
   },
   "hooks": {
+    "mic": {
+      "could_not_start_the_microphone": "无法启动麦克风。",
+      "microphone_is_unavailable_another_app_may_be_usi": "麦克风不可用 — 可能有其他应用正在使用。",
+      "microphone_permission_denied_allow_mic_access_in": "未获得麦克风权限。在操作系统和浏览器设置中允许麦克风访问。",
+      "no_microphone_found_connect_one_or_pick_a_differ": "未找到麦克风。连接一个麦克风，或在设置中选择其他设备。"
+    },
+    "useCronActions": {
+      "failed_to_cancel_job": "取消任务失败",
+      "failed_to_open_in_chat": "在聊天中打开失败",
+      "failed_to_run_job": "运行任务失败"
+    },
+    "useKeyboardShortcuts": {
+      "close_this_session": "关闭此会话？"
+    },
     "useSceneInteraction": {
+      "all_slots_are_occupied": "所有槽位都已占用",
       "approve": "批准",
       "click_for_thread": "点击查看话题",
       "close_thread_view": "关闭话题视图",
       "couldn_t_load_messages": "无法加载消息",
+      "create_a_new_chat_session_a_new_agent_joins_this": "创建新的聊天会话 — 会有新代理加入这个世界",
+      "cron_running": "定时任务 · 运行中",
       "deny": "拒绝",
       "failed": "失败",
+      "idle": "空闲",
       "kiro_is_working": "kiro 正在工作…",
       "loading_thread": "加载话题…",
+      "message_sent": "消息已发送",
+      "message_this_agent": "给此代理发消息…",
       "needs_approval": "需要审批：",
+      "new_session": "+ 新建会话",
       "no_messages_yet": "暂无消息",
       "open_chat": "打开聊天",
-      "waiting_on_approval": "等待审批："
+      "retry": "重试",
+      "retry_sending_message": "重新发送消息",
+      "send": "发送",
+      "send_message": "发送消息",
+      "sending_message": "正在发送消息",
+      "steer_this_agent": "引导此代理…",
+      "summoning": "正在召唤…",
+      "waiting_on_approval": "等待审批：",
+      "working": "工作中"
+    },
+    "useSessionActions": {
+      "close_this_session": "关闭此会话？",
+      "switch_to_autopilot_mode_future_messages_will_us": "切换到自动驾驶模式？后续消息将采用自动驾驶行为（规划 → 审批 → 执行）。",
+      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。"
+    },
+    "useStreamingStt": {
+      "audio_worklet_unavailable": "audio worklet 不可用",
+      "stt_connection_error": "语音转文字连接错误",
+      "stt_connection_lost": "语音转文字连接已断开",
+      "stt_error": "语音转文字错误"
+    },
+    "useVoiceInput": {
+      "transcription_request_failed": "转写请求失败。"
+    },
+    "useWebSocket": {
+      "a_task_needs_your_decision": "有任务需要你决策",
+      "approval_required": "需要审批"
     }
   },
   "nav": {
@@ -5480,6 +5678,16 @@
         "description": "文字转语音与语音转文字（听写）设置",
         "label": "语音"
       }
+    }
+  },
+  "utils": {
+    "cronUtils": {
+      "create": "创建",
+      "save": "保存",
+      "saving": "保存中…"
+    },
+    "popoutController": {
+      "your_browser_blocked_the_pop_out_window_allow_po": "浏览器阻止了弹出窗口。允许此站点的弹出窗口后重试。"
     }
   }
 }

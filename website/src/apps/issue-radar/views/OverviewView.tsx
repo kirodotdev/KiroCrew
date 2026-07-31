@@ -62,12 +62,12 @@ export default function OverviewView() {
   const pct = (n: number) => (open ? Math.round((n / open) * 100) : 0)
 
   const tiles = [
-    { key: 'open', label: 'Open issues', value: open, sub: '' },
-    { key: 'untriaged', label: 'Untriaged', value: stats.untriaged, sub: open ? `${pct(stats.untriaged)}% of open` : '' },
-    { key: 'unanswered', label: 'Unanswered', value: stats.unanswered, sub: '0 comments' },
-    { key: 'unassigned', label: 'Unassigned', value: stats.unassigned, sub: 'no owner' },
-    { key: 'stale', label: 'Stale', value: stats.stale, sub: '> 30d idle' },
-    { key: 'fresh', label: 'New this week', value: stats.fresh, sub: 'last 7 days' },
+    { key: 'open', label: i18nT('apps.issueRadar.views.overviewView.open_issues'), value: open, sub: '' },
+    { key: 'untriaged', label: i18nT('apps.issueRadar.views.overviewView.untriaged'), value: stats.untriaged, sub: open ? `${pct(stats.untriaged)}% of open` : '' },
+    { key: 'unanswered', label: i18nT('apps.issueRadar.views.overviewView.unanswered'), value: stats.unanswered, sub: i18nT('apps.issueRadar.views.overviewView.0_comments') },
+    { key: 'unassigned', label: i18nT('apps.issueRadar.views.overviewView.unassigned'), value: stats.unassigned, sub: i18nT('apps.issueRadar.views.overviewView.no_owner') },
+    { key: 'stale', label: i18nT('apps.issueRadar.views.overviewView.stale'), value: stats.stale, sub: i18nT('apps.issueRadar.views.overviewView.30d_idle') },
+    { key: 'fresh', label: i18nT('apps.issueRadar.views.overviewView.new_this_week'), value: stats.fresh, sub: i18nT('apps.issueRadar.views.overviewView.last_7_days') },
   ]
 
   // ── needs attention: open issues with a clear triage gap (needs triage OR no
@@ -110,10 +110,10 @@ export default function OverviewView() {
 
   const maxAge = Math.max(1, ...stats.ageBuckets)
   const ageRows = [
-    { label: '< 1 week', n: stats.ageBuckets[0] },
-    { label: '1–4 weeks', n: stats.ageBuckets[1] },
-    { label: '1–6 months', n: stats.ageBuckets[2] },
-    { label: '> 6 months', n: stats.ageBuckets[3] },
+    { label: i18nT('apps.issueRadar.views.overviewView.1_week'), n: stats.ageBuckets[0] },
+    { label: i18nT('apps.issueRadar.views.overviewView.1_4_weeks'), n: stats.ageBuckets[1] },
+    { label: i18nT('apps.issueRadar.views.overviewView.1_6_months'), n: stats.ageBuckets[2] },
+    { label: i18nT('apps.issueRadar.views.overviewView.6_months'), n: stats.ageBuckets[3] },
   ]
 
   return (
@@ -169,10 +169,10 @@ export default function OverviewView() {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
             {needsAttention.map((i) => {
               const tags: string[] = []
-              if (needsTriage(i)) tags.push('untriaged')
-              if (i.comments === 0) tags.push('no reply')
-              if (isGoodFirstIssue(i)) tags.push('good first issue')
-              if (i.author_association === 'FIRST_TIME_CONTRIBUTOR') tags.push('first-timer')
+              if (needsTriage(i)) tags.push(i18nT('apps.issueRadar.views.overviewView.untriaged_2'))
+              if (i.comments === 0) tags.push(i18nT('apps.issueRadar.views.overviewView.no_reply'))
+              if (isGoodFirstIssue(i)) tags.push(i18nT('apps.issueRadar.views.overviewView.good_first_issue'))
+              if (i.author_association === 'FIRST_TIME_CONTRIBUTOR') tags.push(i18nT('apps.issueRadar.views.overviewView.first_timer'))
               return (
                 <button
                   key={i.number}

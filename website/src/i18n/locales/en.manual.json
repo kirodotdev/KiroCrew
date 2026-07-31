@@ -1,4 +1,238 @@
 {
+  "api": {
+    "client": {
+      "paste_token_url_or_raw_token": "Paste token URL or raw token…",
+      "rate_limited_by_the_tunnel_edge_http_429_too_man": "Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. The dashboard retries automatically; if this persists, wait a few seconds and reload.",
+      "session_expired": "Session expired."
+    }
+  },
+  "app": {
+    "bonus_credits": "Bonus credits",
+    "builder_id": "Builder ID",
+    "check_logs_for_details": "Check logs for details.",
+    "collapse_sidebar": "Collapse sidebar",
+    "cpu_unavailable": "CPU: unavailable",
+    "disk_unavailable": "Disk: unavailable",
+    "expand_sidebar": "Expand sidebar",
+    "gateway_connected": "Gateway connected",
+    "gateway_offline": "Gateway offline",
+    "hide_full_changelog": "▾ Hide Full Changelog",
+    "i_d_like_to_request_a_feature": "I’d like to request a feature!",
+    "iam_identity_center": "IAM Identity Center",
+    "memory_unavailable": "Memory: unavailable",
+    "metrics_are_stale_latest_fetch_failed": "Metrics are stale, latest fetch failed",
+    "show_fewer_apps": "Show fewer apps",
+    "show_less": "Show less",
+    "social_login": "Social login",
+    "starting_update": "Starting update…",
+    "update_failed_2": "Update failed",
+    "view_full_changelog": "▸ View Full Changelog"
+  },
+  "appSdk": {
+    "chatEmbed": {
+      "agent_is_working": "Agent is working...",
+      "message": "Message..."
+    }
+  },
+  "apps": {
+    "autoResearch": {
+      "grillTree": {
+        "collapse": "Collapse",
+        "excluded": "Excluded",
+        "expand_2": "Expand",
+        "included": "Included"
+      },
+      "researchLabPage": {
+        "add": "Add",
+        "add_to_knowledge": "Add to Knowledge",
+        "adding": "Adding…",
+        "answer_resume": "Answer & resume",
+        "challenging": "Challenging…",
+        "copied": "Copied!",
+        "copy": "Copy",
+        "could_not_generate_challenges_please_try_again": "Could not generate challenges. Please try again.",
+        "emergent": "emergent",
+        "export_as_artifact": "Export as Artifact",
+        "exporting": "Exporting…",
+        "failed_to_add_to_knowledge_library": "Failed to add to Knowledge Library",
+        "failed_to_start_campaign_please_try_again": "Failed to start campaign — please try again.",
+        "fork_failed_no_campaign_was_created": "Fork failed: no campaign was created.",
+        "fork_failed_please_try_again": "Fork failed. Please try again.",
+        "forking": "Forking…",
+        "goal_not_yet": "Goal: not yet",
+        "grill_me": "Grill me →",
+        "grilling": "Grilling…",
+        "hide_report": "Hide report",
+        "one_campaign_at_a_time": "One campaign at a time",
+        "regenerate": "Regenerate",
+        "regenerating": "Regenerating…",
+        "send": "Send",
+        "sending": "Sending…",
+        "start_campaign": "Start Campaign",
+        "starting": "Starting...",
+        "the_agent_is_waiting_for_your_direction": "The agent is waiting for your direction.",
+        "the_campaign_stopped_unexpectedly": "The campaign stopped unexpectedly.",
+        "validation_failed_check_your_connection_and_try": "Validation failed — check your connection and try again.",
+        "your_guidance": "your guidance"
+      }
+    },
+    "codeReviewSage": {
+      "codeReviewSagePage": {
+        "active_loaded_during_reviews_uncheck_to_disable": "Active — loaded during reviews (uncheck to disable)",
+        "inactive_check_to_load_during_reviews": "Inactive — check to load during reviews",
+        "review": "Review",
+        "running": "Running…"
+      }
+    },
+    "fileExplorer": {
+      "searchPanel": {
+        "search_failed": "search failed",
+        "searching": "searching..."
+      }
+    },
+    "issueRadar": {
+      "components": {
+        "agentSessionButton": {
+          "resume": "Resume"
+        },
+        "filterRow": {
+          "sign_in_with_the_gh_cli_to_use_this_filter": "Sign in with the gh CLI to use this filter"
+        },
+        "filtersSection": {
+          "no_repo_members_found_among_these_issues": "No repo members found among these issues"
+        },
+        "investigateButton": {
+          "could_not_check_for_an_existing_investigation_re": "Could not check for an existing investigation — retrying on refresh",
+          "investigated": "Investigated",
+          "investigating": "Investigating",
+          "open_an_ai_investigation_chat_session_for_this_i": "Open an AI investigation chat session for this issue",
+          "resume_the_ai_investigation_chat_session_for_thi": "Resume the AI investigation chat session for this issue"
+        },
+        "issueDetail": {
+          "as_completed": "as completed",
+          "as_not_planned": "as not planned",
+          "commented": "commented",
+          "issue": "Issue",
+          "link_copied": "Link copied",
+          "opened_this_issue": "opened this issue",
+          "read_only_connect_with_triage_push_access_to_app_2": "Read-only — connect with triage/push access to apply"
+        },
+        "issueList": {
+          "closed_issues_are_capped_at_the_100_most_recentl": "Closed issues are capped at the 100 most recently updated"
+        },
+        "labelPicker": {
+          "this_repo_has_no_labels": "This repo has no labels."
+        },
+        "prDetail": {
+          "check_status_unavailable": "Check status unavailable",
+          "commented": "commented",
+          "link_copied": "Link copied",
+          "no_automated_checks": "No automated checks"
+        },
+        "prFiltersSection": {
+          "sign_in_to_gh_to_filter_by_your_review_requests": "Sign in to gh to filter by your review requests"
+        },
+        "prList": {
+          "closed_merged_prs_are_capped_at_the_100_most_rec": "Closed/merged PRs are capped at the 100 most recently updated — turn on a \"me\" filter for a complete, repo-wide search",
+          "resolved_by_github_search_across_the_whole_repo": "Resolved by GitHub search across the whole repo — not limited to the 100 most recent"
+        },
+        "refLink": {
+          "closed": "Closed",
+          "closed_as_not_planned": "Closed as not planned",
+          "draft": "Draft",
+          "merged": "Merged",
+          "open": "Open"
+        }
+      },
+      "connectPanel": {
+        "couldn_t_read_far_enough_back_through_your_activ": "Couldn’t read far enough back through your activity — paste a URL below instead.",
+        "most_recent_activity": "most recent activity",
+        "no_contributions_in_the_last_month_paste_a_url_b": "No contributions in the last month — paste a URL below instead."
+      },
+      "views": {
+        "overviewView": {
+          "0_comments": "0 comments",
+          "1_4_weeks": "1–4 weeks",
+          "1_6_months": "1–6 months",
+          "1_week": "< 1 week",
+          "30d_idle": "> 30d idle",
+          "6_months": "> 6 months",
+          "first_timer": "first-timer",
+          "good_first_issue": "good first issue",
+          "last_7_days": "last 7 days",
+          "new_this_week": "New this week",
+          "no_owner": "no owner",
+          "no_reply": "no reply",
+          "open_issues": "Open issues",
+          "stale": "Stale",
+          "unanswered": "Unanswered",
+          "unassigned": "Unassigned",
+          "untriaged": "Untriaged",
+          "untriaged_2": "untriaged"
+        },
+        "settings": {
+          "repoSettings": {
+            "confirm_disconnect": "Confirm disconnect",
+            "couldn_t_load_saved_settings": "Couldn't load saved settings.",
+            "couldn_t_save_your_changes": "Couldn't save your changes.",
+            "counting_open_issues": "Counting open issues…",
+            "disconnecting": "Disconnecting…",
+            "no_members_found_for_this_repo": "No members found for this repo.",
+            "proposing_new_labels_for_this_repo_now_lives_on": "Proposing NEW labels for this repo now lives on the Tagging dashboard, next to the untagged issues those labels get applied to.",
+            "watch_this_repo_in_the_background_and_post_a_kir": "Watch this repo in the background and post a KiroCrew notification whenever a new issue is opened.",
+            "which_labels_mark_newcomer_friendly_work_so_issu": "Which labels mark newcomer-friendly work, so Issue Radar can surface issues to route to first-time contributors.",
+            "which_labels_mean_an_issue_still_needs_triage_dr": "Which labels mean an issue still needs triage. Drives the Overview's “Untriaged” count and the needs-attention queue."
+          }
+        },
+        "tagging": {
+          "labelsPanel": {
+            "analyzing": "Analyzing…",
+            "couldn_t_read_this_repo_s_labels_retry_with_the": "Couldn't read this repo's labels — retry with the refresh button.",
+            "create": "Create",
+            "create_this_label_on_github": "Create this label on GitHub",
+            "creating": "Creating…",
+            "read_only_repo_needs_triage_push_access": "Read-only repo — needs triage/push access",
+            "suggest_again": "Suggest again",
+            "suggest_new_labels": "Suggest new labels"
+          },
+          "untaggedIssueCard": {
+            "add_these_labels_on_github": "Add these labels on GitHub",
+            "click_to_remove": "Click to remove",
+            "read_only_repo_needs_triage_or_push_access": "Read-only repo — needs triage or push access"
+          }
+        },
+        "taggingView": {
+          "analyzing": "Analyzing…",
+          "applying": "Applying…",
+          "available_to_assign": "available to assign",
+          "clear_selection": "Clear selection",
+          "read_only_repo_needs_triage_or_push_access": "Read-only repo — needs triage or push access",
+          "select_all": "Select all",
+          "write_every_staged_label_to_github": "Write every staged label to GitHub"
+        }
+      }
+    },
+    "workflows": {
+      "workflowRunTree": {
+        "cancelled": "Cancelled",
+        "result": "Result"
+      },
+      "workflowSourcePanel": {
+        "invalid_script": "Invalid script",
+        "loading": "loading…",
+        "rerun_with_edits": "Rerun with edits",
+        "rerunning": "Rerunning…"
+      },
+      "workflowsPage": {
+        "running": "Running…"
+      },
+      "workflowsRuns": {
+        "cancel": "Cancel",
+        "cancelling": "Cancelling…",
+        "run_detail": "Run detail"
+      }
+    }
+  },
   "components": {
     "approvalModePicker": {
       "approval_mode_aria": "Approval mode: {{mode}}",
@@ -523,6 +757,57 @@
       "creating": "Creating…",
       "failed_to_create_workspace": "Failed to create workspace",
       "name_required": "Name required"
+    }
+  },
+  "hooks": {
+    "mic": {
+      "could_not_start_the_microphone": "Could not start the microphone.",
+      "microphone_is_unavailable_another_app_may_be_usi": "Microphone is unavailable — another app may be using it.",
+      "microphone_permission_denied_allow_mic_access_in": "Microphone permission denied. Allow mic access in your OS and browser settings.",
+      "no_microphone_found_connect_one_or_pick_a_differ": "No microphone found. Connect one or pick a different device in Settings."
+    },
+    "useCronActions": {
+      "failed_to_cancel_job": "Failed to cancel job",
+      "failed_to_open_in_chat": "Failed to open in chat",
+      "failed_to_run_job": "Failed to run job"
+    },
+    "useKeyboardShortcuts": {
+      "close_this_session": "Close this session?"
+    },
+    "useSceneInteraction": {
+      "all_slots_are_occupied": "All slots are occupied",
+      "create_a_new_chat_session_a_new_agent_joins_this": "Create a new chat session — a new agent joins this world",
+      "cron_running": "Cron · running",
+      "idle": "Idle",
+      "message_sent": "Message sent",
+      "message_this_agent": "Message this agent…",
+      "new_session": "+ New session",
+      "retry": "Retry",
+      "retry_sending_message": "Retry sending message",
+      "send": "Send",
+      "send_message": "Send message",
+      "sending_message": "Sending message",
+      "steer_this_agent": "Steer this agent…",
+      "summoning": "summoning…",
+      "working": "Working"
+    },
+    "useSessionActions": {
+      "close_this_session": "Close this session?",
+      "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
+      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
+    },
+    "useStreamingStt": {
+      "audio_worklet_unavailable": "audio worklet unavailable",
+      "stt_connection_error": "stt connection error",
+      "stt_connection_lost": "stt connection lost",
+      "stt_error": "stt error"
+    },
+    "useVoiceInput": {
+      "transcription_request_failed": "Transcription request failed."
+    },
+    "useWebSocket": {
+      "a_task_needs_your_decision": "A task needs your decision",
+      "approval_required": "Approval Required"
     }
   },
   "nav": {
@@ -1193,6 +1478,16 @@
         "description": "Text-to-speech and speech-to-text (dictation) settings",
         "label": "Voice"
       }
+    }
+  },
+  "utils": {
+    "cronUtils": {
+      "create": "Create",
+      "save": "Save",
+      "saving": "Saving..."
+    },
+    "popoutController": {
+      "your_browser_blocked_the_pop_out_window_allow_po": "Your browser blocked the pop-out window. Allow pop-ups for this site and try again."
     }
   }
 }

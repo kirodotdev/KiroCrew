@@ -129,8 +129,8 @@ export default function LabelsPanel({
           >
             <Wand2 size={12} className={generate.isPending ? 'animate-pulse' : ''} />
             {generate.isPending
-              ? 'Analyzing…'
-              : recommendations === null ? 'Suggest new labels' : 'Suggest again'}
+              ? i18nT('apps.issueRadar.views.tagging.labelsPanel.analyzing')
+              : recommendations === null ? i18nT('apps.issueRadar.views.tagging.labelsPanel.suggest_new_labels') : i18nT('apps.issueRadar.views.tagging.labelsPanel.suggest_again')}
           </button>
         </div>
       </div>
@@ -140,7 +140,7 @@ export default function LabelsPanel({
         <div className="text-[14px] text-muted">
           {labelsKnown
             ? `${owner}/${repo} defines no labels yet — suggest some to get started.`
-            : "Couldn't read this repo's labels — retry with the refresh button."}
+            : i18nT('apps.issueRadar.views.tagging.labelsPanel.couldn_t_read_this_repo_s_labels_retry_with_the')}
         </div>
       ) : (
         <div className="flex flex-wrap gap-1.5">
@@ -272,13 +272,13 @@ export default function LabelsPanel({
                         // two overlapping patches lose one of the new labels.
                         disabled={!canWrite || createLabel.isPending}
                         aria-label={`Create the ${rec.name} label on GitHub`}
-                        title={canWrite ? 'Create this label on GitHub' : 'Read-only repo — needs triage/push access'}
+                        title={canWrite ? i18nT('apps.issueRadar.views.tagging.labelsPanel.create_this_label_on_github') : i18nT('apps.issueRadar.views.tagging.labelsPanel.read_only_repo_needs_triage_push_access')}
                         // Same accent treatment as the queue's Add button: both are
                         // the row's one write action, so they should read alike.
                         className="inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded border border-accent/40 text-accent hover:bg-accent-subtle disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer bg-transparent"
                       >
                         <Plus size={11} className={isCreating ? 'animate-pulse' : ''} />
-                        {isCreating ? 'Creating…' : 'Create'}
+                        {isCreating ? i18nT('apps.issueRadar.views.tagging.labelsPanel.creating') : i18nT('apps.issueRadar.views.tagging.labelsPanel.create')}
                       </button>
                     )}
                   </div>

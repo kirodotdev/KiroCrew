@@ -50,7 +50,7 @@ export default function LabelPicker({
 
   if (loading) return <div className="text-[12px] text-muted py-2">{i18nT('apps.issueRadar.components.labelPicker.loading_labels')}</div>
   if (error) return <div className="text-[12px] text-danger py-2">{error.message}</div>
-  if (labels.length === 0) return <div className="text-[12px] text-muted py-2">{emptyText ?? 'This repo has no labels.'}</div>
+  if (labels.length === 0) return <div className="text-[12px] text-muted py-2">{emptyText ?? i18nT('apps.issueRadar.components.labelPicker.this_repo_has_no_labels')}</div>
 
   return (
     <div>

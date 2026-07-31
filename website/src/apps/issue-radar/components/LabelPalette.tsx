@@ -53,7 +53,7 @@ export default function LabelPalette({
         {labels.length > 0 && (
           <button
             onClick={toggleSearch}
-            aria-label={searchOpen ? 'Close label search' : 'Search labels'}
+            aria-label={searchOpen ? i18nT('apps.issueRadar.components.labelPalette.close_label_search') : i18nT('apps.issueRadar.components.labelPalette.search_labels')}
             aria-expanded={searchOpen}
             title={i18nT('apps.issueRadar.components.labelPalette.search_labels')}
             className={`ml-auto p-0.5 rounded cursor-pointer bg-transparent transition-colors ${

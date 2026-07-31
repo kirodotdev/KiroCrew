@@ -1,27 +1,46 @@
 {
+  "api": {
+    "client": {
+      "paste_token_url_or_raw_token": "टोकन URL या सीधा टोकन पेस्ट करें…",
+      "rate_limited_by_the_tunnel_edge_http_429_too_man": "टनल एज ने रेट-लिमिट लगा दिया (HTTP 429) — कम समय में बहुत ज़्यादा अनुरोध। डैशबोर्ड अपने आप फिर कोशिश करता है; अगर यह बना रहे, तो कुछ सेकंड रुककर रीलोड करें।",
+      "session_expired": "सत्र समाप्त हो गया।"
+    }
+  },
   "app": {
     "a_newer_version_is_available_no_changelog_entry": "नया संस्करण उपलब्ध है। इस रिलीज़ के लिए कोई चेंजलॉग प्रविष्टि नहीं जोड़ी गई।",
     "across_chat_agents_mcp_and_subagents": "— चैट, एजेंट, MCP और सब-एजेंट, सब में।",
     "apps": "ऐप्स",
     "auto_update_on_restart": "रीस्टार्ट पर ऑटो-अपडेट",
+    "bonus_credits": "बोनस क्रेडिट",
     "breakdown": "विवरण",
+    "builder_id": "Builder ID",
     "cancel_update": "अपडेट रद्द करें",
     "changelog": "चेंजलॉग",
+    "check_logs_for_details": "विवरण के लिए लॉग देखें।",
     "checking_usage_running": "उपयोग जाँचा जा रहा है — चालू",
     "click_to_hide": "छिपाने के लिए क्लिक करें",
     "close": "बंद करें",
+    "collapse_sidebar": "साइडबार समेटें",
     "contact_us": "संपर्क करें",
     "cpu": "CPU",
+    "cpu_unavailable": "CPU: अनुपलब्ध",
     "credits": "क्रेडिट",
     "credits_total": "कुल क्रेडिट",
     "developer": "डेवलपर",
     "discord_community": "Discord कम्युनिटी",
+    "disk_unavailable": "डिस्क: अनुपलब्ध",
     "dismiss": "खारिज करें",
     "dsk": "DSK",
     "est_overage_cost": "अनु. अतिरिक्त उपयोग लागत",
+    "expand_sidebar": "साइडबार विस्तृत करें",
     "explore": "एक्सप्लोर",
     "explore_apps": "ऐप्स एक्सप्लोर करें",
+    "gateway_connected": "गेटवे कनेक्ट है",
+    "gateway_offline": "गेटवे ऑफ़लाइन",
     "github_repository": "GitHub रिपॉज़िटरी",
+    "hide_full_changelog": "▾ पूरा चेंजलॉग छिपाएँ",
+    "i_d_like_to_request_a_feature": "मुझे एक फ़ीचर का अनुरोध करना है!",
+    "iam_identity_center": "IAM Identity Center",
     "k_search_for_anything": "⌘K — कुछ भी खोजें…",
     "kiro_cli_usage": "kiro-cli /usage",
     "kiro_credit_usage_checking": "Kiro क्रेडिट उपयोग — जाँचा जा रहा है…",
@@ -34,6 +53,8 @@
     "main_navigation": "मुख्य नेविगेशन",
     "manage_account": "खाता प्रबंधित करें",
     "mem": "MEM",
+    "memory_unavailable": "मेमोरी: अनुपलब्ध",
+    "metrics_are_stale_latest_fetch_failed": "मेट्रिक्स पुराने हैं, नवीनतम फ़ेच विफल रहा",
     "metrics_unavailable": "मेट्रिक्स अनुपलब्ध",
     "monthly_kiro_credit_usage_from": "मासिक Kiro क्रेडिट उपयोग, प्रारंभ तिथि",
     "notifications": "सूचनाएँ",
@@ -50,7 +71,11 @@
     "resets": "रीसेट होगा",
     "search_everywhere_k": "हर जगह खोजें (⌘K)",
     "search_sessions_files_and_commands": "सत्र, फ़ाइलें और कमांड खोजें",
+    "show_fewer_apps": "कम ऐप्स दिखाएँ",
+    "show_less": "कम दिखाएँ",
     "skip_to_content": "सामग्री पर जाएँ",
+    "social_login": "सोशल लॉगिन",
+    "starting_update": "अपडेट शुरू हो रहा है…",
     "system_metrics": "सिस्टम मेट्रिक्स",
     "terminal": "Terminal",
     "this_step_seems_to_be_taking_longer_than_expecte": "इस चरण में अपेक्षा से अधिक समय लग रहा है।",
@@ -58,15 +83,19 @@
     "update_available_2": "अपडेट उपलब्ध",
     "update_error": "अपडेट त्रुटि",
     "update_failed": "अपडेट विफल",
+    "update_failed_2": "अपडेट विफल",
     "update_now": "अभी अपडेट करें",
     "updating_kirocrew": "KiroCrew अपडेट हो रहा है…",
     "v": "v",
+    "view_full_changelog": "▸ पूरा चेंजलॉग देखें",
     "what_s_new": "नया क्या है",
     "you_re_on_the_latest_version": "आप नवीनतम संस्करण पर हैं"
   },
   "appSdk": {
     "chatEmbed": {
+      "agent_is_working": "एजेंट काम कर रहा है...",
       "chat_message": "चैट संदेश",
+      "message": "संदेश...",
       "send": "भेजें",
       "send_message": "संदेश भेजें",
       "session_ready_type_a_message_to_start": "सत्र तैयार है। शुरू करने के लिए संदेश टाइप करें।",
@@ -80,7 +109,11 @@
         "answer": "उत्तर दें…",
         "answered": "उत्तर दिया:",
         "clarifier_answer": "स्पष्टीकरण का उत्तर",
+        "collapse": "समेटें",
+        "excluded": "बाहर रखा गया",
         "expand": "विस्तृत करें",
+        "expand_2": "विस्तृत करें",
+        "included": "शामिल",
         "investigate_instead": "इसके बजाय जाँच करें",
         "max_depth_add_research_manually_or_prune": "अधिकतम गहराई — शोध मैन्युअल रूप से जोड़ें या छाँटें",
         "no_suggestions_add_manually_or_retry": "कोई सुझाव नहीं — मैन्युअल रूप से जोड़ें या फिर कोशिश करें",
@@ -95,26 +128,34 @@
         "60s": "60s",
         "active": "सक्रिय",
         "adaptive": "(अनुकूली)",
+        "add": "उप-प्रश्न जोड़ें",
         "add_guidance_or_a_sub_question": "मार्गदर्शन या उप-प्रश्न जोड़ें",
         "add_guidance_or_a_sub_question_enter_shift_enter": "मार्गदर्शन या उप-प्रश्न जोड़ें… (Enter; नई पंक्ति के लिए Shift+Enter)",
         "add_sub_question_manually": "उप-प्रश्न मैन्युअल रूप से जोड़ें",
         "add_sub_question_manually_enter_shift_enter_for": "उप-प्रश्न मैन्युअल रूप से जोड़ें (Enter; नई पंक्ति के लिए Shift+Enter)",
+        "add_to_knowledge": "ज्ञान में जोड़ें",
         "add_your_own_sub_question_or_guidance": "अपना उप-प्रश्न या मार्गदर्शन जोड़ें",
         "add_your_own_sub_question_or_guidance_enter_shif": "अपना उप-प्रश्न या मार्गदर्शन जोड़ें (Enter; नई लाइन के लिए Shift+Enter)",
         "added_to_knowledge": "ज्ञान-भंडार में जोड़ा गया",
+        "adding": "जोड़ा जा रहा है…",
         "agent": "एजेंट",
         "agent_needs_input": "एजेंट को इनपुट चाहिए",
         "all_checks_passed": "सभी जाँच पास हुईं",
         "already_in_knowledge": "पहले से ज्ञान-भंडार में है",
         "answer_challenges_to_refine_or_just_pick_sub_que": "परिष्कृत करने के लिए चुनौतियों के उत्तर दें, या बस उप-प्रश्न चुनकर फ़ोर्क करें।",
         "answer_clarifiers_to_refine_or_just_pick_sub_que": "परिष्कृत करने के लिए स्पष्टीकरण प्रश्नों के उत्तर दें, या बस उप-प्रश्न चुनकर आगे बढ़ें।",
+        "answer_resume": "उत्तर दें और फिर शुरू करें",
         "back": "← वापस",
         "cancel": "रद्द करें",
         "challenge_findings": "निष्कर्षों को चुनौती दें →",
         "challenge_the_findings_from": "इनके निष्कर्षों को चुनौती दें: \"",
+        "challenging": "चुनौती दी जा रही है…",
         "continue": "जारी रखें",
         "continue_research": "शोध जारी रखें",
+        "copied": "कॉपी हो गया!",
+        "copy": "कॉपी करें",
         "copy_this_section_s_markdown_to_paste_into_chat": "इस सेक्शन का markdown कॉपी करें और चैट या ऑटोपायलट में पेस्ट करें",
+        "could_not_generate_challenges_please_try_again": "चुनौतियाँ नहीं बनाई जा सकीं। कृपया फिर कोशिश करें।",
         "cycle": "चक्र",
         "cycles": "चक्र,",
         "cycles_2": "चक्र",
@@ -125,19 +166,31 @@
         "dynamic_workflow": "डायनामिक वर्कफ़्लो",
         "dynamic_workflow_can_fan_out_to_many_sub_agents": "डायनामिक वर्कफ़्लो कई सब-एजेंट तक फैल सकता है, और बजट सीमा तक पहुँचने पर रन को तुरंत रोक देता है (बीच का संश्लेषण खो सकता है)। शुरुआत रूढ़िवादी चक्र/वर्कर सीमाओं से करें।",
         "e_g_ai_code_review_finds_no_blocking_issues_and": "उदा. AI कोड समीक्षा में कोई अवरोधक समस्या न मिले और टेस्ट बिल्ड पास हो जाए",
+        "emergent": "स्वतः उभरा",
+        "export_as_artifact": "आर्टिफ़ैक्ट के रूप में एक्सपोर्ट करें",
+        "exporting": "एक्सपोर्ट हो रहा है…",
+        "failed_to_add_to_knowledge_library": "ज्ञान लाइब्रेरी में जोड़ने में विफल",
         "failed_to_export_as_artifact": "आर्टिफ़ैक्ट के रूप में एक्सपोर्ट करने में विफल",
+        "failed_to_start_campaign_please_try_again": "अभियान शुरू करने में विफल — कृपया फिर कोशिश करें।",
         "findings": "निष्कर्ष",
         "findings_2": "निष्कर्ष (",
         "findings_so_far_are_preserved_below": "अब तक के निष्कर्ष नीचे सुरक्षित हैं।",
         "first_cycle_in_progress": "पहला चक्र चल रहा है...",
         "focus_on": "इस पर ध्यान दें...",
         "fork_challenge": "फ़ोर्क करें और चुनौती दें",
+        "fork_failed_no_campaign_was_created": "फ़ोर्क विफल: कोई अभियान नहीं बना।",
+        "fork_failed_please_try_again": "फ़ोर्क विफल। कृपया फिर कोशिश करें।",
         "forked": "फ़ोर्क किया गया",
         "forked_from": "फ़ोर्क का स्रोत:",
+        "forking": "फ़ोर्क हो रहा है…",
         "free_form_a_sub_question_or_an_instruction_the_a": "मुक्त-रूप — एक उप-प्रश्न या एक निर्देश जिसका एजेंट अगले चक्र में पालन करे।",
         "give_direction": "दिशा दें",
         "goal_met": "लक्ष्य पूरा हुआ",
+        "goal_not_yet": "लक्ष्य: अभी नहीं",
+        "grill_me": "मुझे परखें →",
         "grill_unavailable_add_sub_questions_manually_bel": "ग्रिल उपलब्ध नहीं — नीचे उप-प्रश्न मैन्युअल रूप से जोड़ें।",
+        "grilling": "परखा जा रहा है…",
+        "hide_report": "रिपोर्ट छिपाएँ",
         "history": "इतिहास",
         "how_do_other_teams_handle_api_rate_limiting": "अन्य टीमें API रेट लिमिटिंग को कैसे संभालती हैं?",
         "how_sub_agent_execution_is_orchestrated_both_han": "सब-एजेंट निष्पादन को कैसे ऑर्केस्ट्रेट किया जाता है। दोनों ही ओपन-एंडेड शोध संभाल लेते हैं। सेटअप के समय एक बार चुनें।",
@@ -158,13 +211,16 @@
         "nudge": "नज करें",
         "nudge_direction": "नज की दिशा",
         "nudge_direction_2": "नज की दिशा",
+        "one_campaign_at_a_time": "एक बार में एक ही अभियान",
         "one_campaign_at_a_time_research_benefits_from_fo": "एक बार में एक ही अभियान — शोध को केंद्रित गहराई से लाभ होता है।",
         "parallel_workers": "समानांतर वर्कर:",
         "parallel_workers_2": "समानांतर वर्कर",
         "pause": "रोकें",
         "pick_up_where_this_campaign_left_off": "इस अभियान को वहीं से आगे बढ़ाएँ जहाँ यह छूटा था।",
         "pre_flight_check": "प्री-फ़्लाइट जाँच:",
+        "regenerate": "पुनः बनाएँ",
         "regenerate_the_report_updates_the_same_artifact": "रिपोर्ट फिर से बनाएँ — उसी आर्टिफ़ैक्ट को नए वर्शन के रूप में अपडेट करता है",
+        "regenerating": "पुनः बनाया जा रहा है…",
         "remove_sub_question": "उप-प्रश्न हटाएँ",
         "research": "शोध “",
         "research_lab": "शोध लैब",
@@ -178,9 +234,13 @@
         "s_idle": "s निष्क्रिय। ~",
         "scripted": "(स्क्रिप्टेड)",
         "searched_empty": "खोजा गया (खाली):",
+        "send": "भेजें",
+        "sending": "भेजा जा रहा है…",
         "show_less": "कम दिखाएँ",
         "show_more": "और दिखाएँ",
         "sources": "स्रोत:",
+        "start_campaign": "अभियान शुरू करें",
+        "starting": "शुरू हो रहा है...",
         "stop": "रोकें",
         "stops_at_the_cycle_cap_when_the_definition_of_do": "चक्र सीमा पर, पूर्णता की परिभाषा पूरी होने पर, ठहराव आने पर, या जब आप इसे रोकें — तब रुक जाता है।",
         "strong": "मज़बूत",
@@ -188,22 +248,27 @@
         "sub_questions_2": "उप-प्रश्न",
         "sub_questions_guidance": "उप-प्रश्न और मार्गदर्शन (",
         "suggested_from": "सुझाए गए — स्रोत:",
+        "the_agent_is_waiting_for_your_direction": "एजेंट तुम्हारे निर्देश का इंतज़ार कर रहा है।",
         "the_ai_drives_every_round_itself_deciding_what_t": "AI हर राउंड खुद चलाता है — क्या जाँचना है यह तय करता है, सबएजेंट संभालता है, और निष्कर्षों से उभरने वाले नए सूत्रों का पीछा करता है।",
         "the_ai_writes_an_orchestration_script_up_front_a": "AI पहले ही एक ऑर्केस्ट्रेशन स्क्रिप्ट लिख देता है; सबएजेंट का निष्पादन एक नियतात्मक रनर संभालता है, जबकि AI केवल योजना बनाता, जाँच करता और संश्लेषण करता है। दोबारा चलाया जा सकता है, बजट-सीमित।",
+        "the_campaign_stopped_unexpectedly": "अभियान अचानक रुक गया।",
         "then_fork_into_a_new_campaign": "…\", फिर एक नए अभियान में फ़ोर्क करें।",
         "up_to": "अधिकतम",
         "validating": "सत्यापित किया जा रहा है...",
+        "validation_failed_check_your_connection_and_try": "सत्यापन विफल — अपना कनेक्शन जाँचें और फिर कोशिश करें।",
         "view_report": "रिपोर्ट देखें",
         "weak": "कमज़ोर",
         "what_do_you_want_to_research": "आप किस विषय पर शोध करना चाहते हैं?",
         "when_should_the_agent_stop": "एजेंट को कब रुकना चाहिए?",
         "your_answer": "आपका उत्तर",
-        "your_answer_2": "आपका उत्तर..."
+        "your_answer_2": "आपका उत्तर...",
+        "your_guidance": "तुम्हारा मार्गदर्शन"
       }
     },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "active": "सक्रिय",
+        "active_loaded_during_reviews_uncheck_to_disable": "सक्रिय — समीक्षाओं के दौरान लोड होता है (बंद करने के लिए चेक हटाएँ)",
         "add": "जोड़ें",
         "cancel": "रद्द करें",
         "cli_authenticated_there_run": "CLI वहाँ प्रमाणित होना चाहिए: चलाएँ",
@@ -224,6 +289,7 @@
         "github_pr_one_time_setup": "GitHub PR — एक-बार का सेटअप।",
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "inactive": "निष्क्रिय",
+        "inactive_check_to_load_during_reviews": "निष्क्रिय — समीक्षाओं के दौरान लोड करने के लिए चेक करें",
         "is_not_authenticated_on_the_gateway_host": "गेटवे होस्ट पर प्रमाणित नहीं है।",
         "learn_from_sage": "learn-from-sage",
         "list_open_prs": "खुले PR सूचीबद्ध करें",
@@ -254,11 +320,13 @@
         "pending_consolidation": "संकलन लंबित",
         "re_review_every_open_pr_ignoring_the_reviewed_hi": "समीक्षा इतिहास को नज़रअंदाज़ करते हुए हर खुले PR की फिर से समीक्षा करें",
         "repository_url": "रिपॉज़िटरी URL",
+        "review": "समीक्षा करें",
         "review_a_whole_repository": "पूरी रिपॉज़िटरी की समीक्षा करें",
         "reviewed": "समीक्षित",
         "reviews_load_learned_patterns_from_the": "समीक्षाएँ सीखे गए पैटर्न इनसे लोड करती हैं:",
         "run": "चलाएँ",
         "run_the": "; चलाएँ",
+        "running": "चल रहा है…",
         "self_evolving_deep_reviewer_for_github_prs_findi": "GitHub PR के लिए स्वयं-विकसित होने वाला गहन समीक्षक। निष्कर्ष एक PENDING (ड्राफ़्ट)\n        समीक्षा के रूप में पोस्ट होते हैं, जिसे आप स्वयं GitHub पर सबमिट करते हैं।",
         "self_learning": "स्वयं-सीखने वाला",
         "showing": "दिखाए जा रहे हैं:",
@@ -300,7 +368,9 @@
         "comma_separated_glob_patterns": "कॉमा से अलग किए गए glob पैटर्न",
         "glob_e_g_md": "glob (उदा. *.md)",
         "glob_filter_comma_separated_patterns": "Glob फ़िल्टर (कॉमा से अलग किए गए पैटर्न)",
-        "no_matches": "कोई मिलान नहीं"
+        "no_matches": "कोई मिलान नहीं",
+        "search_failed": "खोज विफल",
+        "searching": "खोज हो रही है..."
       },
       "tabStrip": {
         "close_file_tab": "फ़ाइल टैब बंद करें",
@@ -316,7 +386,8 @@
     "issueRadar": {
       "components": {
         "agentSessionButton": {
-          "couldn_t_start": "शुरू नहीं हो सका"
+          "couldn_t_start": "शुरू नहीं हो सका",
+          "resume": "फिर शुरू करें"
         },
         "aiSummaryCard": {
           "ai_summary": "AI सारांश",
@@ -329,22 +400,33 @@
           "regenerate_summary": "सारांश फिर से तैयार करें",
           "retry": "पुनः प्रयास करें"
         },
+        "filterRow": {
+          "sign_in_with_the_gh_cli_to_use_this_filter": "इस फ़िल्टर का उपयोग करने के लिए gh CLI से साइन इन करें"
+        },
         "filtersSection": {
           "assigned_to_me": "मुझे असाइन किए गए",
           "clear": "साफ़ करें",
           "closed": "बंद",
           "created_by_member": "सदस्य द्वारा बनाए गए",
           "filters": "फ़िल्टर",
+          "no_repo_members_found_among_these_issues": "इन इश्यू में कोई रिपो सदस्य नहीं मिला",
           "open": "खुले",
           "requested_by_me": "मेरे द्वारा अनुरोधित",
           "sort": "क्रमबद्ध करें"
         },
         "investigateButton": {
-          "investigate": "जाँच करें"
+          "could_not_check_for_an_existing_investigation_re": "मौजूदा जाँच की पड़ताल नहीं हो सकी — रिफ़्रेश पर फिर कोशिश होगी",
+          "investigate": "जाँच करें",
+          "investigated": "जाँच हो चुकी",
+          "investigating": "जाँच हो रही है",
+          "open_an_ai_investigation_chat_session_for_this_i": "इस इश्यू के लिए AI जाँच चैट सेशन खोलें",
+          "resume_the_ai_investigation_chat_session_for_thi": "इस इश्यू के लिए AI जाँच चैट सेशन फिर शुरू करें"
         },
         "issueDetail": {
           "added_the": "ने जोड़ा",
           "added_this_to_the": "ने इसे जोड़ा",
+          "as_completed": "पूर्ण के रूप में",
+          "as_not_planned": "अनियोजित के रूप में",
           "assigned": "ने असाइन किया",
           "assignees": "असाइनी",
           "by": "· द्वारा",
@@ -356,6 +438,7 @@
           "closed": "बंद",
           "closed_as_not_planned": "नियोजित नहीं के रूप में बंद किया गया",
           "closed_this": "ने इसे बंद किया",
+          "commented": "टिप्पणी की",
           "copy_link_to_this_issue": "इस इश्यू का लिंक कॉपी करें",
           "couldn_t_load_activity": "गतिविधि लोड नहीं हो सकी:",
           "dates": "तिथियाँ",
@@ -364,9 +447,11 @@
           "edit": "संपादित करें",
           "finding_suggestions": "सुझाव खोजे जा रहे हैं…",
           "in": "में",
+          "issue": "इश्यू",
           "issues": "और इश्यू",
           "label": "लेबल",
           "labels": "लेबल",
+          "link_copied": "लिंक कॉपी हो गया",
           "linked": "लिंक किए गए",
           "locked": "लॉक किया गया",
           "milestone": "माइलस्टोन",
@@ -380,7 +465,9 @@
           "open": "खुला",
           "opened": "ने खोला",
           "opened_2": "खोला गया",
+          "opened_this_issue": "ने यह इश्यू खोला",
           "read_only_connect_with_triage_push_access_to_app": "केवल पढ़ने के लिए — लागू करने के लिए triage/push एक्सेस के साथ कनेक्ट करें।",
+          "read_only_connect_with_triage_push_access_to_app_2": "केवल पढ़ने के लिए — लागू करने के लिए triage/push एक्सेस के साथ कनेक्ट करें",
           "referenced_this_in": "ने इसका उल्लेख इसमें किया:",
           "referenced_this_in_commit": "ने इसका उल्लेख इस कमिट में किया:",
           "refresh_issue_details": "इश्यू का विवरण रीफ़्रेश करें",
@@ -397,6 +484,7 @@
         },
         "issueList": {
           "clear_search": "खोज साफ़ करें",
+          "closed_issues_are_capped_at_the_100_most_recentl": "बंद इश्यू सबसे हाल में अपडेट हुए 100 तक सीमित हैं",
           "issue_one": "{{count}} इश्यू",
           "issue_other": "{{count}} इश्यू",
           "issues": "इश्यू",
@@ -423,7 +511,8 @@
           "loading_labels": "लेबल लोड हो रहे हैं…",
           "remove_this_label_no_longer_exists_on_the_repo": "हटाएँ — यह लेबल अब रेपो में मौजूद नहीं है",
           "saved_but_no_longer_on_this_repo": "सहेजे गए, लेकिन अब इस रेपो में नहीं:",
-          "suggested": "सुझाया गया"
+          "suggested": "सुझाया गया",
+          "this_repo_has_no_labels": "इस रिपो में कोई लेबल नहीं है।"
         },
         "leftRail": {
           "dashboards": "डैशबोर्ड",
@@ -449,9 +538,11 @@
           "branches": "ब्रांच",
           "changed_the_title": "ने शीर्षक बदला",
           "changes": "बदलाव",
+          "check_status_unavailable": "चेक स्टेटस अनुपलब्ध",
           "click_to_expand": "विस्तृत करने के लिए क्लिक करें",
           "closed": "बंद",
           "closed_this": "ने इसे बंद किया",
+          "commented": "टिप्पणी की",
           "commits": "Commits",
           "dates": "तारीखें",
           "diff": "Diff",
@@ -463,6 +554,7 @@
           "into": "में",
           "label": "लेबल",
           "labels": "लेबल",
+          "link_copied": "लिंक कॉपी हो गया",
           "loading_checks": "जाँच लोड हो रही हैं…",
           "mergeable": "मर्ज करने योग्य",
           "merged": "मर्ज किया गया",
@@ -470,6 +562,7 @@
           "milestone_2": "माइलस्टोन",
           "newest_first": "· नवीनतम पहले",
           "no_activity_yet": "अभी कोई गतिविधि नहीं।",
+          "no_automated_checks": "कोई स्वचालित चेक नहीं",
           "no_description_provided": "कोई विवरण नहीं दिया गया।",
           "no_milestone": "कोई माइलस्टोन नहीं",
           "no_one_assigned": "किसी को असाइन नहीं किया गया",
@@ -502,12 +595,15 @@
           "merged": "मर्ज किया गया",
           "open": "खुला",
           "review_requested": "समीक्षा का अनुरोध",
+          "sign_in_to_gh_to_filter_by_your_review_requests": "अपने समीक्षा अनुरोधों के आधार पर फ़िल्टर करने के लिए gh में साइन इन करें",
           "sort": "क्रमबद्ध करें"
         },
         "prList": {
           "clear_search": "खोज साफ़ करें",
+          "closed_merged_prs_are_capped_at_the_100_most_rec": "बंद/मर्ज किए गए PR सबसे हाल में अपडेट हुए 100 तक सीमित हैं — पूरे रिपो में पूरी खोज के लिए कोई \"me\" फ़िल्टर चालू करें",
           "pr_one": "{{count}} PR",
           "pr_other": "{{count}} PRs",
+          "resolved_by_github_search_across_the_whole_repo": "पूरे रिपो में GitHub खोज से हल किया गया — सबसे हाल के 100 तक सीमित नहीं",
           "time_since_the_pr_list_was_last_fetched_from_git": "GitHub से PR सूची अंतिम बार लाए जाने के बाद बीता समय",
           "updated": "अपडेट किया गया"
         },
@@ -515,7 +611,12 @@
           "read_only": "केवल पढ़ने के लिए"
         },
         "refLink": {
-          "could_not_load": "लोड नहीं हो सका #"
+          "closed": "बंद",
+          "closed_as_not_planned": "अनियोजित के रूप में बंद",
+          "could_not_load": "लोड नहीं हो सका #",
+          "draft": "ड्राफ़्ट",
+          "merged": "मर्ज किया गया",
+          "open": "खुला"
         },
         "refSheet": {
           "back": "पीछे",
@@ -548,12 +649,15 @@
         "cli": "CLI",
         "connect_a_repo_nothing_runs_without_your_say": "एक रिपो कनेक्ट करें। आपकी अनुमति के बिना कुछ नहीं चलता।",
         "connected": "कनेक्टेड",
+        "couldn_t_read_far_enough_back_through_your_activ": "तुम्हारी गतिविधि में पर्याप्त पीछे तक नहीं पढ़ सके — इसके बजाय नीचे एक URL पेस्ट करें।",
         "details": "विवरण",
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar पढ़ता है",
         "let_s_connect_a_repo": "चलिए एक रिपो कनेक्ट करें",
         "loading_your_repos": "आपके रिपो लोड हो रहे हैं…",
+        "most_recent_activity": "सबसे हाल की गतिविधि",
+        "no_contributions_in_the_last_month_paste_a_url_b": "पिछले महीने में कोई योगदान नहीं — इसके बजाय नीचे एक URL पेस्ट करें।",
         "or": "या",
         "paste_a_url": "URL पेस्ट करें",
         "please_set_up_the": "कृपया सेट अप करें",
@@ -576,23 +680,41 @@
           "coming_soon": "जल्द आ रहा है"
         },
         "overviewView": {
+          "0_comments": "0 टिप्पणियाँ",
+          "1_4_weeks": "1–4 सप्ताह",
+          "1_6_months": "1–6 महीने",
+          "1_week": "< 1 सप्ताह",
+          "30d_idle": "> 30 दिन से निष्क्रिय",
+          "6_months": "> 6 महीने",
           "assigned_to_you": "आपको असाइन किया गया",
           "backlog_age": "बैकलॉग आयु",
           "by_creation_date": "निर्माण तिथि के अनुसार",
           "discussion_hotspots": "चर्चा के हॉटस्पॉट",
           "filter_the_list_to_issues_assigned_to_you": "सूची को आपको असाइन किए गए इश्यू तक फ़िल्टर करें",
+          "first_timer": "नया योगदानकर्ता",
+          "good_first_issue": "गुड फ़र्स्ट इश्यू",
           "label_distribution": "लेबल वितरण",
+          "last_7_days": "पिछले 7 दिन",
           "loading_overview": "अवलोकन लोड हो रहा है…",
           "most_comments_upvotes": "सबसे अधिक टिप्पणियाँ और अपवोट",
           "needs_attention": "ध्यान चाहिए",
+          "new_this_week": "इस हफ़्ते नए",
           "newest_issues_still_untriaged_or_unanswered": "सबसे नए इश्यू जो अभी भी अनट्राइएज्ड या अनुत्तरित हैं",
           "no_activity": "कोई गतिविधि नहीं।",
           "no_discussion_yet": "अभी कोई चर्चा नहीं।",
           "no_labels_in_use": "कोई लेबल उपयोग में नहीं।",
+          "no_owner": "कोई मालिक नहीं",
+          "no_reply": "कोई जवाब नहीं",
           "nothing_needs_attention": "किसी चीज़ को ध्यान की ज़रूरत नहीं",
+          "open_issues": "खुले इश्यू",
           "re_fetch_issues_labels_from_github": "GitHub से इश्यू + लेबल फिर लाएँ",
           "recently_updated": "हाल ही में अपडेट किया गया",
-          "refresh_issues": "इश्यू रिफ़्रेश करें"
+          "refresh_issues": "इश्यू रिफ़्रेश करें",
+          "stale": "निष्क्रिय",
+          "unanswered": "अनुत्तरित",
+          "unassigned": "बिना असाइनी",
+          "untriaged": "अनट्राइएज्ड",
+          "untriaged_2": "अनट्राइएज्ड"
         },
         "settings": {
           "generalSettings": {
@@ -618,10 +740,15 @@
             "auth_are_untouched_you_can_reconnect_anytime": "auth अछूते रहते हैं — आप कभी भी फिर से कनेक्ट कर सकते हैं।",
             "cancel": "रद्द करें",
             "checks_about_once_a_minute_inside_kirocrew_no_cr": "लगभग हर मिनट में एक बार जाँचता है, KiroCrew के भीतर — कोई cron जॉब नहीं। यह केवल तब चलता है जब KiroCrew\n          खुला हो और आपकी मशीन जगी हो, और आपके मौजूदा",
+            "confirm_disconnect": "डिस्कनेक्ट की पुष्टि करें",
             "couldn_t_load_members_right_now": "अभी सदस्य लोड नहीं हो सके।",
+            "couldn_t_load_saved_settings": "सहेजी गई सेटिंग लोड नहीं हो सकीं।",
+            "couldn_t_save_your_changes": "तुम्हारे बदलाव सहेजे नहीं जा सके।",
+            "counting_open_issues": "खुले इश्यू गिने जा रहे हैं…",
             "data_and": "डेटा और",
             "disconnect": "डिस्कनेक्ट करें",
             "disconnect_repository": "रिपॉज़िटरी डिस्कनेक्ट करें",
+            "disconnecting": "डिस्कनेक्ट हो रहा है…",
             "from_issue_radar_and_deletes_its_local_cache_you": "को Issue Radar से हटाता है और उसका स्थानीय कैश मिटा देता है। आपका",
             "good_first_issue_labels": "गुड फ़र्स्ट इश्यू लेबल",
             "is_opened_in": "में खोला जाता है",
@@ -633,6 +760,7 @@
             "membership_is_read_from": "सदस्यता यहाँ से पढ़ी जाती है:",
             "new_issue": "नया इश्यू",
             "no_labels": "कोई लेबल नहीं",
+            "no_members_found_for_this_repo": "इस रिपो के लिए कोई सदस्य नहीं मिला।",
             "notifications": "सूचनाएँ",
             "notify_me_when_a": "मुझे सूचित करें जब कोई",
             "of": "में से",
@@ -641,6 +769,7 @@
             "open_on": "यहाँ खोलें:",
             "open_tagging": "टैगिंग खोलें",
             "organises_its_issues_and_are_never_written_back": "अपने इश्यू व्यवस्थित करता है, और इन्हें कभी वापस नहीं लिखा जाता",
+            "proposing_new_labels_for_this_repo_now_lives_on": "इस रिपो के लिए नए लेबल प्रस्तावित करना अब टैगिंग डैशबोर्ड पर है, उन बिना-टैग इश्यू के साथ जिन पर ये लेबल लगाए जाते हैं।",
             "recommending_a_taxonomy_and_applying_it_to_issue": "टैक्सोनॉमी की सिफ़ारिश करना और उसे इश्यू पर लागू करना एक ही काम के दो हिस्से हैं, इसलिए वे एक\n          पेज साझा करते हैं। यह सेटिंग पेज ऊपर दी गई स्थानीय परिभाषाएँ रखता है — कि",
             "refresh": "रिफ़्रेश करें",
             "removes": "हटाता है",
@@ -650,14 +779,22 @@
             "sign_in_no_extra_credentials_no": "साइन-इन का उपयोग करते हुए (कोई\n          अतिरिक्त क्रेडेंशियल नहीं, कोई",
             "this_is_an_approximate_list_inferred_from_issue": ", यह इश्यू लेखकों से निकाली गई एक अनुमानित सूची है।\n              पूरा रोस्टर और सदस्य प्रबंधन यहाँ रहते हैं:",
             "triage_labels": "ट्राइएज लेबल",
+            "watch_this_repo_in_the_background_and_post_a_kir": "इस रिपो को बैकग्राउंड में देखते रहें और जब भी कोई नया इश्यू खुले, KiroCrew सूचना भेजें।",
             "webhook": "webhook)।",
+            "which_labels_mark_newcomer_friendly_work_so_issu": "कौन से लेबल नए लोगों के लिए अनुकूल काम को चिह्नित करते हैं, ताकि Issue Radar पहली बार योगदान देने वालों तक भेजने योग्य इश्यू सामने ला सके।",
+            "which_labels_mean_an_issue_still_needs_triage_dr": "कौन से लेबल का अर्थ है कि किसी इश्यू को अभी ट्राइएज चाहिए। यह ओवरव्यू की “अनट्राइएज्ड” गिनती और ध्यान-चाहिए कतार को चलाता है।",
             "without_push_access_to": "इसमें पुश एक्सेस के बिना:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "आपके संपादन यहाँ रखे जाते हैं लेकिन बने नहीं रहेंगे। यदि आपने Issue Radar अभी अपडेट किया है, तो बैकएंड को पुनः आरंभ करें ताकि सेटिंग API उपलब्ध हो।"
           }
         },
         "tagging": {
           "labelsPanel": {
+            "analyzing": "विश्लेषण हो रहा है…",
+            "couldn_t_read_this_repo_s_labels_retry_with_the": "इस रिपो के लेबल नहीं पढ़े जा सके — रिफ़्रेश बटन से फिर कोशिश करें।",
+            "create": "बनाएँ",
+            "create_this_label_on_github": "यह लेबल GitHub पर बनाएँ",
             "created": "बनाया गया",
+            "creating": "बनाया जा रहा है…",
             "creating_needs_write_access": "बनाने के लिए राइट एक्सेस चाहिए",
             "defined_by_open_issue_count": "परिभाषित · खुले इश्यू की संख्या के अनुसार",
             "labels": "लेबल",
@@ -665,30 +802,43 @@
             "none_the_repo_s_taxonomy_already_covers_what_its": "कोई नहीं — रिपो की टैक्सोनॉमी पहले से ही उसके खुले इश्यू की ज़रूरतें पूरी करती है।",
             "propose_labels_this_repo_is_missing_from_its_ope": "इस रिपो के खुले इश्यू से, जो लेबल इसमें नहीं हैं उन्हें प्रस्तावित करें",
             "re_fetch_this_repo_s_labels_from_github": "इस रिपो के लेबल GitHub से फिर लाएँ",
+            "read_only_repo_needs_triage_push_access": "केवल पढ़ने वाला रिपो — triage/push एक्सेस चाहिए",
+            "suggest_again": "फिर सुझाएँ",
+            "suggest_new_labels": "नए लेबल सुझाएँ",
             "suggested_new_labels_not_created_until_you_say_s": "सुझाए गए नए लेबल — आपके कहने तक नहीं बनाए जाते"
           },
           "untaggedIssueCard": {
             "add": "जोड़ें",
+            "add_these_labels_on_github": "ये लेबल GitHub पर जोड़ें",
             "added": "जोड़ा गया",
-            "no_label_fits": "कोई लेबल फ़िट नहीं होता"
+            "click_to_remove": "हटाने के लिए क्लिक करें",
+            "no_label_fits": "कोई लेबल फ़िट नहीं होता",
+            "read_only_repo_needs_triage_or_push_access": "केवल पढ़ने वाला रिपो — triage या push एक्सेस चाहिए"
           }
         },
         "taggingView": {
+          "analyzing": "विश्लेषण हो रहा है…",
+          "applying": "लागू हो रहा है…",
           "applying_is_disabled_until_they_load_because_a_s": "जब तक वे लोड न हो जाएँ, लागू करना अक्षम है, क्योंकि ऐसे\n            लेबल का नाम लेने वाला सुझाव जो रिपो में अब नहीं है, पूरे बैच के लिए अस्वीकार हो जाएगा।",
           "applying_needs_write_access": "लागू करने के लिए राइट एक्सेस चाहिए",
+          "available_to_assign": "असाइन करने के लिए उपलब्ध",
           "carries_at_least_one_label_nothing_to_tag": "में कम से कम एक लेबल रखता है। टैग करने के लिए कुछ नहीं।",
+          "clear_selection": "चयन साफ़ करें",
           "couldn_t_load": "लोड नहीं हो सका",
           "couldn_t_reload_the_queue": "कतार पुनः लोड नहीं हो सकी:",
           "defines_no_labels_yet_so_there_is_nothing_to_ass": "अभी कोई लेबल परिभाषित नहीं करता, इसलिए असाइन करने के लिए कुछ नहीं है। ऊपर कुछ सुझाएँ,\n            जो चाहें उन्हें बनाएँ, फिर वापस आकर यहाँ लेबल सुझाएँ।",
           "every_open_issue_in": "हर खुला इश्यू",
           "loading_the_untagged_queue": "अनटैग्ड कतार लोड हो रही है…",
           "newest_first": "नवीनतम पहले",
+          "read_only_repo_needs_triage_or_push_access": "केवल पढ़ने वाला रिपो — triage या push एक्सेस चाहिए",
           "reload_the_untagged_queue": "अनटैग्ड कतार पुनः लोड करें",
           "repo_labels": "रिपो लेबल",
           "s_labels": "के लेबल:",
+          "select_all": "सभी चुनें",
           "untagged": "अनटैग्ड",
           "untagged_issues": "अनटैग्ड इश्यू",
-          "what_you_see_below_is_the_previous_result_not_th": "नीचे आप जो देख रहे हैं वह पिछला परिणाम है, वर्तमान स्थिति नहीं।"
+          "what_you_see_below_is_the_previous_result_not_th": "नीचे आप जो देख रहे हैं वह पिछला परिणाम है, वर्तमान स्थिति नहीं।",
+          "write_every_staged_label_to_github": "हर स्टेज किया गया लेबल GitHub पर लिखें"
         }
       },
       "welcomeCarousel": {
@@ -710,6 +860,8 @@
         "agent_one": "{{count}} एजेंट",
         "agent_other": "{{count}} एजेंट",
         "budget": "बजट",
+        "cancelled": "रद्द किया गया",
+        "result": "परिणाम",
         "waiting_for_events": "इवेंट की प्रतीक्षा…"
       },
       "workflowSourcePanel": {
@@ -717,7 +869,11 @@
         "could_not_load_source": "स्रोत लोड नहीं हो सका:",
         "edit": "संपादित करें",
         "invalid_fix_before_rerun": "अमान्य — पुनः चलाने से पहले ठीक करें:",
+        "invalid_script": "अमान्य स्क्रिप्ट",
+        "loading": "लोड हो रहा है…",
         "no_source_captured_for_this_run": "इस रन के लिए कोई स्रोत कैप्चर नहीं हुआ।",
+        "rerun_with_edits": "संपादनों के साथ फिर चलाएँ",
+        "rerunning": "फिर चलाया जा रहा है…",
         "started_run": "रन शुरू हुआ",
         "view_source": "स्रोत देखें"
       },
@@ -729,6 +885,7 @@
         "request_failed": "अनुरोध विफल:",
         "run": "चलाएँ",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "इसके चरण, एजेंट और परिणाम यहाँ देखने के लिए कोई वर्कफ़्लो चलाएँ।",
+        "running": "चल रहा है…",
         "validate": "मान्य करें",
         "workflow_script_python": "वर्कफ़्लो स्क्रिप्ट (Python)",
         "workflow_source": "वर्कफ़्लो स्रोत",
@@ -737,9 +894,12 @@
       "workflowsRuns": {
         "background_runs": "बैकग्राउंड रन",
         "budget": "बजट",
+        "cancel": "रद्द करें",
+        "cancelling": "रद्द किया जा रहा है…",
         "could_not_load_runs": "रन लोड नहीं हो सके:",
         "events": "इवेंट",
         "no_background_runs_yet_runs_started_in_the_backg": "अभी कोई बैकग्राउंड रन नहीं। बैकग्राउंड में शुरू किए गए रन यहाँ दिखते हैं।",
+        "run_detail": "रन विवरण",
         "select_a_run_to_see_its_phases_agents_and_result": "इसके चरण, एजेंट और परिणाम देखने के लिए कोई रन चुनें।"
       }
     }
@@ -1347,15 +1507,6 @@
       "suggested_follow_up_one": "सुझाया गया फ़ॉलो-अप",
       "suggested_follow_up_other": "सुझाए गए फ़ॉलो-अप",
       "this_session_has_no_project_directory_so_there_i": "इस सेशन में कोई प्रोजेक्ट डायरेक्टरी नहीं है, इसलिए ब्रांच बनाने के लिए कोई रिपॉज़िटरी नहीं है"
-    },
-    "inboundLinkChip": {
-      "confirm_release": "इस सेशन को {{label}} से अलग करें?\n\nवहाँ भेजे गए संदेश अब यहाँ नहीं आएँगे, और जवाब वहाँ नहीं पहुँचेंगे। आप उस चैनल से !sessions का उपयोग करके इसे फिर से जोड़ सकते हैं।",
-      "driven_from": "{{label}} से संचालित",
-      "release": "अलग करें",
-      "release_aria": "इस सेशन को {{label}} से अलग करें",
-      "release_failed": "सेशन को अलग नहीं किया जा सका: {{reason}}",
-      "released": "{{label}} से अलग किया गया",
-      "tooltip": "यह सेशन {{label}} के साथ दो-तरफ़ा जुड़ा है: जवाब वहाँ पहुँचते हैं और वहाँ भेजे गए संदेश यहाँ आते हैं।"
     },
     "inboundLinkChip": {
       "confirm_release": "इस सेशन को {{label}} से अलग करें?\n\nवहाँ भेजे गए संदेश अब यहाँ नहीं आएँगे, और जवाब वहाँ नहीं पहुँचेंगे। आप उस चैनल से !sessions का उपयोग करके इसे फिर से जोड़ सकते हैं।",
@@ -2406,19 +2557,66 @@
     }
   },
   "hooks": {
+    "mic": {
+      "could_not_start_the_microphone": "माइक्रोफ़ोन शुरू नहीं हो सका।",
+      "microphone_is_unavailable_another_app_may_be_usi": "माइक्रोफ़ोन अनुपलब्ध है — कोई दूसरा ऐप इसका उपयोग कर रहा हो सकता है।",
+      "microphone_permission_denied_allow_mic_access_in": "माइक्रोफ़ोन की अनुमति नहीं मिली। अपनी OS और ब्राउज़र सेटिंग में माइक एक्सेस की अनुमति दें।",
+      "no_microphone_found_connect_one_or_pick_a_differ": "कोई माइक्रोफ़ोन नहीं मिला। एक कनेक्ट करें या सेटिंग में कोई दूसरा डिवाइस चुनें।"
+    },
+    "useCronActions": {
+      "failed_to_cancel_job": "जॉब रद्द करने में विफल",
+      "failed_to_open_in_chat": "चैट में खोलने में विफल",
+      "failed_to_run_job": "जॉब चलाने में विफल"
+    },
+    "useKeyboardShortcuts": {
+      "close_this_session": "यह सेशन बंद करें?"
+    },
     "useSceneInteraction": {
+      "all_slots_are_occupied": "सभी स्लॉट भरे हुए हैं",
       "approve": "स्वीकृत करें",
       "click_for_thread": "थ्रेड के लिए क्लिक करें",
       "close_thread_view": "थ्रेड दृश्य बंद करें",
       "couldn_t_load_messages": "संदेश लोड नहीं हो सके",
+      "create_a_new_chat_session_a_new_agent_joins_this": "नया चैट सेशन बनाएँ — इस दुनिया में एक नया एजेंट शामिल होता है",
+      "cron_running": "Cron · चल रहा है",
       "deny": "अस्वीकार करें",
       "failed": "विफल",
+      "idle": "निष्क्रिय",
       "kiro_is_working": "kiro काम कर रहा है…",
       "loading_thread": "थ्रेड लोड हो रहा है…",
+      "message_sent": "संदेश भेजा गया",
+      "message_this_agent": "इस एजेंट को संदेश भेजें…",
       "needs_approval": "स्वीकृति चाहिए:",
+      "new_session": "+ नया सेशन",
       "no_messages_yet": "अभी कोई संदेश नहीं",
       "open_chat": "चैट खोलें",
-      "waiting_on_approval": "स्वीकृति की प्रतीक्षा:"
+      "retry": "फिर कोशिश करें",
+      "retry_sending_message": "संदेश फिर भेजने की कोशिश करें",
+      "send": "भेजें",
+      "send_message": "संदेश भेजें",
+      "sending_message": "संदेश भेजा जा रहा है",
+      "steer_this_agent": "इस एजेंट को दिशा दें…",
+      "summoning": "बुलाया जा रहा है…",
+      "waiting_on_approval": "स्वीकृति की प्रतीक्षा:",
+      "working": "काम कर रहा है"
+    },
+    "useSessionActions": {
+      "close_this_session": "यह सेशन बंद करें?",
+      "switch_to_autopilot_mode_future_messages_will_us": "ऑटोपायलट मोड पर स्विच करें? आगे के संदेश ऑटोपायलट व्यवहार (योजना → अनुमोदन → निष्पादन) का उपयोग करेंगे।",
+      "switch_to_normal_chat_mode_future_messages_will": "सामान्य चैट मोड पर स्विच करें? आगे के संदेश मानक चैट व्यवहार का उपयोग करेंगे।"
+    },
+    "useStreamingStt": {
+      "audio_worklet_unavailable": "ऑडियो वर्कलेट अनुपलब्ध",
+      "stt_connection_error": "stt कनेक्शन त्रुटि",
+      "stt_connection_lost": "stt कनेक्शन टूट गया",
+      "stt_error": "stt त्रुटि"
+    },
+    "useVoiceInput": {
+      "transcription_request_failed": "ट्रांसक्रिप्शन अनुरोध विफल रहा।"
+    },
+    "useWebSocket": {
+      "a_task_needs_your_decision": "एक कार्य को तुम्हारे फ़ैसले की ज़रूरत है",
+      "approval_required": "स्वीकृति आवश्यक"
     }
   },
   "nav": {
@@ -5525,6 +5723,16 @@
         "description": "टेक्स्ट-टू-स्पीच और स्पीच-टू-टेक्स्ट (डिक्टेशन) सेटिंग्स",
         "label": "वॉइस"
       }
+    }
+  },
+  "utils": {
+    "cronUtils": {
+      "create": "बनाएँ",
+      "save": "सहेजें",
+      "saving": "सहेजा जा रहा है..."
+    },
+    "popoutController": {
+      "your_browser_blocked_the_pop_out_window_allow_po": "तुम्हारे ब्राउज़र ने पॉप-आउट विंडो ब्लॉक कर दी। इस साइट के लिए पॉप-अप की अनुमति दें और फिर कोशिश करें।"
     }
   }
 }

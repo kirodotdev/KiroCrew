@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { api } from '../api/client'
 import { streamingSupported, useStreamingStt } from './useStreamingStt'
 import { micAudioConstraints, humanizeMicError, createLevelMeter, createAudioSample } from './mic'
+import { i18nT } from '../i18n/t'
 
 function pickMimeType(): string {
   if (typeof MediaRecorder === 'undefined') return ''
@@ -196,7 +197,7 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
         } catch (err) {
           // eslint-disable-next-line no-console -- surface transcription failures for debugging
           console.error('[voice] transcription failed:', err)
-          setError('Transcription request failed.')
+          setError(i18nT('hooks.useVoiceInput.transcription_request_failed'))
         }
         setTranscribing(false)
       }

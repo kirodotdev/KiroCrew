@@ -226,7 +226,7 @@ function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         <div className="text-4xl mb-4 animate-pulse">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
         <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.updating_kirocrew')}</div>
-        <div className="text-sm text-muted mb-5">{detail || 'Starting update…'}</div>
+        <div className="text-sm text-muted mb-5">{detail || i18nT('app.starting_update')}</div>
         {/* Step progress */}
         <div className="flex flex-col gap-2 text-left mb-5">
           {STEP_ORDER.map((s, i) => {
@@ -244,7 +244,7 @@ function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
         </div>
         {isFailed ? (
           <div className="flex flex-col gap-3 items-center">
-            <div className="text-sm text-danger">{detail || 'Check logs for details.'}</div>
+            <div className="text-sm text-danger">{detail || i18nT('app.check_logs_for_details')}</div>
             <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-card border border-border text-text hover:border-border-strong transition-colors" onClick={handleCancel}>
               {i18nT('app.dismiss')}
             </button>
@@ -495,8 +495,8 @@ function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
   // offers to re-collapse rather than reveal "0 more".
   const showsCollapse = expanded || hiddenCount === 0
   const Icon = showsCollapse ? ChevronUp : MoreHorizontal
-  const labelText = showsCollapse ? 'Show less' : `${hiddenCount} more`
-  const titleText = showsCollapse ? 'Show fewer apps' : `Show ${hiddenCount} more app${hiddenCount === 1 ? '' : 's'}`
+  const labelText = showsCollapse ? i18nT('app.show_less') : `${hiddenCount} more`
+  const titleText = showsCollapse ? i18nT('app.show_fewer_apps') : `Show ${hiddenCount} more app${hiddenCount === 1 ? '' : 's'}`
   return (
     <button ref={rowRef}
       className="group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none w-full"
@@ -616,7 +616,7 @@ function NotificationsBellButton() {
           })
           setSelectedTs(null)
         }}
-        title={unacked.length > 0 ? `${unacked.length} notification${unacked.length === 1 ? '' : 's'}` : 'Notifications'}
+        title={unacked.length > 0 ? `${unacked.length} notification${unacked.length === 1 ? '' : 's'}` : i18nT('app.notifications')}
         aria-label={i18nT('app.notifications')}
         aria-expanded={open}
       >
@@ -1187,7 +1187,7 @@ export default function App() {
           ? {
               used: Number.isFinite(u.bonus_used) ? Math.round(u.bonus_used) : 0,
               limit: Math.round(u.bonus_limit),
-              label: (typeof u.bonus_label === 'string' && u.bonus_label) ? u.bonus_label : 'Bonus credits',
+              label: (typeof u.bonus_label === 'string' && u.bonus_label) ? u.bonus_label : i18nT('app.bonus_credits'),
               expiresLabel: typeof u.bonus_expires_label === 'string' ? u.bonus_expires_label : undefined,
             }
           : undefined
@@ -1342,7 +1342,7 @@ export default function App() {
       await api.applyUpdate()
     } catch (err: unknown) {
       setUpdating(false)
-      let msg = 'Update failed'
+      let msg = i18nT('app.update_failed_2')
       const errMessage = err instanceof Error ? err.message : ''
       try {
         const parsed = JSON.parse(errMessage || '')
@@ -1357,7 +1357,7 @@ export default function App() {
     const slot = result.key
     navigate('/chat')
     const msg = FEATURE_REQUEST_PROMPT
-    dispatch(appendMessage({ role: 'user', content: '\u{1F4A1} I\u2019d like to request a feature!', cls: '', ts: new Date().toISOString() }))
+    dispatch(appendMessage({ role: 'user', content: i18nT('app.i_d_like_to_request_a_feature'), cls: '', ts: new Date().toISOString() }))
     dispatch(setSlotRunning(true))
     try {
       await api.sendChat(msg, slot, colorTheme)
@@ -1570,14 +1570,14 @@ export default function App() {
                 className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
                 title={`${connected ? 'Gateway connected' : authRequired ? 'Gateway offline — session expired, see banner above' : 'Gateway offline — reconnecting'} · click to ${capsuleCollapsed ? 'expand' : 'collapse'} readouts`}
-                aria-label={connected ? 'Gateway connected' : 'Gateway offline'}
+                aria-label={connected ? i18nT('app.gateway_connected') : i18nT('app.gateway_offline')}
                 aria-expanded={!capsuleCollapsed}
               >
                 <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${offline ? 'bg-danger animate-pulse motion-reduce:animate-none' : 'bg-ok shadow-[0_0_8px_rgba(34,197,94,.4)]'}`} />
                 {/* Live-region announcement lives in its own hidden span:
                     role="status" on the button itself would override its
                     implicit button role for screen readers. */}
-                <span role="status" className="sr-only">{connected ? 'Gateway connected' : 'Gateway offline'}</span>
+                <span role="status" className="sr-only">{connected ? i18nT('app.gateway_connected') : i18nT('app.gateway_offline')}</span>
               </button>
             )
             if (!capsuleCollapsed) {
@@ -1595,10 +1595,10 @@ export default function App() {
                 const dskValid = m.diskTotal > 0
                 const cpuValid = typeof m.cpuPct === 'number' && Number.isFinite(m.cpuPct)
                 const staleTitle = sysMetricsStale ? ' (stale: fetch failing)' : ''
-                segments.push(<button key="metrics" className={`${seg} gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} title={sysMetricsStale ? 'Metrics are stale, latest fetch failed' : 'Click to hide'} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
-                  <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'} title={cpuValid ? `CPU: ${m.cpuPct.toFixed(0)}%${staleTitle}` : 'CPU: unavailable'}>{i18nT('app.cpu')} {cpuValid ? `${m.cpuPct.toFixed(0)}%` : '—'}</span>
-                  <span className={memValid ? metricColor(memPct) : 'text-muted'} title={memValid ? `Memory: ${m.memUsed.toFixed(1)}/${m.memTotal.toFixed(1)} GB${staleTitle}` : 'Memory: unavailable'}>{i18nT('app.mem')} {memValid ? `${(memPct * 100).toFixed(0)}%` : '—'}</span>
-                  <span className={dskValid ? metricColor(dskPct) : 'text-muted'} title={dskValid ? `Disk: ${dskUsed.toFixed(0)}/${m.diskTotal.toFixed(0)} GB${staleTitle}` : 'Disk: unavailable'}>{i18nT('app.dsk')} {dskValid ? `${(dskPct * 100).toFixed(0)}%` : '—'}</span>
+                segments.push(<button key="metrics" className={`${seg} gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} title={sysMetricsStale ? i18nT('app.metrics_are_stale_latest_fetch_failed') : i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
+                  <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'} title={cpuValid ? `CPU: ${m.cpuPct.toFixed(0)}%${staleTitle}` : i18nT('app.cpu_unavailable')}>{i18nT('app.cpu')} {cpuValid ? `${m.cpuPct.toFixed(0)}%` : '—'}</span>
+                  <span className={memValid ? metricColor(memPct) : 'text-muted'} title={memValid ? `Memory: ${m.memUsed.toFixed(1)}/${m.memTotal.toFixed(1)} GB${staleTitle}` : i18nT('app.memory_unavailable')}>{i18nT('app.mem')} {memValid ? `${(memPct * 100).toFixed(0)}%` : '—'}</span>
+                  <span className={dskValid ? metricColor(dskPct) : 'text-muted'} title={dskValid ? `Disk: ${dskUsed.toFixed(0)}/${m.diskTotal.toFixed(0)} GB${staleTitle}` : i18nT('app.disk_unavailable')}>{i18nT('app.dsk')} {dskValid ? `${(dskPct * 100).toFixed(0)}%` : '—'}</span>
                 </button>)
               }
             }
@@ -1742,7 +1742,7 @@ export default function App() {
             <div className="mt-3 pt-3 border-t border-border">
               <button className="text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={async () => {
                 if (!showFull) { if (!fullChangelog) { const d = await api.changelog(); setFullChangelog(d.content || '') }; setShowFull(true) } else { setShowFull(false) }
-              }}>{showFull ? '▾ Hide Full Changelog' : '▸ View Full Changelog'}</button>
+              }}>{showFull ? i18nT('app.hide_full_changelog') : i18nT('app.view_full_changelog')}</button>
               {showFull && fullChangelog && (
                 <div className="mt-2 p-3 bg-bg rounded-lg border border-border max-h-72 overflow-y-auto">
                   <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={fullChangelog} /></div>
@@ -1845,8 +1845,8 @@ export default function App() {
               type="button"
               className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left"
               onClick={toggleNav}
-              title={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              aria-label={effectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              title={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
+              aria-label={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
               aria-expanded={!effectiveCollapsed}
             >
               <span className="flex items-center gap-2.5 min-w-0">
@@ -2162,9 +2162,9 @@ export default function App() {
         // external_idp); social login covers Google/GitHub and reports
         // accountType "Social". Unmapped values pass through verbatim rather
         // than being hidden, so a new kind still says something truthful.
-        const acctKind = kiroUsage.accountType === 'IamIdentityCenter' ? 'IAM Identity Center'
-          : kiroUsage.accountType === 'BuilderId' ? 'Builder ID'
-          : kiroUsage.accountType === 'Social' ? 'Social login'
+        const acctKind = kiroUsage.accountType === 'IamIdentityCenter' ? i18nT('app.iam_identity_center')
+          : kiroUsage.accountType === 'BuilderId' ? i18nT('app.builder_id')
+          : kiroUsage.accountType === 'Social' ? i18nT('app.social_login')
           : kiroUsage.accountType
         let issuerHost: string | undefined
         if (kiroUsage.startUrl) { try { issuerHost = new URL(kiroUsage.startUrl).host } catch { issuerHost = undefined } }

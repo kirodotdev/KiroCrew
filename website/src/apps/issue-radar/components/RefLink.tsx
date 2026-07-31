@@ -53,17 +53,17 @@ export function useRefSummary(repoRef: RepoIdentity, number: number, enabled: bo
  * completed / not planned. */
 function lifecycle(s: RefSummary): { Icon: typeof CircleDot; tint: string; label: string } {
   if (s.is_pr) {
-    if (s.merged_at) return { Icon: GitMerge, tint: 'text-aim', label: 'Merged' }
-    if (s.state === 'closed') return { Icon: CircleSlash, tint: 'text-muted', label: 'Closed' }
-    if (s.draft) return { Icon: GitPullRequestDraft, tint: 'text-muted', label: 'Draft' }
-    return { Icon: GitPullRequest, tint: 'text-ok', label: 'Open' }
+    if (s.merged_at) return { Icon: GitMerge, tint: 'text-aim', label: i18nT('apps.issueRadar.components.refLink.merged') }
+    if (s.state === 'closed') return { Icon: CircleSlash, tint: 'text-muted', label: i18nT('apps.issueRadar.components.refLink.closed') }
+    if (s.draft) return { Icon: GitPullRequestDraft, tint: 'text-muted', label: i18nT('apps.issueRadar.components.refLink.draft') }
+    return { Icon: GitPullRequest, tint: 'text-ok', label: i18nT('apps.issueRadar.components.refLink.open') }
   }
   if (s.state === 'closed') {
     return s.state_reason === 'not_planned'
-      ? { Icon: CircleSlash, tint: 'text-muted', label: 'Closed as not planned' }
-      : { Icon: CircleCheck, tint: 'text-aim', label: 'Closed' }
+      ? { Icon: CircleSlash, tint: 'text-muted', label: i18nT('apps.issueRadar.components.refLink.closed_as_not_planned') }
+      : { Icon: CircleCheck, tint: 'text-aim', label: i18nT('apps.issueRadar.components.refLink.closed') }
   }
-  return { Icon: CircleDot, tint: 'text-ok', label: 'Open' }
+  return { Icon: CircleDot, tint: 'text-ok', label: i18nT('apps.issueRadar.components.refLink.open') }
 }
 
 /** Place the card under the link, flipping above when the bottom of the box is

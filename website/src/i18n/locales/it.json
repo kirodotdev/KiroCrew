@@ -1,27 +1,46 @@
 {
+  "api": {
+    "client": {
+      "paste_token_url_or_raw_token": "Incolla l'URL del token o il token grezzo…",
+      "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",
+      "session_expired": "Sessione scaduta."
+    }
+  },
   "app": {
     "a_newer_version_is_available_no_changelog_entry": "È disponibile una versione più recente. Per questa release non è stata aggiunta alcuna voce nel changelog.",
     "across_chat_agents_mcp_and_subagents": "— in chat, agenti, MCP e subagenti.",
     "apps": "App",
     "auto_update_on_restart": "Aggiornamento automatico al riavvio",
+    "bonus_credits": "Crediti bonus",
     "breakdown": "Dettaglio",
+    "builder_id": "Builder ID",
     "cancel_update": "Annulla aggiornamento",
     "changelog": "Changelog",
+    "check_logs_for_details": "Controlla i log per i dettagli.",
     "checking_usage_running": "Verifica dell'utilizzo — in esecuzione",
     "click_to_hide": "Clicca per nascondere",
     "close": "Chiudi",
+    "collapse_sidebar": "Comprimi la barra laterale",
     "contact_us": "Contattaci",
     "cpu": "CPU",
+    "cpu_unavailable": "CPU: non disponibile",
     "credits": "crediti",
     "credits_total": "crediti in totale",
     "developer": "Sviluppatore",
     "discord_community": "Community Discord",
+    "disk_unavailable": "Disco: non disponibile",
     "dismiss": "Ignora",
     "dsk": "DSK",
     "est_overage_cost": "Costo stimato per il superamento",
+    "expand_sidebar": "Espandi la barra laterale",
     "explore": "Esplora",
     "explore_apps": "Esplora le app",
+    "gateway_connected": "Gateway connesso",
+    "gateway_offline": "Gateway offline",
     "github_repository": "Repository GitHub",
+    "hide_full_changelog": "▾ Nascondi il changelog completo",
+    "i_d_like_to_request_a_feature": "Vorrei richiedere una funzionalità!",
+    "iam_identity_center": "IAM Identity Center",
     "k_search_for_anything": "⌘K — Cerca qualsiasi cosa…",
     "kiro_cli_usage": "kiro-cli /usage",
     "kiro_credit_usage_checking": "Utilizzo dei crediti Kiro — verifica in corso…",
@@ -34,6 +53,8 @@
     "main_navigation": "Navigazione principale",
     "manage_account": "Gestisci l'account",
     "mem": "MEM",
+    "memory_unavailable": "Memoria: non disponibile",
+    "metrics_are_stale_latest_fetch_failed": "Le metriche non sono aggiornate: l'ultimo recupero non è riuscito",
     "metrics_unavailable": "metriche non disponibili",
     "monthly_kiro_credit_usage_from": "Utilizzo mensile dei crediti Kiro da",
     "notifications": "Notifiche",
@@ -50,7 +71,11 @@
     "resets": "Reimpostazioni",
     "search_everywhere_k": "Cerca in tutto (⌘K)",
     "search_sessions_files_and_commands": "Cerca tra sessioni, file e comandi",
+    "show_fewer_apps": "Mostra meno app",
+    "show_less": "Mostra meno",
     "skip_to_content": "Vai al contenuto",
+    "social_login": "Accesso social",
+    "starting_update": "Avvio dell'aggiornamento…",
     "system_metrics": "Metriche di sistema",
     "terminal": "Terminale",
     "this_step_seems_to_be_taking_longer_than_expecte": "Questo passaggio sembra richiedere più tempo del previsto.",
@@ -58,15 +83,19 @@
     "update_available_2": "aggiornamento disponibile",
     "update_error": "Errore di aggiornamento",
     "update_failed": "Aggiornamento non riuscito",
+    "update_failed_2": "Aggiornamento non riuscito",
     "update_now": "Aggiorna ora",
     "updating_kirocrew": "Aggiornamento di KiroCrew…",
     "v": "v",
+    "view_full_changelog": "▸ Vedi il changelog completo",
     "what_s_new": "Novità",
     "you_re_on_the_latest_version": "Stai usando la versione più recente"
   },
   "appSdk": {
     "chatEmbed": {
+      "agent_is_working": "L'agente è al lavoro...",
       "chat_message": "Messaggio di chat",
+      "message": "Messaggio...",
       "send": "Invia",
       "send_message": "Invia il messaggio",
       "session_ready_type_a_message_to_start": "Sessione pronta. Digita un messaggio per iniziare.",
@@ -80,7 +109,11 @@
         "answer": "rispondi…",
         "answered": "risposto:",
         "clarifier_answer": "Risposta al chiarimento",
+        "collapse": "Comprimi",
+        "excluded": "Escluso",
         "expand": "espandi",
+        "expand_2": "Espandi",
+        "included": "Incluso",
         "investigate_instead": "indaga invece",
         "max_depth_add_research_manually_or_prune": "profondità massima — aggiungi ricerche manualmente o rimuovine alcune",
         "no_suggestions_add_manually_or_retry": "nessun suggerimento — aggiungi manualmente o riprova",
@@ -95,26 +128,34 @@
         "60s": "60 s",
         "active": "ATTIVO",
         "adaptive": "(adattivo)",
+        "add": "Aggiungi",
         "add_guidance_or_a_sub_question": "Aggiungi indicazioni o una sotto-domanda",
         "add_guidance_or_a_sub_question_enter_shift_enter": "Aggiungi indicazioni o una sotto-domanda… (Invio; Maiusc+Invio per andare a capo)",
         "add_sub_question_manually": "Aggiungi sotto-domanda manualmente",
         "add_sub_question_manually_enter_shift_enter_for": "Aggiungi sotto-domanda manualmente (Invio; Maiusc+Invio per andare a capo)",
+        "add_to_knowledge": "Aggiungi alle conoscenze",
         "add_your_own_sub_question_or_guidance": "Aggiungi la tua sotto-domanda o indicazione",
         "add_your_own_sub_question_or_guidance_enter_shif": "Aggiungi la tua sotto-domanda o indicazione (Invio; Maiusc+Invio per andare a capo)",
         "added_to_knowledge": "Aggiunto alle conoscenze",
+        "adding": "Aggiunta in corso…",
         "agent": "Agente",
         "agent_needs_input": "L'agente richiede input",
         "all_checks_passed": "Tutti i controlli superati",
         "already_in_knowledge": "Già nelle conoscenze",
         "answer_challenges_to_refine_or_just_pick_sub_que": "Rispondi alle obiezioni per affinare, oppure scegli semplicemente delle sotto-domande e crea una diramazione.",
         "answer_clarifiers_to_refine_or_just_pick_sub_que": "Rispondi alle domande di chiarimento per affinare, oppure scegli semplicemente delle sotto-domande e procedi.",
+        "answer_resume": "Rispondi e riprendi",
         "back": "← Indietro",
         "cancel": "Annulla",
         "challenge_findings": "Contesta i risultati →",
         "challenge_the_findings_from": "Contesta i risultati di \"",
+        "challenging": "Contestazione in corso…",
         "continue": "Continua",
         "continue_research": "Continua la ricerca",
+        "copied": "Copiato!",
+        "copy": "Copia",
         "copy_this_section_s_markdown_to_paste_into_chat": "Copia il markdown di questa sezione da incollare nella chat o nel pilota automatico",
+        "could_not_generate_challenges_please_try_again": "Impossibile generare le obiezioni. Riprova.",
         "cycle": "Ciclo",
         "cycles": "cicli,",
         "cycles_2": "cicli",
@@ -125,19 +166,31 @@
         "dynamic_workflow": "Workflow dinamico",
         "dynamic_workflow_can_fan_out_to_many_sub_agents": "Il workflow dinamico può diramarsi su molti subagenti e, se raggiunge il limite di budget, interrompe bruscamente l'esecuzione (la sintesi a metà esecuzione potrebbe andare perduta). Inizia con limiti conservativi di cicli/worker.",
         "e_g_ai_code_review_finds_no_blocking_issues_and": "ad es. la revisione del codice tramite IA non trova problemi bloccanti e la build di test riesce",
+        "emergent": "emergente",
+        "export_as_artifact": "Esporta come artefatto",
+        "exporting": "Esportazione in corso…",
+        "failed_to_add_to_knowledge_library": "Impossibile aggiungere alla libreria delle conoscenze",
         "failed_to_export_as_artifact": "Impossibile esportare come artefatto",
+        "failed_to_start_campaign_please_try_again": "Impossibile avviare la campagna — riprova.",
         "findings": "risultati",
         "findings_2": "Risultati (",
         "findings_so_far_are_preserved_below": "I risultati ottenuti finora sono conservati qui sotto.",
         "first_cycle_in_progress": "Primo ciclo in corso...",
         "focus_on": "Concentrati su...",
         "fork_challenge": "Dirama e contesta",
+        "fork_failed_no_campaign_was_created": "Diramazione non riuscita: non è stata creata alcuna campagna.",
+        "fork_failed_please_try_again": "Diramazione non riuscita. Riprova.",
         "forked": "Diramato",
         "forked_from": "Diramato da:",
+        "forking": "Diramazione in corso…",
         "free_form_a_sub_question_or_an_instruction_the_a": "Formato libero — una sotto-domanda o un'istruzione che l'agente dovrà seguire nel ciclo successivo.",
         "give_direction": "Dai indicazioni",
         "goal_met": "Obiettivo raggiunto",
+        "goal_not_yet": "Obiettivo: non ancora raggiunto",
+        "grill_me": "Interrogami →",
         "grill_unavailable_add_sub_questions_manually_bel": "Interrogazione non disponibile — aggiungi manualmente le sotto-domande qui sotto.",
+        "grilling": "Interrogazione in corso…",
+        "hide_report": "Nascondi il report",
         "history": "CRONOLOGIA",
         "how_do_other_teams_handle_api_rate_limiting": "Come gestiscono gli altri team la limitazione della frequenza delle API?",
         "how_sub_agent_execution_is_orchestrated_both_han": "Come viene orchestrata l'esecuzione dei subagenti. Entrambe le modalità gestiscono ricerche aperte. Scegli una volta in fase di configurazione.",
@@ -158,13 +211,16 @@
         "nudge": "Sollecita",
         "nudge_direction": "Direzione del sollecito",
         "nudge_direction_2": "Direzione del sollecito",
+        "one_campaign_at_a_time": "Una campagna alla volta",
         "one_campaign_at_a_time_research_benefits_from_fo": "Una campagna alla volta — la ricerca beneficia di una profondità focalizzata.",
         "parallel_workers": "Worker paralleli:",
         "parallel_workers_2": "Worker paralleli",
         "pause": "Metti in pausa",
         "pick_up_where_this_campaign_left_off": "Riprendi da dove questa campagna si era interrotta.",
         "pre_flight_check": "Controllo preliminare:",
+        "regenerate": "Rigenera",
         "regenerate_the_report_updates_the_same_artifact": "Rigenera il report — aggiorna lo stesso artefatto come nuova versione",
+        "regenerating": "Rigenerazione in corso…",
         "remove_sub_question": "Rimuovi la sotto-domanda",
         "research": "Ricerca \"",
         "research_lab": "Research Lab",
@@ -178,9 +234,13 @@
         "s_idle": "s di inattività. ~",
         "scripted": "(con script)",
         "searched_empty": "Cercato (vuoto):",
+        "send": "Invia",
+        "sending": "Invio in corso…",
         "show_less": "Mostra meno",
         "show_more": "Mostra altro",
         "sources": "Origini:",
+        "start_campaign": "Avvia campagna",
+        "starting": "Avvio in corso...",
         "stop": "Arresta",
         "stops_at_the_cycle_cap_when_the_definition_of_do": "Si arresta al limite di cicli, quando la definizione di completamento è soddisfatta, in caso di stagnazione o quando lo arresti tu.",
         "strong": "Forte",
@@ -188,22 +248,27 @@
         "sub_questions_2": "sotto-domande",
         "sub_questions_guidance": "Sotto-domande e indicazioni (",
         "suggested_from": "suggerito da",
+        "the_agent_is_waiting_for_your_direction": "L'agente è in attesa delle tue indicazioni.",
         "the_ai_drives_every_round_itself_deciding_what_t": "L'IA guida da sé ogni round — decide cosa indagare, gestisce i subagenti e segue le nuove piste che emergono dai risultati.",
         "the_ai_writes_an_orchestration_script_up_front_a": "L'IA scrive in anticipo uno script di orchestrazione; un runner deterministico gestisce l'esecuzione dei subagenti mentre l'IA si limita a pianificare, indagare e sintetizzare. Riproducibile, con limite di budget.",
+        "the_campaign_stopped_unexpectedly": "La campagna si è interrotta in modo inatteso.",
         "then_fork_into_a_new_campaign": "…\", poi dirama in una nuova campagna.",
         "up_to": "Fino a",
         "validating": "Convalida in corso...",
+        "validation_failed_check_your_connection_and_try": "Convalida non riuscita — controlla la connessione e riprova.",
         "view_report": "Visualizza il report",
         "weak": "Debole",
         "what_do_you_want_to_research": "Cosa vuoi ricercare?",
         "when_should_the_agent_stop": "Quando dovrebbe fermarsi l'agente?",
         "your_answer": "La tua risposta",
-        "your_answer_2": "La tua risposta..."
+        "your_answer_2": "La tua risposta...",
+        "your_guidance": "le tue indicazioni"
       }
     },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "active": "attivo",
+        "active_loaded_during_reviews_uncheck_to_disable": "Attivo — caricato durante le revisioni (deseleziona per disattivare)",
         "add": "Aggiungi",
         "cancel": "Annulla",
         "cli_authenticated_there_run": "CLI autenticata lì: esegui",
@@ -224,6 +289,7 @@
         "github_pr_one_time_setup": "PR GitHub — configurazione una sola volta.",
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "inactive": "inattivo",
+        "inactive_check_to_load_during_reviews": "Inattivo — seleziona per caricarlo durante le revisioni",
         "is_not_authenticated_on_the_gateway_host": "non è autenticato sull'host del gateway.",
         "learn_from_sage": "learn-from-sage",
         "list_open_prs": "Elenca le PR aperte",
@@ -256,11 +322,13 @@
         "pending_consolidation": "Consolidamento in attesa",
         "re_review_every_open_pr_ignoring_the_reviewed_hi": "Rivedi ogni PR aperta, ignorando la cronologia delle revisioni",
         "repository_url": "URL del repository",
+        "review": "Revisiona",
         "review_a_whole_repository": "Revisiona un intero repository",
         "reviewed": "revisionata",
         "reviews_load_learned_patterns_from_the": "Le revisioni caricano i pattern appresi dal",
         "run": "Esegui",
         "run_the": "; esegui il",
+        "running": "In esecuzione…",
         "self_evolving_deep_reviewer_for_github_prs_findi": "Revisore approfondito auto-evolutivo per le PR di GitHub. I risultati vengono pubblicati come revisione\n        IN ATTESA (bozza) che invii tu stesso su GitHub.",
         "self_learning": "Auto-apprendimento",
         "showing": "Visualizzati",
@@ -302,7 +370,9 @@
         "comma_separated_glob_patterns": "Pattern glob separati da virgole",
         "glob_e_g_md": "glob (ad es. *.md)",
         "glob_filter_comma_separated_patterns": "Filtro glob (pattern separati da virgole)",
-        "no_matches": "Nessuna corrispondenza"
+        "no_matches": "Nessuna corrispondenza",
+        "search_failed": "ricerca non riuscita",
+        "searching": "ricerca in corso..."
       },
       "tabStrip": {
         "close_file_tab": "Chiudi la scheda del file",
@@ -318,7 +388,8 @@
     "issueRadar": {
       "components": {
         "agentSessionButton": {
-          "couldn_t_start": "non è stato possibile avviare"
+          "couldn_t_start": "non è stato possibile avviare",
+          "resume": "Riprendi"
         },
         "aiSummaryCard": {
           "ai_summary": "Riepilogo IA",
@@ -331,22 +402,33 @@
           "regenerate_summary": "Rigenera il riepilogo",
           "retry": "Riprova"
         },
+        "filterRow": {
+          "sign_in_with_the_gh_cli_to_use_this_filter": "Accedi con la CLI gh per usare questo filtro"
+        },
         "filtersSection": {
           "assigned_to_me": "Assegnate a me",
           "clear": "cancella",
           "closed": "Chiusa",
           "created_by_member": "Creato da un membro",
           "filters": "Filtri",
+          "no_repo_members_found_among_these_issues": "Nessun membro del repo trovato tra queste issue",
           "open": "Aperte",
           "requested_by_me": "Richieste da me",
           "sort": "Ordina"
         },
         "investigateButton": {
-          "investigate": "Indaga"
+          "could_not_check_for_an_existing_investigation_re": "Impossibile verificare se esiste già un'indagine — nuovo tentativo al prossimo aggiornamento",
+          "investigate": "Indaga",
+          "investigated": "Indagata",
+          "investigating": "Indagine in corso",
+          "open_an_ai_investigation_chat_session_for_this_i": "Apri una sessione di chat di indagine IA per questa issue",
+          "resume_the_ai_investigation_chat_session_for_thi": "Riprendi la sessione di chat di indagine IA per questa issue"
         },
         "issueDetail": {
           "added_the": "ha aggiunto l'etichetta",
           "added_this_to_the": "ha aggiunto questo a",
+          "as_completed": "come completata",
+          "as_not_planned": "come non pianificata",
           "assigned": "assegnato",
           "assignees": "Assegnatari",
           "by": "· di",
@@ -358,6 +440,7 @@
           "closed": "Chiusa",
           "closed_as_not_planned": "Chiusa come non pianificata",
           "closed_this": "ha chiuso questa",
+          "commented": "ha commentato",
           "copy_link_to_this_issue": "Copia il link a questa issue",
           "couldn_t_load_activity": "Impossibile caricare l'attività:",
           "dates": "Date",
@@ -366,9 +449,11 @@
           "edit": "Modifica",
           "finding_suggestions": "Ricerca di suggerimenti…",
           "in": "in",
+          "issue": "Issue",
           "issues": "e issue",
           "label": "etichetta",
           "labels": "Etichette",
+          "link_copied": "Link copiato",
           "linked": "Collegato",
           "locked": "bloccato",
           "milestone": "milestone",
@@ -382,7 +467,9 @@
           "open": "Aperta",
           "opened": "aperta",
           "opened_2": "Aperta",
+          "opened_this_issue": "ha aperto questa issue",
           "read_only_connect_with_triage_push_access_to_app": "Sola lettura — collegati con accesso di triage/push per applicare.",
+          "read_only_connect_with_triage_push_access_to_app_2": "Sola lettura — collegati con accesso di triage/push per applicare",
           "referenced_this_in": "ha fatto riferimento a questa in",
           "referenced_this_in_commit": "ha fatto riferimento a questa nel commit",
           "refresh_issue_details": "Aggiorna i dettagli dell'issue",
@@ -399,6 +486,7 @@
         },
         "issueList": {
           "clear_search": "Cancella ricerca",
+          "closed_issues_are_capped_at_the_100_most_recentl": "Le issue chiuse sono limitate alle 100 aggiornate più di recente",
           "issue_many": "{{count}} issue",
           "issue_one": "{{count}} issue",
           "issue_other": "{{count}} issue",
@@ -426,7 +514,8 @@
           "loading_labels": "Caricamento delle etichette…",
           "remove_this_label_no_longer_exists_on_the_repo": "Rimuovi — questa etichetta non esiste più nel repo",
           "saved_but_no_longer_on_this_repo": "Salvate ma non più presenti in questo repo:",
-          "suggested": "suggerito"
+          "suggested": "suggerito",
+          "this_repo_has_no_labels": "Questo repo non ha etichette."
         },
         "leftRail": {
           "dashboards": "Dashboard",
@@ -452,9 +541,11 @@
           "branches": "Branch",
           "changed_the_title": "ha modificato il titolo",
           "changes": "Modifiche",
+          "check_status_unavailable": "Stato dei controlli non disponibile",
           "click_to_expand": "Clicca per espandere",
           "closed": "Chiusa",
           "closed_this": "ha chiuso questa",
+          "commented": "ha commentato",
           "commits": "Commit",
           "dates": "Date",
           "diff": "Diff",
@@ -466,6 +557,7 @@
           "into": "in",
           "label": "etichetta",
           "labels": "Etichette",
+          "link_copied": "Link copiato",
           "loading_checks": "Caricamento dei controlli…",
           "mergeable": "Unibile",
           "merged": "Unita",
@@ -473,6 +565,7 @@
           "milestone_2": "Milestone",
           "newest_first": "· prima i più recenti",
           "no_activity_yet": "Ancora nessuna attività.",
+          "no_automated_checks": "Nessun controllo automatico",
           "no_description_provided": "Nessuna descrizione fornita.",
           "no_milestone": "Nessuna milestone",
           "no_one_assigned": "Nessun assegnatario",
@@ -505,13 +598,16 @@
           "merged": "Unita",
           "open": "Aperte",
           "review_requested": "Revisione richiesta",
+          "sign_in_to_gh_to_filter_by_your_review_requests": "Accedi a gh per filtrare per le tue richieste di revisione",
           "sort": "Ordina"
         },
         "prList": {
           "clear_search": "Cancella ricerca",
+          "closed_merged_prs_are_capped_at_the_100_most_rec": "Le PR chiuse/unite sono limitate alle 100 aggiornate più di recente — attiva un filtro \"me\" per una ricerca completa su tutto il repo",
           "pr_many": "{{count}} PR",
           "pr_one": "{{count}} PR",
           "pr_other": "{{count}} PR",
+          "resolved_by_github_search_across_the_whole_repo": "Risolto tramite la ricerca GitHub su tutto il repo — non limitato alle 100 più recenti",
           "time_since_the_pr_list_was_last_fetched_from_git": "Tempo trascorso dall'ultimo recupero dell'elenco delle PR da GitHub",
           "updated": "Aggiornato"
         },
@@ -519,7 +615,12 @@
           "read_only": "Sola lettura"
         },
         "refLink": {
-          "could_not_load": "Impossibile caricare #"
+          "closed": "Chiusa",
+          "closed_as_not_planned": "Chiusa come non pianificata",
+          "could_not_load": "Impossibile caricare #",
+          "draft": "Bozza",
+          "merged": "Unita",
+          "open": "Aperta"
         },
         "refSheet": {
           "back": "Indietro",
@@ -552,12 +653,15 @@
         "cli": "CLI",
         "connect_a_repo_nothing_runs_without_your_say": "Collega un repo. Nulla viene eseguito senza il tuo consenso.",
         "connected": "Connesso",
+        "couldn_t_read_far_enough_back_through_your_activ": "Non è stato possibile risalire abbastanza indietro nella tua attività — incolla invece un URL qui sotto.",
         "details": "Dettagli",
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar legge",
         "let_s_connect_a_repo": "Colleghiamo un repo",
         "loading_your_repos": "Caricamento dei tuoi repo…",
+        "most_recent_activity": "attività più recente",
+        "no_contributions_in_the_last_month_paste_a_url_b": "Nessun contributo nell'ultimo mese — incolla invece un URL qui sotto.",
         "or": "Oppure",
         "paste_a_url": "Incolla un URL",
         "please_set_up_the": "Configura il",
@@ -580,23 +684,41 @@
           "coming_soon": "Prossimamente"
         },
         "overviewView": {
+          "0_comments": "0 commenti",
+          "1_4_weeks": "1–4 settimane",
+          "1_6_months": "1–6 mesi",
+          "1_week": "< 1 settimana",
+          "30d_idle": "> 30 g di inattività",
+          "6_months": "> 6 mesi",
           "assigned_to_you": "Assegnate a te",
           "backlog_age": "Età del backlog",
           "by_creation_date": "per data di creazione",
           "discussion_hotspots": "Punti caldi della discussione",
           "filter_the_list_to_issues_assigned_to_you": "Filtra l'elenco per mostrare le issue assegnate a te",
+          "first_timer": "nuovo contributore",
+          "good_first_issue": "good first issue",
           "label_distribution": "Distribuzione delle etichette",
+          "last_7_days": "ultimi 7 giorni",
           "loading_overview": "Caricamento della panoramica…",
           "most_comments_upvotes": "più commenti e voti positivi",
           "needs_attention": "Richiede attenzione",
+          "new_this_week": "Nuove questa settimana",
           "newest_issues_still_untriaged_or_unanswered": "issue più recenti ancora senza triage o senza risposta",
           "no_activity": "Nessuna attività.",
           "no_discussion_yet": "Ancora nessuna discussione.",
           "no_labels_in_use": "Nessuna etichetta in uso.",
+          "no_owner": "senza responsabile",
+          "no_reply": "senza risposta",
           "nothing_needs_attention": "Nulla richiede attenzione",
+          "open_issues": "Issue aperte",
           "re_fetch_issues_labels_from_github": "Recupera di nuovo issue ed etichette da GitHub",
           "recently_updated": "Aggiornati di recente",
-          "refresh_issues": "Aggiorna le issue"
+          "refresh_issues": "Aggiorna le issue",
+          "stale": "Inattive",
+          "unanswered": "Senza risposta",
+          "unassigned": "Non assegnate",
+          "untriaged": "Senza triage",
+          "untriaged_2": "senza triage"
         },
         "settings": {
           "generalSettings": {
@@ -622,10 +744,15 @@
             "auth_are_untouched_you_can_reconnect_anytime": "l'autenticazione resta intatta — puoi riconnetterti in qualsiasi momento.",
             "cancel": "Annulla",
             "checks_about_once_a_minute_inside_kirocrew_no_cr": "Controlla circa una volta al minuto, dentro KiroCrew — nessun job cron. Funziona solo mentre KiroCrew è\n          aperto e la tua macchina è attiva, usando il tuo",
+            "confirm_disconnect": "Conferma la disconnessione",
             "couldn_t_load_members_right_now": "Non è possibile caricare i membri in questo momento.",
+            "couldn_t_load_saved_settings": "Impossibile caricare le impostazioni salvate.",
+            "couldn_t_save_your_changes": "Impossibile salvare le tue modifiche.",
+            "counting_open_issues": "Conteggio delle issue aperte…",
             "data_and": "dati e",
             "disconnect": "Disconnetti",
             "disconnect_repository": "Disconnetti il repository",
+            "disconnecting": "Disconnessione in corso…",
             "from_issue_radar_and_deletes_its_local_cache_you": "da Issue Radar ed elimina la sua cache locale. Il tuo",
             "good_first_issue_labels": "Etichette per le prime issue adatte ai nuovi arrivati",
             "is_opened_in": "è aperto in",
@@ -637,6 +764,7 @@
             "membership_is_read_from": "L'appartenenza viene letta da",
             "new_issue": "nuova issue",
             "no_labels": "nessuna etichetta",
+            "no_members_found_for_this_repo": "Nessun membro trovato per questo repo.",
             "notifications": "Notifiche",
             "notify_me_when_a": "Avvisami quando un",
             "of": "di",
@@ -645,6 +773,7 @@
             "open_on": "Apri su",
             "open_tagging": "Apri l'assegnazione dei tag",
             "organises_its_issues_and_are_never_written_back": "organizza le sue issue e non vengono mai riscritte su",
+            "proposing_new_labels_for_this_repo_now_lives_on": "La proposta di NUOVE etichette per questo repo si trova ora nella dashboard di assegnazione dei tag, accanto alle issue senza tag a cui quelle etichette vengono applicate.",
             "recommending_a_taxonomy_and_applying_it_to_issue": "Consigliare una tassonomia e applicarla alle issue sono due metà dello stesso lavoro, quindi condividono una\n          pagina. Questa pagina delle impostazioni conserva le definizioni locali sopra — quali delle",
             "refresh": "Aggiorna",
             "removes": "Rimuove",
@@ -654,14 +783,22 @@
             "sign_in_no_extra_credentials_no": "accesso (nessuna\n          credenziale aggiuntiva, nessun",
             "this_is_an_approximate_list_inferred_from_issue": ", questo è un elenco approssimativo dedotto dagli autori\n              delle issue. L'elenco completo e la gestione dei membri si trovano su",
             "triage_labels": "Etichette di triage",
+            "watch_this_repo_in_the_background_and_post_a_kir": "Monitora questo repo in background e pubblica una notifica KiroCrew ogni volta che viene aperta una nuova issue.",
             "webhook": "webhook).",
+            "which_labels_mark_newcomer_friendly_work_so_issu": "Quali etichette indicano il lavoro adatto ai nuovi arrivati, così Issue Radar può mostrare le issue da indirizzare ai contributori alla prima esperienza.",
+            "which_labels_mean_an_issue_still_needs_triage_dr": "Quali etichette indicano che una issue necessita ancora di triage. Determina il conteggio \"Senza triage\" della Panoramica e la coda degli elementi che richiedono attenzione.",
             "without_push_access_to": "Senza accesso push a",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "le tue modifiche vengono mantenute qui ma non verranno salvate in modo permanente. Se hai appena aggiornato Issue Radar, riavvia il backend così l'API delle impostazioni diventa disponibile."
           }
         },
         "tagging": {
           "labelsPanel": {
+            "analyzing": "Analisi in corso…",
+            "couldn_t_read_this_repo_s_labels_retry_with_the": "Impossibile leggere le etichette di questo repo — riprova con il pulsante di aggiornamento.",
+            "create": "Crea",
+            "create_this_label_on_github": "Crea questa etichetta su GitHub",
             "created": "Creato",
+            "creating": "Creazione in corso…",
             "creating_needs_write_access": "la creazione richiede l'accesso in scrittura",
             "defined_by_open_issue_count": "definite · per numero di issue aperte",
             "labels": "Etichette",
@@ -669,30 +806,43 @@
             "none_the_repo_s_taxonomy_already_covers_what_its": "Nessuna — la tassonomia del repo copre già ciò che serve alle sue issue aperte.",
             "propose_labels_this_repo_is_missing_from_its_ope": "Proponi le etichette mancanti in questo repo, a partire dalle sue issue aperte",
             "re_fetch_this_repo_s_labels_from_github": "Recupera di nuovo le etichette di questo repo da GitHub",
+            "read_only_repo_needs_triage_push_access": "Repo in sola lettura — serve accesso di triage/push",
+            "suggest_again": "Suggerisci di nuovo",
+            "suggest_new_labels": "Suggerisci nuove etichette",
             "suggested_new_labels_not_created_until_you_say_s": "Nuove etichette suggerite — non vengono create finché non lo confermi"
           },
           "untaggedIssueCard": {
             "add": "Aggiungi",
+            "add_these_labels_on_github": "Aggiungi queste etichette su GitHub",
             "added": "Aggiunto",
-            "no_label_fits": "nessuna etichetta adatta"
+            "click_to_remove": "Clicca per rimuovere",
+            "no_label_fits": "nessuna etichetta adatta",
+            "read_only_repo_needs_triage_or_push_access": "Repo in sola lettura — serve accesso di triage o push"
           }
         },
         "taggingView": {
+          "analyzing": "Analisi in corso…",
+          "applying": "Applicazione in corso…",
           "applying_is_disabled_until_they_load_because_a_s": "l'applicazione è disattivata finché non vengono caricate, perché un suggerimento che nomina\n            un'etichetta non più presente nel repo comporterebbe il rifiuto dell'intero lotto.",
           "applying_needs_write_access": "l'applicazione richiede l'accesso in scrittura",
+          "available_to_assign": "disponibili da assegnare",
           "carries_at_least_one_label_nothing_to_tag": "ha almeno un'etichetta. Nulla da etichettare.",
+          "clear_selection": "Cancella la selezione",
           "couldn_t_load": "Impossibile caricare",
           "couldn_t_reload_the_queue": "Impossibile ricaricare la coda:",
           "defines_no_labels_yet_so_there_is_nothing_to_ass": "non definisce ancora alcuna etichetta, quindi non c'è nulla da assegnare. Proponine alcune sopra,\n            crea quelle che vuoi, poi torna qui a suggerire le etichette.",
           "every_open_issue_in": "Ogni issue aperta in",
           "loading_the_untagged_queue": "Caricamento della coda senza tag…",
           "newest_first": "prima i più recenti",
+          "read_only_repo_needs_triage_or_push_access": "Repo in sola lettura — serve accesso di triage o push",
           "reload_the_untagged_queue": "Ricarica la coda senza tag",
           "repo_labels": "Etichette del repo",
           "s_labels": " - etichette:",
+          "select_all": "Seleziona tutto",
           "untagged": "Senza tag",
           "untagged_issues": "Issue senza tag",
-          "what_you_see_below_is_the_previous_result_not_th": "quello che vedi qui sotto è il risultato precedente, non lo stato attuale."
+          "what_you_see_below_is_the_previous_result_not_th": "quello che vedi qui sotto è il risultato precedente, non lo stato attuale.",
+          "write_every_staged_label_to_github": "Scrivi su GitHub tutte le etichette preparate"
         }
       },
       "welcomeCarousel": {
@@ -715,6 +865,8 @@
         "agent_one": "{{count}} agente",
         "agent_other": "{{count}} agenti",
         "budget": "budget",
+        "cancelled": "Annullato",
+        "result": "Risultato",
         "waiting_for_events": "In attesa di eventi…"
       },
       "workflowSourcePanel": {
@@ -722,7 +874,11 @@
         "could_not_load_source": "Impossibile caricare l'origine:",
         "edit": "Modifica",
         "invalid_fix_before_rerun": "Non valido — correggi prima di rieseguire:",
+        "invalid_script": "Script non valido",
+        "loading": "caricamento…",
         "no_source_captured_for_this_run": "Nessuna origine acquisita per questa esecuzione.",
+        "rerun_with_edits": "Riesegui con le modifiche",
+        "rerunning": "Riesecuzione in corso…",
         "started_run": "Esecuzione avviata",
         "view_source": "Visualizza l'origine"
       },
@@ -734,6 +890,7 @@
         "request_failed": "Richiesta non riuscita:",
         "run": "Esegui",
         "run_a_workflow_to_see_its_phases_agents_and_resu": "Esegui un workflow per vederne qui le fasi, gli agenti e il risultato.",
+        "running": "In esecuzione…",
         "validate": "Convalida",
         "workflow_script_python": "Script del workflow (Python)",
         "workflow_source": "origine del workflow",
@@ -742,9 +899,12 @@
       "workflowsRuns": {
         "background_runs": "Esecuzioni in background",
         "budget": "budget",
+        "cancel": "Annulla",
+        "cancelling": "Annullamento in corso…",
         "could_not_load_runs": "Impossibile caricare le esecuzioni:",
         "events": "eventi",
         "no_background_runs_yet_runs_started_in_the_backg": "Ancora nessuna esecuzione in background. Le esecuzioni avviate in background appaiono qui.",
+        "run_detail": "Dettaglio dell'esecuzione",
         "select_a_run_to_see_its_phases_agents_and_result": "Seleziona un'esecuzione per vederne le fasi, gli agenti e il risultato."
       }
     }
@@ -1364,15 +1524,6 @@
       "suggested_follow_up_one": "Follow-up suggerito",
       "suggested_follow_up_other": "Follow-up suggeriti",
       "this_session_has_no_project_directory_so_there_i": "Questa sessione non ha una directory di progetto, quindi non c'è un repository da cui creare un branch"
-    },
-    "inboundLinkChip": {
-      "confirm_release": "Scollegare questa sessione da {{label}}?\n\nI messaggi inviati lì non arriveranno più qui e le risposte non verranno più recapitate lì. Puoi ricollegarla con !sessions da quel canale.",
-      "driven_from": "Pilotata da {{label}}",
-      "release": "Scollega",
-      "release_aria": "Scollega questa sessione da {{label}}",
-      "release_failed": "Impossibile scollegare la sessione: {{reason}}",
-      "released": "Scollegata da {{label}}",
-      "tooltip": "Questa sessione è bidirezionale con {{label}}: le risposte vengono recapitate lì e i messaggi inviati lì arrivano qui."
     },
     "inboundLinkChip": {
       "confirm_release": "Scollegare questa sessione da {{label}}?\n\nI messaggi inviati lì non arriveranno più qui e le risposte non verranno più recapitate lì. Puoi ricollegarla con !sessions da quel canale.",
@@ -2427,19 +2578,66 @@
     }
   },
   "hooks": {
+    "mic": {
+      "could_not_start_the_microphone": "Impossibile avviare il microfono.",
+      "microphone_is_unavailable_another_app_may_be_usi": "Il microfono non è disponibile — potrebbe essere in uso da un'altra app.",
+      "microphone_permission_denied_allow_mic_access_in": "Autorizzazione al microfono negata. Consenti l'accesso al microfono nelle impostazioni del sistema operativo e del browser.",
+      "no_microphone_found_connect_one_or_pick_a_differ": "Nessun microfono trovato. Collegane uno o scegli un dispositivo diverso in Impostazioni."
+    },
+    "useCronActions": {
+      "failed_to_cancel_job": "Impossibile annullare il job",
+      "failed_to_open_in_chat": "Impossibile aprire nella chat",
+      "failed_to_run_job": "Impossibile eseguire il job"
+    },
+    "useKeyboardShortcuts": {
+      "close_this_session": "Chiudere questa sessione?"
+    },
     "useSceneInteraction": {
+      "all_slots_are_occupied": "Tutti gli slot sono occupati",
       "approve": "Approva",
       "click_for_thread": "clicca per il thread",
       "close_thread_view": "Chiudi la vista del thread",
       "couldn_t_load_messages": "Impossibile caricare i messaggi",
+      "create_a_new_chat_session_a_new_agent_joins_this": "Crea una nuova sessione di chat — un nuovo agente si unisce a questo mondo",
+      "cron_running": "Cron · in esecuzione",
       "deny": "Nega",
       "failed": "non riuscito",
+      "idle": "Inattivo",
       "kiro_is_working": "Kiro sta lavorando…",
       "loading_thread": "Caricamento del thread…",
+      "message_sent": "Messaggio inviato",
+      "message_this_agent": "Scrivi a questo agente…",
       "needs_approval": "richiede approvazione:",
+      "new_session": "+ Nuova sessione",
       "no_messages_yet": "Ancora nessun messaggio",
       "open_chat": "Apri la chat",
-      "waiting_on_approval": "In attesa di approvazione:"
+      "retry": "Riprova",
+      "retry_sending_message": "Riprova a inviare il messaggio",
+      "send": "Invia",
+      "send_message": "Invia il messaggio",
+      "sending_message": "Invio del messaggio",
+      "steer_this_agent": "Indirizza questo agente…",
+      "summoning": "evocazione in corso…",
+      "waiting_on_approval": "In attesa di approvazione:",
+      "working": "Al lavoro"
+    },
+    "useSessionActions": {
+      "close_this_session": "Chiudere questa sessione?",
+      "switch_to_autopilot_mode_future_messages_will_us": "Passare alla modalità pilota automatico? I messaggi successivi useranno il comportamento del pilota automatico (pianifica → approva → esegui).",
+      "switch_to_normal_chat_mode_future_messages_will": "Passare alla modalità chat normale? I messaggi successivi useranno il comportamento standard della chat."
+    },
+    "useStreamingStt": {
+      "audio_worklet_unavailable": "audio worklet non disponibile",
+      "stt_connection_error": "errore di connessione stt",
+      "stt_connection_lost": "connessione stt persa",
+      "stt_error": "errore stt"
+    },
+    "useVoiceInput": {
+      "transcription_request_failed": "Richiesta di trascrizione non riuscita."
+    },
+    "useWebSocket": {
+      "a_task_needs_your_decision": "Un'attività richiede una tua decisione",
+      "approval_required": "Approvazione richiesta"
     }
   },
   "nav": {
@@ -5570,6 +5768,16 @@
         "description": "Impostazioni per la sintesi vocale e il riconoscimento vocale (dettatura)",
         "label": "Voce"
       }
+    }
+  },
+  "utils": {
+    "cronUtils": {
+      "create": "Crea",
+      "save": "Salva",
+      "saving": "Salvataggio in corso..."
+    },
+    "popoutController": {
+      "your_browser_blocked_the_pop_out_window_allow_po": "Il browser ha bloccato la finestra pop-out. Consenti i pop-up per questo sito e riprova."
     }
   }
 }
