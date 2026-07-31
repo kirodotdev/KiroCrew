@@ -1173,6 +1173,11 @@ export const api = {
   rewind: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/rewind', { ts, content }).then(j),
   slackLink: (slot: string, channel?: string, threadTs?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-link', (channel || threadTs) ? { ...(channel ? { channel } : {}), ...(threadTs ? { thread_ts: threadTs } : {}) } : undefined).then(j),
   unlinkSlack: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-unlink').then(j),
+  channelTargets: () => fetch('/api/chat/channel-targets').then(j),
+  linkMirror: (slot: string, channelType: string, targetId: string) => post(
+    '/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-link',
+    { channel_type: channelType, target_id: targetId },
+  ).then(j),
   remindMirror: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-link').then(j),
   unlinkMirror: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-unlink').then(j),
   slackChannels: () => fetch('/api/slack/channels').then(j),

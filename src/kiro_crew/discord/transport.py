@@ -27,6 +27,7 @@ from kiro_crew.discord.client import (
     DiscordInbound,
 )
 from kiro_crew.messaging.transport import (
+    ConfiguredChannelTarget,
     InboundMessage,
     MessagingTransport,
     TransportCapabilities,
@@ -85,9 +86,7 @@ class DiscordTransport(MessagingTransport):
         # Deny-by-default: freeze both allow-lists as snowflake strings so they
         # cannot mutate under an in-flight authorization decision.
         self._allowed: frozenset[str] = frozenset(str(u) for u in allowed_user_ids)
-        self._allowed_threads: frozenset[str] = frozenset(
-            str(t) for t in allowed_thread_ids
-        )
+        self._allowed_threads: frozenset[str] = frozenset(str(t) for t in allowed_thread_ids)
         self._dispatch = dispatch
         self.capabilities = DISCORD_CAPABILITIES
 
@@ -128,6 +127,31 @@ class DiscordTransport(MessagingTransport):
     ) -> list[InboundMessage]:
         # Sessions persist via conversation_log instead (mirrors Telegram).
         return []
+
+    def configured_targets(self) -> list[ConfiguredChannelTarget]:
+        targets = [
+            ConfiguredChannelTarget(f"user:{user_id}", f"Discord DM · {user_id}")
+            for user_id in sorted(self._allowed)
+        ]
+        targets.extend(
+            ConfiguredChannelTarget(f"thread:{thread_id}", f"Discord thread · {thread_id}")
+            for thread_id in sorted(self._allowed_threads)
+        )
+        return targets
+
+    async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
+        kind, separator, value = target_id.partition(":")
+        if not separator or not value:
+            return None
+        if kind == "user" and value in self._allowed:
+            return await self.resolve_conversation(value), None
+        if kind == "thread" and value in self._allowed_threads:
+            # Keep outbound dashboard links on the same disclosure boundary as
+            # inbound guild traffic: an allow-listed snowflake is not enough
+            # if Discord reports that it is a normal shared channel.
+            if await self._client.is_thread_channel(value):
+                return value, None
+        return None
 
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:

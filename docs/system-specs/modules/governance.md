@@ -636,7 +636,10 @@ read-your-writes should add it deliberately, with its own tests.
   (at `cron_add`); the sandbox ordinal floor is clamped in `sandbox.wrap_argv`;
   spawn in `subagent._vet_spawn_governance`; outbound messaging in
   `mcp_core._vet_messaging_governance` plus the per-transport `channels` check
-  in `mcp_core._vet_channel_governance`; the per-transport **startup** gate in
+  in `mcp_core._vet_channel_governance`; dashboard cross-surface mirror creation
+  in `dashboard.chat_mirror` reuses the fail-closed
+  `dashboard.chat_runner._resolve_channel_target` ladder before opaque target
+  resolution and at every outbound send boundary; the per-transport **startup** gate in
   `slack.gateway._channel_transport_permitted` (a `channels` deny for a member
   keeps that transport — `slack`/`wecom`/`telegram`/`discord`/`webex` — from
   connecting at boot; resolved under `session_key=HOST_SESSION_KEY` so a

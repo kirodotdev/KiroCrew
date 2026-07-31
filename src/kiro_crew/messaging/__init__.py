@@ -36,6 +36,7 @@ from kiro_crew.messaging.renderer import (
     chunk_text,
 )
 from kiro_crew.messaging.transport import (
+    ConfiguredChannelTarget,
     InboundMessage,
     MessagingTransport,
     TransportCapabilities,
@@ -46,6 +47,7 @@ __all__ = [
     "MessagingTransport",
     "TransportCapabilities",
     "InboundMessage",
+    "ConfiguredChannelTarget",
     # Layer 2
     "Renderer",
     "OutputEvent",

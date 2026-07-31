@@ -11,6 +11,25 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+@dataclass(frozen=True)
+class ConfiguredChannelTarget:
+    """A user-configured destination exposed to the dashboard."""
+
+    target_id: str
+    label: str
+    available: bool = True
+    unavailable_reason: str = ""
+
+    def to_dict(self, channel_type: str) -> dict[str, Any]:
+        return {
+            "channel_type": channel_type,
+            "target_id": self.target_id,
+            "label": self.label,
+            "available": self.available,
+            "unavailable_reason": self.unavailable_reason,
+        }
+
+
 @dataclass
 class TransportCapabilities:
     """What a messaging channel can do.
@@ -86,6 +105,11 @@ class MessagingTransport(ABC):
     channel_type: str = ""
     capabilities: TransportCapabilities
 
+    @property
+    def dispatcher(self) -> Any:
+        """Return the object owning the bound inbound dispatch callback."""
+        return getattr(getattr(self, "_dispatch", None), "__self__", None)
+
     # -- Tier-1 core (every transport) --------------------------------------
     @abstractmethod
     async def send_message(
@@ -114,6 +138,15 @@ class MessagingTransport(ABC):
 
     async def disconnect(self) -> None:
         """Tear down the channel connection. Optional."""
+        return None
+
+    # -- Dashboard-configured outbound targets -----------------------------
+    def configured_targets(self) -> list[ConfiguredChannelTarget]:
+        """Return configured destinations suitable for dashboard linking."""
+        return []
+
+    async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
+        """Resolve an advertised target to ``(conversation_id, thread_id)``."""
         return None
 
     # -- Inbound adapter ----------------------------------------------------

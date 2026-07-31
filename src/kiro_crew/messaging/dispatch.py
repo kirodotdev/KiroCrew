@@ -93,6 +93,9 @@ class ChannelTurn:
     notice: Optional[Callable[[str, Any], Awaitable[None]]] = None
     """``(session_key, provider) -> None`` post-turn threshold handling."""
 
+    after_persist: Optional[Callable[[], Awaitable[None]]] = None
+    """Optional loop-side callback after persistence, such as dashboard surfacing."""
+
     audit_caller: str = ""
     """SEL audit caller label; defaults to ``<channel_type>:unknown``."""
 
@@ -192,6 +195,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             channel_id=turn.conversation_id,
             agent=turn.agent,
             resumed=resumed,
+            runtime_source=turn.channel_type,
         )
 
         driver = TurnDriver(
@@ -212,7 +216,9 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         except Exception:
             logger.warning(
                 "%s: record_success failed session=%s",
-                turn.channel_type, session_key, exc_info=True,
+                turn.channel_type,
+                session_key,
+                exc_info=True,
             )
         if turn.persist is not None:
             try:
@@ -220,7 +226,19 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             except Exception:
                 logger.warning(
                     "%s: persist_turn failed session=%s",
-                    turn.channel_type, session_key, exc_info=True,
+                    turn.channel_type,
+                    session_key,
+                    exc_info=True,
+                )
+        if is_new and turn.after_persist is not None:
+            try:
+                await turn.after_persist()
+            except Exception:
+                logger.warning(
+                    "%s: post-persist callback failed session=%s",
+                    turn.channel_type,
+                    session_key,
+                    exc_info=True,
                 )
         if turn.notice is not None:
             try:
@@ -228,7 +246,9 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             except Exception:
                 logger.warning(
                     "%s: maybe_notice failed session=%s",
-                    turn.channel_type, session_key, exc_info=True,
+                    turn.channel_type,
+                    session_key,
+                    exc_info=True,
                 )
         try:
             sel().log_api_access(

@@ -83,9 +83,7 @@ def _is_genuine_slack_link(thread_ts: str | None, channel_id: str | None) -> boo
     """True only for a complete Slack link, never another channel's legacy id."""
     namespaced = _split_namespaced_channel_id(channel_id)
     return bool(
-        thread_ts
-        and channel_id
-        and (namespaced is None or namespaced[0] == SLACK_NAMESPACE)
+        thread_ts and channel_id and (namespaced is None or namespaced[0] == SLACK_NAMESPACE)
     )
 
 
@@ -443,10 +441,7 @@ def _budgeted_source_links(links: list[dict]) -> list[dict]:
     """
     changes = [link for link in links if link.get("kind", "change") == "change"]
     issues = [link for link in links if link.get("kind", "change") == "issue"]
-    return (
-        changes[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
-        + issues[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
-    )
+    return changes[:_SERIALIZED_SOURCE_LINKS_PER_SLOT] + issues[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
 
 
 _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
@@ -1820,6 +1815,9 @@ class DashboardState:
         ct = getattr(transport, "channel_type", "")
         if transport is not None and ct:
             self.channel_transports[ct] = transport
+            dispatcher = getattr(transport, "dispatcher", None)
+            if dispatcher is not None:
+                dispatcher.dashboard_state = self
 
     def get_channel_transport(self, channel_type: str) -> "MessagingTransport | None":
         """Return the registered transport for *channel_type*, or None."""
@@ -2253,11 +2251,7 @@ class DashboardState:
         Called when a slot's turn is stopped or reset so a blocked ask_question
         cannot outlive the turn that issued it and strand its MCP call.
         """
-        stale = [
-            aid
-            for aid, p in self._pending_questions.items()
-            if p.get("slot") == slot_key
-        ]
+        stale = [aid for aid, p in self._pending_questions.items() if p.get("slot") == slot_key]
         cancelled = 0
         for aid in stale:
             if self.resolve_question(aid, None):
@@ -2403,9 +2397,7 @@ class DashboardState:
         # delivery O(N²) over time. Same cap as the persisted file; oldest
         # rows drop first (the file trim keeps disk consistent).
         if len(self._notification_log) > _MAX_PERSISTED_NOTIFICATIONS:
-            del self._notification_log[
-                : len(self._notification_log) - _MAX_PERSISTED_NOTIFICATIONS
-            ]
+            del self._notification_log[: len(self._notification_log) - _MAX_PERSISTED_NOTIFICATIONS]
         # Badge counts attention-worthy rows only (RFC Phase 3: passive rows
         # -- including muted-channel notes -- are excluded).
         if note.get("priority") != "passive":
@@ -3151,9 +3143,7 @@ class DashboardState:
 
         if genuine_slack:
             slack_namespace = _split_namespaced_channel_id(slack_channel)
-            visible_slack_channel = (
-                slack_namespace[1] if slack_namespace else (slack_channel or "")
-            )
+            visible_slack_channel = slack_namespace[1] if slack_namespace else (slack_channel or "")
             return links, True, visible_slack_channel, slack_ts or ""
         return links, False, "", ""
 
@@ -3655,9 +3645,7 @@ def _note_ts_epoch(note: dict[str, Any]) -> float | None:
         return None
 
 
-def sweep_expired_notifications(
-    log: list[dict[str, Any]], *, now: float | None = None
-) -> int:
+def sweep_expired_notifications(log: list[dict[str, Any]], *, now: float | None = None) -> int:
     """Remove expired PASSIVE notes in place (RFC Phase 5 TTL sweeper).
 
     A note expires when it is passive, carries a positive integer ``ttl``

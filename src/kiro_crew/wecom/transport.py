@@ -32,6 +32,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from kiro_crew.messaging.transport import (
+    ConfiguredChannelTarget,
     InboundMessage,
     MessagingTransport,
     TransportCapabilities,
@@ -116,6 +117,30 @@ class WeComTransport(MessagingTransport):
         # WeCom AI-bot cannot page DM history; sessions persist via
         # conversation_log instead.
         return []
+
+    def configured_targets(self) -> list[ConfiguredChannelTarget]:
+        identities = set(self._allowed)
+        if self._owner_id:
+            identities.add(self._owner_id)
+        targets = [
+            ConfiguredChannelTarget(
+                f"user:{user_id}",
+                f"WeCom DM · {user_id}",
+                available=False,
+                unavailable_reason="WeCom only allows replies to an inbound message",
+            )
+            for user_id in sorted(identities)
+        ]
+        if self._allow_all and not targets:
+            targets.append(
+                ConfiguredChannelTarget(
+                    "policy:all",
+                    "WeCom · organization users",
+                    available=False,
+                    unavailable_reason="WeCom only allows replies to an inbound message",
+                )
+            )
+        return targets
 
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:

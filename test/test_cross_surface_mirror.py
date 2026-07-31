@@ -31,9 +31,7 @@ from kiro_crew.security import (
 def _fake_transport(channel_type: str = "telegram", proactive: bool = True):
     return SimpleNamespace(
         channel_type=channel_type,
-        capabilities=SimpleNamespace(
-            supports_proactive_send=proactive, max_message_chars=4096
-        ),
+        capabilities=SimpleNamespace(supports_proactive_send=proactive, max_message_chars=4096),
         send_message=AsyncMock(return_value="mid-1"),
     )
 
@@ -67,9 +65,7 @@ class TestGovernanceDegradationFailsClosed:
         tp.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_decision_without_permitted_attr_blocks_delivery(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_decision_without_permitted_attr_blocks_delivery(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "kiro_crew.platform.governance_profiles.governance_permits",
             lambda *a, **k: SimpleNamespace(),
@@ -98,9 +94,7 @@ class TestGovernanceDegradationFailsClosed:
         def _boom(*a, **k):
             raise PlatformCompositionError("ceiling weakened")
 
-        monkeypatch.setattr(
-            "kiro_crew.platform.governance_profiles.governance_permits", _boom
-        )
+        monkeypatch.setattr("kiro_crew.platform.governance_profiles.governance_permits", _boom)
         state = _make_state(tmp_path)
         tp = _fake_transport("telegram")
         state.register_channel_transport(tp)
@@ -120,6 +114,16 @@ class TestRegistrySeam:
         tp = _fake_transport("telegram")
         state.register_channel_transport(tp)
         assert state.get_channel_transport("telegram") is tp
+
+    def test_register_attaches_dashboard_state_to_the_dispatcher(self, tmp_path):
+        state = _make_state(tmp_path)
+        dispatcher = SimpleNamespace()
+        tp = _fake_transport("telegram")
+        tp.dispatcher = dispatcher
+
+        state.register_channel_transport(tp)
+
+        assert dispatcher.dashboard_state is state
 
     def test_get_missing_returns_none(self, tmp_path):
         state = _make_state(tmp_path)
@@ -256,9 +260,7 @@ class TestDeliverCrossSurfaceUserMessage:
             return_value=ChannelLink("telegram", channel_id="123", thread_id=None)
         )
         await _deliver_cross_surface_user_message(state, "k", "hello there")
-        tp.send_message.assert_awaited_once_with(
-            "123", "💬 hello there", thread_id=None
-        )
+        tp.send_message.assert_awaited_once_with("123", "💬 hello there", thread_id=None)
 
     @pytest.mark.asyncio
     async def test_passes_thread_id(self, tmp_path):

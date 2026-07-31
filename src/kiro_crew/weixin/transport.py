@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from kiro_crew.messaging.transport import (
+    ConfiguredChannelTarget,
     InboundMessage,
     MessagingTransport,
     TransportCapabilities,
@@ -92,6 +93,7 @@ class WeixinTransport(MessagingTransport):
         self._account_id = account_id
         self._ctx = ctx_store
         self._allowed: frozenset[str] = frozenset(str(u) for u in allowed_user_ids)
+        self._known_users: set[str] = set()
         self._dm_policy = dm_policy
         self._dispatch = dispatch
         self.capabilities = WEIXIN_CAPABILITIES
@@ -130,6 +132,20 @@ class WeixinTransport(MessagingTransport):
         # iLink getupdates has no history paging; sessions persist elsewhere.
         return []
 
+    def configured_targets(self) -> list[ConfiguredChannelTarget]:
+        identities = self._allowed | self._known_users
+        return [
+            ConfiguredChannelTarget(f"user:{user_id}", f"Weixin DM · {user_id}")
+            for user_id in sorted(identities)
+        ]
+
+    async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
+        kind, separator, value = target_id.partition(":")
+        identities = self._allowed | self._known_users
+        if kind != "user" or not separator or value not in identities:
+            return None
+        return await self.resolve_conversation(value), None
+
     # -- Lifecycle -------------------------------------------------------------
     async def connect(self) -> None:
         await self._client.connect()
@@ -161,7 +177,9 @@ class WeixinTransport(MessagingTransport):
                 # which risks getting the user's personal account limited.
                 errcode = protocol_error_code(resp)
                 if errcode == SESSION_EXPIRED_ERRCODE:
-                    logger.warning("weixin: session expired (-14); pausing — re-login via Settings QR.")
+                    logger.warning(
+                        "weixin: session expired (-14); pausing — re-login via Settings QR."
+                    )
                     await asyncio.sleep(600)
                     continue
                 if errcode == RATE_LIMIT_ERRCODE:
@@ -175,7 +193,9 @@ class WeixinTransport(MessagingTransport):
                     delay = 2 if failures < 3 else 30
                     logger.warning(
                         "weixin: poll returned error code %r (%d) — retrying in %ds",
-                        errcode, failures, delay,
+                        errcode,
+                        failures,
+                        delay,
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -188,7 +208,9 @@ class WeixinTransport(MessagingTransport):
             except Exception as exc:
                 failures += 1
                 delay = 2 if failures < 3 else 30
-                logger.warning("weixin: poll error (%d): %s — retrying in %ds", failures, exc, delay)
+                logger.warning(
+                    "weixin: poll error (%d): %s — retrying in %ds", failures, exc, delay
+                )
                 await asyncio.sleep(delay)
 
     # -- Inbound adapter -------------------------------------------------------
@@ -265,6 +287,7 @@ class WeixinTransport(MessagingTransport):
         # grow that file at will.
         if not self.authorize(msg):
             return
+        self._known_users.add(from_user)
 
         # Persist the peer's latest context_token for reply continuity. The store
         # rewrites + atomically replaces a JSON file, so it runs OFF the loop —

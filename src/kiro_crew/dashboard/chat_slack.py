@@ -178,7 +178,7 @@ async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
     # a turn runs, so unlink MUST clear BOTH the raw and "dashboard:"-prefixed
     # keys or the next turn silently re-inherits the link and mirroring resumes.
     if session_key.startswith("dashboard:"):
-        cleared = state.sessions.clear_slack_link(session_key[len("dashboard:"):]) or cleared
+        cleared = state.sessions.clear_slack_link(session_key[len("dashboard:") :]) or cleared
     else:
         # Defensive: _history_key_for always returns a dashboard:-prefixed key,
         # so this branch is currently unreachable — kept to stay correct if the
@@ -214,15 +214,8 @@ async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "was_linked": cleared})
 
 
-async def api_slack_channels(request: web.Request) -> web.Response:
-    """GET /api/slack/channels — list channels the bot can reply in.
-
-    Returns ``[{id, name}]``. Channel names that aren't already stored in
-    config are resolved via ``ChannelNameResolver`` (single ``conversations.list``
-    call cached for 1h) so the dropdown shows ``# pcn-orchestrator-interest``
-    instead of ``# C0AU38Q0E4B``.
-    """
-    state: DashboardState = request.app["state"]
+async def list_slack_channels(state: DashboardState) -> list[dict]:
+    """List configured Slack destinations, resolving display names."""
     cfg = KiroCrewConfig.load()
     channels: list[dict] = [{"id": "dm", "name": "Direct Message"}]
     seen: set[str] = set()
@@ -254,7 +247,13 @@ async def api_slack_channels(request: web.Request) -> web.Response:
             # Resolution failure leaves placeholder names in place — non-fatal
             logger.debug("Channel name resolution failed", exc_info=True)
 
-    return web.json_response(channels)
+    return channels
+
+
+async def api_slack_channels(request: web.Request) -> web.Response:
+    """GET /api/slack/channels — list channels the bot can reply in."""
+    state: DashboardState = request.app["state"]
+    return web.json_response(await list_slack_channels(state))
 
 
 async def api_chat_slot_handoff(request: web.Request) -> web.Response:

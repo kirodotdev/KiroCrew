@@ -1928,9 +1928,7 @@ async def start_dashboard(
     app.router.add_delete("/api/agents/{name}", handlers.api_kirocrew_agent_delete)
     # Edition capability agents
     app.router.add_get("/api/capability/agents", handlers.api_capability_agents_list)
-    app.router.add_post(
-        "/api/capability/agents/install", handlers.api_capability_agents_install
-    )
+    app.router.add_post("/api/capability/agents/install", handlers.api_capability_agents_install)
     app.router.add_post(
         "/api/capability/agents/uninstall", handlers.api_capability_agents_uninstall
     )
@@ -1989,6 +1987,7 @@ async def start_dashboard(
     app.router.add_post("/api/chat/slots/{slot}/slack-unlink", chat.api_chat_slot_slack_unlink)
     app.router.add_post("/api/chat/slots/{slot}/mirror-link", chat.api_chat_slot_mirror_link)
     app.router.add_post("/api/chat/slots/{slot}/mirror-unlink", chat.api_chat_slot_mirror_unlink)
+    app.router.add_get("/api/chat/channel-targets", chat.api_channel_targets)
     app.router.add_get("/api/slack/channels", chat.api_slack_channels)
 
     # OpenAI-compatible API

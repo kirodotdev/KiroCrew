@@ -808,6 +808,30 @@ class TestPublicInjectionSurface:
         assert d.current_session_key("42").startswith("discord:")
 
 
+class TestConfiguredTargets:
+    @pytest.mark.asyncio
+    async def test_resolves_allowlisted_dm(self) -> None:
+        client = FakeClient()
+        transport = DiscordTransport(client, allowed_user_ids=["u1"])  # type: ignore[arg-type]
+
+        assert await transport.resolve_configured_target("user:u1") == ("dm-u1", None)
+
+    @pytest.mark.asyncio
+    async def test_resolves_allowlisted_confirmed_thread(self) -> None:
+        client = FakeClient()
+        client.thread_channels.add("t1")
+        transport = DiscordTransport(client, allowed_thread_ids=["t1"])  # type: ignore[arg-type]
+
+        assert await transport.resolve_configured_target("thread:t1") == ("t1", None)
+
+    @pytest.mark.asyncio
+    async def test_denies_allowlisted_normal_guild_channel(self) -> None:
+        client = FakeClient()
+        transport = DiscordTransport(client, allowed_thread_ids=["c1"])  # type: ignore[arg-type]
+
+        assert await transport.resolve_configured_target("thread:c1") is None
+
+
 class TestTransportReceive:
     def _transport(
         self, allowed: list[str], allowed_threads: list[str] | None = None

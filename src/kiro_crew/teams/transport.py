@@ -25,6 +25,7 @@ import logging
 from typing import Any, Awaitable, Callable, Iterable
 
 from kiro_crew.messaging.transport import (
+    ConfiguredChannelTarget,
     InboundMessage,
     MessagingTransport,
     TransportCapabilities,
@@ -72,6 +73,7 @@ class TeamsTransport(MessagingTransport):
         # conversation_id -> serviceUrl, learned from inbound activities so
         # proactive/outbound sends can reach a known conversation.
         self._service_urls: dict[str, str] = {}
+        self._conversations_by_user: dict[str, str] = {}
         self.capabilities = TEAMS_CAPABILITIES
 
     @property
@@ -101,6 +103,32 @@ class TeamsTransport(MessagingTransport):
     ) -> list[InboundMessage]:
         # Sessions persist via conversation_log instead.
         return []
+
+    def configured_targets(self) -> list[ConfiguredChannelTarget]:
+        targets: list[ConfiguredChannelTarget] = []
+        for identity in sorted(self._allowed):
+            available = identity in self._conversations_by_user
+            targets.append(
+                ConfiguredChannelTarget(
+                    f"user:{identity}",
+                    f"Teams DM · {identity}",
+                    available=available,
+                    unavailable_reason=(
+                        "" if available else "Send a message to KiroCrew in Teams first"
+                    ),
+                )
+            )
+        return targets
+
+    async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
+        kind, separator, value = target_id.partition(":")
+        identity = value.lower()
+        if kind != "user" or not separator or identity not in self._allowed:
+            return None
+        conversation_id = self._conversations_by_user.get(identity, "")
+        if not conversation_id or not self._service_urls.get(conversation_id):
+            return None
+        return conversation_id, None
 
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
@@ -175,5 +203,6 @@ class TeamsTransport(MessagingTransport):
         )
         if not self.authorize(msg):
             return
+        self._conversations_by_user[identity.lower()] = inbound.conversation_id
         if self._dispatch is not None:
             await self._dispatch(inbound)

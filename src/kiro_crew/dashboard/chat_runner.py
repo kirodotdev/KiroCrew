@@ -1296,19 +1296,26 @@ def _resolve_channel_target(state: Any, session_key: str, link: Any) -> Any:
         return None
     try:
         from kiro_crew.platform.context import PlatformCompositionError
-        from kiro_crew.platform.governance_profiles import governance_permits
+        from kiro_crew.platform.governance_profiles import vet_and_audit
 
-        decision = governance_permits(
+        # vet_and_audit == governance_permits + a SEL governance-decision record
+        # for BOTH grant and denial. Every call here is a real send/link
+        # decision (the read-only links[].live projection uses the in-memory
+        # state._channel_link_is_live instead), so a governance decision at this
+        # egress chokepoint MUST land in the SEL trail — the security contract
+        # requires every permission decision to be audited.
+        decision = vet_and_audit(
             "channels",
             link.channel_type,
             session_key=session_key,
+            tool_name="chat.channel_mirror",
             # fail_closed=True: this is an EGRESS chokepoint on a network
             # surface, so a degraded governance evaluation must DENY rather than
-            # degrade-to-permit. governance_permits swallows its own internal
-            # errors and returns a permissive Decision by default, which the
-            # outer except below can never observe. Matches the other
-            # "channels"-scope gates: messaging/identity.py, slack/gateway.py,
-            # dashboard/handlers_system.py.
+            # degrade-to-permit. vet_and_audit forwards this to
+            # governance_permits, which swallows its own internal errors and
+            # returns a non-permissive Decision under fail_closed. Matches the
+            # other "channels"-scope gates: messaging/identity.py,
+            # slack/gateway.py, dashboard/handlers_system.py.
             fail_closed=True,
         )
         # Default False, not True: a Decision without ``permitted`` is an
@@ -2823,6 +2830,7 @@ async def _run_chat(
                 mode=slot.mode,
                 blocks_reads=slot.blocks_reads,
                 provider_type=cfg.agent.provider,
+                runtime_source="dashboard",
                 exclude_last_n=1,
                 folder_path=folder_path,
                 model_window=model_window,

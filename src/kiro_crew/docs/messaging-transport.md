@@ -1,13 +1,14 @@
 # Messaging Transport Architecture
 
-Channel-neutral contracts that let KiroCrew talk to Slack today and to other
-chat channels (Telegram, Discord, WhatsApp, Teams, …) tomorrow — without
-re-implementing streaming, tool-approval, session identity, or rendering for
-each one.
+Channel-neutral contracts used by KiroCrew's shipped Slack, Discord, Telegram,
+Webex, WeCom, Teams, and Weixin integrations. They also let future channels
+such as WhatsApp be added without re-implementing streaming, tool approval,
+session identity, or rendering for each one.
 
 - **Package:** `kiro_crew.messaging`
-- **Status:** contracts + Slack implementation shipped; **default ON** in this
-  fork (`messaging.use_transport`, default `true`) — opt out with `false`.
+- **Status:** contracts plus Slack, Discord, Telegram, Webex, WeCom, Teams, and
+  Weixin implementations shipped. Slack's transport path is **default ON** in
+  this fork (`messaging.use_transport`, default `true`) — opt out with `false`.
 
 ## Why
 
@@ -58,6 +59,10 @@ class MessagingTransport(ABC):
     async def send_message(self, conversation_id, content, thread_id=None) -> str: ...
     async def resolve_conversation(self, user_id) -> str: ...
     async def fetch_history(self, conversation_id, thread_id=None) -> list[InboundMessage]: ...
+
+    # configured dashboard destinations (optional; default empty)
+    def configured_targets(self) -> list[ConfiguredChannelTarget]: ...
+    async def resolve_configured_target(self, target_id) -> tuple[str, str | None] | None: ...
 
     # lifecycle (optional; default no-ops)
     async def connect(self) -> None: ...

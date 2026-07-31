@@ -15,6 +15,7 @@ from kiro_crew.messaging import (
     TEXT_CHUNK,
     THINKING,
     TOOL_CALL,
+    ConfiguredChannelTarget,
     InboundMessage,
     MessagingTransport,
     OutputEvent,
@@ -39,8 +40,15 @@ class TestTransportCapabilities:
         assert d["streaming"] is True
         assert d["max_message_chars"] == 2000
         assert set(d) == {
-            "streaming", "edit", "reactions", "files", "rich_blocks", "threads",
-            "max_message_chars", "max_buttons", "supports_proactive_send",
+            "streaming",
+            "edit",
+            "reactions",
+            "files",
+            "rich_blocks",
+            "threads",
+            "max_message_chars",
+            "max_buttons",
+            "supports_proactive_send",
         }
 
 
@@ -56,6 +64,24 @@ class TestInboundMessage:
         b = InboundMessage(channel_type="x", user_id="u", conversation_id="c", text="t")
         a.attachments.append("file")
         assert b.attachments == []
+
+
+class TestConfiguredChannelTarget:
+    def test_serializes_with_its_transport_namespace(self):
+        target = ConfiguredChannelTarget(
+            "user:42",
+            "Discord DM · 42",
+            available=False,
+            unavailable_reason="not ready",
+        )
+
+        assert target.to_dict("discord") == {
+            "channel_type": "discord",
+            "target_id": "user:42",
+            "label": "Discord DM · 42",
+            "available": False,
+            "unavailable_reason": "not ready",
+        }
 
 
 class TestAbstract:
@@ -135,7 +161,12 @@ class _RecordingRenderer(Renderer):
 class TestRendererDispatch:
     def test_kinds_registered(self):
         assert OUTPUT_KINDS == {
-            TEXT_CHUNK, THINKING, TOOL_CALL, PROMPT_CHOICE, COMPACTION, DONE,
+            TEXT_CHUNK,
+            THINKING,
+            TOOL_CALL,
+            PROMPT_CHOICE,
+            COMPACTION,
+            DONE,
             STEER_CONSUMED,
         }
 

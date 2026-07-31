@@ -145,6 +145,14 @@ class TeamsDispatcher:
         # ``inbound.conversation_id`` -- the Teams platform conversation id the
         # renderer replies into. The two are deliberately different; passing the
         # platform id would silently repoint every existing Teams session.
+        # Immediately surface a newly-created channel session in the dashboard
+        # (feature: don't wait for the ~30s reconciler). Circular import —
+        # dashboard boot imports channel packages — so import lazily.
+        async def _surface_new_session() -> None:
+            from kiro_crew.dashboard.channel_slots import surface_dispatcher_session
+
+            await surface_dispatcher_session(self)
+
         await drive_turn(
             ChannelTurn(
                 channel_type="teams",
@@ -160,6 +168,7 @@ class TeamsDispatcher:
                 ),
                 notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                 audit_caller=f"teams:{email}",
+                after_persist=_surface_new_session,
             ),
             sessions=self.sessions,
             ctx_builder=self.ctx_builder,

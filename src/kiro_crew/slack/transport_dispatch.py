@@ -275,6 +275,7 @@ async def handle_message_transport(
                 agent=_agent,
                 resumed=resumed,
                 user_display_name=user_display_name,
+                runtime_source="slack",
             )
         else:
             full_message = text

@@ -1831,9 +1831,18 @@
       "we_could_not_check_kiro_cli": "Nous n'avons pas pu vérifier Kiro CLI.",
       "your_crew_is_almost_ready": "Votre équipe est presque prête."
     },
+    "inboundLinkChip": {
+      "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Tu peux la rattacher avec !sessions depuis ce canal.",
+      "driven_from": "Pilotée depuis {{label}}",
+      "release": "Dissocier",
+      "release_aria": "Dissocier cette session de {{label}}",
+      "release_failed": "Impossible de dissocier la session : {{reason}}",
+      "released": "Dissociée de {{label}}",
+      "tooltip": "Cette session est liée à {{label}} dans les deux sens : les réponses y sont transmises et les messages envoyés là-bas arrivent ici."
+    },
     "linkedSurfacesSection": {
-      "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Vous pouvez la rattacher avec !sessions depuis ce canal.",
-      "confirm_stop_mirroring": "Arrêter la mise en miroir de cette session vers {{label}} ?\n\nLes réponses n'y seront plus transmises. Pour un canal autre que Slack, vous ne pouvez la relier que depuis ce canal, pas depuis le tableau de bord.",
+      "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Tu peux la rattacher avec !sessions depuis ce canal.",
+      "confirm_stop_mirroring": "Arrêter la mise en miroir de cette session vers {{label}} ?\n\nLes réponses n'y seront plus transmises. Tu pourras la relier plus tard depuis le sélecteur de canaux configurés.",
       "connected": "Connecté : {{label}}",
       "mirror": "Miroir",
       "mirror_stopped": "Mise en miroir vers {{label}} arrêtée",
@@ -1842,11 +1851,13 @@
       "post_reminder": "Publier un rappel dans {{label}}",
       "release": "Dissocier de {{label}}",
       "released": "Dissociée de {{label}}",
+      "link_failed": "Impossible de lier le canal : {{reason}}",
       "reminder_failed": "Impossible de publier le rappel : {{reason}}",
       "reminder_sent": "Rappel publié dans {{label}}",
       "stop_failed": "Impossible d'arrêter la mise en miroir : {{reason}}",
       "stop_mirroring": "Arrêter la mise en miroir vers {{label}}",
-      "two_way": "Bidirectionnel"
+      "two_way": "Bidirectionnel",
+      "unavailable": "Cette destination est indisponible."
     },
     "logEntry": {
       "cancelled": "Annulé",
@@ -3853,7 +3864,6 @@
       "custom_folder_emoji": "Emoji de dossier personnalisé",
       "custom_recency_amount": "Valeur d'ancienneté personnalisée",
       "custom_recency_unit": "Unité d'ancienneté personnalisée",
-      "dashboard_session": "Session du tableau de bord",
       "day_many": "{{count}} jours",
       "day_one": "{{count}} jour",
       "day_other": "{{count}} jours",
@@ -3895,7 +3905,9 @@
       "match_mode": "Mode de correspondance",
       "merged": "Fusionné",
       "min": "min",
+      "dashboard_source": "Tableau de bord",
       "mirroring_to": "Mise en miroir vers {{label}}",
+      "session_source": "Session",
       "model_list": "Liste des modèles",
       "more": "Plus",
       "more_create_options": "Plus d'options de création",
@@ -3947,7 +3959,6 @@
       "show_folder": "Afficher le dossier",
       "show_the_folder_list": "Afficher la liste des dossiers",
       "skip": "Ignorer",
-      "slack_session": "Session Slack",
       "sort_and_filter_sessions": "Trier et filtrer les sessions",
       "sort_by": "Trier par",
       "sort_filter_sessions": "Trier et filtrer les sessions",

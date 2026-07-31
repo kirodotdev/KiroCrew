@@ -20,8 +20,15 @@ vi.mock('../api/client', () => ({
     unlinkSlack: vi.fn().mockResolvedValue({ ok: true, was_linked: true }),
     slackLink: vi.fn().mockResolvedValue({ ok: true }),
     unlinkMirror: vi.fn().mockResolvedValue({ ok: true, was_linked: true }),
+    linkMirror: vi.fn().mockResolvedValue({ ok: true, conversation_id: 'dm-42' }),
     remindMirror: vi.fn().mockResolvedValue({ ok: true, already_linked: true }),
-    // LinkedSurfacesSection fetches the workspace channel list internally now.
+    channelTargets: vi.fn().mockResolvedValue([{
+      channel_type: 'slack',
+      target_id: 'dm',
+      label: 'Slack · Direct Message',
+      available: true,
+      unavailable_reason: '',
+    }]),
     slackChannels: vi.fn().mockResolvedValue([]),
     mcpActive: vi.fn().mockResolvedValue([]),
     setSlotColor: vi.fn().mockResolvedValue({}),
@@ -117,6 +124,43 @@ describe('Session menu — Slack link/unlink (connected)', () => {
 })
 
 describe('Session menu — channel-neutral connected surfaces', () => {
+  it('lists configured non-Slack destinations and links the selected target', async () => {
+    vi.mocked(api.channelTargets).mockResolvedValueOnce([{
+      channel_type: 'discord',
+      target_id: 'user:42',
+      label: 'Discord DM · 42',
+      available: true,
+      unavailable_reason: '',
+    }])
+    renderMenu({ key: 'chat-1-100', slack_linked: false })
+
+    fireEvent.click(await screen.findByText('Discord DM · 42'))
+
+    await waitFor(() => expect(api.linkMirror).toHaveBeenCalledWith(
+      'chat-1-100',
+      'discord',
+      'user:42',
+    ))
+  })
+
+  it('keeps unavailable destinations focusable and explains why they cannot link', async () => {
+    vi.mocked(api.channelTargets).mockResolvedValueOnce([{
+      channel_type: 'wecom',
+      target_id: 'configured',
+      label: 'WeCom · Configured account',
+      available: false,
+      unavailable_reason: 'WeCom can only reply to an inbound message.',
+    }])
+    renderMenu({ key: 'chat-1-100', slack_linked: false })
+
+    const reason = await screen.findByText('WeCom can only reply to an inbound message.')
+    const item = reason.closest('[role="menuitem"]')
+    expect(item).toHaveAttribute('aria-disabled', 'true')
+
+    fireEvent.click(reason)
+    expect(api.linkMirror).not.toHaveBeenCalled()
+  })
+
   it('shows a Discord origin badge without Slack or disconnect actions', async () => {
     renderMenu({
       key: 'discord-session',

@@ -1811,9 +1811,18 @@
       "we_could_not_check_kiro_cli": "Wir konnten Kiro CLI nicht prüfen.",
       "your_crew_is_almost_ready": "Ihre Crew ist fast bereit."
     },
+    "inboundLinkChip": {
+      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Du kannst sie mit !sessions aus diesem Kanal erneut verbinden.",
+      "driven_from": "Gesteuert von {{label}}",
+      "release": "Lösen",
+      "release_aria": "Diese Sitzung von {{label}} lösen",
+      "release_failed": "Sitzung konnte nicht gelöst werden: {{reason}}",
+      "released": "Von {{label}} gelöst",
+      "tooltip": "Diese Sitzung ist bidirektional mit {{label}} verbunden: Antworten werden dorthin geliefert, und dort gesendete Nachrichten kommen hier an."
+    },
     "linkedSurfacesSection": {
-      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Sie können sie mit !sessions aus diesem Kanal erneut verbinden.",
-      "confirm_stop_mirroring": "Spiegelung dieser Sitzung nach {{label}} beenden?\n\nAntworten werden dort nicht mehr geliefert. Bei einem Kanal außerhalb von Slack können Sie die Verbindung nur aus diesem Kanal wiederherstellen, nicht über das Dashboard.",
+      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Du kannst sie mit !sessions aus diesem Kanal erneut verbinden.",
+      "confirm_stop_mirroring": "Spiegelung dieser Sitzung nach {{label}} beenden?\n\nAntworten werden dort nicht mehr geliefert. Du kannst die Sitzung später über die Auswahl konfigurierter Kanäle erneut verbinden.",
       "connected": "Verbunden: {{label}}",
       "mirror": "Spiegeln",
       "mirror_stopped": "Spiegelung nach {{label}} beendet",
@@ -1822,11 +1831,13 @@
       "post_reminder": "Erinnerung in {{label}} posten",
       "release": "{{label}} lösen",
       "released": "Von {{label}} gelöst",
+      "link_failed": "Kanal konnte nicht verknüpft werden: {{reason}}",
       "reminder_failed": "Erinnerung konnte nicht gepostet werden: {{reason}}",
       "reminder_sent": "Erinnerung in {{label}} gepostet",
       "stop_failed": "Spiegelung konnte nicht beendet werden: {{reason}}",
       "stop_mirroring": "Spiegelung nach {{label}} beenden",
-      "two_way": "Bidirektional"
+      "two_way": "Bidirektional",
+      "unavailable": "Dieses Ziel ist nicht verfügbar."
     },
     "logEntry": {
       "cancelled": "Abgebrochen",
@@ -3816,7 +3827,6 @@
       "custom_folder_emoji": "Benutzerdefiniertes Ordner-Emoji",
       "custom_recency_amount": "Benutzerdefinierter Zeitraumwert",
       "custom_recency_unit": "Benutzerdefinierte Zeitraumeinheit",
-      "dashboard_session": "Dashboard-Sitzung",
       "day_one": "{{count}} Tag",
       "day_other": "{{count}} Tage",
       "days": "Tage",
@@ -3857,7 +3867,9 @@
       "match_mode": "Abgleichmodus",
       "merged": "Zusammengeführt",
       "min": "Min.",
+      "dashboard_source": "Dashboard",
       "mirroring_to": "Spiegelung nach {{label}}",
+      "session_source": "Sitzung",
       "model_list": "Modellliste",
       "more": "Mehr",
       "more_create_options": "Weitere Erstellungsoptionen",
@@ -3907,7 +3919,6 @@
       "show_folder": "Ordner anzeigen",
       "show_the_folder_list": "Die Ordnerliste anzeigen",
       "skip": "Überspringen",
-      "slack_session": "Slack-Sitzung",
       "sort_and_filter_sessions": "Sitzungen sortieren und filtern",
       "sort_by": "Sortieren nach",
       "sort_filter_sessions": "Sitzungen sortieren & filtern",

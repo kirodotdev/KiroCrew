@@ -30,9 +30,7 @@ class FakeClient:
 
 
 def _inbound(userid: str = "Wei", text: str = "hi") -> WeComInbound:
-    return WeComInbound(
-        userid=userid, text=text, response_url="https://r", req_id="rq1", chatid=""
-    )
+    return WeComInbound(userid=userid, text=text, response_url="https://r", req_id="rq1", chatid="")
 
 
 class TestCapabilities:
@@ -43,6 +41,21 @@ class TestCapabilities:
         assert cap.max_buttons == 0  # no tappable chips
         assert cap.supports_proactive_send is False  # reply bound to inbound
         assert cap.max_message_chars == 20000
+
+
+class TestConfiguredTargets:
+    def test_allow_all_policy_remains_visible_but_unavailable(self) -> None:
+        transport = WeComTransport(FakeClient(), allow_all=True)
+
+        assert [target.to_dict("wecom") for target in transport.configured_targets()] == [
+            {
+                "channel_type": "wecom",
+                "target_id": "policy:all",
+                "label": "WeCom · organization users",
+                "available": False,
+                "unavailable_reason": "WeCom only allows replies to an inbound message",
+            }
+        ]
 
 
 class TestAuthorize:
@@ -150,6 +163,4 @@ class TestLifecycle:
 
 
 def _msg(userid: str) -> InboundMessage:
-    return InboundMessage(
-        channel_type="wecom", user_id=userid, conversation_id=userid, text="hi"
-    )
+    return InboundMessage(channel_type="wecom", user_id=userid, conversation_id=userid, text="hi")

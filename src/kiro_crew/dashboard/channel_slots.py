@@ -449,6 +449,21 @@ async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) 
     return surfaced
 
 
+async def surface_dispatcher_session(dispatcher: object) -> None:
+    """Surface a channel dispatcher's just-persisted session immediately."""
+    cfg = getattr(dispatcher, "cfg", None)
+    dashboard_cfg = getattr(cfg, "dashboard", None)
+    if dashboard_cfg is None or not getattr(dashboard_cfg, "surface_channel_sessions", True):
+        return
+    state = getattr(dispatcher, "dashboard_state", None)
+    if state is None:
+        return
+    await reconcile_channel_slots(
+        state,
+        int(getattr(dashboard_cfg, "restore_window_minutes", 30)),
+    )
+
+
 async def channel_slot_reconciler(state: "DashboardState", window_minutes: int) -> None:
     """Background task: reconcile now, then every ``RECONCILE_INTERVAL_SECS``.
 

@@ -12,6 +12,7 @@ import os
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -97,16 +98,12 @@ class TestEligibility:
 
     def test_recent_channel_session_is_eligible(self) -> None:
         sessions = [_session("slack:1785370133.085469")]
-        out = channel_slots.eligible_channel_sessions(
-            sessions, metadata={}, cutoff=NOW - 1800
-        )
+        out = channel_slots.eligible_channel_sessions(sessions, metadata={}, cutoff=NOW - 1800)
         assert [s["key"] for s in out] == ["slack:1785370133.085469"]
 
     def test_stale_channel_session_is_filtered(self) -> None:
         sessions = [_session("slack:1.1", modified=NOW - 7200)]
-        out = channel_slots.eligible_channel_sessions(
-            sessions, metadata={}, cutoff=NOW - 1800
-        )
+        out = channel_slots.eligible_channel_sessions(sessions, metadata={}, cutoff=NOW - 1800)
         assert out == []
 
     def test_zero_window_disables_recency_filter(self) -> None:
@@ -219,15 +216,11 @@ class TestSurfaceChannelSession:
         transcripts and send the `closed` flag to a key the reconciler never
         reads, so a closed tab would reopen.
         """
-        slot = channel_slots.surface_channel_session(
-            dashboard_state, _session("slack:1.1"), {}, []
-        )
+        slot = channel_slots.surface_channel_session(dashboard_state, _session("slack:1.1"), {}, [])
         assert slot is not None
         assert slot.linked_session_key == ""
 
-    def test_untitled_session_falls_back_to_the_channel_label(
-        self, dashboard_state: Any
-    ) -> None:
+    def test_untitled_session_falls_back_to_the_channel_label(self, dashboard_state: Any) -> None:
         slot = channel_slots.surface_channel_session(
             dashboard_state, _session("teams:a:direct:b"), {}, []
         )
@@ -347,9 +340,7 @@ class TestReconcilePass:
         # a rebind-only pass (no create) still reaches connected clients.
         assert pushes, "the pass must broadcast the new slots"
 
-    def test_a_closed_tab_is_not_reopened_by_the_next_pass(
-        self, dashboard_state: Any
-    ) -> None:
+    def test_a_closed_tab_is_not_reopened_by_the_next_pass(self, dashboard_state: Any) -> None:
         """End-to-end guard for the reopen defect: `closed` lives on the SLOT key."""
         dashboard_state.conversation_log = _FakeLog(
             [_session("slack:1.1")], {"dashboard:slack_1.1": {"closed": True}}
@@ -550,9 +541,7 @@ class TestMergeTranscripts:
 
 class TestReconcileMore:
 
-    def test_second_pass_is_a_no_op_and_reads_no_transcripts(
-        self, dashboard_state: Any
-    ) -> None:
+    def test_second_pass_is_a_no_op_and_reads_no_transcripts(self, dashboard_state: Any) -> None:
         log = _FakeLog([_session("slack:1.1")], {})
         dashboard_state.conversation_log = log
         dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
@@ -562,9 +551,7 @@ class TestReconcileMore:
         assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
         assert log.message_reads == [], "steady state must not re-read transcripts"
 
-    def test_works_on_stem_form_keys_as_served_by_list_sessions(
-        self, dashboard_state: Any
-    ) -> None:
+    def test_works_on_stem_form_keys_as_served_by_list_sessions(self, dashboard_state: Any) -> None:
         dashboard_state.conversation_log = _FakeLog(
             [_session("slack_1785370133.085469"), _session("dashboard_chat-1-1")], {}
         )
@@ -594,9 +581,7 @@ class TestReconcileMore:
         dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
         real = channel_slots.surface_channel_session
 
-        def flaky(
-            state: Any, info: dict[str, Any], meta: Any, msgs: Any, **kw: Any
-        ) -> Any:
+        def flaky(state: Any, info: dict[str, Any], meta: Any, msgs: Any, **kw: Any) -> Any:
             if info["key"] == "slack:1.1":
                 raise RuntimeError("boom")
             return real(state, info, meta, msgs, **kw)
@@ -604,3 +589,54 @@ class TestReconcileMore:
         monkeypatch.setattr(channel_slots, "surface_channel_session", flaky)
         assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
         assert "slack_2.2" in dashboard_state._slots
+
+
+class TestImmediateDispatcherSurface:
+    def test_reconciles_with_the_configured_restore_window(
+        self, dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[Any, int]] = []
+
+        async def fake_reconcile(state: Any, window_minutes: int) -> int:
+            calls.append((state, window_minutes))
+            return 1
+
+        monkeypatch.setattr(channel_slots, "reconcile_channel_slots", fake_reconcile)
+        dispatcher = SimpleNamespace(
+            cfg=SimpleNamespace(
+                dashboard=SimpleNamespace(
+                    surface_channel_sessions=True,
+                    restore_window_minutes=47,
+                )
+            ),
+            dashboard_state=dashboard_state,
+        )
+
+        asyncio.run(channel_slots.surface_dispatcher_session(dispatcher))
+
+        assert calls == [(dashboard_state, 47)]
+
+    def test_respects_the_surface_channel_sessions_gate(
+        self, dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called = False
+
+        async def fake_reconcile(state: Any, window_minutes: int) -> int:
+            nonlocal called
+            called = True
+            return 1
+
+        monkeypatch.setattr(channel_slots, "reconcile_channel_slots", fake_reconcile)
+        dispatcher = SimpleNamespace(
+            cfg=SimpleNamespace(
+                dashboard=SimpleNamespace(
+                    surface_channel_sessions=False,
+                    restore_window_minutes=30,
+                )
+            ),
+            dashboard_state=dashboard_state,
+        )
+
+        asyncio.run(channel_slots.surface_dispatcher_session(dispatcher))
+
+        assert not called
