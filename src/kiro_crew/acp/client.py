@@ -107,6 +107,7 @@ from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
 from kiro_crew.sandbox import (
+    apply_windows_resource_ceiling,
     cgroup_scope_argv,
     scrub_agent_denied_env,
     session_host_preexec,
@@ -1793,10 +1794,60 @@ class AcpClient:
             creationflags=(
                 platform_compat.CREATE_NEW_PROCESS_GROUP
                 | platform_compat._SUBPROCESS_NO_WINDOW
+                | platform_compat.CREATE_SUSPENDED
             ),
             preexec_fn=session_host_preexec(),
         )
         self._pid = self._process.pid
+        # Windows resource ceiling, applied while the child is still SUSPENDED.
+        #
+        # cgroup_scope_argv above is a no-op on Windows (no systemd), so without
+        # this the agent and every MCP server it spawns would run with NO
+        # fork-bomb or memory-DoS ceiling. A Job object cannot be an argv prefix,
+        # so it has to be attached to a live pid — and job membership covers a
+        # member's FUTURE descendants only. Attaching to an already-running
+        # kiro-cli would therefore leave a window in which it could fork an MCP
+        # server that escapes the ceiling.
+        #
+        # CREATE_SUSPENDED closes that window by construction: the child has not
+        # executed a single instruction yet, so it provably has no descendants.
+        # Assign the job, then resume. CREATE_SUSPENDED is 0 on POSIX, so this is
+        # a plain unsuspended spawn there and apply/resume are both no-ops.
+        #
+        # The resume failure is FATAL only when the child is actually THERE: a
+        # process that exists but cannot be resumed is alive-but-frozen, and
+        # letting it masquerade as a running agent would hang the session on the
+        # handshake with no diagnosis. Kill it and fail loudly instead. If the pid
+        # no longer exists there is nothing frozen to worry about — it exited on
+        # its own — so just note it and let the handshake surface the real error.
+        # The ceiling itself still fails soft (logs a SECURITY warning, returns
+        # False); a missing ceiling must not break the gateway.
+        try:
+            apply_windows_resource_ceiling(self._pid)
+        finally:
+            if platform_compat.IS_WINDOWS and not platform_compat.resume_process_main_thread(
+                self._pid
+            ):
+                if platform_compat.pid_exists(self._pid):
+                    logger.error(
+                        "Could not resume suspended %s (PID %d); killing it rather than "
+                        "leaving a frozen process that looks like a live agent",
+                        KIRO_CLI_BIN,
+                        self._pid,
+                    )
+                    try:
+                        self._process.kill()
+                    except Exception:
+                        logger.debug("kill of unresumable child failed", exc_info=True)
+                    raise AcpError(
+                        f"failed to resume {KIRO_CLI_BIN} (PID {self._pid}) after applying "
+                        f"Windows Job object resource limits"
+                    )
+                logger.debug(
+                    "Nothing to resume for PID %d — the child is already gone, so it "
+                    "cannot be frozen; the handshake will report the real failure",
+                    self._pid,
+                )
         self._start_time = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _get_start_time, self._pid
         )

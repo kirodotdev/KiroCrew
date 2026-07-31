@@ -1522,6 +1522,51 @@ def _allow_unsandboxed_exec() -> bool:
         return False
 
 
+# The full ``mode`` vocabulary wrap_argv accepts (see _SANDBOX_MODE_ALIASES for
+# the alias resolution and the module docstring for what each tier hides).
+_VALID_SANDBOX_MODES = frozenset({"auto", "standard", "strict", "cc", "off"})
+
+
+def agent_sandbox_mode() -> str:
+    """The operator's ``agent.sandbox`` tier — the mode ``kiro-cli`` spawns run at.
+
+    Use this for ONE-SHOT ``kiro-cli`` invocations (``--list-models``,
+    ``/usage``, ...) so they are confined at exactly the same tier as the
+    interactive session spawn of the same binary (``AcpClient._spawn`` passes
+    ``mode=cfg.agent.sandbox``).  Hardcoding ``"auto"`` at such a call site is
+    strictly TIGHTER than the agent session it describes — no security benefit,
+    and on a host with no sandbox backend (Windows, Linux without user
+    namespaces) :func:`wrap_argv` fail-closes and the feature silently dies.
+
+    Fallbacks distinguish two cases so a config ERROR can never silently disable
+    sandboxing (mirrors ``knowledge.llm_pool._get_sandbox_mode``):
+
+    - ``sandbox`` **absent/unset** -> ``"off"``: the shipped default, deferring
+      isolation to kiro-cli's own internal sandbox (kiro-cli >= 2.13).
+    - ``sandbox`` **present but malformed** (typo, wrong type) -> ``"auto"``:
+      fail SECURE.  A garbage value is a misconfiguration, not an intent to run
+      unconfined.
+
+    Note this is only the REQUESTED tier: governance may still clamp it up to a
+    ``sandbox.min_level`` floor inside :func:`wrap_argv`.
+    """
+    try:
+        from kiro_crew.config.loader import (
+            KiroCrewConfig,  # circular import: sandbox is a low-level dep of config.loader
+        )
+
+        mode = getattr(KiroCrewConfig.load().agent, "sandbox", None)
+    except Exception:
+        # Config unavailable (early boot, tests): fail secure, same as malformed.
+        logger.debug("agent_sandbox_mode: config unavailable, defaulting to 'auto'")
+        return "auto"
+    if mode is None or mode == "":
+        return "off"
+    if isinstance(mode, str) and mode in _VALID_SANDBOX_MODES:
+        return mode
+    return "auto"
+
+
 # The single environment marker that proves this process is already INSIDE a
 # KiroCrew namespace sandbox. Deny-by-default: the gate keys ONLY on the
 # explicit, single-purpose ``KIROCREW_SANDBOX_ACTIVE``, which is exported at
@@ -2005,6 +2050,27 @@ def wrap_argv(
                     "execution, or install a supported sandbox backend "
                     "(Linux user namespaces, or macOS sandbox-exec). "
                 )
+                if platform_compat.IS_WINDOWS:
+                    # The generic guidance above is actively misleading here:
+                    # there is NO Windows backend to install (detect_backend
+                    # implements Linux user namespaces + macOS sandbox-exec
+                    # only), so a Windows operator cannot resolve this by
+                    # installing anything. Say so, and name the only two real
+                    # options, so the failure reads as a documented platform
+                    # limitation rather than a broken install. See
+                    # docs/windows-install.md.
+                    guidance = (
+                        "This is Windows, which has NO OS-level sandbox backend "
+                        "at all (only Linux user namespaces and macOS "
+                        "sandbox-exec are implemented) — there is nothing to "
+                        "install that would satisfy this check. Either this "
+                        "feature is unavailable on Windows by design (see "
+                        "docs/windows-install.md), or the caller should request "
+                        'mode="off" when the target is first-party/trusted. '
+                        "Setting agent.sandbox_allow_unsandboxed_exec=true "
+                        "removes the check GLOBALLY, for untrusted spawns too, "
+                        "so prefer the per-caller fix. "
+                    )
             # Emit SEL audit event for this security-relevant denial so it
             # appears in the tamper-evident audit log (security-review requirement).
             try:
@@ -2442,6 +2508,39 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
         "--",
         *argv,
     ]
+
+
+def apply_windows_resource_ceiling(pid: int) -> bool:
+    """Windows counterpart to :func:`cgroup_scope_argv`, applied AFTER spawn.
+
+    ``cgroup_scope_argv`` bounds an agent subprocess and all its descendants by
+    prepending ``systemd-run --user --scope`` with ``TasksMax`` / ``MemoryMax``.
+    That has no Windows equivalent expressible as an argv prefix, so on Windows
+    it returns argv unchanged and logs a one-time loud SECURITY warning — the
+    fork-bomb and memory-DoS ceilings were simply absent there.
+
+    A Job object is the native mechanism (limits cover every process in the job,
+    and descendants of a member join automatically), but it must be applied to a
+    live pid rather than baked into argv. Callers therefore invoke this right
+    after the spawn returns, in addition to the (no-op on Windows)
+    ``cgroup_scope_argv`` call they already make. Reads the SAME
+    ``resource_limits`` config as the cgroup path, so one setting governs both
+    platforms.
+
+    Returns ``True`` when a ceiling was installed; ``False`` on non-Windows
+    (nothing to do — the cgroup wrapper owns it) or on any failure, which
+    :func:`platform_compat.apply_job_limits` has already logged as a SECURITY
+    warning. Never raises: a missing ceiling must not fail the spawn, matching
+    how an unavailable cgroup scope is handled.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return False
+    max_procs, max_mem_mb, _cpu_weight, _max_cpu_percent = _cgroup_limits_from_config()
+    return platform_compat.apply_job_limits(
+        pid,
+        max_procs=max_procs,
+        max_memory_bytes=max_mem_mb * 1024 * 1024,
+    )
 
 
 # ``systemd-run --user`` finds the caller's session bus through these two

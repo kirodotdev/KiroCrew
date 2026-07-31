@@ -16,6 +16,7 @@ from kiro_crew.mcp_discovery import (
     McpServerInfo,
     _cache_probe,
     _get_cached,
+    _is_managed_server,
     _load_mcp_json_by_source,
     _probe_cache,
     _probe_remote,
@@ -2340,3 +2341,119 @@ class TestProbeGroupReap:
         else:
             platform_compat.kill_pid(gc_pid, platform_compat.SIGKILL)  # cleanup
             pytest.fail("grandchild survived probe teardown — process-group reap regressed")
+
+
+class TestProbeSandboxTier:
+    """The probe's sandbox tier is chosen by TRUST, and only relaxed on Windows.
+
+    Windows has no OS-level sandbox backend, so ``wrap_argv`` fail-closes for
+    every mode except ``"off"`` and the MCP probe used to be entirely
+    unavailable there — including for KiroCrew's own managed servers, which left
+    the agent's first-party cron/spawn/learn toolset permanently un-probeable
+    and reported as an error by ``kirocrew doctor``.
+
+    The carve-out is deliberately narrow and these tests pin every edge of it:
+    managed (first-party) servers only, Windows only, and never as a reaction to
+    a backend probe result — mirroring the carve-out
+    ``kiro_prerequisite._run_process`` already applies to the trusted kiro-cli
+    binary.
+    """
+
+    def _record_mode(self, monkeypatch):
+        """Replace the autouse passthrough with one that records the tier."""
+        import os as _os
+
+        seen: list[str] = []
+
+        def _capture(argv, mode="standard", *a, env=None, **k):
+            seen.append(mode)
+            return list(argv), dict(env if env is not None else _os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _capture)
+        return seen
+
+    async def _probe(self, name):
+        proc = AsyncMock()
+        proc.returncode = None
+        proc.stdin = MagicMock()
+        proc.stdin.close = MagicMock()
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+        proc.stdout = AsyncMock()
+        proc.stdout.readline = AsyncMock(return_value=b"")
+        server = McpServerInfo(name=name, command="echo")
+        with (
+            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
+        ):
+            await probe_server(server)
+
+    @pytest.mark.asyncio
+    async def test_managed_server_on_windows_uses_off(self, monkeypatch) -> None:
+        seen = self._record_mode(monkeypatch)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.platform_compat.IS_WINDOWS", True)
+        await self._probe("kirocrew-core")
+        assert seen == ["off"]
+
+    @pytest.mark.asyncio
+    async def test_third_party_on_windows_keeps_standard(self, monkeypatch) -> None:
+        # Untrusted by definition: it must NOT inherit the carve-out, so it keeps
+        # the stricter tier and consequently still fails closed on Windows.
+        seen = self._record_mode(monkeypatch)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.platform_compat.IS_WINDOWS", True)
+        await self._probe("playwright-mcp")
+        assert seen == ["standard"]
+
+    @pytest.mark.asyncio
+    async def test_managed_server_off_windows_keeps_standard(self, monkeypatch) -> None:
+        # macOS/Linux behavior must be byte-identical to before the carve-out.
+        seen = self._record_mode(monkeypatch)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.platform_compat.IS_WINDOWS", False)
+        await self._probe("kirocrew-core")
+        assert seen == ["standard"]
+
+    @pytest.mark.asyncio
+    async def test_carveout_is_not_gated_on_backend_probe(self, monkeypatch) -> None:
+        """A backendless POSIX host must NOT get the carve-out.
+
+        ``detect_backend()`` also returns ``"none"`` for a TRANSIENT userns
+        failure, so gating on it would let a momentary Linux hiccup silently
+        drop a probe to an unsandboxed spawn. The gate is the platform.
+        """
+        seen = self._record_mode(monkeypatch)
+        monkeypatch.setattr("kiro_crew.mcp_discovery.platform_compat.IS_WINDOWS", False)
+        monkeypatch.setattr("kiro_crew.sandbox.detect_backend", lambda *a, **k: "none")
+        await self._probe("kirocrew-core")
+        assert seen == ["standard"]
+
+
+class TestIsManagedServer:
+    """``_is_managed_server`` is the trust boundary for the probe carve-out."""
+
+    def test_managed_names_from_agent_module(self) -> None:
+        from kiro_crew.agent import _MANAGED_MCP_SERVERS
+
+        # Read from the source of truth rather than restating the names, so
+        # adding a managed server stays a one-line change in agent.py.
+        assert _MANAGED_MCP_SERVERS, "expected at least one managed server"
+        for name in _MANAGED_MCP_SERVERS:
+            assert _is_managed_server(name) is True
+
+    def test_third_party_and_blank_names_are_untrusted(self) -> None:
+        for name in ("playwright-mcp", "awslabs.redshift-mcp-server", "", "kirocrew", "core"):
+            assert _is_managed_server(name) is False
+
+    def test_lookup_failure_fails_closed(self, monkeypatch) -> None:
+        # An unresolvable managed set must be treated as third-party (stricter
+        # tier), never as trusted.
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _boom(name, *a, **k):
+            if name == "kiro_crew.agent":
+                raise ImportError("simulated")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _boom)
+        assert _is_managed_server("kirocrew-core") is False

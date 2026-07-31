@@ -50,6 +50,13 @@ SIGTERM: int = getattr(signal, "SIGTERM", 15)
 # to the real flags on Windows. Mirrors the ``SIGKILL`` pattern above.
 CREATE_NEW_PROCESS_GROUP: int = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 DETACHED_PROCESS: int = getattr(subprocess, "DETACHED_PROCESS", 0)
+# CREATE_SUSPENDED has no ``subprocess`` alias to getattr from (the module only
+# re-exports a subset of the Win32 creation flags), so it is spelled out. It is
+# the load-bearing half of race-free Job object assignment: a process created
+# suspended has not executed a single instruction, so it cannot yet have spawned
+# a descendant that would escape the job. See ``apply_job_limits`` and
+# ``resume_process_main_thread``. 0 on POSIX, where it is never used.
+CREATE_SUSPENDED: int = 0x00000004 if os.name == "nt" else 0
 # For the short-lived helper tools this module shells out to on Windows
 # (whoami / netstat / taskkill / icacls / powershell): a console-less parent
 # (gateway respawned with DETACHED_PROCESS, or pythonw) would otherwise
@@ -2000,3 +2007,322 @@ def raise_nofile_soft_limit(target: int) -> None:
             resource.setrlimit(resource.RLIMIT_NOFILE, (min(target, hard), hard))
     except (ValueError, OSError, ImportError):
         logger.debug("Could not raise RLIMIT_NOFILE", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Windows Job objects — the cgroup-v2-scope analogue
+# ---------------------------------------------------------------------------
+# On Linux, ``sandbox.cgroup_scope_argv`` bounds an agent subprocess AND all its
+# descendants as one cgroup (``TasksMax`` = fork-bomb ceiling, ``MemoryMax`` =
+# RSS-balloon ceiling). That wrapper is a no-op on Windows and logs a one-time
+# loud SECURITY warning, so Windows had NO fork-bomb or memory ceiling at all.
+#
+# A Job object is the native equivalent: limits apply to every process in the
+# job, and descendants of a job member join the job automatically. Unlike the
+# cgroup path this canNOT be expressed as an argv prefix (there is no wrapper
+# binary to prepend), so it is applied to an already-spawned pid instead — see
+# the race note in :func:`apply_job_limits`.
+_JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
+_JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
+# NOTE: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000) is deliberately NOT set.
+# It would terminate the agent tree as soon as the last job handle closed,
+# which would change process LIFECYCLE (the gateway exiting would kill running
+# agents) rather than merely adding a resource ceiling. Omitting it also means
+# we do not have to keep the handle open: a job object stays alive while
+# processes are assigned to it, so the limits keep being enforced after we
+# close our handle. That makes this a fire-and-forget call with no handle
+# registry and no teardown semantics to get wrong.
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9  # JobObjectExtendedLimitInformation
+
+
+def _job_limit_structs():  # pragma: no cover - Windows-only ctypes plumbing
+    """Build the JOBOBJECT_EXTENDED_LIMIT_INFORMATION ctypes layout.
+
+    Declared inside a function (same pattern as :func:`proc_rss_bytes`) so the
+    ``wintypes`` access never runs at import time on POSIX.
+    """
+
+    class IO_COUNTERS(ctypes.Structure):  # noqa: N801 — Windows struct name
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):  # noqa: N801
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):  # noqa: N801
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    return JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+
+
+def apply_job_limits(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool:
+    """Bound *pid* and its descendants with a Windows Job object.
+
+    The Windows analogue of ``sandbox.cgroup_scope_argv``:
+
+    ==============================  ====================================
+    cgroup v2                       Job object
+    ==============================  ====================================
+    ``TasksMax`` (fork bomb)        ``ActiveProcessLimit``
+    ``MemoryMax`` (RSS balloon)     ``JobMemoryLimit``
+    ==============================  ====================================
+
+    Enforcement is by DENIAL, matching the cgroup tier's practical behavior:
+    once ``ActiveProcessLimit`` is reached the child's ``CreateProcess`` calls
+    fail, and an allocation past ``JobMemoryLimit`` fails, rather than the tree
+    being killed outright. Nothing about process lifetime changes (see the
+    ``KILL_ON_JOB_CLOSE`` note above).
+
+    Returns ``True`` when the limits were applied. Returns ``False`` — never
+    raises — on POSIX (where ``cgroup_scope_argv`` owns this), on a
+    non-positive limit, or on any Win32 failure; the caller treats that as "no
+    ceiling enforced" exactly as it already treats the cgroup probe failing.
+
+    Race-free when paired with :data:`CREATE_SUSPENDED`. Job membership covers a
+    member's future descendants but not ones it already spawned, so assigning a
+    *running* child leaves a window in which it could have forked something that
+    escapes the job. Callers therefore create the child with
+    ``creationflags |= CREATE_SUSPENDED`` — a suspended process has executed no
+    instructions and so provably has no descendants — call this, then
+    :func:`resume_process_main_thread`. That is what ``AcpClient._spawn`` does,
+    and it closes the window entirely rather than merely making it small. This
+    function still works on an already-running pid (the ceiling then applies from
+    that moment on); the suspended handshake is what makes it airtight.
+    """
+    if IS_POSIX:
+        return False
+    if max_procs <= 0 or max_memory_bytes <= 0:
+        logger.debug(
+            "apply_job_limits: skipping non-positive limits (procs=%s, mem=%s)",
+            max_procs,
+            max_memory_bytes,
+        )
+        return False
+    job = None
+    proc_handle = None
+    kernel32 = None
+    try:
+        _PROCESS_SET_QUOTA = 0x0100  # noqa: N806 — Windows API constant
+        _PROCESS_TERMINATE = 0x0001  # noqa: N806 — required by AssignProcessToJobObject
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        # Anonymous job (NULL name): nothing else can open it by name.
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            logger.warning(
+                "SECURITY: CreateJobObject failed (err=%s); fork-bomb / memory-DoS "
+                "ceilings are NOT enforced for pid %d",
+                getattr(ctypes, "get_last_error", lambda: 0)(),
+                pid,
+            )
+            return False
+
+        ext_cls = _job_limit_structs()
+        info = ext_cls()
+        info.BasicLimitInformation.LimitFlags = (
+            _JOB_OBJECT_LIMIT_ACTIVE_PROCESS | _JOB_OBJECT_LIMIT_JOB_MEMORY
+        )
+        info.BasicLimitInformation.ActiveProcessLimit = max_procs
+        info.JobMemoryLimit = max_memory_bytes
+        if not kernel32.SetInformationJobObject(
+            job,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            logger.warning(
+                "SECURITY: SetInformationJobObject failed (err=%s); ceilings NOT "
+                "enforced for pid %d",
+                getattr(ctypes, "get_last_error", lambda: 0)(),
+                pid,
+            )
+            return False
+
+        proc_handle = kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
+        if not proc_handle:
+            logger.warning(
+                "SECURITY: OpenProcess(SET_QUOTA|TERMINATE) failed for pid %d (err=%s); "
+                "ceilings NOT enforced",
+                pid,
+                getattr(ctypes, "get_last_error", lambda: 0)(),
+            )
+            return False
+        if not kernel32.AssignProcessToJobObject(job, proc_handle):
+            logger.warning(
+                "SECURITY: AssignProcessToJobObject failed for pid %d (err=%s); "
+                "ceilings NOT enforced",
+                pid,
+                getattr(ctypes, "get_last_error", lambda: 0)(),
+            )
+            return False
+        logger.info(
+            "Job object ceilings applied to pid %d (max_procs=%d, max_mem=%dMB)",
+            pid,
+            max_procs,
+            max_memory_bytes // (1024 * 1024),
+        )
+        return True
+    except Exception:
+        logger.warning("apply_job_limits failed for pid %s", pid, exc_info=True)
+        return False
+    finally:
+        # Safe to close BOTH handles: without KILL_ON_JOB_CLOSE the job object
+        # outlives our handle for as long as processes remain assigned, so the
+        # limits stay in force. Leaking these would be a per-spawn handle leak
+        # in a long-lived gateway.
+        for handle in (proc_handle, job):
+            if handle and kernel32 is not None:
+                try:
+                    kernel32.CloseHandle(handle)
+                except Exception:
+                    logger.debug("CloseHandle failed", exc_info=True)
+
+
+_TH32CS_SNAPTHREAD = 0x00000004
+_THREAD_SUSPEND_RESUME = 0x0002
+_INVALID_HANDLE_VALUE = -1
+
+
+def resume_process_main_thread(pid: int) -> bool:
+    """Resume every suspended thread of *pid*. Returns True on success.
+
+    The other half of race-free Job object assignment. A child spawned with
+    :data:`CREATE_SUSPENDED` has executed no instructions, so
+    :func:`apply_job_limits` can put it in a job with a guarantee that no
+    descendant escaped; this then lets it run.
+
+    Windows has no ``ResumeProcess`` in kernel32, so the main thread has to be
+    reached by ID: snapshot the system thread list
+    (``CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD)``), select entries whose
+    ``th32OwnerProcessID`` matches, and ``ResumeThread`` each. A freshly created
+    suspended process has exactly one thread, but every match is resumed rather
+    than only the first — resuming a thread that is not suspended is a harmless
+    no-op (the suspend count is already 0), whereas guessing wrong about which
+    thread is "main" would leave the process wedged forever.
+
+    Returns False — never raises — on POSIX (nothing is ever suspended there) or
+    on any Win32 failure. A False return is serious for the caller: the child is
+    alive but frozen, and the ONLY safe response is to kill it rather than let a
+    suspended process masquerade as a running agent. Callers must treat it that
+    way (see ``AcpClient._spawn``).
+    """
+    if IS_POSIX:
+        return False
+    snapshot = None
+    kernel32 = None
+    try:
+
+        class THREADENTRY32(ctypes.Structure):  # noqa: N801 — Windows struct name
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+        kernel32.Thread32First.restype = wintypes.BOOL
+        kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+        kernel32.Thread32Next.restype = wintypes.BOOL
+        kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenThread.restype = wintypes.HANDLE
+        kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        kernel32.ResumeThread.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+        if not snapshot or snapshot == _INVALID_HANDLE_VALUE:
+            logger.error(
+                "resume_process_main_thread: thread snapshot failed for pid %d (err=%s)",
+                pid,
+                getattr(ctypes, "get_last_error", lambda: 0)(),
+            )
+            return False
+        entry = THREADENTRY32()
+        entry.dwSize = ctypes.sizeof(THREADENTRY32)
+        resumed = 0
+        ok = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+        while ok:
+            if entry.th32OwnerProcessID == pid:
+                thread = kernel32.OpenThread(_THREAD_SUSPEND_RESUME, False, entry.th32ThreadID)
+                if thread:
+                    try:
+                        # ResumeThread returns the PREVIOUS suspend count, or
+                        # (DWORD)-1 on failure.
+                        if kernel32.ResumeThread(thread) != 0xFFFFFFFF:
+                            resumed += 1
+                        else:
+                            logger.error(
+                                "ResumeThread failed for tid %d of pid %d (err=%s)",
+                                entry.th32ThreadID,
+                                pid,
+                                getattr(ctypes, "get_last_error", lambda: 0)(),
+                            )
+                    finally:
+                        kernel32.CloseHandle(thread)
+                else:
+                    logger.error(
+                        "OpenThread(SUSPEND_RESUME) failed for tid %d of pid %d (err=%s)",
+                        entry.th32ThreadID,
+                        pid,
+                        getattr(ctypes, "get_last_error", lambda: 0)(),
+                    )
+            entry.dwSize = ctypes.sizeof(THREADENTRY32)
+            ok = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+        if not resumed:
+            logger.error("resume_process_main_thread: no threads resumed for pid %d", pid)
+        return resumed > 0
+    except Exception:
+        logger.error("resume_process_main_thread failed for pid %s", pid, exc_info=True)
+        return False
+    finally:
+        if snapshot and snapshot != _INVALID_HANDLE_VALUE and kernel32 is not None:
+            try:
+                kernel32.CloseHandle(snapshot)
+            except Exception:
+                logger.debug("CloseHandle(snapshot) failed", exc_info=True)
