@@ -53,8 +53,8 @@ from aiohttp import web
 from kiro_crew import hooks, platform_compat
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sandbox import (
-    build_resource_limit_preexec,
-    resource_limit_preexec,
+    RLIMIT_PROFILE_BUILD,
+    create_subprocess_limited,
     sandboxed_spawn_argv,
 )
 from kiro_crew.security import (
@@ -619,7 +619,7 @@ async def _run_cmd(
         # Fail closed: no sandbox backend and unsandboxed exec not opted in.
         return -1, "", f"sandbox unavailable: {exc}"
     try:
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_limited(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -627,7 +627,6 @@ async def _run_cmd(
             env=env,
             # Kernel RLIMIT ceilings for the sandboxed child (fork bomb / FD /
             # mem / CPU) — required for every chokepoint-routed spawn.
-            preexec_fn=resource_limit_preexec(),
             # Own process group so a timeout kill reaps descendants (e.g.
             # `pod up` spawning pip), matching _start_run.
             start_new_session=platform_compat.IS_POSIX,
@@ -734,7 +733,7 @@ async def _start_run(
         proc: Any = None
         try:
             try:
-                proc = await asyncio.create_subprocess_exec(
+                proc = await create_subprocess_limited(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
@@ -746,7 +745,7 @@ async def _start_run(
                     # the per-process rlimit backstop must be present. Build
                     # variant: vite/npm need thousands of descriptors — the
                     # default 1024 NOFILE hard cap EMFILEs the SPA build.
-                    preexec_fn=build_resource_limit_preexec(),
+                    profile=RLIMIT_PROFILE_BUILD,
                     # Own process group so a timeout kill reaps descendants
                     # (pip/npm children), not just the immediate CLI process.
                     start_new_session=platform_compat.IS_POSIX,

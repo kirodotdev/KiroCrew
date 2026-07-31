@@ -25,7 +25,7 @@ of failure.
 | ACP prompt timeout | `acp/client.py` | Per-prompt | 2 hr (`_DEFAULT_PROMPT_TIMEOUT`) | No | Raises `AcpTimeoutError` |
 | ACP read timeout | `acp/client.py` | Per-readline | 20s (`_READ_TIMEOUT`) | No | Allows `CancelledError` delivery at each yield point |
 | Process group kill | `acp/client.py` | Process cleanup | Immediate | No | `killpg(SIGTERM)` → `killpg(SIGKILL)` → `_kill_escaped_children` for different-PGID descendants |
-| Per-process resource limits | `security.py` (`apply_resource_limits`) via `sandbox.py` (`resource_limit_preexec`) | Every agent-influenced spawn (MCP servers, app backends, cron scripts, git, hooks, voice). Exception: the trusted ACP session-host spawns (`acp/client.py`, `acp/runtime.py`) use `sandbox.py:session_host_preexec()`, which RAISES NOFILE to the inherited hard limit instead — a session host multiplexes many MCP pipe pairs and the 1024 cap caused EMFILE crashes | Kernel-enforced `RLIMIT_NOFILE=1024` default-on; `RLIMIT_NPROC`/`RLIMIT_CPU`/`RLIMIT_AS` opt-in (default off) | Yes — kernel enforces at fork/alloc/open time, no sweep needed | Kernel refuses `open()` past the FD cap (EMFILE); on opt-in NPROC/CPU/AS, EAGAIN / SIGXCPU / ENOMEM |
+| Per-process resource limits | `security.py` (`apply_resource_limits`) delivered **after `exec`** by `_spawn_exec_shim.py` via `sandbox.py` (`create_subprocess_limited` / `spawn_shim_argv`) | Every agent-influenced spawn (MCP servers, app backends, cron scripts, git, hooks, voice). Async spawns use the `tool` profile; the trusted ACP session-host spawns (`acp/client.py`, `acp/runtime.py`) use the `session_host` profile, which RAISES NOFILE to the inherited hard limit instead — a session host multiplexes many MCP pipe pairs and the 1024 cap caused EMFILE crashes. Synchronous `subprocess.run`/`Popen` spawns still use `resource_limit_preexec` as `preexec_fn=` | Kernel-enforced `RLIMIT_NOFILE=1024` default-on; `RLIMIT_NPROC`/`RLIMIT_CPU`/`RLIMIT_AS` opt-in (default off) | Yes — kernel enforces at fork/alloc/open time, no sweep needed | Kernel refuses `open()` past the FD cap (EMFILE); on opt-in NPROC/CPU/AS, EAGAIN / SIGXCPU / ENOMEM |
 | cgroup v2 scope (fork bomb + memory) | `sandbox.py` (`cgroup_scope_argv`) | Every agent-influenced spawn tree (root agent + all its MCP servers/subagents as one scope; each cron/app-backend/hook/git/tool spawn its own) | `pids.max=8192` (`TasksMax`) + `memory.max=65% of host RAM` (`MemoryMax`, `MemorySwapMax=0`) per transient `systemd --user --scope` under `kirocrew-agents.slice`, default-on where cgroup v2 delegation exists. Note: `pids.max` counts tasks (threads), not processes — 8192 accommodates JVM build trees while still bounding fork bombs. | Yes — kernel enforces at fork()/alloc time; OOM-kills the scope on memory breach, `fork()` fails EAGAIN past `pids.max` | Fork bomb bounded to `pids.max`; memory balloon OOM-killed at `memory.max`. Unavailable (no delegation/macOS) → no-op + one loud SECURITY warning; RLIMIT_NOFILE still applies |
 | Bounded restart shutdown | `dashboard/handlers.py` | Dashboard ⚡ Apply & Restart | 5s (`_SHUTDOWN_TIMEOUT_SECS`) | No | `asyncio.wait_for` on `provider.shutdown()`; `_sync_kill_provider` fallback on timeout |
 | Subagent injection outer cap | `subagent.py _run()` | Per-subagent completion | 1200s (`_ON_DONE_TIMEOUT`) | No | Semaphore wait + injection combined; on timeout kills stuck kiro-cli via `sessions.reset()` and queues failure event for parent to drain |
@@ -65,21 +65,55 @@ of failure.
    sweep catches MCP children but not the root kiro-cli process.
 
 3. **Per-process resource limits — implemented and wired (Talos bdf0d7e5 / V2285983353).**
-   `security.py:apply_resource_limits(config)` returns a `preexec_fn` that applies POSIX
-   `setrlimit` caps in the child (post-fork, pre-exec), and `sandbox.py:resource_limit_preexec()`
-   is the cached accessor every agent-influenced spawn passes as `preexec_fn=` — the ACP
-   session-host spawns (`acp/client.py`, `acp/runtime.py`) now use
-   `sandbox.py:session_host_preexec()` instead, which RAISES NOFILE to the inherited hard limit
-   for the trusted session host (it multiplexes many MCP pipe pairs); all other
-   agent-influenced spawns keep `resource_limit_preexec` — MCP server probes
-   (`mcp_discovery.py`), app backends and their dependency installs (`apps/backend.py`), the app
-   registry's git clone/build spawns (`apps/registry.py`, `apps/routes.py`), builtin app
-   subprocesses (deploy_web, file_explorer), cron scripts/commands
-   (`cron_script.py`), the task runner's test spawn (`task_executor.py`), agent-selected git
-   (`git_coord.py`), shell hooks (`hooks.py`), the knowledge worker pool
-   (`knowledge/llm_pool.py`), and voice synthesis (`voice_reply.py`).
+   `security.py:apply_resource_limits(config)` resolves the POSIX `setrlimit` caps, and
+   `sandbox.py:resource_limit_spec()` renders them as the `RLIMIT_NAME:value` policy string that
+   `_spawn_exec_shim.py` applies **after `exec`**, in the single-threaded child.
+   `sandbox.py:create_subprocess_limited()` is the accessor every agent-influenced ASYNC spawn
+   uses; it prepends the shim and passes `preexec_fn=None`. Profiles: `tool` (default),
+   `session_host` for the ACP spawns (`acp/client.py`, `acp/runtime.py`), which RAISE NOFILE to
+   the inherited hard limit for the trusted session host (it multiplexes many MCP pipe pairs),
+   `build` for the dev-fleet build spawns (vite/npm need thousands of descriptors), and `none`
+   for the user's own interactive terminal, which never carried caps. Covered spawns: MCP server
+   probes (`mcp_discovery.py`), app backends and their dependency installs (`apps/backend.py`),
+   the app registry's git clone/build spawns (`apps/registry.py`, `apps/routes.py`), builtin app
+   subprocesses (deploy_web, file_explorer), cron scripts/commands (`cron_script.py`), the task
+   runner's test spawn (`task_executor.py`), agent-selected git (`git_coord.py`), shell hooks
+   (`hooks.py`), the knowledge worker pool (`knowledge/llm_pool.py`), and voice synthesis
+   (`voice_reply.py`).
    `test/test_spawn_audit.py` enforces that every sandbox-routed spawn also applies the ceiling,
    so the helper cannot regress to dead code.
+
+   **Why after `exec` and not in a `preexec_fn` (issue #935).** `preexec_fn` forces CPython off
+   `posix_spawn`/`vfork` onto a plain `fork()` of the multi-GB, ~118-thread gateway, and runs
+   Python bytecode in the child before `exec`. A lock another thread held at fork time cannot be
+   released there, so the child can wedge before ever reaching `exec` — and a wedged child takes
+   more than itself down:
+
+   - `subprocess.Popen._execute_child` blocks in an unbounded `os.read(errpipe_read, ...)`
+     waiting for the child to exec or die. For `asyncio.create_subprocess_exec` that read runs on
+     the event loop thread with no `await` point, so no `asyncio.wait_for` can interrupt it and
+     the whole gateway stops.
+   - `_posixsubprocess`'s `child_exec()` runs `_close_open_fds()` *after* `preexec_fn`, so the
+     wedged child still holds a duplicate of every inherited fd — `gateway.lock` and the
+     dashboard's listening socket included, which then outlive the gateway.
+
+   This was observed in production (one child deadlocked in a futex, never exec'd, and pinned the
+   fds it inherited). Limits set post-`exec` are inherited by the exec'd image and all its
+   descendants, so coverage is unchanged; only the delivery point moved. `test/
+   test_spawn_preexec_guard.py` is the AST tripwire that keeps a new async call site from
+   reintroducing the fork. Synchronous `subprocess.run`/`Popen` spawns still use
+   `resource_limit_preexec` — they wedge a worker thread rather than the event loop — and are the
+   tracked follow-up.
+
+   **Two documented exceptions**, both allowlisted in the tripwire:
+   - `sandbox.py:create_subprocess_limited`'s own fallback, for a host with no usable shim
+     (non-POSIX, or a truncated install). Dropping the caps silently would be worse.
+   - `dashboard/handlers/terminal.py:api_terminal_ws`, the user's interactive shell. It carries
+     **no** resource policy — no rlimits, no OOM bias — so the shim had nothing to deliver for it
+     while costing an interpreter startup on every terminal open (measurably doubling the terminal
+     test file's wall time). Its `preexec_fn` is a single pre-resolved `ioctl` with no allocation
+     and no lock acquisition, which is the only shape where a fork-child callable is defensible.
+     The fork remains; the risk is accepted and stated at the call site.
 
    **Defaults — only the one safe-by-default limit is on; the hazardous knobs are opt-in:**
    - `RLIMIT_NOFILE = 1024` (default-on) — max open file descriptors. It is **per-process**,
@@ -143,9 +177,11 @@ of failure.
      because hard quotas slow legitimate builds — grok-build and OpenClaw likewise ship no
      default CPU quota, relying on fair scheduling plus timeouts.
 
-   The RLIMIT preexec additionally writes `oom_score_adj=1000` on every spawned child
+   The spawn shim additionally writes `oom_score_adj=1000` on the child it execs
    (inherited by its descendants), biasing the kernel OOM killer toward tool subprocesses so a
    memory-ballooning command is killed *before* `memory.max` takes out the entire agent scope.
+   It is requested explicitly (`--oom-bias`) by the `tool` and `build` profiles only: a trusted
+   session host and the user's own terminal are not preferred kill targets.
 
    The kernel enforces both at `fork()`/allocation time — no reaper race. `--scope` execs into
    the target (it does not fork a wrapper), so the gateway's PID tracking / `killpg` /

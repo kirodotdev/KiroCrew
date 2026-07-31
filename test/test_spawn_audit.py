@@ -70,6 +70,11 @@ _SPAWN_ATTRS = {
 # ``proc.communicate`` or ``pool.run``).
 _SPAWN_BASES = {"subprocess", "asyncio"}
 
+# Spawn helpers called as a BARE NAME rather than ``module.attr`` -- they are
+# imported directly, so the receiver check above cannot see them. Without this
+# the audit goes blind the moment a call site moves to the wrapper.
+_SPAWN_NAMES = {"create_subprocess_limited"}
+
 # Tokens whose presence anywhere in the enclosing function marks the spawn as
 # routed through the sandbox chokepoint. ``_prepare_sandboxed_spawn`` is the
 # prerequisite flow's async adapter; the dedicated regression test below pins
@@ -81,13 +86,22 @@ _ROUTED_TOKENS = (
 )
 
 # Token marking a routed function as also applying a kernel resource ceiling
-# (RLIMIT_NPROC/NOFILE/CPU/AS) to its child via ``preexec_fn`` — the second
-# layer of the spawn guarantee (security-review bdf0d7e5). Every
-# sandbox-routed function must reference it: the sandbox gives the child
-# filesystem + credential isolation, this gives it a fork-bomb / resource
-# ceiling. Functions whose ONLY spawns are fixed-argv internal probes (no
-# agent-influenced child) are exempted in ``PREEXEC_EXEMPT`` below.
-_PREEXEC_TOKENS = ("resource_limit_preexec", "session_host_preexec")
+# (RLIMIT_NPROC/NOFILE/CPU/AS) to its child — the second layer of the spawn
+# guarantee (security-review bdf0d7e5). Every sandbox-routed function must
+# reference one: the sandbox gives the child filesystem + credential isolation,
+# this gives it a fork-bomb / resource ceiling. Functions whose ONLY spawns are
+# fixed-argv internal probes (no agent-influenced child) are exempted in
+# ``PREEXEC_EXEMPT`` below.
+#
+# ``create_subprocess_limited`` is the preferred form: it delivers the same
+# limits AFTER exec via the spawn shim instead of in a fork child of this
+# threaded gateway. The two ``*_preexec`` names remain valid only for the
+# synchronous spawns that have not moved yet.
+_PREEXEC_TOKENS = (
+    "create_subprocess_limited",
+    "resource_limit_preexec",
+    "session_host_preexec",
+)
 
 # Routed functions exempt from the resource-limit requirement: the enclosing
 # function is sandbox-routed (so it appears routed) but the specific spawn is a
@@ -324,6 +338,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "pod/runtime.py::recent_journal",
         "sandbox.py::_probe_sandbox_exec",
         "sandbox.py::_ssh_supports_accept_new",
+        # The chokepoint wrapper itself. It spawns whatever argv it is handed, so
+        # it cannot route on its own behalf — its CALLERS are the ones this audit
+        # holds to sandboxed_spawn_argv / wrap_argv, and they still appear here
+        # individually because _SPAWN_NAMES collects bare-name calls to it.
+        "sandbox.py::create_subprocess_limited",
         "service/linux.py::_current_group",
         "service/linux.py::_sudo_run",
         "service/linux.py::_systemctl",
@@ -390,19 +409,26 @@ def _collect_spawn_functions() -> dict[str, str]:
         lines = source.splitlines()
         rel = path.relative_to(_SRC_ROOT).as_posix()
         for node in ast.walk(tree):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in _SPAWN_ATTRS
-            ):
+            if not isinstance(node, ast.Call):
                 continue
-            base = node.func.value
-            base_name = (
-                base.id
-                if isinstance(base, ast.Name)
-                else base.attr if isinstance(base, ast.Attribute) else ""
-            )
-            if base_name not in _SPAWN_BASES:
+            if isinstance(node.func, ast.Name):
+                if node.func.id not in _SPAWN_NAMES:
+                    continue
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr in _SPAWN_NAMES:
+                    pass  # e.g. sandbox.create_subprocess_limited(...)
+                elif node.func.attr in _SPAWN_ATTRS:
+                    base = node.func.value
+                    base_name = (
+                        base.id
+                        if isinstance(base, ast.Name)
+                        else base.attr if isinstance(base, ast.Attribute) else ""
+                    )
+                    if base_name not in _SPAWN_BASES:
+                        continue
+                else:
+                    continue
+            else:
                 continue
             enc = "<module>"
             enc_node: ast.AST | None = None

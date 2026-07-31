@@ -10,6 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers import source_providers as source
+from kiro_crew.sandbox import spawn_shim_argv
 
 
 @pytest.fixture(autouse=True)
@@ -696,16 +697,19 @@ async def test_run_json_sandboxes_with_minimal_provider_environment(monkeypatch)
     class FakeProcess:
         returncode = 0
 
-    sandbox = MagicMock(return_value=(["sandbox", "/usr/bin/gh", "api"], {"SAFE": "1"}, None))
+    # An absolute launcher path, as sandboxed_spawn_argv really returns: the
+    # spawn shim execs without a PATH search, so a bare name here would not
+    # describe anything the chokepoint actually produces.
+    sandbox = MagicMock(
+        return_value=(["/usr/bin/sandbox-launcher", "/usr/bin/gh", "api"], {"SAFE": "1"}, None)
+    )
     spawn = AsyncMock(return_value=FakeProcess())
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-secret")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
     monkeypatch.setenv("GH_TOKEN", "ghp_" + "a" * 36)
     monkeypatch.setenv("PATH", "/workspace/attacker-bin")
-    preexec = object()
     monkeypatch.setattr(source, "_resolve_provider_executable", lambda _name: "/usr/bin/gh")
     monkeypatch.setattr(source, "sandboxed_spawn_argv", sandbox)
-    monkeypatch.setattr(source, "resource_limit_preexec", MagicMock(return_value=preexec))
     monkeypatch.setattr(source.asyncio, "create_subprocess_exec", spawn)
     monkeypatch.setattr(source, "_collect_process_output", AsyncMock(return_value=(b"{}", b"")))
 
@@ -721,7 +725,18 @@ async def test_run_json_sandboxes_with_minimal_provider_environment(monkeypatch)
     assert base_env["PATH"] == source._PROVIDER_SYSTEM_PATH
     assert "/workspace/attacker-bin" not in base_env["PATH"]
     assert spawn.call_args.kwargs["env"] == {"SAFE": "1"}
-    assert spawn.call_args.kwargs["preexec_fn"] is preexec
+    # The resource ceiling is delivered AFTER exec by the spawn shim, never by a
+    # preexec_fn: one would fork this threaded gateway and run Python in the
+    # child, where a wedge blocks the event loop and pins the inherited fds.
+    assert spawn.call_args.kwargs["preexec_fn"] is None
+    shim = spawn_shim_argv()
+    assert shim, "POSIX hosts must have a shim available for this assertion"
+    assert spawn.call_args.args[: len(shim)] == shim
+    assert spawn.call_args.args[len(shim) :] == (
+        "/usr/bin/sandbox-launcher",
+        "/usr/bin/gh",
+        "api",
+    )
 
 
 @pytest.mark.asyncio
@@ -3303,7 +3318,7 @@ async def test_glab_does_not_forward_ambient_token_to_a_self_managed_host(monkey
     class FakeProcess:
         returncode = 0
 
-    sandbox = MagicMock(return_value=(["sandbox", "/usr/bin/glab"], {"SAFE": "1"}, None))
+    sandbox = MagicMock(return_value=(["/usr/bin/sandbox-launcher", "/usr/bin/glab"], {"SAFE": "1"}, None))
     monkeypatch.setenv("GITLAB_TOKEN", "glpat-" + "a" * 20)
     monkeypatch.setenv("GLAB_CONFIG_DIR", "/home/user/.config/glab-cli")
     monkeypatch.setattr(
@@ -3311,7 +3326,6 @@ async def test_glab_does_not_forward_ambient_token_to_a_self_managed_host(monkey
     )
     monkeypatch.setattr(source, "_resolve_provider_executable", lambda _name: "/usr/bin/glab")
     monkeypatch.setattr(source, "sandboxed_spawn_argv", sandbox)
-    monkeypatch.setattr(source, "resource_limit_preexec", MagicMock(return_value=object()))
     monkeypatch.setattr(
         source.asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess())
     )
@@ -3349,13 +3363,12 @@ async def test_gitlab_mutations_forward_host_to_the_run_json_guard(monkeypatch) 
     class FakeProcess:
         returncode = 0
 
-    sandbox = MagicMock(return_value=(["sandbox", "/usr/bin/glab"], {"SAFE": "1"}, None))
+    sandbox = MagicMock(return_value=(["/usr/bin/sandbox-launcher", "/usr/bin/glab"], {"SAFE": "1"}, None))
     monkeypatch.setattr(
         source, "_allowed_gitlab_hosts", lambda: frozenset({"gitlab.acme.internal"})
     )
     monkeypatch.setattr(source, "_resolve_provider_executable", lambda _name: "/usr/bin/glab")
     monkeypatch.setattr(source, "sandboxed_spawn_argv", sandbox)
-    monkeypatch.setattr(source, "resource_limit_preexec", MagicMock(return_value=object()))
     monkeypatch.setattr(
         source.asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess())
     )
@@ -3397,13 +3410,12 @@ async def test_gitlab_merge_request_read_forwards_host(monkeypatch) -> None:
     class FakeProcess:
         returncode = 0
 
-    sandbox = MagicMock(return_value=(["sandbox", "/usr/bin/glab"], {"SAFE": "1"}, None))
+    sandbox = MagicMock(return_value=(["/usr/bin/sandbox-launcher", "/usr/bin/glab"], {"SAFE": "1"}, None))
     monkeypatch.setattr(
         source, "_allowed_gitlab_hosts", lambda: frozenset({"gitlab.acme.internal"})
     )
     monkeypatch.setattr(source, "_resolve_provider_executable", lambda _name: "/usr/bin/glab")
     monkeypatch.setattr(source, "sandboxed_spawn_argv", sandbox)
-    monkeypatch.setattr(source, "resource_limit_preexec", MagicMock(return_value=object()))
     monkeypatch.setattr(
         source.asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess())
     )
@@ -3542,11 +3554,10 @@ async def test_run_json_pins_glab_to_the_allowlisted_host(monkeypatch) -> None:
     class FakeProcess:
         returncode = 0
 
-    sandbox = MagicMock(return_value=(["sandbox", "/usr/bin/glab"], {"SAFE": "1"}, None))
+    sandbox = MagicMock(return_value=(["/usr/bin/sandbox-launcher", "/usr/bin/glab"], {"SAFE": "1"}, None))
     monkeypatch.setattr(source, "_allowed_gitlab_hosts", lambda: frozenset({"gitlab.acme.internal"}))
     monkeypatch.setattr(source, "_resolve_provider_executable", lambda _name: "/usr/bin/glab")
     monkeypatch.setattr(source, "sandboxed_spawn_argv", sandbox)
-    monkeypatch.setattr(source, "resource_limit_preexec", MagicMock(return_value=object()))
     monkeypatch.setattr(source.asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess()))
     monkeypatch.setattr(source, "_collect_process_output", AsyncMock(return_value=(b"{}", b"")))
 

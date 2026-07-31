@@ -27,7 +27,7 @@ from urllib.parse import quote, urlparse, urlunparse
 from aiohttp import web
 
 from kiro_crew import platform_compat
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 _MAX_URL_LENGTH = 2048
@@ -855,12 +855,11 @@ async def _run_json(
                 raise SourceProviderError("provider audit unavailable") from exc
             invoked = True
             try:
-                proc = await asyncio.create_subprocess_exec(
+                proc = await create_subprocess_limited(
                     *wrapped_argv,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=env,
-                    preexec_fn=resource_limit_preexec(),
                     start_new_session=platform_compat.IS_POSIX,
                     creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
                 )

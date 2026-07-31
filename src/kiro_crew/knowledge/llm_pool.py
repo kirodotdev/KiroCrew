@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from kiro_crew.config.paths import config_dir
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 
 try:
     from kiro_crew.acp.client import AcpClient
@@ -282,12 +282,11 @@ class CCWorker(Worker):
         if fetch_tools:
             cmd += ["--allowedTools", fetch_tools]
         wrapped = cgroup_scope_argv(wrap_argv(cmd)[0])  # cgroup DoS ceiling
-        self._proc = await asyncio.create_subprocess_exec(
+        self._proc = await create_subprocess_limited(
             *wrapped,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            preexec_fn=resource_limit_preexec(),
         )
         self._event_queue = asyncio.Queue()
         self._reader_task = asyncio.create_task(self._stdout_reader())

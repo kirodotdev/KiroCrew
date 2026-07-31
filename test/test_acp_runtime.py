@@ -27,6 +27,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from spawn_test_helpers import strip_spawn_shim
 
 from kiro_crew.acp.runtime import (
     _TERMINATE_TIMEOUT,
@@ -316,7 +317,7 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
 
     def capture_wrap(argv, mode, **kwargs):
         wrapped.update(argv=list(argv), mode=mode, kwargs=kwargs)
-        return ["sandbox-wrapper", *argv], None
+        return ["/usr/bin/sandbox-wrapper", *argv], None
 
     async def stop_spawn(*args, **kwargs):
         wrapped["spawn_args"] = args
@@ -335,7 +336,7 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     monkeypatch.setattr(
         runtime_mod,
         "cgroup_scope_argv",
-        lambda argv: ["cgroup-wrapper", *argv],
+        lambda argv: ["/usr/bin/cgroup-wrapper", *argv],
     )
     monkeypatch.setattr(asyncio, "create_subprocess_exec", stop_spawn)
 
@@ -349,9 +350,9 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
         "strip_python_env": True,
         "is_kiro_cli": True,
     }
-    assert wrapped["spawn_args"] == (
-        "cgroup-wrapper",
-        "sandbox-wrapper",
+    assert strip_spawn_shim(wrapped["spawn_args"]) == (
+        "/usr/bin/cgroup-wrapper",
+        "/usr/bin/sandbox-wrapper",
         launch_path,
         "acp",
         "--agent",

@@ -26,7 +26,7 @@ from kiro_crew.providers.base import (
     LLMEvent,
 )
 from kiro_crew.safety_override import safety_override
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.task_models import (
@@ -964,13 +964,12 @@ async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
     argv, env, cleanup = sandboxed_spawn_argv(list(test_cmd))
     proc: asyncio.subprocess.Process | None = None
     try:
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_limited(
             *argv,
             cwd=str(work_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=env,
-            preexec_fn=resource_limit_preexec(),
             # Lead a new session/process group so a timeout can signal the whole
             # tree (shell wrapper + any children) rather than just the top pid.
             # start_new_session is silently ignored on Windows, where

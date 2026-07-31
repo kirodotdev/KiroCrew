@@ -343,9 +343,10 @@ class TestFetchWhoami:
         proc = MagicMock()
         proc.communicate = AsyncMock(return_value=(stdout, b""))
         proc.returncode = 0
-        with patch.object(sessions_mod, "wrap_argv", return_value=(["kiro-cli"], None)), \
+        # An absolute path, as the real wrap_argv returns: the spawn shim execs
+        # without a PATH search, so a bare name is not a realistic fixture.
+        with patch.object(sessions_mod, "wrap_argv", return_value=(["/usr/bin/kiro-cli"], None)), \
              patch.object(sessions_mod, "cgroup_scope_argv", side_effect=lambda a: a), \
-             patch.object(sessions_mod, "resource_limit_preexec", return_value=None), \
              patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
             return asyncio.run(sessions_mod._fetch_whoami("kiro-cli"))
 
@@ -423,9 +424,10 @@ class TestIdentityAccountCoupling:
             b"Profile:\nKiroProfile-us-east-1\n"
             b"arn:aws:codewhisperer:us-east-1:713669222412:profile/7KHC74QYC9PQ\n", b""))
         proc.returncode = 0
-        with patch.object(sessions_mod, "wrap_argv", return_value=(["kiro-cli"], None)), \
+        # An absolute path, as the real wrap_argv returns: the spawn shim execs
+        # without a PATH search, so a bare name is not a realistic fixture.
+        with patch.object(sessions_mod, "wrap_argv", return_value=(["/usr/bin/kiro-cli"], None)), \
              patch.object(sessions_mod, "cgroup_scope_argv", side_effect=lambda a: a), \
-             patch.object(sessions_mod, "resource_limit_preexec", return_value=None), \
              patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
             out = asyncio.run(sessions_mod._fetch_whoami("kiro-cli"))
         assert out["email"] == "me@corp.com"

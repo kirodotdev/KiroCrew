@@ -54,9 +54,10 @@ from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
 from kiro_crew.sandbox import (
+    RLIMIT_PROFILE_SESSION_HOST,
     cgroup_scope_argv,
+    create_subprocess_limited,
     scrub_agent_denied_env,
-    session_host_preexec,
     wrap_argv,
 )
 from kiro_crew.session_pid import (
@@ -508,7 +509,7 @@ class AcpRuntime:
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
 
-        self._process = await asyncio.create_subprocess_exec(
+        self._process = await create_subprocess_limited(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -527,7 +528,7 @@ class AcpRuntime:
                 | platform_compat._SUBPROCESS_NO_WINDOW
             ),
             env=env,
-            preexec_fn=session_host_preexec(),
+            profile=RLIMIT_PROFILE_SESSION_HOST,
         )
         self._pid = self._process.pid
         self._start_time = _get_start_time(self._pid)

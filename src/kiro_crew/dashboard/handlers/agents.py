@@ -41,6 +41,7 @@ from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor
+from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
@@ -691,11 +692,6 @@ async def api_models(request: web.Request) -> web.Response:
             _resolve_ssh_auth_sock,
         )
         from kiro_crew.env import augmented_path  # noqa: F811
-        from kiro_crew.sandbox import (  # noqa: F811
-            cgroup_scope_argv,
-            resource_limit_preexec,
-            wrap_argv,
-        )
 
         kiro_bin = await _resolve_kiro_bin_for_spawn()
         if not kiro_bin:
@@ -715,13 +711,12 @@ async def api_models(request: web.Request) -> web.Response:
             env = {**os.environ}
             env["PATH"] = augmented_path(env.get("PATH", ""))
             _resolve_ssh_auth_sock(env)
-            proc = await asyncio.create_subprocess_exec(
+            proc = await create_subprocess_limited(
                 *argv,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
                 env=env,
-                preexec_fn=resource_limit_preexec(),
             )
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)

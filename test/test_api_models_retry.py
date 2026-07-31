@@ -95,9 +95,9 @@ def test_list_models_timeout_returns_503(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
     ), patch(
-        "kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv
+        "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
         "kiro_crew.sandbox.resource_limit_preexec", lambda: None
     ), patch.object(
@@ -117,9 +117,9 @@ def test_list_models_nonzero_exit_returns_503(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
     ), patch(
-        "kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv
+        "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
         "kiro_crew.sandbox.resource_limit_preexec", lambda: None
     ), patch(
@@ -139,9 +139,9 @@ def test_list_models_empty_stdout_returns_503(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
     ), patch(
-        "kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv
+        "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
         "kiro_crew.sandbox.resource_limit_preexec", lambda: None
     ), patch.object(
@@ -159,9 +159,9 @@ def test_list_models_invalid_json_returns_503(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
     ), patch(
-        "kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv
+        "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
         "kiro_crew.sandbox.resource_limit_preexec", lambda: None
     ), patch.object(
@@ -180,9 +180,9 @@ def test_list_models_invalid_payload_returns_503(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
     ), patch(
-        "kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv
+        "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
         "kiro_crew.sandbox.resource_limit_preexec", lambda: None
     ), patch.object(
@@ -210,9 +210,9 @@ def test_successful_list_returns_200_with_models(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
     ), patch(
-        "kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv
+        "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
         "kiro_crew.sandbox.resource_limit_preexec", lambda: None
     ), patch.object(
@@ -236,8 +236,8 @@ def test_successful_list_launches_resolved_binary_in_place(tmp_path):
         patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value=resolved),
         patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None),
         patch("kiro_crew.env.augmented_path", lambda p: p),
-        patch("kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)),
-        patch("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv),
+        patch("kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)),
+        patch("kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv),
         patch("kiro_crew.sandbox.resource_limit_preexec", lambda: None),
         patch.object(agents.asyncio, "create_subprocess_exec", spawn),
     ):
@@ -284,9 +284,9 @@ def test_structured_context_window_seeds_central_authority(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.sandbox.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
     ), patch(
-        "kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv
+        "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
         "kiro_crew.sandbox.resource_limit_preexec", lambda: None
     ), patch.object(

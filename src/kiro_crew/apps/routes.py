@@ -78,6 +78,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,6 @@ async def _run_lifecycle_script(
         return {"output": f"app directory not found: {app_root}", "failed": True}
 
     safe_script = f"set -euo pipefail\n{script}"
-    from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
     base_cmd = ["/bin/bash", "-c", safe_script]
     sandboxed_cmd, cleanup = wrap_argv(base_cmd, mode="standard")
     sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
@@ -129,7 +129,7 @@ async def _run_lifecycle_script(
         # fleet): start_new_session=True is a no-op on Windows, creationflags is 0
         # (no-op) on POSIX. (App lifecycle scripts are bash; on Windows without bash
         # they fail gracefully rather than crash here.)
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_limited(
             *sandboxed_cmd,
             cwd=str(app_root),
             stdout=asyncio.subprocess.PIPE,
@@ -137,7 +137,6 @@ async def _run_lifecycle_script(
             env=env,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            preexec_fn=resource_limit_preexec(),
         )
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -1156,15 +1155,13 @@ async def handle_open_app(request: web.Request) -> web.Response:
         })
 
     try:
-        from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
         base_cmd = ["/bin/sh", "-c", open_cmd]
         sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="standard")
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_limited(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
-            preexec_fn=resource_limit_preexec(),
         )
         # Don't wait — launch is fire-and-forget
         sel().log_api_access(
@@ -1681,7 +1678,6 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
     from kiro_crew.apps.registry import (
         anonymous_git_env,
     )
-    from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
 
     git_url = _registry_git_url(repo)
     if not git_url:
@@ -1729,12 +1725,11 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
         # defense — see anonymous_git_env).
         sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode="strict")
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_limited(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=anonymous_git_env(),
-            preexec_fn=resource_limit_preexec(),
         )
         try:
             _, stderr = await asyncio.wait_for(

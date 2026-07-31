@@ -48,7 +48,8 @@ except ImportError:  # non-POSIX (Windows)
     _resource_mod = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping, Sequence
+    from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -2706,3 +2707,233 @@ def build_resource_limit_preexec() -> "Callable[[], None] | None":
         limits["max_open_files"] = max(configured, _BUILD_NOFILE_CEILING)
         _BUILD_RESOURCE_PREEXEC = apply_resource_limits({**(cfg or {}), "resource_limits": limits})
     return _BUILD_RESOURCE_PREEXEC  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Post-exec resource limits (the replacement for ``preexec_fn=``)
+# ---------------------------------------------------------------------------
+
+_SPAWN_SHIM_SOURCE = str(Path(__file__).with_name("_spawn_exec_shim.py"))
+try:
+    # Captured once, at gateway import, and passed to the interpreter as a ``-c``
+    # source string. Loading it from the package path at SPAWN time would let a
+    # same-UID agent rewrite the file between capture and use.
+    _SPAWN_SHIM_CODE = Path(_SPAWN_SHIM_SOURCE).read_text(encoding="utf-8")
+except OSError:  # pragma: no cover - only if the install is truncated
+    _SPAWN_SHIM_CODE = ""
+
+# Resource-limit profiles. ``tool`` is the default for every agent-influenced
+# spawn; the others exist because a single policy cannot serve a one-shot tool, a
+# build, a session host, and the user's own terminal at once. Each one is a
+# faithful port of the ``preexec_fn`` variant it replaces -- including which ones
+# bias the OOM killer, which is not uniform across them.
+RLIMIT_PROFILE_TOOL = "tool"
+RLIMIT_PROFILE_BUILD = "build"
+RLIMIT_PROFILE_SESSION_HOST = "session_host"
+# No limits and no OOM bias: the interactive terminal is the user's own shell,
+# not agent-executed code, and never carried either.
+RLIMIT_PROFILE_NONE = "none"
+
+# profile -> (biases the OOM killer, legacy preexec accessor name)
+_PROFILE_OOM_BIAS = {
+    RLIMIT_PROFILE_TOOL: True,
+    RLIMIT_PROFILE_BUILD: True,
+    # session_host_preexec raises NOFILE and does nothing else -- notably it does
+    # NOT bias the OOM score, and a trusted session host should not be the
+    # preferred kill target.
+    RLIMIT_PROFILE_SESSION_HOST: False,
+    RLIMIT_PROFILE_NONE: False,
+}
+
+_SHIM_ARGV_CACHE: dict[str, tuple[str, ...]] = {}
+_SHIM_UNAVAILABLE_LOGGED = False
+
+
+def _rlimit_spec(profile: str) -> str:
+    """Build the shim's ``--rlimits=`` payload for *profile*.
+
+    The values are policy numbers, not secrets, so argv (world-readable through
+    ``ps``) is a fine channel for them.
+    """
+    from kiro_crew.security import resource_limit_spec
+
+    if profile == RLIMIT_PROFILE_NONE:
+        return ""
+    if profile == RLIMIT_PROFILE_SESSION_HOST:
+        # Faithful port of session_host_preexec: it touches NOFILE only, and
+        # deliberately leaves NPROC/CPU/AS inherited. A session host multiplexes
+        # pipe pairs for a whole tree of MCP servers, and the tool-grade 1024 cap
+        # EMFILE-crashed it.
+        return "RLIMIT_NOFILE:hard"
+
+    cfg: dict | None = None
+    try:
+        from kiro_crew.config.loader import _raw_config
+
+        cfg = _raw_config()
+    except Exception:
+        logger.debug("_rlimit_spec: config unavailable, using defaults")
+    if profile == RLIMIT_PROFILE_BUILD:
+        raw_limits = (cfg or {}).get("resource_limits")
+        limits = dict(raw_limits) if isinstance(raw_limits, dict) else {}
+        raw = limits.get("max_open_files")
+        configured = raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+        limits["max_open_files"] = max(configured, _BUILD_NOFILE_CEILING)
+        cfg = {**(cfg or {}), "resource_limits": limits}
+    return ",".join(f"{name}:{value}" for name, value in resource_limit_spec(cfg))
+
+
+def spawn_shim_argv(profile: str = RLIMIT_PROFILE_TOOL) -> tuple[str, ...]:
+    """Return the argv prefix that applies *profile*'s policy AFTER ``exec``.
+
+    Prepend it to a command and pass ``preexec_fn=None``; the shim replaces
+    itself with the command, so PID, process group, inherited fds, and exit
+    status all stay the command's own. See ``_spawn_exec_shim.py`` for why this
+    cannot ride on ``preexec_fn``: that forks this multi-threaded gateway and runs
+    Python in the child, where a wedged child blocks the spawning thread inside
+    ``Popen`` and pins every fd it inherited.
+
+    Returns an empty tuple when there is nothing for a shim to do -- on Windows
+    (no POSIX rlimits), for a profile that asks for nothing, or if the shim source
+    could not be captured. An empty result on a profile that DOES carry policy
+    means the caller must fall back to ``preexec_fn`` rather than drop it.
+    """
+    global _SHIM_UNAVAILABLE_LOGGED
+    if os.name != "posix":
+        return ()
+    key = profile
+    cached = _SHIM_ARGV_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if not _SPAWN_SHIM_CODE or not sys.executable:
+        if not _SHIM_UNAVAILABLE_LOGGED:
+            _SHIM_UNAVAILABLE_LOGGED = True
+            logger.warning(
+                "post-exec spawn shim unavailable (source_captured=%s, executable=%r); "
+                "falling back to preexec_fn",
+                bool(_SPAWN_SHIM_CODE),
+                sys.executable,
+            )
+        return ()
+    spec = _rlimit_spec(profile)
+    bias = _PROFILE_OOM_BIAS.get(profile, True)
+    if not spec and not bias:
+        # Nothing to do post-exec: skip the interpreter hop entirely rather than
+        # pay ~10ms to exec a shim that would only exec again.
+        _SHIM_ARGV_CACHE[key] = ()
+        return ()
+    argv = [sys.executable, "-I", "-S", "-c", _SPAWN_SHIM_CODE]
+    if spec:
+        argv.append(f"--rlimits={spec}")
+    if bias:
+        argv.append("--oom-bias")
+    argv.append("--")
+    resolved = tuple(argv)
+    _SHIM_ARGV_CACHE[key] = resolved
+    return resolved
+
+
+def _preexec_for_profile(profile: str) -> "Callable[[], None] | None":
+    """Legacy ``preexec_fn`` for *profile*, used only when the shim is missing."""
+    if profile == RLIMIT_PROFILE_NONE:
+        return None
+    if profile == RLIMIT_PROFILE_SESSION_HOST:
+        return session_host_preexec()
+    if profile == RLIMIT_PROFILE_BUILD:
+        return build_resource_limit_preexec()
+    return resource_limit_preexec()
+
+
+def _resolve_spawn_target(
+    argv: "Sequence[str]", env: "Mapping[str, str] | None", cwd: Any = None
+) -> str:
+    """Resolve a bare command NAME against the child's ``PATH``.
+
+    The shim ``execv``s without a PATH search, so a command given as a bare name
+    has to be resolved by someone. It is resolved HERE, in the gateway, on
+    purpose: the call sites that vet an executable (provider allowlists, binary
+    trust checks) do it in the parent, and letting the shim run its own search
+    would add a second resolution path that nothing vetted.
+
+    Resolving here also keeps the contract call sites already depend on -- a
+    command that is not on ``PATH`` raises ``FileNotFoundError`` from the spawn
+    itself, exactly as ``Popen`` raised it when the child's ``execvpe`` failed.
+
+    This touches the filesystem (``shutil.which`` stats each ``PATH`` entry), so
+    the caller runs it in a worker thread: a stalled NFS/autofs ``PATH`` entry
+    would otherwise block the event loop, which the child-side search never did.
+
+    ``PATH`` comes from the child's own environment, matching ``Popen``'s
+    ``os.get_exec_path(env)``. A relative ``PATH`` entry is resolved against the
+    child's *cwd* for the same reason: that is where ``execvpe`` would have looked
+    from, not where the gateway happens to be running.
+    """
+    name = argv[0]
+    if os.sep in name or (os.altsep and os.altsep in name):
+        # An explicit path: exec resolves it (against cwd when relative), and
+        # stat-ing it here would only pre-empt a failure exec reports anyway.
+        return name
+    search_path = (env or os.environ).get("PATH") or os.defpath
+    if cwd:
+        base = os.fspath(cwd)
+        search_path = os.pathsep.join(
+            entry if os.path.isabs(entry) else os.path.join(base, entry)
+            for entry in search_path.split(os.pathsep)
+        )
+    found = shutil.which(name, path=search_path)
+    if not found:
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), name)
+    return found
+
+
+def _needs_path_search(argv: "Sequence[str]") -> bool:
+    """Whether ``argv[0]`` is a bare name, i.e. whether resolution touches disk."""
+    name = argv[0]
+    return not (os.sep in name or (os.altsep and os.altsep in name))
+
+
+async def create_subprocess_limited(
+    *argv: str,
+    profile: str = RLIMIT_PROFILE_TOOL,
+    **kwargs: Any,
+) -> asyncio.subprocess.Process:
+    """``asyncio.create_subprocess_exec`` with resource limits applied post-exec.
+
+    The drop-in replacement for ``create_subprocess_exec(..., preexec_fn=
+    resource_limit_preexec())``. Every keyword argument is forwarded untouched
+    except ``preexec_fn``, which this owns: passing one would reintroduce the fork
+    hazard the shim exists to remove, so it is refused.
+
+    The returned ``Process`` describes the command itself, not a wrapper -- the
+    shim ``exec``s in place -- so ``pid``, ``returncode``, signal delivery, and
+    ``platform_compat.kill_process_tree`` all behave as they did before.
+    """
+    if "preexec_fn" in kwargs:
+        raise TypeError(
+            "create_subprocess_limited owns preexec_fn: limits are applied "
+            "post-exec by the spawn shim, not post-fork"
+        )
+    if not argv:
+        raise ValueError("create_subprocess_limited requires a command")
+    prefix = spawn_shim_argv(profile)
+    if not prefix:
+        # No shim (Windows, a no-op profile, or a truncated install): keep
+        # whatever policy the profile carries on the legacy fork path. Dropping
+        # the caps silently would be worse than the fork hazard.
+        return await asyncio.create_subprocess_exec(
+            *argv, preexec_fn=_preexec_for_profile(profile), **kwargs
+        )
+    if not _needs_path_search(argv):
+        # Explicit path: nothing to resolve, so no filesystem access and no
+        # thread hop -- exec does the work.
+        resolved = argv[0]
+    else:
+        # A PATH search stats every entry, so it runs off the loop. One stalled
+        # NFS/autofs entry would otherwise freeze the gateway -- and the search it
+        # replaces used to happen in the child, never in this process.
+        resolved = await asyncio.to_thread(
+            _resolve_spawn_target, argv, kwargs.get("env"), kwargs.get("cwd")
+        )
+    return await asyncio.create_subprocess_exec(
+        *prefix, resolved, *argv[1:], preexec_fn=None, **kwargs
+    )

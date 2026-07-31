@@ -27,7 +27,7 @@ import shutil
 import tempfile
 from typing import TYPE_CHECKING
 
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -286,12 +286,11 @@ async def _synthesize_piper(
             # macOS seatbelt profile).
             cmd, sandbox_cleanup = wrap_argv(cmd, mode="standard")
             cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling
-            proc = await asyncio.create_subprocess_exec(
+            proc = await create_subprocess_limited(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                preexec_fn=resource_limit_preexec(),
             )
             try:
                 _stdout, stderr = await asyncio.wait_for(
@@ -453,11 +452,10 @@ async def _synthesize_polly(
             # the child exits.
             cmd, sandbox_cleanup = wrap_argv(cmd, mode="standard")
             cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling
-            proc = await asyncio.create_subprocess_exec(
+            proc = await create_subprocess_limited(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                preexec_fn=resource_limit_preexec(),
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)

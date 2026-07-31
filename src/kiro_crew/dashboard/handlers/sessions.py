@@ -34,7 +34,7 @@ from kiro_crew.mcp_discovery import (
     register_servers_for_cc,
     sync_to_agent_config,
 )
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import sanitize_string
 
@@ -269,11 +269,10 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
     try:
         argv, cleanup = wrap_argv([kiro_bin, "whoami", "--format", "json"], mode="standard")
         argv = cgroup_scope_argv(argv)
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_limited(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            preexec_fn=resource_limit_preexec(),
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
         raw = (out or err or b"").decode(errors="replace")
@@ -422,11 +421,10 @@ async def _fetch_usage_bg() -> None:
             mode="standard",
         )
         argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_limited(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            preexec_fn=resource_limit_preexec(),
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
         raw = (out or err or b"").decode(errors="replace")

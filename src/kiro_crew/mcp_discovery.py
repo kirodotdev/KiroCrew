@@ -29,7 +29,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.env import augmented_path
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_utils import mcp_server_alias
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -879,7 +879,7 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
             env=env,
             strip_python_env=True,
         )
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_limited(
             *wrapped_argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -891,7 +891,6 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
             # leaked ``npx @playwright/mcp`` -> node trees). Windows: silently
             # ignored (mirrors AcpRuntime / AcpClient._spawn).
             start_new_session=platform_compat.IS_POSIX,
-            preexec_fn=resource_limit_preexec(),
         )
 
         # Send initialize request

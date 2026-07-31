@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from spawn_test_helpers import strip_spawn_shim
 
 import kiro_crew.acp.client as acp_client
 from kiro_crew.acp.client import (
@@ -733,7 +734,7 @@ class TestAcpClientBackendSelection:
 
             await client._spawn()
 
-            argv = list(mock_exec.call_args.args)
+            argv = list(strip_spawn_shim(mock_exec.call_args.args))
             assert argv == [
                 "/usr/local/bin/node",
                 "/usr/local/lib/claude-agent-acp/index.js",
@@ -770,7 +771,7 @@ class TestAcpClientBackendSelection:
 
             await client._spawn()
 
-            argv = list(mock_exec.call_args.args)
+            argv = list(strip_spawn_shim(mock_exec.call_args.args))
             assert argv[0] == "/usr/bin/kiro-cli"
             assert argv[1] == "acp"
             assert "--agent" in argv
@@ -7038,7 +7039,7 @@ class TestResolveKiroBinEnvOverride:
 
         def capture_wrap(argv, mode, **kwargs):
             wrapped.update(argv=list(argv), mode=mode, kwargs=kwargs)
-            return ["sandbox-wrapper", *argv], None
+            return ["/usr/bin/sandbox-wrapper", *argv], None
 
         with (
             patch.object(
@@ -7050,7 +7051,7 @@ class TestResolveKiroBinEnvOverride:
             patch.object(
                 client_module,
                 "cgroup_scope_argv",
-                side_effect=lambda argv: ["cgroup-wrapper", *argv],
+                side_effect=lambda argv: ["/usr/bin/cgroup-wrapper", *argv],
             ),
             patch(
                 "asyncio.create_subprocess_exec",
@@ -7071,9 +7072,9 @@ class TestResolveKiroBinEnvOverride:
             "is_kiro_cli": True,
         }
         spawn_call = mock_exec.await_args
-        assert spawn_call.args == (
-            "cgroup-wrapper",
-            "sandbox-wrapper",
+        assert strip_spawn_shim(spawn_call.args) == (
+            "/usr/bin/cgroup-wrapper",
+            "/usr/bin/sandbox-wrapper",
             launch_path,
             "acp",
             "--agent",

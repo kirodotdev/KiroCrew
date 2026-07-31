@@ -107,9 +107,10 @@ from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
 from kiro_crew.sandbox import (
+    RLIMIT_PROFILE_SESSION_HOST,
     cgroup_scope_argv,
+    create_subprocess_limited,
     scrub_agent_denied_env,
-    session_host_preexec,
     wrap_argv,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -1781,7 +1782,7 @@ class AcpClient:
         # stops an inherited Ctrl-C propagating into the gateway. The flag comes
         # from platform_compat (getattr) so referencing it doesn't fail mypy's
         # [attr-defined] check on Linux where subprocess.* lacks it.
-        self._process = await asyncio.create_subprocess_exec(
+        self._process = await create_subprocess_limited(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -1794,7 +1795,7 @@ class AcpClient:
                 platform_compat.CREATE_NEW_PROCESS_GROUP
                 | platform_compat._SUBPROCESS_NO_WINDOW
             ),
-            preexec_fn=session_host_preexec(),
+            profile=RLIMIT_PROFILE_SESSION_HOST,
         )
         self._pid = self._process.pid
         self._start_time = await asyncio.get_running_loop().run_in_executor(

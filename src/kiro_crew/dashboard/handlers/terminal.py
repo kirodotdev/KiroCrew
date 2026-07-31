@@ -545,6 +545,20 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             # TIOCSCTTY makes the PTY the controlling terminal after
             # setsid(). Without this, Ctrl+C (SIGINT) doesn't work
             # because the kernel can't find the foreground process group.
+            #
+            # This is the one async spawn that deliberately keeps preexec_fn
+            # rather than moving to the post-exec shim (see issue #935). The
+            # shim exists to deliver RESOURCE LIMITS, and this spawn carries
+            # none: it is the user's own interactive shell, not agent-executed
+            # code, so it has no rlimits and no OOM bias to apply. Routing it
+            # through the shim therefore bought nothing and cost an interpreter
+            # startup on every terminal open -- measurably doubling the wall time
+            # of the terminal test file, and slowing a user-facing surface.
+            #
+            # Residual risk, stated plainly: this still forks the threaded
+            # gateway. It is the smallest such fork in the codebase -- one
+            # pre-resolved ioctl, no allocation, no lock acquisition -- which is
+            # the only shape where preexec_fn is defensible.
             tiocsctty = getattr(termios, "TIOCSCTTY", 0x540E)
 
             def _setup_ctty():

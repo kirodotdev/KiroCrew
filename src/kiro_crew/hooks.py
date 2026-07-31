@@ -1738,7 +1738,7 @@ async def run_script_hook(
 
     try:
         # circular import: sandbox → registry → apps → hooks, so import at call time
-        from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
+        from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 
         # The env var is bounded by ARG_MAX — a multi-KB Stop segment there can
         # fail subprocess creation (~32K on Windows). Cap the ENV copy only; the
@@ -1762,7 +1762,7 @@ async def run_script_hook(
         # on the build fleet): start_new_session=True is a no-op on Windows,
         # creationflags resolves to 0 (no-op) on POSIX. The Windows flag makes the
         # tree taskkill /T-reapable; POSIX setsid -> killpg.
-        proc = await asyncio.create_subprocess_exec(
+        proc = await create_subprocess_limited(
             *wrapped_argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -1770,7 +1770,6 @@ async def run_script_hook(
             env=env,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            preexec_fn=resource_limit_preexec(),
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(

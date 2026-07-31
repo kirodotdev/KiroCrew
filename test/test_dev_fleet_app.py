@@ -1050,7 +1050,10 @@ async def test_start_run_readline_overrun_kills_process_tree(monkeypatch):
     monkeypatch.setattr(mod, "_kill_tree", fake_kill_tree)
     FakeProc.returncode = None
 
-    rid = await mod._start_run("overrun-test", ["whatever"])
+    # Absolute: the spawn shim execs without a PATH search, so only a bare name
+    # would be resolved (and rejected) before fake_exec is ever reached. The
+    # command itself is irrelevant to this test.
+    rid = await mod._start_run("overrun-test", ["/usr/bin/whatever"])
     for _ in range(100):
         async with mod._RUNS_LOCK:
             if mod._RUNS[rid]["status"] != "running":
