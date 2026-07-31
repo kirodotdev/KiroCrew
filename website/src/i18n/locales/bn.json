@@ -1121,6 +1121,7 @@
     },
     "diffPanel": {
       "click_to_copy_path": "পাথ কপি করতে ক্লিক করুন",
+      "contents_identical": "বিষয়বস্তু অভিন্ন",
       "loading_diff": "diff লোড হচ্ছে…"
     },
     "discoverySearchBar": {
@@ -1168,6 +1169,7 @@
       "file_one": "{{count}}টি ফাইল",
       "file_other": "{{count}}টি ফাইল",
       "more": "আরও",
+      "no_changes": "কোনো পরিবর্তন নেই",
       "show": "দেখান",
       "show_less": "কম দেখান",
       "this_document_is_tracked_as_a_session_artifact_n": "এই ডকুমেন্টটি সেশন আর্টিফ্যাক্ট হিসেবে ট্র্যাক করা হয়, সোর্স-ফাইলের পরিবর্তন হিসেবে নয়"

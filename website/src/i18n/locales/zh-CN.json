@@ -1108,6 +1108,7 @@
     },
     "diffPanel": {
       "click_to_copy_path": "点击复制路径",
+      "contents_identical": "内容相同",
       "loading_diff": "正在加载差异…"
     },
     "discoverySearchBar": {
@@ -1153,6 +1154,7 @@
       "changed": "已更改",
       "file_other": "{{count}} 个文件",
       "more": "更多",
+      "no_changes": "无更改",
       "show": "展开",
       "show_less": "收起",
       "this_document_is_tracked_as_a_session_artifact_n": "此文档被记录为会话工件，而非源文件更改"

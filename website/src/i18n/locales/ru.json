@@ -1149,6 +1149,7 @@
     },
     "diffPanel": {
       "click_to_copy_path": "Нажмите, чтобы скопировать путь",
+      "contents_identical": "Содержимое идентично",
       "loading_diff": "Загрузка diff…"
     },
     "discoverySearchBar": {
@@ -1200,6 +1201,7 @@
       "file_one": "{{count}} файл",
       "file_other": "{{count}} файла",
       "more": "ещё",
+      "no_changes": "нет изменений",
       "show": "Показать",
       "show_less": "Показать меньше",
       "this_document_is_tracked_as_a_session_artifact_n": "Этот документ отслеживается как артефакт сессии, а не как изменение исходного файла"

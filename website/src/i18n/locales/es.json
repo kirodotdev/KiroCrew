@@ -1135,6 +1135,7 @@
     },
     "diffPanel": {
       "click_to_copy_path": "Haz clic para copiar la ruta",
+      "contents_identical": "Los contenidos son idénticos",
       "loading_diff": "Cargando el diff…"
     },
     "discoverySearchBar": {
@@ -1184,6 +1185,7 @@
       "file_one": "{{count}} archivo",
       "file_other": "{{count}} archivos",
       "more": "más",
+      "no_changes": "sin cambios",
       "show": "Mostrar",
       "show_less": "Mostrar menos",
       "this_document_is_tracked_as_a_session_artifact_n": "Este documento se registra como artefacto de la sesión, no como un cambio en un archivo fuente"

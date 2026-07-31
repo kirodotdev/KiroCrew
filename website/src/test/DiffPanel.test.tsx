@@ -124,4 +124,20 @@ describe('DiffPanel', () => {
     const editor = await screen.findByTestId('monaco-diff')
     expect(editor.getAttribute('data-theme')).toBe('kirocrew-light')
   })
+
+  it('shows "Contents are identical" banner when original === modified', async () => {
+    const { queryByTestId } = render(
+      <DiffPanel filePath="/x/same.ts" original="foo\nbar" modified="foo\nbar" />,
+    )
+    // The banner renders instead of the Monaco editor.
+    expect(await screen.findByText('Contents are identical')).toBeInTheDocument()
+    expect(queryByTestId('monaco-diff')).toBeNull()
+  })
+
+  it('does NOT show the identical banner when content differs', async () => {
+    render(<DiffPanel filePath="/x/diff.ts" original="a" modified="b" />)
+    const editor = await screen.findByTestId('monaco-diff')
+    expect(editor).toBeInTheDocument()
+    expect(screen.queryByText('Contents are identical')).not.toBeInTheDocument()
+  })
 })

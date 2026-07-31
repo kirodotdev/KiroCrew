@@ -1598,7 +1598,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Brand-new file (no prior content): a diff would render as one big green
     // all-additions block, which hurts readability. Open the normal readable
     // file view instead — there's no meaningful "before" to compare against.
-    if (!original || !original.trim()) { handleFileOpen(filePath); return }
+    // Identical content (no-op): the diff editor shows two identical panes with
+    // zero signal — fall through to the readable file view as well.
+    if (!original || !original.trim() || original === modified) { handleFileOpen(filePath); return }
     tabsCtl.openDiff(filePath, modified, original)
     dispatch(openActivityPanel())
     // Diff pane is render-gated behind !search.isOpen (single right-dock slot);
