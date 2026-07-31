@@ -1,92 +1,44 @@
 {
-  "nav": {
-    "agent_capabilities": "Agent Capabilities",
-    "artifacts": "Artifacts",
-    "explore": "Explore",
-    "knowledge": "Knowledge",
-    "notifications": "Notifications",
-    "schedule": "Schedule",
-    "sessions": "Sessions",
-    "settings": "Settings",
-    "task_runner": "Task Runner"
-  },
-  "settings": {
-    "display": {
-      "language": {
-        "auto": "Auto",
-        "description": "Language for the dashboard interface.",
-        "label": "Language",
-        "sync_failed": "Couldn't save this to your KiroCrew config — the language applies in this browser only and may reset on reload."
-      }
-    },
-    "groups": {
-      "preferences": "Preferences",
-      "system": "System"
-    },
-    "tabs": {
-      "about": {
-        "description": "Version, update channel, check for updates, and license",
-        "label": "About"
-      },
-      "browser": {
-        "description": "Playwright browser mode, extension token, and auth configuration",
-        "label": "Browser"
-      },
-      "channels": {
-        "description": "Chat platforms the agent can send and receive on — Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, WeChat",
-        "label": "Channels"
-      },
-      "chat": {
-        "description": "Message behavior, history, timestamps, and context",
-        "label": "Chat"
-      },
-      "computerUse": {
-        "description": "Let the agent read and drive desktop app windows through accessibility",
-        "label": "Computer Use"
-      },
-      "developer": {
-        "description": "Developer mode, logs, system metrics, and diagnostics",
-        "label": "Developer"
-      },
-      "display": {
-        "description": "Zoom, font, and color theme preferences",
-        "label": "Display"
-      },
-      "imports": {
-        "description": "Bring data from another AI agent, and back up or restore KiroCrew configuration",
-        "label": "Import / Export"
-      },
-      "instances": {
-        "description": "Manage remote crews over SSH tunnels; switch between them from the top header",
-        "label": "Remote Crew"
-      },
-      "notifications": {
-        "description": "Sound effects and per-source alert preferences",
-        "label": "Notifications"
-      },
-      "overview": {
-        "description": "System health, activity, and usage & memory at a glance",
-        "label": "Overview"
-      },
-      "security": {
-        "description": "Security posture, defense layers, certifications, and data classification",
-        "label": "Security"
-      },
-      "shortcuts": {
-        "description": "Keyboard shortcuts reference and preferences",
-        "label": "Shortcuts"
-      },
-      "skills": {
-        "description": "Automatic skill generation from sessions and the approval gate",
-        "label": "Skills"
-      },
-      "voice": {
-        "description": "Text-to-speech and speech-to-text (dictation) settings",
-        "label": "Voice"
-      }
-    }
-  },
   "components": {
+    "agentImportFlow": {
+      "choose_sources": "Choose sources",
+      "could_not_save_onboarding_state": "Could not save onboarding state.",
+      "import_all_your_supported_work_or_handpick_what": "Import all your supported work or handpick what to bring over.",
+      "import_complete": "Import complete",
+      "import_selected": "Import selected",
+      "kiro_crew_found_agent_setup_on_this_gateway_host": "Kiro Crew found agent setup on this gateway host. Select the sources to review.",
+      "review_import": "Review import",
+      "review_the_merge_before_kiro_crew_changes_local": "Review the merge before Kiro Crew changes local setup.",
+      "select_items_to_import": "Select items to import",
+      "the_gateway_returned_an_unexpected_error": "The gateway returned an unexpected error.",
+      "the_import_did_not_finish_please_try_again": "The import did not finish. Please try again.",
+      "your_selected_setup_is_ready_in_kiro_crew": "Your selected setup is ready in Kiro Crew."
+    },
+    "appstore": {
+      "categoryRail": {
+        "all_apps": "All apps"
+      },
+      "installedAppCard": {
+        "app_cannot_be_opened_kirocrew_is_running_in_a_he": "App cannot be opened — KiroCrew is running in a headless environment.",
+        "collapse_details": "Collapse details",
+        "disable": "Disable",
+        "disabled": "Disabled",
+        "enable": "Enable",
+        "enabled": "Enabled",
+        "expand_details": "Expand details",
+        "hide": "Hide",
+        "show": "Show"
+      },
+      "sourcesPopover": {
+        "install": "Install",
+        "install_failed": "Install failed",
+        "installing": "Installing…"
+      },
+      "types": {
+        "built_in": "Built-in",
+        "kirocrew_registry": "KiroCrew registry"
+      }
+    },
     "artifactChatPanel": {
       "agent_chat": "Agent chat",
       "artifact_companion_chat": "Artifact companion chat",
@@ -99,6 +51,125 @@
       "start_chat": "Start chat",
       "starting_session": "Starting session…"
     },
+    "artifactPanel": {
+      "hide_comments": "Hide comments",
+      "show_comments": "Show comments"
+    },
+    "autoNudgePopover": {
+      "never": "never",
+      "save": "Save",
+      "start_loop": "Start loop"
+    },
+    "bottomTerminalPanel": {
+      "open_a_chat_page_to_move_this_terminal_there": "Open a chat page to move this terminal there",
+      "terminal": "Terminal"
+    },
+    "browserAuthPrompt": {
+      "retry": "Retry",
+      "retrying": "Retrying..."
+    },
+    "chatInput": {
+      "approve": "Approve",
+      "approve_all": "Approve all",
+      "could_not_submit_that_decision_see_the_console_f": "Could not submit that decision — see the console for details.",
+      "gateway_offline_message_will_not_send": "Gateway offline — message will not send",
+      "optimize_prompt": "Optimize prompt",
+      "optimize_prompt_busy_optimizing_another_chat": "Optimize prompt — busy optimizing another chat",
+      "optimizing_another_chat_please_wait": "Optimizing another chat — please wait",
+      "project": "Project",
+      "queue_run_after_the_current_turn_finishes_enter": "Queue — run after the current turn finishes (Enter)",
+      "recording_click_mic_to_stop": "Recording… click mic to stop",
+      "reject_all": "Reject all",
+      "resolving": "Resolving…",
+      "select_project": "Select project",
+      "steer": "Steer",
+      "steer_inject_into_the_running_turn_enter": "Steer — inject into the running turn (Enter)",
+      "stop_recording": "Stop recording",
+      "stop_the_current_response_to_switch_agents": "Stop the current response to switch agents",
+      "stop_the_current_response_to_switch_model": "Stop the current response to switch model",
+      "stop_the_current_response_to_switch_project": "Stop the current response to switch project",
+      "that_approval_expired_the_turn_it_belonged_to_is": "That approval expired — the turn it belonged to is no longer waiting.",
+      "transcribing": "Transcribing…",
+      "transcribing_please_wait": "Transcribing, please wait…",
+      "voice_input": "Voice input"
+    },
+    "cliPanel": {
+      "copied": "Copied",
+      "copy": "Copy",
+      "copy_failed": "Copy failed",
+      "failed_retry": "Failed — retry",
+      "redaction_failed_retry": "Redaction failed — retry",
+      "send_selection_to_chat": "Send selection to chat",
+      "send_to_chat": "Send to chat",
+      "sending": "Sending…"
+    },
+    "codeBlock": {
+      "copied": "Copied!",
+      "copy": "Copy"
+    },
+    "commandPalette": {
+      "providers": {
+        "recentsProvider": {
+          "approve": "Approve",
+          "new_session": "New Session…",
+          "recent": "Recent",
+          "thinking": "Thinking…"
+        }
+      }
+    },
+    "commentsSidebar": {
+      "agent": "Agent",
+      "hide": "Hide",
+      "scroll_to_the_highlighted_text": "Scroll to the highlighted text",
+      "show": "Show",
+      "unknown": "Unknown"
+    },
+    "computerUseLiveView": {
+      "close": "Close",
+      "close_live_desktop_view": "Close live desktop view",
+      "desktop": "Desktop",
+      "desktop_live": "Desktop — live",
+      "drag_to_resize": "Drag to resize",
+      "enlarge": "Enlarge",
+      "enlarge_live_desktop_view": "Enlarge live desktop view",
+      "live_desktop_view": "Live desktop view",
+      "minimize_live_desktop_view_to_corner": "Minimize live desktop view to corner",
+      "minimize_to_corner": "Minimize to corner",
+      "no_desktop_frames_yet_frames_appear_when_the_age": "No desktop frames yet. Frames appear when the agent reads an app window — and never for a window holding a password field.",
+      "read_only": "Read-only",
+      "read_only_relayed_from_the_agent_s_own_screensho": "Read-only — relayed from the agent’s own screenshots",
+      "show_live_desktop_view": "Show live desktop view",
+      "shrink": "Shrink",
+      "shrink_live_desktop_view": "Shrink live desktop view"
+    },
+    "diffBlock": {
+      "copied": "Copied!",
+      "copy_patch": "Copy patch",
+      "split_view": "Split view",
+      "switch_to_split_view": "Switch to split view",
+      "switch_to_unified_view": "Switch to unified view",
+      "unified_view": "Unified view"
+    },
+    "embedTabStrip": {
+      "sessions": "Sessions"
+    },
+    "executionsView": {
+      "failed_to_load": "Failed to load"
+    },
+    "followUpBar": {
+      "click_to_add_to_input_double_click_to_select_and": "Click to add to input (double-click to select and send)",
+      "click_to_add_to_input_editable_before_sending": "Click to add to input (editable before sending)",
+      "click_to_add_to_selection": "Click to add to selection",
+      "click_to_remove_from_input": "Click to remove from input",
+      "click_to_remove_from_input_double_click_to_send": "Click to remove from input (double-click to send)",
+      "click_to_send_instantly_shift_click_to_select_mu": "Click to send instantly, Shift+Click to select multiple"
+    },
+    "followUpCard": {
+      "creating_worktree": "Creating worktree…",
+      "failed_to_create_worktree": "Failed to create worktree",
+      "start_in_new_worktree": "Start in new worktree",
+      "this_session_has_no_project_directory_so_there_i": "This session has no project directory, so there is no repository to branch from"
+    },
     "inboundLinkChip": {
       "confirm_release": "Release this session from {{label}}?\n\nMessages sent there will stop arriving here, and replies will stop being delivered there. You can re-attach with !sessions from that channel.",
       "driven_from": "Driven from {{label}}",
@@ -107,6 +178,66 @@
       "release_failed": "Could not release the session: {{reason}}",
       "released": "Released from {{label}}",
       "tooltip": "This session is two-way with {{label}}: replies are delivered there, and messages sent there arrive here."
+    },
+    "instanceTabBar": {
+      "connected": "connected",
+      "connected_refreshing": "connected · refreshing…",
+      "connecting": "connecting…",
+      "tunnel_connected": "Tunnel connected.",
+      "tunnel_connecting": "Tunnel connecting…",
+      "tunnel_error": "tunnel error"
+    },
+    "instancesViewport": {
+      "connecting": "Connecting…",
+      "connection_error": "Connection error",
+      "disconnected": "Disconnected",
+      "pane_failed_to_load": "Pane failed to load"
+    },
+    "issuePanel": {
+      "add_to_chat": "Add to chat",
+      "comments": "Comments",
+      "could_not_load_this_issue": "Could not load this issue",
+      "description": "Description",
+      "issue_sections": "Issue sections",
+      "issues": "Issues",
+      "kiro_crew_uses_your_local_provider_cli_to_load_i": "Kiro Crew uses your local provider CLI to load issues.",
+      "linked": "Linked",
+      "loading_issue": "Loading issue",
+      "locked": "Locked",
+      "no_comment_body_was_returned": "No comment body was returned.",
+      "no_comments_were_returned": "No comments were returned.",
+      "no_description_was_provided": "No description was provided.",
+      "no_linked_pull_requests_were_returned": "No linked pull requests were returned.",
+      "open": "Open",
+      "open_issue": "Open issue",
+      "put_this_issue_s_details_into_the_chat_composer": "Put this issue's details into the chat composer",
+      "refresh_issue": "Refresh issue",
+      "refreshing_issue": "Refreshing issue",
+      "retry": "Retry",
+      "this_issue_is_locked": "This issue is locked",
+      "unknown_author": "Unknown author",
+      "untitled": "Untitled"
+    },
+    "jobForm": {
+      "add": "Add",
+      "enter_a_valid_5_field_cron_expression": "Enter a valid 5-field cron expression",
+      "failed_to_save": "Failed to save",
+      "message_is_required": "Message is required",
+      "name_is_required": "Name is required",
+      "save": "Save",
+      "saving": "Saving...",
+      "select_at_least_one_day": "Select at least one day"
+    },
+    "jobLogsView": {
+      "failed_to_load_history": "Failed to load history"
+    },
+    "kiroPrerequisiteGate": {
+      "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI is installed. Finish signing in to continue.",
+      "kiro_setup_could_not_start": "Kiro setup could not start.",
+      "required": "Required",
+      "the_gateway_returned_an_unexpected_error": "The gateway returned an unexpected error.",
+      "the_gateway_returned_no_prerequisite_status": "The gateway returned no prerequisite status.",
+      "waiting": "Waiting"
     },
     "linkedSurfacesSection": {
       "confirm_release": "Release this session from {{label}}?\n\nMessages sent there will stop arriving here, and replies will stop being delivered there. You can re-attach with !sessions from that channel.",
@@ -124,6 +255,28 @@
       "stop_mirroring": "Stop mirroring to {{label}}",
       "two_way": "Two-way"
     },
+    "markdownPanel": {
+      "adding": "Adding…",
+      "adding_2": "Adding...",
+      "already_in_library": "Already in Library",
+      "edit": "Edit",
+      "full_screen": "Full screen",
+      "no_results": "No results",
+      "preview": "Preview",
+      "refresh_file_re_read_from_disk": "Refresh file (re-read from disk)",
+      "remove_star": "Remove star",
+      "save": "Save",
+      "save_failed": "Save failed",
+      "save_or_discard_changes_first": "Save or discard changes first",
+      "saving": "Saving…",
+      "snapshot_version": "Snapshot version",
+      "snapshotting": "Snapshotting…",
+      "star": "Star",
+      "switch_to_split_view": "Switch to split view",
+      "switch_to_unified_view": "Switch to unified view",
+      "view_preview": "View Preview",
+      "view_source": "View Source"
+    },
     "markdownRenderer": {
       "reset_zoom": "Reset zoom (0)",
       "zoom_in": "Zoom in (+)",
@@ -138,7 +291,234 @@
       "expand_app": "Expand app",
       "full_screen": "Full screen",
       "open_app_full_screen": "Open app full screen"
+    },
+    "mcpBrowserModal": {
+      "waiting_for_the_install_plan_to_load": "Waiting for the install plan to load"
+    },
+    "mcpCustomServerModal": {
+      "add_custom_server": "Add Custom Server",
+      "expected_a_json_object": "Expected a JSON object",
+      "failed_to_load_spec": "Failed to load spec",
+      "mcpservers_is_empty": "\"mcpServers\" is empty",
+      "mcpservers_must_be_an_object": "\"mcpServers\" must be an object",
+      "name_already_in_use_pick_a_different_server_name": "Name already in use — pick a different server name or edit the existing one.",
+      "save": "Save",
+      "server_spec_json": "Server spec JSON",
+      "servers_json": "Servers JSON"
+    },
+    "messageErrorBoundary": {
+      "hide_raw": "hide raw",
+      "view_raw": "view raw"
+    },
+    "monacoCodeBlock": {
+      "copied": "Copied!",
+      "copy": "Copy"
+    },
+    "notifications": {
+      "notifMeta": {
+        "this_week": "This Week",
+        "today": "Today",
+        "unknown_date": "Unknown date",
+        "yesterday": "Yesterday"
+      },
+      "notificationFeed": {
+        "activity_will_appear_here": "Activity will appear here",
+        "clear_all_filters": "Clear all filters",
+        "hide_muted_channel_notifications": "Hide muted-channel notifications",
+        "no_categories_selected_click_a_category_above": "No categories selected — click a category above",
+        "select_all_categories": "Select all categories",
+        "show_less": "Show less",
+        "try_a_different_search": "Try a different search"
+      }
+    },
+    "onboardingFlow": {
+      "change_anything_later_in_settings": "Change anything later in Settings.",
+      "done": "Done",
+      "finish_onboarding": "Finish onboarding",
+      "make_it_yours": "Make it yours.",
+      "next": "Next",
+      "saving": "Saving…",
+      "set_your_look_and_tell_kiro_about_you_so_respons": "Set your look and tell Kiro about you so responses fit the way you work."
+    },
+    "pastedChip": {
+      "collapse_paste": "Collapse paste",
+      "expand_paste": "Expand paste"
+    },
+    "pixelCanvasWidget": {
+      "project": "Project"
+    },
+    "publishHub": {
+      "checking": "Checking…",
+      "content_changed_since_preview_re_run_publish_to": "Content changed since preview — re-run publish to confirm with the current version.",
+      "override_publish_anyway": "Override & Publish Anyway",
+      "publish_failed": "Publish failed",
+      "publishing_2": "Publishing…",
+      "unexpected_response": "Unexpected response"
+    },
+    "pullRequestPanel": {
+      "all_checks_passed": "All checks passed",
+      "changes": "Changes",
+      "checks": "Checks",
+      "checks_running": "Checks running",
+      "checks_unavailable": "Checks unavailable",
+      "collapse_comment": "Collapse comment",
+      "commits": "Commits",
+      "confirm_auto_merge": "Confirm auto-merge",
+      "could_not_load_this_pull_request": "Could not load this pull request",
+      "description": "Description",
+      "enable_auto_merge": "Enable auto-merge",
+      "expand_comment": "Expand comment",
+      "github_merges_this_pull_request_automatically_on": "GitHub merges this pull request automatically once required checks and reviews pass",
+      "github_will_merge_this_pull_request_once_its_req": "GitHub will merge this pull request once its requirements pass",
+      "gitlab_merges_this_merge_request_when_the_pipeli": "GitLab merges this merge request when the pipeline succeeds — it merges right away if no pipeline is pending",
+      "gitlab_will_merge_this_merge_request_when_the_pi": "GitLab will merge this merge request when the pipeline succeeds",
+      "merge_now": "Merge now",
+      "refresh_pull_request": "Refresh pull request",
+      "refreshing_pull_request": "Refreshing pull request",
+      "reviews": "Reviews",
+      "unknown_reviewer": "Unknown reviewer",
+      "untitled_commit": "Untitled commit"
+    },
+    "registryManager": {
+      "adding": "Adding…",
+      "failed_to_refresh_registries": "Failed to refresh registries",
+      "failed_to_update_registries": "Failed to update registries",
+      "org_owned_app_catalogs_hosted_in_git_repositorie": "Org-owned app catalogs hosted in Git repositories. Apps from these repos appear alongside core registry apps in the Browse tab.",
+      "repo_must_be_a_git_url_or_an_alphanumeric_name_h": "Repo must be a git URL or an alphanumeric name (hyphens/underscores allowed)",
+      "repo_name_is_required": "Repo name is required",
+      "sync_apps": "Sync Apps",
+      "syncing": "Syncing…",
+      "these_hosts": "these hosts",
+      "this_host": "this host"
+    },
+    "remoteArtifactCard": {
+      "clone_failed": "Clone failed",
+      "fork_failed": "Fork failed"
+    },
+    "restartButton": {
+      "restart_failed": "Restart failed",
+      "sessions_restarted_config_applied": "Sessions restarted — config applied."
+    },
+    "searchBar": {
+      "no_results": "No results"
+    },
+    "searchResultsList": {
+      "assistant": "Assistant",
+      "selected": "selected",
+      "you": "You"
+    },
+    "secretField": {
+      "hide": "Hide",
+      "show": "Show"
+    },
+    "sessionActionsMenu": {
+      "mark_as_read": "Mark as read",
+      "mark_as_unread": "Mark as unread",
+      "pin": "Pin",
+      "switch_to_autopilot": "Switch to Autopilot",
+      "switch_to_chat": "Switch to Chat",
+      "unpin": "Unpin"
+    },
+    "settings": {
+      "click_to_reset": "Click to reset"
+    },
+    "skillBrowserModal": {
+      "install_skill": "Install Skill",
+      "no_preview_available": "No preview available."
+    },
+    "skillDirectoryBrowser": {
+      "failed_to_load_file": "Failed to load file"
+    },
+    "snipOverlay": {
+      "could_not_capture_the_selected_region_please_try": "Could not capture the selected region. Please try again."
+    },
+    "tagManagerList": {
+      "filter_by_tag": "Filter by tag",
+      "make_status_tag": "Make status tag",
+      "status_tag_mutually_exclusive_on_cards_click_to": "Status tag (mutually exclusive on cards) — click to make regular"
+    },
+    "terminalCompletion": {
+      "use_this_folder": "use this folder"
+    },
+    "terminalKeyBar": {
+      "terminal_keys": "Terminal keys"
+    },
+    "themeEditor": {
+      "failed_to_delete_theme": "Failed to delete theme",
+      "failed_to_load_theme_for_editing": "Failed to load theme for editing",
+      "failed_to_save_theme": "Failed to save theme",
+      "save_theme": "Save Theme",
+      "saving": "Saving…",
+      "update_theme": "Update Theme"
+    },
+    "themeExperienceLayer": {
+      "mute_theme_sounds": "Mute theme sounds",
+      "unmute_theme_sounds": "Unmute theme sounds"
+    },
+    "tunnelStatus": {
+      "connected": "Connected",
+      "connecting": "Connecting…",
+      "error": "Error",
+      "reconnecting": "Reconnecting…",
+      "stopped": "Stopped",
+      "tunnel_connected": "Tunnel connected",
+      "tunnel_error": "Tunnel error",
+      "tunnel_is_starting_up": "Tunnel is starting up",
+      "tunnel_stopped": "Tunnel stopped"
+    },
+    "updateModal": {
+      "restart_update": "Restart & Update",
+      "restarting": "Restarting..."
+    },
+    "voiceStatusBar": {
+      "default_microphone": "Default microphone"
+    },
+    "webAppArtifactCard": {
+      "api_app": "API app",
+      "estimated_monthly_cost": "Estimated monthly cost",
+      "expired": "Expired",
+      "no_expiry_set": "no expiry set",
+      "opens_a_new_chat_session_to_run_the_deploy": "opens a new chat session to run the deploy",
+      "opens_a_new_chat_session_to_run_the_deploy_add_a": "opens a new chat session to run the deploy — add a profile in Artifact Deploy first",
+      "persistent_2": "∞ persistent",
+      "stateful_app": "Stateful app",
+      "static_app": "Static app",
+      "tearing_down": "Tearing down..."
+    },
+    "webPreviewPanel": {
+      "exit_expanded_preview": "Exit expanded preview",
+      "expand_preview": "Expand preview",
+      "expand_preview_hide_nav_sessions": "Expand preview (hide nav & sessions)"
+    },
+    "welcomeView": {
+      "autopilot": "Autopilot",
+      "switch_back_to_default_mode": "Switch back to default mode",
+      "switch_to_ephemeral_mode": "Switch to ephemeral mode",
+      "what_can_i_do_for_you": "What can I do for you?"
+    },
+    "widgetFrame": {
+      "cannot_star_widget_has_no_slug_or_message_contex": "Cannot star: widget has no slug or message context",
+      "expand": "Expand",
+      "minimize": "Minimize",
+      "star_as_artifact": "Star as artifact"
+    },
+    "workspacePicker": {
+      "create": "Create",
+      "creating": "Creating…",
+      "failed_to_create_workspace": "Failed to create workspace",
+      "name_required": "Name required"
     }
+  },
+  "nav": {
+    "agent_capabilities": "Agent Capabilities",
+    "artifacts": "Artifacts",
+    "explore": "Explore",
+    "knowledge": "Knowledge",
+    "notifications": "Notifications",
+    "schedule": "Schedule",
+    "sessions": "Sessions",
+    "settings": "Settings",
+    "task_runner": "Task Runner"
   },
   "pages": {
     "artifactDetailPage": {
@@ -242,9 +622,6 @@
         "show_result": "Show result"
       }
     },
-    "chatSidebar": {
-      "mirroring_to": "Mirroring to {{label}}"
-    },
     "chatPage": {
       "no_tools": "No tools",
       "tool_search_deferred": "Tool Search · Deferred",
@@ -254,6 +631,9 @@
       "tool_status_deferred": "Deferred",
       "tool_status_disabled": "Disabled",
       "tool_status_loaded": "Loaded this session"
+    },
+    "chatSidebar": {
+      "mirroring_to": "Mirroring to {{label}}"
     },
     "scenes": {
       "ghostScene": {
@@ -327,6 +707,82 @@
         "update_error_server": "The update server returned an error.",
         "update_error_server_status": "The update server returned an error (HTTP {{status}}).",
         "update_error_unknown": "Something went wrong. Try checking for updates again."
+      }
+    }
+  },
+  "settings": {
+    "display": {
+      "language": {
+        "auto": "Auto",
+        "description": "Language for the dashboard interface.",
+        "label": "Language",
+        "sync_failed": "Couldn't save this to your KiroCrew config — the language applies in this browser only and may reset on reload."
+      }
+    },
+    "groups": {
+      "preferences": "Preferences",
+      "system": "System"
+    },
+    "tabs": {
+      "about": {
+        "description": "Version, update channel, check for updates, and license",
+        "label": "About"
+      },
+      "browser": {
+        "description": "Playwright browser mode, extension token, and auth configuration",
+        "label": "Browser"
+      },
+      "channels": {
+        "description": "Chat platforms the agent can send and receive on — Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, WeChat",
+        "label": "Channels"
+      },
+      "chat": {
+        "description": "Message behavior, history, timestamps, and context",
+        "label": "Chat"
+      },
+      "computerUse": {
+        "description": "Let the agent read and drive desktop app windows through accessibility",
+        "label": "Computer Use"
+      },
+      "developer": {
+        "description": "Developer mode, logs, system metrics, and diagnostics",
+        "label": "Developer"
+      },
+      "display": {
+        "description": "Zoom, font, and color theme preferences",
+        "label": "Display"
+      },
+      "imports": {
+        "description": "Bring data from another AI agent, and back up or restore KiroCrew configuration",
+        "label": "Import / Export"
+      },
+      "instances": {
+        "description": "Manage remote crews over SSH tunnels; switch between them from the top header",
+        "label": "Remote Crew"
+      },
+      "notifications": {
+        "description": "Sound effects and per-source alert preferences",
+        "label": "Notifications"
+      },
+      "overview": {
+        "description": "System health, activity, and usage & memory at a glance",
+        "label": "Overview"
+      },
+      "security": {
+        "description": "Security posture, defense layers, certifications, and data classification",
+        "label": "Security"
+      },
+      "shortcuts": {
+        "description": "Keyboard shortcuts reference and preferences",
+        "label": "Shortcuts"
+      },
+      "skills": {
+        "description": "Automatic skill generation from sessions and the approval gate",
+        "label": "Skills"
+      },
+      "voice": {
+        "description": "Text-to-speech and speech-to-text (dictation) settings",
+        "label": "Voice"
       }
     }
   }

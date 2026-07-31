@@ -90,7 +90,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
       // so echo the backend's authoritative newlyTrustedHosts list here.
       setTrustNotice(res?.newlyTrustedHosts && res.newlyTrustedHosts.length > 0 ? res.newlyTrustedHosts : [])
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Failed to update registries'),
+    onError: (e: unknown) => setError(e instanceof Error ? e.message : i18nT('components.registryManager.failed_to_update_registries')),
   })
 
   const refreshMutation = useMutation({
@@ -108,7 +108,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         setError('')
       }
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Failed to refresh registries'),
+    onError: (e: unknown) => setError(e instanceof Error ? e.message : i18nT('components.registryManager.failed_to_refresh_registries')),
   })
 
   const handleAdd = () => {
@@ -118,9 +118,9 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
     // for a URL made the backend reject it (400) since names disallow '/' & ':'.
     const name = editName.trim()
     const branch = editBranch.trim()
-    if (!repo) { setError('Repo name is required'); return }
+    if (!repo) { setError(i18nT('components.registryManager.repo_name_is_required')); return }
     if (!isValidRepo(repo)) {
-      setError('Repo must be a git URL or an alphanumeric name (hyphens/underscores allowed)')
+      setError(i18nT('components.registryManager.repo_must_be_a_git_url_or_an_alphanumeric_name_h'))
       return
     }
     if (registries.some(r => r.repo === repo)) {
@@ -154,7 +154,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
     <Wrapper>
       <CardTitle>
         {i18nT('components.registryManager.external_registries')}
-        <InfoTip text="Org-owned app catalogs hosted in Git repositories. Apps from these repos appear alongside core registry apps in the Browse tab." />
+        <InfoTip text={i18nT('components.registryManager.org_owned_app_catalogs_hosted_in_git_repositorie')} />
       </CardTitle>
 
       {error && (
@@ -170,7 +170,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         <div className="mb-3 bg-accent/10 border border-accent/20 rounded-lg p-2.5 flex items-start gap-2 animate-rise">
           <ShieldCheck size={14} className="text-accent shrink-0 mt-0.5" />
           <span className="text-accent text-[13px] flex-1">
-            {i18nT('components.registryManager.you_are_now_trusting_apps_from')} {trustNotice.join(', ')}{i18nT('components.registryManager.apps_from')} {trustNotice.length > 1 ? 'these hosts' : 'this host'} {i18nT('components.registryManager.become_installable_and_run_setup_with_gateway_pr')}
+            {i18nT('components.registryManager.you_are_now_trusting_apps_from')} {trustNotice.join(', ')}{i18nT('components.registryManager.apps_from')} {trustNotice.length > 1 ? i18nT('components.registryManager.these_hosts') : i18nT('components.registryManager.this_host')} {i18nT('components.registryManager.become_installable_and_run_setup_with_gateway_pr')}
           </span>
           <Clickable className="text-accent/60 hover:text-accent" onClick={() => setTrustNotice([])} aria-label={i18nT('components.registryManager.dismiss_trust_notice')}>
             <X size={14} />
@@ -273,7 +273,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
           <div className="flex items-center gap-2 justify-end">
             <Btn onClick={() => { setAdding(false); setError('') }}>{i18nT('components.registryManager.cancel')}</Btn>
             <Btn onClick={handleAdd} disabled={mutation.isPending}>
-              {mutation.isPending ? 'Adding…' : 'Add Registry'}
+              {mutation.isPending ? i18nT('components.registryManager.adding') : i18nT('components.registryManager.add_registry')}
             </Btn>
           </div>
         </div>
@@ -290,7 +290,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
                 aria-label={i18nT('components.registryManager.sync_registry_apps')}
               >
                 <RefreshCw size={14} className={refreshMutation.isPending && !refreshMutation.variables ? 'animate-spin' : ''} />
-                {refreshMutation.isPending && !refreshMutation.variables ? 'Syncing…' : 'Sync Apps'}
+                {refreshMutation.isPending && !refreshMutation.variables ? i18nT('components.registryManager.syncing') : i18nT('components.registryManager.sync_apps')}
               </Btn>
               {lastSyncedAt && (
                 <span className="text-[12px] text-muted">

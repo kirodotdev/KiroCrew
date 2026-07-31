@@ -397,10 +397,10 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
               onClick={handleSendToChat}
               disabled={sending === 'busy'}
               className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-text hover:bg-bg-hover transition-colors ${sending === 'busy' ? 'opacity-60' : ''}`}
-              title={sending === 'failed' ? 'Redaction failed — retry' : 'Send selection to chat'}
+              title={sending === 'failed' ? i18nT('components.cliPanel.redaction_failed_retry') : i18nT('components.cliPanel.send_selection_to_chat')}
             >
               <MessageSquarePlus className={`h-3.5 w-3.5 ${sending === 'failed' ? 'text-red-500' : ''}`} />
-              {sending === 'busy' ? 'Sending…' : sending === 'failed' ? 'Failed — retry' : 'Send to chat'}
+              {sending === 'busy' ? i18nT('components.cliPanel.sending') : sending === 'failed' ? i18nT('components.cliPanel.failed_retry') : i18nT('components.cliPanel.send_to_chat')}
             </button>
           )}
           <button
@@ -410,7 +410,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
             title={i18nT('components.cliPanel.copy_selection')}
           >
             {copied === 'done' ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className={`h-3.5 w-3.5 ${copied === 'failed' ? 'text-red-500' : ''}`} />}
-            {copied === 'done' ? 'Copied' : copied === 'failed' ? 'Copy failed' : 'Copy'}
+            {copied === 'done' ? i18nT('components.cliPanel.copied') : copied === 'failed' ? i18nT('components.cliPanel.copy_failed') : i18nT('components.cliPanel.copy')}
           </button>
         </div>
       )}

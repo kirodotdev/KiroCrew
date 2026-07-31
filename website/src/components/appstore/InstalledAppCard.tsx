@@ -81,7 +81,7 @@ export default function InstalledAppCard({
                   <Badge variant="ok">{i18nT('components.appstore.installedAppCard.self_managed')}</Badge>
                 ) : (
                   <Badge variant={app.enabled ? 'ok' : 'warn'}>
-                    {app.enabled ? 'Enabled' : 'Disabled'}
+                    {app.enabled ? i18nT('components.appstore.installedAppCard.enabled') : i18nT('components.appstore.installedAppCard.disabled')}
                   </Badge>
                 )}
                 {app.migratedTo && (
@@ -111,7 +111,7 @@ export default function InstalledAppCard({
             {/* Open button — all app types */}
             {hasOpenCommand && (
               <Btn primary onClick={() => api.openApp(app.name).then((res: { remote?: boolean; command?: string; message?: string } | null) => {
-                if (res?.remote) setRemoteCmd(res.command || res.message || 'App cannot be opened — KiroCrew is running in a headless environment.')
+                if (res?.remote) setRemoteCmd(res.command || res.message || i18nT('components.appstore.installedAppCard.app_cannot_be_opened_kirocrew_is_running_in_a_he'))
               }).catch(() => {})}>
                 <ExternalLink size={14} /> {i18nT('components.appstore.installedAppCard.open')}
               </Btn>
@@ -128,14 +128,14 @@ export default function InstalledAppCard({
                 onClick={() => onAction(app.name, 'disable')}
                 disabled={actionLoading === `${app.name}:disable`}
               >
-                <PowerOff size={14} /> {isBuiltin ? 'Hide' : 'Disable'}
+                <PowerOff size={14} /> {isBuiltin ? i18nT('components.appstore.installedAppCard.hide') : i18nT('components.appstore.installedAppCard.disable')}
               </Btn>
             ) : (
               <Btn
                 onClick={() => onAction(app.name, 'enable')}
                 disabled={actionLoading === `${app.name}:enable`}
               >
-                <Power size={14} /> {isBuiltin ? 'Show' : 'Enable'}
+                <Power size={14} /> {isBuiltin ? i18nT('components.appstore.installedAppCard.show') : i18nT('components.appstore.installedAppCard.enable')}
               </Btn>
             )}
 
@@ -173,7 +173,7 @@ export default function InstalledAppCard({
             )}
 
             <button
-              aria-label={expanded ? 'Collapse details' : 'Expand details'}
+              aria-label={expanded ? i18nT('components.appstore.installedAppCard.collapse_details') : i18nT('components.appstore.installedAppCard.expand_details')}
               className="text-muted hover:text-text transition-colors p-1 bg-transparent border-0 cursor-pointer"
               onClick={() => setExpanded(!expanded)}
             >

@@ -26,6 +26,8 @@ import MarkdownRenderer from './MarkdownRenderer'
 import { pullRequestErrorDetails } from './PullRequestPanel'
 import { Btn } from './ui'
 
+import { i18nT } from '../i18n/t'
+
 type IssueTab = 'description' | 'comments' | 'linked'
 
 function age(value: string): string {
@@ -128,7 +130,7 @@ function EmptyTab({ children }: { children: string }) {
  *  rotating spinner: the panel shows the SHAPE of what is coming. */
 function LoadingSkeleton() {
   return (
-    <div role="status" aria-label="Loading issue" className="flex-1 px-4 py-4 flex flex-col gap-3">
+    <div role="status" aria-label={i18nT('components.issuePanel.loading_issue')} className="flex-1 px-4 py-4 flex flex-col gap-3">
       <div className="h-4 w-24 rounded bg-bg-hover animate-pulse" />
       <div className="h-5 w-3/4 rounded bg-bg-hover animate-pulse" />
       <div className="h-3 w-1/2 rounded bg-bg-hover animate-pulse" />
@@ -151,7 +153,7 @@ function CommentCard({
     <article className="border border-border rounded-lg bg-card overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated/30">
         <MessageSquare className="lucide-inline text-muted shrink-0" aria-hidden="true" />
-        <span className="text-[12px] font-medium text-text truncate">{comment.author || 'Unknown author'}</span>
+        <span className="text-[12px] font-medium text-text truncate">{comment.author || i18nT('components.issuePanel.unknown_author')}</span>
         <div className="ml-auto flex items-center gap-2 shrink-0">
           <span className="text-[11px] text-muted">{age(comment.createdAt)}</span>
           {commentUrl && (
@@ -161,7 +163,7 @@ function CommentCard({
               rel="noopener noreferrer"
               className="text-[11px] text-accent hover:underline inline-flex items-center gap-1"
             >
-              Open <ExternalLink className="lucide-inline" aria-hidden="true" />
+              {i18nT('components.issuePanel.open')} <ExternalLink className="lucide-inline" aria-hidden="true" />
             </a>
           )}
           <Btn
@@ -171,14 +173,14 @@ function CommentCard({
             )}
             className="text-[11px] px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
           >
-            Add to chat
+            {i18nT('components.issuePanel.add_to_chat')}
           </Btn>
         </div>
       </div>
       <div className="px-3 py-2 text-[13px] text-text">
         {comment.body
           ? <MarkdownRenderer content={comment.body} />
-          : <span className="text-muted">No comment body was returned.</span>}
+          : <span className="text-muted">{i18nT('components.issuePanel.no_comment_body_was_returned')}</span>}
       </div>
     </article>
   )
@@ -196,7 +198,7 @@ function IssueBody({
   if (tab === 'description') {
     return source.description
       ? <div className="px-4 py-4 text-[13px]"><MarkdownRenderer content={source.description} /></div>
-      : <EmptyTab>No description was provided.</EmptyTab>
+      : <EmptyTab>{i18nT('components.issuePanel.no_description_was_provided')}</EmptyTab>
   }
   if (tab === 'comments') {
     return source.comments.length ? (
@@ -205,7 +207,7 @@ function IssueBody({
           <CommentCard key={comment.id || index} comment={comment} onAddToChat={onAddToChat} />
         ))}
       </div>
-    ) : <EmptyTab>No comments were returned.</EmptyTab>
+    ) : <EmptyTab>{i18nT('components.issuePanel.no_comments_were_returned')}</EmptyTab>
   }
   return source.linkedChanges.length ? (
     <div>
@@ -216,7 +218,7 @@ function IssueBody({
           <>
             <GitPullRequest className="lucide-inline text-muted shrink-0 mt-0.5" aria-hidden="true" />
             <div className="min-w-0 flex-1">
-              <div className="text-[13px] font-medium text-text truncate">{change.title || 'Untitled'}</div>
+              <div className="text-[13px] font-medium text-text truncate">{change.title || i18nT('components.issuePanel.untitled')}</div>
               <div className="flex items-center gap-2 mt-1 text-[11px] text-muted">
                 <span className="shrink-0">{marker}{change.number}</span>
                 {change.state && <span className="capitalize shrink-0">{change.state.toLowerCase()}</span>}
@@ -241,7 +243,7 @@ function IssueBody({
         )
       })}
     </div>
-  ) : <EmptyTab>No linked pull requests were returned.</EmptyTab>
+  ) : <EmptyTab>{i18nT('components.issuePanel.no_linked_pull_requests_were_returned')}</EmptyTab>
 }
 
 function LabelChips({ labels }: { labels: IssueLabel[] }) {
@@ -328,10 +330,10 @@ export default function IssuePanel({
   // 'linked' appears only when the provider actually reported linked changes —
   // an empty tab that can never fill is noise, not information.
   const tabs: Array<{ id: IssueTab; label: string; count?: number }> = source ? [
-    { id: 'description', label: 'Description' },
-    { id: 'comments', label: 'Comments', count: source.comments.length || source.commentCount },
+    { id: 'description', label: i18nT('components.issuePanel.description') },
+    { id: 'comments', label: i18nT('components.issuePanel.comments'), count: source.comments.length || source.commentCount },
     ...(source.linkedChanges.length
-      ? [{ id: 'linked' as const, label: 'Linked', count: source.linkedChanges.length }]
+      ? [{ id: 'linked' as const, label: i18nT('components.issuePanel.linked'), count: source.linkedChanges.length }]
       : []),
   ] : []
   // The selected tab can vanish (a refresh that drops linkedChanges), so the
@@ -343,7 +345,7 @@ export default function IssuePanel({
       {cappedIssues.length > 1 && (
         <div
           role="tablist"
-          aria-label="Issues"
+          aria-label={i18nT('components.issuePanel.issues')}
           className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto"
         >
           {cappedIssues.map(item => (
@@ -376,12 +378,12 @@ export default function IssuePanel({
             <div className="text-[13px] font-medium text-text">
               {queryError.loginCommand
                 ? `${queryError.loginCommand === 'gh auth login' ? 'GitHub' : 'GitLab'} CLI login required`
-                : 'Could not load this issue'}
+                : i18nT('components.issuePanel.could_not_load_this_issue')}
             </div>
             {queryError.loginCommand ? (
               <>
                 <div className="text-[12px] text-muted mt-1 text-center">
-                  Kiro Crew uses your local provider CLI to load issues.
+                  {i18nT('components.issuePanel.kiro_crew_uses_your_local_provider_cli_to_load_i')}
                 </div>
                 <code className="inline-block mt-2 px-2 py-1 rounded bg-bg-hover text-[12px] text-text">
                   {queryError.loginCommand}
@@ -397,7 +399,7 @@ export default function IssuePanel({
               onClick={handleRefresh}
               className="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border bg-transparent text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
             >
-              <RefreshCw className="lucide-inline" aria-hidden="true" />Retry
+              <RefreshCw className="lucide-inline" aria-hidden="true" />{i18nT('components.issuePanel.retry')}
             </Btn>
           </div>
         </div>
@@ -423,8 +425,8 @@ export default function IssuePanel({
                 <span>{source.provider === 'github' ? 'GitHub' : 'GitLab'}</span>
               </span>
               {source.locked && (
-                <span className="inline-flex items-center gap-1 shrink-0" title="This issue is locked">
-                  <Lock className="lucide-inline" aria-hidden="true" />Locked
+                <span className="inline-flex items-center gap-1 shrink-0" title={i18nT('components.issuePanel.this_issue_is_locked')}>
+                  <Lock className="lucide-inline" aria-hidden="true" />{i18nT('components.issuePanel.locked')}
                 </span>
               )}
               <Btn
@@ -432,8 +434,8 @@ export default function IssuePanel({
                 onClick={handleRefresh}
                 disabled={query.isFetching}
                 className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-60 disabled:cursor-default"
-                aria-label={query.isFetching ? 'Refreshing issue' : 'Refresh issue'}
-                title={query.isFetching ? 'Refreshing issue' : 'Refresh issue'}
+                aria-label={query.isFetching ? i18nT('components.issuePanel.refreshing_issue') : i18nT('components.issuePanel.refresh_issue')}
+                title={query.isFetching ? i18nT('components.issuePanel.refreshing_issue') : i18nT('components.issuePanel.refresh_issue')}
               >
                 <RefreshCw className="lucide-inline" aria-hidden="true" />
               </Btn>
@@ -443,8 +445,8 @@ export default function IssuePanel({
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover"
-                  aria-label="Open issue"
-                  title="Open issue"
+                  aria-label={i18nT('components.issuePanel.open_issue')}
+                  title={i18nT('components.issuePanel.open_issue')}
                 >
                   <ExternalLink className="lucide-inline" aria-hidden="true" />
                 </a>
@@ -487,9 +489,9 @@ export default function IssuePanel({
                   type="button"
                   onClick={() => onAddToChat(issueHandoff(source))}
                   className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-                  title="Put this issue's details into the chat composer"
+                  title={i18nT('components.issuePanel.put_this_issue_s_details_into_the_chat_composer')}
                 >
-                  Add to chat
+                  {i18nT('components.issuePanel.add_to_chat')}
                 </Btn>
               </div>
             )}
@@ -506,7 +508,7 @@ export default function IssuePanel({
 
           <div
             role="tablist"
-            aria-label="Issue sections"
+            aria-label={i18nT('components.issuePanel.issue_sections')}
             className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto"
           >
             {tabs.map(item => (

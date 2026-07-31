@@ -116,7 +116,7 @@ export default function WelcomeView({
       <div className="text-center">
         <div className="flex items-center justify-center gap-4">
           {mode !== 'orchestrator' && brandMark}
-          <h2 className="text-5xl font-light text-text-strong tracking-tight">{mode === 'orchestrator' ? 'Autopilot' : 'What can I do for you?'}</h2>
+          <h2 className="text-5xl font-light text-text-strong tracking-tight">{mode === 'orchestrator' ? i18nT('components.welcomeView.autopilot') : i18nT('components.welcomeView.what_can_i_do_for_you')}</h2>
           {mode !== 'orchestrator' && <div className="w-[64px] shrink-0" />}
         </div>
         {mode === 'orchestrator' && <p className="text-[13px] text-muted mt-1">{i18nT('components.welcomeView.simple_tasks_run_instantly_complex_ones_get_a_pl')}</p>}
@@ -151,7 +151,7 @@ export default function WelcomeView({
                 }}
               >
                 {!ephemeralActive ? <Ghost size={13} /> : <Undo2 size={13} />}
-                <span>{!ephemeralActive ? 'Switch to ephemeral mode' : 'Switch back to default mode'}</span>
+                <span>{!ephemeralActive ? i18nT('components.welcomeView.switch_to_ephemeral_mode') : i18nT('components.welcomeView.switch_back_to_default_mode')}</span>
               </button>
             )
           })()}

@@ -167,8 +167,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               ? 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
               : 'text-muted hover:text-text hover:bg-bg-hover'
           }`}
-          title={loop?.active ? `Goal active (cycle ${loop.cycle_count})` : 'Set a goal'}
-          aria-label={loop?.active ? `Goal active (cycle ${loop.cycle_count})` : 'Set a goal'}
+          title={loop?.active ? `Goal active (cycle ${loop.cycle_count})` : i18nT('components.autoNudgePopover.set_a_goal')}
+          aria-label={loop?.active ? `Goal active (cycle ${loop.cycle_count})` : i18nT('components.autoNudgePopover.set_a_goal')}
         >
           <Goal size={16} className="shrink-0" />
           {loop?.active && loop.cycle_count > 0 ? loop.cycle_count : null}
@@ -227,7 +227,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
         {loop && (
           <div className="text-muted text-[11px] mb-3">
-            {i18nT('components.autoNudgePopover.last_fire')} {loop.last_fire_ts ? new Date(loop.last_fire_ts * 1000).toLocaleTimeString() : 'never'}
+            {i18nT('components.autoNudgePopover.last_fire')} {loop.last_fire_ts ? new Date(loop.last_fire_ts * 1000).toLocaleTimeString() : i18nT('components.autoNudgePopover.never')}
           </div>
         )}
 
@@ -248,7 +248,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             disabled={saving || !message.trim()}
             className="px-3 py-1 rounded bg-accent text-accent-fg border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
           >
-            {loop ? 'Save' : 'Start loop'}
+            {loop ? i18nT('components.autoNudgePopover.save') : i18nT('components.autoNudgePopover.start_loop')}
           </button>
         </div>
       </PopoverContent>

@@ -118,7 +118,7 @@ export function useThemeEditor() {
       setJsonText(JSON.stringify(data, null, 2))
       setEditingSlug(slug); setEditorOpen(true); setCreatorMode('picker')
     } catch {
-      setError('Failed to load theme for editing')
+      setError(i18nT('components.themeEditor.failed_to_load_theme_for_editing'))
       setEditorOpen(true)
     }
   }
@@ -151,7 +151,7 @@ export function useThemeEditor() {
       }
       closeEditor()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to save theme')
+      setError(e instanceof Error ? e.message : i18nT('components.themeEditor.failed_to_save_theme'))
     } finally { setSaving(false) }
   }
 
@@ -160,7 +160,7 @@ export function useThemeEditor() {
     if (!target) return
     if (confirm(i18nT('components.themeEditor.delete_this_custom_theme'))) {
       try { await deleteCustomTheme(target); closeEditor() }
-      catch (e: unknown) { setError(e instanceof Error ? e.message : 'Failed to delete theme') }
+      catch (e: unknown) { setError(e instanceof Error ? e.message : i18nT('components.themeEditor.failed_to_delete_theme')) }
     }
   }
 
@@ -320,7 +320,7 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
 
       <div className="flex items-center gap-2 mt-3">
         <Btn onClick={saveTheme} className="bg-accent text-accent-fg hover:bg-accent-hover" disabled={saving}>
-          {saving ? 'Saving…' : isEditing ? 'Update Theme' : 'Save Theme'}
+          {saving ? i18nT('components.themeEditor.saving') : isEditing ? i18nT('components.themeEditor.update_theme') : i18nT('components.themeEditor.save_theme')}
         </Btn>
         <Btn onClick={closeEditor}>{i18nT('components.themeEditor.cancel')}</Btn>
         {isEditing && (

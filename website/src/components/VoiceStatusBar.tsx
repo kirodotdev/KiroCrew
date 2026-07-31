@@ -69,7 +69,7 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, error, o
       </span>
       <Mic size={12} className="shrink-0 text-danger opacity-70" />
       <span className="flex-1 min-w-0 truncate text-danger opacity-80" title={deviceLabel || undefined}>
-        {deviceLabel || 'Default microphone'}
+        {deviceLabel || i18nT('components.voiceStatusBar.default_microphone')}
       </span>
     </div>
   )

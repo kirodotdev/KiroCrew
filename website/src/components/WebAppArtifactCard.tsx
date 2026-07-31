@@ -30,10 +30,10 @@ function statusBadgeVariant(status: string): 'ok' | 'warn' | 'err' | 'aim' {
 }
 
 function formatCountdown(expiresAt: string | null, persistent: boolean): string {
-  if (persistent) return '\u221e persistent'
-  if (!expiresAt) return 'no expiry set'
+  if (persistent) return i18nT('components.webAppArtifactCard.persistent_2')
+  if (!expiresAt) return i18nT('components.webAppArtifactCard.no_expiry_set')
   const diff = new Date(expiresAt).getTime() - Date.now()
-  if (Number.isNaN(diff)) return 'no expiry set'
+  if (Number.isNaN(diff)) return i18nT('components.webAppArtifactCard.no_expiry_set')
   if (diff <= 0) return 'expired'
   const days = Math.floor(diff / 86400000)
   const hours = Math.floor((diff % 86400000) / 3600000)
@@ -321,9 +321,9 @@ export default function WebAppArtifactCard({
   const tierSummary = useMemo(() => {
     if (!arch) return ''
     const parts: string[] = []
-    if (arch.state) parts.push('Stateful app')
-    else if (arch.backend) parts.push('API app')
-    else parts.push('Static app')
+    if (arch.state) parts.push(i18nT('components.webAppArtifactCard.stateful_app'))
+    else if (arch.backend) parts.push(i18nT('components.webAppArtifactCard.api_app'))
+    else parts.push(i18nT('components.webAppArtifactCard.static_app'))
     parts.push(`${arch.tier}-tier`)
     return parts.join(' \u00b7 ')
   }, [arch])
@@ -395,7 +395,7 @@ export default function WebAppArtifactCard({
   const frameUrl = !isExpired && !isDeploying && remoteFramable ? framablePreviewUrl(deploy_target.public_url) : null
   const costLabel = cost.model === 'ttl-window'
     ? `Estimated cost \u2014 over ${cost.window_hours}h TTL window`
-    : 'Estimated monthly cost'
+    : i18nT('components.webAppArtifactCard.estimated_monthly_cost')
 
   const handleTeardown = () => {
     const resourceList = architecture.resources
@@ -455,8 +455,8 @@ export default function WebAppArtifactCard({
             </button>
             <span className="text-[10px] text-muted">
               {registeredProfiles.length > 0
-                ? 'opens a new chat session to run the deploy'
-                : 'opens a new chat session to run the deploy — add a profile in Artifact Deploy first'}
+                ? i18nT('components.webAppArtifactCard.opens_a_new_chat_session_to_run_the_deploy')
+                : i18nT('components.webAppArtifactCard.opens_a_new_chat_session_to_run_the_deploy_add_a')}
             </span>
           </div>
         </div>
@@ -587,7 +587,7 @@ export default function WebAppArtifactCard({
         <div className="flex items-center gap-2.5 flex-wrap">
           <TargetPills dt={deploy_target} />
           <Badge variant={statusBadgeVariant(isExpired ? 'expired' : lifecycle.status)}>
-            {isExpired ? 'Expired' : lifecycle.status}
+            {isExpired ? i18nT('components.webAppArtifactCard.expired') : lifecycle.status}
           </Badge>
         </div>
       </div>
@@ -656,7 +656,7 @@ export default function WebAppArtifactCard({
             aria-label={i18nT('components.webAppArtifactCard.cancel_tear_down')}
           >
             <Trash2 className="lucide-inline" />
-            {teardownMut.isPending ? 'Tearing down...' : 'Cancel / Tear down'}
+            {teardownMut.isPending ? i18nT('components.webAppArtifactCard.tearing_down') : i18nT('components.webAppArtifactCard.cancel_tear_down')}
           </button>
           <span className="text-[10px] text-muted">{i18nT('components.webAppArtifactCard.owner_only_confirm_gated')}</span>
         </div>

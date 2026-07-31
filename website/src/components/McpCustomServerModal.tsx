@@ -53,17 +53,17 @@ export function parseCustomJson(text: string, nameForBareSpec: string): ParseOut
     return { ok: false, error: `Not valid JSON: ${e instanceof Error ? e.message : String(e)}` }
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { ok: false, error: 'Expected a JSON object' }
+    return { ok: false, error: i18nT('components.mcpCustomServerModal.expected_a_json_object') }
   }
   const obj = parsed as Record<string, unknown>
 
   const block = obj.mcpServers
   if (block !== undefined) {
     if (block === null || typeof block !== 'object' || Array.isArray(block)) {
-      return { ok: false, error: '"mcpServers" must be an object' }
+      return { ok: false, error: i18nT('components.mcpCustomServerModal.mcpservers_must_be_an_object') }
     }
     const servers = block as Record<string, McpCustomSpec>
-    if (Object.keys(servers).length === 0) return { ok: false, error: '"mcpServers" is empty' }
+    if (Object.keys(servers).length === 0) return { ok: false, error: i18nT('components.mcpCustomServerModal.mcpservers_is_empty') }
     return { ok: true, servers, needsName: false }
   }
 
@@ -73,7 +73,7 @@ export function parseCustomJson(text: string, nameForBareSpec: string): ParseOut
     return { ok: true, servers: { [name]: obj as McpCustomSpec }, needsName: true }
   }
 
-  if (Object.keys(obj).length === 0) return { ok: false, error: 'Expected a JSON object' }
+  if (Object.keys(obj).length === 0) return { ok: false, error: i18nT('components.mcpCustomServerModal.expected_a_json_object') }
   return { ok: true, servers: obj as Record<string, McpCustomSpec>, needsName: false }
 }
 
@@ -134,7 +134,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
       try {
         const spec = JSON.parse(text)
         if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
-          return { ok: false, error: 'Expected a JSON object' }
+          return { ok: false, error: i18nT('components.mcpCustomServerModal.expected_a_json_object') }
         }
         return { ok: true, servers: { [editName!]: spec as McpCustomSpec }, needsName: false }
       } catch (e) {
@@ -156,7 +156,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
-        setSubmitError('Name already in use — pick a different server name or edit the existing one.')
+        setSubmitError(i18nT('components.mcpCustomServerModal.name_already_in_use_pick_a_different_server_name'))
       } else {
         setSubmitError(err instanceof Error ? err.message : String(err))
       }
@@ -184,7 +184,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
     <Modal
       open={open}
       onClose={onClose}
-      title={editing ? `Edit JSON — ${editName}` : 'Add Custom Server'}
+      title={editing ? `Edit JSON — ${editName}` : i18nT('components.mcpCustomServerModal.add_custom_server')}
       maxWidth={640}
     >
       <div className="flex flex-col gap-3 p-1">
@@ -204,7 +204,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
         {editing && specQuery.isError && (
           <span className="flex items-center gap-1 text-xs text-amber-400" role="alert">
             <AlertTriangle size={13} aria-hidden="true" />
-            {specQuery.error instanceof Error ? specQuery.error.message : 'Failed to load spec'}
+            {specQuery.error instanceof Error ? specQuery.error.message : i18nT('components.mcpCustomServerModal.failed_to_load_spec')}
           </span>
         )}
 
@@ -213,7 +213,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
           onChange={(e) => setText(e.target.value)}
           placeholder={editing ? '' : PLACEHOLDER}
           spellCheck={false}
-          aria-label={editing ? 'Server spec JSON' : 'Servers JSON'}
+          aria-label={editing ? i18nT('components.mcpCustomServerModal.server_spec_json') : i18nT('components.mcpCustomServerModal.servers_json')}
           className="w-full min-h-[220px] rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text focus:outline-none focus:ring-1 focus:ring-accent resize-y"
         />
 
@@ -279,7 +279,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
               ) : (
                 <Check size={14} aria-hidden="true" />
               )}
-              {editing ? 'Save' : `Add${previewNames.length > 1 ? ` ${previewNames.length} servers` : ''}`}
+              {editing ? i18nT('components.mcpCustomServerModal.save') : `Add${previewNames.length > 1 ? ` ${previewNames.length} servers` : ''}`}
             </Btn>
           </div>
         </div>

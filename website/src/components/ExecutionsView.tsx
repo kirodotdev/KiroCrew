@@ -58,7 +58,7 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
   }
 
   if (isLoading) return <div className="flex justify-center py-12"><Skeleton className="h-6 w-32 rounded" /></div>
-  if (error) return <div className="text-danger text-sm text-center py-8">{error instanceof Error ? error.message : 'Failed to load'}</div>
+  if (error) return <div className="text-danger text-sm text-center py-8">{error instanceof Error ? error.message : i18nT('components.executionsView.failed_to_load')}</div>
   if (entries.length === 0) return <div className="text-muted text-sm text-center py-12">{i18nT('components.executionsView.no_execution_history_yet')}</div>
 
   return (

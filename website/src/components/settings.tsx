@@ -207,7 +207,7 @@ export function SettingsStepper({ label, description, hint, value, onIncrement, 
             onReset ? 'cursor-pointer hover:border-accent hover:text-accent' : 'cursor-default'
           } disabled:opacity-40 disabled:cursor-not-allowed`}
           onClick={onReset}
-          title={onReset ? 'Click to reset' : undefined}
+          title={onReset ? i18nT('components.settings.click_to_reset') : undefined}
         >{value}{suffix}</button>
         <button
           type="button"

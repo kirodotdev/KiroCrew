@@ -394,7 +394,7 @@ function InstallStatus({
     <Btn
       primary={large}
       disabled={!installReady}
-      title={installReady ? undefined : 'Waiting for the install plan to load'}
+      title={installReady ? undefined : i18nT('components.mcpBrowserModal.waiting_for_the_install_plan_to_load')}
       onClick={(e: React.MouseEvent) => { e.stopPropagation(); onInstall(server) }}
     >
       <Download size={iconSize} aria-hidden="true" />

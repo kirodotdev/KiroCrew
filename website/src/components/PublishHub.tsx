@@ -111,10 +111,10 @@ export function PublishHub({
         // Immediate success (already deployed / no confirm needed)
         setResult({ url: (resp.url || resp.public_url) as string })
       } else {
-        setResult({ error: resp?.error || 'Unexpected response' })
+        setResult({ error: resp?.error || i18nT('components.publishHub.unexpected_response') })
       }
     } catch (err: unknown) {
-      setResult({ error: err instanceof Error ? err.message : 'Publish failed' })
+      setResult({ error: err instanceof Error ? err.message : i18nT('components.publishHub.publish_failed') })
     } finally {
       setBusy(false)
     }
@@ -149,7 +149,7 @@ export function PublishHub({
         // Content changed since preview — force re-preview
         setPreview(null)
         setContentDigest('')
-        setResult({ error: 'Content changed since preview — re-run publish to confirm with the current version.' })
+        setResult({ error: i18nT('components.publishHub.content_changed_since_preview_re_run_publish_to') })
       } else if (data?.blocked && data?.reason === 'scan') {
         setScanBlocked({ findings: data.findings, count: data.count, credential: !!data.credential })
         setPreview(null)
@@ -161,7 +161,7 @@ export function PublishHub({
         setResult({ url: data?.url || '' })
       }
     } catch (err: unknown) {
-      setResult({ error: err instanceof Error ? err.message : 'Publish failed' })
+      setResult({ error: err instanceof Error ? err.message : i18nT('components.publishHub.publish_failed') })
     } finally {
       setBusy(false)
     }
@@ -233,7 +233,7 @@ export function PublishHub({
           </div>
           <div className="flex gap-2">
             <Btn primary onClick={() => confirmPublish()} disabled={busy}>
-              {busy ? 'Publishing…' : <><Upload size={12} /> {i18nT('components.publishHub.confirm_publish')}</>}
+              {busy ? i18nT('components.publishHub.publishing_2') : <><Upload size={12} /> {i18nT('components.publishHub.confirm_publish')}</>}
             </Btn>
             <Btn onClick={() => { setPreview(null); setSelectedId('') }}>{i18nT('components.publishHub.back')}</Btn>
           </div>
@@ -265,7 +265,7 @@ export function PublishHub({
               </p>
               <div className="flex gap-2">
                 <Btn danger onClick={() => { setScanBlocked(null); confirmPublish(true) }} disabled={busy}>
-                  {busy ? 'Publishing…' : 'Override & Publish Anyway'}
+                  {busy ? i18nT('components.publishHub.publishing_2') : i18nT('components.publishHub.override_publish_anyway')}
                 </Btn>
                 <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>{i18nT('components.publishHub.cancel')}</Btn>
               </div>
@@ -292,7 +292,7 @@ export function PublishHub({
           </div>
           <div className="flex gap-2">
             <Btn primary onClick={requestPreview} disabled={busy}>
-              {busy ? 'Checking…' : <><Upload size={12} /> {i18nT('components.publishHub.publish')}</>}
+              {busy ? i18nT('components.publishHub.checking') : <><Upload size={12} /> {i18nT('components.publishHub.publish')}</>}
             </Btn>
             <Btn onClick={() => setSelectedId('')}>{i18nT('components.publishHub.back')}</Btn>
           </div>

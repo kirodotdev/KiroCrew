@@ -365,9 +365,9 @@ export default function OnboardingFlow({
       <OnboardingChapterShell
         eyebrow={`Customize · 1 ${i18nT('components.onboardingChapterShell.of')} 2`}
         ariaLabel={i18nT('components.onboardingFlow.customize_kirocrew')}
-        panelHeadline="Make it yours."
-        panelBody="Set your look and tell Kiro about you so responses fit the way you work."
-        panelFootnote="Change anything later in Settings."
+        panelHeadline={i18nT('components.onboardingFlow.make_it_yours')}
+        panelBody={i18nT('components.onboardingFlow.set_your_look_and_tell_kiro_about_you_so_respons')}
+        panelFootnote={i18nT('components.onboardingFlow.change_anything_later_in_settings')}
         header={
           <div className="mt-6">
             <h1 tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
@@ -441,9 +441,9 @@ export default function OnboardingFlow({
       <OnboardingChapterShell
         eyebrow={`Customize · 2 ${i18nT('components.onboardingChapterShell.of')} 2`}
         ariaLabel={i18nT('components.onboardingFlow.customize_kirocrew')}
-        panelHeadline="Make it yours."
-        panelBody="Set your look and tell Kiro about you so responses fit the way you work."
-        panelFootnote="Change anything later in Settings."
+        panelHeadline={i18nT('components.onboardingFlow.make_it_yours')}
+        panelBody={i18nT('components.onboardingFlow.set_your_look_and_tell_kiro_about_you_so_respons')}
+        panelFootnote={i18nT('components.onboardingFlow.change_anything_later_in_settings')}
         header={
           <div className="mt-6">
             <h1 tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
@@ -463,7 +463,7 @@ export default function OnboardingFlow({
               {i18nT('components.onboardingFlow.back')}
             </Btn>
             <SendBtn type="button" disabled={savingProfile} onClick={next}>
-              {savingProfile ? 'Saving…' : 'Continue'}
+              {savingProfile ? i18nT('components.onboardingFlow.saving') : i18nT('components.onboardingFlow.continue')}
             </SendBtn>
           </>
         }
@@ -570,10 +570,10 @@ export default function OnboardingFlow({
             )}
             <button
               onClick={next}
-              aria-label={step === LAST_STEP ? 'Finish onboarding' : 'Next'}
+              aria-label={step === LAST_STEP ? i18nT('components.onboardingFlow.finish_onboarding') : i18nT('components.onboardingFlow.next')}
               className="flex items-center gap-1.5 rounded-[10px] bg-accent text-accent-fg text-[13px] font-semibold px-3 py-2 cursor-pointer border-none hover:opacity-90 transition-opacity"
             >
-              {step === LAST_STEP ? 'Done' : 'Next'}
+              {step === LAST_STEP ? i18nT('components.onboardingFlow.done') : i18nT('components.onboardingFlow.next')}
               {step === LAST_STEP ? <Check size={15} /> : <ArrowRight size={15} />}
             </button>
           </div>

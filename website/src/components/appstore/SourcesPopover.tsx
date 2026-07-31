@@ -36,7 +36,7 @@ export default function SourcesPopover({ open, onOpenChange, onError }: {
       window.dispatchEvent(new Event('mc:apps-changed'))
       onOpenChange(false)
     } catch (e) {
-      onError((e as Error)?.message || 'Install failed')
+      onError((e as Error)?.message || i18nT('components.appstore.sourcesPopover.install_failed'))
     } finally {
       setInstalling(false)
     }
@@ -66,7 +66,7 @@ export default function SourcesPopover({ open, onOpenChange, onError }: {
               className="flex-1"
             />
             <Btn onClick={handleInstall} disabled={installing || !installPath.trim()}>
-              {installing ? 'Installing…' : 'Install'}
+              {installing ? i18nT('components.appstore.sourcesPopover.installing') : i18nT('components.appstore.sourcesPopover.install')}
             </Btn>
           </div>
         </div>

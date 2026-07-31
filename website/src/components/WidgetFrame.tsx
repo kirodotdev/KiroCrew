@@ -599,12 +599,12 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
             className={saving ? 'cursor-wait' : ''}
             title={
               !effectiveSlug
-                ? 'Cannot star: widget has no slug or message context'
+                ? i18nT('components.widgetFrame.cannot_star_widget_has_no_slug_or_message_contex')
                 : savedSlug
                   ? `Starred as "${savedSlug}" — click to remove`
-                  : 'Star as artifact'
+                  : i18nT('components.widgetFrame.star_as_artifact')
             }
-            aria-label={savedSlug ? `Remove artifact ${savedSlug} from library` : 'Star as artifact'}
+            aria-label={savedSlug ? `Remove artifact ${savedSlug} from library` : i18nT('components.widgetFrame.star_as_artifact')}
           >
             <Star size={12} fill={savedSlug ? 'currentColor' : 'none'} />
           </IconButton>
@@ -614,7 +614,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
           <IconButton onClick={openInNewTab} title={i18nT('components.widgetFrame.open_in_new_tab')} aria-label={i18nT('components.widgetFrame.open_in_new_tab')}>
             <ExternalLink size={12} />
           </IconButton>
-          <IconButton onClick={() => setExpanded(!expanded)} title={expanded ? 'Minimize' : 'Expand'} aria-label={expanded ? 'Minimize' : 'Expand'}>
+          <IconButton onClick={() => setExpanded(!expanded)} title={expanded ? i18nT('components.widgetFrame.minimize') : i18nT('components.widgetFrame.expand')} aria-label={expanded ? i18nT('components.widgetFrame.minimize') : i18nT('components.widgetFrame.expand')}>
             {expanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </IconButton>
         </IconButtonGroup>

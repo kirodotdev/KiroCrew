@@ -187,8 +187,8 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
               {i18nT('components.diffBlock.open')}
             </button>
           )}
-          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={() => setSideBySide(!sideBySide)} title={sideBySide ? 'Unified view' : 'Split view'} aria-label={sideBySide ? 'Switch to unified view' : 'Switch to split view'}>{sideBySide ? <Rows2 size={13} /> : <Columns2 size={13} />}</button>
-          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? 'Copied!' : 'Copy patch'} aria-label={copied ? 'Copied!' : 'Copy patch'}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
+          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={() => setSideBySide(!sideBySide)} title={sideBySide ? i18nT('components.diffBlock.unified_view') : i18nT('components.diffBlock.split_view')} aria-label={sideBySide ? i18nT('components.diffBlock.switch_to_unified_view') : i18nT('components.diffBlock.switch_to_split_view')}>{sideBySide ? <Rows2 size={13} /> : <Columns2 size={13} />}</button>
+          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? i18nT('components.diffBlock.copied') : i18nT('components.diffBlock.copy_patch')} aria-label={copied ? i18nT('components.diffBlock.copied') : i18nT('components.diffBlock.copy_patch')}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
         </div>
       </div>
       <pre className="p-0 overflow-x-auto scroll-fade min-w-full">

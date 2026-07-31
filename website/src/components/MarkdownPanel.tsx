@@ -235,8 +235,8 @@ function ArtifactToggleIconButton({ state }: { state: ReturnType<typeof useFileA
       className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-50"
       onClick={() => state.toggleSave()}
       disabled={state.toggling}
-      title={state.saved ? 'Remove star' : 'Star'}
-      aria-label={state.saved ? 'Remove star' : 'Star'}
+      title={state.saved ? i18nT('components.markdownPanel.remove_star') : i18nT('components.markdownPanel.star')}
+      aria-label={state.saved ? i18nT('components.markdownPanel.remove_star') : i18nT('components.markdownPanel.star')}
     >
       <Star size={14} className={state.saved ? 'fill-current' : ''} style={state.saved ? { color: 'var(--accent)' } : undefined} />
     </button>
@@ -316,7 +316,7 @@ export function OverflowMenu({ filePath, content, revealOrCopy, onRefresh, refre
   const delayedClose = () => { closeTimerRef.current = setTimeout(() => setOpen(false), 800) }
   useEffect(() => () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current) }, [])
   // Reset the per-mutation success flags whenever the menu closes so the
-  // 'Added!' / 'Snapshotted!' acknowledgement doesn't bleed into the next
+  // i18nT('components.markdownPanel.added') / 'Snapshotted!' acknowledgement doesn't bleed into the next
   // open if the user closed quickly. Destructure the callbacks so the dep
   // array stays stable across renders (review round 13: object refs from
   // hooks change every render, causing the effect to re-fire constantly).
@@ -350,7 +350,7 @@ export function OverflowMenu({ filePath, content, revealOrCopy, onRefresh, refre
           )}
           {onFullscreen && (
             <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { onFullscreen(); setOpen(false) }}>
-              {fullscreen ? <Minimize2 size={14} className="lucide-inline" /> : <Maximize2 size={14} className="lucide-inline" />} {fullscreen ? 'Exit full screen' : 'Full screen'}
+              {fullscreen ? <Minimize2 size={14} className="lucide-inline" /> : <Maximize2 size={14} className="lucide-inline" />} {fullscreen ? i18nT('components.markdownPanel.exit_full_screen') : i18nT('components.markdownPanel.full_screen')}
             </button>
           )}
           <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { revealOrCopy(filePath, 'open'); setOpen(false) }}>
@@ -378,13 +378,13 @@ export function OverflowMenu({ filePath, content, revealOrCopy, onRefresh, refre
               {artifact.added
                 ? <><BookmarkPlus size={14} className="lucide-inline" style={{ color: 'var(--ok)' }} /> {i18nT('components.markdownPanel.added')}</>
                 : artifact.adding
-                  ? 'Adding…'
+                  ? i18nT('components.markdownPanel.adding')
                   : <><BookmarkPlus size={14} className="lucide-inline" /> {i18nT('components.markdownPanel.add_to_artifacts')}</>}
             </button>
           )}
           {onSnapshot && artifact.existing && (
             <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none disabled:opacity-50" onClick={() => { onSnapshot(); delayedClose() }} disabled={snapshotting} title={i18nT('components.markdownPanel.capture_the_current_file_content_as_a_new_artifa')}>
-              <Camera size={14} className="lucide-inline" /> {snapshotting ? 'Snapshotting…' : 'Snapshot version'}
+              <Camera size={14} className="lucide-inline" /> {snapshotting ? i18nT('components.markdownPanel.snapshotting') : i18nT('components.markdownPanel.snapshot_version')}
             </button>
           )}
           {canAddToKnowledge && (
@@ -394,7 +394,7 @@ export function OverflowMenu({ filePath, content, revealOrCopy, onRefresh, refre
               </span>
             ) : (
               <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => knowledge.add(undefined, { onSuccess: delayedClose })} disabled={knowledge.adding}>
-                {knowledge.added ? <><BookOpen size={14} className="lucide-inline" style={{color: 'var(--ok)'}} /> {knowledge.addResult === 'exists' ? 'Already in Library' : 'Added!'}</> : knowledge.adding ? 'Adding...' : <><BookOpen size={14} className="lucide-inline" /> {i18nT('components.markdownPanel.add_to_knowledge')}</>}
+                {knowledge.added ? <><BookOpen size={14} className="lucide-inline" style={{color: 'var(--ok)'}} /> {knowledge.addResult === 'exists' ? i18nT('components.markdownPanel.already_in_library') : i18nT('components.markdownPanel.added')}</> : knowledge.adding ? i18nT('components.markdownPanel.adding_2') : <><BookOpen size={14} className="lucide-inline" /> {i18nT('components.markdownPanel.add_to_knowledge')}</>}
               </button>
             )
           )}
@@ -897,7 +897,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         aria-label={i18nT('components.markdownPanel.find_in_document_2')}
       />
       <button onClick={() => setFindCase((c) => !c)} className={`p-0.5 rounded cursor-pointer border-none transition-colors ${findCase ? 'bg-accent/20 text-accent' : 'bg-transparent text-muted hover:text-text'}`} title={i18nT('components.markdownPanel.case_sensitive')} aria-label={i18nT('components.markdownPanel.case_sensitive')}><CaseSensitive size={15} /></button>
-      {findTerm && <span className="text-muted text-[12px] whitespace-nowrap tabular-nums">{findCount > 0 ? `${findIdx + 1} of ${findCount}` : 'No results'}</span>}
+      {findTerm && <span className="text-muted text-[12px] whitespace-nowrap tabular-nums">{findCount > 0 ? `${findIdx + 1} of ${findCount}` : i18nT('components.markdownPanel.no_results')}</span>}
       <button onClick={() => stepFind(-1)} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.markdownPanel.previous_shift_enter')} aria-label={i18nT('components.markdownPanel.previous_match')}><ChevronUp size={15} /></button>
       <button onClick={() => stepFind(1)} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.markdownPanel.next_enter')} aria-label={i18nT('components.markdownPanel.next_match')}><ChevronDown size={15} /></button>
       <button onClick={closeFind} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.markdownPanel.close_esc')} aria-label={i18nT('components.markdownPanel.close_find')}><X size={15} /></button>
@@ -1256,7 +1256,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const handleSave = useCallback(async () => {
     setSaving(true); setSaveError(null)
     try { await onSave(filePath, content); setDirty(false); qc.invalidateQueries({ queryKey: ['file-diff', filePath] }) }
-    catch (err) { setSaveError(err instanceof Error ? err.message : 'Save failed') }
+    catch (err) { setSaveError(err instanceof Error ? err.message : i18nT('components.markdownPanel.save_failed')) }
     finally { setSaving(false) }
   }, [filePath, content, onSave, qc])
 
@@ -1306,10 +1306,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       <button className={`p-1.5 rounded-md border cursor-pointer transition-all ${lineNums ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => setLineNums(!lineNums)} title={i18nT('components.markdownPanel.toggle_line_numbers')} aria-label={i18nT('components.markdownPanel.toggle_line_numbers')}><Hash size={14} /></button>
     )}
     {!isRichType && (
-      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { setEditing(!editing) }}>{editing ? 'Preview' : 'Edit'}</button>
+      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { setEditing(!editing) }}>{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
     )}
     {!isRichType && editing && (
-      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`} disabled={saving || !dirty} onClick={handleSave}>{saving ? 'Saving…' : 'Save'}</button>
+      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`} disabled={saving || !dirty} onClick={handleSave}>{saving ? i18nT('components.markdownPanel.saving') : i18nT('components.markdownPanel.save')}</button>
     )}
   </>)
 
@@ -1375,16 +1375,16 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
                 className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors shrink-0"
                 onClick={() => setEditing(!editing)}
                 aria-pressed={editing}
-              >{editing ? 'View Preview' : 'View Source'}</button>
+              >{editing ? i18nT('components.markdownPanel.view_preview') : i18nT('components.markdownPanel.view_source')}</button>
             )}
             {!isRichType && diffMode && (
-              <button className={barIconBtn(!diffSplit)} onClick={() => setDiffSplit(!diffSplit)} title={diffSplit ? 'Switch to unified view' : 'Switch to split view'} aria-label={diffSplit ? 'Switch to unified view' : 'Switch to split view'} aria-pressed={!diffSplit}><Columns2 size={14} /></button>
+              <button className={barIconBtn(!diffSplit)} onClick={() => setDiffSplit(!diffSplit)} title={diffSplit ? i18nT('components.markdownPanel.switch_to_unified_view') : i18nT('components.markdownPanel.switch_to_split_view')} aria-label={diffSplit ? i18nT('components.markdownPanel.switch_to_unified_view') : i18nT('components.markdownPanel.switch_to_split_view')} aria-pressed={!diffSplit}><Columns2 size={14} /></button>
             )}
             {!isRichType && (
               <button className={barIconBtn(diffMode)} onClick={toggleDiffMode} title={i18nT('components.markdownPanel.toggle_diff_view')} aria-label={i18nT('components.markdownPanel.toggle_diff_view')} aria-pressed={diffMode}><FileDiff size={14} /></button>
             )}
             <OverflowMenu filePath={filePath} content={content} revealOrCopy={revealOrCopy}
-              onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? 'Save or discard changes first' : 'Refresh file (re-read from disk)'}
+              onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk')}
               onFullscreen={() => setFullscreen(f => !f)} fullscreen={fullscreen}
               onSnapshot={artifactState.existing ? handleSnapshot : undefined} snapshotting={artifactState.snapshotting}
             />
@@ -1403,7 +1403,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
                       a clean buffer keeps the row to just the view options. */}
                   {dirty && (<>
                     <button className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text border border-border bg-transparent cursor-pointer transition-colors disabled:opacity-40 shrink-0" onClick={handleCancel} disabled={refreshing} title={i18nT('components.markdownPanel.cancel_discard_unsaved_edits')} tabIndex={editing ? 0 : -1}>{i18nT('components.markdownPanel.cancel')}</button>
-                    <button className="px-3 h-[26px] rounded-md text-[11.5px] font-semibold border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover transition-all disabled:opacity-40 shrink-0" disabled={saving} onClick={handleSave} tabIndex={editing ? 0 : -1}>{saving ? 'Saving…' : 'Save'}</button>
+                    <button className="px-3 h-[26px] rounded-md text-[11.5px] font-semibold border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover transition-all disabled:opacity-40 shrink-0" disabled={saving} onClick={handleSave} tabIndex={editing ? 0 : -1}>{saving ? i18nT('components.markdownPanel.saving') : i18nT('components.markdownPanel.save')}</button>
                   </>)}
                 </div>
               </div>
@@ -1450,7 +1450,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         <div className="flex items-center justify-between pl-20 pr-6 h-12 shrink-0 border-b border-border">
           <span className="text-base font-semibold text-text-strong truncate">{fileName}</span>
           <div className="flex items-center gap-1.5">
-            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? 'Save or discard changes first' : 'Refresh file'} aria-label={i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
+            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file')} aria-label={i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
             <ArtifactToggleIconButton state={artifactState} />
             {(() => {
               const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()

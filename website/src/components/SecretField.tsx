@@ -116,7 +116,7 @@ export function SecretField({
             className="font-mono"
           />
           <button type="button" className={iconBtn} onClick={() => setRevealed(r => !r)}
-            aria-label={revealed ? 'Hide' : 'Show'} title={revealed ? 'Hide' : 'Show'}>
+            aria-label={revealed ? i18nT('components.secretField.hide') : i18nT('components.secretField.show')} title={revealed ? i18nT('components.secretField.hide') : i18nT('components.secretField.show')}>
             {revealed ? <EyeOff size={14} /> : <Eye size={14} />}
           </button>
           {isSet && (

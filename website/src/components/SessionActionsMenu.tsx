@@ -121,13 +121,13 @@ export default function SessionActionsMenu({
         </Item>
       ),
       <Item key="read" onSelect={() => toggleRead(slotKey)}>
-        <Circle size={13} className="shrink-0 text-muted" /> {isUnread ? 'Mark as read' : 'Mark as unread'}
+        <Circle size={13} className="shrink-0 text-muted" /> {isUnread ? i18nT('components.sessionActionsMenu.mark_as_read') : i18nT('components.sessionActionsMenu.mark_as_unread')}
       </Item>,
       <Item key="pin" onSelect={() => togglePin(slotKey)}>
-        <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? 'Unpin' : 'Pin'}
+        <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
       </Item>,
       <Item key="mode" onSelect={() => toggleMode(slotKey)}>
-        <Zap size={13} className="shrink-0 text-muted" /> {slot?.mode === 'orchestrator' ? 'Switch to Chat' : 'Switch to Autopilot'}
+        <Zap size={13} className="shrink-0 text-muted" /> {slot?.mode === 'orchestrator' ? i18nT('components.sessionActionsMenu.switch_to_chat') : i18nT('components.sessionActionsMenu.switch_to_autopilot')}
       </Item>,
       folders.length > 0 && (
         <FolderMoveSubmenu

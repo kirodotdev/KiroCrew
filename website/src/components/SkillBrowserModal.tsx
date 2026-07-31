@@ -327,7 +327,7 @@ function InstallStatus({
     return (
       <span className="flex items-center gap-1 text-xs text-green-400" role="status">
         <Check size={iconSize} aria-hidden="true" />
-        {phase.fileCount > 1 ? `Installed ${phase.fileCount} files` : 'Installed'}
+        {phase.fileCount > 1 ? `Installed ${phase.fileCount} files` : i18nT('components.skillBrowserModal.installed')}
       </span>
     )
   }
@@ -356,7 +356,7 @@ function InstallStatus({
       onClick={(e: React.MouseEvent) => { e.stopPropagation(); onInstall(skill) }}
     >
       <Download size={iconSize} aria-hidden="true" />
-      {i18nT('components.skillBrowserModal.install')}{large ? ' Skill' : ''}
+      {large ? i18nT('components.skillBrowserModal.install_skill') : i18nT('components.skillBrowserModal.install')}
     </Btn>
   )
 }
@@ -452,7 +452,7 @@ function SkillDetailPanel({
         </>
       ) : (
         <p className="text-sm text-muted">
-          {stripDescription || 'No preview available.'}
+          {stripDescription || i18nT('components.skillBrowserModal.no_preview_available')}
         </p>
       )}
 

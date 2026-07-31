@@ -21,7 +21,7 @@ function fmtTs(ts: string): string {
 /** Display name for a comment author (feedback #7). */
 function authorName(c: ArtifactComment): string {
   if (c.author) return c.author
-  return c.is_agent ? 'Agent' : 'Unknown'
+  return c.is_agent ? i18nT('components.commentsSidebar.agent') : i18nT('components.commentsSidebar.unknown')
 }
 
 /** Initials for the small author avatar. */
@@ -176,7 +176,7 @@ export function CommentRow({
         role={onBodyClick ? 'button' : undefined}
         tabIndex={onBodyClick ? 0 : undefined}
         onKeyDown={onBodyClick ? (e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onBodyClick(comment) } }) : undefined}
-        title={onBodyClick ? 'Scroll to the highlighted text' : undefined}
+        title={onBodyClick ? i18nT('components.commentsSidebar.scroll_to_the_highlighted_text') : undefined}
         className={`rounded-lg border px-3 py-2.5 shadow-sm transition-colors ${onBodyClick ? 'cursor-pointer' : ''} ${
           active
             ? 'border-accent bg-accent-subtle ring-1 ring-accent/50'
@@ -510,7 +510,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
             onClick={() => setShowResolved(v => !v)}
             className="w-full inline-flex items-center justify-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer py-1.5 transition-colors"
           >
-            <CheckCircle2 size={12} /> {showResolved ? 'Hide' : 'Show'} {resolvedCount} {i18nT('components.commentsSidebar.resolved')}
+            <CheckCircle2 size={12} /> {showResolved ? i18nT('components.commentsSidebar.hide') : i18nT('components.commentsSidebar.show')} {resolvedCount} {i18nT('components.commentsSidebar.resolved')}
           </button>
         )}
       </div>

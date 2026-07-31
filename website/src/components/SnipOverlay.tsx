@@ -49,7 +49,7 @@ export default function SnipOverlay({ frame, onComplete, onCancel, onError }: Pr
   /** Crop the given display-space rect from the source frame and hand off the PNG File. */
   /** Surface a failure to the user (if a handler is wired) and close the overlay. */
   const onFail = useCallback(() => {
-    onError?.('Could not capture the selected region. Please try again.')
+    onError?.(i18nT('components.snipOverlay.could_not_capture_the_selected_region_please_try'))
     onCancel()
   }, [onError, onCancel])
 

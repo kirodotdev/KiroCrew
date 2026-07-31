@@ -630,8 +630,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           type="button"
           onClick={toggleExpand}
           className={`${iconBtn} ${expanded ? 'text-accent bg-accent-subtle hover:text-accent' : ''}`}
-          title={expanded ? 'Exit expanded preview' : 'Expand preview (hide nav & sessions)'}
-          aria-label={expanded ? 'Exit expanded preview' : 'Expand preview'}
+          title={expanded ? i18nT('components.webPreviewPanel.exit_expanded_preview') : i18nT('components.webPreviewPanel.expand_preview_hide_nav_sessions')}
+          aria-label={expanded ? i18nT('components.webPreviewPanel.exit_expanded_preview') : i18nT('components.webPreviewPanel.expand_preview')}
           aria-pressed={expanded}
         >
           {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}

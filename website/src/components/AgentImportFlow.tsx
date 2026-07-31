@@ -354,7 +354,7 @@ export default function AgentImportFlow({
             {i18nT('components.agentImportFlow.back')}
           </Btn>
           <SendBtn type="button" disabled={applyMutation.isPending} onClick={beginImport}>
-            {applyMutation.isPending ? <ImportingLabel /> : 'Import selected'}
+            {applyMutation.isPending ? <ImportingLabel /> : i18nT('components.agentImportFlow.import_selected')}
           </SendBtn>
         </>
       )
@@ -391,20 +391,20 @@ export default function AgentImportFlow({
     if (!showStepFooter) return null
     const headings: Record<Stage, { title: string; description: string }> = {
       1: {
-        title: 'Choose sources',
-        description: 'Kiro Crew found agent setup on this gateway host. Select the sources to review.',
+        title: i18nT('components.agentImportFlow.choose_sources'),
+        description: i18nT('components.agentImportFlow.kiro_crew_found_agent_setup_on_this_gateway_host'),
       },
       2: {
-        title: 'Select items to import',
-        description: 'Import all your supported work or handpick what to bring over.',
+        title: i18nT('components.agentImportFlow.select_items_to_import'),
+        description: i18nT('components.agentImportFlow.import_all_your_supported_work_or_handpick_what'),
       },
       3: {
-        title: 'Review import',
-        description: 'Review the merge before Kiro Crew changes local setup.',
+        title: i18nT('components.agentImportFlow.review_import'),
+        description: i18nT('components.agentImportFlow.review_the_merge_before_kiro_crew_changes_local'),
       },
       4: {
-        title: 'Import complete',
-        description: 'Your selected setup is ready in Kiro Crew.',
+        title: i18nT('components.agentImportFlow.import_complete'),
+        description: i18nT('components.agentImportFlow.your_selected_setup_is_ready_in_kiro_crew'),
       },
     }
     const { title, description } = headings[stage]
@@ -438,7 +438,7 @@ export default function AgentImportFlow({
             {i18nT('components.agentImportFlow.we_could_not_scan_agent_setup')}
           </h1>
           <p className="mt-2 max-w-lg text-sm text-danger" role="alert">
-            {errorMessage(scanQuery.error, 'The gateway returned an unexpected error.')}
+            {errorMessage(scanQuery.error, i18nT('components.agentImportFlow.the_gateway_returned_an_unexpected_error'))}
           </p>
           <SendBtn type="button" className="mt-5" onClick={() => scanQuery.refetch()}>
             <RefreshCw className="lucide-inline" /> {i18nT('components.agentImportFlow.try_again')}
@@ -467,7 +467,7 @@ export default function AgentImportFlow({
           </SendBtn>
           {completionError && (
             <p className="mt-4 text-sm text-danger" role="alert">
-              {errorMessage(completionError, 'Could not save onboarding state.')}
+              {errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state'))}
             </p>
           )}
         </div>
@@ -478,7 +478,7 @@ export default function AgentImportFlow({
         <>
           {completionError && (
             <p className="mb-4 text-sm text-danger" role="alert">
-              {errorMessage(completionError, 'Could not save onboarding state.')}
+              {errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state'))}
             </p>
           )}
           <div className="space-y-3">
@@ -568,7 +568,7 @@ export default function AgentImportFlow({
         <>
           {applyMutation.isError && (
             <p className="mb-4 text-sm text-danger" role="alert">
-              {errorMessage(applyMutation.error, 'The import did not finish. Please try again.')}
+              {errorMessage(applyMutation.error, i18nT('components.agentImportFlow.the_import_did_not_finish_please_try_again'))}
             </p>
           )}
           <section className="rounded-lg border border-ok/30 bg-ok-subtle p-4">
@@ -680,7 +680,7 @@ export default function AgentImportFlow({
         )}
         {completionError && (
           <div className="mt-5 rounded-lg border border-danger/20 bg-danger/10 p-3 text-sm text-danger" role="alert">
-            {errorMessage(completionError, 'Could not save onboarding state.')}
+            {errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state'))}
           </div>
         )}
       </>

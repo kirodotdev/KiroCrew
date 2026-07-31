@@ -22,7 +22,7 @@ const MAX_VH = 0.72
  *  backend poller; falls back to "Terminal" until the first frame arrives. */
 function TerminalTitle({ sessionId }: { sessionId: string }) {
   const live = useTerminalTitle(sessionId)
-  return <>{live || 'Terminal'}</>
+  return <>{live || i18nT('components.bottomTerminalPanel.terminal')}</>
 }
 
 /** A terminal tab chip — mirrors the activity-bar SidePanel TabChip design */
@@ -56,7 +56,7 @@ function TabChip({ tab, active, onSelect, onClose, onTransfer, canTransfer }: {
           onClick={(e) => { e.stopPropagation(); if (canTransfer) onTransfer() }}
           disabled={!canTransfer}
           className={transferCls}
-          title={canTransfer ? 'Move to side panel' : 'Open a chat page to move this terminal there'}
+          title={canTransfer ? i18nT('components.bottomTerminalPanel.move_to_side_panel') : i18nT('components.bottomTerminalPanel.open_a_chat_page_to_move_this_terminal_there')}
           aria-label={i18nT('components.bottomTerminalPanel.move_to_side_panel')}
         >
           <PanelRight size={12} />
@@ -207,7 +207,7 @@ export default function BottomTerminalPanel() {
               className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
               onClick={() => addTab()}
               disabled={atCap}
-              title={atCap ? `Maximum ${MAX_TERMINALS} terminals` : 'New terminal'}
+              title={atCap ? `Maximum ${MAX_TERMINALS} terminals` : i18nT('components.bottomTerminalPanel.new_terminal')}
               aria-label={i18nT('components.bottomTerminalPanel.new_terminal')}
             >
               <Plus size={15} />

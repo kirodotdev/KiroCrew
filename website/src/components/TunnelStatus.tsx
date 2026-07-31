@@ -18,21 +18,21 @@ export function tunnelDisplay(
     case 'connected': {
       const mins = Math.max(0, Math.round((s.uptime || 0) / 60))
       const up = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`
-      const tip = s.url ? `${s.url}${s.uptime ? ` · up ${up}` : ''}` : 'Tunnel connected'
-      return { value: 'Connected', colorClass: 'text-accent', tooltip: tip }
+      const tip = s.url ? `${s.url}${s.uptime ? ` · up ${up}` : ''}` : i18nT('components.tunnelStatus.tunnel_connected')
+      return { value: i18nT('components.tunnelStatus.connected'), colorClass: 'text-accent', tooltip: tip }
     }
     case 'starting':
-      return { value: 'Connecting…', colorClass: 'text-warn', tooltip: 'Tunnel is starting up' }
+      return { value: i18nT('components.tunnelStatus.connecting'), colorClass: 'text-warn', tooltip: i18nT('components.tunnelStatus.tunnel_is_starting_up') }
     case 'reconnecting':
       return {
-        value: 'Reconnecting…',
+        value: i18nT('components.tunnelStatus.reconnecting'),
         colorClass: 'text-warn',
         tooltip: `Reconnect attempt ${s.reconnect_attempt || 0}${s.error ? ` · ${s.error}` : ''}`,
       }
     case 'error':
-      return { value: 'Error', colorClass: 'text-danger', tooltip: s.error || 'Tunnel error' }
+      return { value: i18nT('components.tunnelStatus.error'), colorClass: 'text-danger', tooltip: s.error || i18nT('components.tunnelStatus.tunnel_error') }
     case 'stopped':
-      return { value: 'Stopped', colorClass: 'text-muted', tooltip: 'Tunnel stopped' }
+      return { value: i18nT('components.tunnelStatus.stopped'), colorClass: 'text-muted', tooltip: i18nT('components.tunnelStatus.tunnel_stopped') }
     case 'disabled':
     default:
       // Fork adaptation: `disabled` is the permanent public-edition state, so

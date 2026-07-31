@@ -1,5 +1,6 @@
 import type { Terminal } from '@xterm/xterm'
 import { SOFT_KEYS, pressTerminalKey } from '../utils/terminalKeys'
+import { i18nT } from '../i18n/t'
 
 /**
  * A row of soft keys for the keys a touch keyboard omits (Tab, Escape, arrows,
@@ -18,7 +19,7 @@ export default function TerminalKeyBar({ term }: { term: Terminal }) {
     <div
       data-testid="terminal-key-bar"
       role="toolbar"
-      aria-label="Terminal keys"
+      aria-label={i18nT('components.terminalKeyBar.terminal_keys')}
       className="flex shrink-0 items-center gap-1 overflow-x-auto border-t border-border py-1"
     >
       {SOFT_KEYS.map(k => {

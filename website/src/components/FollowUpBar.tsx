@@ -32,12 +32,16 @@ function sendSegmentClassName(isPicked: boolean) {
 }
 
 function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: Set<string>, hasOnSend: boolean) {
-  if (isPicked) return hasOnSend ? 'Click to remove from input (double-click to send)' : 'Click to remove from input'
-  if (quickSend && picked.size === 0) return 'Click to send instantly, Shift+Click to select multiple'
-  if (quickSend) return 'Click to add to selection'
+  if (isPicked) {
+    return hasOnSend
+      ? i18nT('components.followUpBar.click_to_remove_from_input_double_click_to_send')
+      : i18nT('components.followUpBar.click_to_remove_from_input')
+  }
+  if (quickSend && picked.size === 0) return i18nT('components.followUpBar.click_to_send_instantly_shift_click_to_select_mu')
+  if (quickSend) return i18nT('components.followUpBar.click_to_add_to_selection')
   return hasOnSend
-    ? 'Click to add to input (double-click to select and send)'
-    : 'Click to add to input (editable before sending)'
+    ? i18nT('components.followUpBar.click_to_add_to_input_double_click_to_select_and')
+    : i18nT('components.followUpBar.click_to_add_to_input_editable_before_sending')
 }
 
 interface ChipProps {

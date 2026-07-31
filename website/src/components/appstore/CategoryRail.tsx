@@ -43,7 +43,7 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
     <div className="flex flex-col gap-[18px] w-full">
       <div>
         <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.categories')}</div>
-        {item('All apps', total, 'All')}
+        {item(i18nT('components.appstore.categoryRail.all_apps'), total, 'All')}
         {categories.map(({ category, count }) => item(category, count, category))}
       </div>
       <div>

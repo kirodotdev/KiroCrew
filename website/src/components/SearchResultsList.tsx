@@ -112,7 +112,7 @@ export default function SearchResultsList({
 
   if (snippets.length === 0) return null
 
-  const roleLabel = (role: string) => (role === 'user' ? 'You' : role === 'assistant' ? 'Assistant' : role)
+  const roleLabel = (role: string) => (role === 'user' ? i18nT('components.searchResultsList.you') : role === 'assistant' ? i18nT('components.searchResultsList.assistant') : role)
 
   return (
     <div
@@ -138,7 +138,7 @@ export default function SearchResultsList({
               active ? 'bg-accent-subtle ring-1 ring-inset ring-accent' : 'bg-transparent hover:bg-bg-hover'
             }`}
           >
-            <span className={`block text-[10px] uppercase tracking-wide mb-0.5 ${active ? 'text-accent font-semibold' : 'text-muted'}`}>{roleLabel(s.role)}{active ? ' · selected' : ''}</span>
+            <span className={`block text-[10px] uppercase tracking-wide mb-0.5 ${active ? 'text-accent font-semibold' : 'text-muted'}`}>{roleLabel(s.role)}{active ? ' · ' + i18nT('components.searchResultsList.selected') : ''}</span>
             <span className={`block leading-snug ${active ? 'text-text-strong font-medium' : 'text-text'}`}>
               <span className="text-muted">{s.prefix}</span>
               <mark className="bg-accent text-accent-fg rounded-sm px-0.5">{s.match}</mark>

@@ -259,8 +259,8 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
     <button
       className={`p-1.5 rounded-md border cursor-pointer transition-all ${open ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
       onClick={onToggle}
-      title={open ? 'Hide comments' : 'Show comments'}
-      aria-label={open ? 'Hide comments' : 'Show comments'}
+      title={open ? i18nT('components.artifactPanel.hide_comments') : i18nT('components.artifactPanel.show_comments')}
+      aria-label={open ? i18nT('components.artifactPanel.hide_comments') : i18nT('components.artifactPanel.show_comments')}
       aria-pressed={open}
     >
       {/* leading-none collapses the icon and count pill's line-box to the 14px

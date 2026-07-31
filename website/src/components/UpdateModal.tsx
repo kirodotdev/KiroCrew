@@ -130,7 +130,7 @@ export default function UpdateModal() {
             onClick={() => installMutation.mutate()}
             disabled={installing}
           >
-            {installing ? 'Restarting...' : 'Restart & Update'}
+            {installing ? i18nT('components.updateModal.restarting') : i18nT('components.updateModal.restart_update')}
           </button>
         </div>
       </div>

@@ -93,7 +93,7 @@ const MonacoCodeBlock = memo(function MonacoCodeBlock(
         <span className="text-muted text-[13px] font-mono">{lang || 'code'}</span>
         <div className="flex items-center gap-1">
           <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={() => { setValue(code); setEditing(false) }} title={i18nT('components.monacoCodeBlock.close_editor')} aria-label={i18nT('components.monacoCodeBlock.close_editor')}><X size={13} /></button>
-          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? 'Copied!' : 'Copy'} aria-label={copied ? 'Copied!' : 'Copy'}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
+          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? i18nT('components.monacoCodeBlock.copied') : i18nT('components.monacoCodeBlock.copy')} aria-label={copied ? i18nT('components.monacoCodeBlock.copied') : i18nT('components.monacoCodeBlock.copy')}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
         </div>
       </div>
       <div className="overflow-hidden">

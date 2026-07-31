@@ -55,7 +55,7 @@ export default class MessageErrorBoundary extends Component<Props, State> {
               onClick={() => this.setState(s => ({ showRaw: !s.showRaw }))}
             >
               <Code size={12} />
-              {this.state.showRaw ? 'hide raw' : 'view raw'}
+              {this.state.showRaw ? i18nT('components.messageErrorBoundary.hide_raw') : i18nT('components.messageErrorBoundary.view_raw')}
             </button>
           )}
         </div>

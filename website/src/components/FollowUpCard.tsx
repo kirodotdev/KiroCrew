@@ -76,7 +76,7 @@ function FollowUpCard({
       if (itemsGen.current === gen) {
         setErrors(prev => ({
           ...prev,
-          [index]: err instanceof Error ? err.message : 'Failed to create worktree',
+          [index]: err instanceof Error ? err.message : i18nT('components.followUpCard.failed_to_create_worktree'),
         }))
       }
     } finally {
@@ -112,12 +112,12 @@ function FollowUpCard({
                 title={
                   projectDir
                     ? `Create a git worktree from ${projectDir} and open a new session there`
-                    : 'This session has no project directory, so there is no repository to branch from'
+                    : i18nT('components.followUpCard.this_session_has_no_project_directory_so_there_i')
                 }
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-accent text-accent-fg hover:bg-accent-hover border-none"
               >
                 <GitBranch size={13} aria-hidden="true" />
-                {busy ? 'Creating worktree…' : 'Start in new worktree'}
+                {busy ? i18nT('components.followUpCard.creating_worktree') : i18nT('components.followUpCard.start_in_new_worktree')}
               </button>
               <button
                 onClick={() => onAddToSession(item)}

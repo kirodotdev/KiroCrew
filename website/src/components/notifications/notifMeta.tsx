@@ -1,6 +1,8 @@
 import { ClipboardList, Anchor, Heart, Bot, Lock, GitBranch, Bell, Clock } from 'lucide-react'
 import type { ReactNode } from 'react'
 
+import { i18nT } from '../../i18n/t'
+
 /**
  * Shared notification metadata + helpers. Extracted verbatim from the former
  * inline NotificationsPage so the full page and the topbar bell popover render
@@ -77,9 +79,9 @@ export function dateGroup(d: Date): string {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const yesterday = new Date(today.getTime() - 86400000)
   const weekAgo = new Date(today.getTime() - 6 * 86400000)
-  if (d >= today) return 'Today'
-  if (d >= yesterday) return 'Yesterday'
-  if (d >= weekAgo) return 'This Week'
+  if (d >= today) return i18nT('components.notifications.notifMeta.today')
+  if (d >= yesterday) return i18nT('components.notifications.notifMeta.yesterday')
+  if (d >= weekAgo) return i18nT('components.notifications.notifMeta.this_week')
   return d.toLocaleDateString([], { year: 'numeric', month: 'short' })
 }
 
@@ -117,12 +119,12 @@ export function safeInternalUrl(url: string | undefined): string | null {
 
 export function fmtTime(ts: string | number): string {
   const d = parseTs(ts)
-  return isNaN(d.getTime()) ? 'Unknown date' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return isNaN(d.getTime()) ? i18nT('components.notifications.notifMeta.unknown_date') : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
 export function fmtFull(ts: string | number): string {
   const d = parseTs(ts)
-  return isNaN(d.getTime()) ? 'Unknown date' : d.toLocaleString()
+  return isNaN(d.getTime()) ? i18nT('components.notifications.notifMeta.unknown_date') : d.toLocaleString()
 }
 
 export function stripMd(text: string): string {

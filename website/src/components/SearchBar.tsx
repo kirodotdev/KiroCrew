@@ -108,7 +108,7 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
       </button>
       {term && (
         <span className="text-muted text-[12px] whitespace-nowrap tabular-nums">
-          {matches.length > 0 ? `${currentIdx + 1} of ${matches.length} results` : 'No results'}
+          {matches.length > 0 ? `${currentIdx + 1} of ${matches.length} results` : i18nT('components.searchBar.no_results')}
         </span>
       )}
       <button onClick={prev} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={`Previous (${platformShortcut('Shift+Enter')})`} aria-label={i18nT('components.searchBar.previous_match')}>

@@ -62,8 +62,8 @@ function buildBody(
   // so the partial PATCH preserves the script/command binding (the update endpoint
   // does not accept script/command, so we never send them — only the fields it
   // supports: schedule, channel, silent, strict, hide-in-chat, timezone).
-  if (!f.name) { setError('Name is required'); return null }
-  if (!isLlmless && !f.message) { setError('Message is required'); return null }
+  if (!f.name) { setError(i18nT('components.jobForm.name_is_required')); return null }
+  if (!isLlmless && !f.message) { setError(i18nT('components.jobForm.message_is_required')); return null }
   const body: Record<string, string | number | boolean> = { name: f.name }
   if (!isLlmless) {
     body.message = f.message
@@ -80,13 +80,13 @@ function buildBody(
   if (f.schedMode === 'interval') {
     body.every = f.intVal * (f.intUnit === 'minutes' ? 60 : f.intUnit === 'hours' ? 3600 : 86400)
   } else if (f.schedMode === 'weekly') {
-    if (f.weekDays.length === 0) { setError('Select at least one day'); return null }
+    if (f.weekDays.length === 0) { setError(i18nT('components.jobForm.select_at_least_one_day')); return null }
     const [h, m] = f.weekTime.split(':').map(Number)
     body.cron = `${m} ${h} * * ${f.weekDays.map(d => GRID_TO_CRON_DOW[d]).join(',')}`
     body.timezone = tz
   } else {
     const expr = f.cronExpr.trim()
-    if (expr.split(/\s+/).length !== 5) { setError('Enter a valid 5-field cron expression'); return null }
+    if (expr.split(/\s+/).length !== 5) { setError(i18nT('components.jobForm.enter_a_valid_5_field_cron_expression')); return null }
     body.cron = expr
     body.timezone = tz
   }
@@ -171,7 +171,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
       if (res.error) { setError(res.error); setSaving(false); return }
       if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false) }
       onSaved()
-    } catch { setError('Failed to save'); setSaving(false) }
+    } catch { setError(i18nT('components.jobForm.failed_to_save')); setSaving(false) }
   }
 
   const toggleDay = (d: number) => setWeekDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort())
@@ -251,7 +251,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
             {Array.from(new Set([tz, ...TIMEZONES])).map(z => <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>)}
           </select>
         </>)}
-        {!vertical && !externalSubmit && <SendBtn onClick={submit} disabled={saving}>{saving ? 'Saving...' : (job ? 'Save' : 'Add')}</SendBtn>}
+        {!vertical && !externalSubmit && <SendBtn onClick={submit} disabled={saving}>{saving ? i18nT('components.jobForm.saving') : (job ? i18nT('components.jobForm.save') : i18nT('components.jobForm.add'))}</SendBtn>}
       </div>
 
       {/* Vertical-only: agent, channel, actions */}

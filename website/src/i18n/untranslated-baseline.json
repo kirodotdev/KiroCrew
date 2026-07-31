@@ -1,6 +1,6 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — regenerate with `node scripts/check-i18n-strings.mjs --update`. This is both the CI ratchet and the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 2798,
+  "_total": 2411,
   "files": {
     "api/client.ts": {
       "total": 39,
@@ -258,12 +258,6 @@
       "total": 1,
       "prose": 1
     },
-    "components/AgentImportFlow.tsx": {
-      "total": 14,
-      "expression": 1,
-      "object-prop": 8,
-      "prose": 5
-    },
     "components/AgentSkillsEditor.tsx": {
       "total": 4,
       "prose": 1,
@@ -296,8 +290,8 @@
       "prose": 1
     },
     "components/appstore/CategoryRail.tsx": {
-      "total": 2,
-      "prose": 2
+      "total": 1,
+      "prose": 1
     },
     "components/appstore/FeatureCard.tsx": {
       "total": 1,
@@ -312,19 +306,12 @@
       "template": 1
     },
     "components/appstore/InstalledAppCard.tsx": {
-      "total": 11,
-      "expression": 8,
-      "prose": 1,
+      "total": 2,
       "template": 2
     },
     "components/appstore/SourcesPopover.tsx": {
-      "total": 4,
-      "expression": 2,
-      "prose": 2
-    },
-    "components/appstore/types.ts": {
-      "total": 2,
-      "prose": 2
+      "total": 1,
+      "prose": 1
     },
     "components/ArtifactBody.tsx": {
       "total": 1,
@@ -336,32 +323,27 @@
       "template": 1
     },
     "components/ArtifactPanel.tsx": {
-      "total": 6,
-      "expression": 4,
+      "total": 2,
       "object-prop": 2
     },
     "components/AutoNudgePopover.tsx": {
-      "total": 6,
-      "expression": 2,
-      "template": 4
-    },
-    "components/BottomTerminalPanel.tsx": {
-      "total": 5,
-      "expression": 2,
-      "prose": 1,
+      "total": 2,
       "template": 2
     },
+    "components/BottomTerminalPanel.tsx": {
+      "total": 1,
+      "template": 1
+    },
     "components/BrowserAuthPrompt.tsx": {
-      "total": 3,
-      "expression": 2,
+      "total": 1,
       "template": 1
     },
     "components/ChatInput.tsx": {
-      "total": 58,
+      "total": 24,
       "array": 3,
-      "expression": 24,
-      "prose": 10,
-      "template": 21
+      "expression": 1,
+      "prose": 6,
+      "template": 14
     },
     "components/ChatPane.tsx": {
       "total": 4,
@@ -374,14 +356,9 @@
       "prose": 1
     },
     "components/CliPanel.tsx": {
-      "total": 13,
-      "expression": 8,
+      "total": 5,
       "prose": 1,
       "template": 4
-    },
-    "components/CodeBlock.tsx": {
-      "total": 4,
-      "expression": 4
     },
     "components/CommandPalette.tsx": {
       "total": 6,
@@ -398,9 +375,8 @@
       "object-prop": 1
     },
     "components/commandPalette/providers/recentsProvider.ts": {
-      "total": 10,
-      "object-prop": 3,
-      "prose": 6,
+      "total": 6,
+      "prose": 5,
       "template": 1
     },
     "components/commandPalette/providers/settingsProvider.ts": {
@@ -412,20 +388,13 @@
       "prose": 4,
       "template": 8
     },
-    "components/CommentsSidebar.tsx": {
-      "total": 5,
-      "expression": 5
-    },
     "components/CommentThreadPopover.tsx": {
       "total": 1,
       "prose": 1
     },
     "components/ComputerUseLiveView.tsx": {
-      "total": 20,
-      "attribute": 9,
-      "expression": 6,
-      "prose": 2,
-      "template": 3
+      "total": 2,
+      "template": 2
     },
     "components/ContextBar.tsx": {
       "total": 1,
@@ -436,23 +405,14 @@
       "template": 4
     },
     "components/DiffBlock.tsx": {
-      "total": 10,
-      "expression": 8,
+      "total": 2,
       "template": 2
     },
     "components/DiscoverySearchBar.tsx": {
       "total": 3,
       "template": 3
     },
-    "components/EmbedTabStrip.tsx": {
-      "total": 1,
-      "prose": 1
-    },
     "components/ErrorBoundary.tsx": {
-      "total": 1,
-      "expression": 1
-    },
-    "components/ExecutionsView.tsx": {
       "total": 1,
       "expression": 1
     },
@@ -470,15 +430,12 @@
       "template": 1
     },
     "components/FollowUpBar.tsx": {
-      "total": 7,
-      "expression": 4,
-      "prose": 2,
+      "total": 1,
       "template": 1
     },
     "components/FollowUpCard.tsx": {
-      "total": 5,
-      "expression": 3,
-      "template": 2
+      "total": 1,
+      "template": 1
     },
     "components/InlineCommentOverlay.tsx": {
       "total": 2,
@@ -486,49 +443,33 @@
       "template": 1
     },
     "components/InstancesViewport.tsx": {
-      "total": 5,
-      "expression": 4,
+      "total": 1,
       "template": 1
     },
     "components/InstanceTabBar.tsx": {
-      "total": 9,
-      "expression": 1,
-      "prose": 4,
-      "template": 4
+      "total": 4,
+      "prose": 1,
+      "template": 3
     },
     "components/IssuePanel.tsx": {
-      "total": 48,
-      "attribute": 5,
-      "expression": 10,
-      "object-prop": 3,
-      "prose": 19,
-      "template": 11
-    },
-    "components/JobForm.tsx": {
-      "total": 8,
-      "expression": 3,
-      "status-call": 5
-    },
-    "components/JobLogsView.tsx": {
-      "total": 1,
-      "expression": 1
+      "total": 23,
+      "expression": 6,
+      "prose": 8,
+      "template": 9
     },
     "components/KiroPrerequisiteGate.tsx": {
-      "total": 7,
-      "expression": 3,
-      "prose": 2,
-      "template": 2
+      "total": 1,
+      "template": 1
     },
     "components/LinkedSurfacesSection.tsx": {
       "total": 1,
       "object-prop": 1
     },
     "components/MarkdownPanel.tsx": {
-      "total": 41,
-      "expression": 29,
+      "total": 11,
       "object-prop": 3,
       "prose": 4,
-      "template": 5
+      "template": 4
     },
     "components/MarkdownRenderer.tsx": {
       "total": 9,
@@ -545,72 +486,52 @@
       "prose": 3
     },
     "components/McpBrowserModal.tsx": {
-      "total": 4,
-      "expression": 3,
+      "total": 3,
+      "expression": 2,
       "prose": 1
     },
     "components/McpCustomServerModal.tsx": {
-      "total": 15,
-      "expression": 3,
-      "object-prop": 5,
-      "prose": 1,
-      "template": 6
-    },
-    "components/MessageErrorBoundary.tsx": {
-      "total": 2,
-      "expression": 2
-    },
-    "components/MonacoCodeBlock.tsx": {
       "total": 4,
-      "expression": 4
+      "template": 4
     },
     "components/notifications/NotificationDetailPanel.tsx": {
       "total": 1,
       "template": 1
     },
     "components/notifications/NotificationFeed.tsx": {
-      "total": 19,
-      "expression": 6,
+      "total": 11,
+      "expression": 1,
       "prose": 1,
-      "template": 12
-    },
-    "components/notifications/notifMeta.tsx": {
-      "total": 5,
-      "expression": 2,
-      "prose": 3
+      "template": 9
     },
     "components/OnboardingFlow.tsx": {
-      "total": 17,
-      "expression": 6,
-      "prose": 9,
+      "total": 5,
+      "prose": 3,
       "template": 2
     },
     "components/PastedChip.tsx": {
-      "total": 4,
-      "expression": 4
+      "total": 2,
+      "expression": 2
     },
     "components/PixelCanvas.tsx": {
       "total": 1,
       "prose": 1
     },
     "components/PixelCanvasWidget.tsx": {
-      "total": 2,
-      "prose": 1,
+      "total": 1,
       "template": 1
     },
     "components/PublishHub.tsx": {
-      "total": 10,
+      "total": 2,
       "array": 1,
-      "expression": 6,
-      "object-prop": 1,
-      "prose": 2
+      "prose": 1
     },
     "components/PullRequestPanel.tsx": {
-      "total": 74,
-      "expression": 29,
-      "object-prop": 8,
-      "prose": 14,
-      "template": 23
+      "total": 50,
+      "expression": 12,
+      "object-prop": 4,
+      "prose": 12,
+      "template": 22
     },
     "components/QueueStack.tsx": {
       "total": 2,
@@ -621,67 +542,41 @@
       "template": 2
     },
     "components/RegistryManager.tsx": {
-      "total": 19,
-      "expression": 8,
-      "prose": 4,
-      "status-call": 2,
+      "total": 8,
+      "prose": 3,
       "template": 5
     },
     "components/RemoteArtifactCard.tsx": {
-      "total": 4,
-      "expression": 2,
+      "total": 2,
       "prose": 1,
       "template": 1
     },
-    "components/RestartButton.tsx": {
-      "total": 2,
-      "expression": 1,
-      "status-call": 1
-    },
     "components/SearchBar.tsx": {
-      "total": 5,
-      "prose": 2,
-      "template": 3
-    },
-    "components/SearchResultsList.tsx": {
-      "total": 3,
-      "expression": 3
-    },
-    "components/SecretField.tsx": {
       "total": 4,
-      "expression": 4
+      "prose": 2,
+      "template": 2
     },
     "components/SelectionToolbar.tsx": {
       "total": 3,
       "object-prop": 3
     },
-    "components/SessionActionsMenu.tsx": {
-      "total": 6,
-      "expression": 6
-    },
     "components/SessionGridView.tsx": {
       "total": 2,
       "template": 2
-    },
-    "components/settings.tsx": {
-      "total": 1,
-      "expression": 1
     },
     "components/ShortcutsModal.tsx": {
       "total": 4,
       "expression": 4
     },
     "components/SkillBrowserModal.tsx": {
-      "total": 4,
-      "expression": 1,
-      "prose": 1,
-      "template": 2
+      "total": 1,
+      "template": 1
     },
     "components/SkillDirectoryBrowser.tsx": {
-      "total": 7,
+      "total": 6,
       "array": 1,
       "expression": 2,
-      "prose": 3,
+      "prose": 2,
       "template": 1
     },
     "components/SkillForm.tsx": {
@@ -689,34 +584,20 @@
       "prose": 1,
       "template": 1
     },
-    "components/SnipOverlay.tsx": {
-      "total": 1,
-      "prose": 1
-    },
     "components/TagManagerList.tsx": {
-      "total": 9,
-      "expression": 2,
-      "prose": 1,
+      "total": 6,
       "template": 6
     },
     "components/TerminalCompletion.tsx": {
-      "total": 4,
-      "expression": 2,
+      "total": 2,
       "prose": 2
     },
-    "components/TerminalKeyBar.tsx": {
-      "total": 1,
-      "attribute": 1
-    },
     "components/themeEditor.tsx": {
-      "total": 7,
-      "expression": 5,
-      "status-call": 1,
+      "total": 1,
       "template": 1
     },
     "components/ThemeExperienceLayer.tsx": {
-      "total": 6,
-      "expression": 4,
+      "total": 2,
       "prose": 1,
       "template": 1
     },
@@ -729,9 +610,8 @@
       "prose": 2
     },
     "components/TunnelStatus.tsx": {
-      "total": 11,
-      "prose": 8,
-      "template": 3
+      "total": 2,
+      "template": 2
     },
     "components/ui.tsx": {
       "total": 6,
@@ -739,23 +619,12 @@
       "prose": 2,
       "template": 2
     },
-    "components/UpdateModal.tsx": {
-      "total": 2,
-      "expression": 2
-    },
-    "components/VoiceStatusBar.tsx": {
-      "total": 1,
-      "prose": 1
-    },
     "components/WebAppArtifactCard.tsx": {
-      "total": 21,
-      "expression": 5,
-      "prose": 6,
-      "template": 10
+      "total": 9,
+      "template": 9
     },
     "components/WebPreviewPanel.tsx": {
-      "total": 5,
-      "expression": 4,
+      "total": 1,
       "template": 1
     },
     "components/WeekGrid.tsx": {
@@ -763,21 +632,15 @@
       "prose": 1
     },
     "components/WelcomeView.tsx": {
-      "total": 8,
-      "expression": 4,
+      "total": 4,
       "object-prop": 2,
       "prose": 2
     },
     "components/WidgetFrame.tsx": {
-      "total": 14,
-      "expression": 5,
+      "total": 7,
+      "expression": 1,
       "prose": 1,
-      "template": 8
-    },
-    "components/WorkspacePicker.tsx": {
-      "total": 4,
-      "expression": 2,
-      "status-call": 2
+      "template": 5
     },
     "hooks/mic.ts": {
       "total": 4,

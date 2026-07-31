@@ -4,6 +4,8 @@ import { AppWindow, Maximize2, Minimize2, Minus, X } from 'lucide-react'
 import { useComputerUseFrame, COMPUTER_USE_FRAME_EVENT } from '../hooks/useComputerUseFrame'
 import { safeSetItem } from '../utils/safeStorage'
 
+import { i18nT } from '../i18n/t'
+
 /**
  * ComputerUseLiveView — floating picture-in-picture view of the desktop the agent
  * is driving.
@@ -313,31 +315,31 @@ export default function ComputerUseLiveView() {
       <button
         className="fixed z-[60] bottom-4 left-4 flex items-center gap-2 px-3 py-2 rounded-full border border-border bg-card shadow-lg hover:bg-bg-hover transition-colors"
         onClick={() => setPhase('open')}
-        aria-label="Show live desktop view"
-        title="Show live desktop view"
+        aria-label={i18nT('components.computerUseLiveView.show_live_desktop_view')}
+        title={i18nT('components.computerUseLiveView.show_live_desktop_view')}
       >
         <AppWindow className="lucide-inline text-muted" />
-        <span className="text-[12px] font-medium text-text">Desktop</span>
+        <span className="text-[12px] font-medium text-text">{i18nT('components.computerUseLiveView.desktop')}</span>
         {liveDot}
       </button>
     )
   }
 
-  const headerLabel = appName ? `Desktop — ${appName}` : 'Desktop — live'
+  const headerLabel = appName ? `Desktop — ${appName}` : i18nT('components.computerUseLiveView.desktop_live')
 
   return (
     <div
       className="fixed z-[60] flex flex-col rounded-xl border border-border bg-card shadow-xl overflow-hidden"
       style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
       role="dialog"
-      aria-label="Live desktop view"
+      aria-label={i18nT('components.computerUseLiveView.live_desktop_view')}
     >
       {GRIP_ORDER.map(grip => (
         <div
           key={grip}
           role="separator"
           aria-label={`Resize live desktop view (${GRIP_NAMES[grip]})`}
-          title="Drag to resize"
+          title={i18nT('components.computerUseLiveView.drag_to_resize')}
           onPointerDown={beginGesture(grip)}
           className={`absolute ${GRIP_STYLES[grip].box} ${GRIP_STYLES[grip].cursor} ${
             GRIP_STYLES[grip].onTop ? 'z-20' : 'z-10'
@@ -365,8 +367,8 @@ export default function ComputerUseLiveView() {
         <button
           onPointerDown={event => event.stopPropagation()}
           onClick={swapPreset}
-          aria-label={roomy ? 'Shrink live desktop view' : 'Enlarge live desktop view'}
-          title={roomy ? 'Shrink' : 'Enlarge'}
+          aria-label={roomy ? i18nT('components.computerUseLiveView.shrink_live_desktop_view') : i18nT('components.computerUseLiveView.enlarge_live_desktop_view')}
+          title={roomy ? i18nT('components.computerUseLiveView.shrink') : i18nT('components.computerUseLiveView.enlarge')}
           className="relative z-30 p-1 rounded hover:bg-bg-hover text-muted hover:text-text transition-colors"
         >
           {roomy ? <Minimize2 className="lucide-inline" /> : <Maximize2 className="lucide-inline" />}
@@ -374,8 +376,8 @@ export default function ComputerUseLiveView() {
         <button
           onPointerDown={event => event.stopPropagation()}
           onClick={() => setPhase('chip')}
-          aria-label="Minimize live desktop view to corner"
-          title="Minimize to corner"
+          aria-label={i18nT('components.computerUseLiveView.minimize_live_desktop_view_to_corner')}
+          title={i18nT('components.computerUseLiveView.minimize_to_corner')}
           className="relative z-30 p-1 rounded hover:bg-bg-hover text-muted hover:text-text transition-colors"
         >
           <Minus className="lucide-inline" />
@@ -383,8 +385,8 @@ export default function ComputerUseLiveView() {
         <button
           onPointerDown={event => event.stopPropagation()}
           onClick={dismiss}
-          aria-label="Close live desktop view"
-          title="Close"
+          aria-label={i18nT('components.computerUseLiveView.close_live_desktop_view')}
+          title={i18nT('components.computerUseLiveView.close')}
           className="relative z-30 p-1 rounded hover:bg-bg-hover text-muted hover:text-text transition-colors"
         >
           <X className="lucide-inline" />
@@ -395,15 +397,14 @@ export default function ComputerUseLiveView() {
         {frame ? (
           <img
             src={frame}
-            alt="Live desktop view"
+            alt={i18nT('components.computerUseLiveView.live_desktop_view')}
             className="max-w-full max-h-full object-contain"
           />
         ) : (
           <div className="flex flex-col items-center gap-2 px-4 py-8 text-center text-muted">
             <AppWindow className="lucide-inline" />
             <span className="text-[11px]">
-              No desktop frames yet. Frames appear when the agent reads an app window — and
-              never for a window holding a password field.
+              {i18nT('components.computerUseLiveView.no_desktop_frames_yet_frames_appear_when_the_age')}
             </span>
           </div>
         )}
@@ -411,7 +412,9 @@ export default function ComputerUseLiveView() {
 
       <footer className="px-3 py-1.5 border-t border-border text-[11px] text-muted flex items-center justify-between gap-2">
         <span className="truncate">
-          Read-only{box.width > 420 ? ' — relayed from the agent’s own screenshots' : ''}
+          {box.width > 420
+            ? i18nT('components.computerUseLiveView.read_only_relayed_from_the_agent_s_own_screensho')
+            : i18nT('components.computerUseLiveView.read_only')}
         </span>
         {lastTs && (
           <span className="shrink-0">updated {new Date(lastTs).toLocaleTimeString()}</span>

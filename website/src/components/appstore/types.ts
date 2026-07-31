@@ -1,3 +1,5 @@
+import { i18nT } from '../../i18n/t'
+
 /**
  * Shared types for the Apps page (Discover + Library) surfaces.
  *
@@ -87,8 +89,8 @@ export type InstalledApp = {
  */
 export function sourceLabel(app: Pick<RegistryApp, '_registry' | 'origin'>): string {
   if (app._registry) return app._registry
-  if (app.origin === 'builtin') return 'Built-in'
-  return 'KiroCrew registry'
+  if (app.origin === 'builtin') return i18nT('components.appstore.types.built_in')
+  return i18nT('components.appstore.types.kirocrew_registry')
 }
 
 /**

@@ -61,7 +61,7 @@ export default function RemoteArtifactCard({
         onForked?.(res.slug)
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Fork failed')
+      setError(e instanceof Error ? e.message : i18nT('components.remoteArtifactCard.fork_failed'))
     } finally {
       setForking(false)
     }
@@ -78,7 +78,7 @@ export default function RemoteArtifactCard({
       if (res.error) setError(res.error)
       else onCloned?.(res.slug)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Clone failed')
+      setError(e instanceof Error ? e.message : i18nT('components.remoteArtifactCard.clone_failed'))
     } finally {
       setCloning(false)
     }

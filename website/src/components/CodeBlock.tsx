@@ -53,7 +53,7 @@ export const CodeBlock = memo(function CodeBlock(
         <span className="text-muted text-[13px] font-mono">{lang || 'code'}</span>
         <div className="flex items-center gap-1 opacity-0 group-hover/code:opacity-100 group-focus-within/code:opacity-100 transition-opacity">
           {headerActions}
-          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? 'Copied!' : 'Copy'} aria-label={copied ? 'Copied!' : 'Copy'}>
+          <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')} aria-label={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')}>
             {copied ? <Check size={13} /> : <Copy size={13} />}
           </button>
         </div>

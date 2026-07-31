@@ -67,14 +67,14 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
 
   const create = async () => {
     const name = wsName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-')
-    if (!name) { setError('Name required'); return }
+    if (!name) { setError(i18nT('components.workspacePicker.name_required')); return }
     setCreating(true); setError('')
     try {
       const res = await api.createWorkspace({ name, dir: selectedDir }) as { ok?: boolean; error?: string }
       if (res.error) { setError(res.error); setCreating(false); return }
       onCreated(name)
       onOpenChange(false); setSelectedDir(''); setWsName('')
-    } catch { setError('Failed to create workspace') }
+    } catch { setError(i18nT('components.workspacePicker.failed_to_create_workspace')) }
     setCreating(false)
   }
 
@@ -93,7 +93,7 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
               {error && <div className="text-[11px] text-red-400">{error}</div>}
               <div className="flex gap-2 justify-end">
                 <button onClick={() => { setSelectedDir(''); setWsName('') }} className="px-3 py-1.5 text-[12px] text-muted hover:text-text rounded">{i18nT('components.workspacePicker.back')}</button>
-                <button onClick={create} disabled={creating} className="px-3 py-1.5 text-[12px] bg-accent text-accent-fg rounded hover:bg-accent/80 disabled:opacity-50">{creating ? 'Creating…' : 'Create'}</button>
+                <button onClick={create} disabled={creating} className="px-3 py-1.5 text-[12px] bg-accent text-accent-fg rounded hover:bg-accent/80 disabled:opacity-50">{creating ? i18nT('components.workspacePicker.creating') : i18nT('components.workspacePicker.create')}</button>
               </div>
             </div>
           ) : (

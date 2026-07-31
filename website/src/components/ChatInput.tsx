@@ -556,13 +556,13 @@ function ChatInput({
         setApprovalNotice(
           approvalIsUnattended
             ? `That ${approvalSource} request already timed out and was denied — the job is no longer waiting. Check the approvals feed for the record.`
-            : 'That approval expired — the turn it belonged to is no longer waiting.'
+            : i18nT('components.chatInput.that_approval_expired_the_turn_it_belonged_to_is')
         )
         return
       }
       // eslint-disable-next-line no-console -- surface real approval-resolution failures to the dev console
       console.error('Approval failed:', err)
-      setApprovalNotice('Could not submit that decision — see the console for details.')
+      setApprovalNotice(i18nT('components.chatInput.could_not_submit_that_decision_see_the_console_f'))
     }
     if (['trust_command', 'trust_base', 'trust', 'trust_reads'].includes(decision) && activeSlot) {
       // Defence in depth: the Trust controls are not rendered for unattended
@@ -652,7 +652,7 @@ function ChatInput({
   // previously discoverable is lost, and names the branch even when the label
   // is truncated or the shelf has collapsed to icon-only.
   const projectChipTitle = useMemo(() => {
-    if (!project) return 'Select project'
+    if (!project) return i18nT('components.chatInput.select_project')
     const base = `Project: ${project}`
     if (!projectBranch) return base
     return projectDetached
@@ -1813,7 +1813,7 @@ function ChatInput({
                 </span>
                 {spawnApprovalsResolving ? (
                   <span className="inline-flex items-center gap-1 text-[12px] text-muted/60 shrink-0">
-                    <Loader2 size={12} className="animate-spin shrink-0" />Resolving…
+                    <Loader2 size={12} className="animate-spin shrink-0" />{i18nT('components.chatInput.resolving')}
                   </span>
                 ) : (
                   <div className="flex items-center gap-1.5 shrink-0">
@@ -1823,7 +1823,7 @@ function ChatInput({
                       className={approvalBtnClass}
                     >
                       <CheckCircle size={12} className="shrink-0" />
-                      {pendingSpawnApprovals.length === 1 ? 'Approve' : 'Approve all'}
+                      {pendingSpawnApprovals.length === 1 ? i18nT('components.chatInput.approve') : i18nT('components.chatInput.approve_all')}
                     </button>
                     <button
                       type="button"
@@ -1831,7 +1831,7 @@ function ChatInput({
                       className={`${approvalBtnClass} hover:!text-danger hover:!border-danger`}
                     >
                       <Ban size={12} className="shrink-0" />
-                      {pendingSpawnApprovals.length === 1 ? 'Reject' : 'Reject all'}
+                      {pendingSpawnApprovals.length === 1 ? i18nT('components.chatInput.reject') : i18nT('components.chatInput.reject_all')}
                     </button>
                     <button
                       type="button"
@@ -1855,7 +1855,7 @@ function ChatInput({
                       </code>
                       {a.approving ? (
                         <span className="inline-flex items-center gap-1 text-[11px] text-muted/60 shrink-0">
-                          <Loader2 size={11} className="animate-spin shrink-0" />Resolving…
+                          <Loader2 size={11} className="animate-spin shrink-0" />{i18nT('components.chatInput.resolving')}
                         </span>
                       ) : (
                         <div className="flex items-center gap-1 shrink-0">
@@ -1865,7 +1865,7 @@ function ChatInput({
                             onClick={() => resolveOneSpawn(a, 'approve')}
                             className={approvalBtnClass}
                           >
-                            <CheckCircle size={12} className="shrink-0" />Approve
+                            <CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.approve')}
                           </button>
                           <button
                             type="button"
@@ -1873,7 +1873,7 @@ function ChatInput({
                             onClick={() => resolveOneSpawn(a, 'reject')}
                             className={`${approvalBtnClass} hover:!text-danger hover:!border-danger`}
                           >
-                            <Ban size={12} className="shrink-0" />Reject
+                            <Ban size={12} className="shrink-0" />{i18nT('components.chatInput.reject')}
                           </button>
                         </div>
                       )}
@@ -2074,7 +2074,7 @@ function ChatInput({
           aria-label={i18nT('components.chatInput.message_input')}
           className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? 'Gateway offline — message will not send' : disabledProp ? 'Stopping…' : voiceRecording ? 'Recording… click mic to stop' : voiceTranscribing ? 'Transcribing, please wait…' : resolvedPlaceholder}
+          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : resolvedPlaceholder}
           readOnly={optimizing}
           rows={1}
           value={value}
@@ -2240,8 +2240,8 @@ function ChatInput({
                 onClick={onVoiceToggle}
                 onPointerDown={onVoicePrewarm}
                 disabled={disabled || voiceTranscribing || optimizing}
-                aria-label={voiceRecording ? 'Stop recording' : voiceTranscribing ? 'Transcribing…' : 'Voice input'}
-                title={voiceRecording ? 'Stop recording' : voiceTranscribing ? 'Transcribing…' : 'Voice input'}
+                aria-label={voiceRecording ? i18nT('components.chatInput.stop_recording') : voiceTranscribing ? i18nT('components.chatInput.transcribing') : i18nT('components.chatInput.voice_input')}
+                title={voiceRecording ? i18nT('components.chatInput.stop_recording') : voiceTranscribing ? i18nT('components.chatInput.transcribing') : i18nT('components.chatInput.voice_input')}
               >
                 {voiceTranscribing ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
               </button>
@@ -2296,8 +2296,8 @@ function ChatInput({
                         className="w-8 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer hover:bg-black/15 transition-all text-inherit"
                         onClick={fireComposer}
                         disabled={disabled}
-                        title={busySendMode === 'steer' ? 'Steer — inject into the running turn (Enter)' : 'Queue — run after the current turn finishes (Enter)'}
-                        aria-label={busySendMode === 'steer' ? 'Steer' : 'Queue message'}
+                        title={busySendMode === 'steer' ? i18nT('components.chatInput.steer_inject_into_the_running_turn_enter') : i18nT('components.chatInput.queue_run_after_the_current_turn_finishes_enter')}
+                        aria-label={busySendMode === 'steer' ? i18nT('components.chatInput.steer') : i18nT('components.chatInput.queue_message')}
                         data-testid="busy-send-button"
                       >
                         {busySendMode === 'steer' ? <Target size={16} /> : <ArrowUpFromLine size={16} />}
@@ -2369,8 +2369,8 @@ function ChatInput({
                 // optimizePrompt(). optimizing ⊂ optimizePending, so this stays
                 // disabled on the originating session too.
                 disabled={!value.trim() || optimizePending || !connected}
-                aria-label={optimizePending && !optimizing ? 'Optimize prompt — busy optimizing another chat' : 'Optimize prompt'}
-                title={optimizePending && !optimizing ? 'Optimizing another chat — please wait' : `Optimize prompt (${platformShortcut('Cmd+Shift+Enter')})`}
+                aria-label={optimizePending && !optimizing ? i18nT('components.chatInput.optimize_prompt_busy_optimizing_another_chat') : i18nT('components.chatInput.optimize_prompt')}
+                title={optimizePending && !optimizing ? i18nT('components.chatInput.optimizing_another_chat_please_wait') : `Optimize prompt (${platformShortcut('Cmd+Shift+Enter')})`}
                 {...offlineProps(connected, 'optimize', 'Optimize')}
               >
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
@@ -2403,8 +2403,8 @@ function ChatInput({
               className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
               onClick={e => onAgentClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
-              title={isRunning ? 'Stop the current response to switch agents' : `Agent: ${agentName}`}
-              aria-label={isRunning ? 'Stop the current response to switch agents' : `Agent: ${agentName}`}
+              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : `Agent: ${agentName}`}
+              aria-label={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : `Agent: ${agentName}`}
             >
               <Bot size={13} className="shrink-0 opacity-70" />
               {!shelfCompact && <span className="truncate max-w-[160px]">{agentName}</span>}
@@ -2421,8 +2421,8 @@ function ChatInput({
             className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
             onClick={e => onProjectClick(e.currentTarget.getBoundingClientRect())}
             disabled={isRunning}
-            title={isRunning ? 'Stop the current response to switch project' : projectChipTitle}
-            aria-label={isRunning ? 'Stop the current response to switch project' : projectChipTitle}
+            title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : projectChipTitle}
+            aria-label={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : projectChipTitle}
           >
             <FolderOpen size={13} className="shrink-0 opacity-70" />
             {/* Budget favours the branch: the folder name is also in the tooltip
@@ -2430,7 +2430,7 @@ function ChatInput({
                 the ambiguity this label exists to remove. The enclosing shelf
                 group is flex-1/min-w-0, so both segments still shrink below
                 these caps on a narrow window. */}
-            {!shelfCompact && <span className="truncate max-w-[160px]">{project ? (project.split('/').filter(Boolean).pop() || project) : 'Project'}</span>}
+            {!shelfCompact && <span className="truncate max-w-[160px]">{project ? (project.split('/').filter(Boolean).pop() || project) : i18nT('components.chatInput.project')}</span>}
           </button>
           {!shelfCompact && !!projectBranch && (
             <>
@@ -2497,7 +2497,7 @@ function ChatInput({
               className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
               onClick={e => onModelClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
-              title={isRunning ? 'Stop the current response to switch model' : `Model: ${modelName}`}
+              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_model') : `Model: ${modelName}`}
             >
               <span className="truncate max-w-[180px]">{modelName}</span>
               {onReasoningEffortClick && !shelfCompact && (

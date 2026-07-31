@@ -68,7 +68,7 @@ export default function BrowserAuthPrompt() {
         className="px-3 py-1 text-[13px] font-medium rounded border border-border bg-card hover:bg-bg-hover disabled:opacity-50 transition-colors"
         style={{ color: 'var(--text)' }}
       >
-        {retryMutation.isPending ? 'Retrying...' : 'Retry'}
+        {retryMutation.isPending ? i18nT('components.browserAuthPrompt.retrying') : i18nT('components.browserAuthPrompt.retry')}
       </button>
       <button
         onClick={() => setVisible(false)}

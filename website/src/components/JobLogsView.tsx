@@ -50,7 +50,7 @@ export default function JobLogsView({ jobId, isRunning, runningSince, onCancel, 
           failed Cancel showed no feedback. Render it here too. */}
       {cancelError && <div className="text-danger text-[13px] px-3">{cancelError}</div>}
       {error ? (
-        <div className="text-danger text-sm px-3">{error instanceof Error ? error.message : 'Failed to load history'}</div>
+        <div className="text-danger text-sm px-3">{error instanceof Error ? error.message : i18nT('components.jobLogsView.failed_to_load_history')}</div>
       ) : isLoading ? (
         <div className="text-muted text-sm px-3 animate-pulse">{i18nT('components.jobLogsView.loading_logs')}</div>
       ) : entries.length === 0 ? (

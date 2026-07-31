@@ -464,12 +464,12 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               <div className="text-sm font-medium text-text">{nameFor(activeId)}</div>
               <div className="text-xs text-muted">
                 {panelConnecting
-                  ? 'Connecting…'
+                  ? i18nT('components.instancesViewport.connecting')
                   : activeTimedOut
-                    ? 'Pane failed to load'
+                    ? i18nT('components.instancesViewport.pane_failed_to_load')
                     : panelState === 'error'
-                      ? 'Connection error'
-                      : 'Disconnected'}
+                      ? i18nT('components.instancesViewport.connection_error')
+                      : i18nT('components.instancesViewport.disconnected')}
               </div>
               {!panelConnecting && activeTimedOut && !panelError && (
                 <div className="text-xs text-muted">

@@ -310,7 +310,7 @@ export default function EmbedTabStrip() {
   }
 
   const getTitle = (slug: string, _index: number) => {
-    if (!slug) return 'Sessions'
+    if (!slug) return i18nT('components.embedTabStrip.sessions')
     return slots.find(s => s.key === slug)?.title || slug
   }
 

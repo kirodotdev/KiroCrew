@@ -21,7 +21,7 @@ export default function PixelCanvasWidget({ run }: { run: ProjectRun }) {
   const [open, setOpen] = useState(false)
   const slots = slotsFromRun(run)
   const active = slots.filter(s => s.state !== 'empty').length
-  const name = run.name || run.spec_name || 'Project'
+  const name = run.name || run.spec_name || i18nT('components.pixelCanvasWidget.project')
 
   return (
     <>

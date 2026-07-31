@@ -283,7 +283,7 @@ export default function SkillDirectoryBrowser({
         {fileErr && (
           <div className="text-danger text-[12px] flex items-start gap-1.5">
             <AlertCircle size={14} className="shrink-0" />
-            <span>{(fileErr as Error)?.message || 'Failed to load file'}</span>
+            <span>{(fileErr as Error)?.message || i18nT('components.skillDirectoryBrowser.failed_to_load_file')}</span>
           </div>
         )}
         {!fileLoading && !fileErr && lang === 'markdown' && (

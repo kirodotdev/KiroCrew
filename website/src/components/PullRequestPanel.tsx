@@ -479,12 +479,12 @@ function CommentCard({ comment, url, onAddToChat }: { comment: PullRequestCommen
           onClick={() => setExpanded(value => !value)}
           className="shrink-0 p-0.5 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
           aria-expanded={expanded}
-          aria-label={expanded ? 'Collapse comment' : 'Expand comment'}
+          aria-label={expanded ? i18nT('components.pullRequestPanel.collapse_comment') : i18nT('components.pullRequestPanel.expand_comment')}
         >
           {expanded ? <ChevronDown className="lucide-inline" /> : <ChevronRight className="lucide-inline" />}
         </Btn>
         <MessageSquare className="lucide-inline text-muted shrink-0" />
-        <span className="text-[12px] font-medium text-text truncate">{comment.author || 'Unknown reviewer'}</span>
+        <span className="text-[12px] font-medium text-text truncate">{comment.author || i18nT('components.pullRequestPanel.unknown_reviewer')}</span>
         {comment.state && <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-muted capitalize shrink-0">{comment.state.toLowerCase()}</span>}
         <div className="ml-auto flex items-center gap-2 shrink-0">
           <span className="text-[11px] text-muted">{age(comment.createdAt)}</span>
@@ -618,7 +618,7 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
         </Btn>
       )}
       {source.autoMerge && (
-        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-aim/15 text-[11px] text-aim" title={isGitHub ? 'GitHub will merge this pull request once its requirements pass' : 'GitLab will merge this merge request when the pipeline succeeds'}>
+        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-aim/15 text-[11px] text-aim" title={isGitHub ? i18nT('components.pullRequestPanel.github_will_merge_this_pull_request_once_its_req') : i18nT('components.pullRequestPanel.gitlab_will_merge_this_merge_request_when_the_pi')}>
           <GitMerge className="lucide-inline" /> {i18nT('components.pullRequestPanel.auto_merge_enabled')}{armedMethod ? ` (${armedMethod})` : ''}
         </span>
       )}
@@ -642,12 +642,12 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
           }}
           disabled={busy}
           title={isGitHub
-            ? 'GitHub merges this pull request automatically once required checks and reviews pass'
-            : 'GitLab merges this merge request when the pipeline succeeds — it merges right away if no pipeline is pending'}
+            ? i18nT('components.pullRequestPanel.github_merges_this_pull_request_automatically_on')
+            : i18nT('components.pullRequestPanel.gitlab_merges_this_merge_request_when_the_pipeli')}
           className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${confirmAutoMerge || immediateMergeWarning ? 'border-warn text-warn hover:bg-warn/10' : 'border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover'}`}
         >
           {autoMergeMutation.isPending ? <Loader className="lucide-inline animate-spin" /> : <GitMerge className="lucide-inline" />}
-          {immediateMergeWarning ? 'Merge now' : confirmAutoMerge ? 'Confirm auto-merge' : 'Enable auto-merge'}
+          {immediateMergeWarning ? i18nT('components.pullRequestPanel.merge_now') : confirmAutoMerge ? i18nT('components.pullRequestPanel.confirm_auto_merge') : i18nT('components.pullRequestPanel.enable_auto_merge')}
         </Btn>
       )}
       {immediateMergeWarning && !autoMergeMutation.isPending && (
@@ -693,7 +693,7 @@ function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSour
             <>
               <GitCommitHorizontal className="lucide-inline text-muted shrink-0 mt-0.5" />
               <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-medium text-text">{commit.title || 'Untitled commit'}</div>
+                <div className="text-[13px] font-medium text-text">{commit.title || i18nT('components.pullRequestPanel.untitled_commit')}</div>
                 <div className="flex items-center gap-2 mt-1 text-[11px] text-muted">
                   {commit.author && <span className="truncate">{commit.author}</span>}
                   {commit.date && <span className="shrink-0">{age(commit.date)}</span>}
@@ -935,18 +935,18 @@ export default function PullRequestPanel({
   }, [statusQuery.data, source])
 
   const tabs: Array<{ id: SourceTab; label: string; count?: number; tone?: string }> = source ? [
-    { id: 'changes', label: 'Changes', count: source.files.length },
-    { id: 'description', label: 'Description' },
-    { id: 'commits', label: 'Commits', count: source.commits.length },
+    { id: 'changes', label: i18nT('components.pullRequestPanel.changes'), count: source.files.length },
+    { id: 'description', label: i18nT('components.pullRequestPanel.description') },
+    { id: 'commits', label: i18nT('components.pullRequestPanel.commits'), count: source.commits.length },
     {
       id: 'checks',
       label: checksUnavailable
-        ? 'Checks unavailable'
+        ? i18nT('components.pullRequestPanel.checks_unavailable')
         : checksRunning
-          ? 'Checks running'
+          ? i18nT('components.pullRequestPanel.checks_running')
           : showAllChecksPassed
-            ? 'All checks passed'
-            : 'Checks',
+            ? i18nT('components.pullRequestPanel.all_checks_passed')
+            : i18nT('components.pullRequestPanel.checks'),
       count: checkCounts.total,
       tone: checkCounts.failed
         ? 'text-danger'
@@ -956,7 +956,7 @@ export default function PullRequestPanel({
             ? 'text-ok'
             : '',
     },
-    { id: 'reviews', label: 'Reviews', count: source.comments.length },
+    { id: 'reviews', label: i18nT('components.pullRequestPanel.reviews'), count: source.comments.length },
   ] : []
 
   return (
@@ -987,7 +987,7 @@ export default function PullRequestPanel({
             <div className="text-[13px] font-medium text-text">
               {queryError.loginCommand
                 ? `${queryError.loginCommand === 'gh auth login' ? 'GitHub' : 'GitLab'} CLI login required`
-                : 'Could not load this pull request'}
+                : i18nT('components.pullRequestPanel.could_not_load_this_pull_request')}
             </div>
             {queryError.loginCommand ? (
               <>
@@ -1016,8 +1016,8 @@ export default function PullRequestPanel({
                 onClick={handleRefresh}
                 disabled={query.isFetching}
                 className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-60 disabled:cursor-default"
-                aria-label={query.isFetching ? 'Refreshing pull request' : 'Refresh pull request'}
-                title={query.isFetching ? 'Refreshing pull request' : 'Refresh pull request'}
+                aria-label={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
+                title={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
               >
                 <RefreshCw className={`lucide-inline ${query.isFetching ? 'animate-spin' : ''}`} />
               </Btn>

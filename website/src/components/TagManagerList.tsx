@@ -59,7 +59,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
 
   return (
     <>
-      <div className="flex flex-col gap-0.5 max-h-[260px] overflow-y-auto" {...(mode === 'column-filter' ? { role: 'group', 'aria-label': 'Filter by tag' } : {})}>
+      <div className="flex flex-col gap-0.5 max-h-[260px] overflow-y-auto" {...(mode === 'column-filter' ? { role: 'group', 'aria-label': i18nT('components.tagManagerList.filter_by_tag') } : {})}>
         {[...tags].sort((a, b) => a.order - b.order).map(t => {
           const on = mode === 'column-filter' && selectedIds.includes(t.id)
           const nextIds = on ? selectedIds.filter(x => x !== t.id) : [...selectedIds, t.id]
@@ -110,7 +110,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
               {/* Status lightning — filled for status tags, muted ghost for non-status on hover */}
               <button type="button" data-testid={`tag-status-${t.id}`}
                 className={`shrink-0 cursor-pointer bg-transparent border-none p-[2px] transition-all outline-none focus-visible:ring-1 focus-visible:ring-accent ${t.status ? 'text-accent hover:text-accent-hover' : 'text-transparent group-hover/tag:text-muted focus-visible:!text-muted hover:!text-text'}`}
-                title={t.status ? 'Status tag (mutually exclusive on cards) — click to make regular' : 'Make status tag'}
+                title={t.status ? i18nT('components.tagManagerList.status_tag_mutually_exclusive_on_cards_click_to') : i18nT('components.tagManagerList.make_status_tag')}
                 aria-pressed={!!t.status}
                 aria-label={t.status ? `Remove status flag from ${t.name}` : `Make ${t.name} a status tag`}
                 onClick={() => updateTagMutation.mutate({ id: t.id, body: { status: !t.status } })}>

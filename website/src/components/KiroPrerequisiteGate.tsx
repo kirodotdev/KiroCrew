@@ -126,7 +126,7 @@ function StepStatus({
   if (complete) {
     return <Badge variant="ok"><CheckCircle2 className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.complete')}</Badge>
   }
-  return <Badge variant={current ? 'aim' : 'muted'}>{current ? 'Required' : 'Waiting'}</Badge>
+  return <Badge variant={current ? 'aim' : 'muted'}>{current ? i18nT('components.kiroPrerequisiteGate.required') : i18nT('components.kiroPrerequisiteGate.waiting')}</Badge>
 }
 
 function OperationProgress({ status }: { status: KiroPrerequisiteStatus }) {
@@ -327,8 +327,8 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
       return <>{children}</>
     }
     const message = statusQuery.isError
-      ? (statusQuery.error?.message || 'The gateway returned an unexpected error.')
-      : 'The gateway returned no prerequisite status.'
+      ? (statusQuery.error?.message || i18nT('components.kiroPrerequisiteGate.the_gateway_returned_an_unexpected_error'))
+      : i18nT('components.kiroPrerequisiteGate.the_gateway_returned_no_prerequisite_status')
     return (
       <SetupStatusError message={message} retrying={retrying} onRetry={retryStatus} />
     )
@@ -458,14 +458,14 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
               role="alert"
             >
               <AlertTriangle className="lucide-inline" />
-              {mutationError.message || 'Kiro setup could not start.'}
+              {mutationError.message || i18nT('components.kiroPrerequisiteGate.kiro_setup_could_not_start')}
             </div>
           )}
 
           <div className="flex items-center justify-between gap-4 border-t border-border pt-5">
             <p className="text-[13px] text-muted" aria-live="polite">
               {status.installed
-                ? 'Kiro CLI is installed. Finish signing in to continue.'
+                ? i18nT('components.kiroPrerequisiteGate.kiro_cli_is_installed_finish_signing_in_to_conti')
                 : `Kiro CLI is required on the ${platform} gateway host.`}
             </p>
             <Btn

@@ -9,6 +9,8 @@ import { createSlot, resumeFromHistory, switchSlot } from '../../../store/chatSl
 import type { ChatSlot, ChatFolder, CronJob } from '../../../types'
 import type { Result, ResourceProvider } from '../types'
 
+import { i18nT } from '../../../i18n/t'
+
 /**
  * Recents / quick-switcher — the unscoped empty-query default view (blended
  * from our palette). Unlike the Sessions tab (content search, min 2 chars,
@@ -167,7 +169,7 @@ export function sessionStatus(
     return {
       style: 'pill',
       colorVar: '--warn',
-      label: 'Approve',
+      label: i18nT('components.commandPalette.providers.recentsProvider.approve'),
       detail: shortMsg(slot) || undefined,
     }
   }
@@ -176,7 +178,7 @@ export function sessionStatus(
       style: 'dot',
       colorVar: '--accent',
       pulse: true,
-      label: statusDetail?.text || 'Thinking…',
+      label: statusDetail?.text || i18nT('components.commandPalette.providers.recentsProvider.thinking'),
     }
   }
   if (unread.includes(slot.key) || slot.waiting_for_input) {
@@ -206,7 +208,7 @@ export function useRecentsProvider(): ResourceProvider {
 
     return {
       id: 'recents',
-      label: 'Recent',
+      label: i18nT('components.commandPalette.providers.recentsProvider.recent'),
       icon: sessionIcon(),
       async search(): Promise<Result[]> {
         const [hist, crons, foldersResp] = await Promise.all([
@@ -278,7 +280,7 @@ export function useRecentsProvider(): ResourceProvider {
           current.unshift({
             id: 'recents:new-session',
             providerId: 'recents',
-            title: 'New Session…',
+            title: i18nT('components.commandPalette.providers.recentsProvider.new_session'),
             icon: sessionIcon(),
             score: 0,
             indices: [],
