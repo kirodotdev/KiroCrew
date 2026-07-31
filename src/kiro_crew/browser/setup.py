@@ -8,6 +8,7 @@ working, but SSO setup is a no-op and reports "not available in OSS".
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ import platform
 import shutil
 import stat
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -326,51 +328,59 @@ def migrate_owned_playwright_registration() -> None:
 
 def _migrate_owned_kiro_registration() -> None:
     """Rewrite KiroCrew's browse entry in kiro's ``mcp.json`` to the canonical key."""
-    mcp_json = Path.home() / ".kiro" / "settings" / "mcp.json"
+    mcp_json = _kiro_mcp_json_path()
+    # Fast-path bail BEFORE taking the lock: this migration never adds Playwright
+    # where none exists, and _kiro_mcp_locked would otherwise create the settings
+    # dir + lock sidecar on an install that has no kiro config at all.
     if not mcp_json.is_file():
         return
-    try:
-        data = json.loads(mcp_json.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return
-    servers = data.get("mcpServers") if isinstance(data, dict) else None
-    if not isinstance(servers, dict):
-        return
-    canonical = mcp_server_alias(_PLAYWRIGHT_MCP_PACKAGE)
-    canon_entry = servers.get(canonical)
-    canon_is_proxy = _spec_is_proxy(canon_entry)
-    # There are two KiroCrew-owned things worth migrating to the canonical proxy:
-    #   (a) a superseded PROXY entry (a duplicate proxy under a legacy key), and
-    #   (b) KiroCrew's legacy DIRECT ``npm:@playwright/mcp`` entry — the key
-    #       earlier KiroCrew installs wrote for a direct npm-launched Playwright
-    #       (before the compression proxy existed). Upgrading it to the proxy is
-    #       the ORIGINAL purpose of this boot migration; dropping it would leave
-    #       existing users on the direct server with no compression.
-    # A user-declared *direct* server under the BARE ``@playwright/mcp`` key is
-    # NOT KiroCrew's (authorship is by launch target, not key name) and is left
-    # untouched — only the ``npm:``-prefixed key is a KiroCrew legacy artifact.
-    superseded_proxy_present = any(
-        key != canonical and _spec_is_proxy(servers.get(key)) for key in _SUPERSEDED_PLAYWRIGHT_KEYS
-    )
-    legacy_direct = servers.get(_LEGACY_DIRECT_PLAYWRIGHT_KEY)
-    legacy_direct_present = isinstance(legacy_direct, dict) and not _spec_is_proxy(legacy_direct)
-    # Leave the file untouched unless there is a KiroCrew-owned entry to migrate,
-    # AND the canonical slot is either empty or already our proxy (safe to
-    # (re)write). If the canonical key holds a user-declared *direct* (non-proxy)
-    # server, migrating would call patch_mcp_*, which does servers[canonical] =
-    # proxy_entry and would clobber that user config on every boot — so skip.
-    if not (superseded_proxy_present or legacy_direct_present):
-        return
-    if canon_entry is not None and not canon_is_proxy:
-        return
-    if has_playwright_extension():
-        token = get_extension_token() or ""
-        if token:
-            patch_mcp_extension(token)
-        else:
-            patch_mcp_headless()
-    else:
-        patch_mcp_headless()
+    # The read + decide + write must be ONE critical section: deciding from an
+    # unlocked read and then writing lets a concurrent bridge/dashboard update
+    # land in between, so the write is computed from a stale snapshot and drops
+    # the other writer's entries.
+    with _kiro_mcp_locked():
+        if not mcp_json.is_file():
+            return
+        try:
+            data = json.loads(mcp_json.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        servers = data.get("mcpServers") if isinstance(data, dict) else None
+        if not isinstance(servers, dict):
+            return
+        canonical = mcp_server_alias(_PLAYWRIGHT_MCP_PACKAGE)
+        canon_entry = servers.get(canonical)
+        canon_is_proxy = _spec_is_proxy(canon_entry)
+        # There are two KiroCrew-owned things worth migrating to the canonical
+        # proxy:
+        #   (a) a superseded PROXY entry (a duplicate proxy under a legacy key),
+        #       and
+        #   (b) KiroCrew's legacy DIRECT ``npm:@playwright/mcp`` entry — the key
+        #       earlier KiroCrew installs wrote for a direct npm-launched
+        #       Playwright (before the compression proxy existed). Upgrading it to
+        #       the proxy is the ORIGINAL purpose of this boot migration; dropping
+        #       it would leave existing users on the direct server with no
+        #       compression.
+        # A user-declared *direct* server under the BARE ``@playwright/mcp`` key
+        # is NOT KiroCrew's (authorship is by launch target, not key name) and is
+        # left untouched — only the ``npm:``-prefixed key is a KiroCrew legacy
+        # artifact.
+        superseded_proxy_present = any(
+            key != canonical and _spec_is_proxy(servers.get(key))
+            for key in _SUPERSEDED_PLAYWRIGHT_KEYS
+        )
+        legacy_direct = servers.get(_LEGACY_DIRECT_PLAYWRIGHT_KEY)
+        legacy_direct_present = isinstance(legacy_direct, dict) and not _spec_is_proxy(legacy_direct)
+        # Leave the file untouched unless there is a KiroCrew-owned entry to
+        # migrate, AND the canonical slot is either empty or already our proxy
+        # (safe to (re)write). If the canonical key holds a user-declared *direct*
+        # (non-proxy) server, migrating would write servers[canonical] =
+        # proxy_entry and clobber that user config on every boot — so skip.
+        if not (superseded_proxy_present or legacy_direct_present):
+            return
+        if canon_entry is not None and not canon_is_proxy:
+            return
+        _patch_mcp_for_mode_unlocked()
 
 
 def _converge_kirocrew_mcp_json() -> None:
@@ -630,9 +640,43 @@ def _record_owned_mcp_key(key: str) -> None:
         pass
 
 
-def patch_mcp_extension(token: str) -> None:
-    """Update MCP config to use proxy with --extension and token env var."""
-    mcp_json = Path.home() / ".kiro" / "settings" / "mcp.json"
+def _kiro_mcp_json_path() -> Path:
+    """Path to kiro's global MCP config — the file KiroCrew co-manages."""
+    return Path.home() / ".kiro" / "settings" / "mcp.json"
+
+
+@contextlib.contextmanager
+def _kiro_mcp_locked() -> Iterator[None]:
+    """Hold the exclusive advisory lock guarding kiro's global ``mcp.json``.
+
+    Every writer of that file must serialize on the shared ``mcp.lock`` sidecar:
+    the dashboard MCP handler (``handlers/mcp.py`` ``_McpFileLock``) and the app
+    bridges (``apps/bridges.py``) already do. Writers coordinate ONLY if they all
+    take this lock — a lock-free read-modify-write races the others and drops
+    whichever side wrote first, losing that writer's server entries (an app's MCP
+    server silently disappearing, or the browse entry vanishing).
+
+    Blocking: callers on the event loop must dispatch through
+    ``asyncio.to_thread``. Not reentrant — code already inside this block must
+    call the ``_unlocked`` write helpers, never the public ``patch_mcp_*``
+    wrappers (a second exclusive acquire on a fresh fd deadlocks the process
+    against itself).
+    """
+    mcp_json = _kiro_mcp_json_path()
+    mcp_json.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = mcp_json.with_suffix(".lock")
+    lock_path.touch(exist_ok=True)
+    # "r+" (not "r"): Windows msvcrt.locking requires a writable fd, and
+    # platform_compat swallows the EACCES an "r" fd would raise — which would
+    # silently degrade this to a no-op.
+    with open(lock_path, "r+") as lf:
+        with platform_compat.file_lock(lf.fileno(), exclusive=True):
+            yield
+
+
+def _patch_mcp_extension_unlocked(token: str) -> None:
+    """Write the ``--extension`` proxy entry. Caller MUST hold ``_kiro_mcp_locked``."""
+    mcp_json = _kiro_mcp_json_path()
     if not mcp_json.exists():
         return
     try:
@@ -662,15 +706,15 @@ def patch_mcp_extension(token: str) -> None:
         pass
 
 
-def patch_mcp_headless() -> None:
-    """Update MCP config to use proxy with headless mode config."""
-    mcp_json = Path.home() / ".kiro" / "settings" / "mcp.json"
+def _patch_mcp_headless_unlocked() -> None:
+    """Write the headless-config proxy entry. Caller MUST hold ``_kiro_mcp_locked``."""
+    mcp_json = _kiro_mcp_json_path()
     if not mcp_json.exists():
         return
     try:
         data = json.loads(mcp_json.read_text(encoding="utf-8"))
-        # See patch_mcp_extension: guard a non-object mcp.json / non-dict
-        # mcpServers so setdefault/servers[...] can't raise an uncaught
+        # See _patch_mcp_extension_unlocked: guard a non-object mcp.json /
+        # non-dict mcpServers so setdefault/servers[...] can't raise an uncaught
         # AttributeError/TypeError.
         if not isinstance(data, dict):
             data = {}
@@ -689,6 +733,42 @@ def patch_mcp_headless() -> None:
         _record_owned_mcp_key(canonical)
     except (json.JSONDecodeError, OSError):
         pass
+
+
+def _patch_mcp_for_mode_unlocked() -> None:
+    """Write the proxy entry matching the configured browse mode.
+
+    Extension mode needs a token to be usable, so a flagged-but-tokenless install
+    falls back to the headless config rather than writing an entry whose
+    ``PLAYWRIGHT_MCP_EXTENSION_TOKEN`` is empty. Every registration path shares
+    this dispatch so the mode decision cannot drift between them.
+
+    Caller MUST hold ``_kiro_mcp_locked``.
+    """
+    if has_playwright_extension():
+        token = get_extension_token() or ""
+        if token:
+            _patch_mcp_extension_unlocked(token)
+            return
+    _patch_mcp_headless_unlocked()
+
+
+def patch_mcp_extension(token: str) -> None:
+    """Update MCP config to use proxy with --extension and token env var.
+
+    Takes the shared mcp.json lock. Blocking — do not call on the event loop.
+    """
+    with _kiro_mcp_locked():
+        _patch_mcp_extension_unlocked(token)
+
+
+def patch_mcp_headless() -> None:
+    """Update MCP config to use proxy with headless mode config.
+
+    Takes the shared mcp.json lock. Blocking — do not call on the event loop.
+    """
+    with _kiro_mcp_locked():
+        _patch_mcp_headless_unlocked()
 
 
 def check_playwright_launchable() -> tuple[bool, str]:
@@ -724,42 +804,27 @@ def register_playwright_proxy() -> tuple[Path, str]:
     key, so we left it untouched rather than clobber their config — authorship is
     by launch target, not key name, mirroring the boot-time migration guard).
     """
-    mcp_json = Path.home() / ".kiro" / "settings" / "mcp.json"
-    mcp_json.parent.mkdir(parents=True, exist_ok=True)
-    # Serialize with the other writers of this SAME file — the dashboard MCP
-    # handler and the app bridges both take an exclusive flock on the shared
-    # ``mcp.lock`` sidecar (via platform_compat.file_lock) before mutating
-    # mcp.json. Hold that lock across our read + create + patch_mcp_* write so a
-    # concurrent gateway/bridge update can't be clobbered (which would drop the
-    # other writer's server entries).
-    lock_path = mcp_json.with_suffix(".lock")
-    lock_path.touch(exist_ok=True)
+    mcp_json = _kiro_mcp_json_path()
     canonical = mcp_server_alias(_PLAYWRIGHT_MCP_PACKAGE)
-    # "r+" (not "r"): Windows msvcrt.locking requires a writable fd.
-    with open(lock_path, "r+") as lf:
-        with platform_compat.file_lock(lf.fileno(), exclusive=True):
-            if mcp_json.exists():
-                try:
-                    existing = json.loads(mcp_json.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    existing = {}
-                servers = existing.get("mcpServers") if isinstance(existing, dict) else None
-                canon = servers.get(canonical) if isinstance(servers, dict) else None
-                # A user may hand-author their OWN direct (non-proxy) server under
-                # the canonical key. patch_mcp_* would overwrite it, silently
-                # losing their config — so leave it untouched and report back.
-                if canon is not None and not _spec_is_proxy(canon):
-                    return mcp_json, "kept-user-entry"
-            else:
-                mcp_json.write_text(json.dumps({"mcpServers": {}}, indent=2), encoding="utf-8")
-            if has_playwright_extension():
-                token = get_extension_token() or ""
-                if token:
-                    patch_mcp_extension(token)
-                else:
-                    patch_mcp_headless()
-            else:
-                patch_mcp_headless()
+    # Serialize with the other writers of this SAME file — see _kiro_mcp_locked.
+    # The lock spans our read + create + write so a concurrent gateway/bridge
+    # update can't be clobbered (which would drop its server entries).
+    with _kiro_mcp_locked():
+        if mcp_json.exists():
+            try:
+                existing = json.loads(mcp_json.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+            servers = existing.get("mcpServers") if isinstance(existing, dict) else None
+            canon = servers.get(canonical) if isinstance(servers, dict) else None
+            # A user may hand-author their OWN direct (non-proxy) server under
+            # the canonical key. The patch helpers would overwrite it, silently
+            # losing their config — so leave it untouched and report back.
+            if canon is not None and not _spec_is_proxy(canon):
+                return mcp_json, "kept-user-entry"
+        else:
+            mcp_json.write_text(json.dumps({"mcpServers": {}}, indent=2), encoding="utf-8")
+        _patch_mcp_for_mode_unlocked()
     return mcp_json, "registered"
 
 

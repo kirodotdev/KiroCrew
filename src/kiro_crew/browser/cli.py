@@ -152,14 +152,14 @@ def _cmd_extension(action: str) -> None:
         with os.fdopen(fd, "w") as f:
             f.write(token)
         flag_file.touch()
-        _patch_mcp_config_extension(token)
+        _reregister_proxy()
         print()
         print("Extension mode enabled.")
         print("Restart gateway to apply: kirocrew stop && kirocrew gateway")
     elif action == "off":
         flag_file.unlink(missing_ok=True)
         token_file.unlink(missing_ok=True)
-        _patch_mcp_config_headless()
+        _reregister_proxy()
         print("Extension mode disabled. Using separate headless Chromium.")
         print("Restart gateway to apply: kirocrew stop && kirocrew gateway")
     else:
@@ -167,14 +167,18 @@ def _cmd_extension(action: str) -> None:
         sys.exit(1)
 
 
-def _patch_mcp_config_extension(token: str) -> None:
-    """Update MCP config to use --extension with token env var."""
-    _setup.patch_mcp_extension(token)
+def _reregister_proxy() -> None:
+    """Rewrite the proxy entry for the mode just recorded in the flag file.
 
-
-def _patch_mcp_config_headless() -> None:
-    """Update MCP config to use headless mode with --config."""
-    _setup.patch_mcp_headless()
+    Goes through ``register_playwright_proxy`` rather than the patch primitives so
+    the write takes the shared mcp.json lock, keeps a user-authored non-proxy
+    entry under the canonical key, and creates the config when absent. The mode
+    dispatch is read from the flag file, which the caller has already updated.
+    """
+    _, status = _setup.register_playwright_proxy()
+    if status == "kept-user-entry":
+        print("  Kept your existing playwright-mcp entry in mcp.json (left untouched).")
+        print("  Remove it to let KiroCrew manage the browse server.")
 
 
 def _cmd_auth_health() -> None:

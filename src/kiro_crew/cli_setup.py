@@ -19,12 +19,9 @@ from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.browser.setup import (
     ensure_playwright_installed,
     generate_playwright_config,
-    get_extension_token,
-    has_playwright_extension,
     is_playwright_installed,
-    patch_mcp_extension,
-    patch_mcp_headless,
     refresh_storage_state,
+    register_playwright_proxy,
 )
 from kiro_crew.cli_chat import _ensure_default_agent_in_config
 from kiro_crew.conductor_skill import generate_conductor_skill
@@ -351,15 +348,14 @@ def _setup(agent_only: bool = False, electron_only: bool = False, clean: bool = 
     try:
         generate_playwright_config()
         refresh_storage_state()
-        if has_playwright_extension():
-            token = get_extension_token()
-            if token:
-                patch_mcp_extension(token)
-            else:
-                patch_mcp_headless()
+        # register_playwright_proxy owns the shared mcp.json lock, the
+        # user-entry guard, and the create-when-absent path — the patch
+        # primitives have none of those.
+        _, status = register_playwright_proxy()
+        if status == "kept-user-entry":
+            print("  Kept your existing playwright-mcp entry in mcp.json (left untouched)")
         else:
-            patch_mcp_headless()
-        print("  Browser proxy registered in mcp.json")
+            print("  Browser proxy registered in mcp.json")
     except Exception:
         pass  # Non-fatal: browser still works without pre-loaded cookies
 

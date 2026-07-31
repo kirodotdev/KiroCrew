@@ -19,8 +19,7 @@ from kiro_crew.browser.screencast import BROWSER_FRAME_EVENT, build_frame_payloa
 from kiro_crew.browser.setup import (
     get_extension_token,
     has_playwright_extension,
-    patch_mcp_extension,
-    patch_mcp_headless,
+    register_playwright_proxy,
 )
 from kiro_crew.constants import CHAT_TURN_TIMEOUT
 from kiro_crew.cron import CronStoreBusy
@@ -1763,20 +1762,37 @@ async def api_browser_config_save(request: web.Request) -> web.Response:
             fd = os.open(str(token_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
                 f.write(token)
-            patch_mcp_extension(token)
     else:
         flag_file.unlink(missing_ok=True)
         token_file.unlink(missing_ok=True)
-        patch_mcp_headless()
+
+    # Re-register through register_playwright_proxy rather than the patch
+    # primitives: it holds the shared mcp.json lock (so a concurrent app-bridge or
+    # dashboard MCP write is not clobbered), refuses to overwrite a user-authored
+    # non-proxy entry under the canonical key, and creates the file when a fresh
+    # install has no kiro settings yet. Blocking (file lock + disk I/O), so it
+    # runs off the event loop.
+    #
+    # The mode preference above is already persisted, so an mcp.json-level failure
+    # is reported in the payload rather than raised — a 500 here would tell the
+    # user nothing was saved when the flag/token files were in fact written.
+    try:
+        _, mcp_status = await asyncio.to_thread(register_playwright_proxy)
+    except OSError as exc:
+        logger.warning("browser config: MCP registration failed: %s", exc)
+        mcp_status = "registration-failed"
 
     _sel().log_tool_invocation(
         session_key="dashboard",
         tool_name="browser_config_save",
         outcome="completed",
         downstream_service="browser",
-        resources=f"extension_mode={extension_mode}",
+        resources=f"extension_mode={extension_mode} mcp={mcp_status}",
     )
-    return web.json_response({"ok": True})
+    # ``mcp_status`` is "kept-user-entry" when the caller's own hand-authored
+    # Playwright server was left in place — the mode preference was still saved,
+    # but KiroCrew's proxy was deliberately NOT written over their config.
+    return web.json_response({"ok": True, "mcp_status": mcp_status})
 
 
 # ── Slack configuration API ──
