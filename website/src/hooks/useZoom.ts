@@ -5,9 +5,9 @@ export type FontFamily = 'sans' | 'mono' | 'system'
 
 const FAMILIES: FontFamily[] = ['sans', 'mono', 'system']
 const FAMILY_MAP: Record<FontFamily, string> = {
-  sans: "'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif",
-  mono: "'JetBrains Mono',ui-monospace,SFMono-Regular,monospace",
-  system: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+  sans: "var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif",
+  mono: "var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace",
+  system: "var(--script-fallbacks),-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
 }
 
 // Native zoom bridge exposed by electron/preload.js. Chromium's per-origin

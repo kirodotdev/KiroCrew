@@ -201,13 +201,13 @@ function injectCustomThemeCSS(theme: CustomThemeData) {
 
   // Static defaults (not user-controlled)
   const darkDefaults =
-    '--font-body:\'Space Grotesk\',-apple-system,BlinkMacSystemFont,sans-serif;' +
-    '--mono:\'JetBrains Mono\',ui-monospace,SFMono-Regular,monospace;' +
+    '--font-body:var(--script-fallbacks),\'Space Grotesk\',-apple-system,BlinkMacSystemFont,sans-serif;' +
+    '--mono:var(--script-fallbacks-mono),\'JetBrains Mono\',ui-monospace,SFMono-Regular,monospace;' +
     '--radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;' +
     'color-scheme:dark;'
   const lightDefaults =
-    '--font-body:\'Space Grotesk\',-apple-system,BlinkMacSystemFont,sans-serif;' +
-    '--mono:\'JetBrains Mono\',ui-monospace,SFMono-Regular,monospace;' +
+    '--font-body:var(--script-fallbacks),\'Space Grotesk\',-apple-system,BlinkMacSystemFont,sans-serif;' +
+    '--mono:var(--script-fallbacks-mono),\'JetBrains Mono\',ui-monospace,SFMono-Regular,monospace;' +
     '--radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;' +
     'color-scheme:light;'
 
@@ -286,7 +286,7 @@ function injectThemeFonts(theme: CustomThemeData) {
   style.textContent =
     faces.join('\n') +
     `\n[data-theme="custom-${slug}-dark"],[data-theme="custom-${slug}-light"]{` +
-    `--font-body:'${primary}','Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;}`
+    `--font-body:'${primary}',var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;}`
   document.head.appendChild(style)
 }
 

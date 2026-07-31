@@ -2,11 +2,123 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Script fallback faces ──
+   zh-CN, hi and bn have no font coverage otherwise: every family in --font-body
+   and --mono below covers Latin only, so those scripts fall through to the
+   browser's per-script fallback, which picks a face per character and silently
+   mismatches. CJK punctuation makes it visible — Unicode uses one code point for
+   the Chinese and Japanese comma and full stop, so only the FONT decides where in
+   the em box the glyph sits.
+
+   Each alias below is a `unicode-range`-restricted @font-face over locally
+   installed faces. That restriction is the whole point: a face whose range
+   excludes Latin is never consulted for Latin, so the alias can sit FIRST in a
+   family list without changing how Latin renders. Ordering therefore stops
+   mattering — this works regardless of what follows, including the terminal
+   `sans-serif`/`monospace` generic, which is what a plain appended tail could not
+   guarantee (on macOS `-apple-system` resolves Han from the OS cascade before any
+   appended family is reached).
+
+   Each alias declares a REAL 400 and 700 face rather than one face spanning
+   100-900. Weight matching happens *within* the selected family, so a single
+   Regular face would make every `font-semibold` in these scripts render as
+   Chromium's SYNTHETIC bold — worse than today, where browser fallback reaches the
+   platform's real Semibold/Bold. Declaring the bold locals keeps the real face.
+
+   Not claimed on purpose: CJK quotes, dashes and ellipsis (U+2018/2019/201C/201D/
+   2014/2026) live in General Punctuation, which the aliases must exclude or they
+   would take over Latin punctuation too. Those glyphs keep coming from the Latin
+   face, exactly as today.
+
+   `src` is local()-only, so nothing is ever downloaded. Several candidates per
+   face, by family and PostScript name, because local() matching differs by
+   platform. If none is installed the face has no usable source and matching falls
+   through to the next family — i.e. exactly today's behaviour, never worse. */
+@font-face {
+  font-family: 'KC Han Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('PingFang SC'), local('PingFangSC-Regular'), local('Hiragino Sans GB'),
+       local('Microsoft YaHei'), local('MicrosoftYaHei'), local('Noto Sans CJK SC'),
+       local('NotoSansCJKsc-Regular'), local('Source Han Sans SC'),
+       local('WenQuanYi Micro Hei');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3100-312F, U+31C0-31EF,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
+                 U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Han Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('PingFang SC Semibold'), local('PingFangSC-Semibold'),
+       local('Hiragino Sans GB W6'), local('Microsoft YaHei Bold'),
+       local('MicrosoftYaHei-Bold'), local('Noto Sans CJK SC Bold'),
+       local('NotoSansCJKsc-Bold'), local('Source Han Sans SC Bold');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3100-312F, U+31C0-31EF,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
+                 U+FE30-FE4F, U+FF00-FFEF;
+}
+/* Monospace Han, for code and CLI surfaces. Rarely installed on a stock machine;
+   when absent 'KC Han Fallback' follows it in --script-fallbacks-mono, so Han in a
+   code block draws from a proportional face — the same pairing the browser's own
+   fallback produces today, and better than a missing glyph. */
+@font-face {
+  font-family: 'KC Han Mono Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Sarasa Mono SC'), local('SarasaMonoSC-Regular'), local('Noto Sans Mono CJK SC'),
+       local('NotoSansMonoCJKsc-Regular');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3100-312F, U+31C0-31EF,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
+                 U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Han Mono Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Sarasa Mono SC Bold'), local('SarasaMonoSC-Bold'),
+       local('Noto Sans Mono CJK SC Bold'), local('NotoSansMonoCJKsc-Bold');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3100-312F, U+31C0-31EF,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
+                 U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Devanagari Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Noto Sans Devanagari'), local('NotoSansDevanagari-Regular'), local('Nirmala UI'),
+       local('NirmalaUI'), local('Kohinoor Devanagari'), local('Devanagari Sangam MN');
+  unicode-range: U+0900-097F, U+1CD0-1CFF, U+A8E0-A8FF;
+}
+@font-face {
+  font-family: 'KC Devanagari Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Noto Sans Devanagari Bold'), local('NotoSansDevanagari-Bold'),
+       local('Nirmala UI Bold'), local('NirmalaUI-Bold'), local('Kohinoor Devanagari Semibold');
+  unicode-range: U+0900-097F, U+1CD0-1CFF, U+A8E0-A8FF;
+}
+@font-face {
+  font-family: 'KC Bengali Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Noto Sans Bengali'), local('NotoSansBengali-Regular'), local('Nirmala UI'),
+       local('NirmalaUI'), local('Vrinda'), local('Bangla Sangam MN');
+  unicode-range: U+0980-09FF;
+}
+@font-face {
+  font-family: 'KC Bengali Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Noto Sans Bengali Bold'), local('NotoSansBengali-Bold'), local('Nirmala UI Bold'),
+       local('NirmalaUI-Bold'), local('Vrinda Bold');
+  unicode-range: U+0980-09FF;
+}
+
 /* ── Design tokens ── */
 /* Shared across all themes */
 :root {
-  --font-body:'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;
-  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  /* Single source of truth for the script fallbacks. Every declaration of
+     --font-body / --mono — here, in the theme blocks below, and the ones built in
+     hooks/useTheme.tsx and hooks/useZoom.ts — references these by name instead of
+     repeating the list, so adding a script is one edit. They lead each stack;
+     unicode-range is what makes leading safe. */
+  --script-fallbacks:'KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --font-body:var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;
+  --mono:var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
   --radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;
 }
 /* Dark theme shadows */
@@ -597,8 +709,8 @@
   --diff-hunk:rgba(10,132,255,.15);--diff-hunk-text:#64d2ff;
   --diff-meta-text:#e4e4e7;
   --json-key:#64d2ff;--json-str:#30d158;--json-num:#bf5af2;--json-bool:#0a84ff;
-  --font-body:'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;
-  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  --font-body:var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;
+  --mono:var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
   --shadow-sm:none;
   --shadow-md:0 0 0 1px rgba(255,255,255,.06);
   --shadow-lg:0 0 0 1px rgba(255,255,255,.08);
