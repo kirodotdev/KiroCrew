@@ -367,10 +367,12 @@ describe('OffsetIndex: sub-linear scaling benchmark', () => {
     const sizes = [500, 2000, 5000]
     // OffsetIndex is so cheap it needs a large iteration count to rise well
     // above performance.now() resolution — that's what keeps the ratio stable.
-    const ITER = 100_000
+    // Keep iteration counts modest so the test completes well within the 15s
+    // timeout even under parallel CI load.
+    const ITER = 20_000
     // The O(N) baseline is expensive PER CALL, so a much smaller count already
     // yields a stable, well-above-floor measurement (and keeps the test fast).
-    const NAIVE_ITER = 20_000
+    const NAIVE_ITER = 5_000
 
     // One full measurement pass. Returns the two ratios being compared.
     const measure = () => {

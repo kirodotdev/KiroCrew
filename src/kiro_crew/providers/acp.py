@@ -954,6 +954,8 @@ class AcpProvider(LLMProvider):
             # effect (the gate sees an empty server name and never records).
             tool_name=e.tool_name,
             mcp_server_name=e.mcp_server_name,
+            diff_old_text=e.diff_old_text,
+            diff_path=e.diff_path,
         )
 
     async def stream(self, message: str) -> AsyncIterator[LLMEvent]:

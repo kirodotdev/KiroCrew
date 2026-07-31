@@ -260,9 +260,11 @@ async def test_cancel_during_on_done_produces_no_second_delivery():
     mgr._running_count = 1
     mgr._sessions.reset = _noop_reset
     calls: list[str] = []
+    entered = asyncio.Event()
 
     async def _slow_on_done(_info):
         calls.append("start")
+        entered.set()
         await asyncio.sleep(0.05)
         calls.append("end")
 
@@ -271,7 +273,10 @@ async def test_cancel_during_on_done_produces_no_second_delivery():
     task = asyncio.ensure_future(
         mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped")
     )
-    await asyncio.sleep(0.01)
+    # Wait until _on_done is actually executing before cancelling — avoids a
+    # race under heavy xdist load where asyncio.sleep(0.01) could expire after
+    # _force_reap already completed, so the cancel would be a no-op.
+    await asyncio.wait_for(entered.wait(), timeout=5)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

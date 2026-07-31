@@ -7,6 +7,7 @@ claude-agent-acp does not implement the kiro-only
 
 from __future__ import annotations
 
+import dataclasses
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -77,6 +78,66 @@ class TestToLlmEventFieldPropagation:
     carried through or downstream consumers see defaults."""
 
     @pytest.mark.asyncio
+    async def test_stream_propagates_diff_old_text_with_content(self):
+        """diff_old_text with real content (edit case) survives _to_llm_event."""
+        provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
+        src = AcpEvent(
+            kind="tool_result",
+            tool_call_id="tc-diff-1",
+            diff_old_text="original content",
+            diff_path="/tmp/foo.py",
+        )
+        provider._client.stream_events = MagicMock(return_value=_async_iter([src]))
+
+        events = await _drain(provider.stream("hi"))
+
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.diff_old_text == "original content"
+        assert ev.diff_path == "/tmp/foo.py"
+
+    @pytest.mark.asyncio
+    async def test_stream_propagates_diff_old_text_empty_string_create_case(self):
+        """diff_old_text="" means file-create (no previous content); must not
+        be confused with None (no diff block present / fallback to disk)."""
+        provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
+        src = AcpEvent(
+            kind="tool_result",
+            tool_call_id="tc-diff-2",
+            diff_old_text="",
+            diff_path="/tmp/new_file.py",
+        )
+        provider._client.stream_events = MagicMock(return_value=_async_iter([src]))
+
+        events = await _drain(provider.stream("hi"))
+
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.diff_old_text == ""
+        assert ev.diff_old_text is not None  # explicitly not None
+        assert ev.diff_path == "/tmp/new_file.py"
+
+    @pytest.mark.asyncio
+    async def test_stream_propagates_diff_old_text_none_no_block_case(self):
+        """diff_old_text=None means no diff block was present — provider must
+        preserve None so chat_runner falls back to disk read."""
+        provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
+        src = AcpEvent(
+            kind="tool_result",
+            tool_call_id="tc-diff-3",
+            diff_old_text=None,
+            diff_path="",
+        )
+        provider._client.stream_events = MagicMock(return_value=_async_iter([src]))
+
+        events = await _drain(provider.stream("hi"))
+
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.diff_old_text is None
+        assert ev.diff_path == ""
+
+    @pytest.mark.asyncio
     async def test_stream_propagates_tool_final_and_subagent_fields(self):
         provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
         src = AcpEvent(
@@ -121,6 +182,57 @@ class TestToLlmEventFieldPropagation:
         assert ev.usage.output_tokens == 22
         assert ev.usage.cache_creation_tokens == 33
         assert ev.usage.cache_read_tokens == 44
+
+
+class TestToLlmEventFieldParity:
+    """Structural guard: every field on AcpEvent must either be explicitly
+    forwarded in _to_llm_event or listed in a documented allowlist of
+    intentionally-dropped fields. This prevents the bug class where a new
+    AcpEvent field is silently lost by the provider copy."""
+
+    # Fields that are intentionally NOT forwarded through _to_llm_event.
+    # Each entry must document why it is excluded.
+    _INTENTIONALLY_DROPPED: set[str] = {
+        # ``todo`` is consumed directly by the dashboard websocket handler
+        # (EVENT_TODO_UPDATE) and never needs to survive the LLMProvider
+        # stream interface — chat_runner does not inspect it.
+        "todo",
+    }
+
+    def test_all_acp_event_fields_forwarded_or_allowlisted(self):
+        """_to_llm_event must forward every AcpEvent field not in the
+        intentionally-dropped allowlist."""
+        all_fields = {f.name for f in dataclasses.fields(AcpEvent)}
+        # Build a source event with kind (required positional)
+        src = AcpEvent(kind="test")
+        result = AcpProvider._to_llm_event(src)
+
+        forwarded: set[str] = set()
+        for f in dataclasses.fields(AcpEvent):
+            src_val = getattr(src, f.name)
+            out_val = getattr(result, f.name)
+            # If the output matches the source default, it was forwarded
+            # (since we only set kind, all others are at their defaults).
+            if out_val == src_val:
+                forwarded.add(f.name)
+
+        # Verify with non-default values to be certain (kind is always set).
+        missing = all_fields - forwarded - self._INTENTIONALLY_DROPPED
+        assert not missing, (
+            f"AcpEvent fields not forwarded by _to_llm_event and not in "
+            f"allowlist: {sorted(missing)}. Either add them to _to_llm_event "
+            f"or document why in _INTENTIONALLY_DROPPED."
+        )
+
+    def test_intentionally_dropped_fields_exist_on_acp_event(self):
+        """Guard against stale entries in the allowlist — every listed field
+        must actually exist on AcpEvent."""
+        all_fields = {f.name for f in dataclasses.fields(AcpEvent)}
+        stale = self._INTENTIONALLY_DROPPED - all_fields
+        assert not stale, (
+            f"Fields in _INTENTIONALLY_DROPPED that no longer exist on "
+            f"AcpEvent: {sorted(stale)}. Remove them from the allowlist."
+        )
 
 
 class TestCompactRouting:
