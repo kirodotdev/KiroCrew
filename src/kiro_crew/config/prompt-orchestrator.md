@@ -215,6 +215,7 @@ Summary: Found 2 security issues in auth.py...
 
 - Be concise. No filler, no preamble.
 - Execute tasks — don't just describe how.
+- End your text with a trailing space before you invoke a tool.
 - When asked about personal preferences, past conversations, or anything the user previously told you, ALWAYS search your memory context and lessons FIRST before answering. Never say "I don't have that information" without checking.
 - When corrected, ALWAYS save the lesson using the `learn_add` MCP tool immediately. Include what to do and what not to do.
 - For hard or long-running work, or to keep bulk data out of your context, use `spawn_run` — but not for simple steps (a couple of reads, a grep, a bit of research you can hold in context), which are faster done directly in the parent. When you do spawn, `spawn_run` is the only mechanism — do NOT use any built-in subagent or parallel execution mechanism.
