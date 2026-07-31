@@ -71,16 +71,19 @@ done
 FEED_BASE="${FEED_BASE%/}"
 ARTIFACT_BASE="${ARTIFACT_BASE%/}"
 
-# Users say "insider"; the release pipeline publishes that channel under the
-# `beta` prefix (see docs/release-automation.md channel naming). Map the
-# user-facing name to the storage prefix; keep the user-facing name for the
-# recorded channel file.
-case "$CHANNEL" in
-  insider) CHANNEL_PATH="beta" ;;
-  *) CHANNEL_PATH="$CHANNEL" ;;
-esac
-
 err() { echo "kirocrew-install: $*" >&2; exit 1; }
+
+# The channel name IS the storage path segment: publish-cli.yml writes
+# feed/<channel>/latest-cli.json and cli/<channel>/<version>/ using the literal
+# channel, and "beta" was renamed to "insider" everywhere including the path
+# segment (docs/release-automation.md -> "Deliberately not built"). So there is
+# no name-to-prefix mapping. Reject anything outside the known set here: a
+# typo'd channel otherwise reaches the CDN and surfaces as an opaque 403.
+case "$CHANNEL" in
+  nightly|insider|stable) ;;
+  *) err "unknown channel '$CHANNEL' (expected one of: nightly, insider, stable)" ;;
+esac
+CHANNEL_PATH="$CHANNEL"
 
 # Canonical physical path of an EXISTING directory (symlinks and `..` resolved),
 # or empty output when it cannot be resolved. Used to compare two directory

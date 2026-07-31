@@ -480,3 +480,74 @@ def test_mac_notarize_attaches_gated_artifact_fail_closed() -> None:
     assert step["with"]["if-no-files-found"] == "error", (
         "the gated artifact upload must error when empty -- it is the publish job's sole input"
     )
+
+
+# ---------------------------------------------------------------------------
+# Installer <-> publisher channel-name agreement
+# ---------------------------------------------------------------------------
+
+CLI_INSTALLER = ROOT / "cli.sh"
+CLI_WORKFLOW = WORKFLOWS / "publish-cli.yml"
+
+# The channels the publisher accepts, as documented on its workflow_call input.
+# Kept as the single source both assertions read, so a channel added to the
+# pipeline without teaching the installer about it fails here.
+_PUBLISHED_CHANNELS = ("nightly", "insider", "stable")
+
+
+def _installer_source() -> str:
+    return CLI_INSTALLER.read_text(encoding="utf-8")
+
+
+def _installer_code() -> str:
+    """Installer source with comment lines stripped, for code-only assertions."""
+    lines = _installer_source().splitlines()
+    return "\n".join(ln for ln in lines if not ln.lstrip().startswith("#"))
+
+
+def test_publisher_documents_the_expected_channel_set() -> None:
+    """Anchor _PUBLISHED_CHANNELS to the workflow instead of duplicating it."""
+    doc = yaml.safe_load(CLI_WORKFLOW.read_text(encoding="utf-8"))
+    # PyYAML resolves the bare `on:` key to the boolean True (YAML 1.1).
+    described = doc[True]["workflow_call"]["inputs"]["channel"]["description"]
+    declared = tuple(part.strip() for part in described.split(":", 1)[1].split("|"))
+    assert declared == _PUBLISHED_CHANNELS, (
+        "publish-cli.yml's channel set changed; cli.sh's accepted channels and "
+        f"_PUBLISHED_CHANNELS must move with it (workflow says {declared})"
+    )
+
+
+def test_installer_channel_name_is_the_literal_path_segment() -> None:
+    """The installer must not remap a channel name to a different prefix.
+
+    ``publish-cli.yml`` writes ``feed/${CHANNEL}/latest-cli.json`` and
+    ``cli/${CHANNEL}/${VERSION}/`` using the literal channel, and "beta" was
+    renamed to "insider" everywhere *including* the path segment. A remap here
+    (``insider`` -> ``beta``) makes the installer request a prefix that was
+    never published: the CDN answers 403 and the user sees "channel has no
+    feed", with no hint that the channel itself is fine.
+    """
+    code = _installer_code()
+    assert re.search(r'^CHANNEL_PATH="\$CHANNEL"$', code, re.M), (
+        "cli.sh must use the channel verbatim as the storage prefix"
+    )
+    assert "beta" not in code, (
+        "cli.sh has executable code referencing a `beta` prefix; the published "
+        "path segment is `insider` (docs/release-automation.md)"
+    )
+
+
+def test_installer_rejects_an_unknown_channel_before_hitting_the_cdn() -> None:
+    """A typo'd channel must fail with the valid set, not an opaque CDN 403."""
+    src = _installer_source()
+    guard = re.search(r"^case \"\$CHANNEL\" in\n\s*([a-z|]+)\) ;;", src, re.M)
+    assert guard, "cli.sh must validate --channel against a known set"
+    assert tuple(guard.group(1).split("|")) == _PUBLISHED_CHANNELS, (
+        "cli.sh's accepted channels must match what publish-cli.yml publishes"
+    )
+    # The rejection has to name the alternatives; that message is the whole
+    # point of validating locally instead of letting the fetch 403.
+    for channel in _PUBLISHED_CHANNELS:
+        assert channel in src.split("unknown channel", 1)[1][:200], (
+            f"the unknown-channel error must list '{channel}'"
+        )
