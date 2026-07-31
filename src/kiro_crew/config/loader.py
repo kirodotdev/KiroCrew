@@ -1090,6 +1090,28 @@ class MemoryConfig:
             "sha256-verified regardless of source.",
         ),
     )
+    embed_model_path: str = field(
+        default="",
+        metadata=_meta(
+            "Embedding Model Path",
+            "Absolute path to a local GGUF embedding model to use INSTEAD of the bundled "
+            "Qwen3-Embedding-0.6B. When set, the default model is never downloaded or "
+            "installed, so a custom model survives a default-model version change. Set "
+            "embedding_dim to the model's output width. Changing the model changes the "
+            "vector space, so stored embeddings are regenerated automatically. The "
+            "KIROCREW_EMBED_MODEL_PATH env var wins over this.",
+        ),
+    )
+    embed_model_id: str = field(
+        default="",
+        metadata=_meta(
+            "Embedding Model ID",
+            "Optional stable identifier for a custom model's vector space. Defaults to "
+            "'custom:<filename>:<size>', which changes when a different model file is "
+            "used. Set this explicitly if you swap between models of identical byte size, "
+            "which the default derivation cannot distinguish.",
+        ),
+    )
     semantic_confidence_threshold: float = field(
         default=0.8,
         metadata=_meta(
@@ -4034,6 +4056,8 @@ class KiroCrewConfig:
                 ),
                 embedding_dim=memory_data.get("embedding_dim", 1024),
                 embed_model_url=memory_data.get("embed_model_url", ""),
+                embed_model_path=memory_data.get("embed_model_path", ""),
+                embed_model_id=memory_data.get("embed_model_id", ""),
                 semantic_confidence_threshold=memory_data.get("semantic_confidence_threshold", 0.8),
                 episodic_dedup_threshold=memory_data.get("episodic_dedup_threshold", 0.88),
                 episodic_max_results=memory_data.get("episodic_max_results", 8),

@@ -36,7 +36,11 @@ from kiro_crew.dashboard.origin import (
     resolve_dashboard_host,
 )
 from kiro_crew.dashboard.token_auth import parse_duration
-from kiro_crew.embeddings import make_sync_embed_fn, model_file_present
+from kiro_crew.embeddings import (
+    make_sync_embed_fn,
+    model_file_present,
+    store_embedding_space_is_stale,
+)
 from kiro_crew.env import activate_mise
 from kiro_crew.frontend import build_frontend_sync, ensure_dev_dist_symlink
 from kiro_crew.history import ConversationLog, HistoryConsolidator
@@ -1409,6 +1413,20 @@ async def _run_task(args: argparse.Namespace) -> None:
         print(
             "Embedding model not downloaded yet — keyword search for this run "
             "(the gateway downloads it in the background)",
+            file=sys.stderr,
+        )
+    # A stale vector space means the loaded FAISS index was built by a different
+    # model, so a new-model query vector would be scored against incomparable
+    # vectors. Degrade THIS run to keyword search rather than reconciling:
+    # clearing is destructive, a one-shot CLI cannot re-embed a corpus, and with a
+    # rejected custom path nothing could ever regenerate what it cleared. The
+    # gateway reconciles and re-embeds on its next boot.
+    if vector_memory.embed_fn is not None and store_embedding_space_is_stale(vector_memory):
+        vector_memory.embed_fn = None
+        vector_memory.embed_fn_factory = None
+        print(
+            "Embedding model changed — keyword search for this run "
+            "(the gateway re-embeds in the background)",
             file=sys.stderr,
         )
     memory.vector_store = vector_memory

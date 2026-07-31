@@ -10,6 +10,13 @@ blob salvaged from a legacy Ollama install, then the public CloudFront CDN
 (or the ``memory.embed_model_url`` config knob) overrides the CDN URL for
 mirrored/airgapped deployments.
 
+A user-supplied model can be run instead of the bundled one by pointing
+``KIROCREW_EMBED_MODEL_PATH`` (or ``memory.embed_model_path``) at a local
+GGUF. In that mode the default model is never downloaded or installed, so a
+custom model survives a default-model version bump. Changing the model also
+changes the vector space, so stored embeddings are re-generated automatically
+— see :func:`embedding_space_signature`.
+
 While the model file is absent (first boot, download in flight, or a
 failed download) every embed call returns ``None`` and memory degrades
 gracefully to keyword/FTS search — the existing lazy-rebind machinery in
@@ -39,12 +46,24 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple, Protocol
 
 from kiro_crew.config.loader import config_path
 from kiro_crew.config.paths import config_dir
+from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
+
+
+class _ReconcilableStore(Protocol):
+    """Structural type for a vector store, so this module needs no import of it."""
+
+    def recorded_embedding_space(self) -> "str | None": ...
+
+    def reconcile_embedding_space(
+        self, signature: str, *, clear_when_unknown: bool = False
+    ) -> int: ...
+
 
 # ── Model constants ──
 
@@ -60,6 +79,10 @@ _MODEL_ID = "qwen3-embedding:0.6b"
 _GGUF_SHA256 = "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
 _DEFAULT_DIM = 1024  # Qwen3-Embedding-0.6B output dimension
 _MODELS_DIR_NAME = "models"
+# Stand-in path for a REJECTED custom model. Never created, so it can never
+# satisfy model_file_present() and the embedder can never load — which is the
+# point: a rejected spec must not carry the real (possibly protected) path.
+_REJECTED_MODEL_SENTINEL = ".rejected-custom-model.invalid"
 
 # ── Runtime constants ──
 
@@ -106,6 +129,16 @@ _SKIP_DOWNLOAD_ENV = "KIROCREW_SKIP_MODEL_DOWNLOAD"
 # basename (qwen3-embedding-0.6b.gguf) intentionally differs from the on-disk
 # _GGUF_FILENAME — the sha pin, not the name, is the integrity gate.
 _MODEL_URL_ENV = "KIROCREW_EMBED_MODEL_URL"
+# Custom-model escape hatch: an absolute path to a user-supplied GGUF. When set
+# (env, or the memory.embed_model_path config knob) KiroCrew runs THAT model and
+# never downloads or installs the bundled default — including when the default's
+# pinned version changes. No sha256 pin is applied: the pin is the trust anchor
+# for a NETWORK download, whereas a local file is trusted by provenance (the
+# user put it there). Note a GGUF is parsed by native llama.cpp code, so this
+# knob is deliberately config-file-only — it is NOT in the dashboard's
+# _EDITABLE_CONFIG allowlist, so no API caller and no agent can point the
+# embedder at an arbitrary file.
+_MODEL_PATH_ENV = "KIROCREW_EMBED_MODEL_PATH"
 _DEFAULT_MODEL_URL = (
     "https://d3j0sthz5doyui.cloudfront.net/models/qwen3-embedding-0.6b.gguf"
 )
@@ -209,16 +242,274 @@ def models_dir() -> Path:
 
 
 def default_model_path() -> Path:
+    """On-disk path of the BUNDLED model (the CDN download target)."""
     return models_dir() / _GGUF_FILENAME
 
 
+def _read_memory_config() -> dict:
+    """Read the raw ``memory`` section of ``config.json``. Never raises.
+
+    Read raw rather than through the config loader so the download thread and
+    the backend factory never depend on the config dataclass import graph
+    (which imports large parts of the package).
+    """
+    try:
+        path = config_path()
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            section = data.get("memory", {})
+            if isinstance(section, dict):
+                return section
+    except Exception:
+        logger.debug("Could not read the memory config section", exc_info=True)
+    return {}
+
+
+class CustomModelSpec(NamedTuple):
+    """A user-configured local embedding model.
+
+    ``error`` is non-empty when the configured path is unusable. Such a spec is
+    still returned (rather than falling back to the bundled model) so a typo can
+    never silently swap the user's vector space back to the default and trigger a
+    full re-embed behind their back: embeddings simply stay unavailable, memory
+    degrades to keyword search, and the reason is logged and surfaced by
+    ``kirocrew doctor``.
+    """
+
+    path: Path
+    model_id: str
+    dim: int
+    error: str
+
+
+def _custom_model_id(path: Path, configured: str) -> str:
+    """Stable vector-space identifier for a custom model.
+
+    An explicit ``memory.embed_model_id`` always wins. Otherwise it is derived
+    from the file's name and byte size, which is free to compute and changes
+    when a genuinely different model is dropped in. It deliberately does NOT
+    hash the file: a sha256 over ~600MB on every boot buys almost nothing here.
+    The tradeoff is that swapping in a different model of IDENTICAL byte size
+    will not be detected — set ``memory.embed_model_id`` explicitly if you do
+    that.
+    """
+    if configured:
+        return configured
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    return f"custom:{path.name}:{size}"
+
+
+def _is_sensitive_model_path(path: Path) -> bool:
+    """True when *path* is a credential store or the governance trust-root.
+
+    Failing CLOSED on an evaluation error is deliberate — a gate that cannot be
+    evaluated must not silently widen what this knob is allowed to open.
+    """
+    try:
+        return is_sensitive_path(str(path))
+    except Exception:
+        # The path is deliberately NOT logged. These are the two sites where the
+        # value is, by this gate's own determination, likely to name a credential
+        # store or the governance trust-root, and a gateway log may be shipped or
+        # shared. The exact path stays available on demand: `kirocrew doctor`
+        # prints it, the dashboard returns it in `setup_error`, and the resolver
+        # reports it through CustomModelSpec.error.
+        logger.warning(
+            "Could not evaluate the sensitive-path gate for the configured custom "
+            "embedding model — refusing it. Run 'kirocrew doctor' for the path.",
+            exc_info=True,
+        )
+        return True
+
+
+def resolve_custom_model() -> "CustomModelSpec | None":
+    """Resolve the user-configured local model, or ``None`` to use the bundled one.
+
+    Resolution order for the path: ``KIROCREW_EMBED_MODEL_PATH`` env, then the
+    ``memory.embed_model_path`` config knob. Returning ``None`` means "no custom
+    model configured" — it never means "configured but broken", which is
+    reported via :attr:`CustomModelSpec.error` instead.
+    """
+    memory_cfg = _read_memory_config()
+    raw = os.environ.get(_MODEL_PATH_ENV, "").strip()
+    origin = _MODEL_PATH_ENV
+    if not raw:
+        raw = str(memory_cfg.get("embed_model_path", "") or "").strip()
+        origin = "memory.embed_model_path"
+    if not raw:
+        return None
+
+    dim = _DEFAULT_DIM
+    raw_dim = memory_cfg.get("embedding_dim")
+    if isinstance(raw_dim, int) and not isinstance(raw_dim, bool) and raw_dim > 0:
+        dim = raw_dim
+    configured_id = str(memory_cfg.get("embed_model_id", "") or "").strip()
+
+    path = Path(raw).expanduser()
+    error = ""
+    if not path.is_absolute():
+        error = f"{origin} must be an absolute path (got {raw!r})"
+    elif _is_sensitive_model_path(path):
+        # Same gate every other file-access surface uses (hooks, artifacts,
+        # dashboard file I/O, knowledge indexing). A GGUF is handed to native
+        # llama.cpp to mmap and parse, so pointing this knob at a credential
+        # store or the governance trust-root would feed those bytes to native
+        # code. Refuse by path rather than relying on the parse to fail.
+        error = f"{origin} points at a protected location: {path}"
+    elif not path.exists():
+        error = f"{origin} points at a file that does not exist: {path}"
+    elif not path.is_file():
+        error = f"{origin} is not a regular file: {path}"
+    else:
+        try:
+            if path.stat().st_size <= _GGUF_MIN_BYTES:
+                error = (
+                    f"{origin} is too small to be model weights "
+                    f"({path.stat().st_size} bytes): {path}"
+                )
+        except OSError as exc:
+            error = f"{origin} could not be read: {exc}"
+    _log_custom_model_error(error)
+    return CustomModelSpec(path, _custom_model_id(path, configured_id), dim, error)
+
+
+# Last error reported by resolve_custom_model(), so a persistent misconfiguration
+# is logged once instead of on every call. The resolver is invoked from hot-ish
+# paths — model_file_present() runs it, and the dashboard polls the embedding
+# status endpoint every ~2s — so logging unconditionally would flood the log for
+# as long as the path stays broken. A CHANGED message still logs, and a resolve
+# that succeeds clears the state, so a fix-then-break cycle is not swallowed.
+_last_custom_model_error = ""
+
+
+def _log_custom_model_error(error: str) -> None:
+    global _last_custom_model_error
+    if error != _last_custom_model_error:
+        _last_custom_model_error = error
+        if error:
+            logger.error("Custom embedding model unusable — %s", error)
+
+
+def embedding_model_is_custom() -> bool:
+    """True when a custom model path is configured (valid or not).
+
+    Gates the default-model download: a configured custom model must never be
+    replaced by the bundled one, and a BROKEN custom path must not silently
+    fall back to it either.
+    """
+    return resolve_custom_model() is not None
+
+
+def active_model_path() -> Path:
+    """Path of the model actually in use — the custom one when configured."""
+    spec = resolve_custom_model()
+    return spec.path if spec is not None else default_model_path()
+
+
 def model_file_present(path: Path | None = None) -> bool:
-    """True when the GGUF exists and is not a truncated/placeholder file."""
-    target = path or default_model_path()
+    """True when the GGUF exists and is not a truncated/placeholder file.
+
+    Defaults to :func:`active_model_path`, so callers asking "is the embedding
+    model on disk?" get an answer about the model actually in use. Callers that
+    specifically mean the bundled download target (the download manager) pass
+    :func:`default_model_path` explicitly.
+    """
+    target = path or active_model_path()
     try:
         return target.is_file() and target.stat().st_size > _GGUF_MIN_BYTES
     except OSError:
         return False
+
+
+def embedding_space_signature(model_id: str, dim: int) -> str:
+    """Short signature of a vector space: vectors from different sigs are incomparable.
+
+    Single source of truth so vector memory and the knowledge library cannot
+    disagree about whether stored vectors are still valid. The knowledge
+    library folds this model identity into its own per-item signature (which
+    additionally covers its content budget); vector memory compares it against
+    the signature the database was last embedded under.
+    """
+    return hashlib.sha256(f"{model_id}|{dim}".encode()).hexdigest()[:16]
+
+
+def default_embedding_space_signature() -> str:
+    """Signature of the BUNDLED model's vector space.
+
+    Every vector stored before custom-model support existed was produced by the
+    bundled model at :data:`_DEFAULT_DIM` — the embedder was always constructed
+    with no arguments, so no other identity was reachable. That makes this the
+    provable identity of any un-versioned vector on disk, which is what lets
+    :meth:`~kiro_crew.vector_memory.VectorMemoryStore.reconcile_embedding_space`
+    decide whether such vectors belong to the space now in use.
+
+    Keyed on the bundled constants rather than on config, so it stays correct
+    however the active backend was selected — config knob, env var, or a
+    programmatic :func:`register_embedding_backend`.
+    """
+    return embedding_space_signature(_MODEL_ID, _DEFAULT_DIM)
+
+
+def active_embedding_space_signature() -> str:
+    """Signature of the vector space the ACTIVE backend produces.
+
+    Available without loading the model: ``model_id`` and ``dim`` are set when
+    the backend is constructed, so this is cheap enough to call on any startup
+    path.
+    """
+    backend = get_shared_embedder()
+    return embedding_space_signature(backend.model_id, backend.dim)
+
+
+def store_embedding_space_is_stale(store: "_ReconcilableStore") -> bool:
+    """True when *store*'s vectors were NOT produced by the active backend.
+
+    Read-only counterpart to :func:`reconcile_store_embedding_space`, for callers
+    that must detect the condition without mutating. An unrecorded space is
+    treated as the bundled model's, which is provable: nothing else could have
+    written those vectors before space tracking existed.
+    """
+    recorded = store.recorded_embedding_space() or default_embedding_space_signature()
+    return recorded != active_embedding_space_signature()
+
+
+def reconcile_store_embedding_space(store: "_ReconcilableStore") -> int:
+    """Reconcile *store* against the active embedding space. Returns rows invalidated.
+
+    THE single chokepoint for this. Reconciliation used to live inline in the
+    gateway's boot sweep, which meant every other process that opens a vector
+    store — ``kirocrew run`` (``cli_server``), the onboarding importer — loaded a
+    FAISS index built under the previous model and scored it against new-model
+    query vectors. Routing all of them through one named function is what keeps a
+    future entry point from silently reintroducing that.
+
+    Refuses to clear when the active backend is not ready and is not the bundled
+    model: clearing is destructive, and a backend that cannot load — a rejected
+    custom path yields exactly that — could never regenerate what was cleared, so
+    a single typo in ``memory.embed_model_path`` would otherwise cost the user
+    every stored vector. Callers that legitimately want the clear (the gateway
+    sweep) wait for readiness first. :func:`store_embedding_space_is_stale` is the
+    non-mutating probe for callers that cannot.
+
+    Callers that can also re-embed should follow this with
+    ``backfill_missing_embeddings()``; a one-shot CLI deliberately does not, so
+    the affected rows stay keyword-searchable until the gateway's sweep refills
+    them.
+    """
+    active = active_embedding_space_signature()
+    if active != default_embedding_space_signature() and not get_shared_embedder().is_ready():
+        logger.info(
+            "Skipping embedding-space reconciliation: the active backend is not "
+            "ready, so clearing stored vectors would leave nothing able to "
+            "re-embed them"
+        )
+        return 0
+    return store.reconcile_embedding_space(
+        active, clear_when_unknown=active != default_embedding_space_signature()
+    )
 
 
 # ── Embedding backend interface ──
@@ -315,7 +606,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
         dim: int = _DEFAULT_DIM,
         model_id: str = _MODEL_ID,
     ):
-        self._model_path = model_path or default_model_path()
+        self._model_path = model_path or active_model_path()
         self._dim = dim
         self._model_id = model_id
         self._llm: object | None = None
@@ -368,6 +659,21 @@ class LlamaCppEmbedder(EmbeddingBackend):
             if not model_file_present(self._model_path):
                 # Not a failure — the background download may still be in flight.
                 return
+            if _is_sensitive_model_path(self._model_path):
+                # THE security boundary: below this line the path is handed to
+                # native llama.cpp to open and mmap. resolve_custom_model()
+                # already reports a protected path via CustomModelSpec.error, but
+                # that is a diagnostic, not enforcement — this class can be
+                # constructed with an explicit path (and model_file_present() is
+                # passed one here, so it does not re-derive the active path).
+                # Refuse here so no construction route can feed a credential
+                # store or the governance trust-root to native code.
+                logger.error(
+                    "Refusing to load an embedding model from a protected location. "
+                    "Run 'kirocrew doctor' for the path."
+                )
+                self._load_failed_at = time.monotonic()
+                return
             self._load_thread = threading.Thread(
                 target=self._load_model, name="kc-embed-load", daemon=True
             )
@@ -390,6 +696,26 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 n_ubatch=_N_CTX,
                 verbose=False,
             )
+            # Validate the model's REAL output width against the configured dim
+            # before publishing it. Without this a custom model whose dim does
+            # not match memory.embedding_dim loads fine and then every embed
+            # call trips embed_batch's dim guard and returns None — indefinite
+            # silent keyword-only search with nothing explaining why. Fail the
+            # load instead, with the number the operator has to fix.
+            actual_dim = self._probe_dim(llm)
+            if actual_dim is not None and actual_dim != self._dim:
+                logger.error(
+                    "Embedding model %s produces %d-dim vectors but memory.embedding_dim "
+                    "is %d — refusing to load. Set memory.embedding_dim to %d "
+                    "(changing it re-embeds stored vectors).",
+                    self._model_path.name,
+                    actual_dim,
+                    self._dim,
+                    actual_dim,
+                )
+                self._load_failed_at = time.monotonic()
+                self._llm = None
+                return
             logger.info(
                 "Loaded embedding model %s in %.1fs",
                 self._model_path.name,
@@ -400,6 +726,24 @@ class LlamaCppEmbedder(EmbeddingBackend):
             logger.warning("Failed to load embedding model %s", self._model_path, exc_info=True)
             self._load_failed_at = time.monotonic()
             self._llm = None
+
+    @staticmethod
+    def _probe_dim(llm: object) -> int | None:
+        """Read a loaded model's embedding width, or None when unavailable.
+
+        ``n_embd()`` is llama.cpp's own accessor. Returning None on anything
+        unexpected keeps the check advisory — a runtime that does not expose it
+        must not be blocked from loading.
+        """
+        try:
+            n_embd = getattr(llm, "n_embd", None)
+            if not callable(n_embd):
+                return None
+            value = int(n_embd())
+            return value if value > 0 else None
+        except Exception:
+            logger.debug("Could not probe embedding dim", exc_info=True)
+            return None
 
     def _infer_loop(self, jobs: "queue.SimpleQueue[_InferJob | None]") -> None:
         """Worker body: run queued ``create_embedding`` calls, one at a time.
@@ -557,6 +901,43 @@ def register_embedding_backend(factory: "Callable[[], EmbeddingBackend] | None")
         _backend_factory = factory
 
 
+def default_embedding_backend() -> EmbeddingBackend:
+    """Build the backend the config asks for: a custom local model, or the bundled one.
+
+    This is the default factory behind :func:`get_shared_embedder`, so a custom
+    model reaches every consumer (vector memory, knowledge library, the MCP
+    server process) without any of them knowing it exists.
+    :func:`register_embedding_backend` still overrides it for other runtimes.
+    """
+    spec = resolve_custom_model()
+    if spec is None:
+        return LlamaCppEmbedder()
+    # A broken custom path is still honoured as "custom": the embedder will not
+    # load, embeddings stay unavailable, and memory degrades to keyword search.
+    # Falling back to the bundled model here would silently swap the vector
+    # space and re-embed everything — a far worse failure than no embeddings.
+    if spec.error:
+        # Do not point the embedder at a rejected path. For a protected path
+        # this matters beyond tidiness: the file may well exist and be large
+        # enough to pass model_file_present(), so handing it over would leave
+        # only LlamaCppEmbedder's own gate between it and llama.cpp. Keep the
+        # custom identity (so the vector space is still recognised as
+        # non-bundled) but give it a path that cannot resolve to a real file.
+        logger.error(
+            "Custom embedding model rejected (%s) — embeddings unavailable, "
+            "memory falls back to keyword search", spec.error,
+        )
+        return LlamaCppEmbedder(
+            model_path=models_dir() / _REJECTED_MODEL_SENTINEL,
+            dim=spec.dim,
+            model_id=spec.model_id,
+        )
+    logger.info(
+        "Using custom embedding model %s (id=%s, dim=%d)", spec.path, spec.model_id, spec.dim
+    )
+    return LlamaCppEmbedder(model_path=spec.path, dim=spec.dim, model_id=spec.model_id)
+
+
 def get_shared_embedder() -> EmbeddingBackend:
     """Process-wide embedder singleton.
 
@@ -566,7 +947,7 @@ def get_shared_embedder() -> EmbeddingBackend:
     global _shared_embedder
     with _shared_embedder_lock:
         if _shared_embedder is None:
-            _shared_embedder = (_backend_factory or LlamaCppEmbedder)()
+            _shared_embedder = (_backend_factory or default_embedding_backend)()
         return _shared_embedder
 
 
@@ -665,20 +1046,14 @@ def _resolve_model_url() -> str:
             "%s must be an https:// URL — ignoring the override and using "
             "the CDN default", _MODEL_URL_ENV,
         )
-    try:
-        path = config_path()
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            cfg_url = str(data.get("memory", {}).get("embed_model_url", "") or "").strip()
-            if cfg_url:
-                if cfg_url.lower().startswith("https://"):
-                    return cfg_url
-                logger.warning(
-                    "memory.embed_model_url must be an https:// URL — ignoring "
-                    "the override and using the CDN default",
-                )
-    except Exception:
-        logger.debug("Could not read embed_model_url from config", exc_info=True)
+    cfg_url = str(_read_memory_config().get("embed_model_url", "") or "").strip()
+    if cfg_url:
+        if cfg_url.lower().startswith("https://"):
+            return cfg_url
+        logger.warning(
+            "memory.embed_model_url must be an https:// URL — ignoring "
+            "the override and using the CDN default",
+        )
     return _DEFAULT_MODEL_URL
 
 
@@ -734,6 +1109,14 @@ class ModelDownloadManager:
         if self.model_ready():
             self.status = {"step": "ready", "error": "", "attempt": 0}
             return True
+        if embedding_model_is_custom():
+            # Reached via the dashboard's Enable/Retry click. Downloading the
+            # bundled model here would install a second model the embedder is
+            # not using, and would imply the custom one had been replaced.
+            msg = "a custom embedding model is configured (memory.embed_model_path)"
+            logger.info("Skipping default model download — %s", msg)
+            self.status = {"step": "custom_model", "error": "", "attempt": 0}
+            return False
         if os.environ.get(_SKIP_DOWNLOAD_ENV) == "1":
             logger.info("%s=1 — skipping embedding model download", _SKIP_DOWNLOAD_ENV)
             return False
@@ -923,12 +1306,19 @@ def reset_download_manager() -> None:
 def start_background_model_download() -> "asyncio.Task[bool] | None":
     """Kick the default-on background model download. Returns the task or None.
 
-    Called from gateway/server startup. Returns None when the model is
-    already present (nothing to do) or downloads are skipped via env.
-    Idempotent: a second call while a download is in flight returns the
-    existing task instead of spawning another.
+    Called from gateway/server startup. Returns None when a custom model is
+    configured (the bundled model must never overwrite or compete with it —
+    this is what makes a custom model survive a default-model version bump),
+    when the model is already present (nothing to do), or when downloads are
+    skipped via env. Idempotent: a second call while a download is in flight
+    returns the existing task instead of spawning another.
     """
     global _download_task
+    if embedding_model_is_custom():
+        logger.info(
+            "Custom embedding model configured — skipping the default model download"
+        )
+        return None
     mgr = model_download_manager()
     if mgr.model_ready():
         mgr.status = {"step": "ready", "error": "", "attempt": 0}

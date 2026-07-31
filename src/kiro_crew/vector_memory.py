@@ -201,9 +201,23 @@ def _migrate_v2(db: sqlite3.Connection) -> None:
             raise
 
 
+_MEMORY_META_TABLE = """
+CREATE TABLE IF NOT EXISTS memory_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+# memory_meta key holding the embedding_space_signature() the stored vectors
+# were produced under. Absent means "unknown" — see reconcile_embedding_space.
+_EMBED_SIG_KEY = "embedding_space_sig"
+
+
 _MIGRATIONS: list[tuple[int, str, "Callable[[sqlite3.Connection], None] | None"]] = [
     (1, _SCHEMA_V1, None),
     (2, "", _migrate_v2),
+    (3, _MEMORY_META_TABLE, None),
 ]
 
 _MAX_BACKFILLS_PER_CALL = 5  # cap lazy embedding backfills to bound latency
@@ -1918,6 +1932,152 @@ class VectorMemoryStore:
                 return None
         return None
 
+    def _read_meta(self, key: str) -> str | None:
+        """Read a ``memory_meta`` value, or None when absent."""
+        with self._db_lock:
+            row = self.db.execute("SELECT value FROM memory_meta WHERE key = ?", (key,)).fetchone()
+        return str(row["value"]) if row is not None else None
+
+    def _write_meta(self, key: str, value: str) -> None:
+        """Upsert a ``memory_meta`` value."""
+        with self._db_lock:
+            self.db.execute(
+                "INSERT INTO memory_meta (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at",
+                (key, value, _now_iso()),
+            )
+            self.db.commit()
+
+    def recorded_embedding_space(self) -> str | None:
+        """Signature the stored vectors were produced under, or None if unrecorded.
+
+        Read-only companion to :meth:`reconcile_embedding_space`, for callers that
+        must detect a stale vector space WITHOUT mutating — a one-shot CLI can
+        then degrade itself to keyword search instead of clearing vectors it has
+        no way to re-embed. ``None`` means the store predates space tracking, so
+        its vectors came from the bundled model.
+        """
+        return self._read_meta(_EMBED_SIG_KEY)
+
+    def reconcile_embedding_space(
+        self, signature: str, *, clear_when_unknown: bool = False
+    ) -> int:
+        """Discard embeddings produced by a DIFFERENT model. Returns rows invalidated.
+
+        Stored vectors are only comparable to each other when they came from the
+        same model at the same dimensionality. Nothing recorded which model
+        produced them, so swapping the embedding model used to corrupt search
+        silently: with a different dim the old rows were quietly dropped from the
+        index, and with the SAME dim (any other 1024-d model) stale vectors were
+        cosine-scored against new-model queries and returned meaningless
+        similarities.
+
+        This records the active vector space in ``memory_meta`` and, when it
+        changes, clears every stored embedding to NULL and drops the FAISS index.
+        That deliberately reuses the existing NULL-embedding machinery instead of
+        adding a parallel one: :meth:`backfill_missing_embeddings` already
+        re-embeds NULL episodic rows in batches and now repairs NULL lesson rows
+        alongside them, ``build_faiss_index`` and ``_sqlite_vector_search``
+        already skip NULL rows, and FTS keyword search is
+        unaffected — so search stays correct (just keyword-only for the affected
+        rows) while the re-embed proceeds, and an interrupted run is simply
+        resumed by the next sweep.
+
+        The first call on a pre-existing database has no recorded space to compare
+        against, and what to do then depends on whether the caller can ATTRIBUTE
+        those vectors:
+
+        - ``clear_when_unknown=False`` (default) — the active space is the one
+          that produced them (the bundled model), so stamp the signature and
+          change nothing. A plain upgrade must not force every user to re-embed
+          their whole memory.
+        - ``clear_when_unknown=True`` — the caller knows the active space did NOT
+          produce them, so they are foreign and get cleared. Callers decide this
+          by comparing the active signature against the bundled model's
+          (``embeddings.default_embedding_space_signature``), which is provable:
+          un-versioned vectors predate custom-model support, so the bundled model
+          is the only thing that could have written them. Deciding it that way
+          rather than by "is a custom model configured?" covers a model selected
+          by config, by env var, or by a programmatic
+          ``register_embedding_backend`` alike. Without this the common upgrade
+          order — stop, update, point ``embed_model_path`` at a model, start —
+          would stamp the NEW signature onto bundled-model vectors and they would
+          never be re-embedded.
+
+        A signature that already matches is a no-op regardless of
+        ``clear_when_unknown``, so a custom-model host does not re-clear on
+        every boot.
+        """
+        stored = self._read_meta(_EMBED_SIG_KEY)
+        if stored == signature:
+            return 0
+        if stored is None and not clear_when_unknown:
+            self._write_meta(_EMBED_SIG_KEY, signature)
+            logger.info("Recorded embedding vector space %s for existing memory", signature)
+            return 0
+
+        with self._db_lock:
+            try:
+                episodic = self.db.execute(
+                    "UPDATE episodic_memories SET embedding = NULL WHERE embedding IS NOT NULL"
+                ).rowcount
+                semantic = self.db.execute(
+                    "UPDATE semantic_memory SET embedding = NULL WHERE embedding IS NOT NULL"
+                ).rowcount
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+            self._faiss_index = None
+            self._faiss_id_map = []
+            stale_removal_failed = False
+            for stale in (self._faiss_path, self._faiss_path.with_suffix(".ids.json")):
+                try:
+                    stale.unlink(missing_ok=True)
+                except OSError:
+                    # A surviving index file is NOT cosmetic: load_faiss_index()
+                    # prefers the persisted pair, and its only consistency check
+                    # is index-vs-id-map (both intact here), so the next start
+                    # would load OLD vectors and score them against new-model
+                    # queries. Reachable on a read-only directory and on Windows,
+                    # where unlink fails while another process holds the index
+                    # mapped.
+                    stale_removal_failed = True
+                    logger.warning(
+                        "Could not remove stale FAISS file %s", stale, exc_info=True
+                    )
+        invalidated = max(0, episodic) + max(0, semantic)
+        if stale_removal_failed:
+            # Deliberately do NOT stamp the signature. Stamping would mark the
+            # reconciliation done while a stale index survives on disk, making
+            # the corruption permanent. Leaving the old signature makes the next
+            # boot retry — the embeddings are already NULL, so the retry is a
+            # cheap no-op UPDATE plus another unlink attempt.
+            logger.error(
+                "Embedding vector space NOT reconciled: stale FAISS files could not be "
+                "removed. Stored embeddings were cleared, but the signature is left "
+                "unchanged so the next start retries. Semantic search may be degraded "
+                "until then; delete %s and its .ids.json sidecar to resolve now.",
+                self._faiss_path,
+            )
+            return invalidated
+        self._write_meta(_EMBED_SIG_KEY, signature)
+        if invalidated:
+            logger.warning(
+                "Embedding model changed (vector space %s -> %s) — invalidated %d stored "
+                "embeddings (%d episodic, %d semantic). They are keyword-searchable now and "
+                "are re-embedded in the background.",
+                stored or "unrecorded",
+                signature,
+                invalidated,
+                episodic,
+                semantic,
+            )
+        else:
+            logger.info("Recorded embedding vector space %s (no stored vectors)", signature)
+        return invalidated
+
     def backfill_missing_embeddings(self) -> int:
         """Compute embeddings for episodic rows that have none, then rebuild FAISS.
 
@@ -1928,6 +2088,12 @@ class VectorMemoryStore:
         the onboarding importer. Once the model is present and ``embed_fn`` is
         bound, this sweep embeds those rows and rebuilds the vector index so they
         become semantically searchable.
+
+        Rows cleared by :meth:`reconcile_embedding_space` after an embedding-model
+        change arrive here the same way, so a model swap re-embeds through this
+        one path rather than a parallel one. Lesson vectors cleared by the same
+        call are repaired here too via :meth:`_backfill_lesson_embeddings`; the
+        returned count stays EPISODIC-only, which is what callers report.
 
         Idempotent and cheap in steady state: a no-op (returns 0) when there is
         no ``embed_fn``, numpy is missing, or no NULL-embedding rows remain.
@@ -1941,7 +2107,14 @@ class VectorMemoryStore:
         over these blobs), so the stored vectors are useful either way; the
         index rebuild below is simply skipped when faiss is absent.
         """
-        if self.embed_fn is None or not _HAS_NUMPY:
+        if self.embed_fn is None:
+            return 0
+        # Repair lesson vectors FIRST: they need no numpy (struct-packed and
+        # compared directly, never indexed), and they must be rebuilt even when
+        # there is not a single NULL episodic row — which is exactly the state
+        # after reconcile_embedding_space() on a memory that holds only lessons.
+        self._backfill_lesson_embeddings()
+        if not _HAS_NUMPY:
             return 0
         with self._db_lock:
             rows = self.db.execute(
@@ -1986,6 +2159,58 @@ class VectorMemoryStore:
                     self.build_faiss_index()
                     self.save_faiss_index()
             logger.info("Backfilled embeddings for %d episodic entries", embedded)
+        return embedded
+
+    def _backfill_lesson_embeddings(self) -> int:
+        """Embed lesson rows whose vector is NULL. Returns the count embedded.
+
+        Lesson vectors drive semantic dedup and contradiction detection
+        (:meth:`write_lesson`, :meth:`find_contradiction_candidates`). They are
+        otherwise only refilled lazily inside ``write_lesson``, capped at
+        ``_MAX_BACKFILLS_PER_CALL`` per call — fine for the handful of legacy rows
+        that cap was written for, but not for a wholesale invalidation: after
+        :meth:`reconcile_embedding_space` clears every lesson vector on a model
+        change, lesson writes are rare enough that recovery could take
+        arbitrarily long, and until then dedup silently degrades and can accept a
+        duplicate or contradictory lesson.
+
+        Scoped to ``lesson.*`` keys because those are the only semantic rows that
+        ever carry a vector — embedding every semantic KV would be new work, not a
+        repair. Failures leave the row NULL so a later sweep retries it, matching
+        the episodic sweep's contract. No FAISS involvement: lesson vectors are
+        compared directly, never indexed.
+        """
+        if self.embed_fn is None:
+            return 0
+        with self._db_lock:
+            rows = self.db.execute(
+                "SELECT key, value_json FROM semantic_memory "
+                "WHERE is_deleted = 0 AND embedding IS NULL AND key LIKE 'lesson.%'"
+            ).fetchall()
+        if not rows:
+            return 0
+        embedded = 0
+        for row in rows:
+            try:
+                text = str(json.loads(row["value_json"]))
+            except (ValueError, TypeError):
+                logger.debug("Skipping lesson %s with unparseable value", row["key"])
+                continue
+            vec = self._try_embed(text)
+            if not vec:
+                continue
+            # Stored un-normalized to match write_lesson(): _cosine_sim()
+            # normalizes both operands itself.
+            blob = struct.pack(f"{len(vec)}f", *vec)
+            with self._db_lock:
+                self.db.execute(
+                    "UPDATE semantic_memory SET embedding = ? WHERE key = ?",
+                    (blob, row["key"]),
+                )
+                self.db.commit()
+            embedded += 1
+        if embedded:
+            logger.info("Backfilled embeddings for %d lessons", embedded)
         return embedded
 
     def migrate_from_markdown(self) -> dict[str, int]:

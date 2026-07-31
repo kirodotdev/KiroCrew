@@ -43,6 +43,7 @@ from kiro_crew.embeddings import (
     _resolve_model_url,
     default_model_path,
     model_file_present,
+    resolve_custom_model,
 )
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
 from kiro_crew.mcp_discovery import McpServerInfo, probe_server
@@ -635,7 +636,21 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
         print("  runtime:     ❌ vendored runtime failed to load")
         issues.append("embedding runtime")
 
-    if model_file_present():
+    _custom = resolve_custom_model()
+    if _custom is not None:
+        # A custom model is configured. Never suggest the CDN here: the default
+        # model is deliberately not downloaded in this mode, so its reachability
+        # is irrelevant and pointing at it would be misleading advice.
+        if _custom.error:
+            print(f"  model:       ❌ custom model unusable — {_custom.error}")
+            issues.append("custom embedding model unusable")
+        elif model_file_present():
+            print(f"  model:       ✅ {_custom.path} (custom)")
+            print(f"  vector space: {_custom.model_id} @ {_custom.dim}d")
+        else:
+            print(f"  model:       ❌ custom model not readable: {_custom.path}")
+            issues.append("custom embedding model unreadable")
+    elif model_file_present():
         print(f"  model:       ✅ {default_model_path()}")
     else:
         print("  model:       ⏹ not downloaded yet (downloads in background on gateway start)")

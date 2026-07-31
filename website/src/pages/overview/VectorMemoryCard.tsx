@@ -34,6 +34,10 @@ interface EmbeddingStatus {
   model_available?: boolean
   model_id?: string
   model_dim?: number
+  // 'custom' means a user-supplied GGUF (memory.embed_model_path) is in use and
+  // the bundled model is never downloaded; model_path is that file.
+  model_source?: string
+  model_path?: string
   server_healthy?: boolean
   download_step?: string
   download_attempt?: number
@@ -117,13 +121,20 @@ export function formatEmbedModel(modelId?: string): string {
 // The model name is a technical identifier; the surrounding copy is localized.
 // Returns null when no model id is known, so the disclosure line is omitted.
 export function embedModelDisclosure(status?: EmbeddingStatus | null): { label: string; title: string } | null {
-  const name = formatEmbedModel(status?.model_id)
+  // A custom model's id is either operator-chosen or derived as
+  // 'custom:<file>:<size>'; neither reads well through formatEmbedModel, so
+  // label it by filename and put the full path in the tooltip.
+  const isCustom = status?.model_source === 'custom'
+  const customFile = (status?.model_path ?? '').split(/[\\/]/).pop() ?? ''
+  const name = isCustom && customFile ? customFile : formatEmbedModel(status?.model_id)
   if (!name) return null
   const dim = status?.model_dim
   const label = dim ? i18nT('pages.overview.vectorMemoryCard.embed_model_label', { model: name, dim }) : name
-  const title = dim
+  const baseTitle = dim
     ? i18nT('pages.overview.vectorMemoryCard.embed_model_runs_locally', { model: status?.model_id, dim })
     : String(status?.model_id ?? '')
+  // Technical identifiers only — no new localized copy needed.
+  const title = isCustom && status?.model_path ? `${baseTitle} — ${status.model_path}` : baseTitle
   return { label, title }
 }
 

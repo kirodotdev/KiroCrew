@@ -101,9 +101,11 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
 from kiro_crew.discord.gateway import maybe_start_discord
 from kiro_crew.embeddings import (
+    embedding_model_is_custom,
     get_shared_embedder,
     make_sync_embed_fn,
     model_file_present,
+    reconcile_store_embedding_space,
     start_background_model_download,
 )
 from kiro_crew.executors import (
@@ -4607,6 +4609,13 @@ class GatewayOrchestrator:
         if model_file_present():
             self.vector_memory.embed_fn = make_sync_embed_fn()
             logger.info("In-process embeddings ready (model already present)")
+        elif embedding_model_is_custom():
+            # No download will fix this — the operator has to correct the path.
+            # resolve_custom_model() already logged the specific reason.
+            logger.warning(
+                "Custom embedding model is not usable — memory falls back to keyword "
+                "search. Run 'kirocrew doctor' for the reason."
+            )
         else:
             logger.info(
                 "Embedding model not yet present — downloading in background; "
@@ -4646,6 +4655,19 @@ class GatewayOrchestrator:
             if store is None:
                 logger.debug("auto-migrate skipped: vector memory not initialised")
                 return
+            # Reconcile BEFORE phase 1 when the backend is ALREADY usable. A ready
+            # backend makes migration write real vectors, and write_episodic's
+            # FAISS dedup search would then query an index built at the previous
+            # model's dimensionality — faiss raises on the mismatch, which aborts
+            # migration AND phase 2, so the store would never reconcile, on every
+            # boot. No waiting here on purpose: when the backend is NOT ready,
+            # migration writes NULL vectors and skips the FAISS search entirely,
+            # so there is nothing to reconcile ahead of, and waiting would delay
+            # first-boot migration behind the model download.
+            if get_shared_embedder().is_ready():
+                await loop.run_in_executor(
+                    maintenance_executor(), reconcile_store_embedding_space, store
+                )
             # ── Phase 1: migrate ──
             if not self._cfg.memory.migrated:
                 # Bind embed_fn so migration writes real vectors when the model
@@ -4688,32 +4710,37 @@ class GatewayOrchestrator:
                     raise
                 except Exception:
                     logger.debug("model download task errored", exc_info=True)
-            if model_file_present():
+            # Gate on EMBEDDER READINESS, not on the bundled GGUF being on disk.
+            # model_file_present() is a proxy that only means anything for the
+            # file-backed llama.cpp backend: a backend installed via
+            # register_embedding_backend() (remote endpoint, ONNX, ...) can be
+            # ready with no local file at all, and gating on the file left it
+            # outside this block entirely — so its foreign vectors were never
+            # reconciled. Readiness is the property actually required here.
+
+            def _wait_then_backfill() -> int:
+                embedder = get_shared_embedder()
+                # wait_ready() is on the llama.cpp backend but not the
+                # EmbeddingBackend ABC (a swapped-in backend may not support
+                # blocking-wait); fall back to is_ready() when absent.
+                wait_ready = getattr(embedder, "wait_ready", None)
+                ready = wait_ready(timeout=120) if callable(wait_ready) else embedder.is_ready()
+                if not ready:
+                    logger.info(
+                        "Embedding model not ready within timeout; deferring "
+                        "re-embed sweep to a later boot"
+                    )
+                    return 0
                 if store.embed_fn is None:
                     store.embed_fn = make_sync_embed_fn()
+                # Reconcile BEFORE the sweep: a model change clears stale vectors
+                # to NULL and the same sweep re-embeds them in one pass. Routed
+                # through the shared chokepoint so every process that opens a
+                # store reconciles identically (see reconcile_store_embedding_space).
+                reconcile_store_embedding_space(store)
+                return store.backfill_missing_embeddings()
 
-                # model_file_present() only means the GGUF is on disk — the
-                # in-memory load is async and the first embed returns None while
-                # it warms up. Block (in the worker thread) until the model is
-                # actually loaded, else backfill_missing_embeddings would embed
-                # zero rows and no later sweep is scheduled. On timeout, skip and
-                # let a later boot's sweep backfill.
-                def _wait_then_backfill() -> int:
-                    embedder = get_shared_embedder()
-                    # wait_ready() is on the llama.cpp backend but not the
-                    # EmbeddingBackend ABC (a swapped-in backend may not support
-                    # blocking-wait); fall back to is_ready() when absent.
-                    wait_ready = getattr(embedder, "wait_ready", None)
-                    ready = wait_ready(timeout=120) if callable(wait_ready) else embedder.is_ready()
-                    if not ready:
-                        logger.info(
-                            "Embedding model not ready within timeout; deferring "
-                            "re-embed sweep to a later boot"
-                        )
-                        return 0
-                    return store.backfill_missing_embeddings()
-
-                await loop.run_in_executor(maintenance_executor(), _wait_then_backfill)
+            await loop.run_in_executor(maintenance_executor(), _wait_then_backfill)
         except asyncio.CancelledError:
             raise
         except Exception:

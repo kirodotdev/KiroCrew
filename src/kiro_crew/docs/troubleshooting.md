@@ -90,6 +90,9 @@ every gateway start. If it keeps failing:
 - Mirrored/airgapped hosts: point `KIROCREW_EMBED_MODEL_URL` (or the
   `memory.embed_model_url` config knob) at a mirror hosting the GGUF — the
   sha256 pin still verifies whatever is downloaded
+- Want to run a different embedding model entirely? Set
+  `memory.embed_model_path` to a local GGUF (see below) — the default model is
+  then never downloaded at all
 - Retry via the dashboard Overview → Memory tab → Enable/Retry button (it
   kicks the download in the background and shows progress) — or do nothing;
   it retries automatically on the next gateway start
@@ -106,6 +109,33 @@ every gateway start. If it keeps failing:
   unset it or download once from a machine where it isn't set
 - While the model is absent, memory falls back to keyword search — this is
   expected, not an error; semantic search resumes once the model is ready
+
+### Using your own embedding model
+
+Point `memory.embed_model_path` (or `KIROCREW_EMBED_MODEL_PATH`) at an absolute path to a local GGUF, and set `memory.embedding_dim` to that model's output width:
+
+```json
+{
+  "memory": {
+    "embed_model_path": "/home/you/models/bge-m3-q8_0.gguf",
+    "embedding_dim": 1024
+  }
+}
+```
+
+What changes when a custom model is configured:
+
+- The bundled Qwen3 model is **never** downloaded or installed, so your model survives a default-model version change.
+- Stored embeddings are **regenerated automatically**, because the model change alters the vector space. Vector memory clears its stale vectors and re-embeds them in the background; the Knowledge Library re-embeds items whose signature no longer matches on its next watcher sweep. Affected entries stay keyword-searchable throughout, and an interrupted re-embed resumes on the next sweep.
+- The dashboard Memory tab reports `custom` as the model source and shows the path. The Enable/Retry button is not offered — retrying would fetch the bundled model, which is not the one in use.
+
+Common problems:
+
+- **`kirocrew doctor` says "custom model unusable"** — the path is relative, missing, a directory, or too small to be model weights. The exact reason is printed. A broken path deliberately does **not** fall back to the bundled model: doing so would silently swap your vector space and re-embed your whole corpus because of a typo. Embeddings stay unavailable (keyword search still works) until the path is fixed.
+- **Log says "produces N-dim vectors but memory.embedding_dim is M — refusing to load"** — set `memory.embedding_dim` to the number in the message. This is checked at load precisely so a mismatch is not an unexplained silent loss of semantic search.
+- **Swapped models but nothing re-embedded** — the default vector-space identity is derived from the file's name and size, so two different models of identical byte size look the same. Set `memory.embed_model_id` explicitly to distinguish them.
+
+The knob is config-file only — it is intentionally not editable from the dashboard or the API, because a GGUF is parsed by native llama.cpp code and a model file is therefore a trust boundary. The bundled model is sha256-pinned because it arrives over the network; your local file is trusted because you placed it there.
 
 ### High memory usage with embeddings
 

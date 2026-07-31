@@ -21,6 +21,7 @@ from kiro_crew.embeddings import (
     make_sync_embed_fn,
     model_download_manager,
     model_file_present,
+    resolve_custom_model,
 )
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
@@ -309,6 +310,25 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     mgr = model_download_manager()
     step = str(mgr.status["step"])
     model_present = model_file_present()
+    custom = resolve_custom_model()
+
+    setup_step = _SETUP_STEP_LEGACY.get(step, step)
+    setup_error = str(mgr.status["error"])
+    can_retry = step == "failed" and bool(setup_error)
+    if custom is not None:
+        # No download is pending or possible in custom mode, so the download
+        # manager's step ("idle" — it never ran) would leave the frontend
+        # polling forever. Report a TERMINAL state derived from whether the
+        # configured file is actually usable, and never offer Retry: retrying
+        # would download the bundled model, which is not the one in use.
+        can_retry = False
+        if custom.error or not model_present:
+            setup_step = "error"
+            setup_error = custom.error or f"custom embedding model not readable: {custom.path}"
+        else:
+            setup_step = "done"
+            setup_error = ""
+
     return web.json_response(
         {
             # Embeddings are always-on since the in-process runtime landed.
@@ -325,19 +345,25 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
             # Memory tab can show users exactly which model runs locally.
             "model_id": embedder.model_id,
             "model_dim": embedder.dim,
+            # Provenance: "custom" means a user-supplied GGUF from
+            # memory.embed_model_path is in use and the bundled model is never
+            # downloaded. The path is shown so a misconfiguration is diagnosable
+            # from the UI rather than only from the logs.
+            "model_source": "custom" if custom is not None else "default",
+            "model_path": str(custom.path) if custom is not None else "",
             # "healthy" = embeddings usable now or ready to lazily activate:
             # the model file being present is what matters — the in-memory
             # load happens automatically on first embed.
             "server_healthy": model_present or embedder.is_ready(),
             "needs_docker": False,
             "docker_available": True,
-            "setup_step": _SETUP_STEP_LEGACY.get(step, step),
+            "setup_step": setup_step,
             "download_step": step,
             "download_attempt": mgr.status["attempt"],
             "bytes_downloaded": mgr.status.get("bytes_downloaded", 0),
             "bytes_total": mgr.status.get("bytes_total", 0),
-            "setup_error": mgr.status["error"],
-            "can_retry": step == "failed" and bool(mgr.status["error"]),
+            "setup_error": setup_error,
+            "can_retry": can_retry,
         }
     )
 
