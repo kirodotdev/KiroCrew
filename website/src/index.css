@@ -1115,17 +1115,15 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    requires that), so they are themed from here rather than by editing the art.
    This is the pattern a new theme follows: register the artwork, then style it. */
 .csb4 .lyr>.kp{width:100%;height:100%;object-fit:contain}
-/* The art is a fixed white body with black eyes, which reads on the dark palette
-   as-is. On the light palette it needs an outline: a drop-shadow chain traces the
-   image's rendered alpha, so one asset serves both themes and no per-theme variant
-   (or SVG editing) is required. Offsets every 45° at ~0.6px keep it a hairline. */
-[data-theme="kiro-light"] .csb4 .lyr>.kp{
-  filter:
-    drop-shadow(.6px 0 0 #000) drop-shadow(.45px .45px 0 #000)
-    drop-shadow(0 .6px 0 #000) drop-shadow(-.45px .45px 0 #000)
-    drop-shadow(-.6px 0 0 #000) drop-shadow(-.45px -.45px 0 #000)
-    drop-shadow(0 -.6px 0 #000) drop-shadow(.45px -.45px 0 #000);
-}
+/* The outline is a REAL vector stroke baked into each pose asset (black, scaled
+   per-viewBox so all 8 render at the same 1px), not a CSS effect. Chained
+   drop-shadows were tried first and rejected: each pass shadows the *result* of
+   the previous one, so the weight compounds and reads as a soft, heavy band
+   rather than a line. A stroke with paint-order:stroke sits outside the
+   silhouette and stays crisp at any size.
+   The stroke is in the shared asset, so it applies on both palettes — on the
+   dark surface a black edge against a near-black background is imperceptible,
+   which is why no dark-theme override is needed. */
 @keyframes grow{0%{width:15%}50%{width:45%}100%{width:60%}}
 @property --glow-strength{syntax:'<number>';inherits:false;initial-value:0}
 @keyframes approval-glow{0%,100%{--glow-strength:0}50%{--glow-strength:1}}
