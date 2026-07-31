@@ -432,7 +432,9 @@ class ArtifactKnowledgeSync:
             if action == "delete":
                 src = self.kstore.get_source_by_uri(ARTIFACT_SOURCE_URI)
                 if src:
-                    remove_artifact(self.kstore, src["id"], slug)
+                    # Same reasoning as the eligibility path below: a batch delete
+                    # plus a graph reload is not loop-safe work.
+                    await asyncio.to_thread(remove_artifact, self.kstore, src["id"], slug)
                 return
             if action == "rename":
                 # Metadata-only rename: refresh the stored display name (the
@@ -457,6 +459,29 @@ class ArtifactKnowledgeSync:
                     )
                 return
             source_id, _ = ensure_artifact_source(self.kstore)
+            # An upsert can arrive because the artifact's KIND changed, and kind
+            # is what decides eligibility. ``ingest_artifact`` early-returns on an
+            # ineligible kind, so re-ingesting alone would leave the chunks from
+            # the previous kind searchable -- markdown ingested, switched to svg,
+            # obsolete prose still answering queries. Reconcile that here: an
+            # artifact that is no longer eligible is removed rather than skipped.
+            try:
+                art = await asyncio.to_thread(self.art_store.get, slug)
+            except ArtifactNotFoundError:
+                return
+            if art.kind not in self.kinds:
+                removed = await asyncio.to_thread(
+                    remove_artifact, self.kstore, source_id, slug
+                )
+                if removed:
+                    logger.info(
+                        "artifact KB sync: %s is no longer an eligible kind (%s); "
+                        "removed %d chunk(s)",
+                        slug,
+                        art.kind,
+                        removed,
+                    )
+                return
             await ingest_artifact(
                 self.pipeline, self.art_store, slug, source_id, self.kinds
             )

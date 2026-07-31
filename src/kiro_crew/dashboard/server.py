@@ -75,6 +75,7 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_session_docs,
     api_artifact_set_folder,
     api_artifact_set_pinned,
+    api_artifact_settle_blank,
     api_artifact_unpublish,
     api_artifact_update,
     api_artifact_update_sharing,
@@ -941,6 +942,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/artifacts/{slug}", api_artifact_detail)
     app.router.add_patch("/api/artifacts/{slug}", api_artifact_update)
     app.router.add_delete("/api/artifacts/{slug}", api_artifact_delete)
+    app.router.add_post("/api/artifacts/{slug}/settle", api_artifact_settle_blank)
     app.router.add_get("/api/artifacts/{slug}/versions", api_artifact_versions)
     app.router.add_get("/api/artifacts/{slug}/versions/{version}", api_artifact_version_detail)
     app.router.add_get("/api/artifacts/{slug}/events", api_artifact_events)

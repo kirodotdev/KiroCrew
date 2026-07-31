@@ -24,6 +24,7 @@ import { sanitize } from '../api/helpers'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { framablePreviewUrl } from '../lib/safeUrl'
+import { markJustCreatedBlank } from '../lib/blankHandoff'
 import { IMPORT_ACCEPT, IMPORTABLE_EXT_LIST, MAX_IMPORT_BYTES, planFileImport, wasContentRedacted, type ImportPlan, type ImportRejection } from '../lib/artifactImport'
 import { useAppPreview } from '../components/WebAppArtifactCard'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
@@ -1453,6 +1454,53 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     addArtifactMut.mutate({ ...result.plan, folder: parent })
   }, [addArtifactMut, view, filtersActive, scopeFolderId])
 
+  // ── New Artifact — start a blank document in the library ───────
+  // Create-first, name-later: the artifact is created empty and the detail
+  // page opens with its editor already focused, so the user starts typing
+  // immediately instead of answering a name prompt before they know what
+  // they are writing. The kind is left unspecified so the store defaults it
+  // to markdown and marks it auto-assigned — the first save that looks like
+  // JSON or SVG re-types it (see detect_editor_kind in artifacts.py).
+  //
+  // The cost of create-first is litter (abandoned empty documents); the
+  // detail page pays for it by discarding an untouched blank on leave, which
+  // is why `justCreatedBlank` is handed over in navigation state.
+  const newArtifactMut = useMutation({
+    mutationFn: async (vars: { folder: string }) => {
+      const art = (await api.createArtifact({
+        name: i18nT('pages.artifactsPage.untitled_artifact_name'),
+        content: '',
+      })) as Artifact
+      let filed = true
+      if (vars.folder) {
+        try {
+          // Same reasoning as the import path: file by id through the
+          // dedicated endpoint, which errors on a stale folder id rather
+          // than minting a junk folder from it.
+          await api.setArtifactFolder(art.slug, vars.folder)
+        } catch {
+          filed = false
+        }
+      }
+      return { art, filed }
+    },
+    onSuccess: ({ art, filed }) => {
+      qc.invalidateQueries({ queryKey: ['artifacts'] })
+      invalidateFolders()
+      if (!filed) setAddError(i18nT('pages.artifactsPage.add_artifact_error_unfiled'))
+      // One-shot, module-scoped: a reload must NOT re-arm the detail page's
+      // cleanup on a document the user has come back to.
+      markJustCreatedBlank(art.slug, art.name)
+      navigate(`/artifacts/${art.slug}`)
+    },
+  })
+  const handleNewArtifact = useCallback(() => {
+    setAddError(null)
+    if (newArtifactMut.isPending) return
+    const parent = view === 'grid' && !filtersActive ? scopeFolderId : ''
+    newArtifactMut.mutate({ folder: parent })
+  }, [newArtifactMut, view, filtersActive, scopeFolderId])
+
   const folderActions = useMemo<FolderActions>(() => ({
     onOpen: openFolder,
     onRename: (f) => setRenamingFolderId(f.id),
@@ -1713,15 +1761,14 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   }, [deleteMut])
 
   const errMessage = error ? (error instanceof Error ? error.message : String(error)) : null
+  const asMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
   const mutErr = deleteMut.error
-    ? deleteMut.error instanceof Error
-      ? deleteMut.error.message
-      : String(deleteMut.error)
+    ? asMessage(deleteMut.error)
     : addArtifactMut.error
-      ? addArtifactMut.error instanceof Error
-        ? addArtifactMut.error.message
-        : String(addArtifactMut.error)
-      : null
+      ? asMessage(addArtifactMut.error)
+      : newArtifactMut.error
+        ? asMessage(newArtifactMut.error)
+        : null
 
   if (isLoading) return <div className="p-6 text-muted">{i18nT('pages.artifactsPage.loading')}</div>
 
@@ -1736,16 +1783,42 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               <div className="text-sm text-danger font-medium">{i18nT('pages.artifactsPage.error')}</div>
               <div className="text-[13px] text-danger/90 mt-0.5">{errMessage || mutErr || addError}</div>
             </div>
-            <Btn aria-label={i18nT('app.dismiss')} onClick={() => { deleteMut.reset(); addArtifactMut.reset(); setAddError(null) }} className="text-danger/60 hover:text-danger shrink-0"><X className="lucide-inline" /></Btn>
+            <Btn aria-label={i18nT('app.dismiss')} onClick={() => { deleteMut.reset(); addArtifactMut.reset(); newArtifactMut.reset(); setAddError(null) }} className="text-danger/60 hover:text-danger shrink-0"><X className="lucide-inline" /></Btn>
           </div>
         )}
 
         <div className="flex items-center justify-between gap-3 mb-3">
           <h3 className="text-sm font-semibold text-text-strong">{i18nT('pages.artifactsPage.your_artifacts')}</h3>
           <div className="flex items-center gap-2">
-            <Btn onClick={handleAddArtifact} disabled={addArtifactMut.isPending} className="flex items-center gap-1.5" title={i18nT('pages.artifactsPage.add_a_file_from_your_computer_to_the_library')}>
-              {addArtifactMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <FilePlus size={13} />} {i18nT('pages.artifactsPage.add_artifact')}
-            </Btn>
+            {/* Split button: creating a blank document is the common verb and
+              * gets the zero-click path; importing a file keeps its muscle
+              * memory one click away under the caret. */}
+            <div className="flex items-center">
+              <Btn
+                onClick={handleNewArtifact}
+                disabled={newArtifactMut.isPending}
+                className="flex items-center gap-1.5 rounded-r-none"
+                title={i18nT('pages.artifactsPage.start_a_new_blank_document_in_the_library')}
+              >
+                {newArtifactMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <FilePlus size={13} />} {i18nT('pages.artifactsPage.new_artifact')}
+              </Btn>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Btn
+                    aria-label={i18nT('pages.artifactsPage.more_ways_to_add_an_artifact')}
+                    disabled={addArtifactMut.isPending}
+                    className="rounded-l-none border-l-0 px-1"
+                  >
+                    {addArtifactMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <ChevronDown size={13} />}
+                  </Btn>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={handleAddArtifact}>
+                    <FileText size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.import_from_a_file')}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
             <Input
               ref={addFileInputRef}
               type="file"

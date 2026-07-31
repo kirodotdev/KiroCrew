@@ -10,6 +10,7 @@ import type {
   SessionDoc,
 } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
+import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { installApiTransport } from './apiTransport'
 import { queryClient } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
@@ -652,15 +653,43 @@ const jNullable = async (r: Response) => {
 // Without it, browser requests would skip the `if sk:` check — a fail-open
 // path that an MCP subprocess could exploit by omitting its own header.
 const _sk = { 'X-Session-Key': 'dashboard:ui' }
+
+/**
+ * Count a mutating request against the artifact it targets, so the leave-time
+ * cleanup can tell an unacknowledged write from a document nobody touched.
+ *
+ * Hooked HERE, at the transport, rather than in each caller: the previous design
+ * asked every write path to announce itself and repeatedly shipped one that did
+ * not, letting a document be deleted with its own PATCH still in the air. A
+ * request cannot be issued without passing through these five helpers, so this
+ * cannot be forgotten by a new call site. `settle` itself is excluded — it is the
+ * cleanup, not a user write, and counting it would have it guard against itself.
+ */
+const ARTIFACT_WRITE_RE = /\/api\/artifacts\/([^/?#]+)/
+function trackArtifactWrite(url: string, res: Promise<Response>): Promise<Response> {
+  const m = ARTIFACT_WRITE_RE.exec(url)
+  if (!m || url.includes('/settle')) return res
+  let slug: string
+  try {
+    slug = decodeURIComponent(m[1])
+  } catch {
+    slug = m[1]
+  }
+  beginArtifactWrite(slug)
+  // `finally` on both paths: a FAILED write clears too, which is correct — the
+  // server never applied it, so the record it re-reads is authoritative anyway.
+  return res.finally(() => endArtifactWrite(slug))
+}
+
 const get = (url: string) => fetch(url, { headers: { ..._sk } })
 const post = (url: string, body?: object) =>
-  fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: body ? JSON.stringify(body) : undefined })
+  trackArtifactWrite(url, fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: body ? JSON.stringify(body) : undefined }))
 const put = (url: string, body: object) =>
-  fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
+  trackArtifactWrite(url, fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) }))
 const del = (url: string, body?: object) =>
-  fetch(url, { method: 'DELETE', headers: body ? { 'Content-Type': 'application/json', ..._sk } : _sk, body: body ? JSON.stringify(body) : undefined })
+  trackArtifactWrite(url, fetch(url, { method: 'DELETE', headers: body ? { 'Content-Type': 'application/json', ..._sk } : _sk, body: body ? JSON.stringify(body) : undefined }))
 const patch = (url: string, body: object) =>
-  fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
+  trackArtifactWrite(url, fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) }))
 
 // Publish the blessed transport so a downstream edition can build its OWN typed
 // API module on the SAME session-key-authenticated helpers as core methods
@@ -1552,7 +1581,16 @@ export const api = {
     }).then(j),
   createArtifact: (body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string; folder?: string }) =>
     post('/api/artifacts', body).then(j),
-  updateArtifact: (slug: string, body: { content?: string; name?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>
+  /** Atomically resolve a just-created blank document being left: keep it, save
+   *  the draft still in the editor, or delete the abandoned shell. The store
+   *  decides under its own lock -- deciding here would race a concurrent save. */
+  settleBlankArtifact: (
+    slug: string,
+    body: { untitled_name: string; draft: string; allow_delete: boolean },
+  ) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/settle`, body).then(j) as
+      Promise<{ outcome: 'kept' | 'saved' | 'deleted' }>,
+  updateArtifact: (slug: string, body: { content?: string; name?: string; kind?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}`, body).then(j),
   deleteArtifact: (slug: string) => del(`/api/artifacts/${encodeURIComponent(slug)}`).then(j),
   // Artifact library folders

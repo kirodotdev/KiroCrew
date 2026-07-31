@@ -311,6 +311,16 @@ class Artifact:
     slug: str
     name: str
     kind: str = "widget"
+    #: True when ``kind`` was assigned by the store rather than chosen by the
+    #: caller. Set only for a document created BLANK — no content to sniff and
+    #: no pinned kind — which is the library's "New artifact" action. While it
+    #: stays true, every content write re-runs :func:`detect_editor_kind` so the
+    #: document can settle into ``json`` / ``svg`` once the user has typed
+    #: enough to tell what it is. Passing an explicit ``kind`` to
+    #: :meth:`ArtifactStore.update` pins the kind and clears this flag.
+    #: Tolerant-loaded: every artifact that predates the field defaults to
+    #: ``False`` and is therefore never re-typed.
+    kind_auto: bool = False
     source: str = "chat"
     description: str = ""
     tags: _List[str] = field(default_factory=list)
@@ -440,6 +450,16 @@ def _validate_slug(slug: str) -> str:
     return slug
 
 
+#: Kinds a HUMAN may select for an artifact from the dashboard's type control.
+#: A strict subset of :data:`ALLOWED_KINDS`, and deliberately the same set the
+#: frontend's ``isEditableKind`` treats as inline-editable: ``widget`` / ``html``
+#: render in a sandboxed iframe with no editor, so offering them would let the
+#: user strand the document they are typing in, and ``webapp`` carries deploy
+#: metadata that a hand-flip would desynchronise. Agents and importers still
+#: reach the full :data:`ALLOWED_KINDS` set; this bounds the UI surface only.
+USER_SELECTABLE_KINDS = frozenset({"markdown", "text", "json", "svg"})
+
+
 def _validate_kind(kind: str) -> str:
     if kind not in ALLOWED_KINDS:
         raise ArtifactValidationError(
@@ -474,6 +494,54 @@ _HTML_SNIFF_MARKERS = (
 
 #: A leading markdown ATX heading (``#`` .. ``######`` followed by whitespace).
 _MD_HEADING_RE = re.compile(r"^#{1,6}\s")
+
+#: An ``<svg>`` document root, optionally preceded by an XML declaration and/or
+#: an SVG doctype. Anchored so a stray ``<svg>`` in the middle of a markdown
+#: document never re-types it.
+_SVG_ROOT_RE = re.compile(
+    r"^(?:<\?xml[^>]*\?>\s*|<!DOCTYPE\s+svg[^>]*>\s*)*<svg[\s>]",
+    re.IGNORECASE,
+)
+
+
+def detect_editor_kind(content: str) -> str | None:
+    """Detect the structured kind of hand-authored ``content``, or ``None``.
+
+    Used by :meth:`ArtifactStore.update` to re-type a document that was created
+    blank (``kind_auto``) once its content becomes recognizable. It only ever
+    returns an **editable** kind — ``json`` or ``svg`` — and returns ``None``
+    for anything it cannot positively identify.
+
+    Two deliberate exclusions:
+
+    * ``html`` / ``widget`` are never returned. Both render in a sandboxed
+      iframe and are NOT inline-editable (see ``isEditableKind`` on the
+      frontend), so promoting a document the user is *typing in* to either one
+      would rip the editor away mid-sentence. Markdown passes raw HTML through
+      to its renderer anyway, so a hand-written HTML document still renders
+      while staying editable.
+    * a bare JSON scalar (``42``, ``true``, a quoted string) is valid JSON but
+      far more likely to be prose, so only a whole document parsing as an
+      object or an array counts.
+
+    Returning ``None`` rather than ``"markdown"`` for unrecognized content is
+    what makes re-typing stable: a JSON document left mid-edit with a syntax
+    error detects as nothing and keeps the kind it already had, instead of
+    flapping back to markdown on every save.
+    """
+    sniff = (content or "").strip()
+    if not sniff:
+        return None
+    if _SVG_ROOT_RE.match(sniff):
+        return "svg"
+    if sniff[0] in "{[":
+        try:
+            parsed = json.loads(sniff)
+        except ValueError:
+            return None
+        if isinstance(parsed, (dict, list)):
+            return "json"
+    return None
 
 
 #: Text document extensions used by the "session docs" feature (virtual All
@@ -753,6 +821,17 @@ class ArtifactStore:
         # Infer the kind when the caller didn't pin one (explicit kind always
         # wins). Validated content is needed for the inline content sniff, so
         # this runs after _validate_content.
+        #
+        # A document created BLANK is the one case inference cannot help with —
+        # there is nothing to sniff — and it is exactly what the library's "New
+        # artifact" action creates. Default it to markdown (the editable prose
+        # default) and record that the kind was auto-assigned, so the first real
+        # content write can settle it into json / svg (see
+        # :func:`detect_editor_kind`). A caller that pinned a kind, or supplied
+        # real content or a source_path, has a genuine signal and is left alone.
+        kind_auto = kind is None and not source_path and not content.strip()
+        if kind_auto:
+            kind = "markdown"
         kind = _validate_kind(_infer_kind(content, source_path, kind))
         source = _validate_source(source)
         description = _validate_description(description)
@@ -771,6 +850,7 @@ class ArtifactStore:
                 slug=slug,
                 name=name,
                 kind=kind,
+                kind_auto=kind_auto,
                 source=source,
                 description=description,
                 tags=tags_list,
@@ -1022,6 +1102,7 @@ class ArtifactStore:
             art = self._load_meta(slug)
             changed_content = False
             name_changed = False
+            kind_changed = False
             if content is not None:
                 content = _validate_content(content)
                 changed_content = True
@@ -1039,7 +1120,12 @@ class ArtifactStore:
                 # are an already-wrapped document → ``html``). A kind change
                 # alone does not bump the version; the per-version kind is
                 # recorded in the snapshot branch below when content changes.
-                art.kind = _validate_kind(kind)
+                new_kind = _validate_kind(kind)
+                kind_changed = new_kind != art.kind
+                art.kind = new_kind
+                # An explicit kind is the caller's decision — stop re-detecting
+                # from content on subsequent saves.
+                art.kind_auto = False
             if webapp_metadata is not None:
                 art.webapp_metadata = webapp_metadata
             art.updated_at = _now_iso()
@@ -1071,6 +1157,25 @@ class ArtifactStore:
                 # snapshot-without-content path sets art.content from disk
                 # without populating ``content``.
                 live_content = art.content or ""
+                # Settle an auto-assigned kind now that there is something to
+                # look at. A document created blank starts as markdown; the
+                # first save that makes it recognizably JSON or SVG re-types it
+                # so it gets the right renderer. Detection only ever returns an
+                # editable kind and returns None for anything unrecognized, so
+                # this can neither strand the user's editor nor flap the kind
+                # back on a mid-edit syntax error. An explicit ``kind`` on this
+                # call already cleared ``kind_auto`` above, so a pinned artifact
+                # is never touched here.
+                if art.kind_auto:
+                    detected = detect_editor_kind(live_content)
+                    if detected and detected != art.kind:
+                        logger.info(
+                            "artifact kind auto-detected: slug=%s %s->%s",
+                            slug,
+                            art.kind,
+                            detected,
+                        )
+                        art.kind = detected
                 prev = self._artifact_dir(slug) / "current.html"
                 self._write_text(prev, live_content)
                 if art.source_path:
@@ -1135,12 +1240,17 @@ class ArtifactStore:
                 changed_content,
                 snapshot,
             )
-            fire_upsert = changed_content
-            fire_rename = name_changed and not changed_content
+            fire_upsert = changed_content or kind_changed
+            fire_rename = name_changed and not fire_upsert
         # A content change is worth re-ingesting; a metadata-only rename just
         # refreshes the KB group label (no chunk churn). Description/tag-only
         # updates fire nothing. Fire outside the lock so the listener may call
         # get().
+        #
+        # A KIND change fires too, even with identical content: Knowledge
+        # eligibility is keyed on kind, so switching markdown → svg has to be
+        # reconciled or the obsolete chunks stay searchable. The listener owns
+        # that decision (re-ingest or remove); the store only reports the change.
         if fire_upsert:
             self._fire_change("upsert", slug)
         elif fire_rename:
@@ -1314,6 +1424,114 @@ class ArtifactStore:
             self._fire_change("delete", art.slug)
             deleted += 1
         return deleted
+
+    def settle_blank(
+        self,
+        slug: str,
+        *,
+        untitled_name: str,
+        draft: str = "",
+        allow_delete: bool = True,
+    ) -> str:
+        """Atomically resolve a just-created blank document that is being left.
+
+        The library's "New artifact" action creates a document empty and opens it.
+        When the user navigates away, one of three things should happen — keep it
+        (they invested something), save the draft still sitting in the editor, or
+        delete the empty shell they abandoned. This decides which, and acts, in a
+        SINGLE lock acquisition.
+
+        That atomicity is the whole point. Deciding client-side means reading the
+        artifact, then acting on it, with a window in between — and a save landing
+        in that window from a popout window or an agent gets overwritten or
+        deleted. No amount of re-reading closes it, because the gap is between the
+        read and the write, not inside the read. :meth:`prune_auto_widgets` faces
+        the identical hazard and resolves it the same way: re-check and act without
+        letting go of the lock.
+
+        "Untouched" means untouched on every axis the record can report:
+
+        * still at version 1 — a snapshot is history worth keeping even if the live
+          body was emptied again afterwards;
+        * still carrying the caller's untitled placeholder as its name;
+        * empty content;
+        * no tags, no description;
+        * not filed, not starred, not published, not a fork;
+        * no ``comments.json`` sidecar. Comments are written WITHOUT touching
+          ``meta.json``, so they are invisible to every field above — the same
+          reason :meth:`_is_sweepable_auto_widget` stats that file separately.
+
+        The two questions are answered INDEPENDENTLY, and that matters:
+
+        * *Should the draft be written?* Only that the stored content is still
+          empty. Nothing else. A document can be renamed, tagged or filed and
+          still be holding the user's first paragraph in an editor buffer that was
+          never saved — refusing to write it because the name changed loses their
+          typing.
+        * *Should the shell be deleted?* Only when it is untouched on EVERY axis
+          AND there is no draft AND the caller permits it. ``allow_delete=False``
+          is how a client says "I have issued writes you may not have applied
+          yet": it cannot make deletion safe, but it does not prevent the rescue.
+
+        Returns what it did: ``"saved"`` (``draft`` became the content), ``"kept"``
+        (left exactly as it was), or ``"deleted"``.
+        """
+        slug = _validate_slug(slug)
+        draft = _validate_content(draft)
+        with self._lock:
+            art = self._load_meta(slug)
+            live_empty = self._read_text(self._artifact_dir(slug) / "current.html") == ""
+            if draft.strip() and live_empty:
+                self._write_settled_draft(art, draft)
+                outcome = "saved"
+            else:
+                outcome = ""
+            pristine = outcome == "" and (
+                allow_delete
+                and art.version == 1
+                and art.name == untitled_name
+                and not art.description
+                and not art.tags
+                and not art.folder_id
+                and not art.pinned
+                and art.publication is None
+                and art.fork_metadata is None
+                and not (self._artifact_dir(slug) / "comments.json").exists()
+                and live_empty
+            )
+            if outcome == "":
+                if not pristine:
+                    return "kept"
+                self._rmtree(self._artifact_dir(slug))
+                outcome = "deleted"
+            logger.info("blank artifact settled: slug=%s outcome=%s", slug, outcome)
+        # Fired outside the lock so a listener is free to call back into get().
+        self._fire_change("upsert" if outcome == "saved" else "delete", slug)
+        return outcome
+
+    def _write_settled_draft(self, art: Artifact, draft: str) -> None:
+        """Persist an unsaved editor buffer as the document's first content.
+
+        The caller must hold ``self._lock`` and must have just confirmed that the
+        stored content is empty — that confirmation is what makes this safe, since
+        there is nothing to overwrite and therefore no concurrent save to lose.
+        Metadata is preserved untouched: the user may well have named or tagged the
+        document before typing, and this is a content write, not a reset.
+        """
+        self._write_text(self._artifact_dir(art.slug) / "current.html", draft)
+        art.content = draft
+        # A settled draft is this document's first content, so it gets the same
+        # kind detection an ordinary save would have applied. Without this, typing
+        # JSON into a blank and navigating away stored it as markdown and rendered
+        # it with the wrong viewer. Gated on ``kind_auto`` so a kind the user picked
+        # explicitly still wins.
+        if art.kind_auto:
+            detected = detect_editor_kind(draft)
+            if detected and detected != art.kind:
+                art.kind = detected
+                art.version_kinds[str(art.version)] = detected
+        art.updated_at = _now_iso()
+        self._write_meta(art)
 
     def delete(self, slug: str) -> None:
         """Permanently delete an artifact and all of its versions."""
@@ -2380,6 +2598,7 @@ class ArtifactStore:
             slug=str(slug),
             name=str(raw.get("name", slug)),
             kind=str(raw.get("kind", "widget")),
+            kind_auto=bool(raw.get("kind_auto", False)),
             source=str(raw.get("source", "chat")),
             description=str(raw.get("description", "")),
             tags=list(raw.get("tags", []) or []),

@@ -181,7 +181,7 @@ describe('ArtifactDetailPage', () => {
 
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
     // New model: dropdown defaults to "Live" — historical snapshots are
     // numbered and ordered newest-first below it.
     expect(select.value).toBe('live')
@@ -339,7 +339,7 @@ describe('ArtifactDetailPage', () => {
     // Current view: no Revert button.
     expect(screen.queryByTitle(/Revert to v/)).toBeNull()
     // Switch to v1.
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
     fireEvent.change(select, { target: { value: '1' } })
     await waitFor(() => expect(screen.getByTitle(/Revert to v1/)).toBeInTheDocument())
   })
@@ -533,7 +533,7 @@ describe('ArtifactDetailPage', () => {
       .mockResolvedValue({ slug: 'cr-queue', versions: [1, 2, 3] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
     const labels = Array.from(select.options).map((o) => o.textContent?.trim())
     expect(labels).toEqual(['Live', 'v3', 'v2', 'v1'])
   })
@@ -558,7 +558,7 @@ describe('ArtifactDetailPage', () => {
 
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
     // Select v3 (the latest numbered snapshot).
     fireEvent.change(select, { target: { value: '3' } })
     // versionQuery must fire for v3 — the buggy code skipped it.
@@ -647,7 +647,7 @@ describe('ArtifactDetailPage', () => {
     )
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
     expect(select.disabled).toBe(false)
     fireEvent.click(screen.getByText('Snapshot'))
     // Wait for the saving state to render (in-flight update).
@@ -739,7 +739,7 @@ describe('ArtifactDetailPage', () => {
     vi.mocked(api).artifactVersion = versionFetch
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '2' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '2' } })
     await waitFor(() => expect(versionFetch).toHaveBeenCalledWith('cr-queue', 2))
     await waitFor(() => expect(screen.getByText(/historical v2/)).toBeInTheDocument())
     // Edit/Snapshot buttons hidden on historical view.
@@ -763,7 +763,7 @@ describe('ArtifactDetailPage', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '2' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '2' } })
     await waitFor(() => expect(screen.getByTitle(/Revert to v2/)).toBeInTheDocument())
     fireEvent.click(screen.getByTitle(/Revert to v2/))
     await waitFor(() =>
@@ -861,7 +861,7 @@ describe('ArtifactDetailPage', () => {
     // Enter edit mode but stay clean — no dirty, no confirm needed.
     fireEvent.click(screen.getByTitle('Edit content'))
     const confirmSpy = vi.spyOn(window, 'confirm')
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '1' } })
     expect(confirmSpy).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })

@@ -44,6 +44,7 @@ from kiro_crew import publish_sync
 from kiro_crew import sel as _sel_mod
 from kiro_crew.artifacts import (
     MAX_CONTENT_BYTES,
+    USER_SELECTABLE_KINDS,
     ArtifactAlreadyExistsError,
     ArtifactComment,
     ArtifactError,
@@ -1399,8 +1400,34 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             from_version = int(raw_from_version) if raw_from_version is not None else None
         except (TypeError, ValueError):
             from_version = None
+        # Explicit render-kind change (the type control on the artifact page).
+        # Restricted to the inline-editable kinds: `widget` / `html` render in a
+        # sandboxed iframe and are NOT editable, so letting a caller select one
+        # would strand the editor on a document the user is typing in — and
+        # `webapp` carries deploy metadata that a hand-flip would desynchronise.
+        # Setting a kind also PINS it: the store clears its auto-detect flag, so
+        # a document the user has typed a kind onto is never re-typed under them.
+        raw_kind = body.get("kind")
+        if raw_kind is not None:
+            # isinstance FIRST: a JSON body may carry any type here, and an
+            # unhashable one (list / dict) raises TypeError on the set lookup --
+            # a 500 where the caller deserves a 400.
+            if not isinstance(raw_kind, str) or raw_kind not in USER_SELECTABLE_KINDS:
+                msg = (
+                    f"kind must be one of {sorted(USER_SELECTABLE_KINDS)}; "
+                    f"got {raw_kind!r}"
+                )
+                _audit(
+                    tool="artifact_update",
+                    request=request,
+                    outcome="denied",
+                    error=msg,
+                    extra={"slug": slug, "kind": str(raw_kind)[:32]},
+                )
+                return _err(msg)
         art = get_default_store().update(
             slug,
+            kind=raw_kind,
             content=body.get("content"),
             description=body.get("description"),
             tags=body.get("tags"),
@@ -1514,6 +1541,97 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             except Exception as exc:  # noqa: BLE001 - best-effort egress
                 logger.info("auto-sync push after snapshot failed for %s: %s", art.slug, exc)
     return _json_response(_serialize(art, include_content=True))
+
+
+async def api_artifact_settle_blank(request: web.Request) -> web.Response:
+    """Atomically resolve a just-created blank document the user is leaving.
+
+    The library's "New artifact" action creates a document empty and opens its
+    editor. On leaving, exactly one of three things is right: keep it (something
+    was invested), save the draft still in the editor, or delete the abandoned
+    shell. The decision has to be atomic -- deciding in the browser means reading
+    the artifact and then acting, and a save landing in that gap from a popout
+    window or an agent would be overwritten or deleted. So the browser states its
+    intent and the store decides under its own lock.
+
+    Body: ``{"untitled_name": str, "draft": str}``. ``untitled_name`` is the
+    localised placeholder the creating client used, so the store can recognise an
+    unnamed document without owning a copy of the UI's copy.
+
+    Responds ``{"outcome": "kept" | "saved" | "deleted"}``.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_settle_blank",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session cannot settle artifacts", status=403)
+    slug = request.match_info.get("slug", "")
+
+    # Every rejection is audited, not just the ones the store raises: this
+    # endpoint can DELETE a document, so a refusal is exactly as interesting to an
+    # auditor as a success, and a silent 400 would leave the attempt with no trace.
+    def _denied(error: str) -> web.Response:
+        _audit(
+            tool="artifact_settle_blank",
+            request=request,
+            outcome="denied",
+            error=error,
+            extra={"slug": slug},
+        )
+        return _err(error)
+
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _denied(str(exc))
+    untitled_name = body.get("untitled_name")
+    if not isinstance(untitled_name, str) or not untitled_name.strip():
+        return _denied("untitled_name is required")
+    raw_draft = body.get("draft", "")
+    if not isinstance(raw_draft, str):
+        return _denied("draft must be a string")
+    # A client that has issued its own writes sends allow_delete=false: those
+    # writes may not have been applied yet, so deletion cannot be made safe. It
+    # does not block the draft rescue, which only needs the stored content to be
+    # empty. Defaults to true so an omitted field is the ordinary leave-time call.
+    allow_delete = body.get("allow_delete", True)
+    if not isinstance(allow_delete, bool):
+        return _denied("allow_delete must be a boolean")
+    try:
+        outcome = await _run_off_loop(
+            lambda: get_default_store().settle_blank(
+                slug,
+                untitled_name=untitled_name,
+                draft=raw_draft,
+                allow_delete=allow_delete,
+            )
+        )
+    except ArtifactNotFoundError as exc:
+        # Already gone (double navigation, or deleted in another window). Nothing
+        # to settle and nothing to report as an error.
+        _audit(tool="artifact_settle_blank", request=request, outcome="success",
+               extra={"slug": slug, "result": "absent"})
+        return _json_response({"outcome": "kept", "detail": str(exc)})
+    except ArtifactValidationError as exc:
+        return _denied(str(exc))
+    except ArtifactError as exc:
+        _audit(tool="artifact_settle_blank", request=request, outcome="error", error=str(exc),
+               extra={"slug": slug})
+        return _err(str(exc), status=500)
+    _audit(
+        tool="artifact_settle_blank",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "result": outcome},
+    )
+    if outcome != "kept":
+        _notify_artifact_update(state, slug, 1, deleted=outcome == "deleted")
+    return _json_response({"outcome": outcome})
 
 
 async def api_artifact_delete(request: web.Request) -> web.Response:

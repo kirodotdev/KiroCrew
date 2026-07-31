@@ -22,6 +22,7 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_relocate,
     api_artifact_session_docs,
     api_artifact_set_pinned,
+    api_artifact_settle_blank,
     api_artifact_update,
     api_artifact_version_detail,
     api_artifact_versions,
@@ -1463,6 +1464,243 @@ class TestTeardown:
         # Artifact must NOT be tombstoned — teardown did not actually happen.
         art = isolated_store.get("fail-app")
         assert art.webapp_metadata.lifecycle.status != "expired"
+
+
+class TestSettleBlankEndpoint:
+    """``POST /api/artifacts/{slug}/settle`` -- the atomic leave-time resolution."""
+
+    UNTITLED = "Untitled"
+
+    @pytest.mark.asyncio
+    async def test_deletes_an_abandoned_blank(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(body={"untitled_name": self.UNTITLED, "draft": ""}, match={"slug": "u"})
+        )
+        assert resp.status == 200
+        assert _json_body(resp)["outcome"] == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_saves_a_draft(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(
+                body={"untitled_name": self.UNTITLED, "draft": "# notes"}, match={"slug": "u"}
+            )
+        )
+        assert _json_body(resp)["outcome"] == "saved"
+        assert isolated_store.get("u").content == "# notes"
+
+    @pytest.mark.asyncio
+    async def test_keeps_an_invested_document(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name="Release plan", content="# real", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(
+                body={"untitled_name": self.UNTITLED, "draft": "# stale"}, match={"slug": "u"}
+            )
+        )
+        assert _json_body(resp)["outcome"] == "kept"
+        assert isolated_store.get("u").content == "# real"
+
+    @pytest.mark.asyncio
+    async def test_requires_the_untitled_placeholder(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """Without it the store cannot tell an unnamed document from a named one,
+        and guessing would risk deleting a named document."""
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(_request(body={"draft": ""}, match={"slug": "u"}))
+        assert resp.status == 400
+        assert isolated_store.get("u") is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("draft", [[], {}, 7])
+    async def test_refuses_a_non_string_draft(
+        self, isolated_store, patch_restricted, draft
+    ) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(body={"untitled_name": self.UNTITLED, "draft": draft}, match={"slug": "u"})
+        )
+        assert resp.status == 400
+        assert isolated_store.get("u") is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body,reason",
+        [
+            pytest.param({"draft": ""}, "untitled_name is required", id="missing-placeholder"),
+            pytest.param(
+                {"untitled_name": "  ", "draft": ""},
+                "untitled_name is required",
+                id="blank-placeholder",
+            ),
+            pytest.param(
+                {"untitled_name": "Untitled", "draft": []},
+                "draft must be a string",
+                id="non-string-draft",
+            ),
+        ],
+    )
+    async def test_every_rejection_is_audited(
+        self, isolated_store, patch_restricted, monkeypatch, body, reason
+    ) -> None:
+        """This endpoint can DELETE a document, so a refused attempt is as
+        interesting to an auditor as a successful one -- a silent 400 would leave
+        no trace of it."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard.handlers import artifacts as art_handlers
+
+        sel_stub = MagicMock()
+        monkeypatch.setattr(art_handlers, "sel", lambda: sel_stub)
+        isolated_store.create(name="Untitled", content="", slug="u")
+        resp = await api_artifact_settle_blank(_request(body=body, match={"slug": "u"}))
+        assert resp.status == 400
+        kwargs = sel_stub.log_tool_invocation.call_args.kwargs
+        assert kwargs["tool_name"] == "artifact_settle_blank"
+        assert kwargs["outcome"] == "denied"
+        assert reason in kwargs["error"]
+
+    @pytest.mark.asyncio
+    async def test_allow_delete_false_rescues_the_draft_without_deleting(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(
+                body={"untitled_name": self.UNTITLED, "draft": "# typed", "allow_delete": False},
+                match={"slug": "u"},
+            )
+        )
+        assert _json_body(resp)["outcome"] == "saved"
+        assert isolated_store.get("u").content == "# typed"
+
+    @pytest.mark.asyncio
+    async def test_allow_delete_false_keeps_an_empty_shell(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(
+                body={"untitled_name": self.UNTITLED, "draft": "", "allow_delete": False},
+                match={"slug": "u"},
+            )
+        )
+        assert _json_body(resp)["outcome"] == "kept"
+        assert isolated_store.get("u") is not None
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_non_boolean_allow_delete(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(
+                body={"untitled_name": self.UNTITLED, "draft": "", "allow_delete": "no"},
+                match={"slug": "u"},
+            )
+        )
+        assert resp.status == 400
+        assert isolated_store.get("u") is not None
+
+    @pytest.mark.asyncio
+    async def test_an_already_gone_document_is_not_an_error(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """Double navigation, or deleted in another window -- nothing to settle."""
+        resp = await api_artifact_settle_blank(
+            _request(body={"untitled_name": self.UNTITLED, "draft": ""}, match={"slug": "gone"})
+        )
+        assert resp.status == 200
+        assert _json_body(resp)["outcome"] == "kept"
+
+
+class TestUpdateDocumentType:
+    """The artifact page's type control -- ``PATCH {"kind": ...}``.
+
+    The control exists because some types cannot be inferred from content:
+    markdown and plain text accept identical bytes and differ only in whether
+    ``#`` means "heading" or a literal hash. That is intent, so it has to be
+    stated rather than sniffed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_accepts_a_selectable_kind(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"kind": "text"}, match={"slug": "x"}))
+        assert resp.status == 200
+        assert _json_body(resp)["kind"] == "text"
+        assert isolated_store.get("x").kind == "text"
+
+    @pytest.mark.asyncio
+    async def test_choosing_a_kind_does_not_bump_the_version(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """Re-typing is a render change, not a content edit."""
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"kind": "text"}, match={"slug": "x"}))
+        assert _json_body(resp)["version"] == 1
+
+    @pytest.mark.asyncio
+    async def test_choosing_a_kind_pins_it_against_auto_detect(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """The whole point of the control: a stated type must stick.
+
+        A blank document is born auto-typed, so without pinning the next save
+        would re-detect and silently overrule what the user chose.
+        """
+        isolated_store.create(name="x", content="", slug="x")
+        assert isolated_store.get("x").kind_auto is True
+        await api_artifact_update(_request(body={"kind": "text"}, match={"slug": "x"}))
+        assert isolated_store.get("x").kind_auto is False
+        # JSON content would normally re-type an auto-typed document.
+        isolated_store.update("x", content='{"a": 1}')
+        assert isolated_store.get("x").kind == "text"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["widget", "html", "webapp"])
+    async def test_refuses_kinds_with_no_editor(
+        self, isolated_store, patch_restricted, kind: str
+    ) -> None:
+        """``widget`` / ``html`` render in a sandboxed iframe with no editor, and
+        ``webapp`` carries deploy metadata -- selecting one would strand the
+        document the user is typing in."""
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"kind": kind}, match={"slug": "x"}))
+        assert resp.status == 400
+        assert isolated_store.get("x").kind == "markdown"
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_kind_that_is_not_a_kind(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"kind": "../etc"}, match={"slug": "x"}))
+        assert resp.status == 400
+        assert isolated_store.get("x").kind == "markdown"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", [[], {}, 7, True])
+    async def test_refuses_a_non_string_kind_without_crashing(
+        self, isolated_store, patch_restricted, kind
+    ) -> None:
+        """A JSON body can carry any type here. An unhashable one raises
+        TypeError on the set lookup -- a 500 where the caller deserves a 400."""
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"kind": kind}, match={"slug": "x"}))
+        assert resp.status == 400
+        assert isolated_store.get("x").kind == "markdown"
+
+    @pytest.mark.asyncio
+    async def test_omitting_kind_leaves_it_alone(self, isolated_store, patch_restricted) -> None:
+        """A content save must not disturb the type, or every editor keystroke
+        would fight the control."""
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"content": "# bye"}, match={"slug": "x"}))
+        assert resp.status == 200
+        assert _json_body(resp)["kind"] == "markdown"
 
 
 class TestUpdateWebappMetadata:

@@ -193,7 +193,7 @@ describe('ArtifactDetailPage anchored comments', () => {
     // would produce an instruction the agent can never satisfy.
     renderPage()
     await waitFor(() => expect(screen.getByLabelText('Toggle agent chat')).toBeInTheDocument())
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '1' } })
     await waitFor(() => expect(screen.getByTitle(/revert to v1/i)).toBeInTheDocument())
     selectInBody('beta')
     expect(screen.queryByLabelText('Add a comment')).toBeNull()

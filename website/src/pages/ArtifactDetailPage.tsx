@@ -13,7 +13,7 @@ import { safeHttpUrl } from '../lib/safeUrl'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
-import { PageHeader, Card, Badge, Btn } from '../components/ui'
+import { PageHeader, Card, Badge, Btn, Input } from '../components/ui'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import ReadingWidthToggle from '../components/ReadingWidthToggle'
 import { useReadingWidth } from '../hooks/useReadingWidth'
@@ -32,6 +32,9 @@ import { forwardToMain, type NavIntent } from '../utils/artifactPopout'
 import { writePrefill } from '../utils/navIntent'
 import { announceCommentsChanged, onCommentsChanged } from '../utils/artifactCommentsSync'
 import { setArtifactEditing } from '../utils/artifactEditGuard'
+import { consumeJustCreatedBlank } from '../lib/blankHandoff'
+import { hasPendingArtifactWrite } from '../lib/artifactWrites'
+import { USER_SELECTABLE_KINDS } from '../lib/artifactKinds'
 import { PublishHub } from '../components/PublishHub'
 import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor, ChatSlot } from '../types'
 
@@ -270,6 +273,62 @@ function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
 export default function ArtifactDetailPage({ popout = false }: { popout?: boolean } = {}) {
   const { slug = '' } = useParams<{ slug: string }>()
   const navigate = useNavigate()
+  // Claimed once from the library's "New Artifact" action, which creates the
+  // document empty and hands it over here. Two behaviours hang off it: the editor
+  // opens focused (so the user starts typing rather than hunting for an Edit
+  // button), and a document left empty and unnamed is cleaned up when they leave.
+  // A page RELOAD clears the module-level hand-off, so a revisit never arms
+  // either behaviour — which is the point of keeping it out of router state.
+  //
+  // Claimed in an EFFECT, never during render. Claiming a one-shot hand-off is a
+  // side effect, and React may begin a render and then throw it away; a discarded
+  // render had already spent the hand-off, so the surviving render concluded this
+  // was not a fresh blank and the editor silently failed to open. Effects run only
+  // on committed renders. The ref keeps the claim idempotent per instance, so a
+  // double-invoked effect (StrictMode, remount) reuses the recorded answer rather
+  // than re-asking a hand-off that is already spent.
+  // Holds the name the library CREATED the document with, or null when this page
+  // was not handed a fresh blank. Carried rather than re-derived: the untitled
+  // placeholder is localised, so re-translating it on departure would let a
+  // language change in between look like a deliberate rename.
+  // The claim carries the SLUG as well as the name. Both are needed: this route is
+  // reused when navigating straight from one artifact to another, so the page has
+  // to be able to tell "the blank I was handed" from "whatever is on screen now".
+  const [blankClaim, setBlankClaim] = useState<{ slug: string; createdName: string } | null>(
+    null,
+  )
+  const claimRef = useRef<{ slug: string; claimed: string | null } | null>(null)
+  useEffect(() => {
+    if (claimRef.current?.slug !== slug) {
+      claimRef.current = { slug, claimed: slug ? consumeJustCreatedBlank(slug) : null }
+    }
+    const claimed = claimRef.current.claimed
+    setBlankClaim(claimed === null ? null : { slug, createdName: claimed })
+  }, [slug])
+  const justCreatedBlank = blankClaim !== null
+  // Inline title rename. The artifact API has always accepted a name change;
+  // the dashboard just never exposed one, which create-first naming makes
+  // necessary (a document called "Untitled" you cannot rename is useless).
+  const [renaming, setRenaming] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
+  // Has the user done anything with this document? Set the moment an action is
+  // taken, locally, by every write path on this page — rename, save, tag, comment.
+  //
+  // Deliberately a flag and not a re-reading of the artifact record. Deriving the
+  // answer from the record meant asking a value that lags: a write that had been
+  // issued but not yet round-tripped left the document still looking brand new,
+  // which is how five review rounds of "this deleted my work" happened. Set once,
+  // locally, at the moment of the act — nothing to be stale about.
+  // NOTE: there is deliberately no per-write-path flag here any more. Asking each
+  // handler to announce itself failed four separate review rounds in a row, each
+  // time because one path did not -- a folder move in a child component, a
+  // live-edit flush, a snapshot, a revert, comment resolution -- and an
+  // unannounced write let a document be deleted with its own request still in the
+  // air. In-flight writes are now counted centrally in `lib/artifactWrites`, hooked
+  // at the API transport where a request cannot avoid passing through, so a write
+  // path added later is covered without anyone remembering to opt in. Writes the
+  // server has already APPLIED need no client help at all: it re-reads the record
+  // under its own lock.
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
   const { theme, colorTheme, themeVersion } = useTheme()
@@ -361,6 +420,11 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     setPopover(null)
     setAddingTag(false)
     setNewTag('')
+    setRenaming(false)
+    setNameDraft('')
+    // No reset of the touched flag here -- it is keyed by slug, so a different
+    // artifact already gets a fresh verdict, and clearing it at this point would
+    // race the departing document's cleanup.
   }, [slug])
 
   const detailQuery = useQuery<Artifact>({
@@ -402,6 +466,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // ── Tag editing handlers (round 4) ────────────────────────────
   const updateTagsMut = useCallback(async (newTags: string[]) => {
     if (!artifact) return
+    // Same in-flight window as commitRename / handleSave: the record still reads
     setSaveError(null)
     try {
       await api.updateArtifact(artifact.slug, { tags: newTags })
@@ -443,6 +508,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     const next = !artifact.pinned
     setSaveError(null)
     setPinning(true)
+    // Starring is investment, so it also has to stop the just-created-blank
     try {
       await api.setArtifactPinned(artifact.slug, next)
       // Patch the cached record in place — do NOT invalidate ['artifact', slug].
@@ -467,6 +533,52 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     }
   }, [artifact, pinning, queryClient, slug])
 
+  // ── Document type ─────────────────────────────────────────────────────────
+  const [changingKind, setChangingKind] = useState(false)
+  const changeKind = useCallback(async (next: string) => {
+    if (!artifact || next === artifact.kind) return
+    // Choosing a type is doing something, and it lands before the refetch — so
+    setChangingKind(true)
+    setSaveError(null)
+    try {
+      await api.updateArtifact(artifact.slug, { kind: next })
+      await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
+      await queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setChangingKind(false)
+    }
+  }, [artifact, queryClient, slug])
+
+  // ── Inline title rename ────────────────────────────────────────────────────
+  const titleButtonRef = useRef<HTMLButtonElement | null>(null)
+  const startRenaming = useCallback(() => {
+    if (!artifact) return
+    setNameDraft(artifact.name)
+    setRenaming(true)
+  }, [artifact])
+
+  const commitRename = useCallback(async () => {
+    const next = nameDraft.trim()
+    setRenaming(false)
+    // The input is about to unmount, which would drop keyboard focus to the body
+    // and lose the user's place. Hand it back to the control they opened it from.
+    requestAnimationFrame(() => titleButtonRef.current?.focus())
+    if (!artifact || !next || next === artifact.name) return
+    // Mark BEFORE awaiting: an unmount racing this PATCH would otherwise see a
+    setSaveError(null)
+    try {
+      // Renames are metadata-only — no version bump, no lifecycle event — and
+      // the slug is unaffected, so links and bookmarks keep resolving.
+      await api.updateArtifact(artifact.slug, { name: next })
+      await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
+      await queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err))
+    }
+  }, [artifact, nameDraft, queryClient, slug])
+
   // ── Edit / save / cancel / revert handlers ────────────────────────────────
   const startEditing = useCallback(() => {
     if (!artifact || !editable) return
@@ -474,6 +586,96 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     setEditing(true)
     setSaveError(null)
   }, [artifact, editable])
+
+  // A freshly created blank document opens straight into the editor. Guarded on
+  // emptiness rather than firing blind so a reload of an artifact the user has
+  // since typed into does not yank them back into edit mode; guarded on
+  // `!editing` so it never fights a manual Cancel.
+  const autoOpenedRef = useRef(false)
+  useEffect(() => {
+    if (!justCreatedBlank || autoOpenedRef.current) return
+    if (!artifact || !editable) return
+    if ((artifact.content ?? '') !== '') return
+    autoOpenedRef.current = true
+    startEditing()
+  }, [justCreatedBlank, artifact, editable, startEditing])
+
+  // Discard an abandoned blank. Create-first naming buys a zero-click "start
+  // writing" path at the cost of littering the library with empty Untitled
+  // documents, so leaving one untouched cleans it up on the way out. Four
+  // conditions must ALL hold, so this can only ever remove the document this
+  // page just created and nothing the user invested in: it was handed over as
+  // just-created-blank, it is still at v1, its content is still empty, and its
+  // name is still the untitled default. Fires on unmount (in-app navigation);
+  // closing the tab outright cannot reliably issue the request, which just
+  // leaves one empty document behind.
+  const discardStateRef = useRef<
+    { slug: string; draft: string; createdName: string } | null
+  >(null)
+  // Text typed into the editor and not yet saved. Local state, so like the flag
+  // above it can never be stale. Whitespace alone is not a draft.
+  const draft = dirty && editedContent.trim() !== '' ? editedContent : ''
+  // Only ever describes the document this page was handed as a fresh blank, and is
+  // never overwritten by a LATER one. Navigating straight from the blank to another
+  // artifact reuses this route: the new artifact renders before the cleanup runs, so
+  // an ungated assignment would replace the snapshot and strand the blank's unsaved
+  // draft. Matching on the claim's own slug is what prevents that -- and it is never
+  // reset to null here, because the cleanup still needs it after the claim is gone.
+  if (blankClaim && artifact && isCurrent && artifact.slug === blankClaim.slug) {
+    discardStateRef.current = { slug: blankClaim.slug, draft, createdName: blankClaim.createdName }
+  }
+  // Sticky disarm — the safety catch that makes the four conditions above
+  // trustworthy under a race. The snapshot above is rebuilt from `artifact` on
+  // every render, and `artifact` only refreshes when the query refetches, so a
+  // write that is still IN FLIGHT is invisible to it: rename to "Release plan"
+  // and immediately click a sidebar link and the unmount would read the
+  // pre-rename snapshot (still "Untitled", still empty), pass all four
+  // conditions, and DELETE the document the user just named. Every write that
+  // invalidates the discard verdict therefore calls `disarmDiscard()`
+  // SYNCHRONOUSLY, before awaiting its request. Nulling the snapshot alone
+  // would not work — the next render re-populates it from the same stale
+  // artifact — so the disarm is a separate flag, and it is deliberately
+  // one-way: once the user has named or saved this document, it is theirs to
+  // keep. Reset only when navigating to a different artifact.
+  useEffect(() => {
+    if (!justCreatedBlank) return
+    return () => {
+      const snap = discardStateRef.current
+      if (!snap) return
+      // Consumed: this document is being settled now and must not be settled twice.
+      discardStateRef.current = null
+      // The rule: did you name it, or put something in the body? Then it's yours
+      // — keep it. Otherwise this is the empty document you opened and walked
+      // away from, so clean it up.
+      //
+      // One thing this page knows for certain and the server cannot: a write it
+      // issued itself, which may not be acknowledged yet. That makes DELETION
+      // unsafe -- but it must not skip the call, because the editor may still be
+      // holding text the user typed and never saved. Naming a document and then
+      // navigating away should not throw away its first paragraph. So the flag
+      // suppresses deletion only; the draft rescue still runs, and needs nothing
+      // more than the stored content being empty.
+      // Everything else is ONE atomic server call. It deliberately does not read
+      // and then decide: reading here and acting afterwards leaves a window, and a
+      // save landing in that window — from a popout window on the same document,
+      // or from an agent — would be overwritten or deleted. Re-reading cannot
+      // close that gap, because the gap is between the read and the write. So this
+      // states the intent and the store resolves it while holding its own lock:
+      // keep the document, save the draft, or delete the empty shell.
+      //
+      // Fails closed: a rejected request leaves the document alone.
+      api.settleBlankArtifact(snap.slug, {
+        untitled_name: snap.createdName,
+        draft: snap.draft,
+        // Asked at unmount, per document, of a registry that counts requests
+        // rather than call sites -- so a write in flight for THIS document
+        // withholds permission to delete it, whichever handler issued it.
+        allow_delete: !hasPendingArtifactWrite(snap.slug),
+      })
+        .then(() => { queryClient.invalidateQueries({ queryKey: ['artifacts'] }) })
+        .catch(() => {})
+    }
+  }, [justCreatedBlank, queryClient])
 
   const cancelEditing = useCallback(() => {
     if (dirty && !window.confirm(i18nT('pages.artifactDetailPage.discard_unsaved_changes'))) return
@@ -485,6 +687,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
 
   const handleSave = useCallback(async (snapshot = false) => {
     if (!artifact || !dirty) return
+    // Same race as commitRename: the discard snapshot still reads empty until
+    // the query refetches, so disarm synchronously or an unmount landing
     setSaving(true)
     setSaveError(null)
     try {
@@ -770,6 +974,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // Doc-level add (from the sidebar) — works for ALL kinds, including
   // HTML/widget where in-iframe text selection isn't reachable.
   const addDocComment = useCallback((text: string) => {
+    // A DOCUMENT-level comment needs no text selection, so unlike the anchored
+    // path it can be left on an empty document -- and it must still count as
     postCommentMut.mutate({ text, scope: 'private' })
   }, [postCommentMut])
 
@@ -1154,7 +1360,33 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
 
   return (
     <>
-      <PageHeader title={artifact.name} subtitle={`Artifact: ${artifact.slug}`} />
+      <PageHeader
+        title={renaming ? (
+          <Input
+            autoFocus
+            value={nameDraft}
+            aria-label={i18nT('pages.artifactDetailPage.artifact_name')}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); void commitRename() }
+              else if (e.key === 'Escape') { e.preventDefault(); setRenaming(false) }
+            }}
+            className="px-2 py-0.5 text-2xl font-bold tracking-tight text-text-strong w-full max-w-[36rem]"
+          />
+        ) : (
+          <Btn
+            ref={titleButtonRef}
+            onClick={startRenaming}
+            title={i18nT('pages.artifactDetailPage.rename_this_artifact')}
+            className="group gap-2 bg-transparent border-none p-0 text-2xl font-bold tracking-tight text-text-strong cursor-text hover:bg-transparent hover:border-none"
+          >
+            {artifact.name}
+            <Pencil size={14} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" aria-hidden="true" />
+          </Btn>
+        )}
+        subtitle={i18nT('pages.artifactDetailPage.artifact_slug', { slug: artifact.slug })}
+      />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         <div className="flex flex-wrap items-center gap-2 mb-4">
           {!popout && (
@@ -1165,7 +1397,29 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               <ArrowLeft size={13} /> {i18nT('pages.artifactDetailPage.back')}
             </Btn>
           )}
-          <Badge variant="aim">{artifact.kind}</Badge>
+          {/* Type control. Markdown and plain text are indistinguishable by
+            * content — "# Notes" is a heading in one and literal text in the
+            * other — so the difference is intent and has to be stated, not
+            * sniffed. Offered only for the inline-editable kinds; widget / html
+            * render in a sandboxed iframe with no editor, so switching to one
+            * would strand a document the user is typing in. Choosing a type also
+            * PINS it, stopping the auto-detect from re-typing it later. */}
+          {editable ? (
+            <select
+              className="text-[11px] px-1.5 py-0.5 rounded bg-accent-soft border border-accent-soft-border text-accent font-mono cursor-pointer outline-none focus-ring"
+              value={artifact.kind}
+              aria-label={i18nT('pages.artifactDetailPage.document_type')}
+              title={i18nT('pages.artifactDetailPage.change_how_this_document_is_rendered')}
+              disabled={changingKind}
+              onChange={(e) => void changeKind(e.target.value)}
+            >
+              {USER_SELECTABLE_KINDS.map((k) => (
+                <option key={k} value={k}>{k}</option>
+              ))}
+            </select>
+          ) : (
+            <Badge variant="aim">{artifact.kind}</Badge>
+          )}
           <FolderChip artifact={artifact} />
           {/* Only on the current version: a version snapshot does not carry the
             * live record-level `pinned`, so rendering it there could show a
@@ -1242,6 +1496,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             <span>{i18nT('pages.artifactDetailPage.version')}</span>
             <select
               className={sel}
+              // Named so it is distinguishable from the document-type control
+              // beside it -- both for assistive tech and for tests.
+              aria-label={i18nT('pages.artifactDetailPage.version')}
               disabled={saving}
               value={selectedVersion === null ? 'live' : String(selectedVersion)}
               onChange={(e) => {
