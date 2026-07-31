@@ -233,12 +233,13 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
       {/* Add form */}
       {adding ? (
         <div className="mt-4 border border-accent/30 rounded-lg p-4 bg-accent/5 animate-rise">
-          <div className="grid grid-cols-[1fr_1fr_auto] gap-3 mb-3">
+          <div className="grid grid-cols-[1fr_1fr_0.7fr] gap-3 mb-3 [&>div]:min-w-0">
             <div>
               {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule can't see the htmlFor→id link to the custom Input control; label-has-associated-control is satisfied. */}
               <label htmlFor="registry-name" className="text-[12px] text-muted mb-1 block">{i18nT('components.registryManager.display_name')}</label>
               <Input
                 id="registry-name"
+                className="w-full"
                 placeholder={i18nT('components.registryManager.e_g_identity_services')}
                 value={editName}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditName(e.target.value)}
@@ -249,6 +250,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               <label htmlFor="registry-repo" className="text-[12px] text-muted mb-1 block">{i18nT('components.registryManager.repo')}</label>
               <Input
                 id="registry-repo"
+                className="w-full"
                 placeholder={i18nT('components.registryManager.https_github_com_org_app_registry')}
                 value={editRepo}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRepo(e.target.value)}
@@ -260,6 +262,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               <label htmlFor="registry-branch" className="text-[12px] text-muted mb-1 block">{i18nT('components.registryManager.branch')}</label>
               <Input
                 id="registry-branch"
+                className="w-full"
                 placeholder={i18nT('components.registryManager.main')}
                 value={editBranch}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditBranch(e.target.value)}
