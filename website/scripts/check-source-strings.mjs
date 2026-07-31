@@ -123,7 +123,27 @@ const CHECKS = [
   {
     id: 'leading-connector',
     why: 'starts mid-sentence',
-    test: (v) => /^[)\].,;:]|^\s*(and|or|of|to|in|on|for|with|by|at|from|the)\s/i.test(v),
+    // Two signals, not one. Leading closing punctuation is unambiguous. A leading
+    // connector WORD is not: `The skill this update targets no longer exists, so
+    // there is nothing to update.` is a complete message, and the bare word list
+    // flagged it for starting with `The`.
+    //
+    // The discriminator is CAPITALISATION, not punctuation. A fragment continues
+    // a sentence that started in a sibling node, so it stays lowercase; a
+    // complete sentence or a standalone label starts with a capital. Exempting
+    // anything merely punctuated would let `and enable it there to start using
+    // it.` through — a real fragment that happens to end in a full stop.
+    //
+    // Every genuinely fragmented value is still caught: a lowercase joiner by
+    // this branch, and one that leads with punctuation or whitespace by the
+    // `^[)\].,;:]` branch or by `edge-whitespace`.
+    //
+    // Known limit: a lowercase standalone label like `in progress` is
+    // indistinguishable in shape from the fragment `to confirm`. No string-shape
+    // rule separates those; a render-time check (Phase 5) is what can.
+    test: (v) => /^[)\].,;:]/.test(v)
+      || (!/^[A-Z]/.test(v)
+        && /^\s*(and|or|of|to|in|on|for|with|by|at|from|the)\s/i.test(v)),
   },
   {
     id: 'unbalanced-delimiter',

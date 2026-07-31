@@ -47,11 +47,15 @@ describe('hi punctuation (style/hi.md §1)', () => {
 
 describe('hi tone (style/hi.md §4)', () => {
   it('does not use formal आप', () => {
-    // Check for आप (formal) — should use तुम (informal)
+    // Formal आप should be तुम (informal). `अपने-आप` / `अपने आप` is a DIFFERENT
+    // word meaning "automatically" and merely contains those two letters, so a
+    // substring check conflates them: of the 127 values matching the substring,
+    // 8 are `अपने-आप` and have nothing to do with formality. The old baseline of
+    // 127 was that substring count; the genuine figure is 119.
     const bad = Object.entries(hi)
-      .filter(([, v]) => v.includes('आप'))
+      .filter(([, v]) => v.replace(/अपने[-\s]?आप/g, '').includes('आप'))
       .map(([k]) => k)
-    // Baselined: existing catalog likely uses आप extensively
-    expect(bad.length, report(bad)).toBeLessThanOrEqual(127)
+    // Baselined: the existing catalog uses आप extensively.
+    expect(bad.length, report(bad)).toBeLessThanOrEqual(119)
   })
 })

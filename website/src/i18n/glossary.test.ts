@@ -21,7 +21,9 @@ import { CATALOGS as RUNTIME_CATALOGS } from './index'
 import { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES } from './languages'
 import glossary from './glossary.json'
 
-const DNT_BASELINE = 36
+// 2 genuine drops remain (zh-CN onboarding, de genitive `Kiros`); the other 42
+// were the sentence-final false positive `boundary` used to produce.
+const DNT_BASELINE = 2
 
 const GENERATED = new Set(SUPPORTED_LANGUAGES.filter((l) => l.devOnly).map((l) => l.code))
 
@@ -44,8 +46,25 @@ const catalogs = Object.fromEntries(
 const en = catalogs[DEFAULT_LANGUAGE]
 
 /** Word-boundary match that also refuses to fire inside a dotted identifier (`Node.js`). */
-const boundary = (term: string) =>
-  new RegExp(`(?<![\\w.])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w.])`)
+/**
+ * Word-boundary match for a do-not-translate term.
+ *
+ * The `.` in the original lookarounds existed so a term appearing only inside an
+ * identifier — `Kiro.dev`, `kiro.json` — is not *demanded* in the translation.
+ * But `(?![\w.])` also refuses to match a term at the END of a sentence, and that
+ * is exactly where translations put it: Romance and Slavic word order moves the
+ * noun modifier last, so `its own MCP backends.` becomes `sus propios backends
+ * MCP.` — the term is present, yet the trailing full stop read as a drop.
+ * Measured across the shipped catalogs, 42 of 44 reported drops were that false
+ * positive.
+ *
+ * Keep the identifier intent, drop the punctuation blindness: a dot only
+ * continues an identifier when a word character follows it.
+ */
+const boundary = (term: string) => {
+  const t = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?<!\\w)(?<!\\w\\.)${t}(?!\\w)(?!\\.\\w)`)
+}
 
 describe('glossary', () => {
   it('glossary.json is well formed', () => {
