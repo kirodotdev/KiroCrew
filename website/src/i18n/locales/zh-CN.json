@@ -21,7 +21,6 @@
     "click_to_hide": "点击隐藏",
     "close": "关闭",
     "collapse_sidebar": "折叠侧边栏",
-    "contact_us": "联系我们",
     "cpu": "CPU",
     "cpu_unavailable": "CPU：不可用",
     "credits": "额度",
@@ -37,7 +36,6 @@
     "explore_apps": "探索应用",
     "gateway_connected": "网关已连接",
     "gateway_offline": "网关离线",
-    "github_repository": "GitHub 仓库",
     "hide_full_changelog": "▾ 隐藏完整更新日志",
     "i_d_like_to_request_a_feature": "我想提一个功能建议！",
     "iam_identity_center": "IAM Identity Center",
@@ -47,9 +45,6 @@
     "kiro_credit_usage_checking_2": "Kiro 额度用量 — 检查中",
     "kiro_credits": "Kiro 额度",
     "kiro_discord_community": "Kiro Discord 社区",
-    "kiro_website": "Kiro 网站",
-    "kiro_website_kiro_dev": "Kiro 网站 (kiro.dev)",
-    "kirocrew_github_repository": "KiroCrew GitHub 仓库",
     "main_navigation": "主导航",
     "manage_account": "管理账户",
     "mem": "MEM",
@@ -89,7 +84,11 @@
     "v": "v",
     "view_full_changelog": "▸ 查看完整更新日志",
     "what_s_new": "新增内容",
-    "you_re_on_the_latest_version": "已是最新版本"
+    "you_re_on_the_latest_version": "已是最新版本",
+    "star_us": "给我们加星",
+    "report_issue": "反馈问题",
+    "star_kirocrew_on_github": "在 GitHub 上为 KiroCrew 加星",
+    "report_an_issue_on_github": "在 GitHub 上反馈问题"
   },
   "appSdk": {
     "chatEmbed": {

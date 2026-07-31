@@ -26,7 +26,11 @@
     "social_login": "Social login",
     "starting_update": "Starting update…",
     "update_failed_2": "Update failed",
-    "view_full_changelog": "▸ View Full Changelog"
+    "view_full_changelog": "▸ View Full Changelog",
+    "star_us": "Star us",
+    "report_issue": "Report issue",
+    "star_kirocrew_on_github": "Star KiroCrew on GitHub",
+    "report_an_issue_on_github": "Report an issue on GitHub"
   },
   "appSdk": {
     "chatEmbed": {

@@ -21,7 +21,6 @@
     "click_to_hide": "Cliquer pour masquer",
     "close": "Fermer",
     "collapse_sidebar": "Réduire la barre latérale",
-    "contact_us": "Nous contacter",
     "cpu": "CPU",
     "cpu_unavailable": "CPU : indisponible",
     "credits": "crédits",
@@ -37,7 +36,6 @@
     "explore_apps": "Explorer les applications",
     "gateway_connected": "Passerelle connectée",
     "gateway_offline": "Passerelle hors ligne",
-    "github_repository": "Dépôt GitHub",
     "hide_full_changelog": "▾ Masquer le journal complet des modifications",
     "i_d_like_to_request_a_feature": "J’aimerais demander une fonctionnalité !",
     "iam_identity_center": "IAM Identity Center",
@@ -47,9 +45,6 @@
     "kiro_credit_usage_checking_2": "Utilisation des crédits Kiro — vérification",
     "kiro_credits": "Crédits Kiro",
     "kiro_discord_community": "Communauté Discord Kiro",
-    "kiro_website": "Site web Kiro",
-    "kiro_website_kiro_dev": "Site web Kiro (kiro.dev)",
-    "kirocrew_github_repository": "Dépôt GitHub KiroCrew",
     "main_navigation": "Navigation principale",
     "manage_account": "Gérer le compte",
     "mem": "MEM",
@@ -89,7 +84,11 @@
     "v": "v",
     "view_full_changelog": "▸ Voir le journal complet des modifications",
     "what_s_new": "Nouveautés",
-    "you_re_on_the_latest_version": "Vous utilisez la dernière version"
+    "you_re_on_the_latest_version": "Vous utilisez la dernière version",
+    "star_us": "Mets une étoile",
+    "report_issue": "Signaler un problème",
+    "star_kirocrew_on_github": "Mets une étoile à KiroCrew sur GitHub",
+    "report_an_issue_on_github": "Signaler un problème sur GitHub"
   },
   "appSdk": {
     "chatEmbed": {

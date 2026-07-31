@@ -21,7 +21,6 @@
     "click_to_hide": "Нажмите, чтобы скрыть",
     "close": "Закрыть",
     "collapse_sidebar": "Свернуть боковую панель",
-    "contact_us": "Связаться с нами",
     "cpu": "CPU",
     "cpu_unavailable": "CPU: недоступен",
     "credits": "кредитов",
@@ -37,7 +36,6 @@
     "explore_apps": "Обзор приложений",
     "gateway_connected": "Шлюз подключён",
     "gateway_offline": "Шлюз офлайн",
-    "github_repository": "Репозиторий GitHub",
     "hide_full_changelog": "▾ Скрыть полный журнал изменений",
     "i_d_like_to_request_a_feature": "Хочу предложить функцию!",
     "iam_identity_center": "IAM Identity Center",
@@ -47,9 +45,6 @@
     "kiro_credit_usage_checking_2": "Расход кредитов Kiro — проверка",
     "kiro_credits": "Кредиты Kiro",
     "kiro_discord_community": "Сообщество Kiro в Discord",
-    "kiro_website": "Сайт Kiro",
-    "kiro_website_kiro_dev": "Сайт Kiro (kiro.dev)",
-    "kirocrew_github_repository": "Репозиторий KiroCrew на GitHub",
     "main_navigation": "Основная навигация",
     "manage_account": "Управление аккаунтом",
     "mem": "MEM",
@@ -89,7 +84,11 @@
     "v": "v",
     "view_full_changelog": "▸ Показать полный журнал изменений",
     "what_s_new": "Что нового",
-    "you_re_on_the_latest_version": "У вас последняя версия"
+    "you_re_on_the_latest_version": "У вас последняя версия",
+    "star_us": "Поставить звезду",
+    "report_issue": "Сообщить о проблеме",
+    "star_kirocrew_on_github": "Поставить KiroCrew звезду на GitHub",
+    "report_an_issue_on_github": "Сообщить о проблеме на GitHub"
   },
   "appSdk": {
     "chatEmbed": {

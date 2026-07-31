@@ -21,7 +21,6 @@
     "click_to_hide": "লুকাতে ক্লিক করুন",
     "close": "বন্ধ করুন",
     "collapse_sidebar": "সাইডবার সংকুচিত করো",
-    "contact_us": "যোগাযোগ করুন",
     "cpu": "CPU",
     "cpu_unavailable": "CPU: জানা যাচ্ছে না",
     "credits": "ক্রেডিট",
@@ -37,7 +36,6 @@
     "explore_apps": "অ্যাপ অন্বেষণ করুন",
     "gateway_connected": "গেটওয়ে সংযুক্ত",
     "gateway_offline": "গেটওয়ে অফলাইন",
-    "github_repository": "GitHub রিপোজিটরি",
     "hide_full_changelog": "▾ পূর্ণ চেঞ্জলগ লুকাও",
     "i_d_like_to_request_a_feature": "আমি একটা ফিচার চাই!",
     "iam_identity_center": "IAM Identity Center",
@@ -47,9 +45,6 @@
     "kiro_credit_usage_checking_2": "Kiro ক্রেডিট ব্যবহার — যাচাই করা হচ্ছে",
     "kiro_credits": "Kiro ক্রেডিট",
     "kiro_discord_community": "Kiro Discord কমিউনিটি",
-    "kiro_website": "Kiro ওয়েবসাইট",
-    "kiro_website_kiro_dev": "Kiro ওয়েবসাইট (kiro.dev)",
-    "kirocrew_github_repository": "KiroCrew GitHub রিপোজিটরি",
     "main_navigation": "প্রধান নেভিগেশন",
     "manage_account": "অ্যাকাউন্ট পরিচালনা করুন",
     "mem": "MEM",
@@ -89,7 +84,11 @@
     "v": "v",
     "view_full_changelog": "▸ পূর্ণ চেঞ্জলগ দেখো",
     "what_s_new": "নতুন কী আছে",
-    "you_re_on_the_latest_version": "আপনি সর্বশেষ সংস্করণে আছেন"
+    "you_re_on_the_latest_version": "আপনি সর্বশেষ সংস্করণে আছেন",
+    "star_us": "আমাদের স্টার দিন",
+    "report_issue": "সমস্যা জানান",
+    "star_kirocrew_on_github": "GitHub-এ KiroCrew-কে স্টার দিন",
+    "report_an_issue_on_github": "GitHub-এ সমস্যা জানান"
   },
   "appSdk": {
     "chatEmbed": {

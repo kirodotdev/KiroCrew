@@ -184,11 +184,14 @@ describe('App routing', () => {
     expect(screen.getByText('Settings')).toBeInTheDocument()
     // The App Store now rides the Apps section header as an accent link.
     expect(screen.getByText('Explore')).toBeInTheDocument()
-    // The bottom-pinned contact row with its three external links.
-    expect(screen.getByText('Contact Us')).toBeInTheDocument()
-    expect(screen.getByLabelText('Kiro website (kiro.dev)')).toBeInTheDocument()
-    expect(screen.getByLabelText('KiroCrew GitHub repository')).toBeInTheDocument()
+    // The bottom-pinned community row: two stacked GitHub links under one mark,
+    // plus the icon-only Discord link. The kiro.dev link was removed.
+    expect(screen.getByText('Star us')).toBeInTheDocument()
+    expect(screen.getByText('Report issue')).toBeInTheDocument()
+    expect(screen.getByLabelText('Star KiroCrew on GitHub')).toBeInTheDocument()
+    expect(screen.getByLabelText('Report an issue on GitHub')).toBeInTheDocument()
     expect(screen.getByLabelText('Kiro Discord community')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Kiro website (kiro.dev)')).not.toBeInTheDocument()
   })
 
   it('renders the registry-derived Artifacts and Knowledge nav items', () => {
@@ -517,11 +520,11 @@ describe('App routing', () => {
     localStorage.removeItem('mc-nav')
   })
 
-  it('hides the Contact Us row when the sidebar is collapsed', () => {
+  it('hides the community row when the sidebar is collapsed', () => {
     localStorage.removeItem('mc-nav')
     renderWithProviders(<App />, { route: '/chat' })
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    const contact = within(nav).getByText('Contact Us')
+    const contact = within(nav).getByText('Star us')
     expect(contact).toBeVisible()
     fireEvent.click(within(nav).getByRole('button', { name: 'Collapse sidebar' }))
     // The row folds away (max-h-0 + opacity-0 + inert) instead of unmounting.

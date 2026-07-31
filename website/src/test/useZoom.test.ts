@@ -156,6 +156,20 @@ test('setFontFamily updates state and persists', () => {
   expect(localStorage.getItem('mc-font-family')).toBe('mono')
 })
 
+test('publishes the resolved family on html[data-font-family]', () => {
+  // CSS keys off this attribute to compensate for JetBrains Mono being ~20%
+  // wider than Space Grotesk — see the html[data-font-family="mono"] rule in
+  // index.css. Without the attribute the nav rail's community row truncates for
+  // mono users, and that failure is INVISIBLE on the default family, so it is
+  // pinned here rather than left to manual checking.
+  const { result } = renderHook(() => useZoom())
+  expect(document.documentElement.dataset.fontFamily).toBe('sans')
+  act(() => result.current.setFontFamily('mono'))
+  expect(document.documentElement.dataset.fontFamily).toBe('mono')
+  act(() => result.current.setFontFamily('system'))
+  expect(document.documentElement.dataset.fontFamily).toBe('system')
+})
+
 test('cycleFamily rotates sans → mono → system → sans', () => {
   const { result } = renderHook(() => useZoom())
   act(() => result.current.cycleFamily())

@@ -21,7 +21,6 @@
     "click_to_hide": "छिपाने के लिए क्लिक करें",
     "close": "बंद करें",
     "collapse_sidebar": "साइडबार समेटें",
-    "contact_us": "संपर्क करें",
     "cpu": "CPU",
     "cpu_unavailable": "CPU: अनुपलब्ध",
     "credits": "क्रेडिट",
@@ -37,7 +36,6 @@
     "explore_apps": "ऐप्स एक्सप्लोर करें",
     "gateway_connected": "गेटवे कनेक्ट है",
     "gateway_offline": "गेटवे ऑफ़लाइन",
-    "github_repository": "GitHub रिपॉज़िटरी",
     "hide_full_changelog": "▾ पूरा चेंजलॉग छिपाएँ",
     "i_d_like_to_request_a_feature": "मुझे एक फ़ीचर का अनुरोध करना है!",
     "iam_identity_center": "IAM Identity Center",
@@ -47,9 +45,6 @@
     "kiro_credit_usage_checking_2": "Kiro क्रेडिट उपयोग — जाँचा जा रहा है",
     "kiro_credits": "Kiro क्रेडिट",
     "kiro_discord_community": "Kiro Discord कम्युनिटी",
-    "kiro_website": "Kiro वेबसाइट",
-    "kiro_website_kiro_dev": "Kiro वेबसाइट (kiro.dev)",
-    "kirocrew_github_repository": "KiroCrew GitHub रिपॉज़िटरी",
     "main_navigation": "मुख्य नेविगेशन",
     "manage_account": "खाता प्रबंधित करें",
     "mem": "MEM",
@@ -89,7 +84,11 @@
     "v": "v",
     "view_full_changelog": "▸ पूरा चेंजलॉग देखें",
     "what_s_new": "नया क्या है",
-    "you_re_on_the_latest_version": "आप नवीनतम संस्करण पर हैं"
+    "you_re_on_the_latest_version": "आप नवीनतम संस्करण पर हैं",
+    "star_us": "हमें स्टार करें",
+    "report_issue": "समस्या रिपोर्ट करें",
+    "star_kirocrew_on_github": "GitHub पर KiroCrew को स्टार करें",
+    "report_an_issue_on_github": "GitHub पर समस्या रिपोर्ट करें"
   },
   "appSdk": {
     "chatEmbed": {

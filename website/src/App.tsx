@@ -26,7 +26,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, PanelLeftClose, Globe, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
+import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, PanelLeftClose, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -1996,7 +1996,7 @@ export default function App() {
         </div>
 
         {/* Bottom-fixed: Agent Capabilities, Developer (only when dev mode is
-            enabled), Settings, and the Contact Us row. Pinned to the
+            enabled), Settings, and the community row. Pinned to the
             rail's bottom edge — the Apps frame above absorbs the scroll. */}
         {(() => {
           const s = NAV_ITEMS.find(n => n.id === 'settings')!
@@ -2041,15 +2041,70 @@ export default function App() {
                 onClick={closeMobileNav}
                 badge={updateAvailable ? <span title={i18nT('app.update_available')} role="status" aria-label={i18nT('app.update_available_2')} className={effectiveCollapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} /> : undefined}
               />
-              {/* Contact Us — icon links to kiro.dev, the GitHub repo,
-                  and the Discord community. Hidden while the rail is collapsed
-                  (folds away via max-height so the collapse stays smooth). */}
+              {/* Community row — a leading GitHub mark, then two links on ONE
+                  line separated by a middot, then the icon-only Discord link.
+
+                  This line is tight by construction, and the numbers are
+                  MEASURED against real font advance widths, not estimated.
+                  The rail is 236px, which leaves a 143px text group after the
+                  mark, the Discord icon and padding; the middot plus its gaps
+                  costs ~10-15px depending on family.
+
+                  CRITICAL: size this against the WIDEST font the user can pick,
+                  not the default. `useZoom` lets them set --font-body to sans
+                  (Space Grotesk), mono (JetBrains Mono) or system (-apple-system),
+                  and mono is ~20% wider. A 12px row measured only against Space
+                  Grotesk shipped and truncated for every mono user.
+
+                  "Star us · Report issue" at 12px, measured:
+                    Space Grotesk   114.0px against a 132.8px budget — 18.7 spare
+                    JetBrains Mono  136.8px against a 127.8px budget — 9.0 OVER
+                  Rather than shrink the type for everyone or drop the Discord
+                  link, mono alone is tightened to -0.05em, which brings it to
+                  125.4px (+3.0 spare). That rule lives in index.css keyed on
+                  html[data-font-family="mono"] via the `rail-community-links`
+                  class, and its measurement table is there. Mono's margin is only
+                  ~3px, so ANY copy growth here must be re-measured IN MONO first.
+
+                  The separator is a middot because " / " is wider, and the row's
+                  right padding is trimmed for the same budget reason.
+
+                  The mark sits 2px from the text (ml-0.5) while the middot keeps
+                  4px gaps. That asymmetry is an OPTICAL correction, not an
+                  oversight: github-mark.svg is a circle filling its whole 16x16
+                  viewBox (no internal padding), and a circle beside a capital "S"
+                  curves away from it, so an equal metric gap reads as a wider
+                  one. Matching the middot's 4px here looked detached. Font and
+                  letter-spacing are deliberately NOT overridden — the row
+                  inherits --font-body and letter-spacing:normal from body, so it
+                  follows the user's own font choice like everything else.
+
+                  Order of yielding under pressure is deliberate: "Star us" and
+                  the middot are shrink-0, so a longer locale (Spanish's "Informar
+                  de un problema") ellipsizes the TAIL of the second link rather
+                  than mangling both. Both links keep a title tooltip, so a
+                  clipped label is still readable on hover.
+
+                  One mark for two links is correct — both destinations ARE
+                  GitHub. It is decorative (BrandGlyph is aria-hidden) and each
+                  link carries its own descriptive aria-label, since "Star us"
+                  alone names no target. Hidden while the rail is collapsed (folds
+                  away via max-height so the collapse stays smooth). */}
               <div {...(effectiveCollapsed ? { inert: '' } : {})} className={`overflow-hidden transition-all duration-200 ${effectiveCollapsed ? 'max-h-0 opacity-0' : 'max-h-16 opacity-100 mt-1'}`}>
-                <div className="flex items-center gap-1 border-t border-border-strong pl-3 pr-1 pt-2.5 pb-0.5 whitespace-nowrap">
-                  <span className="text-[13px] text-muted flex-1 overflow-hidden">{i18nT('app.contact_us')}</span>
-                  <a href="https://kiro.dev" target="_blank" rel="noopener noreferrer" title={i18nT('app.kiro_website')} aria-label={i18nT('app.kiro_website_kiro_dev')} className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><Globe size={15} /></a>
-                  <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title={i18nT('app.github_repository')} aria-label={i18nT('app.kirocrew_github_repository')} className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><GithubIcon size={15} /></a>
-                  <a href="https://kiro.dev/discord/" target="_blank" rel="noopener noreferrer" title={i18nT('app.discord_community')} aria-label={i18nT('app.kiro_discord_community')} className="flex items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><DiscordIcon size={15} /></a>
+                <div className="flex items-center border-t border-border-strong pl-3 pr-0.5 pt-2.5 pb-0.5 whitespace-nowrap">
+                  {/* pl-3 puts the mark on the same 12px x-offset as the
+                      nav-item icons above. No `gap` on this row ON PURPOSE: a row
+                      gap applies between ALL THREE children (mark, links,
+                      Discord), so pairing it with ml-0.5 silently doubled the
+                      mark-to-text distance to 6px and cost 4px the budget below
+                      never accounted for. Spacing is explicit per child instead. */}
+                  <span className="flex items-center shrink-0 text-muted"><GithubIcon size={15} /></span>
+                  <div className="rail-community-links flex items-center gap-[5px] flex-1 min-w-0 ml-1.5 text-[12px]">
+                    <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title={i18nT('app.star_kirocrew_on_github')} aria-label={i18nT('app.star_kirocrew_on_github')} className="shrink-0 rounded text-muted hover:text-text transition-colors">{i18nT('app.star_us')}</a>
+                    <span aria-hidden="true" className="shrink-0 opacity-40">·</span>
+                    <a href="https://github.com/kirodotdev/KiroCrew/issues" target="_blank" rel="noopener noreferrer" title={i18nT('app.report_an_issue_on_github')} aria-label={i18nT('app.report_an_issue_on_github')} className="min-w-0 overflow-hidden text-ellipsis rounded text-muted hover:text-text transition-colors">{i18nT('app.report_issue')}</a>
+                  </div>
+                  <a href="https://kiro.dev/discord/" target="_blank" rel="noopener noreferrer" title={i18nT('app.discord_community')} aria-label={i18nT('app.kiro_discord_community')} className="flex items-center justify-center ml-1 w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><DiscordIcon size={15} /></a>
                 </div>
               </div>
             </div>
