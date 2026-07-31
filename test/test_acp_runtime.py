@@ -3340,6 +3340,35 @@ async def test_set_model_syncs_resolved_model_id():
     assert h._resolved_model_id == "new-model"
 
 
+@pytest.mark.asyncio
+async def test_set_model_rebases_context_stats(monkeypatch):
+    """Contract parity with AcpClient.set_model: a mid-session switch re-anchors
+    last_prompt_stats to the new model's window and clears the authoritative
+    usage flag, so the next metadata pct backfills against the NEW model
+    instead of being gated forever by the old model's usage_update."""
+    from kiro_crew import model_registry
+
+    monkeypatch.setattr(model_registry, "has_known_window", lambda mid: True)
+    monkeypatch.setattr(model_registry, "model_window", lambda mid, **kw: 272_000)
+    rt = MagicMock()
+    rt.is_alive.return_value = True
+    rt.send_request = AsyncMock()
+    h = AcpSessionHandle("sA", asyncio.Queue(), rt)
+    h._turn_done.set()
+    h.last_prompt_stats.context_used_tokens = 100_000
+    h.last_prompt_stats.context_window_tokens = 1_000_000
+    h.last_prompt_stats.context_pct = 10.0
+    h.last_prompt_stats.context_tokens_from_usage = True
+
+    await h.set_model("new-model")
+
+    stats = h.last_prompt_stats
+    assert stats.context_window_tokens == 272_000
+    assert stats.context_used_tokens == 100_000
+    assert stats.context_pct == round(100_000 / 272_000 * 100, 1)
+    assert stats.context_tokens_from_usage is False
+
+
 def test_normalize_models_shape():
     """Contract parity: available_models normalized to {modelId,name,description}
     with guaranteed keys (mirrors AcpClient._capture_available_models)."""

@@ -506,6 +506,15 @@ class AcpSessionHandle:
         # (otherwise the context meter converts pct against the stale session/new
         # model until the next session refresh).
         self._resolved_model_id = model_id
+        # Also rebase the meter stats themselves — the old model's window and
+        # its authoritative usage_update no longer describe this session
+        # (mirrors AcpClient.set_model).
+        win = (
+            model_registry.model_window(model_id)
+            if model_registry.has_known_window(model_id)
+            else None
+        )
+        self.last_prompt_stats.rebase_to_window(win or 0)
 
     async def steer(self, message: str) -> bool:
         """Inject a mid-turn steer into the running turn via kiro-cli's

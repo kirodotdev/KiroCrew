@@ -370,3 +370,28 @@ class AcpPromptStats:
     # Per-turn billing credits summed from kiro's _kiro.dev/metadata
     # meteringUsage (unit="credit"). 0 for providers that bill in tokens.
     credits: float = 0.0
+
+    def rebase_to_window(self, window_tokens: int) -> None:
+        """Re-anchor the token stats to a new model's context window.
+
+        Called after a mid-session ``session/set_model``: the previous model's
+        window no longer describes the session, and ``context_tokens_from_usage``
+        must drop so the next metadata percentage can re-derive against the new
+        model (a stale True gates ``_backfill_context_window`` forever when the
+        new model streams only ``contextUsagePercentage``). ``context_used_tokens``
+        is kept — the transcript is unchanged and token counts are roughly
+        model-independent — and ``context_pct`` is recomputed against the new
+        window when it is known. Pass 0 for an unknown window: window AND pct
+        zero out (the old model's pct must not ship in the reset broadcast),
+        so downstream consumers fall back to their own model-derived value
+        until the next turn's telemetry re-derives real numbers.
+        """
+        self.context_tokens_from_usage = False
+        if window_tokens and window_tokens > 0:
+            self.context_window_tokens = int(window_tokens)
+            if self.context_used_tokens > 0:
+                pct = self.context_used_tokens / window_tokens * 100.0
+                self.context_pct = round(min(max(pct, 0.0), 100.0), 1)
+        else:
+            self.context_window_tokens = 0
+            self.context_pct = 0.0

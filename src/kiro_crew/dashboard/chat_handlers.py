@@ -12,6 +12,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
@@ -34,7 +35,7 @@ from kiro_crew.dashboard.chat_persistence import (
     get_reasoning_effort_values,
     save_slot_off_loop,
 )
-from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.chat_runner import _context_usage_payload, _run_chat
 from kiro_crew.dashboard.chat_title import _maybe_auto_title
 from kiro_crew.dashboard.chat_utils import (
     _build_stream_chunk,
@@ -1672,6 +1673,30 @@ async def _try_live_model_switch(
     return True
 
 
+def _broadcast_context_reset(state: "DashboardState", slot_key: str, provider: Any) -> None:
+    """Push one ``context_usage`` event so the meter updates on a model switch.
+
+    Without this the frontend keeps the previous model's stored ``{used,
+    window}`` until the next turn emits an event. ``reset: true`` tells the
+    ``sseContextUsage`` reducer it may REPLACE or DELETE the stored token entry
+    (per-turn events deliberately never delete, so a pct-only event cannot wipe
+    good counts). With a live provider the payload carries the freshly rebased
+    stats from ``set_model``; without one (the session-reset path) it carries no
+    tokens, so the reducer deletes the entry and the UI falls back to its own
+    model-derived window for the slot's new model. Best-effort: a broadcast
+    failure must not fail the switch.
+    """
+    try:
+        if provider is not None:
+            payload = _context_usage_payload(slot_key, provider)
+        else:
+            payload = {"slot": slot_key, "pct": 0.0}
+        payload["reset"] = True
+        state.broadcast_ws("context_usage", payload)
+    except Exception:
+        logger.exception("Failed to broadcast context_usage reset for slot %s", slot_key)
+
+
 async def api_chat_slot_model(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/model — set model for a chat slot.
 
@@ -1698,9 +1723,12 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     slot.model = model_name
     session_key = _history_key_for(name)
     provider = state.sessions.get_provider(session_key)
-    if not await _try_live_model_switch(name, slot, provider, model_name):
+    if await _try_live_model_switch(name, slot, provider, model_name):
+        _broadcast_context_reset(state, slot.key, provider)
+    else:
         logger.info("Slot %s model switched to %r, resetting session", name, model_name or "auto")
         await _reset_slot_session(state, slot, session_key)
+        _broadcast_context_reset(state, slot.key, None)
     state.push_slots_update()
     return web.json_response({"ok": True, "model": model_name})
 
@@ -1771,6 +1799,7 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             failed.append(name)
             continue
         slot.model = model_name
+        _broadcast_context_reset(state, slot.key, None)
         switched.append(name)
 
     if switched:

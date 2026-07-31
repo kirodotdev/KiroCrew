@@ -1480,6 +1480,28 @@ describe('sseContextUsage reducer', () => {
     const state = reducer(initial, sseContextUsage({ slot: 's1', pct: 10, window_tokens: 200000 }))
     expect(state.slotContextTokens['s1']).toEqual({ used: 0, window: 200000 })
   })
+
+  it('reset with a window replaces the stored entry (live model switch)', () => {
+    const seeded = reducer(initial, sseContextUsage({ slot: 's1', pct: 10, used_tokens: 100000, window_tokens: 1000000 }))
+    const state = reducer(seeded, sseContextUsage({ slot: 's1', pct: 36.8, used_tokens: 100000, window_tokens: 272000, reset: true }))
+    expect(state.slotContextTokens['s1']).toEqual({ used: 100000, window: 272000 })
+    expect(state.slotContextPct['s1']).toBe(36.8)
+  })
+
+  it('reset without a window deletes the stored entry (session reset / compaction)', () => {
+    // Deleting re-enables the model-derived fallback for the slot's NEW model;
+    // without reset the stale old-model entry short-circuits it until the next turn.
+    const seeded = reducer(initial, sseContextUsage({ slot: 's1', pct: 10, used_tokens: 100000, window_tokens: 1000000 }))
+    const state = reducer(seeded, sseContextUsage({ slot: 's1', pct: 0, reset: true }))
+    expect(state.slotContextTokens['s1']).toBeUndefined()
+    expect(state.slotContextPct['s1']).toBe(0)
+  })
+
+  it('pct-only event WITHOUT reset still leaves stored tokens untouched', () => {
+    const seeded = reducer(initial, sseContextUsage({ slot: 's1', pct: 10, used_tokens: 100000, window_tokens: 1000000 }))
+    const state = reducer(seeded, sseContextUsage({ slot: 's1', pct: 12 }))
+    expect(state.slotContextTokens['s1']).toEqual({ used: 100000, window: 1000000 })
+  })
 })
 
 describe('sseSideResult — side conversation reducer', () => {

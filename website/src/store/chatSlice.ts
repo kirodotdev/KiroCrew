@@ -984,12 +984,19 @@ const chatSlice = createSlice({
       if (items.length) state.followups[slot] = { ...card, items }
       else delete state.followups[slot]
     },
-    sseContextUsage(state, action: PayloadAction<{ slot: string; pct: number; used_tokens?: number; window_tokens?: number }>) {
-      const { slot, pct, used_tokens, window_tokens } = action.payload
+    sseContextUsage(state, action: PayloadAction<{ slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean }>) {
+      const { slot, pct, used_tokens, window_tokens, reset } = action.payload
       if (isUnsafeKey(slot)) return
       state.slotContextPct[safeKey(slot)] = pct
       if (window_tokens && window_tokens > 0) {
         state.slotContextTokens[safeKey(slot)] = { used: used_tokens ?? 0, window: window_tokens }
+      } else if (reset) {
+        // Model switch / compaction / session reset: the stored counts belong
+        // to a window that no longer describes the session. Deleting re-enables
+        // the model-derived fallback (provider.getContextWindow(slot.model)).
+        // Per-turn events without `reset` deliberately never delete, so a
+        // pct-only event cannot wipe good token counts.
+        delete state.slotContextTokens[safeKey(slot)]
       }
     },
     appendMessage(state, action: PayloadAction<ChatMessage>) { state.messages.push(action.payload) },

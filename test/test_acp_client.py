@@ -8412,3 +8412,107 @@ class TestSpawnEnvChannelCredentialScrub:
             assert key not in env, f"{key} leaked into default-auto ACP child env"
         assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
         assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
+
+
+class TestSetModelRebasesContextStats:
+    """A mid-session set_model must re-anchor the context-meter stats.
+
+    Regression for the stale context meter: set_model used to leave
+    last_prompt_stats untouched, so the old model's window (and its
+    authoritative context_tokens_from_usage flag) survived the switch. When
+    the new model streams only contextUsagePercentage metadata (kiro 2.10+),
+    the stale True gated _backfill_context_window forever — pct updated but
+    the token text stayed scaled to the OLD model's window.
+    """
+
+    def _client(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path)
+        client._session_id = "s1"
+        client._send_request = AsyncMock()
+        return client
+
+    def _usage_msg(self, used, size):
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        return JsonRpcMessage(
+            method="session/update",
+            params={"update": {"sessionUpdate": "usage_update", "used": used, "size": size}},
+        )
+
+    @pytest.mark.asyncio
+    async def test_rebases_window_and_clears_usage_flag(self, tmp_path, monkeypatch):
+        import kiro_crew.acp.client as c
+
+        monkeypatch.setattr(c.model_registry, "has_known_window", lambda mid: True)
+        monkeypatch.setattr(c.model_registry, "model_window", lambda mid, **kw: 272_000)
+        client = self._client(tmp_path)
+        # Old model reported authoritative counts: 100K / 1M = 10%.
+        client._track_usage_update(self._usage_msg(100_000, 1_000_000))
+        assert client.last_prompt_stats.context_tokens_from_usage is True
+
+        await client.set_model("gpt-5.6-sol")
+
+        stats = client.last_prompt_stats
+        assert stats.context_window_tokens == 272_000
+        assert stats.context_used_tokens == 100_000  # transcript unchanged
+        assert stats.context_pct == round(100_000 / 272_000 * 100, 1)
+        # The old model's usage_update no longer describes the session.
+        assert stats.context_tokens_from_usage is False
+
+    @pytest.mark.asyncio
+    async def test_post_switch_metadata_backfills_new_window(self, tmp_path, monkeypatch):
+        """Load-bearing: with the rebase reverted, context_tokens_from_usage
+        stays True and this metadata pct would be ignored, leaving the window
+        at the OLD model's 1M forever."""
+        import kiro_crew.acp.client as c
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        monkeypatch.setattr(c.model_registry, "has_known_window", lambda mid: True)
+        monkeypatch.setattr(c.model_registry, "model_window", lambda mid, **kw: 272_000)
+        client = self._client(tmp_path)
+        client._track_usage_update(self._usage_msg(100_000, 1_000_000))
+
+        await client.set_model("gpt-5.6-sol")
+        client._track_metadata(
+            JsonRpcMessage(
+                method="_kiro.dev/metadata",
+                params={"contextUsagePercentage": 50.0},
+            )
+        )
+
+        stats = client.last_prompt_stats
+        assert stats.context_window_tokens == 272_000
+        assert stats.context_used_tokens == 136_000  # 50% of the NEW window
+        assert stats.context_pct == 50.0
+
+    @pytest.mark.asyncio
+    async def test_unknown_window_zeroes_out(self, tmp_path, monkeypatch):
+        """A registry miss must not keep the old window: zero it so downstream
+        consumers fall back to their own model-derived value."""
+        import kiro_crew.acp.client as c
+
+        monkeypatch.setattr(c.model_registry, "has_known_window", lambda mid: False)
+        client = self._client(tmp_path)
+        client._track_usage_update(self._usage_msg(100_000, 1_000_000))
+
+        await client.set_model("mystery-model")
+
+        stats = client.last_prompt_stats
+        assert stats.context_window_tokens == 0
+        # The old model's pct must not survive either — it would ship in the
+        # model-switch reset broadcast as a claim about the unknown window.
+        assert stats.context_pct == 0.0
+        assert stats.context_tokens_from_usage is False
+
+    def test_rebase_clamps_pct_when_used_exceeds_new_window(self):
+        """Shrinking the window below used must clamp pct to 100, not overflow."""
+        stats = AcpPromptStats(
+            context_used_tokens=500_000,
+            context_window_tokens=1_000_000,
+            context_pct=50.0,
+            context_tokens_from_usage=True,
+        )
+        stats.rebase_to_window(272_000)
+        assert stats.context_pct == 100.0
+        assert stats.context_window_tokens == 272_000
+        assert stats.context_tokens_from_usage is False

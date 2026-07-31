@@ -302,7 +302,9 @@ class TestCompactCallbackWiring:
         payloads = [json.loads(c.args[0]) for c in ws.send_str.call_args_list]
         context = [p for p in payloads if p.get("type") == "context_usage"]
         assert len(context) == 1
-        assert context[0]["data"] == {"slot": "chat-1", "pct": 0.0}
+        # reset lets the frontend drop its stored token counts too — they
+        # describe the pre-compaction transcript.
+        assert context[0]["data"] == {"slot": "chat-1", "pct": 0.0, "reset": True}
 
     @pytest.mark.asyncio
     async def test_callback_broadcast_runs_even_if_append_fails(

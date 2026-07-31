@@ -1842,8 +1842,13 @@ class DashboardState:
                 )
             if success:
                 # Reset the context bar — successful compact dropped usage.
+                # reset lets the frontend drop its stored token counts too
+                # (the "X / Y tokens" tooltip), which no longer describe the
+                # compacted session.
                 try:
-                    self.broadcast_ws("context_usage", {"slot": slot_key, "pct": 0.0})
+                    self.broadcast_ws(
+                        "context_usage", {"slot": slot_key, "pct": 0.0, "reset": True}
+                    )
                 except Exception:
                     logging.getLogger(__name__).exception(
                         "Failed to broadcast context_usage for slot %s", slot_key

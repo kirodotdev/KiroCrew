@@ -836,7 +836,7 @@ export function useWebSocket() {
             // Dispatching here would reset ts and break slow-warning detection.
             break
           case 'context_usage':
-            dispatch(sseContextUsage(data as { slot: string; pct: number; used_tokens?: number; window_tokens?: number }))
+            dispatch(sseContextUsage(data as { slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean }))
             break
           case 'chat_thinking':
             // kiro-cli/ACP reasoning (agent_thought_chunk) -> collapsible block.

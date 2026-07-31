@@ -11268,6 +11268,97 @@ class TestSlotModelLiveSwitch:
         state.sessions.reset.assert_not_awaited()
 
 
+class TestSlotModelSwitchContextBroadcast:
+    """POST /api/chat/slots/{slot}/model — one ``context_usage`` event per
+    switch so the meter updates immediately.
+
+    Regression: nothing broadcast on a model switch, so the frontend's stored
+    ``slotContextTokens`` kept the OLD model's {used, window} until the next
+    turn. The event carries ``reset: true`` so the reducer may replace or
+    delete the stored entry (per-turn events never delete).
+    """
+
+    _app = staticmethod(TestSlotModelLiveSwitch._app)
+    _provider = staticmethod(TestSlotModelLiveSwitch._provider)
+
+    @staticmethod
+    def _find_context_events(broadcast_mock):
+        return [
+            call.args[1]
+            for call in broadcast_mock.call_args_list
+            if call.args and call.args[0] == "context_usage"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_live_switch_broadcasts_rebased_stats(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.broadcast_ws = MagicMock()
+        provider = self._provider()
+        # The provider accessors report the freshly rebased stats set_model left.
+        provider.context_usage_pct.return_value = 36.8
+        provider.context_used_tokens.return_value = 100_000
+        provider.context_window_tokens.return_value = 272_000
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"}
+            )
+
+        assert resp.status == 200
+        events = self._find_context_events(state.broadcast_ws)
+        assert events == [
+            {
+                "slot": state._slots["a"].key,
+                "pct": 36.8,
+                "used_tokens": 100_000,
+                "window_tokens": 272_000,
+                "reset": True,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_reset_fallback_broadcasts_token_clearing_event(self, tmp_path):
+        # No live provider -> the reset path: no token counts, so the frontend
+        # deletes its stored entry and falls back to the model-derived window.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.broadcast_ws = MagicMock()
+        state.sessions.get_provider = MagicMock(return_value=None)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"}
+            )
+
+        assert resp.status == 200
+        state.sessions.reset.assert_awaited_once()
+        events = self._find_context_events(state.broadcast_ws)
+        assert events == [{"slot": state._slots["a"].key, "pct": 0.0, "reset": True}]
+
+    @pytest.mark.asyncio
+    async def test_broadcast_failure_does_not_fail_the_switch(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.broadcast_ws = MagicMock(side_effect=RuntimeError("ws down"))
+        state.sessions.get_provider = MagicMock(return_value=None)
+        state.get_or_create_slot("a", model="claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"}
+            )
+
+        assert resp.status == 200
+        assert state._slots["a"].model == "gpt-5.6-sol"
+
+
 def _make_tail_fork_slot(state):
     slot = state.get_or_create_slot("src")
     slot.title = "My Chat"
