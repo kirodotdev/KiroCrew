@@ -1256,6 +1256,140 @@
         "select_a_run_to_see_its_phases_agents_and_result": "Sélectionnez une exécution pour voir ses phases, ses agents et son résultat.",
         "unknown": "Inconnu"
       }
+    },
+    "mdNotebook": {
+      "title": "Notes",
+      "badge": {
+        "pending": "en attente"
+      },
+      "boot": {
+        "loading": "Chargement…",
+        "unreachable": "Impossible de joindre le backend Notes : {{message}}. Il démarre peut-être encore."
+      },
+      "body": {
+        "empty": "Sélectionnez une note, ou créez-en une avec le bouton +.",
+        "backlinks": "Liée depuis {{n}}"
+      },
+      "banner": {
+        "staleBackend": "Le backend Notes exécute un code plus ancien que cette page — manquant : {{features}}. Désactivez puis réactivez Notes dans la page Applications pour le redémarrer.",
+        "staleBackendRoute": "Le backend Notes exécute un code plus ancien que cette page. Désactivez puis réactivez Notes dans la page Apps pour le redémarrer.",
+        "diskConflict": "Cette note a changé sur le disque depuis son ouverture.",
+        "useDisk": "Utiliser la version du disque",
+        "keepMine": "Conserver ma version",
+        "syncConflict": "La synchronisation s’est arrêtée sur un conflit de fusion, donc rien n’a été poussé. Notes en conflit : {{paths}}"
+      },
+      "editor": {
+        "blockAria": "Modifier le bloc",
+        "titleAria": "Titre de la note",
+        "renameHint": "Cliquez pour renommer cette note"
+      },
+      "header": {
+        "newNote": "Nouvelle note",
+        "view_rendered": "Rendu",
+        "view_raw": "Source Markdown"
+      },
+      "panel": {
+        "hide": "Masquer le panneau des notes",
+        "show": "Afficher le panneau des notes",
+        "switchVault": "Changer de coffre",
+        "vaults": "Coffres",
+        "connectVault": "Connecter un coffre",
+        "searchPlaceholder": "Rechercher des notes",
+        "sortAndView": "Tri et affichage",
+        "viewSection": "Affichage",
+        "sortSection": "Trier par",
+        "view_folders": "Dossiers",
+        "view_list": "Liste simple",
+        "noMatches": "Aucun résultat"
+      },
+      "sort": {
+        "modifiedNewOld": "Modification — du plus récent au plus ancien",
+        "modifiedOldNew": "Modification — du plus ancien au plus récent",
+        "createdNewOld": "Création — du plus récent au plus ancien",
+        "createdOldNew": "Création — du plus ancien au plus récent",
+        "nameAZ": "Nom de fichier — de A à Z",
+        "nameZA": "Nom de fichier — de Z à A"
+      },
+      "sync": {
+        "action": "Synchroniser",
+        "syncing": "Synchronisation",
+        "justNow": "Synchronisé à l’instant",
+        "ago_m": "Synchronisé il y a {{n}} min",
+        "ago_h": "Synchronisé il y a {{n}} h",
+        "ago_d": "Synchronisé il y a {{n}} j"
+      },
+      "knowledge": {
+        "label": "Synchroniser avec les connaissances Kiro Crew",
+        "connectHelp": "Ajoute ce coffre à la bibliothèque de Connaissances pour que les agents puissent chercher dans vos notes. Modifiable ensuite dans les Réglages."
+      },
+      "connect": {
+        "title": "Connecter un coffre",
+        "cloneTab": "Cloner un dépôt",
+        "attachTab": "Rattacher un dossier",
+        "cloneHelp": "Clone un dépôt GitHub et conserve sa propre copie de travail.",
+        "attachHelp": "Utilise un dossier git que vous avez déjà, sur place — sans seconde copie.",
+        "repoUrl": "URL du dépôt",
+        "branch": "Branche",
+        "token": "Jeton d’accès (facultatif)",
+        "localFolder": "Dossier local",
+        "subfolder": "Sous-dossier (facultatif)",
+        "choose": "Choisir…",
+        "choosing": "Sélection…",
+        "cloneAction": "Connecter le coffre",
+        "attachAction": "Rattacher le dossier",
+        "cloning": "Clonage…",
+        "attaching": "Rattachement…",
+        "cancel": "Annuler",
+        "pickerNeedsMac": "Le sélecteur de dossier nécessite macOS — saisissez le chemin.",
+        "pickerFailed": "Impossible d’ouvrir le sélecteur de dossier : {{message}}",
+        "knowledgeFailed": "Coffre connecté, mais la synchronisation des connaissances a échoué : {{message}}",
+        "localFolderPlaceholder": "~/Developer/my-notes",
+        "repoUrlPlaceholder": "https://github.com/you/notes",
+        "tokenPlaceholder": "github_pat_…",
+        "subfolderPlaceholder": "notes"
+      },
+      "settings": {
+        "title": "Réglages",
+        "subtitle": "Coffres, accès GitHub et synchronisation",
+        "close": "Fermer les réglages",
+        "vaultsSection": "Coffres",
+        "badgeLocal": "Dossier local",
+        "badgeCloned": "Cloné",
+        "active": "Actif",
+        "open": "Ouvrir",
+        "remove": "Retirer",
+        "removeConfirm": "Retirer ce coffre de l’application ? Vos fichiers restent intacts sur le disque — seule la connexion est oubliée.",
+        "removeIt": "Le retirer",
+        "knowledgeIndexed": "Indexé dans la bibliothèque de Connaissances — les agents peuvent chercher dans ces notes.",
+        "knowledgeNotIndexed": "Non indexé. Activez pour que les agents cherchent dans ce coffre.",
+        "knowledgeAdding": "Ajout aux Connaissances…",
+        "knowledgeRemoving": "Retrait des Connaissances…",
+        "knowledgeAdded": "Ajouté aux Connaissances.",
+        "knowledgeAddedCount": "Ajouté aux Connaissances — {{n}} fichier(s) en file d’indexation.",
+        "knowledgeRemoved": "Retiré des Connaissances.",
+        "githubSection": "Accès GitHub",
+        "authStored": "Utilise un jeton stocké dans cette application.",
+        "authGh": "Utilise votre connexion GitHub CLI.",
+        "authNone": "Aucun accès GitHub — ajoutez un jeton pour synchroniser des dépôts privés.",
+        "tokenPlaceholderStored": "Remplacer le jeton stocké…",
+        "tokenPlaceholderEmpty": "github_pat_…",
+        "save": "Enregistrer",
+        "clear": "Effacer",
+        "tokenSaved": "Jeton enregistré.",
+        "tokenCleared": "Jeton effacé.",
+        "syncSection": "Synchronisation",
+        "autoSync": "Synchronisation automatique",
+        "autoSyncHelp": "Envoie vos modifications vers GitHub et récupère les dernières, sur une minuterie. En pause tant qu’un conflit attend votre décision.",
+        "every": "Toutes les",
+        "minutes": "minutes",
+        "intervalAria": "Intervalle de synchronisation automatique en minutes",
+        "shortcut": "Raccourci de synchronisation manuelle",
+        "shortcutHelpIdle": "Cliquez pour enregistrer un nouveau raccourci.",
+        "shortcutHelpRecording": "Appuyez sur les touches souhaitées — Échap pour annuler.",
+        "recording": "Enregistrement…",
+        "reset": "Réinitialiser",
+        "shortcutNeedsModifier": "Utilisez au moins ⌘, Ctrl ou ⌥ — une simple lettre se déclencherait pendant la saisie."
+      }
     }
   },
   "components": {

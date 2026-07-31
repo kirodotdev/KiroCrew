@@ -2419,6 +2419,10 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".pypirc",
     ".netrc",
     ".git-credentials",
+    # (The Notes builtin's GitHub PAT lives under the crew data-home at
+    # ``<prefix>/workspace/md-notebook/pat``; it is added below via
+    # ``_CREW_SECRET_LEAVES`` so BOTH ``.kiro/crew`` and the legacy ``.kirocrew``
+    # data-home are covered — ``config_dir()`` can resolve to either.)
     # Enterprise SSO cookie store. The public core ships no bundled SSO
     # integration, but the browser-auth layer already references this cookie
     # path (browser/auth.py), an edition CredentialPolicy redacts its session
@@ -2483,6 +2487,27 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 _CREW_SECRET_LEAVES: list[str] = [
     ".env",
+    # The Notes builtin stores a GitHub Personal Access Token here so it can
+    # push a vault. Owner-only mode (0600) does not isolate another process
+    # running as the same UID, and the token is a live bearer credential for the
+    # user's repositories, so it belongs behind the shared floor like every other
+    # credential store. The app's own backend opens it directly rather than
+    # through this gate, so it keeps working. It is a leaf here (not a flat
+    # ``~/.kiro/crew`` entry) so it is generated for BOTH ``_CREW_HOME_PREFIXES``:
+    # ``HOME`` follows ``config_dir()``, which can resolve to the legacy
+    # ``.kirocrew`` data-home during a migration fallback, and the PAT must be
+    # protected there too. A vault relocated with ``MD_NOTEBOOK_HOME`` falls
+    # outside a home-relative entry; the default path is what ships and what an
+    # agent would find.
+    "workspace/md-notebook/pat",
+    # The Notes builtin's vault registry. It is not a secret, but it stores each
+    # vault's on-disk ``localPath``, which auto-sync trusts and runs ``git
+    # add``/``commit``/``push`` against. A prompt-injected agent that could
+    # rewrite this file would repoint a vault at an unrelated repository and have
+    # the app commit and push work from it outside the hook controls, so the
+    # agent must not be able to write it. The app's own backend opens it directly
+    # rather than through this gate, so it keeps working.
+    "workspace/md-notebook/vaults.json",
     "browser-cookies.txt",
     "playwright-storage-state.json",
     "sel_hmac.key",
@@ -2723,39 +2748,17 @@ def _get_sensitive_re() -> re.Pattern[str]:
     return _SENSITIVE_RE
 
 
-def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None = None) -> bool:
-    """Return True if *path_str* resolves under any of *home_dirs* (``$HOME``-relative).
+def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
+    """Expand *path_str* into every candidate form the sensitive-path gates match.
 
-    Shared matching core for :func:`is_sensitive_path` (read+write gate,
-    ``_SENSITIVE_HOME_DIRS``) and :func:`is_sensitive_write_path` (write-only
-    gate, the read+write set PLUS ``_WRITE_PROTECTED_HOME_PATHS``). Keeping one
-    implementation means the symlink/casefold hardening below cannot drift
-    between the two gates.
-
-    ── Symlink robustness (pentest AWS-345 / AWS-62) ──
-    A workspace symlink pointing at ``~/.aws/credentials`` (absolute OR relative
-    ``../../.aws/credentials`` traversal) must NOT be readable through the link.
-    We therefore check MULTIPLE candidate forms of the input and return True if
-    ANY of them lands in a matched location:
-
-      1. the fully symlink-RESOLVED canonical target (``realpath`` /
-         ``Path.resolve`` — follows every symlink in the chain, including
-         intermediate directories and the final component).  This is what
-         defeats the symlink bypass: the resolved target of the link is
-         ``~/.aws/credentials`` even though the link's own name is benign.
-      2. the LEXICALLY-normalized path (no symlink following) and the raw
-         expanded string — so a path that *textually* names a matched dir is
-         still caught when resolution fails (dangling link, permission error).
-
-    ``base_dir`` anchors a *relative* input against the caller's known working
-    directory (e.g. the agent's workspace cwd) so a relative title like
-    ``sub/cfg.ini`` resolves against the real directory rather than whatever CWD
-    the gateway process happens to have.  Absolute inputs are unaffected;
-    ``base_dir=None`` preserves the historical CWD-relative behavior.
+    Symlink-resolved forms defeat a link bypass; the lexical forms are the
+    fail-safe fallback when resolution cannot complete (over-matching a
+    sensitive-looking path is the safe direction). ``base_dir`` anchors a
+    relative input against the caller's known working directory. Shared by
+    :func:`_path_in_home_dirs` (is the path INSIDE a protected location?) and
+    :func:`path_contains_sensitive` (does the path CONTAIN one?) so the
+    symlink/anchoring hardening cannot drift between the two directions.
     """
-    if not path_str:
-        return False
-
     # Expand ~ and $HOME
     expanded = os.path.expanduser(os.path.expandvars(path_str))
 
@@ -2787,24 +2790,31 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
         pass
     candidates.add(os.path.normpath(expanded))
     candidates.add(expanded)
+    return candidates
 
+
+def _home_dir_targets(home_dirs: list[str]) -> set[str]:
+    """Anchor the ``$HOME``-relative *home_dirs* entries into absolute, casefolded
+    on-disk targets.
+
+    Anchors against BOTH the logical home and its realpath.  On macOS the
+    per-user temp/home prefix can itself be reached via OS symlinks (``/var`` →
+    ``/private/var``); folding both roots in means a resolved candidate under
+    either spelling is still matched.
+
+    ``home_dirs`` entries are authored with POSIX "/" separators, and some are
+    multi-segment now (e.g. ".kiro/crew/security_policy.json"). Split on "/"
+    and re-join with ``os.path.join`` so the target uses the running OS's
+    separator — otherwise on Windows the target keeps a literal "/" in the
+    leaf while the candidate forms (realpath/normpath) are all-backslash, they
+    never compare equal, and the keystone would silently stop gating its own
+    secrets. On POSIX a single-segment entry splits to a 1-element list, so
+    this is a no-op there.
+    """
     try:
         home = str(Path.home().resolve())
     except (OSError, ValueError):
         home = str(Path.home())
-    # Compare against the sensitive dirs anchored at BOTH the logical home and
-    # its realpath.  On macOS the per-user temp/home prefix can itself be
-    # reached via OS symlinks (``/var`` → ``/private/var``); folding both roots
-    # in means a resolved candidate under either spelling is still matched.
-    #
-    # ``home_dirs`` entries are authored with POSIX "/" separators, and some are
-    # multi-segment now (e.g. ".kiro/crew/security_policy.json"). Split on "/"
-    # and re-join with ``os.path.join`` so the target uses the running OS's
-    # separator — otherwise on Windows the target keeps a literal "/" in the
-    # leaf while the candidate forms (realpath/normpath) are all-backslash, they
-    # never compare equal, and the keystone would silently stop gating its own
-    # secrets. On POSIX a single-segment entry splits to a 1-element list, so
-    # this is a no-op there.
 
     def _anchor(root: str, d: str) -> str:
         return os.path.join(root, *d.split("/")).casefold()
@@ -2844,6 +2854,44 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
                     except (OSError, ValueError):
                         pass
                     break
+    return sensitive_targets
+
+
+def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None = None) -> bool:
+    """Return True if *path_str* resolves under any of *home_dirs* (``$HOME``-relative).
+
+    Shared matching core for :func:`is_sensitive_path` (read+write gate,
+    ``_SENSITIVE_HOME_DIRS``) and :func:`is_sensitive_write_path` (write-only
+    gate, the read+write set PLUS ``_WRITE_PROTECTED_HOME_PATHS``). Keeping one
+    implementation means the symlink/casefold hardening below cannot drift
+    between the two gates.
+
+    ── Symlink robustness (pentest AWS-345 / AWS-62) ──
+    A workspace symlink pointing at ``~/.aws/credentials`` (absolute OR relative
+    ``../../.aws/credentials`` traversal) must NOT be readable through the link.
+    We therefore check MULTIPLE candidate forms of the input and return True if
+    ANY of them lands in a matched location:
+
+      1. the fully symlink-RESOLVED canonical target (``realpath`` /
+         ``Path.resolve`` — follows every symlink in the chain, including
+         intermediate directories and the final component).  This is what
+         defeats the symlink bypass: the resolved target of the link is
+         ``~/.aws/credentials`` even though the link's own name is benign.
+      2. the LEXICALLY-normalized path (no symlink following) and the raw
+         expanded string — so a path that *textually* names a matched dir is
+         still caught when resolution fails (dangling link, permission error).
+
+    ``base_dir`` anchors a *relative* input against the caller's known working
+    directory (e.g. the agent's workspace cwd) so a relative title like
+    ``sub/cfg.ini`` resolves against the real directory rather than whatever CWD
+    the gateway process happens to have.  Absolute inputs are unaffected;
+    ``base_dir=None`` preserves the historical CWD-relative behavior.
+    """
+    if not path_str:
+        return False
+
+    candidates = _candidate_forms(path_str, base_dir)
+    sensitive_targets = _home_dir_targets(home_dirs)
 
     # Case-fold both sides for the membership test.  On a case-insensitive
     # filesystem (macOS APFS/HFS+ default — a supported platform) the OS opens
@@ -2871,6 +2919,44 @@ def is_sensitive_path(path_str: str, base_dir: str | None = None) -> bool:
     symlink/casefold matching contract.
     """
     return _path_in_home_dirs(path_str, _SENSITIVE_HOME_DIRS, base_dir)
+
+
+def path_contains_sensitive(dir_str: str, base_dir: str | None = None) -> bool:
+    """Return True if a read+write-sensitive location lies UNDER *dir_str*.
+
+    The REVERSE direction of :func:`is_sensitive_path`: that gate answers "is
+    this path inside a protected location?", this one answers "does this
+    directory CONTAIN one?". A bulk operation rooted at *dir_str* — e.g. the
+    Notes builtin's ``git add -A`` over an attached vault — sweeps every file
+    below the root, so a root that is an ANCESTOR of a credential store (the
+    home directory itself, or a parent of ``~/.ssh``) would stage and push the
+    credentials wholesale even though the root is not itself a sensitive path.
+
+    List-based, no filesystem walk: the known sensitive roots
+    (:data:`_SENSITIVE_HOME_DIRS`, including the crew data-home secret leaves
+    and any ``KIROCREW_HOME`` re-anchoring) are prefix-compared against the
+    directory's candidate forms, so the check is O(sensitive entries) even when
+    *dir_str* is a huge tree. Shares :func:`_candidate_forms` and
+    :func:`_home_dir_targets` with :func:`_path_in_home_dirs` so the
+    symlink/casefold hardening cannot drift between the two directions.
+    """
+    if not dir_str:
+        return False
+    sensitive_targets = _home_dir_targets(_SENSITIVE_HOME_DIRS)
+    for cand in _candidate_forms(dir_str, base_dir):
+        # Normalize away a trailing separator so `/home/u/` and `/home/u`
+        # produce the same prefix (a bare `/` or `C:\` root rstrips to ""/"C:",
+        # whose prefix form still matches everything under it — correct: every
+        # sensitive path is inside the filesystem root).
+        cand_cf = cand.casefold().rstrip(os.sep)
+        prefix = cand_cf + os.sep
+        for target in sensitive_targets:
+            # Equality (the dir IS the sensitive path) is is_sensitive_path's
+            # job, but including it here fails safe for callers using only this
+            # gate.
+            if target == cand_cf or target.startswith(prefix):
+                return True
+    return False
 
 
 def is_sensitive_write_path(path_str: str, base_dir: str | None = None) -> bool:

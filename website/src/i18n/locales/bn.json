@@ -1239,6 +1239,140 @@
         "repeat_days": "প্রতি {{n}} দিন",
         "repeat_daily": "প্রতিদিন"
       }
+    },
+    "mdNotebook": {
+      "title": "নোট",
+      "badge": {
+        "pending": "অপেক্ষমাণ"
+      },
+      "boot": {
+        "loading": "লোড হচ্ছে…",
+        "unreachable": "নোট ব্যাকএন্ডে পৌঁছানো যায়নি: {{message}}। এটি এখনও চালু হচ্ছে হতে পারে।"
+      },
+      "body": {
+        "empty": "একটি নোট বাছুন, বা + বোতামে নতুন তৈরি করুন।",
+        "backlinks": "{{n}} থেকে সংযুক্ত"
+      },
+      "banner": {
+        "staleBackend": "নোট ব্যাকএন্ড এই পৃষ্ঠার চেয়ে পুরোনো কোড চালাচ্ছে — অনুপস্থিত: {{features}}। পুনরারম্ভ করতে অ্যাপস পৃষ্ঠায় নোট বন্ধ করে চালু করুন।",
+        "staleBackendRoute": "নোটস ব্যাকএন্ড এই পৃষ্ঠার চেয়ে পুরনো কোড চালাচ্ছে। এটি পুনরায় চালু করতে Apps পৃষ্ঠায় নোটস বন্ধ করে আবার চালু করুন।",
+        "diskConflict": "আপনি খোলার পর এই নোটটি ডিস্কে বদলে গেছে।",
+        "useDisk": "ডিস্কের সংস্করণ ব্যবহার করুন",
+        "keepMine": "আমার সংস্করণ রাখুন",
+        "syncConflict": "মার্জ কনফ্লিক্টের কারণে সিঙ্ক থেমে গেছে, তাই কিছুই পুশ হয়নি। কনফ্লিক্টে থাকা নোট: {{paths}}"
+      },
+      "editor": {
+        "blockAria": "ব্লক সম্পাদনা",
+        "titleAria": "নোটের শিরোনাম",
+        "renameHint": "এই নোটের নাম বদলাতে ক্লিক করুন"
+      },
+      "header": {
+        "newNote": "নতুন নোট",
+        "view_rendered": "রেন্ডার করা",
+        "view_raw": "Markdown সোর্স"
+      },
+      "panel": {
+        "hide": "নোট প্যানেল লুকান",
+        "show": "নোট প্যানেল দেখান",
+        "switchVault": "ভল্ট বদলান",
+        "vaults": "ভল্ট",
+        "connectVault": "ভল্ট যোগ করুন",
+        "searchPlaceholder": "নোট খুঁজুন",
+        "sortAndView": "ক্রম ও ভিউ",
+        "viewSection": "ভিউ",
+        "sortSection": "এভাবে সাজান",
+        "view_folders": "ফোল্ডার",
+        "view_list": "সরল তালিকা",
+        "noMatches": "কিছু মেলেনি"
+      },
+      "sort": {
+        "modifiedNewOld": "পরিবর্তিত — নতুন থেকে পুরোনো",
+        "modifiedOldNew": "পরিবর্তিত — পুরোনো থেকে নতুন",
+        "createdNewOld": "তৈরি — নতুন থেকে পুরোনো",
+        "createdOldNew": "তৈরি — পুরোনো থেকে নতুন",
+        "nameAZ": "ফাইলের নাম — A থেকে Z",
+        "nameZA": "ফাইলের নাম — Z থেকে A"
+      },
+      "sync": {
+        "action": "সিঙ্ক",
+        "syncing": "সিঙ্ক হচ্ছে",
+        "justNow": "এইমাত্র সিঙ্ক হয়েছে",
+        "ago_m": "{{n}} মিনিট আগে সিঙ্ক",
+        "ago_h": "{{n}} ঘণ্টা আগে সিঙ্ক",
+        "ago_d": "{{n}} দিন আগে সিঙ্ক"
+      },
+      "knowledge": {
+        "label": "Kiro Crew জ্ঞানে সিঙ্ক করুন",
+        "connectHelp": "এই ভল্টটি জ্ঞান লাইব্রেরিতে যোগ করে, যাতে এজেন্ট আপনার নোট খুঁজতে পারে। পরে সেটিংসে বদলানো যাবে।"
+      },
+      "connect": {
+        "title": "ভল্ট যোগ করুন",
+        "cloneTab": "রিপোজিটরি ক্লোন করুন",
+        "attachTab": "ফোল্ডার সংযুক্ত করুন",
+        "cloneHelp": "একটি GitHub রিপোজিটরি ক্লোন করে এবং নিজের কর্মকপি রাখে।",
+        "attachHelp": "আপনার আগে থেকেই থাকা git ফোল্ডার সেখানেই ব্যবহার করে — দ্বিতীয় কপি নয়।",
+        "repoUrl": "রিপোজিটরি URL",
+        "branch": "ব্রাঞ্চ",
+        "token": "অ্যাক্সেস টোকেন (ঐচ্ছিক)",
+        "localFolder": "স্থানীয় ফোল্ডার",
+        "subfolder": "সাবফোল্ডার (ঐচ্ছিক)",
+        "choose": "বাছুন…",
+        "choosing": "বাছা হচ্ছে…",
+        "cloneAction": "ভল্ট যোগ করুন",
+        "attachAction": "ফোল্ডার সংযুক্ত করুন",
+        "cloning": "ক্লোন হচ্ছে…",
+        "attaching": "সংযুক্ত হচ্ছে…",
+        "cancel": "বাতিল",
+        "pickerNeedsMac": "ফোল্ডার নির্বাচকের জন্য macOS দরকার — পথ টাইপ করুন।",
+        "pickerFailed": "ফোল্ডার নির্বাচক খোলা যায়নি: {{message}}",
+        "knowledgeFailed": "ভল্ট যুক্ত হয়েছে, কিন্তু জ্ঞান সিঙ্ক ব্যর্থ: {{message}}",
+        "localFolderPlaceholder": "~/Developer/my-notes",
+        "repoUrlPlaceholder": "https://github.com/you/notes",
+        "tokenPlaceholder": "github_pat_…",
+        "subfolderPlaceholder": "notes"
+      },
+      "settings": {
+        "title": "সেটিংস",
+        "subtitle": "ভল্ট, GitHub অ্যাক্সেস ও সিঙ্ক",
+        "close": "সেটিংস বন্ধ করুন",
+        "vaultsSection": "ভল্ট",
+        "badgeLocal": "স্থানীয় ফোল্ডার",
+        "badgeCloned": "ক্লোন করা",
+        "active": "সক্রিয়",
+        "open": "খুলুন",
+        "remove": "সরান",
+        "removeConfirm": "এই ভল্টটি অ্যাপ থেকে সরাবেন? ডিস্কে ফাইলগুলি অপরিবর্তিত থাকে — শুধু সংযোগটি ভুলে যাওয়া হয়।",
+        "removeIt": "সরিয়ে দিন",
+        "knowledgeIndexed": "জ্ঞান লাইব্রেরিতে সূচিবদ্ধ — এজেন্ট এই নোটগুলি খুঁজতে পারে।",
+        "knowledgeNotIndexed": "সূচিবদ্ধ নয়। এজেন্টকে এই ভল্টে খুঁজতে দিতে চালু করুন।",
+        "knowledgeAdding": "জ্ঞানে যোগ করা হচ্ছে…",
+        "knowledgeRemoving": "জ্ঞান থেকে সরানো হচ্ছে…",
+        "knowledgeAdded": "জ্ঞানে যোগ করা হয়েছে।",
+        "knowledgeAddedCount": "জ্ঞানে যোগ হয়েছে — {{n}}টি ফাইল সূচিকরণের সারিতে।",
+        "knowledgeRemoved": "জ্ঞান থেকে সরানো হয়েছে।",
+        "githubSection": "GitHub অ্যাক্সেস",
+        "authStored": "এই অ্যাপে সংরক্ষিত টোকেন ব্যবহার হচ্ছে।",
+        "authGh": "GitHub CLI লগইন ব্যবহার হচ্ছে।",
+        "authNone": "GitHub অ্যাক্সেস নেই — ব্যক্তিগত রিপোজিটরি সিঙ্ক করতে টোকেন যোগ করুন।",
+        "tokenPlaceholderStored": "সংরক্ষিত টোকেন বদলান…",
+        "tokenPlaceholderEmpty": "github_pat_…",
+        "save": "সংরক্ষণ",
+        "clear": "মুছুন",
+        "tokenSaved": "টোকেন সংরক্ষিত।",
+        "tokenCleared": "টোকেন মোছা হয়েছে।",
+        "syncSection": "সিঙ্ক",
+        "autoSync": "স্বয়ংক্রিয় সিঙ্ক",
+        "autoSyncHelp": "টাইমার অনুযায়ী পরিবর্তন GitHub-এ পাঠায় ও সর্বশেষ আনে। কোনো দ্বন্দ্বে সিদ্ধান্ত দরকার হলে থেমে থাকে।",
+        "every": "প্রতি",
+        "minutes": "মিনিট",
+        "intervalAria": "স্বয়ংক্রিয় সিঙ্কের বিরতি (মিনিট)",
+        "shortcut": "ম্যানুয়াল সিঙ্ক শর্টকাট",
+        "shortcutHelpIdle": "নতুন শর্টকাট রেকর্ড করতে ক্লিক করুন।",
+        "shortcutHelpRecording": "যে কীগুলি চান চাপুন — বাতিলে Esc।",
+        "recording": "রেকর্ডিং…",
+        "reset": "রিসেট",
+        "shortcutNeedsModifier": "অন্তত ⌘, Ctrl বা ⌥ ব্যবহার করুন — একা একটি অক্ষর টাইপ করার সময় চালু হয়ে যাবে।"
+      }
     }
   },
   "components": {

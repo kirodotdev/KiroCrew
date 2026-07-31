@@ -1,0 +1,51 @@
+{
+  "name": "md-notebook",
+  "version": "1.0.0",
+  "displayName": "Notes",
+  "description": "Keep a markdown notebook that lives in a git repository, so your notes are versioned, portable, and readable by any other editor. Point it at a GitHub repo and it clones a working copy, or attach a folder you already have — including an existing Obsidian vault — and it adopts that checkout in place without making a second copy. Notes render as formatted text you can click straight into to edit, [[wikilinks]] connect them, and every note shows what links back to it. Sync commits, pulls and pushes in one step, and a merge conflict is reported — listing the conflicted notes and aborting the merge — rather than overwriting anything.",
+  "author": "kirocrew",
+  "tags": [
+    "notes",
+    "markdown",
+    "git",
+    "writing",
+    "productivity"
+  ],
+  "highlights": [
+    "Your notes are plain markdown in a git repo — no lock-in, readable by Obsidian or any editor",
+    "Clone a GitHub repo as a vault, or attach a folder you already have without copying it",
+    "Click any rendered block to edit it in place; Enter starts a new block, Tab nests lists",
+    "[[Wikilinks]] between notes, with a backlinks list showing what points at the note you are reading",
+    "Full-text search across titles and content, plus folder and flat views with six sort orders",
+    "One-step sync commits, pulls and pushes; a merge conflict lists the conflicted notes and overwrites nothing",
+    "A save is refused if the file changed on disk since you opened it, so edits made elsewhere are never clobbered",
+    "Optionally index a vault into the Knowledge library so agents can search your notes"
+  ],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/apps/md-notebook/api",
+      "/api/knowledge"
+    ]
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/md-notebook",
+        "label": "Notes",
+        "icon": "NotebookPen"
+      }
+    ]
+  },
+  "backend": {
+    "entryPoint": "kiro_crew.apps.builtins.md_notebook.server",
+    "port": "auto",
+    "healthCheck": "/health"
+  },
+  "iconUrl": "/app-assets/md-notebook/icon.svg",
+  "heroImage": "/app-assets/md-notebook/hero-light.svg",
+  "heroImageDark": "/app-assets/md-notebook/hero-dark.svg",
+  "heroImageDetail": "/app-assets/md-notebook/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/md-notebook/hero-detail-dark.svg",
+  "features": []
+}

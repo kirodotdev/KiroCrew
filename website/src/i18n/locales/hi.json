@@ -1239,6 +1239,140 @@
         "repeat_days": "हर {{n}} दिन",
         "repeat_daily": "हर दिन"
       }
+    },
+    "mdNotebook": {
+      "title": "नोट्स",
+      "badge": {
+        "pending": "लंबित"
+      },
+      "boot": {
+        "loading": "लोड हो रहा है…",
+        "unreachable": "नोट्स बैकएंड तक नहीं पहुँच सके: {{message}}. यह अभी शुरू हो रहा हो सकता है."
+      },
+      "body": {
+        "empty": "कोई नोट चुनें, या + बटन से नया बनाएँ.",
+        "backlinks": "{{n}} से लिंक किया गया"
+      },
+      "banner": {
+        "staleBackend": "नोट्स बैकएंड इस पृष्ठ से पुराना कोड चला रहा है — अनुपलब्ध: {{features}}. इसे पुनः आरंभ करने के लिए ऐप्स पृष्ठ में नोट्स बंद करके चालू करें.",
+        "staleBackendRoute": "नोट्स बैकएंड इस पेज से पुराना कोड चला रहा है। इसे पुनरारंभ करने के लिए Apps पेज में नोट्स को बंद करके फिर से चालू करें।",
+        "diskConflict": "खोलने के बाद यह नोट डिस्क पर बदल गया है.",
+        "useDisk": "डिस्क वाला संस्करण उपयोग करें",
+        "keepMine": "मेरा संस्करण रखें",
+        "syncConflict": "मर्ज कॉन्फ़्लिक्ट के कारण सिंक रुक गया, इसलिए कुछ भी पुश नहीं हुआ। कॉन्फ़्लिक्ट वाले नोट्स: {{paths}}"
+      },
+      "editor": {
+        "blockAria": "ब्लॉक संपादित करें",
+        "titleAria": "नोट शीर्षक",
+        "renameHint": "इस नोट का नाम बदलने के लिए क्लिक करें"
+      },
+      "header": {
+        "newNote": "नया नोट",
+        "view_rendered": "रेंडर किया गया",
+        "view_raw": "Markdown स्रोत"
+      },
+      "panel": {
+        "hide": "नोट्स पैनल छिपाएँ",
+        "show": "नोट्स पैनल दिखाएँ",
+        "switchVault": "वॉल्ट बदलें",
+        "vaults": "वॉल्ट",
+        "connectVault": "वॉल्ट जोड़ें",
+        "searchPlaceholder": "नोट्स खोजें",
+        "sortAndView": "क्रम और दृश्य",
+        "viewSection": "दृश्य",
+        "sortSection": "इससे क्रमबद्ध करें",
+        "view_folders": "फ़ोल्डर",
+        "view_list": "सपाट सूची",
+        "noMatches": "कोई मिलान नहीं"
+      },
+      "sort": {
+        "modifiedNewOld": "संशोधित — नए से पुराने",
+        "modifiedOldNew": "संशोधित — पुराने से नए",
+        "createdNewOld": "बनाया — नए से पुराने",
+        "createdOldNew": "बनाया — पुराने से नए",
+        "nameAZ": "फ़ाइल नाम — A से Z",
+        "nameZA": "फ़ाइल नाम — Z से A"
+      },
+      "sync": {
+        "action": "सिंक करें",
+        "syncing": "सिंक हो रहा है",
+        "justNow": "अभी सिंक हुआ",
+        "ago_m": "{{n}} मिनट पहले सिंक हुआ",
+        "ago_h": "{{n}} घंटे पहले सिंक हुआ",
+        "ago_d": "{{n}} दिन पहले सिंक हुआ"
+      },
+      "knowledge": {
+        "label": "Kiro Crew ज्ञान से सिंक करें",
+        "connectHelp": "इस वॉल्ट को ज्ञान लाइब्रेरी में जोड़ता है, ताकि एजेंट इन नोट्स को खोज सकें. इसे बाद में सेटिंग्स में बदला जा सकता है."
+      },
+      "connect": {
+        "title": "वॉल्ट जोड़ें",
+        "cloneTab": "रिपॉज़िटरी क्लोन करें",
+        "attachTab": "फ़ोल्डर जोड़ें",
+        "cloneHelp": "GitHub रिपॉज़िटरी क्लोन करता है और अपनी कार्य-प्रति रखता है.",
+        "attachHelp": "पहले से मौजूद git फ़ोल्डर को उसी जगह उपयोग करता है — दूसरी प्रति नहीं.",
+        "repoUrl": "रिपॉज़िटरी URL",
+        "branch": "ब्रांच",
+        "token": "एक्सेस टोकन (वैकल्पिक)",
+        "localFolder": "स्थानीय फ़ोल्डर",
+        "subfolder": "सबफ़ोल्डर (वैकल्पिक)",
+        "choose": "चुनें…",
+        "choosing": "चुन रहे हैं…",
+        "cloneAction": "वॉल्ट जोड़ें",
+        "attachAction": "फ़ोल्डर जोड़ें",
+        "cloning": "क्लोन हो रहा है…",
+        "attaching": "जोड़ा जा रहा है…",
+        "cancel": "रद्द करें",
+        "pickerNeedsMac": "फ़ोल्डर चयनकर्ता के लिए macOS आवश्यक है — पथ टाइप करें.",
+        "pickerFailed": "फ़ोल्डर चयनकर्ता नहीं खुल सका: {{message}}",
+        "knowledgeFailed": "वॉल्ट जुड़ गया, लेकिन ज्ञान सिंक असफल रहा: {{message}}",
+        "localFolderPlaceholder": "~/Developer/my-notes",
+        "repoUrlPlaceholder": "https://github.com/you/notes",
+        "tokenPlaceholder": "github_pat_…",
+        "subfolderPlaceholder": "notes"
+      },
+      "settings": {
+        "title": "सेटिंग्स",
+        "subtitle": "वॉल्ट, GitHub पहुँच और सिंक",
+        "close": "सेटिंग्स बंद करें",
+        "vaultsSection": "वॉल्ट",
+        "badgeLocal": "स्थानीय फ़ोल्डर",
+        "badgeCloned": "क्लोन किया",
+        "active": "सक्रिय",
+        "open": "खोलें",
+        "remove": "हटाएँ",
+        "removeConfirm": "इस वॉल्ट को ऐप से हटाना है? डिस्क पर फ़ाइलें अछूती रहती हैं — केवल कनेक्शन भुला दिया जाता है.",
+        "removeIt": "हटा दें",
+        "knowledgeIndexed": "ज्ञान लाइब्रेरी में अनुक्रमित — एजेंट इन नोट्स को खोज सकते हैं.",
+        "knowledgeNotIndexed": "अनुक्रमित नहीं. एजेंट को इस वॉल्ट में खोजने देने के लिए चालू करें.",
+        "knowledgeAdding": "ज्ञान में जोड़ा जा रहा है…",
+        "knowledgeRemoving": "ज्ञान से हटाया जा रहा है…",
+        "knowledgeAdded": "ज्ञान में जोड़ा गया.",
+        "knowledgeAddedCount": "ज्ञान में जोड़ा गया — {{n}} फ़ाइल अनुक्रमण के लिए कतार में.",
+        "knowledgeRemoved": "ज्ञान से हटाया गया.",
+        "githubSection": "GitHub पहुँच",
+        "authStored": "इस ऐप में संग्रहीत टोकन का उपयोग हो रहा है.",
+        "authGh": "GitHub CLI लॉगिन का उपयोग हो रहा है.",
+        "authNone": "GitHub पहुँच नहीं — निजी रिपॉज़िटरी सिंक करने के लिए टोकन जोड़ें.",
+        "tokenPlaceholderStored": "संग्रहीत टोकन बदलें…",
+        "tokenPlaceholderEmpty": "github_pat_…",
+        "save": "सहेजें",
+        "clear": "साफ़ करें",
+        "tokenSaved": "टोकन सहेजा गया.",
+        "tokenCleared": "टोकन साफ़ किया गया.",
+        "syncSection": "सिंक",
+        "autoSync": "स्वतः सिंक",
+        "autoSyncHelp": "टाइमर पर परिवर्तन GitHub को भेजता है और नवीनतम लाता है. जब किसी विरोध पर निर्णय चाहिए, तब रुका रहता है.",
+        "every": "हर",
+        "minutes": "मिनट",
+        "intervalAria": "स्वतः सिंक अंतराल (मिनट)",
+        "shortcut": "मैनुअल सिंक शॉर्टकट",
+        "shortcutHelpIdle": "नया शॉर्टकट रिकॉर्ड करने के लिए क्लिक करें.",
+        "shortcutHelpRecording": "जो कुंजियाँ चाहिए वे दबाएँ — रद्द करने के लिए Esc.",
+        "recording": "रिकॉर्डिंग…",
+        "reset": "रीसेट",
+        "shortcutNeedsModifier": "कम से कम ⌘, Ctrl या ⌥ में से एक का प्रयोग करें — केवल अक्षर टाइप करते समय चल जाएगा."
+      }
     }
   },
   "components": {

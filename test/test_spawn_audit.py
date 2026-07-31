@@ -182,6 +182,21 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Same classification as the other ``asyncio.run`` sites in this list
         # (cli_doctor.py::_doctor, cli_commands.py::_cleanup_app_crons_from_scheduler).
         "apps/builtins/issue_radar/tests/test_pr_actions.py::_await",
+        # md-notebook shells out to the real git binary rather than a pure-Python
+        # implementation, because a server refuses a push from the shallow clone
+        # isomorphic-git produces. The command is the literal "git"; the remote
+        # URL and branch are validated by `validate_remote_url` / `validate_ref`
+        # before they reach argv (rejecting a leading "-" and the ext::/fd::
+        # transport helpers, which name a program for git to run), and a "--"
+        # terminates option parsing ahead of the positionals. No shell.
+        "apps/builtins/md_notebook/git_ops.py::run_git",
+        # Fixed argv `<gh> auth token`: the subcommand is constant and the
+        # binary comes from `_find_gh()`, which probes known install paths —
+        # neither is caller- or agent-supplied.
+        "apps/builtins/md_notebook/server.py::_gh_token_sync",
+        # Fixed argv `osascript -e <constant AppleScript>` for the macOS folder
+        # picker; the script is a module constant with nothing substituted in.
+        "apps/builtins/md_notebook/server.py::_pick_folder_sync",
         # Issue Radar GitLab access — the glab counterpart of _gh_run, and benign
         # for the same reasons, with ONE extra agent-reachable input that gh does
         # not have: the HOST.

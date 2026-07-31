@@ -73,12 +73,16 @@ On some installs the agent backend (`kiro-cli`) is a bash shim that re-execs the
 
 ### Sensitive Path Blocking
 
-`is_sensitive_path(path)` resolves and checks against 13 sensitive directories:
+`is_sensitive_path(path)` resolves and checks against the sensitive locations in
+`_SENSITIVE_HOME_DIRS` (`security.py` is the source of truth — the list has grown
+well past the credential stores shown here, and now also covers the gateway's own
+keystone files):
 
 ```
 ~/.aws, ~/.ssh, ~/.gnupg, ~/.gpg, ~/.config/gcloud, ~/.azure,
 ~/.docker/config.json, ~/.kube/config, ~/.npmrc, ~/.pypirc,
-~/.netrc, ~/.git-credentials, ~/.kiro/crew/.env
+~/.netrc, ~/.git-credentials, ~/.kiro/crew/.env,
+~/.kiro/crew/workspace/md-notebook/pat
 ```
 
 ### Sensitive Bash Command Detection

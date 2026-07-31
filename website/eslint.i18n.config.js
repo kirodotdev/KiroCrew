@@ -229,6 +229,11 @@ export default [
               '^RegExp$',
               // HTTP and serialisation: header names, endpoints, content types.
               'fetch', '\\w*[Hh]eaders?\\.\\w+', 'JSON\\.\\w+', 'encodeURI(Component)?',
+              // Notes app HTTP wrappers around `fetch`: their string args are the
+              // method verb and the endpoint path (`/note?path=…`), never copy —
+              // same class as `fetch` directly above. Uniquely named so the
+              // exclusion cannot mask a `call(...)`/`vq(...)` callee elsewhere.
+              '^mdnbCall$', '^mdnbVaultQuery$',
               'setAttribute', 'getAttribute', 'removeAttribute', 'classList\\.\\w+',
               // The translate functions themselves. Anchored: these are matched as
               // regexes, so a bare 't' would exclude every callee whose name contains
@@ -309,6 +314,22 @@ export default [
   // for `src/lib/**` would silence real copy in its neighbours.
   {
     files: ['src/lib/commitProfiler.tsx'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // A pure-CSS module: one template literal of scoped style rules (hover/focus
+  // states inline styles cannot express) injected via a <style> tag. It contains
+  // selectors and declarations, never user-visible copy. The Tailwind/CSS shape
+  // exemption cannot cover it — full CSS rules carry `{`/`}`/`;`, and widening
+  // that character class would also exempt comma-joined prose like
+  // `'no results, try again'`. Scoped to this one file for the same reason as
+  // `commitProfiler.tsx` above: a shape rule cannot express "CSS, but only in
+  // this module", and any copy later added to this file belongs in the catalog,
+  // not here — keep this module CSS-only.
+  {
+    files: ['src/apps/md-notebook/styles.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

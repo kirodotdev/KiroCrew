@@ -1239,6 +1239,140 @@
         "select_a_run_to_see_its_phases_agents_and_result": "Wählen Sie eine Ausführung, um ihre Phasen, Agenten und Ergebnisse zu sehen.",
         "unknown": "Unbekannt"
       }
+    },
+    "mdNotebook": {
+      "title": "Notizen",
+      "badge": {
+        "pending": "ausstehend"
+      },
+      "boot": {
+        "loading": "Wird geladen…",
+        "unreachable": "Das Notizen-Backend ist nicht erreichbar: {{message}}. Möglicherweise startet es noch."
+      },
+      "body": {
+        "empty": "Wähle eine Notiz oder erstelle eine mit der Schaltfläche +.",
+        "backlinks": "Verlinkt von {{n}}"
+      },
+      "banner": {
+        "staleBackend": "Das Notizen-Backend führt älteren Code als diese Seite aus – fehlend: {{features}}. Schalte Notizen auf der Apps-Seite aus und wieder ein, um es neu zu starten.",
+        "staleBackendRoute": "Das Notizen-Backend führt älteren Code als diese Seite aus. Schalte Notizen auf der Apps-Seite aus und wieder ein, um es neu zu starten.",
+        "diskConflict": "Diese Notiz wurde auf der Festplatte geändert, seit du sie geöffnet hast.",
+        "useDisk": "Version auf der Festplatte verwenden",
+        "keepMine": "Meine Version behalten",
+        "syncConflict": "Die Synchronisierung wurde durch einen Merge-Konflikt gestoppt, daher wurde nichts gepusht. Betroffene Notizen: {{paths}}"
+      },
+      "editor": {
+        "blockAria": "Block bearbeiten",
+        "titleAria": "Notiztitel",
+        "renameHint": "Klicken, um diese Notiz umzubenennen"
+      },
+      "header": {
+        "newNote": "Neue Notiz",
+        "view_rendered": "Gerendert",
+        "view_raw": "Markdown-Quelltext"
+      },
+      "panel": {
+        "hide": "Notizbereich ausblenden",
+        "show": "Notizbereich anzeigen",
+        "switchVault": "Vault wechseln",
+        "vaults": "Vaults",
+        "connectVault": "Vault verbinden",
+        "searchPlaceholder": "Notizen durchsuchen",
+        "sortAndView": "Sortierung und Ansicht",
+        "viewSection": "Ansicht",
+        "sortSection": "Sortieren nach",
+        "view_folders": "Ordner",
+        "view_list": "Flache Liste",
+        "noMatches": "Keine Treffer"
+      },
+      "sort": {
+        "modifiedNewOld": "Geändert – neu nach alt",
+        "modifiedOldNew": "Geändert – alt nach neu",
+        "createdNewOld": "Erstellt – neu nach alt",
+        "createdOldNew": "Erstellt – alt nach neu",
+        "nameAZ": "Dateiname – A bis Z",
+        "nameZA": "Dateiname – Z bis A"
+      },
+      "sync": {
+        "action": "Synchronisieren",
+        "syncing": "Synchronisierung",
+        "justNow": "Gerade synchronisiert",
+        "ago_m": "Vor {{n}} Min. synchronisiert",
+        "ago_h": "Vor {{n}} Std. synchronisiert",
+        "ago_d": "Vor {{n}} T. synchronisiert"
+      },
+      "knowledge": {
+        "label": "Mit Kiro Crew Wissen synchronisieren",
+        "connectHelp": "Fügt diesen Vault der Wissensbibliothek hinzu, damit Agenten deine Notizen durchsuchen können. Später in den Einstellungen änderbar."
+      },
+      "connect": {
+        "title": "Vault verbinden",
+        "cloneTab": "Repository klonen",
+        "attachTab": "Ordner anhängen",
+        "cloneHelp": "Klont ein GitHub-Repository und behält eine eigene Arbeitskopie.",
+        "attachHelp": "Verwendet einen bereits vorhandenen Git-Ordner an seinem Platz – ohne zweite Kopie.",
+        "repoUrl": "Repository-URL",
+        "branch": "Branch",
+        "token": "Zugriffstoken (optional)",
+        "localFolder": "Lokaler Ordner",
+        "subfolder": "Unterordner (optional)",
+        "choose": "Auswählen…",
+        "choosing": "Auswahl…",
+        "cloneAction": "Vault verbinden",
+        "attachAction": "Ordner anhängen",
+        "cloning": "Klonen…",
+        "attaching": "Anhängen…",
+        "cancel": "Abbrechen",
+        "pickerNeedsMac": "Die Ordnerauswahl benötigt macOS – gib den Pfad ein.",
+        "pickerFailed": "Die Ordnerauswahl konnte nicht geöffnet werden: {{message}}",
+        "knowledgeFailed": "Vault verbunden, aber die Wissenssynchronisierung ist fehlgeschlagen: {{message}}",
+        "localFolderPlaceholder": "~/Developer/my-notes",
+        "repoUrlPlaceholder": "https://github.com/you/notes",
+        "tokenPlaceholder": "github_pat_…",
+        "subfolderPlaceholder": "notes"
+      },
+      "settings": {
+        "title": "Einstellungen",
+        "subtitle": "Vaults, GitHub-Zugriff und Synchronisierung",
+        "close": "Einstellungen schließen",
+        "vaultsSection": "Vaults",
+        "badgeLocal": "Lokaler Ordner",
+        "badgeCloned": "Geklont",
+        "active": "Aktiv",
+        "open": "Öffnen",
+        "remove": "Entfernen",
+        "removeConfirm": "Diesen Vault aus der App entfernen? Die Dateien bleiben unangetastet auf der Festplatte – nur die Verbindung wird vergessen.",
+        "removeIt": "Entfernen",
+        "knowledgeIndexed": "In der Wissensbibliothek indexiert – Agenten können diese Notizen durchsuchen.",
+        "knowledgeNotIndexed": "Nicht indexiert. Aktivieren, damit Agenten diesen Vault durchsuchen können.",
+        "knowledgeAdding": "Wird zum Wissen hinzugefügt…",
+        "knowledgeRemoving": "Wird aus dem Wissen entfernt…",
+        "knowledgeAdded": "Zum Wissen hinzugefügt.",
+        "knowledgeAddedCount": "Zum Wissen hinzugefügt – {{n}} Datei(en) zur Indexierung eingereiht.",
+        "knowledgeRemoved": "Aus dem Wissen entfernt.",
+        "githubSection": "GitHub-Zugriff",
+        "authStored": "Verwendet ein in dieser App gespeichertes Token.",
+        "authGh": "Verwendet deine GitHub-CLI-Anmeldung.",
+        "authNone": "Kein GitHub-Zugriff – füge ein Token hinzu, um private Repositories zu synchronisieren.",
+        "tokenPlaceholderStored": "Gespeichertes Token ersetzen…",
+        "tokenPlaceholderEmpty": "github_pat_…",
+        "save": "Speichern",
+        "clear": "Löschen",
+        "tokenSaved": "Token gespeichert.",
+        "tokenCleared": "Token gelöscht.",
+        "syncSection": "Synchronisierung",
+        "autoSync": "Automatische Synchronisierung",
+        "autoSyncHelp": "Überträgt deine Änderungen zu GitHub und holt die neuesten, nach Zeitplan. Pausiert, solange ein Konflikt deine Entscheidung braucht.",
+        "every": "Alle",
+        "minutes": "Minuten",
+        "intervalAria": "Intervall der automatischen Synchronisierung in Minuten",
+        "shortcut": "Kurzbefehl für manuelle Synchronisierung",
+        "shortcutHelpIdle": "Klicken, um einen neuen Kurzbefehl aufzunehmen.",
+        "shortcutHelpRecording": "Drücke die gewünschten Tasten – Esc bricht ab.",
+        "recording": "Aufnahme…",
+        "reset": "Zurücksetzen",
+        "shortcutNeedsModifier": "Verwende mindestens ⌘, Ctrl oder ⌥ – ein einzelner Buchstabe würde beim Tippen auslösen."
+      }
     }
   },
   "components": {
