@@ -142,9 +142,9 @@ class TestInstallId:
 
 
 class TestPayloadAllowlist:
-    EXPECTED_KEYS = {"id", "v", "os", "arch", "py", "dist", "first_seen"}
+    EXPECTED_KEYS = {"id", "v", "os", "arch", "py", "dist", "gov", "first_seen"}
 
-    def test_exactly_seven_keys(self, _isolated_home):
+    def test_exactly_eight_keys(self, _isolated_home):
         assert set(beacon.payload("1.2.3")) == self.EXPECTED_KEYS
 
     def test_no_value_leaks_identity_or_paths(self, _isolated_home, monkeypatch):
@@ -716,3 +716,111 @@ def _fake_urlopen(calls: list | None = None):
         return _Resp()
 
     return _open
+
+
+class TestGovernancePosture:
+    """``gov`` answers an adoption question, without leaking who is governed.
+
+    A governed enterprise fleet and an ungoverned laptop were previously one
+    undifferentiated DAU number, so "is governance being adopted, and correctly"
+    had no answer. The field reports a STATE from a four-value vocabulary.
+    """
+
+    def _ceiling(self, signature_state):
+        class _C:
+            pass
+
+        c = _C()
+        c.signature_state = signature_state
+        return c
+
+    def _with_context(self, monkeypatch, governance):
+        class _Ctx:
+            pass
+
+        ctx = _Ctx()
+        ctx.governance = governance
+        import kiro_crew.platform.context as pc
+
+        monkeypatch.setattr(pc, "current_context", lambda: ctx)
+
+    def test_no_ceiling_reports_none(self, _isolated_home, monkeypatch):
+        self._with_context(monkeypatch, None)
+        assert beacon.governance_posture() == beacon.POSTURE_NONE
+
+    @pytest.mark.parametrize(
+        "state,expected",
+        [
+            ("verified", beacon.POSTURE_VERIFIED),
+            ("unsigned", beacon.POSTURE_UNSIGNED),
+            # Both "present but unproven" states collapse to one bucket: the
+            # distinction carries no adoption meaning.
+            ("unverified", beacon.POSTURE_SIGNED),
+            ("unchecked", beacon.POSTURE_SIGNED),
+        ],
+    )
+    def test_signature_state_maps_to_posture(
+        self, _isolated_home, monkeypatch, state, expected
+    ):
+        self._with_context(monkeypatch, self._ceiling(state))
+        assert beacon.governance_posture() == expected
+
+    def test_posture_is_always_in_the_known_set(self, _isolated_home, monkeypatch):
+        """Low cardinality by construction — an unexpected state cannot widen it."""
+        for state in ("verified", "unsigned", "unverified", "unchecked", "", "wat", None):
+            self._with_context(monkeypatch, self._ceiling(state))
+            assert beacon.governance_posture() in beacon.KNOWN_POSTURES
+
+    def test_never_leaks_the_issuer(self, _isolated_home, monkeypatch):
+        """The issuer names the signing ORGANIZATION.
+
+        Correlated with a stable install id it de-anonymizes the row, which is the
+        one thing this payload exists to prevent — so a ceiling carrying an issuer
+        must contribute only the state word.
+        """
+        ceiling = self._ceiling("verified")
+        ceiling.identity_issuer = "Acme Corp Security Engineering"
+        ceiling.identity_signature = "deadbeefcafe" * 8
+        self._with_context(monkeypatch, ceiling)
+
+        blob = json.dumps(beacon.payload("1.2.3"))
+        assert "Acme" not in blob and "deadbeef" not in blob
+        assert beacon.payload("1.2.3")["gov"] == "verified"
+
+    def test_never_leaks_a_profile_name(self, _isolated_home, monkeypatch):
+        """Profile names are free-form file stems — unbounded, often internal.
+
+        Guards the deliberate choice not to report the ACTIVE PROFILE: stems are
+        operator-authored (``path.stem``) and routinely encode a team, app, or
+        surface name.
+        """
+        ceiling = self._ceiling("verified")
+        ceiling.profile_name = "internal-oncall-tier1"
+        ceiling.all_profiles = lambda: ["internal-oncall-tier1"]
+        self._with_context(monkeypatch, ceiling)
+        assert "oncall" not in json.dumps(beacon.payload("1.2.3"))
+
+    def test_broken_context_reports_none_not_a_crash(self, _isolated_home, monkeypatch):
+        """Fail direction is the honest one: unestablished posture is not governance.
+
+        The beacon runs in a detached boot thread, so a raising context must never
+        propagate — and must not be optimistically reported as governed either.
+        """
+        import kiro_crew.platform.context as pc
+
+        def boom():
+            raise RuntimeError("no context installed")
+
+        monkeypatch.setattr(pc, "current_context", boom)
+        assert beacon.governance_posture() == beacon.POSTURE_NONE
+
+    def test_posture_is_not_environment_spoofable(self, _isolated_home, monkeypatch):
+        """Unlike ``dist``, posture is derived from the composed ceiling.
+
+        A host cannot claim to be governed by exporting a variable, so the field
+        cannot be inflated the way a build-stamped channel could.
+        """
+        monkeypatch.setenv("KIROCREW_GOVERNANCE_POSTURE", "verified")
+        monkeypatch.setenv("KIROCREW_GOV", "verified")
+        self._with_context(monkeypatch, None)
+        assert beacon.governance_posture() == beacon.POSTURE_NONE

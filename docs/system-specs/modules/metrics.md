@@ -353,6 +353,7 @@ shape cannot be widened from a call site.
 | `arch` | `arm64` | Architecture mix. |
 | `py` | `3.12` | **Minor only.** Answers "when can the floor move off 3.10". |
 | `dist` | `dmg` | Which install path users take. Clamped to a fixed set. |
+| `gov` | `verified` | Governance posture: `none` / `unsigned` / `signed` / `verified`. What share of DAU run under a Level-1 ceiling, and how many verify its signature. A STATE, never an identity — deliberately not the profile name (free-form stems) nor `identity.issuer` (names the signing org). |
 | `first_seen` | `1`/`0` | One bit → new-install and "launched once, never again" rate. |
 
 **Anti-fingerprinting is a design constraint, not a side effect.** Every value
@@ -467,7 +468,7 @@ absent/corrupt — so the id regenerates rather than merely not crashing. The
 Zero application code — the access log **is** the data product:
 
 ```
-client ──GET /b/1/<id>?v&os&arch&py&dist&first_seen──> CloudFront E1YM983XX3ASBM
+client ──GET /b/1/<id>?v&os&arch&py&dist&gov&first_seen──> CloudFront E1YM983XX3ASBM
                                      │ CloudFront Function returns 204 at the edge
                                      ▼
         standard logging v2 → s3://kirocrew-beacon-logs (PERMANENT, tiered)

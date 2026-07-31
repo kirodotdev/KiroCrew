@@ -2,10 +2,11 @@
 
 Answers questions no local signal can: how many installations are actually
 RUNNING (Daily Active Instances), which VERSIONS they run, which
-OS/ARCH/Python they run on, which DISTRIBUTION CHANNEL they came from, and what
-share of installs are launched only once. Download counts cannot answer these —
-an install downloaded and never launched is indistinguishable from an active
-one, and self-hosted distribution links have no download telemetry at all.
+OS/ARCH/Python they run on, which DISTRIBUTION CHANNEL they came from, what share
+run under a governance ceiling (and how many of those verify its signature), and
+what share of installs are launched only once. Download counts cannot answer
+these — an install downloaded and never launched is indistinguishable from an
+active one, and self-hosted distribution links have no download telemetry.
 
 DELIBERATELY SEPARATE FROM ``kiro_crew.metrics`` (the OTEL trunk). Four reasons,
 each independently disqualifying:
@@ -43,7 +44,7 @@ PRIVACY:
   * Deliberately NOT ``handlers_system._get_owner_hash()``: that is
     ``HMAC(salt, hostname + ":" + username)``. It never leaves the host today,
     and sending it would change its character entirely.
-  * The payload is a fixed seven-key ALLOWLIST built by :func:`payload`. There
+  * The payload is a fixed eight-key ALLOWLIST built by :func:`payload`. There
     is no free-form field and no caller-supplied pass-through, so no prompt,
     path, repo name, credential, or model output can reach the wire — not by
     accident and not via a future call site.
@@ -134,6 +135,18 @@ _CI_ENV_VARS = (
 DIST_ENV = "KIROCREW_DISTRIBUTION"
 KNOWN_DISTRIBUTIONS = frozenset({"dmg", "appimage", "wheel", "source", "docker"})
 DEFAULT_DISTRIBUTION = "source"
+
+# Governance posture — a STATE, never an identity. Derived from the composed
+# ceiling (see :func:`governance_posture`), not from the environment, so unlike
+# ``dist`` there is nothing for a host to spoof. Four constants, so the field
+# stays low-cardinality by construction.
+POSTURE_NONE = "none"  # no Level-1 ceiling loaded
+POSTURE_UNSIGNED = "unsigned"  # ceiling enforced, integrity rests on file modes
+POSTURE_SIGNED = "signed"  # signature present but unproven / unchecked
+POSTURE_VERIFIED = "verified"  # signature verified against a trust key
+KNOWN_POSTURES = frozenset(
+    {POSTURE_NONE, POSTURE_UNSIGNED, POSTURE_SIGNED, POSTURE_VERIFIED}
+)
 
 # Fallback id when the data home is unwritable (read-only container, etc).
 # Process-local, so such a host contributes at most one count per process and
@@ -340,8 +353,63 @@ def _mark_sent() -> None:
         logger.debug("beacon stamp write failed: %s", exc)
 
 
+def governance_posture() -> str:
+    """Return this install's governance POSTURE, clamped to a fixed vocabulary.
+
+    Answers a question ``dist`` cannot: what share of Daily Active Instances run
+    under a Level-1 security ceiling at all, and of those, how many have a ceiling
+    whose signature actually VERIFIES. Today a governed enterprise fleet and an
+    ungoverned laptop are one undifferentiated number, so "is governance being
+    adopted, and is it being adopted correctly" has no answer.
+
+    Reports the POSTURE, never the identity. Deliberately NOT:
+
+      * the active PROFILE NAME — profile names are free-form file stems
+        (``governance_profiles`` derives them from ``path.stem``), so they are
+        unbounded operator-authored strings: exactly the cardinality bomb the
+        payload contract forbids, and they routinely encode an internal team,
+        app, or surface name.
+      * the ``identity.issuer`` — that names the ORGANIZATION that signed the
+        ceiling. Correlated with a stable install id it de-anonymizes the whole
+        row, which is the one thing this payload is built to prevent.
+
+    So the values are four constants that describe a STATE, and an outside
+    observer learns "some ceiling is present and verified", never whose:
+
+      * ``none``      — no ceiling loaded (the default standalone posture)
+      * ``unsigned``  — a ceiling is enforced, integrity rests on file permissions
+      * ``signed``    — a ceiling carries a signature that did NOT verify (or was
+                        never checked against a trust root) — advisory only
+      * ``verified``  — a ceiling whose signature verified against a trust key
+
+    Best-effort and import-cycle-safe: the context is read lazily inside the
+    function (``platform.context`` is a leaf that must not import this module's
+    dependents), and ANY failure reports ``none``. That fail direction is the
+    honest one — an install whose posture cannot be established is not evidence
+    of governance.
+    """
+    try:
+        from kiro_crew.platform.context import current_context
+
+        ceiling = getattr(current_context(), "governance", None)
+        if ceiling is None:
+            return POSTURE_NONE
+        state = getattr(ceiling, "signature_state", "")
+        if state == "verified":
+            return POSTURE_VERIFIED
+        if state == "unsigned":
+            return POSTURE_UNSIGNED
+        # "unverified" (present but unproven) and "unchecked" (parsed with no
+        # trust root) collapse to one bucket: both mean "a signature exists but
+        # nothing established it", and splitting them would report a distinction
+        # that carries no adoption meaning.
+        return POSTURE_SIGNED
+    except Exception:  # pragma: no cover - defensive; posture is never load-bearing
+        return POSTURE_NONE
+
+
 def payload(app_version: str) -> dict[str, str]:
-    """Build the exact seven-key allowlist that goes on the wire.
+    """Build the exact eight-key allowlist that goes on the wire.
 
     Every value is a random id, a low-cardinality platform constant, or a
     single bit. There is no caller-supplied field, so the payload shape is
@@ -354,6 +422,7 @@ def payload(app_version: str) -> dict[str, str]:
         "arch": platform.machine().lower(),
         "py": python_minor(),
         "dist": distribution(),
+        "gov": governance_posture(),
         "first_seen": "1" if is_first_send() else "0",
     }
 
@@ -423,7 +492,7 @@ def send(endpoint: str, app_version: str, *, enabled: bool) -> bool:
         return False
     try:
         req = urllib.request.Request(url, method="GET")
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- beacon_url enforces https:// and the payload is a fixed seven-key allowlist
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- beacon_url enforces https:// and the payload is a fixed eight-key allowlist
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECS):
             pass
         # Stamp only after a delivered request, so a failed send retries later
