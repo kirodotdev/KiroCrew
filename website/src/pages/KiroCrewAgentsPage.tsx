@@ -59,7 +59,7 @@ function WorkspaceModal({
   const submit = async () => {
     setWsError('')
     const n = wsName.trim()
-    if (!n) { setWsError('Workspace name is required'); return }
+    if (!n) { setWsError(i18nT('pages.kiroCrewAgentsPage.workspace_name_is_required')); return }
     setSubmitting(true)
     try {
       const body: Record<string, string> = { name: n, dir: wsDir }
@@ -68,7 +68,7 @@ function WorkspaceModal({
       if (r.error) { setWsError(r.error); setSubmitting(false); return }
       onCreated(r.name || n)
     } catch (e) {
-      setWsError(e instanceof Error ? e.message : 'Failed to create workspace')
+      setWsError(e instanceof Error ? e.message : i18nT('pages.kiroCrewAgentsPage.failed_to_create_workspace'))
     } finally {
       setSubmitting(false)
     }
@@ -86,7 +86,7 @@ function WorkspaceModal({
               {/* Native input associated via htmlFor+id; label-has-for's nesting requirement is a false positive. */}
               {/* eslint-disable-next-line jsx-a11y/label-has-for */}
               <label htmlFor="ws-name" className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.name')}</label>
-              <InfoTip text="A unique identifier for this workspace. Agents reference workspaces by name." />
+              <InfoTip text={i18nT('pages.kiroCrewAgentsPage.a_unique_identifier_for_this_workspace_agents_re')} />
             </div>
             <Input id="ws-name" placeholder={i18nT('pages.kiroCrewAgentsPage.e_g_oncall')} value={wsName} onChange={e => handleNameChange(e.target.value)} autoFocus />
           </div>
@@ -95,14 +95,14 @@ function WorkspaceModal({
               {/* Native input associated via htmlFor+id; label-has-for's nesting requirement is a false positive. */}
               {/* eslint-disable-next-line jsx-a11y/label-has-for */}
               <label htmlFor="ws-dir" className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.directory')}</label>
-              <InfoTip text="Subdirectory inside ~/.kiro/crew where this workspace stores its data (chat history, lessons, projects). Each workspace gets its own isolated directory." />
+              <InfoTip text={i18nT('pages.kiroCrewAgentsPage.subdirectory_inside_kiro_crew_where_this_workspa')} />
             </div>
             <Input id="ws-dir" placeholder={i18nT('pages.kiroCrewAgentsPage.workspace')} value={wsDir} onChange={e => { setDirTouched(true); setWsDir(e.target.value) }} />
           </div>
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1">
               <span className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('pages.kiroCrewAgentsPage.copy_from_optional')}</span>
-              <InfoTip text="Copy the contents of an existing workspace into the new one. Leave as '— none —' to start fresh." />
+              <InfoTip text={i18nT('pages.kiroCrewAgentsPage.copy_the_contents_of_an_existing_workspace_into')} />
             </div>
             <SimpleSelect
               options={workspaceOptions}
@@ -115,7 +115,7 @@ function WorkspaceModal({
           {wsError && <div className="text-danger text-[13px]">{wsError}</div>}
           <div className="flex gap-2 justify-end mt-1">
             <Btn onClick={onClose}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
-            <SendBtn onClick={submit} disabled={submitting}>{submitting ? 'Creating…' : 'Create'}</SendBtn>
+            <SendBtn onClick={submit} disabled={submitting}>{submitting ? i18nT('pages.kiroCrewAgentsPage.creating') : i18nT('pages.kiroCrewAgentsPage.create')}</SendBtn>
           </div>
         </div>
       </Card>
@@ -177,23 +177,23 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const createMut = useMutation({
     mutationFn: (data: { name: string; kiro_agent: string; workspace: string; memory_store: string }) => api.createKirocrewAgent(data),
     onSuccess: (r: AgentMutationResult) => { if (r.error) { setError(r.error); return }; setName(''); setKiroAgent('kirocrew'); setWorkspace('default'); setMemoryStore('default'); refetchAgents() },
-    onError: (e: Error) => setError(e.message || 'Failed to create agent'),
+    onError: (e: Error) => setError(e.message || i18nT('pages.kiroCrewAgentsPage.failed_to_create_agent')),
   })
   const updateMut = useMutation({
     mutationFn: ({ name, data }: { name: string; data: AgentUpdatePayload }) => api.updateKirocrewAgent(name, data),
     onSuccess: (r: AgentMutationResult) => { if (r.error) { setError(r.error); return }; setEditing(null); refetchAgents() },
-    onError: (e: Error) => setError(e.message || 'Failed to update agent'),
+    onError: (e: Error) => setError(e.message || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent')),
   })
   const deleteMut = useMutation({
     mutationFn: (n: string) => api.deleteKirocrewAgent(n),
     onSuccess: (r: AgentMutationResult) => { if (r.error) { setError(r.error); return }; refetchAgents() },
-    onError: (e: Error) => setError(e.message || 'Failed to delete agent'),
+    onError: (e: Error) => setError(e.message || i18nT('pages.kiroCrewAgentsPage.failed_to_delete_agent')),
   })
 
   const create = () => {
     setError('')
     const n = name.trim()
-    if (!n) { setError('Name is required'); return }
+    if (!n) { setError(i18nT('pages.kiroCrewAgentsPage.name_is_required')); return }
     createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: memoryStore })
   }
 

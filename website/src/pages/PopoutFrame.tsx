@@ -4,6 +4,8 @@ import { registerPopout } from '../utils/chatPopout'
 import { useAppSelector } from '../store'
 import ChatPage from './ChatPage'
 
+import { i18nT } from '../i18n/t'
+
 /**
  * The window shell for a popped-out chat session (`/popout/chat/:slug?sid=…`).
  *
@@ -29,7 +31,7 @@ export default function PopoutFrame() {
   // Reflect the session in the window/taskbar title so multiple popouts are
   // distinguishable at the OS level.
   useEffect(() => {
-    const label = title && title !== sid ? title : 'Session'
+    const label = title && title !== sid ? title : i18nT('pages.popoutFrame.session')
     document.title = `${label} — Kiro Crew`
   }, [sid, title])
 

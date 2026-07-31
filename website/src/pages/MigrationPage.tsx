@@ -61,7 +61,7 @@ export default function MigrationPage() {
   const targetName = migrationData?.targetName || ''
   const state: MigrationState = isLoading ? 'loading' : (queryError ? 'error' : (migrationData?.state || 'loading'))
   const displayError = queryError
-    ? (queryError instanceof Error ? queryError.message : '') || 'Failed to load app info'
+    ? (queryError instanceof Error ? queryError.message : '') || i18nT('pages.migrationPage.failed_to_load_app_info')
     : error
 
   // Cleanup mutation
@@ -73,7 +73,7 @@ export default function MigrationPage() {
       queryClient.invalidateQueries({ queryKey: ['apps'] })
     },
     onError: (e: unknown) => {
-      setError((e instanceof Error && e.message) || 'Cleanup failed')
+      setError((e instanceof Error && e.message) || i18nT('pages.migrationPage.cleanup_failed'))
     },
   })
 
@@ -89,7 +89,7 @@ export default function MigrationPage() {
         {displayError && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-center gap-3 animate-rise">
             <span className="text-danger text-sm flex-1">{displayError}</span>
-            <button aria-label={queryError ? 'Retry' : 'Dismiss error'} className="text-danger/60 hover:text-danger text-sm" onClick={() => { if (queryError) refetch(); else setError('') }}>
+            <button aria-label={queryError ? i18nT('pages.migrationPage.retry') : i18nT('pages.migrationPage.dismiss_error')} className="text-danger/60 hover:text-danger text-sm" onClick={() => { if (queryError) refetch(); else setError('') }}>
               {queryError ? <RefreshCw size={14} /> : <X size={14} />}
             </button>
           </div>
@@ -174,7 +174,7 @@ export default function MigrationPage() {
                       onClick={() => cleanupMutation.mutate()}
                       disabled={cleanupMutation.isPending}
                     >
-                      <Trash2 size={14} /> {cleanupMutation.isPending ? 'Cleaning up…' : 'Clean up old entry'}
+                      <Trash2 size={14} /> {cleanupMutation.isPending ? i18nT('pages.migrationPage.cleaning_up') : i18nT('pages.migrationPage.clean_up_old_entry')}
                     </Btn>
                   </div>
                 </div>

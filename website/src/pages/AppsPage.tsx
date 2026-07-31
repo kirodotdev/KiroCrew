@@ -125,8 +125,8 @@ export default function AppsPage() {
 
   useEffect(() => { if (appsError || registryError) setDismissedQueryError(false) }, [appsError, registryError])
   const displayError = error
-    || (!dismissedQueryError && appsError ? (appsError as Error)?.message || 'Failed to load apps' : '')
-    || (!dismissedQueryError && registryError ? (registryError as Error)?.message || 'Failed to load registry' : '')
+    || (!dismissedQueryError && appsError ? (appsError as Error)?.message || i18nT('pages.appsPage.failed_to_load_apps') : '')
+    || (!dismissedQueryError && registryError ? (registryError as Error)?.message || i18nT('pages.appsPage.failed_to_load_registry') : '')
 
   // ---- Discover data -------------------------------------------------------
 
@@ -180,14 +180,14 @@ export default function AppsPage() {
       else coreCount++
     }
     const rows: SourceRow[] = []
-    if (builtinCount > 0) rows.push({ name: '__builtin__', label: 'Built-in · kirocrew', count: builtinCount, builtin: true })
+    if (builtinCount > 0) rows.push({ name: '__builtin__', label: i18nT('pages.appsPage.built_in_kirocrew'), count: builtinCount, builtin: true })
     for (const reg of registriesData?.registries || []) {
       rows.push({ name: reg.repo, label: reg.name || reg.repo, count: counts.get(reg.name || reg.repo) || 0, builtin: false })
       counts.delete(reg.name || reg.repo)
     }
     // Registries present in entries but no longer configured (stale cache)
     for (const [name, count] of counts) rows.push({ name, label: name, count, builtin: false })
-    if (coreCount > 0) rows.push({ name: '__core__', label: 'KiroCrew registry', count: coreCount, builtin: true })
+    if (coreCount > 0) rows.push({ name: '__core__', label: i18nT('pages.appsPage.kirocrew_registry'), count: coreCount, builtin: true })
     return rows
   }, [browseApps, registriesData])
 
@@ -299,7 +299,7 @@ export default function AppsPage() {
       if (action === 'disable') {
         const app = apps.find(a => a.name === name)
         if (app?.origin === 'builtin') {
-          setSuccessMsg('Hidden. You can re-enable it from the Discover tab.')
+          setSuccessMsg(i18nT('pages.appsPage.hidden_you_can_re_enable_it_from_the_discover_ta'))
           setTimeout(() => setSuccessMsg(''), 4000)
         }
       }
@@ -363,15 +363,15 @@ export default function AppsPage() {
         actions={<>
           <SegmentedControl
             segments={[
-              { key: 'discover' as const, label: 'Discover', icon: <Boxes size={13} /> },
-              { key: 'library' as const, label: 'Library', icon: <Package size={13} />, count: installedApps.length },
+              { key: 'discover' as const, label: i18nT('pages.appsPage.discover'), icon: <Boxes size={13} /> },
+              { key: 'library' as const, label: i18nT('pages.appsPage.library'), icon: <Package size={13} />, count: installedApps.length },
             ]}
             value={tab}
             onChange={setTab}
             layoutId="app-store-tabs"
           />
           <SearchInput
-            placeholder={tab === 'discover' ? 'Search apps' : 'Search library'}
+            placeholder={tab === 'discover' ? i18nT('pages.appsPage.search_apps') : i18nT('pages.appsPage.search_library')}
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
             className="w-[220px]"
@@ -519,7 +519,7 @@ export default function AppsPage() {
               <div className="flex items-center gap-2 justify-end">
                 <Btn onClick={() => { setUninstallTarget(null); setUninstallPreview(null) }}>{i18nT('pages.appsPage.cancel')}</Btn>
                 <Btn danger onClick={confirmUninstall} disabled={actionLoading === `${uninstallTarget.name}:uninstall`}>
-                  {actionLoading === `${uninstallTarget.name}:uninstall` ? 'Removing…' : 'Uninstall'}
+                  {actionLoading === `${uninstallTarget.name}:uninstall` ? i18nT('pages.appsPage.removing') : i18nT('pages.appsPage.uninstall')}
                 </Btn>
               </div>
             </div>
@@ -566,7 +566,7 @@ export default function AppsPage() {
 
               <div className="flex items-baseline justify-between mt-2 mb-3">
                 <h3 className="text-[17px] font-semibold text-text-strong">
-                  {category === 'All' ? 'All apps' : category}
+                  {category === 'All' ? i18nT('pages.appsPage.all_apps') : category}
                 </h3>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-[224px_minmax(0,1fr)] gap-6 items-start">
@@ -624,10 +624,10 @@ export default function AppsPage() {
           ) : filteredInstalled.length === 0 ? (
             <EmptyState
               icon={<Package size={36} />}
-              title={installedApps.length === 0 ? 'No apps installed yet' : 'No matching apps'}
+              title={installedApps.length === 0 ? i18nT('pages.appsPage.no_apps_installed_yet') : i18nT('pages.appsPage.no_matching_apps')}
               subtitle={installedApps.length === 0
-                ? 'Find apps in the Discover tab, or install from a local path via the sources gear above.'
-                : 'Try a different search term'}
+                ? i18nT('pages.appsPage.find_apps_in_the_discover_tab_or_install_from_a')
+                : i18nT('pages.appsPage.try_a_different_search_term')}
             />
           ) : (
             <>
@@ -642,7 +642,7 @@ export default function AppsPage() {
                     onClick={updateAll}
                     disabled={!!updatingAll}
                   >
-                    {updatingAll ? `Updating ${updatingAll.done}/${updatingAll.total}…` : 'Update All'}
+                    {updatingAll ? `Updating ${updatingAll.done}/${updatingAll.total}…` : i18nT('pages.appsPage.update_all')}
                   </Btn>
                 </div>
               )}

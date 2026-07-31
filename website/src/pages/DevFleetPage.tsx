@@ -150,14 +150,14 @@ export function mergeLogWindow(buffer: string[], window: string[]): string[] {
  */
 export function pruneVerdictLabel(code?: string): string {
   switch (code) {
-    case 'merged': return 'PR merged'
-    case 'empty': return 'no commits, stale'
-    case 'merged_dirty': return 'PR merged, uncommitted changes'
-    case 'fresh': return 'created recently'
-    case 'active': return 'PR open or unmerged commits'
-    case 'merged_new_commits': return 'PR merged but new commits pushed after merge'
-    case 'merged_unverified': return 'PR merged but verification unavailable — retry'
-    case 'dirty_check_failed': return 'git status failed'
+    case 'merged': return i18nT('pages.devFleetPage.pr_merged')
+    case 'empty': return i18nT('pages.devFleetPage.no_commits_stale')
+    case 'merged_dirty': return i18nT('pages.devFleetPage.pr_merged_uncommitted_changes')
+    case 'fresh': return i18nT('pages.devFleetPage.created_recently')
+    case 'active': return i18nT('pages.devFleetPage.pr_open_or_unmerged_commits')
+    case 'merged_new_commits': return i18nT('pages.devFleetPage.pr_merged_but_new_commits_pushed_after_merge')
+    case 'merged_unverified': return i18nT('pages.devFleetPage.pr_merged_but_verification_unavailable_retry')
+    case 'dirty_check_failed': return i18nT('pages.devFleetPage.git_status_failed')
     default: return code || ''
   }
 }
@@ -201,7 +201,7 @@ function fmtElapsed(ms: number): string {
 function relTime(epoch: number | null | undefined): string {
   if (!epoch) return ''
   const s = Math.max(0, Math.floor(Date.now() / 1000 - epoch))
-  if (s < 60) return 'just now'
+  if (s < 60) return i18nT('pages.devFleetPage.just_now')
   const m = Math.floor(s / 60); if (m < 60) return m + 'm ago'
   const h = Math.floor(m / 60); if (h < 24) return h + 'h ago'
   const d = Math.floor(h / 24); if (d < 30) return d + 'd ago'
@@ -323,7 +323,7 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
           <div style={{ fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 9 }}>{desc}</div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' } as CSSProperties}>
             <Btn onClick={() => setOpen(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn>
-            <Btn primary onClick={() => { setOpen(false); onConfirm() }}>{confirmLabel || 'Start'}</Btn>
+            <Btn primary onClick={() => { setOpen(false); onConfirm() }}>{confirmLabel || i18nT('pages.devFleetPage.start')}</Btn>
           </div>
         </div>
       )}
@@ -425,12 +425,12 @@ function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading }: { 
       <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
         {d.pod_running ? (
           <Btn onClick={() => { if (!logsOpen) { setLogsOpen(true); onLoadLogs() } else setLogsOpen(false) }} disabled={!!logsLoading}>
-            {iconLabel(<FileText size={12} className="lucide-inline" />, logsLoading ? 'Loading\u2026' : logsOpen ? 'Hide logs' : 'Load pod logs')}
+            {iconLabel(<FileText size={12} className="lucide-inline" />, logsLoading ? i18nT('pages.devFleetPage.loading') : logsOpen ? i18nT('pages.devFleetPage.hide_logs') : i18nT('pages.devFleetPage.load_pod_logs'))}
           </Btn>
         ) : null}
         {!w.is_main ? (
           <Btn danger onClick={onRemove} disabled={!!busy[w.name + ':remove']}>
-            {iconLabel(<Trash2 size={13} className="lucide-inline" />, 'Remove')}
+            {iconLabel(<Trash2 size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.remove'))}
           </Btn>
         ) : null}
       </div>
@@ -596,9 +596,9 @@ export default function DevFleetPage() {
       }
       if (gone || !run) {
         if (gone) {
-          setSyncRun({ rid, status: 'error', phase: 0, lines: [], startedAt, last: 'gateway restarted mid-sync — run lost; check git state and re-run Pull+Build' })
+          setSyncRun({ rid, status: 'error', phase: 0, lines: [], startedAt, last: i18nT('pages.devFleetPage.gateway_restarted_mid_sync_run_lost_check_git_st') })
           setFlag('__syncmain', false)
-          notify('Sync run lost (gateway restarted mid-sync). Re-run Pull+Build.', { type: 'error' })
+          notify(i18nT('pages.devFleetPage.sync_run_lost_gateway_restarted_mid_sync_re_run'), { type: 'error' })
           return
         }
         continue
@@ -615,7 +615,7 @@ export default function DevFleetPage() {
         const okRun = run.exit_code === 0
         setSyncRun({ rid, status: okRun ? 'done' : 'error', phase: okRun ? SYNC_TOTAL_STEPS : phase, lines: out, startedAt: t0, exit: run.exit_code, last })
         setFlag('__syncmain', false)
-        if (okRun) notify('Synced \u2014 restart gateway to apply the new build.', { type: 'success' })
+        if (okRun) notify(i18nT('pages.devFleetPage.synced_restart_gateway_to_apply_the_new_build'), { type: 'success' })
         else notify('Pull+Build failed (exit ' + run.exit_code + '): ' + last, { type: 'error' })
         invalidateFleet()
         return
@@ -648,11 +648,11 @@ export default function DevFleetPage() {
         if (w) w.opener = null
         const r = await api.post<{ ok?: boolean; url?: string; error?: string }>('/pod/token', { name })
         if (r?.ok && r.url) { if (w) w.location.href = r.url; else window.open(r.url, '_blank', 'noopener') }
-        else { w?.close(); notify(r?.error || 'Token mint failed', { type: 'error' }) }
+        else { w?.close(); notify(r?.error || i18nT('pages.devFleetPage.token_mint_failed'), { type: 'error' }) }
       }
-      else if (kind === 'up') { notify('Starting pod for ' + name + '\u2026 (can take ~1 min)', { type: 'info' }); const r = await api.post<{ ok?: boolean; error?: string }>('/pod/up', { name }); notify(r?.ok ? 'Pod up: ' + name : (r?.error || 'Pod start failed'), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
-      else if (kind === 'down') { const r = await api.post<{ ok?: boolean; error?: string }>('/pod/down', { name }); notify(r?.ok ? 'Stopped ' + name : (r?.error || 'Failed'), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
-      else if (kind === 'restart') { const r = await api.post<{ ok?: boolean; error?: string }>('/pod/restart', { name }); notify(r?.ok ? 'Restarted ' + name : (r?.error || 'Failed'), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
+      else if (kind === 'up') { notify('Starting pod for ' + name + '\u2026 (can take ~1 min)', { type: 'info' }); const r = await api.post<{ ok?: boolean; error?: string }>('/pod/up', { name }); notify(r?.ok ? 'Pod up: ' + name : (r?.error || i18nT('pages.devFleetPage.pod_start_failed')), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
+      else if (kind === 'down') { const r = await api.post<{ ok?: boolean; error?: string }>('/pod/down', { name }); notify(r?.ok ? 'Stopped ' + name : (r?.error || i18nT('pages.devFleetPage.failed')), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
+      else if (kind === 'restart') { const r = await api.post<{ ok?: boolean; error?: string }>('/pod/restart', { name }); notify(r?.ok ? 'Restarted ' + name : (r?.error || i18nT('pages.devFleetPage.failed')), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setFlag(flag, false) }
   }
@@ -685,7 +685,7 @@ export default function DevFleetPage() {
       const lines = acc
       if (run.status === 'done') {
         const ok = run.exit_code === 0
-        notify(ok ? 'Provisioned' : 'Provision failed (exit ' + run.exit_code + ')', { type: ok ? 'success' : 'error' })
+        notify(ok ? i18nT('pages.devFleetPage.provisioned') : 'Provision failed (exit ' + run.exit_code + ')', { type: ok ? 'success' : 'error' })
         if (ok) {
           // Flash a brief green "Provisioned", then clear (as before). The
           // fleet refetch flips the row to its built state in the meantime.
@@ -706,7 +706,7 @@ export default function DevFleetPage() {
         return
       }
       if (run.status !== 'running') {
-        notify(run.status === 'timeout' ? 'Provision timed out' : 'Provision failed (' + run.status + ')', { type: 'error' })
+        notify(run.status === 'timeout' ? i18nT('pages.devFleetPage.provision_timed_out') : 'Provision failed (' + run.status + ')', { type: 'error' })
         setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: lines.length ? lines : ['Provision ' + run.status], startedAt, exit: run.exit_code ?? null } }))
         setProvLogOpen((o) => ({ ...o, [name]: true }))
         invalidateFleet()
@@ -716,7 +716,7 @@ export default function DevFleetPage() {
     }
     // Poll budget exhausted (e.g. run id lost across a gateway restart): keep
     // the failed marker + accumulated log so the user has something to act on.
-    notify('Provision polling timed out \u2014 check pod logs', { type: 'error' })
+    notify(i18nT('pages.devFleetPage.provision_polling_timed_out_check_pod_logs'), { type: 'error' })
     setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: acc.length ? acc : ['Provision polling timed out \u2014 check pod logs'], startedAt, exit: null } }))
     setProvLogOpen((o) => ({ ...o, [name]: true }))
     invalidateFleet()
@@ -735,7 +735,7 @@ export default function DevFleetPage() {
       // "Provision failed" state. Only a response with no run id to attach to
       // is a genuine failure (issue #231 / PR #320).
       if (!r?.run_id) {
-        notify('Provision failed to start', { type: 'error' })
+        notify(i18nT('pages.devFleetPage.provision_failed_to_start'), { type: 'error' })
         setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: ['Provision failed to start'], startedAt, exit: null } }))
         setProvLogOpen((o) => ({ ...o, [name]: true }))
         return
@@ -750,13 +750,13 @@ export default function DevFleetPage() {
   }
 
   async function removeWorktree(name: string, d: Worktree) {
-    if (d?.is_main) { notify('Cannot remove the main worktree', { type: 'error' }); return }
+    if (d?.is_main) { notify(i18nT('pages.devFleetPage.cannot_remove_the_main_worktree'), { type: 'error' }); return }
     const shipped = !!d?.shipped; const empty = d && d.own_commits === 0 && d.real_dirty === false
-    const desc = shipped ? 'PR merged \u2014 safe to remove. Runs `git worktree remove`. Cannot be undone.' : empty ? 'Empty worktree. Cannot be undone.' : 'Has unmerged work \u2014 removing DELETES permanently.'
-    const ok = await askConfirm('Remove "' + name + '"?', desc, { confirmLabel: shipped || empty ? 'Remove' : 'Delete anyway', danger: true })
+    const desc = shipped ? i18nT('pages.devFleetPage.pr_merged_safe_to_remove_runs_git_worktree_remov') : empty ? i18nT('pages.devFleetPage.empty_worktree_cannot_be_undone') : i18nT('pages.devFleetPage.has_unmerged_work_removing_deletes_permanently')
+    const ok = await askConfirm('Remove "' + name + '"?', desc, { confirmLabel: shipped || empty ? i18nT('pages.devFleetPage.remove') : i18nT('pages.devFleetPage.delete_anyway'), danger: true })
     if (!ok) return
     setFlag(name + ':remove', true)
-    try { const r = await api.post<{ ok?: boolean; error?: string }>('/worktree/remove', { name, force: !shipped && !empty }); if (r?.ok) { notify('Removed ' + name, { type: 'success' }); invalidateAll() } else notify(r?.error || 'Failed', { type: 'error' }) }
+    try { const r = await api.post<{ ok?: boolean; error?: string }>('/worktree/remove', { name, force: !shipped && !empty }); if (r?.ok) { notify('Removed ' + name, { type: 'success' }); invalidateAll() } else notify(r?.error || i18nT('pages.devFleetPage.failed'), { type: 'error' }) }
     catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setFlag(name + ':remove', false) }
   }
@@ -765,20 +765,20 @@ export default function DevFleetPage() {
     setFlag('__syncmain', true)
     try {
       const r = await api.post<{ ok?: boolean; run_id?: string; error?: string }>('/sync', {})
-      if (!r?.ok || !r.run_id) { notify(r?.error || 'Pull+Build failed to start', { type: 'error' }); setFlag('__syncmain', false); return }
+      if (!r?.ok || !r.run_id) { notify(r?.error || i18nT('pages.devFleetPage.pull_build_failed_to_start'), { type: 'error' }); setFlag('__syncmain', false); return }
       setSyncRun({ rid: r.run_id, status: 'running', phase: 0, lines: [], startedAt: Date.now() })
       pollSyncRun(r.run_id, Date.now())
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setFlag('__syncmain', false) }
   }
 
   async function rebaseWorktree(name: string) {
-    const ok = await askConfirm('Rebase "' + name + '"?', 'Fetches latest main and replays. Refused if dirty; on conflict rebase is aborted.', { confirmLabel: 'Rebase' })
+    const ok = await askConfirm('Rebase "' + name + '"?', i18nT('pages.devFleetPage.fetches_latest_main_and_replays_refused_if_dirty'), { confirmLabel: i18nT('pages.devFleetPage.rebase') })
     if (!ok) return; setFlag(name + ':rebase', true)
     try {
       const r = await api.post<{ ok?: boolean; head?: string; ahead?: number; behind?: number; conflict?: boolean; error?: string }>('/rebase', { name })
       if (r?.ok) { const txt = 'Rebased (HEAD ' + (r.head || '?').slice(0, 7) + ')'; showRebaseResult(name, { kind: 'ok', text: txt }); notify(txt, { type: 'success' }) }
-      else if (r?.conflict) { showRebaseResult(name, { kind: 'conflict', text: 'Conflicts \u2014 aborted' }); notify('Rebase conflicts', { type: 'error' }) }
-      else { showRebaseResult(name, { kind: 'error', text: r?.error || 'failed' }); notify(r?.error || 'Rebase failed', { type: 'error' }) }
+      else if (r?.conflict) { showRebaseResult(name, { kind: 'conflict', text: i18nT('pages.devFleetPage.conflicts_aborted') }); notify(i18nT('pages.devFleetPage.rebase_conflicts'), { type: 'error' }) }
+      else { showRebaseResult(name, { kind: 'error', text: r?.error || 'failed' }); notify(r?.error || i18nT('pages.devFleetPage.rebase_failed'), { type: 'error' }) }
       invalidateFleet()
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setFlag(name + ':rebase', false) }
@@ -788,10 +788,10 @@ export default function DevFleetPage() {
     setFlag('__prune', true)
     try {
       const r = await api.get<{ ok?: boolean; candidates?: { name: string; code?: string }[]; kept?: { name: string; code?: string }[]; scanned?: number; error?: string }>('/prune-candidates')
-      if (!r || r.ok === false) { notify(r?.error || 'Prune preview failed', { type: 'error' }); return }
+      if (!r || r.ok === false) { notify(r?.error || i18nT('pages.devFleetPage.prune_preview_failed'), { type: 'error' }); return }
       const cands = r.candidates || []
       const kept = r.kept || []
-      if (!cands.length && !kept.length) { notify('Nothing to prune', { type: 'info' }); return }
+      if (!cands.length && !kept.length) { notify(i18nT('pages.devFleetPage.nothing_to_prune'), { type: 'info' }); return }
       setPruneSelected(new Set(cands.map((c: { name: string }) => c.name)))
       setPruneDialog({ candidates: cands, kept, scanned: r.scanned || 0 })
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
@@ -803,7 +803,7 @@ export default function DevFleetPage() {
     // duplicate checklist rows and inflate the total for a batch the server
     // processes once.
     const names = Array.from(new Set(rawNames))
-    if (!names.length) { notify('Nothing selected', { type: 'info' }); return }
+    if (!names.length) { notify(i18nT('pages.devFleetPage.nothing_selected'), { type: 'info' }); return }
     setPruneDialog(null)
     const seed: Record<string, { status: string; error?: string | null }> =
       Object.fromEntries(names.map((n) => [n, { status: 'pending', error: null }]))
@@ -814,7 +814,7 @@ export default function DevFleetPage() {
       // items and render every row as a misleading "Pending".
       const start = await api.post<{ ok?: boolean; error?: string }>('/prune-run', { names })
       if (!start || start.ok === false) {
-        notify(start?.error || 'Prune failed to start', { type: 'error' })
+        notify(start?.error || i18nT('pages.devFleetPage.prune_failed_to_start'), { type: 'error' })
         setPruneProgress(null)
         return
       }
@@ -897,16 +897,16 @@ export default function DevFleetPage() {
       await sleep(2000)
     }
     setRestarting(false)
-    notify('Gateway did not come back within 60s \u2014 reload the page manually, or check `kirocrew logs`.', { type: 'error' })
+    notify(i18nT('pages.devFleetPage.gateway_did_not_come_back_within_60s_reload_the'), { type: 'error' })
   }
 
   async function restartGateway() {
-    const ok = await askConfirm('Restart gateway?', 'Applies the last Pull+Build. The dashboard will briefly disconnect and reconnect on its own.', { confirmLabel: 'Restart' })
+    const ok = await askConfirm(i18nT('pages.devFleetPage.restart_gateway_2'), i18nT('pages.devFleetPage.applies_the_last_pull_build_the_dashboard_will_b'), { confirmLabel: i18nT('pages.devFleetPage.restart') })
     if (!ok) return
     setRestarting(true)
     try {
       const r = await api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
-      if (!r?.ok) { notify(r?.error || 'Restart failed', { type: 'error' }); setRestarting(false); return }
+      if (!r?.ok) { notify(r?.error || i18nT('pages.devFleetPage.restart_failed'), { type: 'error' }); setRestarting(false); return }
       // Wait for the NEW process (a different start identity), not "a 200 came
       // back" — see gatewayRecovered / issue #639.
       await awaitGatewayBack(r.start_id ?? null)
@@ -919,13 +919,13 @@ export default function DevFleetPage() {
     if (w.is_live) return
     if (!w.path) { notify('Cannot resolve worktree path for ' + w.name, { type: 'error' }); return }
     const ok = await askConfirm('Make "' + w.name + '" live?',
-      'Swaps the code behind the live dashboard to this worktree (same port, same data). The gateway restarts and this page reconnects automatically. Refused unless the worktree is provisioned and built.',
-      { confirmLabel: 'Make live' })
+      i18nT('pages.devFleetPage.swaps_the_code_behind_the_live_dashboard_to_this'),
+      { confirmLabel: i18nT('pages.devFleetPage.make_live') })
     if (!ok) return
     setFlag(w.name + ':makelive', true)
     try {
       const r = await api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/make-live', { path: w.path })
-      if (!r?.ok) { notify(r?.error || 'Make live failed', { type: 'error' }); setFlag(w.name + ':makelive', false); return }
+      if (!r?.ok) { notify(r?.error || i18nT('pages.devFleetPage.make_live_failed'), { type: 'error' }); setFlag(w.name + ':makelive', false); return }
       // Gateway is restarting into the new worktree — reuse the restart overlay
       // and the SAME identity handshake (a cutover is a restart into different
       // code, with the identical early-200 hazard). awaitGatewayBack reloads on
@@ -941,7 +941,7 @@ export default function DevFleetPage() {
     try {
       const r = await api.get<{ ok?: boolean; logs?: string; error?: string }>('/pod/logs?name=' + encodeURIComponent(name) + '&n=100')
       if (r?.ok) setPodLogs((l) => ({ ...l, [name]: r.logs || '(empty)' }))
-      else notify(r?.error || 'Failed to load logs', { type: 'error' })
+      else notify(r?.error || i18nT('pages.devFleetPage.failed_to_load_logs'), { type: 'error' })
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setPodLogsLoading((l) => ({ ...l, [name]: false })) }
   }
@@ -979,31 +979,31 @@ export default function DevFleetPage() {
 
   function stateDot(w: Worktree) {
     let variant: 'ok' | 'err' | 'warn' | 'aim' | 'muted', label: string, title: string
-    if (w.is_main) { variant = 'aim'; label = 'main'; title = 'The primary checkout this fleet is discovered from' }
+    if (w.is_main) { variant = 'aim'; label = 'main'; title = i18nT('pages.devFleetPage.the_primary_checkout_this_fleet_is_discovered_fr') }
     else if (w.running) {
       // 200 = open; 401/403 = serving but auth-gated — all mean the pod is up
       // (matches pod/runtime.py health() contract; anonymous probes get 403).
       const healthy = !!w.health && ((w.health >= 200 && w.health < 400) || w.health === 401 || w.health === 403)
       variant = healthy ? 'ok' : 'err'
-      label = healthy ? 'pod up' : 'pod sick'
-      title = healthy ? 'QA pod is running — click Open to use it' : 'QA pod is running but failing its health check'
+      label = healthy ? i18nT('pages.devFleetPage.pod_up') : i18nT('pages.devFleetPage.pod_sick')
+      title = healthy ? i18nT('pages.devFleetPage.qa_pod_is_running_click_open_to_use_it') : i18nT('pages.devFleetPage.qa_pod_is_running_but_failing_its_health_check')
     }
-    else if (!w.has_dist) { variant = 'muted'; label = 'not built'; title = 'No venv/UI build yet — Provision builds this worktree so a pod can run' }
-    else { variant = 'muted'; label = 'ready'; title = 'Built and ready — spin up a pod from the row menu to QA this branch' }
+    else if (!w.has_dist) { variant = 'muted'; label = i18nT('pages.devFleetPage.not_built'); title = i18nT('pages.devFleetPage.no_venv_ui_build_yet_provision_builds_this_workt') }
+    else { variant = 'muted'; label = 'ready'; title = i18nT('pages.devFleetPage.built_and_ready_spin_up_a_pod_from_the_row_menu') }
     return <Badge variant={variant} className="text-[10.5px] px-1.5 py-0" title={title}>{label}</Badge>
   }
 
   function rowButtons(w: Worktree): ReactNode[] {
     if (w.is_main) {
       const out: ReactNode[] = [
-        <ConfirmBtn key="sync" title={i18nT('pages.devFleetPage.pull_build_main')} desc="Pulls main and rebuilds (~6 min). Does NOT restart." confirmLabel="Start" onConfirm={() => syncMain()} btn={{ disabled: !!busy['__syncmain'] || syncRun?.status === 'running' || gatewayMutating }}>
-          {iconLabel(<RefreshCw size={13} className="lucide-inline" />, busy['__syncmain'] || syncRun?.status === 'running' ? 'Building\u2026' : 'Pull+Build')}
+        <ConfirmBtn key="sync" title={i18nT('pages.devFleetPage.pull_build_main')} desc={i18nT('pages.devFleetPage.pulls_main_and_rebuilds_6_min_does_not_restart')} confirmLabel={i18nT('pages.devFleetPage.start')} onConfirm={() => syncMain()} btn={{ disabled: !!busy['__syncmain'] || syncRun?.status === 'running' || gatewayMutating }}>
+          {iconLabel(<RefreshCw size={13} className="lucide-inline" />, busy['__syncmain'] || syncRun?.status === 'running' ? i18nT('pages.devFleetPage.building') : i18nT('pages.devFleetPage.pull_build_2'))}
         </ConfirmBtn>,
       ]
       if (fleet?.gateway_service_active) {
         out.push(
           <Btn key="restart" onClick={() => restartGateway()} disabled={gatewayMutating} aria-label={i18nT('pages.devFleetPage.restart_gateway')}>
-            {iconLabel(<RotateCw size={13} className="lucide-inline" />, 'Restart')}
+            {iconLabel(<RotateCw size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.restart'))}
           </Btn>
         )
         // After a cutover to a feature worktree, main is dormant (is_live=false)
@@ -1012,7 +1012,7 @@ export default function DevFleetPage() {
         if (!w.is_live) {
           out.push(
             <Btn key="makelive" onClick={() => makeLive(w)} disabled={gatewayMutating} title={i18nT('pages.devFleetPage.repoint_the_live_gateway_back_at_main_restarts_t')}>
-              {iconLabel(<Rocket size={13} className="lucide-inline" />, 'Make live')}
+              {iconLabel(<Rocket size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.make_live'))}
             </Btn>
           )
         }
@@ -1031,17 +1031,17 @@ export default function DevFleetPage() {
       // renderProvStepper), so this branch only offers the entry-point button.
       out.push(<Btn key="prov" onClick={() => provision(w.name)}>{i18nT('pages.devFleetPage.provision')}</Btn>)
     } else if (w.running) {
-      out.push(<Btn key="open" onClick={() => act(w.name, 'open')}>{iconLabel(<ExternalLink size={13} className="lucide-inline" />, 'Open')}</Btn>)
+      out.push(<Btn key="open" onClick={() => act(w.name, 'open')}>{iconLabel(<ExternalLink size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.open'))}</Btn>)
     }
     const podBusy = busy[w.name + ':up'] || busy[w.name + ':down'] || busy[w.name + ':restart']
     if (podBusy) out.push(<span key="podbusy" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--muted)' } as CSSProperties}><LoaderCircle size={12} className="lucide-inline" /> {i18nT('pages.devFleetPage.pod')}{"\u2026"}</span>)
     out.push(<MenuBtn key="menu" items={[
-      w.has_dist && !w.running ? { label: 'Spin up pod', icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
-      w.running ? { label: 'Restart pod', icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
-      { label: 'Rebase onto main', icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => rebaseWorktree(w.name), disabled: !!busy[w.name + ':rebase'] },
-      !w.is_live ? { label: 'Make live', icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: 'Repoint the live gateway at this worktree (restarts the gateway)' } : null,
-      { label: 'QA + video', icon: <Video size={13} className="lucide-inline" />, onClick: () => launchQa(w.name) },
-      w.running ? { label: 'Stop pod', icon: <Square size={13} className="lucide-inline" />, onClick: () => act(w.name, 'down'), danger: true } : null,
+      w.has_dist && !w.running ? { label: i18nT('pages.devFleetPage.spin_up_pod'), icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
+      w.running ? { label: i18nT('pages.devFleetPage.restart_pod'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
+      { label: i18nT('pages.devFleetPage.rebase_onto_main'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => rebaseWorktree(w.name), disabled: !!busy[w.name + ':rebase'] },
+      !w.is_live ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
+      { label: i18nT('pages.devFleetPage.qa_video'), icon: <Video size={13} className="lucide-inline" />, onClick: () => launchQa(w.name) },
+      w.running ? { label: i18nT('pages.devFleetPage.stop_pod'), icon: <Square size={13} className="lucide-inline" />, onClick: () => act(w.name, 'down'), danger: true } : null,
     ]} />)
     const rr = rebaseResult[w.name]
     if (rr) out.push(<Clickable key="rr" aria-label={i18nT('pages.devFleetPage.dismiss')} onClick={() => dismissRebaseResult(w.name)} style={{ fontSize: 11, color: rr.kind === 'ok' ? 'var(--ok)' : 'var(--danger)', cursor: 'pointer', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0 } as CSSProperties}>{rr.text}</Clickable>)
@@ -1064,7 +1064,7 @@ export default function DevFleetPage() {
           </span>
           <span style={{ ...mono, flexShrink: 0 } as CSSProperties}>{'~' + pct + '%'}</span>
           <span style={mono}>{fmtElapsed(Date.now() - syncRun.startedAt)}</span>
-          <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? 'log \u25B4' : 'log \u25BE'}</Clickable>
+          <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? i18nT('pages.devFleetPage.log') : i18nT('pages.devFleetPage.log_2')}</Clickable>
           <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_sync_status')} onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
         </div>
       )
@@ -1075,7 +1075,7 @@ export default function DevFleetPage() {
           <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Check size={12} className="lucide-inline" /> {i18nT('pages.devFleetPage.synced')}</span>
           <span style={{ fontSize: 11, color: 'var(--muted)' }}>{i18nT('pages.devFleetPage.restart_gateway_to_apply_the_new_build')}</span>
           <span style={{ flex: 1 }} />
-          <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? 'log \u25B4' : 'log \u25BE'}</Clickable>
+          <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? i18nT('pages.devFleetPage.log') : i18nT('pages.devFleetPage.log_2')}</Clickable>
           <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_sync_status')} onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
         </div>
       )
@@ -1085,7 +1085,7 @@ export default function DevFleetPage() {
       <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } as CSSProperties}>
         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)' }}>{i18nT('pages.devFleetPage.pull_build_failed')}</span>
         <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={syncRun.last}>{syncRun.last}</span>
-        <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? 'log \u25B4' : 'log \u25BE'}</Clickable>
+        <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? i18nT('pages.devFleetPage.log') : i18nT('pages.devFleetPage.log_2')}</Clickable>
         <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_sync_status')} onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
       </div>
     )
@@ -1098,7 +1098,7 @@ export default function DevFleetPage() {
     const mono: CSSProperties = { fontFamily: 'ui-monospace, monospace', fontVariantNumeric: 'tabular-nums', fontSize: 11, color: 'var(--muted)' }
     const open = !!provLogOpen[w.name]
     const logToggle = (
-      <Clickable aria-label={i18nT('pages.devFleetPage.toggle_provision_log')} onClick={() => toggleProvLog(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{open ? 'log \u25B4' : 'log \u25BE'}</Clickable>
+      <Clickable aria-label={i18nT('pages.devFleetPage.toggle_provision_log')} onClick={() => toggleProvLog(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{open ? i18nT('pages.devFleetPage.log') : i18nT('pages.devFleetPage.log_2')}</Clickable>
     )
     if (pr.failed) {
       return (
@@ -1125,7 +1125,7 @@ export default function DevFleetPage() {
         <LoaderCircle size={12} className="lucide-inline" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
         <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{i18nT('pages.devFleetPage.provisioning')}</span>
         {phase ? <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent)', background: 'var(--accent-subtle, rgba(99,102,241,0.14))', borderRadius: 5, padding: '1px 6px', flexShrink: 0 } as CSSProperties}>{phase}</span> : null}
-        <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={last}>{last || 'starting\u2026'}</span>
+        <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={last}>{last || i18nT('pages.devFleetPage.starting')}</span>
         <span style={mono}>{fmtElapsed(Date.now() - pr.startedAt)}</span>
         {logToggle}
       </div>
@@ -1150,7 +1150,7 @@ export default function DevFleetPage() {
         <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--border)', minHeight: 30 } as CSSProperties}>
           {w.is_main
             ? <span style={{ width: 15 }} />
-            : <Clickable aria-label={open ? 'Collapse' : 'Expand'} aria-expanded={open} onClick={() => toggleExpand(w.name)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 0, transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } as CSSProperties}><ChevronRight size={15} className="lucide-inline" /></Clickable>}
+            : <Clickable aria-label={open ? i18nT('pages.devFleetPage.collapse') : i18nT('pages.devFleetPage.expand')} aria-expanded={open} onClick={() => toggleExpand(w.name)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 0, transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } as CSSProperties}><ChevronRight size={15} className="lucide-inline" /></Clickable>}
           <span style={{ overflow: 'hidden', display: 'flex' } as CSSProperties}>{stateDot(w)}</span>
           <div style={{ minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap', overflow: 'hidden' } as CSSProperties}>
             <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{w.name}</span>
@@ -1162,7 +1162,7 @@ export default function DevFleetPage() {
           {isMainWithStepper ? renderSyncStepper() : provActive ? renderProvStepper(w) : (
             <>
               {rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>{"\u2014"}</span>}
-              <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? w.behind + ' commits behind main' : 'up to date with main'}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
+              <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? w.behind + ' commits behind main' : i18nT('pages.devFleetPage.up_to_date_with_main')}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
               <span style={{ ...mut, opacity: 0.85 }}>{relTime(w.last_updated_at).replace(' ago', '')}</span>
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', minWidth: 0, flexWrap: 'wrap' } as CSSProperties}>{rowButtons(w)}</div>
             </>
@@ -1200,7 +1200,7 @@ export default function DevFleetPage() {
   else body = <div>{columnHeader}{visible.map(renderRow)}{legacyToggle}</div>
 
   const confirmDialog = (
-    <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || 'Confirm'}</Btn></>}>
+    <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || i18nT('pages.devFleetPage.confirm')}</Btn></>}>
       <p className="text-sm text-muted m-0">{confirmReq?.desc}</p>
     </Modal>
   )
@@ -1245,13 +1245,13 @@ export default function DevFleetPage() {
     <Modal
       open={true}
       onClose={() => { if (pruneDone) setPruneProgress(null) }}
-      title={pruneDone ? 'Prune complete' : 'Pruning worktrees'}
+      title={pruneDone ? i18nT('pages.devFleetPage.prune_complete') : i18nT('pages.devFleetPage.pruning_worktrees')}
       maxWidth={460}
       footer={pruneDone ? <Btn onClick={() => setPruneProgress(null)}>{i18nT('pages.devFleetPage.close')}</Btn> : undefined}
     >
       <div style={{ fontSize: 12 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>
-          {pruneDone ? 'Finished' : 'Removing'} {pruneProgress.done}/{pruneProgress.total}
+          {pruneDone ? i18nT('pages.devFleetPage.finished') : i18nT('pages.devFleetPage.removing')} {pruneProgress.done}/{pruneProgress.total}
         </div>
         <div role="list" style={{ display: 'flex', flexDirection: 'column', maxHeight: 320, overflowY: 'auto' }}>
           {pruneProgress.names.map((nm) => {
@@ -1294,7 +1294,7 @@ export default function DevFleetPage() {
       {restarting && (
         <div role="alert" aria-busy="true" style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--text)' }}>
           <LoaderCircle size={32} className="lucide-inline" style={{ animation: 'spin 1s linear infinite' }} />
-          <p style={{ marginTop: 16, fontSize: 16, fontWeight: 600 }}>{'Restarting \u2014 reconnecting\u2026'}</p>
+          <p style={{ marginTop: 16, fontSize: 16, fontWeight: 600 }}>{i18nT('pages.devFleetPage.restarting_reconnecting')}</p>
           <p style={{ fontSize: 12, color: 'var(--muted)' }}>{i18nT('pages.devFleetPage.waiting_for_the_new_gateway_process_the_page_rel')}</p>
         </div>
       )}
@@ -1315,7 +1315,7 @@ export default function DevFleetPage() {
               <StatCard label={i18nT('pages.devFleetPage.disk_worktrees')} value={diskGb} />
             </div>
             <Card>
-              <CardTitle><span className="flex items-center gap-1.5">{i18nT('pages.devFleetPage.worktrees_2')}{wts.length})<InfoTip text="Every git worktree of the main checkout. Pull+Build syncs main; pods are isolated gateways booted from a worktree." /></span></CardTitle>
+              <CardTitle><span className="flex items-center gap-1.5">{i18nT('pages.devFleetPage.worktrees_2')}{wts.length})<InfoTip text={i18nT('pages.devFleetPage.every_git_worktree_of_the_main_checkout_pull_bui')} /></span></CardTitle>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', margin: '12px 0 4px' } as CSSProperties}>
                 <div className="flex-1 min-w-0">
                   <SearchInput placeholder={i18nT('pages.devFleetPage.filter_worktrees')} value={q} onChange={(e) => setQ((e.target as HTMLInputElement).value)} aria-label={i18nT('pages.devFleetPage.filter_worktrees_2')} />
@@ -1331,8 +1331,8 @@ export default function DevFleetPage() {
                   <option value="name">{i18nT('pages.devFleetPage.sort_name')}</option>
                   <option value="behind">{i18nT('pages.devFleetPage.sort_behind')}</option>
                 </Select>
-                <Btn danger onClick={pruneShipped} disabled={!!busy['__prune']}>{iconLabel(<Trash2 size={13} className="lucide-inline" />, 'Prune merged')}</Btn>
-                <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, 'Refresh')}</Btn>
+                <Btn danger onClick={pruneShipped} disabled={!!busy['__prune']}>{iconLabel(<Trash2 size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.prune_merged'))}</Btn>
+                <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, i18nT('pages.devFleetPage.refresh'))}</Btn>
               </div>
               {body}
             </Card>

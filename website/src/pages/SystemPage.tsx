@@ -36,10 +36,10 @@ export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
       <div className={`${embedded ? '' : 'px-6 pb-8'} overflow-y-auto flex-1 min-h-0`}>
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
           {[
-            { label: 'CPU %', value: d?.cpu_pct != null ? d.cpu_pct + '%' : '—', accent: true },
-            { label: 'Memory', value: d?.mem_used_gb != null ? d.mem_used_gb + ' / ' + d.mem_total_gb + ' GB' : '—' },
-            { label: 'Network ↓', value: d?.net_rx_kbs != null ? fmtSpeed(d.net_rx_kbs) : '—' },
-            { label: 'Network ↑', value: d?.net_tx_kbs != null ? fmtSpeed(d.net_tx_kbs) : '—' },
+            { label: i18nT('pages.systemPage.cpu'), value: d?.cpu_pct != null ? d.cpu_pct + '%' : '—', accent: true },
+            { label: i18nT('pages.systemPage.memory'), value: d?.mem_used_gb != null ? d.mem_used_gb + ' / ' + d.mem_total_gb + ' GB' : '—' },
+            { label: i18nT('pages.systemPage.network_2'), value: d?.net_rx_kbs != null ? fmtSpeed(d.net_rx_kbs) : '—' },
+            { label: i18nT('pages.systemPage.network_3'), value: d?.net_tx_kbs != null ? fmtSpeed(d.net_tx_kbs) : '—' },
           ].map(s => (
             <StatCard key={s.label} label={s.label} value={s.value} accent={s.accent} />
           ))}
@@ -48,22 +48,22 @@ export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
         <div className="grid grid-cols-2 gap-4 mb-6 max-[900px]:grid-cols-1">
           <div className="flex flex-col">
             <div className="card-glow border border-border border-l-[3px] border-l-accent bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
-              <h3 className="text-sm font-semibold text-accent mb-3.5 flex items-center gap-1.5"><PawPrint className="lucide-inline" /> {i18nT('pages.systemPage.kirocrew_process')} <InfoTip text="Gateway process info: PID, uptime, Python version, and runtime stats (messages, tool calls, sessions)." /></h3>
-              <Info k="PID" v={d?.pid} /><Info k="Python" v={d?.python} /><Info k="Uptime" v={statusUptime} /><Info k="Sessions" v={statusSessions} />
-              <Info k="Process Memory (RSS)" v={d?.proc_mem_mb ? d.proc_mem_mb + ' MB' : '—'} />
-              <Info k="Child Processes" v={d?.child_processes} /><Info k="Threads" v={d?.thread_count} />
-              <Info k="MCP Processes" v={mcpLabel} />
-              <Info k="CPU %" v={d?.proc_cpu_pct != null ? d.proc_cpu_pct + '%' : '—'} /><Info k="CWD" v={d?.cwd} />
+              <h3 className="text-sm font-semibold text-accent mb-3.5 flex items-center gap-1.5"><PawPrint className="lucide-inline" /> {i18nT('pages.systemPage.kirocrew_process')} <InfoTip text={i18nT('pages.systemPage.gateway_process_info_pid_uptime_python_version_a')} /></h3>
+              <Info k={i18nT('pages.systemPage.pid')} v={d?.pid} /><Info k={i18nT('pages.systemPage.python')} v={d?.python} /><Info k={i18nT('pages.systemPage.uptime')} v={statusUptime} /><Info k={i18nT('pages.systemPage.sessions')} v={statusSessions} />
+              <Info k={i18nT('pages.systemPage.process_memory_rss')} v={d?.proc_mem_mb ? d.proc_mem_mb + ' MB' : '—'} />
+              <Info k={i18nT('pages.systemPage.child_processes')} v={d?.child_processes} /><Info k={i18nT('pages.systemPage.threads')} v={d?.thread_count} />
+              <Info k={i18nT('pages.systemPage.mcp_processes')} v={mcpLabel} />
+              <Info k={i18nT('pages.systemPage.cpu')} v={d?.proc_cpu_pct != null ? d.proc_cpu_pct + '%' : '—'} /><Info k={i18nT('pages.systemPage.cwd')} v={d?.cwd} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3.5 content-start max-[900px]:grid-cols-1">
-            <SysCard title={i18nT('pages.systemPage.host')}><Info k="Hostname" v={d?.hostname} /><Info k="OS" v={d?.os} /><Info k="Arch" v={d?.arch} /><Info k="CPUs" v={d?.cpu_count} /><Info k="Load (1/5/15m)" v={d?.load_1m != null ? d.load_1m + ' / ' + d.load_5m + ' / ' + d.load_15m : '—'} /></SysCard>
-            <SysCard title={i18nT('pages.systemPage.memory')}><Info k="Total" v={d?.mem_total_gb ? d.mem_total_gb + ' GB' : '—'} /><Info k="Used" v={d?.mem_used_gb ? d.mem_used_gb + ' GB' : '—'} /><Info k="Free" v={d?.mem_free_gb ? d.mem_free_gb + ' GB' : '—'} /></SysCard>
-            <SysCard title={i18nT('pages.systemPage.network')}><Info k="IP Address" v={d?.ip} /><Info k="Download" v={d?.net_rx_kbs != null ? fmtSpeed(d.net_rx_kbs) : '—'} /><Info k="Upload" v={d?.net_tx_kbs != null ? fmtSpeed(d.net_tx_kbs) : '—'} /></SysCard>
-            <SysCard title={i18nT('pages.systemPage.storage')}><Info k="Total" v={d?.disk_total_gb ? d.disk_total_gb + ' GB' : '—'} /><Info k="Free" v={d?.disk_free_gb ? d.disk_free_gb + ' GB' : '—'} /></SysCard>
-            <SysCard title={i18nT('pages.systemPage.ollama')}><Info k="Status" v={d?.ollama_running ? (d?.ollama_remote ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {i18nT('pages.systemPage.remote')}</> : <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {i18nT('pages.systemPage.running')}</>) : <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--muted)]" /> {i18nT('pages.systemPage.stopped')}</>} />{d?.ollama_running && <><Info k="PID" v={d?.ollama_pid} /><Info k="Memory (RSS)" v={d?.ollama_mem_mb ? d.ollama_mem_mb + ' MB' : '—'} /></>}</SysCard>
-            <SysCard title={i18nT('pages.systemPage.slack')}><Info k="Status" v={<span style={{ color: status?.slack_connected ? 'var(--ok)' : 'var(--muted)' }}>{status?.slack_connected ? 'Connected' : 'Not connected'}</span>} /></SysCard>
-            <SysCard title={i18nT('pages.systemPage.governance')}><Info k="Status" v={<GovernanceStatus value={status?.governance} />} /></SysCard>
+            <SysCard title={i18nT('pages.systemPage.host')}><Info k={i18nT('pages.systemPage.hostname')} v={d?.hostname} /><Info k={i18nT('pages.systemPage.os')} v={d?.os} /><Info k={i18nT('pages.systemPage.arch')} v={d?.arch} /><Info k={i18nT('pages.systemPage.cpus')} v={d?.cpu_count} /><Info k={i18nT('pages.systemPage.load_1_5_15m')} v={d?.load_1m != null ? d.load_1m + ' / ' + d.load_5m + ' / ' + d.load_15m : '—'} /></SysCard>
+            <SysCard title={i18nT('pages.systemPage.memory')}><Info k={i18nT('pages.systemPage.total')} v={d?.mem_total_gb ? d.mem_total_gb + ' GB' : '—'} /><Info k={i18nT('pages.systemPage.used')} v={d?.mem_used_gb ? d.mem_used_gb + ' GB' : '—'} /><Info k={i18nT('pages.systemPage.free')} v={d?.mem_free_gb ? d.mem_free_gb + ' GB' : '—'} /></SysCard>
+            <SysCard title={i18nT('pages.systemPage.network')}><Info k={i18nT('pages.systemPage.ip_address')} v={d?.ip} /><Info k={i18nT('pages.systemPage.download')} v={d?.net_rx_kbs != null ? fmtSpeed(d.net_rx_kbs) : '—'} /><Info k={i18nT('pages.systemPage.upload')} v={d?.net_tx_kbs != null ? fmtSpeed(d.net_tx_kbs) : '—'} /></SysCard>
+            <SysCard title={i18nT('pages.systemPage.storage')}><Info k={i18nT('pages.systemPage.total')} v={d?.disk_total_gb ? d.disk_total_gb + ' GB' : '—'} /><Info k={i18nT('pages.systemPage.free')} v={d?.disk_free_gb ? d.disk_free_gb + ' GB' : '—'} /></SysCard>
+            <SysCard title={i18nT('pages.systemPage.ollama')}><Info k={i18nT('pages.systemPage.status')} v={d?.ollama_running ? (d?.ollama_remote ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {i18nT('pages.systemPage.remote')}</> : <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {i18nT('pages.systemPage.running')}</>) : <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--muted)]" /> {i18nT('pages.systemPage.stopped')}</>} />{d?.ollama_running && <><Info k={i18nT('pages.systemPage.pid')} v={d?.ollama_pid} /><Info k={i18nT('pages.systemPage.memory_rss')} v={d?.ollama_mem_mb ? d.ollama_mem_mb + ' MB' : '—'} /></>}</SysCard>
+            <SysCard title={i18nT('pages.systemPage.slack')}><Info k={i18nT('pages.systemPage.status')} v={<span style={{ color: status?.slack_connected ? 'var(--ok)' : 'var(--muted)' }}>{status?.slack_connected ? i18nT('pages.systemPage.connected') : i18nT('pages.systemPage.not_connected')}</span>} /></SysCard>
+            <SysCard title={i18nT('pages.systemPage.governance')}><Info k={i18nT('pages.systemPage.status')} v={<GovernanceStatus value={status?.governance} />} /></SysCard>
           </div>
         </div>
       </div>

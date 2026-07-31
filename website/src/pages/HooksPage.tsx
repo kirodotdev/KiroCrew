@@ -64,7 +64,7 @@ function HookForm({ hook, onSave, onCancel }: {
 
   return (
     <Card>
-      <CardTitle>{hook ? 'Edit Hook' : 'New Hook'} <InfoTip text="Script hooks fire shell commands on chat lifecycle events. PreToolUse/PostToolUse hooks can filter by tool name pattern." /></CardTitle>
+      <CardTitle>{hook ? i18nT('pages.hooksPage.edit_hook') : i18nT('pages.hooksPage.new_hook_2')} <InfoTip text={i18nT('pages.hooksPage.script_hooks_fire_shell_commands_on_chat_lifecyc')} /></CardTitle>
       <div className="flex flex-col gap-3">
         <div className="flex gap-2 items-center flex-wrap">
           <Input placeholder={i18nT('pages.hooksPage.hook_name')} value={name} onChange={e => setName(e.target.value)} />
@@ -76,7 +76,7 @@ function HookForm({ hook, onSave, onCancel }: {
           <Input className="w-full font-mono" placeholder={i18nT('pages.hooksPage.echo_hook_fired')} value={command} onChange={e => setCommand(e.target.value)} />
         </div>
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder={isToolHook ? 'Matcher (tool filter, e.g. fs_write, @git/*)' : 'Matcher (optional, e.g. *deploy*)'} value={matcher} onChange={e => setMatcher(e.target.value)} />
+          <Input placeholder={isToolHook ? i18nT('pages.hooksPage.matcher_tool_filter_e_g_fs_write_git') : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')} value={matcher} onChange={e => setMatcher(e.target.value)} />
           <div className="flex items-center gap-1.5 text-[13px] text-muted shrink-0">
             <span>{i18nT('pages.hooksPage.timeout')}</span>
             <Input type="number" min={1} max={300} className="w-16" value={timeout} onChange={e => setTimeout_(parseInt(e.target.value, 10) || 30)} />
@@ -145,10 +145,10 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
     <>
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
         {[
-          { label: 'Total', value: hooks.length, accent: true },
-          { label: 'Enabled', value: enabled },
-          { label: 'Total Runs', value: totalRuns },
-          { label: 'Errors', value: lastErr },
+          { label: i18nT('pages.hooksPage.total'), value: hooks.length, accent: true },
+          { label: i18nT('pages.hooksPage.enabled'), value: enabled },
+          { label: i18nT('pages.hooksPage.total_runs'), value: totalRuns },
+          { label: i18nT('pages.hooksPage.errors'), value: lastErr },
         ].map((s, i) => (
           <StatCard key={s.label} label={s.label} value={s.value} delay={i * 60} accent={s.accent} />
         ))}
@@ -179,7 +179,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
         })()}
 
         <Card>
-          <CardTitle>{i18nT('pages.hooksPage.hooks')} <InfoTip text="Hooks run shell commands on chat events: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Tool hooks support matcher patterns to filter by tool name." /></CardTitle>
+          <CardTitle>{i18nT('pages.hooksPage.hooks')} <InfoTip text={i18nT('pages.hooksPage.hooks_run_shell_commands_on_chat_events_agentspa')} /></CardTitle>
           <div className="mb-3"><SearchInput placeholder={i18nT('pages.hooksPage.filter_hooks')} value={filter} onChange={e => setFilter(e.target.value)} /></div>
           {hooks.length === 0 ? (
             <EmptyState icon={<Anchor className="lucide-inline" />} title={i18nT('pages.hooksPage.no_hooks_yet')} subtitle={i18nT('pages.hooksPage.create_a_hook_to_run_scripts_on_chat_events')} />
@@ -208,7 +208,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                         <button
                           className={`w-9 h-5 rounded-full relative transition-colors cursor-pointer ${h.enabled ? 'bg-accent' : 'bg-border'}`}
                           onClick={() => handleToggle(h.id)}
-                          aria-label={h.enabled ? 'Disable hook' : 'Enable hook'}
+                          aria-label={h.enabled ? i18nT('pages.hooksPage.disable_hook') : i18nT('pages.hooksPage.enable_hook')}
                         >
                           <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${h.enabled ? 'left-[18px]' : 'left-0.5'}`} />
                         </button>
@@ -265,7 +265,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
               <table className="w-full border-collapse table-striped">
                 <thead>
                   <tr>
-                    {[{ h: '#', w: 'w-[40px]' }, { h: 'Event', w: 'w-[150px]' }, { h: 'Source', w: 'w-[90px]' }, { h: 'Matcher', w: 'w-[120px]' }, { h: 'Command', w: 'min-w-[300px]' }].map(c => (
+                    {[{ h: '#', w: 'w-[40px]' }, { h: i18nT('pages.hooksPage.event'), w: 'w-[150px]' }, { h: i18nT('pages.hooksPage.source'), w: 'w-[90px]' }, { h: i18nT('pages.hooksPage.matcher'), w: 'w-[120px]' }, { h: i18nT('pages.hooksPage.command'), w: 'min-w-[300px]' }].map(c => (
                       <th key={c.h} className={`text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium ${c.w}`}>{c.h}</th>
                     ))}
                   </tr>

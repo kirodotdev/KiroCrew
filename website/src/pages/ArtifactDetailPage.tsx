@@ -81,8 +81,8 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
           className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border cursor-pointer bg-bg-elevated transition-colors ${
             current ? 'border-border text-muted hover:text-text' : 'border-dashed border-border text-muted hover:text-text hover:border-border-strong'
           }`}
-          title={current ? `Filed in ${path} — click to move` : 'Not in a folder — click to file'}
-          aria-label={current ? `Folder: ${path}. Move to folder` : 'Move to folder'}
+          title={current ? `Filed in ${path} — click to move` : i18nT('pages.artifactDetailPage.not_in_a_folder_click_to_file')}
+          aria-label={current ? `Folder: ${path}. Move to folder` : i18nT('pages.artifactDetailPage.move_to_folder')}
         >
           <FolderIcon size={10} className={current ? 'text-accent' : undefined} />
           {current ? current.name : 'folder'}
@@ -132,14 +132,18 @@ const ActivityTimeline = memo(function ActivityTimeline({
   const verb = (t: ArtifactEvent['type'], md?: ArtifactEvent['metadata']) => {
     if (t === 'comment') {
       const action = typeof md?.action === 'string' ? md.action : ''
-      return { deleted: 'Comment removed', reviewed: 'Comment marked for review', resolved: 'Comment resolved' }[action] ?? 'Comment'
+      return {
+        deleted: i18nT('pages.artifactDetailPage.comment_removed'),
+        reviewed: i18nT('pages.artifactDetailPage.comment_marked_for_review'),
+        resolved: i18nT('pages.artifactDetailPage.comment_resolved'),
+      }[action] ?? i18nT('pages.artifactDetailPage.comment')
     }
     return {
-      created: 'Created',
-      edited: 'Edited',
-      iterated: 'Iterated',
-      referenced: 'Referenced',
-      reverted: 'Reverted',
+      created: i18nT('pages.artifactDetailPage.created'),
+      edited: i18nT('pages.artifactDetailPage.edited'),
+      iterated: i18nT('pages.artifactDetailPage.iterated'),
+      referenced: i18nT('pages.artifactDetailPage.referenced'),
+      reverted: i18nT('pages.artifactDetailPage.reverted'),
     }[t] ?? t
   }
   // Distinct hues per type so created/edited/iterated don't visually blur
@@ -1230,7 +1234,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                   className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`}
                   title={i18nT('pages.artifactDetailPage.save_to_live_cmd_s_updates_the_live_state_withou')}
                 >
-                  {saving ? 'Saving…' : 'Save'}
+                  {saving ? i18nT('pages.artifactDetailPage.saving') : i18nT('pages.artifactDetailPage.save')}
                 </button>
                 <button
                   type="button"
@@ -1255,9 +1259,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                   onClick={() => setPreviewDuringEdit(p => !p)}
                   disabled={saving}
                   className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all disabled:opacity-40 ${previewDuringEdit ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-                  title={previewDuringEdit ? 'Back to editor' : 'Preview rendered output of current edits'}
+                  title={previewDuringEdit ? i18nT('pages.artifactDetailPage.back_to_editor') : i18nT('pages.artifactDetailPage.preview_rendered_output_of_current_edits')}
                 >
-                  {previewDuringEdit ? 'Edit' : 'Preview'}
+                  {previewDuringEdit ? i18nT('pages.artifactDetailPage.edit') : i18nT('pages.artifactDetailPage.preview')}
                 </button>
               </>
             ) : (
@@ -1313,7 +1317,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               type="button"
               onClick={toggleSidebar}
               className={`p-1.5 rounded-md border cursor-pointer transition-all ${panel === 'comments' ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`}
-              title={panel === 'comments' ? 'Hide comments' : 'Show comments'}
+              title={panel === 'comments' ? i18nT('pages.artifactDetailPage.hide_comments') : i18nT('pages.artifactDetailPage.show_comments')}
               aria-label={i18nT('pages.artifactDetailPage.toggle_comments')}
               aria-pressed={panel === 'comments'}
             >
@@ -1614,10 +1618,10 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
         // shown on a fork as a manual check, even when the 15s-stale status
         // says nothing is ahead), so surface it as a neutral notice — not a
         // danger-styled error.
-        setNotice(String(res.pull_result.reason || 'Nothing to pull.'))
+        setNotice(String(res.pull_result.reason || i18nT('pages.artifactDetailPage.nothing_to_pull')))
       else onPulled()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Pull failed')
+      setError(e instanceof Error ? e.message : i18nT('pages.artifactDetailPage.pull_failed'))
     } finally {
       setPulling(false)
     }
@@ -1635,10 +1639,10 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
       const res = await api.overwriteRemote(artifact.slug)
       if (res.error) setError(res.error)
       else if (res.overwrite_result && res.overwrite_result.overwritten === false)
-        setError(String(res.overwrite_result.reason || 'Could not overwrite.'))
+        setError(String(res.overwrite_result.reason || i18nT('pages.artifactDetailPage.could_not_overwrite')))
       else onPulled()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Overwrite failed')
+      setError(e instanceof Error ? e.message : i18nT('pages.artifactDetailPage.overwrite_failed'))
     } finally {
       setOverwriting(false)
     }
@@ -1656,7 +1660,7 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
       if ((res as { error?: string })?.error) setError(String((res as { error?: string }).error))
       else onPulled()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Snapshot failed')
+      setError(e instanceof Error ? e.message : i18nT('pages.artifactDetailPage.snapshot_failed'))
     } finally {
       setSnapshotting(false)
     }
@@ -1687,7 +1691,7 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
           title={i18nT('pages.artifactDetailPage.snapshot_the_current_content_as_a_new_version_an')}
         >
           <Camera size={12} />
-          {snapshotting ? 'Publishing…' : 'Snapshot to publish'}
+          {snapshotting ? i18nT('pages.artifactDetailPage.publishing') : i18nT('pages.artifactDetailPage.snapshot_to_publish')}
         </Btn>
       </div>
     )

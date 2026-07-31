@@ -172,7 +172,7 @@ export default function OverviewPage() {
         <div>
           <div className="text-lg font-bold text-text-strong flex items-center gap-2">
             <span className={`w-2 h-2 rounded-full shrink-0 ${connected && status ? 'bg-ok' : 'bg-warn'}`} />
-            {connected && status ? 'All systems running' : status ? 'Reconnecting…' : 'Connecting…'}
+            {connected && status ? i18nT('pages.overviewPage.all_systems_running') : status ? i18nT('pages.overviewPage.reconnecting') : i18nT('pages.overviewPage.connecting')}
           </div>
           <div className="text-[12.5px] text-muted mt-0.5">
             {i18nT('pages.overviewPage.up')} {uptime}{status?.version ? <> {i18nT('pages.overviewPage.v')}{status.version}</> : null}

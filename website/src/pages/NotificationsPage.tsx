@@ -51,7 +51,7 @@ export default function NotificationsPage() {
           {/* Left: feed */}
           <div className={`flex flex-col shrink-0 ${isMobile ? 'w-full' : 'min-w-[320px] max-w-[420px] w-[40%]'} ${isMobile && selected ? 'hidden' : ''}`}>
             <Card className="flex flex-col flex-1 min-h-0">
-              <CardTitle>{i18nT('pages.notificationsPage.activity_feed')} <InfoTip text="Click a notification to view details. Jump to the source chat or job from the detail panel." /></CardTitle>
+              <CardTitle>{i18nT('pages.notificationsPage.activity_feed')} <InfoTip text={i18nT('pages.notificationsPage.click_a_notification_to_view_details_jump_to_the')} /></CardTitle>
               <NotificationFeed selectedTs={selectedTs} onSelect={handleSelect} />
             </Card>
           </div>

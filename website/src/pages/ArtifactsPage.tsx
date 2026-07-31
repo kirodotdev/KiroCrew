@@ -281,12 +281,12 @@ function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
   const frameUrl = previewBase
     || (!mini && status === 'live' && remoteFramable ? framablePreviewUrl(publicUrl) : null)
   const urlLabel = (() => {
-    if (!publicUrl) return 'not deployed'
+    if (!publicUrl) return i18nT('pages.artifactsPage.not_deployed')
     try {
       const u = new URL(publicUrl)
       return `${u.host}${u.pathname}`
     } catch {
-      return 'not deployed'
+      return i18nT('pages.artifactsPage.not_deployed')
     }
   })()
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -305,7 +305,7 @@ function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
   const heroIcon = status === 'expired'
     ? <Cloud size={mini ? 16 : 24} className="text-muted" aria-hidden="true" />
     : <Rocket size={mini ? 16 : 24} className={status === 'deploying' ? 'text-warn animate-pulse' : 'text-accent/70'} aria-hidden="true" />
-  const heroLabel = status === 'expired' ? 'Expired' : status === 'deploying' ? 'Deploying\u2026' : status === 'live' ? 'Live' : 'Not deployed'
+  const heroLabel = status === 'expired' ? i18nT('pages.artifactsPage.expired') : status === 'deploying' ? i18nT('pages.artifactsPage.deploying') : status === 'live' ? i18nT('pages.artifactsPage.live') : i18nT('pages.artifactsPage.not_deployed_2')
   return (
     <div className="bg-card">
       {/* chrome bar */}
@@ -680,7 +680,7 @@ function FolderBreadcrumbBar({ folders, currentFolderId, onNavigate }: {
   )
   return (
     <nav aria-label={i18nT('pages.artifactsPage.folder_breadcrumb')} className="flex items-center flex-wrap gap-0.5 mb-3">
-      {segment('All Artifacts', '', chain.length === 0)}
+      {segment(i18nT('pages.artifactsPage.all_artifacts'), '', chain.length === 0)}
       {chain.map((f, i) => (
         <span key={f.id} className="flex items-center gap-0.5">
           <ChevronRight size={12} className="text-muted" />
@@ -745,7 +745,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
                 <Share2
                   size={12}
                   className={a.publication.last_error ? 'text-danger shrink-0' : 'text-ok shrink-0'}
-                  aria-label={a.publication.last_error ? 'Published (sync issue)' : `Published (${a.publication.visibility.toLowerCase()})`}
+                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : `Published (${a.publication.visibility.toLowerCase()})`}
                 />
               )}
             </div>
@@ -923,8 +923,8 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pinningSl
               disabled={pinningSlug === a.slug}
               onClick={(e) => { e.stopPropagation(); onTogglePin(a) }}
               className={`p-0.5 rounded transition-colors cursor-pointer bg-transparent border-none disabled:cursor-default ${a.pinned ? 'text-accent' : 'text-muted/40 hover:text-accent'}`}
-              title={a.pinned ? 'Starred — click to unstar' : 'Star (save to library)'}
-              aria-label={a.pinned ? 'Remove star from artifact' : 'Star artifact'}
+              title={a.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_save_to_library')}
+              aria-label={a.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
               aria-pressed={!!a.pinned}
             >
               <Star size={14} className={a.pinned ? 'fill-current' : ''} />
@@ -937,7 +937,7 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pinningSl
                 <Share2
                   size={12}
                   className={a.publication.last_error ? 'text-danger' : 'text-ok'}
-                  aria-label={a.publication.last_error ? 'Published (sync issue)' : `Published (${a.publication.visibility.toLowerCase()})`}
+                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : `Published (${a.publication.visibility.toLowerCase()})`}
                 />
               )}
             </div>
@@ -1730,8 +1730,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             </Btn>
             <SegmentedControl
               segments={[
-                { key: 'grid', label: 'Gallery', icon: <LayoutDashboard size={13} />, tooltip: 'Masonry preview gallery' },
-                { key: 'table', label: 'Table', icon: <TableIcon size={13} />, tooltip: 'Compact table' },
+                { key: 'grid', label: i18nT('pages.artifactsPage.gallery'), icon: <LayoutDashboard size={13} />, tooltip: i18nT('pages.artifactsPage.masonry_preview_gallery') },
+                { key: 'table', label: i18nT('pages.artifactsPage.table'), icon: <TableIcon size={13} />, tooltip: i18nT('pages.artifactsPage.compact_table') },
               ]}
               value={view}
               onChange={(v) => { setView(v); safeSetItem('mc-artifacts-view', v) }}
@@ -1748,7 +1748,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             <select className={sel} value={kindFilter} aria-label={i18nT('pages.artifactsPage.filter_by_kind')} onChange={(e) => setKindFilter(e.target.value)}>
               {KIND_OPTIONS.map((k) => (
                 <option key={k} value={k}>
-                  {k ? `kind: ${k}` : 'all kinds'}
+                  {k ? `kind: ${k}` : i18nT('pages.artifactsPage.all_kinds')}
                 </option>
               ))}
             </select>
@@ -1858,10 +1858,10 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               ) : (
                 <div className="text-muted italic px-2.5 py-3.5 text-sm">
                   {filtersActive
-                    ? 'No artifacts match your filters.'
+                    ? i18nT('pages.artifactsPage.no_artifacts_match_your_filters')
                     : scopeFolderId
-                      ? (subfolders.length ? 'No artifacts directly in this folder.' : 'This folder is empty. Drag artifacts onto it to file them here.')
-                      : 'No unfiled artifacts — everything is filed in folders.'}
+                      ? (subfolders.length ? i18nT('pages.artifactsPage.no_artifacts_directly_in_this_folder') : i18nT('pages.artifactsPage.this_folder_is_empty_drag_artifacts_onto_it_to_f'))
+                      : i18nT('pages.artifactsPage.no_unfiled_artifacts_everything_is_filed_in_fold')}
                 </div>
               )
             ) : view === 'grid' ? (
@@ -2030,7 +2030,7 @@ function RemoteBrowseSection({ provider, onForked, onCloned }: {
           >
             {isFetchingNextPage
               ? <Loader2 className="lucide-inline w-3.5 h-3.5 animate-spin" />
-              : 'Load more'}
+              : i18nT('pages.artifactsPage.load_more')}
           </Btn>
         </div>
       )}

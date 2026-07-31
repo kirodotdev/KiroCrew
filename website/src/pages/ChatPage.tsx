@@ -308,7 +308,7 @@ function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number; tokens
         onClick={() => setExpanded(v => !v)}
         className="inline-flex items-center gap-1 text-[11px] text-accent bg-accent/10 rounded px-1.5 py-0.5 border-none cursor-pointer hover:bg-accent/20 transition-colors"
         aria-expanded={expanded}
-        aria-label={`${expanded ? 'Collapse' : 'Expand'} knowledge context`}
+        aria-label={expanded ? i18nT('pages.chatPage.collapse_knowledge_context') : i18nT('pages.chatPage.expand_knowledge_context')}
       >
         <BookOpen size={12} className="shrink-0" /> {knowledge.items} {i18nT('pages.chatPage.knowledge')} {knowledge.items === 1 ? 'item' : 'items'} · {knowledge.tokens.toLocaleString()} {i18nT('pages.chatPage.tokens')}
       </button>
@@ -1512,8 +1512,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             const res = await fetch(url)
             const text = res.ok
               ? await res.text()
-              : res.status === 404 ? '_File not found on disk. It may have been moved or deleted._'
-              : '_Unable to read file._'
+              : res.status === 404 ? i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
+              : i18nT('pages.chatPage.unable_to_read_file')
             return { text, ok: res.ok }
           },
           staleTime: 10_000,
@@ -1531,7 +1531,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       search.close()
       if (ok) touchedFiles.addFile(filePath, 'history')
     } catch {
-      tabsCtl.openFile(filePath, '_Error reading file_', activeSlotRef.current ?? null, opts)
+      tabsCtl.openFile(filePath, i18nT('pages.chatPage.error_reading_file'), activeSlotRef.current ?? null, opts)
       dispatch(openActivityPanel())
       search.close()
     }
@@ -1657,10 +1657,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (result.ok) {
         await dispatch(switchSlot(result.key))
       } else {
-        alert('Fork failed: ' + (result.error || 'unknown error'))
+        alert(i18nT('pages.chatPage.fork_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
       }
     } catch (e) {
-      alert('Fork failed: ' + (e instanceof Error ? e.message : String(e)))
+      alert(i18nT('pages.chatPage.fork_failed_error', { error: e instanceof Error ? e.message : String(e) }))
     }
   }, [activeSlot, dispatch, forkCfg])
 
@@ -1673,10 +1673,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // Unified view: the forked orchestrator slot lives in the same sidebar.
         if (!mode) navigate('/chat')
       } else {
-        alert('Plan from here failed: ' + (result.error || 'unknown error'))
+        alert(i18nT('pages.chatPage.plan_from_here_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
       }
     } catch (e) {
-      alert('Plan from here failed: ' + (e instanceof Error ? e.message : String(e)))
+      alert(i18nT('pages.chatPage.plan_from_here_failed_error', { error: e instanceof Error ? e.message : String(e) }))
     }
   }, [activeSlot, dispatch, mode, navigate])
 
@@ -1753,14 +1753,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // so an async capture lands where it started, not where the user switched to.
     const requestSlot = targetSlot !== undefined ? targetSlot : activeSlotRef.current
     setUploadError('')
-    if (files.length > 20) { setUploadError('Too many files (max 20)'); return }
+    if (files.length > 20) { setUploadError(i18nT('pages.chatPage.too_many_files_max_20')); return }
     const big = files.find(f => f.size > 50 * 1024 * 1024)
     if (big) { setUploadError(`File too large: ${big.name} (max 50 MB)`); return }
     setUploading(true)
     try {
       const res = await api.uploadFiles(files)
       if (res.error) {
-        setUploadError('Upload failed: ' + res.error)
+        setUploadError(i18nT('pages.chatPage.upload_failed_error', { error: res.error }))
       } else if (res.paths?.length) {
         const landing = fileLandingSlot(requestSlot, activeSlotRef.current)
         if (landing.target === 'pending') {
@@ -1774,7 +1774,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (!res.error && res.resizedByPath && Object.keys(res.resizedByPath).length) {
         setResizedInfo(prev => ({ ...prev, ...res.resizedByPath }))
       }
-    } catch { setUploadError('Upload failed — check file type and size (max 50 MB)') }
+    } catch { setUploadError(i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb')) }
     setUploading(false)
   }, [saveDrafts])
 
@@ -2555,7 +2555,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               ts: uniqueNotificationTs(),
               kind: 'agent',
               priority: 'critical',
-              title: 'Could not start a new session',
+              title: i18nT('pages.chatPage.could_not_start_a_new_session'),
               body: `${createFailReason(e)}. Your message is queued and will be sent when a session is ready — but it is held in this tab only, so if you navigate away or reload you will need to retype it.`,
             }))
           }
@@ -2572,7 +2572,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             ts: uniqueNotificationTs(),
             kind: 'agent',
             priority: 'critical',
-            title: 'Could not start a new session',
+            title: i18nT('pages.chatPage.could_not_start_a_new_session'),
             body: `${createFailReason(e)}. Your message is saved as a draft in the session you sent it from.${lostContext}`,
             slot: uiSlot,
           }))
@@ -2622,7 +2622,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const body = await r.json().catch(() => ({}))
       if (!body.queued && !body.ok) {
         dispatch(setSlotRunning(false))
-        dispatch(appendMessage({ role: 'error', content: body.error || 'Send failed', cls: '' }))
+        dispatch(appendMessage({ role: 'error', content: body.error || i18nT('pages.chatPage.send_failed'), cls: '' }))
       }
     } catch (e: unknown) {
       clearTimeout(timeout)
@@ -2630,7 +2630,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // Timeout — message was received, WS will deliver response
       } else {
         dispatch(setSlotRunning(false))
-        dispatch(appendMessage({ role: 'error', content: 'Connection error', cls: '' }))
+        dispatch(appendMessage({ role: 'error', content: i18nT('pages.chatPage.connection_error'), cls: '' }))
         // Restore draft so the user doesn't lose their message.
         // Also restore the paste blocks backing any tokens in `txt`, otherwise
         // the restored text shows a dead `[ Paste #N · M lines ]` literal.
@@ -3006,8 +3006,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         const res = await fetch(fileReadUrl(t.path!))
         const text = res.ok
           ? await res.text()
-          : res.status === 404 ? '_File not found on disk. It may have been moved or deleted._'
-          : '_Unable to read file._'
+          : res.status === 404 ? i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
+          : i18nT('pages.chatPage.unable_to_read_file')
         return { text, ok: res.ok }
       },
       staleTime: 10_000,
@@ -3022,7 +3022,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const t = coldFileTabs[i]
       if (!t || t.content !== undefined) return
       if (r.data) tabsCtl.patchTab(t.id, { content: r.data.text })
-      else if (r.isError) tabsCtl.patchTab(t.id, { content: '_Error reading file_' })
+      else if (r.isError) tabsCtl.patchTab(t.id, { content: i18nT('pages.chatPage.error_reading_file') })
     })
   }, [coldFileResults, coldFileTabs, tabsCtl])
   // Session mode of the active slot. In the unified chat view the page-level
@@ -3992,8 +3992,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               type="button"
               onClick={() => window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))}
               className="absolute top-[12px] left-2 z-[61] w-[34px] h-[34px] rounded-xl flex items-center justify-center cursor-pointer text-muted hover:text-text transition-colors bg-transparent border-none"
-              title={sidebarOpen ? 'Hide sessions' : 'Show sessions'}
-              aria-label={sidebarOpen ? 'Hide sessions sidebar' : 'Show sessions sidebar'}
+              title={sidebarOpen ? i18nT('pages.chatPage.hide_sessions') : i18nT('pages.chatPage.show_sessions')}
+              aria-label={sidebarOpen ? i18nT('pages.chatPage.hide_sessions_sidebar') : i18nT('pages.chatPage.show_sessions_sidebar')}
             >
               {sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
             </button>
@@ -4128,7 +4128,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 </div>
               )}
                 </div>
-              {effectiveMode === 'orchestrator' && <span className="pointer-events-auto"><InfoTip text="Autopilot plans before executing. Each stage needs your approval (or select 'Go All' to run autonomously). Sub-agents are delegated automatically. Plan lessons persist across sessions." /></span>}
+              {effectiveMode === 'orchestrator' && <span className="pointer-events-auto"><InfoTip text={i18nT('pages.chatPage.autopilot_plans_before_executing_each_stage_need')} /></span>}
               <InboundLinkChip slotKey={activeSlot} />
               {/* Trailing controls grouped under a single ml-auto so multiple
                   right-aligned items don't each absorb free space (two ml-auto
@@ -4162,8 +4162,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <Clickable
                   className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
                   onClick={toggleAct}
-                  title="Open activity panel"
-                  aria-label="Open activity panel"
+                  title={i18nT('pages.chatPage.open_activity_panel')}
+                  aria-label={i18nT('pages.chatPage.open_activity_panel')}
                 >
                   <PanelRight size={15} />
                 </Clickable>
@@ -4723,7 +4723,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 onJump={jumpToSearchResult}
               />
             ) : (
-              <div className="px-4 py-3 text-[13px] text-muted">{search.term ? 'No results' : 'Type to search this conversation.'}</div>
+              <div className="px-4 py-3 text-[13px] text-muted">{search.term ? i18nT('pages.chatPage.no_results') : i18nT('pages.chatPage.type_to_search_this_conversation')}</div>
             )}
           </DetailPanel>
         )}

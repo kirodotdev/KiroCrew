@@ -274,7 +274,7 @@ export default function AppDetailPage() {
         setError(`App "${name}" not found`)
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load app')
+      setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_load_app'))
     } finally {
       setLoading(false)
     }
@@ -341,12 +341,12 @@ export default function AppDetailPage() {
         await load()
         window.dispatchEvent(new Event('mc:apps-changed'))
       } else {
-        setError(result.error || 'Install failed')
+        setError(result.error || i18nT('pages.appDetailPage.install_failed'))
       }
     } catch (e: unknown) {
       if (e instanceof Error && e.name === 'AbortError') return
       setInstallDone(true)
-      setError(e instanceof Error ? e.message : 'Install failed')
+      setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.install_failed'))
     } finally {
       // Only clear loading if this is still the active install —
       // compare by identity to avoid the race where a second invocation
@@ -394,7 +394,7 @@ export default function AppDetailPage() {
       window.dispatchEvent(new Event('mc:apps-changed'))
       navigate('/apps')
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to uninstall')
+      setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_uninstall'))
     } finally {
       setActionLoading(null)
       setShowUninstallConfirm(false)
@@ -495,7 +495,7 @@ export default function AppDetailPage() {
               <div className="flex items-center gap-2 justify-end">
                 <Btn onClick={() => setShowUninstallConfirm(false)}>{i18nT('pages.appDetailPage.cancel')}</Btn>
                 <Btn danger onClick={confirmUninstall} disabled={actionLoading === 'uninstall'}>
-                  {actionLoading === 'uninstall' ? 'Removing…' : 'Uninstall'}
+                  {actionLoading === 'uninstall' ? i18nT('pages.appDetailPage.removing') : i18nT('pages.appDetailPage.uninstall')}
                 </Btn>
               </div>
             </div>
@@ -526,7 +526,7 @@ export default function AppDetailPage() {
               <span className="text-xl font-medium text-text">{app.displayName}</span>
               {app.installed && isBuiltin && <Badge variant="aim">{i18nT('pages.appDetailPage.built_in')}</Badge>}
               {app.installed && isSelfManaged && !isBuiltin && <Badge variant="ok">{i18nT('pages.appDetailPage.self_managed')}</Badge>}
-              {app.installed && !isSelfManaged && !isBuiltin && <Badge variant={app.enabled ? 'ok' : 'warn'}>{app.enabled ? 'Enabled' : 'Disabled'}</Badge>}
+              {app.installed && !isSelfManaged && !isBuiltin && <Badge variant={app.enabled ? 'ok' : 'warn'}>{app.enabled ? i18nT('pages.appDetailPage.enabled') : i18nT('pages.appDetailPage.disabled')}</Badge>}
             </div>
             <div className="text-[13px] text-muted mb-3">{app.author} {i18nT('pages.appDetailPage.v_2')}{app.version}</div>
 
@@ -581,7 +581,7 @@ export default function AppDetailPage() {
                 {installDone && !error && <Check size={14} className="text-ok" />}
                 {installDone && error && <X size={14} className="text-danger" />}
                 <CardTitle>
-                  {!installDone ? 'Installing…' : error ? 'Install failed' : 'Install complete'}
+                  {!installDone ? i18nT('pages.appDetailPage.installing') : error ? i18nT('pages.appDetailPage.install_failed') : i18nT('pages.appDetailPage.install_complete')}
                 </CardTitle>
               </div>
               <div className="flex items-center gap-2">
@@ -613,7 +613,7 @@ export default function AppDetailPage() {
             <pre
               ref={installLogRef}
               className="bg-bg border border-border rounded-lg p-3 text-[12px] text-muted whitespace-pre-wrap font-mono max-h-64 overflow-y-auto"
-            >{installLog || 'Starting install…'}</pre>
+            >{installLog || i18nT('pages.appDetailPage.starting_install')}</pre>
           </Card>
         )}
 

@@ -189,7 +189,7 @@ export default function RemoteArtifactDetailPage() {
       if (res.error) setForkError(res.error)
       else navigate(`/artifacts/${encodeURIComponent(res.slug)}`)
     } catch (e: unknown) {
-      setForkError(e instanceof Error ? e.message : 'Fork failed')
+      setForkError(e instanceof Error ? e.message : i18nT('pages.remoteArtifactDetailPage.fork_failed'))
     } finally {
       setForking(false)
     }
@@ -259,7 +259,7 @@ export default function RemoteArtifactDetailPage() {
 
   if (detailQuery.isLoading) return <div className="p-6 text-muted">{i18nT('pages.remoteArtifactDetailPage.loading')}</div>
   if (detailQuery.error || !art) {
-    const msg = detailQuery.error instanceof Error ? detailQuery.error.message : 'Failed to load remote artifact'
+    const msg = detailQuery.error instanceof Error ? detailQuery.error.message : i18nT('pages.remoteArtifactDetailPage.failed_to_load_remote_artifact')
     return (
       <>
         <PageHeader title={i18nT('pages.remoteArtifactDetailPage.remote_artifact')} subtitle={externalId} />
@@ -309,7 +309,7 @@ export default function RemoteArtifactDetailPage() {
               type="button"
               onClick={toggleSidebar}
               className={sidebarOpen ? 'border-accent text-accent bg-accent-subtle' : ''}
-              title={sidebarOpen ? 'Hide comments' : 'Show comments'}
+              title={sidebarOpen ? i18nT('pages.remoteArtifactDetailPage.hide_comments') : i18nT('pages.remoteArtifactDetailPage.show_comments')}
               aria-pressed={sidebarOpen}
             >
               <MessageSquare size={13} /> {i18nT('pages.remoteArtifactDetailPage.comments')}

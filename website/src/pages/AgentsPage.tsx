@@ -88,11 +88,11 @@ function AgentMetadataEditor({ name }: { name: string }) {
     <div className="mb-3">
       <div className="flex items-center gap-2 mb-1">
         <span className="text-[12px] text-muted font-medium uppercase tracking-wider">{i18nT('pages.agentsPage.routing_metadata')}</span>
-        <InfoTip text="Routing hints for the conductor skill: describe the tasks and triggering conditions where this agent should be picked (e.g. 'Use for frontend/React UI work' or 'Handle DB migrations'). An incoming task is matched against this text to delegate to the right specialist. These hints only take effect once Orchestrator Mode is enabled in Config (Developer → Config → Orchestrator Mode); otherwise they're ignored. Markdown format." />
+        <InfoTip text={i18nT('pages.agentsPage.routing_hints_for_the_conductor_skill_describe_t')} />
       </div>
       <textarea aria-label={i18nT('pages.agentsPage.routing_metadata_2')} className="w-full bg-bg-elevated border border-border rounded-md p-2.5 text-text font-mono text-[12px] outline-none resize-y leading-relaxed transition-colors focus-ring" rows={4} value={content} onChange={e => setContent(e.target.value)} placeholder={i18nT('pages.agentsPage.describe_when_to_use_this_agent')} />
       <div className="flex items-center gap-2 mt-1">
-        <Btn primary onClick={save} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save Metadata'}</Btn>
+        <Btn primary onClick={save} disabled={!dirty || saving}>{saving ? i18nT('pages.agentsPage.saving') : i18nT('pages.agentsPage.save_metadata')}</Btn>
         {msg && <span className={`text-[12px] ${msgOk ? 'text-ok' : 'text-danger'}`}>{msg}</span>}
       </div>
     </div>
@@ -222,7 +222,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
           </div>
         ) : installed.length > 0 && (
           <div className="card-glow border border-border bg-card rounded-lg mb-4 animate-rise shadow-sm hover:border-border-strong hover:shadow-md transition-all overflow-hidden">
-            <div className="px-5 pt-5 pb-3"><h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{i18nT('pages.agentsPage.installed_agents')} <InfoTip text={`Agent templates grouped by package. Update and uninstall at package level. Individual agents can be deleted (removes config file).`} /></h3></div>
+            <div className="px-5 pt-5 pb-3"><h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{i18nT('pages.agentsPage.installed_agents')} <InfoTip text={i18nT('pages.agentsPage.agent_templates_grouped_by_package_update_and_un')} /></h3></div>
             <div className="flex" style={{ height: `${LAYOUT.AGENT_LIST_HEIGHT}px` }}>
               {/* Agent list — scrollable */}
               <div className="w-[260px] shrink-0 border-r border-border overflow-y-auto p-2">
@@ -237,9 +237,9 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       <span
                         role="button"
                         tabIndex={0}
-                        aria-label={defaultAgent === a.name ? 'Remove default agent' : 'Set as default agent'}
+                        aria-label={defaultAgent === a.name ? i18nT('pages.agentsPage.remove_default_agent') : i18nT('pages.agentsPage.set_as_default_agent')}
                         className={`text-[13px] shrink-0 transition-colors cursor-pointer ${defaultAgent === a.name ? 'text-warn' : 'text-muted hover:text-warn'}`}
-                        title={defaultAgent === a.name ? 'Remove default agent' : 'Set as default agent'}
+                        title={defaultAgent === a.name ? i18nT('pages.agentsPage.remove_default_agent') : i18nT('pages.agentsPage.set_as_default_agent')}
                         onClick={e => { e.stopPropagation(); toggleDefault(a.name) }}
                         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleDefault(a.name) } }}
                       >{defaultAgent === a.name ? <Star className="lucide-inline" /> : <StarOff className="lucide-inline" />}</span>

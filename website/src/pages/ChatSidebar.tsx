@@ -206,7 +206,7 @@ function SortableColumnFolder({ folder, columnId, colSlotKeys, renderColumnFolde
 function FolderDragGhost({ folder }: { folder?: ChatFolder }) {
   return (
     <div className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-[13px] text-text shadow-lg max-w-[240px] truncate pointer-events-none flex items-center gap-2">
-      <FolderGlyph icon={folder?.icon} size={14} />{folder?.name ?? 'Folder'}
+      <FolderGlyph icon={folder?.icon} size={14} />{folder?.name ?? i18nT('pages.chatSidebar.folder')}
     </div>
   )
 }
@@ -382,18 +382,18 @@ function useDebouncedSessionSearch<T>(
 /** Compute a date segment label for a session timestamp. Mirrors ChatGPT/Claude.
  *  Accepts either a Unix epoch (seconds) from backend `modified` or an ISO `created` string. */
 function dateSegment(ts: number | string | undefined): string {
-  if (ts == null) return 'Older'
+  if (ts == null) return i18nT('pages.chatSidebar.older')
   const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
-  if (isNaN(d.getTime())) return 'Older'
+  if (isNaN(d.getTime())) return i18nT('pages.chatSidebar.older')
   const now = new Date()
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
   const daysAgo7 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7)
   const daysAgo30 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30)
-  if (d >= startOfToday) return 'Today'
-  if (d >= startOfYesterday) return 'Yesterday'
-  if (d >= daysAgo7) return 'Last 7 Days'
-  if (d >= daysAgo30) return 'Last 30 Days'
+  if (d >= startOfToday) return i18nT('pages.chatSidebar.today')
+  if (d >= startOfYesterday) return i18nT('pages.chatSidebar.yesterday')
+  if (d >= daysAgo7) return i18nT('pages.chatSidebar.last_7_days')
+  if (d >= daysAgo30) return i18nT('pages.chatSidebar.last_30_days')
   if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString([], { month: 'long' })
   return d.toLocaleDateString([], { year: 'numeric', month: 'long' })
 }
@@ -978,7 +978,7 @@ function ChatSidebar({
       }
       queryClient.invalidateQueries({ queryKey: ['cleanup-preview'] })
     },
-    onError: (e) => setCleanupError(e instanceof Error ? e.message : 'Archive failed'),
+    onError: (e) => setCleanupError(e instanceof Error ? e.message : i18nT('pages.chatSidebar.archive_failed')),
   })
 
   // Bulk model switch — apply one model to every live session at once.
@@ -1023,7 +1023,7 @@ function ChatSidebar({
         setBulkModelError('')
       }
     },
-    onError: (e) => setBulkModelError(e instanceof Error ? e.message : 'Switch failed'),
+    onError: (e) => setBulkModelError(e instanceof Error ? e.message : i18nT('pages.chatSidebar.switch_failed')),
   })
   // Roving-focus keyboard nav for the model list (WAI-ARIA listbox). No filter
   // input here, so the hook moves focus into the list on open; Escape/Tab close.
@@ -1893,13 +1893,13 @@ function ChatSidebar({
                   folders={reparentTargets}
                   currentFolderId={folder.parent_id || null}
                   onPick={pid => moveFolderTo(folder.id, pid)} />
-                <DropdownMenuItem onClick={() => { setLinking({ folderId: folder.id, scope: columnId }) }}><Link2 size={13} /> {folders.find(f => f.id === folder.id)?.project_dir ? 'Change project directory' : 'Link project directory'}</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setLinking({ folderId: folder.id, scope: columnId }) }}><Link2 size={13} /> {folders.find(f => f.id === folder.id)?.project_dir ? i18nT('pages.chatSidebar.change_project_directory') : i18nT('pages.chatSidebar.link_project_directory')}</DropdownMenuItem>
                 {renderFolderMenuConfigSections(folder)}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-danger focus:text-danger" onClick={() => { if (confirm(`Delete "${folder.name}"? Sessions will be ungrouped.`)) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title="New chat in folder" aria-label={`New chat in folder ${folder.name}`} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, columnId) }} onMouseDown={e => { e.stopPropagation() }} onKeyDown={e => { e.stopPropagation() }}>
+            <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title={i18nT('pages.chatSidebar.new_chat_in_folder')} aria-label={`New chat in folder ${folder.name}`} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, columnId) }} onMouseDown={e => { e.stopPropagation() }} onKeyDown={e => { e.stopPropagation() }}>
               <MessageSquarePlus size={11} />
             </button>
           </span>
@@ -1913,7 +1913,7 @@ function ChatSidebar({
             <button key={`col-${columnId}-newchat-${folder.id}`} type="button"
               
               onClick={() => createChatInFolder(folder.id, columnId)}
-              title="New chat in folder" aria-label={`New chat in ${folder.name}`}
+              title={i18nT('pages.chatSidebar.new_chat_in_folder')} aria-label={`New chat in ${folder.name}`}
               className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[11px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
               {/* Trailing glyph — list-view parity (see renderFolderBlock). */}
               <span>{i18nT('pages.chatSidebar.new_chat_in_folder')}</span><MessageSquarePlus size={11} className="shrink-0 ml-auto" />
@@ -2013,7 +2013,7 @@ function ChatSidebar({
       : subagentCount > 0
         ? subagentLabel
         : s.running
-          ? (slotStatusDetail[s.key]?.text || 'Thinking…')
+          ? (slotStatusDetail[s.key]?.text || i18nT('pages.chatSidebar.thinking'))
           : (s.last_message || '')
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
     const rowColor = ci != null ? paletteColors[ci] : null
@@ -2229,7 +2229,7 @@ function ChatSidebar({
                 <span className="truncate">{subagentLabel}</span>
               </div>
             ) : s.running ? (
-              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusDetail[s.key]?.text || 'Thinking…'}</div>
+              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusDetail[s.key]?.text || i18nT('pages.chatSidebar.thinking')}</div>
             ) : s.last_message ? (
               <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
             ) : null}
@@ -2444,7 +2444,7 @@ function ChatSidebar({
                 folders={reparentTargets}
                 currentFolderId={folder.parent_id || null}
                 onPick={pid => moveFolderTo(folder.id, pid)} />
-              <DropdownMenuItem onClick={() => { setLinking({ folderId: folder.id, scope: 'list' }) }}><Link2 size={13} /> {folders.find(f => f.id === folder.id)?.project_dir ? 'Change project directory' : 'Link project directory'}</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => { setLinking({ folderId: folder.id, scope: 'list' }) }}><Link2 size={13} /> {folders.find(f => f.id === folder.id)?.project_dir ? i18nT('pages.chatSidebar.change_project_directory') : i18nT('pages.chatSidebar.link_project_directory')}</DropdownMenuItem>
               {renderFolderMenuConfigSections(folder)}
               {/* Hide this folder from the session lists (flat lane + tree).
                *  Same state the filter menu's checkboxes drive, reached from the
@@ -2463,7 +2463,7 @@ function ChatSidebar({
               <DropdownMenuItem className="text-danger focus:text-danger" data-testid={`folder-delete-${folder.id}`} onClick={() => { if (confirm(`Delete "${folder.name}"? Sessions will be ungrouped.`)) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title="New chat in folder" aria-label={i18nT('pages.chatSidebar.new_chat_in_folder')} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id) }}><MessageSquarePlus size={12} /></button>
+          <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.new_chat_in_folder')} aria-label={i18nT('pages.chatSidebar.new_chat_in_folder')} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id) }}><MessageSquarePlus size={12} /></button>
         </div>
         )}
         {linking?.folderId === folder.id && linking.scope === 'list' && <ProjectPicker open={true} onOpenChange={open => { if (!open) setLinking(null) }} anchorRef={linkAnchorRef} onSelect={path => { updateFolderMutation.mutate({ id: folder.id, body: { project_dir: path } }); setLinking(null) }} />}
@@ -2486,7 +2486,7 @@ function ChatSidebar({
           type="button"
           onClick={() => toggleReveal(containerKey)}
           aria-expanded={open}
-          title={open ? 'Collapse hidden folders' : `Show ${n} hidden folder${n === 1 ? '' : 's'}`}
+          title={open ? i18nT('pages.chatSidebar.collapse_hidden_folders') : `Show ${n} hidden folder${n === 1 ? '' : 's'}`}
           className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-muted hover:text-fg hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
           style={{ paddingLeft: `${8 + depth * 12}px` }}
         >
@@ -2571,7 +2571,7 @@ function ChatSidebar({
       <button key={`folder-newchat-${folder.id}`} type="button"
         
         onClick={() => createChatInFolder(folder.id)}
-        title="New chat in folder" aria-label={`New chat in ${folder.name}`}
+        title={i18nT('pages.chatSidebar.new_chat_in_folder')} aria-label={`New chat in ${folder.name}`}
         className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
         {/* Label first, glyph trailing: a leading icon pushed this row's text
          *  ~23px right of the session titles below it, breaking the single left
@@ -2664,7 +2664,7 @@ function ChatSidebar({
             <DropdownMenuContent align="end" className="min-w-[180px]">
               <DropdownMenuItem onClick={() => { const isActive = tagColumnsEnabled && rawColumns.length > 0; const next = !isActive; const cfg = loadChatConfig(); saveChatConfig({ ...cfg, tagColumnsEnabled: next }); if (next && rawColumns.length === 0) { createColumnMutation.mutate({ name: '', tag_ids: [], mode: 'any' }) } }}>
                 <Columns3 size={14} className={tagColumnsEnabled && rawColumns.length > 0 ? 'text-accent' : 'text-muted'} />
-                {tagColumnsEnabled && rawColumns.length > 0 ? 'Switch to list view' : 'Switch to board view'}
+                {tagColumnsEnabled && rawColumns.length > 0 ? i18nT('pages.chatSidebar.switch_to_list_view') : i18nT('pages.chatSidebar.switch_to_board_view')}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => { setCleanupOpen(!cleanupOpen); setCleanupExpanded(false); setCleanupError('') }}>
                 <BrushCleaning size={14} className="text-muted" />
@@ -2690,10 +2690,10 @@ function ChatSidebar({
               disabled={creatingSlot}
               className={`flex items-center h-7 cursor-pointer bg-transparent border-none text-accent-fg hover:bg-accent-hover active:scale-95 transition-all disabled:opacity-70 disabled:cursor-wait disabled:active:scale-100 ${compactHeader ? 'justify-center w-7' : 'gap-1.5 pl-2 pr-2.5 text-[12px] font-semibold'}`}
               onClick={() => { createChatMutation.mutate() }}
-              title="New chat"
+              title={i18nT('pages.chatSidebar.new_chat')}
               aria-label={i18nT('pages.chatSidebar.new_chat_session')}
               aria-busy={creatingSlot}
-            >{creatingSlot ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}{!compactHeader && <span className="whitespace-nowrap">{creatingSlot ? 'Creating…' : 'New'}</span>}</button>
+            >{creatingSlot ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}{!compactHeader && <span className="whitespace-nowrap">{creatingSlot ? i18nT('pages.chatSidebar.creating') : i18nT('pages.chatSidebar.new')}</span>}</button>
             <span className="w-px h-4 bg-accent-fg opacity-30" aria-hidden="true" />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -2772,16 +2772,16 @@ function ChatSidebar({
             </div>
             <div className="text-[12px] text-muted mb-3">
               {cleanupPreviewLoading
-                ? 'Checking…'
+                ? i18nT('pages.chatSidebar.checking')
                 : cleanupPreviewError
                   ? <>{i18nT('pages.chatSidebar.failed_to_load_preview')} <button className="text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => queryClient.invalidateQueries({ queryKey: ['cleanup-preview'] })}>{i18nT('pages.chatSidebar.retry')}</button></>
                   : noStale
-                    ? 'No inactive sessions to archive.'
+                    ? i18nT('pages.chatSidebar.no_inactive_sessions_to_archive')
                     : cleanupPreview != null && <>
                       {i18nT('pages.chatSidebar.session', { count: archivable.length })} {i18nT('pages.chatSidebar.will_be_moved_to_older_sessions')}{activeIsStale ? ' (1 skipped — currently selected)' : ''} {i18nT('pages.chatSidebar.pinned_sessions_are_kept')}
                       {archivable.length > 0 && (
                         <button className="ml-1 text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => setCleanupExpanded(!cleanupExpanded)}>
-                          {cleanupExpanded ? 'Hide' : 'Show'} {i18nT('pages.chatSidebar.session', { count: archivable.length })} ▸
+                          {cleanupExpanded ? i18nT('pages.chatSidebar.hide') : i18nT('pages.chatSidebar.show')} {i18nT('pages.chatSidebar.session', { count: archivable.length })} ▸
                         </button>
                       )}
                       {cleanupExpanded && archivable.length > 0 && (
@@ -2803,7 +2803,7 @@ function ChatSidebar({
               <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={archivable.length === 0 || cleanupMutation.isPending || cleanupPreviewLoading} onClick={() => {
                 setCleanupError('')
                 cleanupMutation.mutate()
-              }}>{cleanupMutation.isPending ? 'Archiving…' : `Archive ${archivable.length} session${archivable.length !== 1 ? 's' : ''}`}</Btn>
+              }}>{cleanupMutation.isPending ? i18nT('pages.chatSidebar.archiving') : `Archive ${archivable.length} session${archivable.length !== 1 ? 's' : ''}`}</Btn>
             </div>
           </div>
         )
@@ -2828,7 +2828,7 @@ function ChatSidebar({
           <div className="flex items-center gap-2 justify-end">
             {bulkModelError && <span className="text-[11px] text-danger flex-1">{bulkModelError}</span>}
             <Btn className="text-[12px] px-3 py-1" onClick={() => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') }}>{i18nT('pages.chatSidebar.cancel')}</Btn>
-            <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={!bulkModel || bulkAffectedCount === 0 || bulkModelMutation.isPending} onClick={() => { setBulkModelError(''); bulkModelMutation.mutate({ model: bulkModel, skipRunning: bulkSkipRunning }) }}>{bulkModelMutation.isPending ? 'Switching…' : `Switch ${bulkAffectedCount} session${bulkAffectedCount !== 1 ? 's' : ''}`}</Btn>
+            <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={!bulkModel || bulkAffectedCount === 0 || bulkModelMutation.isPending} onClick={() => { setBulkModelError(''); bulkModelMutation.mutate({ model: bulkModel, skipRunning: bulkSkipRunning }) }}>{bulkModelMutation.isPending ? i18nT('pages.chatSidebar.switching') : `Switch ${bulkAffectedCount} session${bulkAffectedCount !== 1 ? 's' : ''}`}</Btn>
           </div>
         </div>
       )}
@@ -2862,8 +2862,8 @@ function ChatSidebar({
               type="button"
               className={`relative w-6 h-6 rounded flex items-center justify-center cursor-pointer transition-colors border-none ${flatView ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`}
               onClick={toggleFlatView}
-              title={flatView ? 'Back to folder view' : 'Flat view — all chats without folders'}
-              aria-label={flatView ? 'Switch to folder view' : 'Switch to flat view (all chats without folders)'}
+              title={flatView ? i18nT('pages.chatSidebar.back_to_folder_view') : i18nT('pages.chatSidebar.flat_view_all_chats_without_folders')}
+              aria-label={flatView ? i18nT('pages.chatSidebar.switch_to_folder_view') : i18nT('pages.chatSidebar.switch_to_flat_view_all_chats_without_folders')}
               aria-pressed={flatView}
               data-testid="flat-view-toggle"
             >
@@ -3309,7 +3309,7 @@ function ChatSidebar({
                     </span>
                     <div className="flex flex-wrap gap-1 items-center flex-1 min-w-0">
                       {colTags.length === 0 ? (
-                        <span className="text-[11px] text-muted font-semibold uppercase tracking-wider">{col.name || (col.include_untagged ? 'Untagged' : 'All sessions')}</span>
+                        <span className="text-[11px] text-muted font-semibold uppercase tracking-wider">{col.name || (col.include_untagged ? i18nT('pages.chatSidebar.untagged_2') : i18nT('pages.chatSidebar.all_sessions'))}</span>
                       ) : (
                         <>
                           {colTags.map(t => (
@@ -3588,7 +3588,7 @@ function ChatSidebar({
                       dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
                     }}>
                       {/* Platform glyph — fills the left column that session rows reserve for the unread dot */}
-                      <span role="img" className="shrink-0 flex items-center justify-center self-center text-muted" title={isDashboard ? 'Dashboard session' : 'Slack session'} aria-label={isDashboard ? 'Dashboard session' : 'Slack session'}>
+                      <span role="img" className="shrink-0 flex items-center justify-center self-center text-muted" title={isDashboard ? i18nT('pages.chatSidebar.dashboard_session') : i18nT('pages.chatSidebar.slack_session')} aria-label={isDashboard ? i18nT('pages.chatSidebar.dashboard_session') : i18nT('pages.chatSidebar.slack_session')}>
                         {isDashboard
                           ? <Monitor size={12} />
                           : <MessageSquare size={12} />
@@ -3625,7 +3625,7 @@ function ChatSidebar({
                         <button type="button" aria-expanded={!collapsed} aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${folder ? folder.name : 'Unfiled'} results`} className="w-full flex items-center gap-1.5 px-2 pt-3 pb-1 text-[11px] font-semibold text-muted select-none bg-transparent border-none cursor-pointer hover:text-text first:pt-1" onClick={() => setCollapsedHistoryGroups(prev => { const next = new Set(prev); if (next.has(gid)) next.delete(gid); else next.add(gid); return next })}>
                           {collapsed ? <ChevronRight size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
                           {folder ? <FolderGlyph icon={folder.icon} size={12} open={!collapsed} /> : <Folder size={12} className="text-muted shrink-0" />}
-                          <span className="truncate">{folder ? folder.name : 'Unfiled'}</span>
+                          <span className="truncate">{folder ? folder.name : i18nT('pages.chatSidebar.unfiled')}</span>
                           <span className="ml-0.5 text-muted font-normal tabular-nums">· {rows.length}</span>
                         </button>
                         {!collapsed && rows.map((s, i) => (

@@ -52,6 +52,7 @@
     "pages.chat.assistantMessage.raw": "Label on the toggle that switches an assistant message from its rendered markdown to the unformatted source text. The adjective \"raw\" as in raw/unprocessed output, not the verb and not \"rare\". Paired with the rendered view on the same control, so keep it as short as the target language allows.",
     "pages.chat.subagentProgressBar.s": "The unit \"s\" = seconds, rendered directly after a number (`30s`). Not a plural marker.",
     "pages.chatSidebar.min": "The unit \"min\" = minutes, rendered after a number. An abbreviation, not the word \"minimum\".",
+    "pages.chatSidebar.new": "Label on the \"+\" button in the chat sidebar header that starts a new chat. A verb-less shorthand for \"new chat\" sitting beside a plus icon, not the adjective \"recently added\". Width-constrained: it is hidden entirely when the header is compact, so keep it as short as the target language allows.",
     "pages.devFleetPage.mb": "The unit \"MB\" = megabytes, rendered after a numeric size.",
     "pages.devFleetPage.pod": "A KiroCrew dev \"pod\" — an isolated development environment. Product terminology; see the do-not-translate glossary before translating.",
     "pages.devFleetPage.pod_2": "A KiroCrew dev \"pod\" — an isolated development environment. Product terminology; see the do-not-translate glossary before translating.",
@@ -84,7 +85,9 @@
     "pages.remoteArtifactDetailPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.schedulePage.id": "Column header for a record's identifier in a table. Keep it short; it labels a column of opaque id strings.",
     "pages.schedulePage.new": "Verb-like button label: create a new one of these. If the target language needs a noun, name the object being created.",
+    "pages.schedulePage.now": "Rendered in place of a countdown (\"in 5m\") when a scheduled job is already due — the time remaining is zero or negative. An adverb of time meaning \"at this moment\", NOT the \"Run now\" button on the same page.",
     "pages.schedulePage.ok": "Status value in a table or log line, meaning the operation succeeded. A state, not the confirmation button.",
+    "pages.schedulePage.run": "Verb on a button: execute this job/workflow now. NOT the noun (\"a run\"), which several locales translate differently.",
     "pages.settings.aboutPanel.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.settings.instancesPanel.20h": "A preset retention/timeout duration of 20 hours. The number is data; only the unit letter is translatable, and most locales keep `h`.",
     "pages.settings.notificationsPanel.app": "\"app\" as a notification-delivery target, meaning the desktop application itself rather than Slack or Discord.",
@@ -93,6 +96,9 @@
     "pages.settings.slackPanel.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
     "pages.settings.sttSettings.dictation_panel": "Label for the toggle in Settings > Voice that switches the recording UI between the animated dictation panel and the thin status bar.",
     "pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of": "Description under the 'Dictation panel' toggle in Settings > Voice. 'WebGL2' is a technology name and must not be translated. 'reduced motion' refers to the OS accessibility preference.",
+    "pages.systemPage.cwd": "Abbreviation for \"current working directory\", labelling a filesystem path in the System diagnostics card. Practitioners in most languages keep the Latin acronym.",
+    "pages.systemPage.os": "Abbreviation for \"operating system\", labelling the host OS name in the System diagnostics card. Keep whichever acronym practitioners in the target language use.",
+    "pages.systemPage.pid": "Abbreviation for \"process ID\", labelling a numeric process identifier in the System diagnostics card. Keep the Latin acronym unless the target language has an established equivalent.",
     "pages.telemetryPanel.ok": "Status value in a telemetry row, meaning healthy. A state, not the confirmation button."
   }
 }

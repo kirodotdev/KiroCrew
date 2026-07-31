@@ -116,7 +116,7 @@ export default function ProjectsPage() {
           if (latest?.status === 'failed' && latest.error) { setPlanError(latest.error); setIsPlanning(false); sessionStorage.removeItem('tr-planning'); return }
         } catch { /* retry */ }
       }
-      if (!cancelled && mountedRef.current) { setIsPlanning(false); setPlanError('Planning timed out. Try again.'); sessionStorage.removeItem('tr-planning') }
+      if (!cancelled && mountedRef.current) { setIsPlanning(false); setPlanError(i18nT('pages.projectsPage.planning_timed_out_try_again')); sessionStorage.removeItem('tr-planning') }
     }
     poll()
     return () => { cancelled = true }
@@ -169,8 +169,8 @@ export default function ProjectsPage() {
         setData(d)
         const planned = d.runs?.find((run: ProjectRun) => run.task_id === r.task_id)
         if (planned) setSelectedRun(planned)
-      } else setPlanError(r.error || 'Failed to generate plan')
-    } catch (e) { setPlanError(e instanceof Error ? e.message : 'Planning request failed')
+      } else setPlanError(r.error || i18nT('pages.projectsPage.failed_to_generate_plan'))
+    } catch (e) { setPlanError(e instanceof Error ? e.message : i18nT('pages.projectsPage.planning_request_failed'))
     } finally { sessionStorage.removeItem('tr-planning'); activePlanRef.current = false; if (mountedRef.current) setIsPlanning(false) }
   }
 
@@ -254,7 +254,7 @@ export default function ProjectsPage() {
             <div className="w-10 h-1 bg-bg-elevated rounded-full overflow-hidden shrink-0">
               <div className={`h-full rounded-full ${r.status === 'failed' ? 'bg-danger' : 'bg-accent'}`} style={{ width: `${pct}%` }} />
             </div>
-            <button aria-label={r.running ? 'Cancel' : 'Delete'} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none" onClick={e => { e.stopPropagation(); (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)).then(load) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
+            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none" onClick={e => { e.stopPropagation(); (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)).then(load) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
           </div>
         )
       })}
@@ -277,7 +277,7 @@ export default function ProjectsPage() {
           aria-label={i18nT('pages.projectsPage.workspace_folder')}
           value={workspaceDir}
           onChange={e => setWorkspaceDir(e.target.value)}
-          placeholder={defaultWorkspaceDir || 'Default workspace folder'}
+          placeholder={defaultWorkspaceDir || i18nT('pages.projectsPage.default_workspace_folder')}
           title={i18nT('pages.projectsPage.root_folder_for_a_new_plan_leave_blank_to_use_th')}
           disabled={anyPlanning}
           className={`min-w-[200px] px-2.5 py-1.5 text-[13px] font-mono ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -344,7 +344,7 @@ export default function ProjectsPage() {
                   className="text-[13px] font-semibold text-text-strong truncate cursor-pointer hover:text-accent transition-all"
                   onClick={() => { setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') }}
                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') } }}
-                >{selectedRun.name || selectedRun.spec_name || 'Project'}</span>
+                >{selectedRun.name || selectedRun.spec_name || i18nT('pages.projectsPage.project')}</span>
               )}
               {!editingName && <span
                 role="button"

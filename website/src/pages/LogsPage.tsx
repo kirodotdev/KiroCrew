@@ -122,11 +122,11 @@ export function LogViewer({ compact }: { compact?: boolean }) {
           </>
         )}
         <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ml-auto ${newestFirst ? 'bg-surface border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
-          onClick={() => setNewestFirst(p => !p)}>{newestFirst ? 'Latest: first' : 'Latest: last'}</button>
+          onClick={() => setNewestFirst(p => !p)}>{newestFirst ? i18nT('pages.logsPage.latest_first') : i18nT('pages.logsPage.latest_last')}</button>
         <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${wrapLines ? 'bg-surface border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
-          onClick={() => setWrapLines(p => !p)}>{wrapLines ? 'Wrap: on' : 'Wrap: off'}</button>
+          onClick={() => setWrapLines(p => !p)}>{wrapLines ? i18nT('pages.logsPage.wrap_on') : i18nT('pages.logsPage.wrap_off')}</button>
         <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${autoFollow ? 'bg-surface border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
-          onClick={toggleTail}>{autoFollow ? 'Tail: on' : 'Tail: off'}</button>
+          onClick={toggleTail}>{autoFollow ? i18nT('pages.logsPage.tail_on') : i18nT('pages.logsPage.tail_off')}</button>
       </div>
       <div className={`flex-1 flex flex-col min-h-0 ${compact ? 'border border-border rounded-lg overflow-hidden mb-2' : 'card-glow border border-border bg-card rounded-lg p-5 animate-rise shadow-sm transition-all'}`}>
         <Virtuoso ref={virtuosoRef} data={filtered} followOutput={autoFollow && !newestFirst ? 'smooth' : false}

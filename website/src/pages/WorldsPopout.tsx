@@ -7,9 +7,17 @@ import { SCENE_COMPONENTS } from './scenes/components'
 import { useAppDispatch } from '../store'
 import { fetchSlots } from '../store/dashboardSlice'
 
+import { i18nT } from '../i18n/t'
+
 export default function WorldsPopout() {
   const [scene, setScene] = useState<SceneKey>(() => (localStorage.getItem(SCENE_STORAGE_KEY) as SceneKey) || 'office')
   const [collapsed, setCollapsed] = useState(false)
+  // The toggle renders only a ▼/▲ glyph, so it needs an explicit accessible
+  // name: `title` alone is an unreliable accessible-name source across screen
+  // readers. Shared with `title` so the two can never drift apart.
+  const collapseLabel = collapsed
+    ? i18nT('pages.worldsPopout.show_controls')
+    : i18nT('pages.worldsPopout.hide_controls')
   const dispatch = useAppDispatch()
   const { agents } = useAgentSync()
   const { broadcastScene } = usePopoutSync(true, s => setScene(s as SceneKey))
@@ -64,7 +72,8 @@ export default function WorldsPopout() {
         <div style={{ position: 'relative', width: '100%', maxWidth: 480 * SCENE_LAYOUT_SCALE, aspectRatio: '3/2' }}>
           <button
             onClick={() => setCollapsed(c => !c)}
-            title={collapsed ? 'Show controls' : 'Hide controls'}
+            title={collapseLabel}
+            aria-label={collapseLabel}
             aria-expanded={!collapsed}
             aria-controls="popout-collapse-panel"
             className="bg-black/55 hover:bg-black/75 transition-colors"

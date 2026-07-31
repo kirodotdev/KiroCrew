@@ -376,7 +376,7 @@ export default function TelemetryPanel() {
       {/* ── Section 4: Acceleration internals ──────────────────── */}
       <Section title={i18nT('pages.telemetryPanel.acceleration_internals')} icon={<Zap size={13} />}>
         <div className="grid grid-cols-2 gap-2.5 max-[720px]:grid-cols-1">
-          <Card title={i18nT('pages.telemetryPanel.warm_pool_efficiency')} meaning="Sessions reusing a warm MCP backend vs a cold spawn">
+          <Card title={i18nT('pages.telemetryPanel.warm_pool_efficiency')} meaning={i18nT('pages.telemetryPanel.sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp')}>
             {warmHit + warmMiss > 0 ? (
               <>
                 <div className="text-[18px] font-bold" style={{ color: warmRate >= 50 ? 'var(--ok)' : 'var(--warn)' }}>
@@ -393,7 +393,7 @@ export default function TelemetryPanel() {
               <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_acquisitions_yet')}</div>
             )}
           </Card>
-          <Card title={i18nT('pages.telemetryPanel.mcp_backend_acquire')} meaning="Time to hand a pooled MCP backend to a session">
+          <Card title={i18nT('pages.telemetryPanel.mcp_backend_acquire')} meaning={i18nT('pages.telemetryPanel.time_to_hand_a_pooled_mcp_backend_to_a_session')}>
             {acquire ? (
               <div className="text-[18px] font-bold">
                 {fmtMs(acquire.p50_ms)}
@@ -403,7 +403,7 @@ export default function TelemetryPanel() {
               <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
             )}
           </Card>
-          <Card title={i18nT('pages.telemetryPanel.mcp_cold_load_first_use')} meaning="First-use spawn of an MCP server backend">
+          <Card title={i18nT('pages.telemetryPanel.mcp_cold_load_first_use')} meaning={i18nT('pages.telemetryPanel.first_use_spawn_of_an_mcp_server_backend')}>
             {mcpLazy ? (
               <div className="text-[18px] font-bold">
                 {fmtMs(mcpLazy.p50_ms)}
@@ -413,7 +413,7 @@ export default function TelemetryPanel() {
               <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
             )}
           </Card>
-          <Card title={i18nT('pages.telemetryPanel.skill_load')} meaning="On-demand read of a skill body from disk">
+          <Card title={i18nT('pages.telemetryPanel.skill_load')} meaning={i18nT('pages.telemetryPanel.on_demand_read_of_a_skill_body_from_disk')}>
             {skillLazy ? (
               <div className="text-[18px] font-bold" style={{ color: 'var(--ok)' }}>
                 {fmtMs(skillLazy.p50_ms)}

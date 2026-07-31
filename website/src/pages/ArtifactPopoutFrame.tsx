@@ -39,7 +39,7 @@ export default function ArtifactPopoutFrame() {
   // Reflect the artifact in the window/taskbar title so multiple popouts are
   // distinguishable at the OS level.
   useEffect(() => {
-    const label = artifact?.name || slug || 'Artifact'
+    const label = artifact?.name || slug || i18nT('pages.artifactPopoutFrame.artifact')
     document.title = `${label} — Kiro Crew`
   }, [slug, artifact?.name])
 

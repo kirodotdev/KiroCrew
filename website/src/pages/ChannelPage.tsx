@@ -485,7 +485,7 @@ export default function ChannelPage() {
         setActiveId(res.channel.id)
       }
     } catch (err) {
-      setError(apiError(err, 'Failed to create channel'))
+      setError(apiError(err, i18nT('pages.channelPage.failed_to_create_channel')))
     }
   }
 
@@ -538,7 +538,7 @@ export default function ChannelPage() {
                   await api.channelClearContext(channel.id, 'all')
                   const res = await api.channelGet(channel.id)
                   setChannels(prev => prev.map(c => c.id === channel.id ? mapChannel(res) : c))
-                } catch (e) { alert('Failed to clear context: ' + (e instanceof Error ? e.message : 'unknown error')) }
+                } catch (e) { alert(i18nT('pages.channelPage.failed_to_clear_context_error', { error: e instanceof Error ? e.message : i18nT('pages.channelPage.unknown_error') })) }
               }} title={i18nT('pages.channelPage.clear_all_context')}>
                 <RotateCcw className="lucide-inline" /> {i18nT('pages.channelPage.clear_context_2')}
               </Btn>
@@ -566,7 +566,7 @@ export default function ChannelPage() {
               ))}
               {channel.agents.filter(a => a.state === 'working' || a.state === 'tool_running').map(a => (
                 <div key={a.id + '-typing'} className="flex items-center gap-2 px-3 py-1.5 text-[13px] text-muted animate-pulse">
-                  <Badge variant="ok">{a.state === 'tool_running' ? <Wrench className="lucide-inline" /> : '●'}</Badge> <span className="font-medium">{a.role}</span> {a.state === 'tool_running' ? 'running tool…' : 'is working…'}
+                  <Badge variant="ok">{a.state === 'tool_running' ? <Wrench className="lucide-inline" /> : '●'}</Badge> <span className="font-medium">{a.role}</span> {a.state === 'tool_running' ? i18nT('pages.channelPage.running_tool') : i18nT('pages.channelPage.is_working')}
                 </div>
               ))}
               <div ref={messagesEndRef} />
@@ -595,7 +595,7 @@ export default function ChannelPage() {
                     ))}
                     {channel.agents.filter(a => a.state === 'working' || a.state === 'tool_running').map(a => (
                       <div key={a.id + '-typing-t'} className="flex items-center gap-2 px-2 py-1 text-[13px] text-muted animate-pulse">
-                        <Badge variant="ok">{a.state === 'tool_running' ? <Wrench className="lucide-inline" /> : '●'}</Badge> <span className="font-medium">{a.role}</span> {a.state === 'tool_running' ? 'running tool…' : 'is working…'}
+                        <Badge variant="ok">{a.state === 'tool_running' ? <Wrench className="lucide-inline" /> : '●'}</Badge> <span className="font-medium">{a.role}</span> {a.state === 'tool_running' ? i18nT('pages.channelPage.running_tool') : i18nT('pages.channelPage.is_working')}
                       </div>
                     ))}
                   </div>
@@ -616,12 +616,12 @@ export default function ChannelPage() {
                       onDismiss={() => handleDismiss(agent.id)}
                       onListenChange={m => handleListenChange(agent.id, m)}
                       onClearContext={async () => {
-                        if (!confirm(`Reset ${agent.role}'s LLM session. The channel's shared message history is preserved.`)) return
+                        if (!confirm(i18nT('pages.channelPage.reset_role_s_llm_session_the_channel_s_shared_me', { role: agent.role }))) return
                         try {
                           await api.channelClearContext(channel.id, 'agent', agent.id)
                           const res = await api.channelGet(channel.id)
                           setChannels(prev => prev.map(c => c.id === channel.id ? mapChannel(res) : c))
-                        } catch (e) { alert('Failed to clear context: ' + (e instanceof Error ? e.message : 'unknown error')) }
+                        } catch (e) { alert(i18nT('pages.channelPage.failed_to_clear_context_error', { error: e instanceof Error ? e.message : i18nT('pages.channelPage.unknown_error') })) }
                       }} />
                   ))}
                 </div>
@@ -630,7 +630,7 @@ export default function ChannelPage() {
                     <AddAgentForm onCancel={() => setShowAddAgent(false)} onAdd={async (role, task, agent) => {
                       if (!channel) return
                       setShowAddAgent(false)
-                      try { await api.channelAddAgent(channel.id, { role, task: task || channel.topic, agent }) } catch (err) { setError(apiError(err, 'Failed to add agent')) }
+                      try { await api.channelAddAgent(channel.id, { role, task: task || channel.topic, agent }) } catch (err) { setError(apiError(err, i18nT('pages.channelPage.failed_to_add_agent'))) }
                     }} />
                   ) : (
                     <Btn onClick={() => setShowAddAgent(true)} primary className="w-full">{i18nT('pages.channelPage.add_agent')}</Btn>

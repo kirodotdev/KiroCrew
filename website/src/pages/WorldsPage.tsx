@@ -89,10 +89,10 @@ export default function WorldsPage() {
           <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 20, display: 'flex', gap: 4 }}>
             <button
               onClick={() => setCollapsed(c => !c)}
-              title={collapsed ? 'Show controls' : 'Hide controls'}
+              title={collapsed ? i18nT('pages.worldsPage.show_controls') : i18nT('pages.worldsPage.hide_controls')}
               aria-expanded={!collapsed}
               aria-controls="worlds-collapse-panel"
-              aria-label={collapsed ? 'Show controls' : 'Hide controls'}
+              aria-label={collapsed ? i18nT('pages.worldsPage.show_controls') : i18nT('pages.worldsPage.hide_controls')}
               className="bg-black/55 hover:bg-black/75 transition-colors"
               style={{
                 border: '1px solid var(--border, #333)',

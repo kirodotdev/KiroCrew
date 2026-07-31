@@ -54,10 +54,10 @@ export function CollapsibleMessage({ message }: { message: string }) {
       <Btn
         onClick={e => { e.stopPropagation(); setOpen(v => !v) }}
         className="!p-0 !border-none !rounded-none flex items-start gap-1 text-left w-full hover:text-text-strong"
-        title={open ? 'Collapse' : 'Expand'}
+        title={open ? i18nT('pages.schedulePage.collapse') : i18nT('pages.schedulePage.expand')}
       >
         <ChevronRight size={14} className={`mt-[3px] shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
-        <span className={open ? 'text-muted text-[12px] min-w-0' : 'truncate min-w-0'}>{open ? 'Hide message' : preview}</span>
+        <span className={open ? 'text-muted text-[12px] min-w-0' : 'truncate min-w-0'}>{open ? i18nT('pages.schedulePage.hide_message') : preview}</span>
       </Btn>
       {open && (
         // Presentational content block; the handler only stops the click from
@@ -76,7 +76,7 @@ export function CollapsibleMessage({ message }: { message: string }) {
 const fmtAgo = (ts?: number) => {
   if (!ts) return '—'
   const s = Math.floor((Date.now() / 1000) - ts)
-  if (s < 60) return 'just now'
+  if (s < 60) return i18nT('pages.schedulePage.just_now')
   if (s < 3600) return `${Math.floor(s / 60)}m ago`
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   return `${Math.floor(s / 86400)}d ago`
@@ -85,7 +85,12 @@ const fmtAgo = (ts?: number) => {
 const fmtIn = (ts?: number | null) => {
   if (ts == null) return '—'
   const s = Math.floor(ts - Date.now() / 1000)
-  if (s <= 0) return 'now'
+  if (s <= 0) return i18nT('pages.schedulePage.now')
+  // `in <1m` deliberately stays English for now: as a NEW catalog value it is
+  // rejected by check-source-strings' `leading-connector` rule, which cannot
+  // separate a lowercase standalone label from a real sentence fragment (its
+  // own comment names `in progress` as the same known limit). The `${}` branches
+  // below need a key plus `{{vars}}`, which is Phase 6.
   if (s < 60) return 'in <1m'
   if (s < 3600) return `in ${Math.floor(s / 60)}m`
   if (s < 86400) { const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return `in ${h}h ${m}m` }
@@ -141,7 +146,7 @@ export default function SchedulePage() {
         return next.size === prev.size ? prev : next
       })
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : 'Failed to load jobs')
+      setLoadError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed_to_load_jobs'))
     } finally {
       setLoading(false)
     }
@@ -171,7 +176,7 @@ export default function SchedulePage() {
       setSelected(prev => prev?.id === id ? null : prev)
       await load()
     } catch (e: unknown) {
-      setActionError({ id, msg: e instanceof Error ? e.message : 'Delete failed' })
+      setActionError({ id, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.delete_failed') })
     } finally {
       setDeletingId(null)
       setConfirmDeleteId(null)
@@ -227,7 +232,7 @@ export default function SchedulePage() {
         setBatchConfirm(false)
       }
     } catch (e) {
-      setBatchError(e instanceof Error ? e.message : 'Batch delete failed')
+      setBatchError(e instanceof Error ? e.message : i18nT('pages.schedulePage.batch_delete_failed'))
     } finally {
       setBatchDeleting(false)
     }
@@ -300,7 +305,7 @@ export default function SchedulePage() {
 
           <Card><CardTitle>
             <div className="flex items-center justify-between w-full">
-              <span className="flex items-center gap-1.5">{i18nT('pages.schedulePage.jobs')} <InfoTip text="Scheduled jobs run on the configured interval or cron expression." /></span>
+              <span className="flex items-center gap-1.5">{i18nT('pages.schedulePage.jobs')} <InfoTip text={i18nT('pages.schedulePage.scheduled_jobs_run_on_the_configured_interval_or')} /></span>
               <div className="flex items-center gap-2">
                 <SendBtn onClick={openBlankCreate}>
                   <span className="flex items-center gap-1.5">
@@ -328,7 +333,7 @@ export default function SchedulePage() {
                 {/* eslint-disable-next-line jsx-a11y/label-has-for */}
                 <label htmlFor="schedule-render-tz" className="mr-1">{i18nT('pages.schedulePage.render_in')}</label>
                 <TimezoneSelect id="schedule-render-tz" value={renderTz} onChange={setRenderTz} />
-                <InfoTip text="Changes only how the calendar grid is displayed — does not change when any job actually fires." />
+                <InfoTip text={i18nT('pages.schedulePage.changes_only_how_the_calendar_grid_is_displayed')} />
               </div>
               <WeekGrid jobs={jobs} selectedId={selected?.id} onSelect={setSelected} renderTz={renderTz} />
             </>) : jobsView === 'executions' ? (
@@ -392,18 +397,18 @@ export default function SchedulePage() {
                 <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtAgo(j.last_run_ts)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm text-muted" title={j.next_run_ts ? new Date(j.next_run_ts * 1000).toLocaleString() : ''}>{fmtIn(j.next_run_ts)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                  <span title={j.strict_schedule ? 'Disable strict schedule (allow jitter)' : 'Enable strict schedule (no jitter)'}><Btn onClick={async () => { try { await api.updateCron(j.id, { strict_schedule: !j.strict_schedule }); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : 'Failed' }) } }}>{j.strict_schedule ? <><Check className="lucide-inline" /> {i18nT('pages.schedulePage.strict')}</> : 'Strict'}</Btn></span>{' '}
+                  <span title={j.strict_schedule ? i18nT('pages.schedulePage.disable_strict_schedule_allow_jitter') : i18nT('pages.schedulePage.enable_strict_schedule_no_jitter')}><Btn onClick={async () => { try { await api.updateCron(j.id, { strict_schedule: !j.strict_schedule }); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') }) } }}>{j.strict_schedule ? <><Check className="lucide-inline" /> {i18nT('pages.schedulePage.strict')}</> : i18nT('pages.schedulePage.strict')}</Btn></span>{' '}
                   {j.is_running
-                    ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => cancelRun(j.id)} disabled={cancelling.has(j.id)}>{cancelling.has(j.id) ? '...' : 'Cancel'}</Btn></span>
-                    : <span title={j.enabled ? 'Run now' : 'Resume to run'}><Btn onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)}>{running.has(j.id) ? '...' : 'Run'}</Btn></span>}{' '}
-                  <span title={j.has_slot ? 'Continue session' : j.has_result ? 'View last result' : 'No result'}><Btn onClick={() => openInChat(j.id)} disabled={!j.has_result && !j.has_slot}>{j.has_slot ? 'Continue' : 'View'}</Btn></span>{' '}
-                  <Btn onClick={async () => { try { await api.toggleCron(j.id, !j.enabled); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : 'Failed' }) } }}>{j.enabled ? 'Pause' : 'Resume'}</Btn>{' '}
+                    ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => cancelRun(j.id)} disabled={cancelling.has(j.id)}>{cancelling.has(j.id) ? '...' : i18nT('pages.schedulePage.cancel')}</Btn></span>
+                    : <span title={j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)}>{running.has(j.id) ? '...' : i18nT('pages.schedulePage.run')}</Btn></span>}{' '}
+                  <span title={j.has_slot ? i18nT('pages.schedulePage.continue_session') : j.has_result ? i18nT('pages.schedulePage.view_last_result') : i18nT('pages.schedulePage.no_result')}><Btn onClick={() => openInChat(j.id)} disabled={!j.has_result && !j.has_slot}>{j.has_slot ? i18nT('pages.schedulePage.continue') : i18nT('pages.schedulePage.view')}</Btn></span>{' '}
+                  <Btn onClick={async () => { try { await api.toggleCron(j.id, !j.enabled); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') }) } }}>{j.enabled ? i18nT('pages.schedulePage.pause') : i18nT('pages.schedulePage.resume')}</Btn>{' '}
                   <Btn
                     danger
                     disabled={deletingId === j.id}
-                    title={confirmDeleteId === j.id ? 'Click again to confirm' : 'Delete job'}
+                    title={confirmDeleteId === j.id ? i18nT('pages.schedulePage.click_again_to_confirm') : i18nT('pages.schedulePage.delete_job')}
                     onClick={() => confirmDeleteId === j.id ? deleteJob(j.id) : armDelete(j.id)}
-                  >{deletingId === j.id ? '...' : confirmDeleteId === j.id ? 'Confirm' : 'Delete'}</Btn>
+                  >{deletingId === j.id ? '...' : confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm') : i18nT('pages.schedulePage.delete')}</Btn>
                   {actionError?.id === j.id && <span className="text-danger text-[12px] ml-1">{actionError.msg}</span>}
                 </td>
               </tr>
@@ -493,7 +498,7 @@ export default function SchedulePage() {
             <div className="flex gap-2 justify-end">
               <Btn onClick={() => setBatchConfirm(false)} disabled={batchDeleting}>{i18nT('pages.schedulePage.cancel')}</Btn>
               <Btn danger disabled={batchDeleting || !confirmArmed} onClick={runBatchDelete}>
-                {batchDeleting ? 'Deleting…' : `Delete ${selectedIds.size}`}
+                {batchDeleting ? i18nT('pages.schedulePage.deleting') : `Delete ${selectedIds.size}`}
               </Btn>
             </div>
             {batchError && <p className="text-danger text-[12px] mt-2">{batchError}</p>}
@@ -552,7 +557,7 @@ function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }
         <div className="w-[2px] h-full bg-transparent group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-colors duration-200" />
       </div>
       <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-        <span className="text-base font-semibold text-text-strong truncate">{job ? job.name : (prefill?.name || 'New Job')}</span>
+        <span className="text-base font-semibold text-text-strong truncate">{job ? job.name : (prefill?.name || i18nT('pages.schedulePage.new_job'))}</span>
         <Btn aria-label={i18nT('pages.schedulePage.close')} onClick={onClose}>
           <svg className="w-4 h-4 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </Btn>
@@ -571,10 +576,10 @@ function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }
               layoutId="panel-tab"
             />
             <div className="flex gap-2">
-              <Btn onClick={async () => { try { await api.toggleCron(job.id, !job.enabled); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : 'Failed') } }}>{job.enabled ? 'Pause' : 'Resume'}</Btn>
+              <Btn onClick={async () => { try { await api.toggleCron(job.id, !job.enabled); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }}>{job.enabled ? i18nT('pages.schedulePage.pause') : i18nT('pages.schedulePage.resume')}</Btn>
               {job.is_running
-                ? <Btn danger onClick={async () => { try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : 'Failed') } }}>{i18nT('pages.schedulePage.cancel_run')}</Btn>
-                : <SendBtn onClick={async () => { try { await api.runCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : 'Failed') } }}>{i18nT('pages.schedulePage.run_now')}</SendBtn>}
+                ? <Btn danger onClick={async () => { try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }}>{i18nT('pages.schedulePage.cancel_run')}</Btn>
+                : <SendBtn onClick={async () => { try { await api.runCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }}>{i18nT('pages.schedulePage.run_now')}</SendBtn>}
             </div>
           </div>
         )}
@@ -584,14 +589,14 @@ function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }
           </div>
         )}
         {detailTab === 'logs' && job ? (
-          <JobLogsView jobId={job.id} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : 'Failed') } }} />
+          <JobLogsView jobId={job.id} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
         ) : (
           <>
             <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />
             {panelError && <div className="text-danger text-[13px]">{panelError}</div>}
             {job?.script && (job.last_result || job.last_error) && (
               <div className="flex flex-col gap-1.5">
-                <div className="text-[12px] text-muted font-medium">{job.last_error ? 'Last Error' : 'Last Output'}</div>
+                <div className="text-[12px] text-muted font-medium">{job.last_error ? i18nT('pages.schedulePage.last_error') : i18nT('pages.schedulePage.last_output')}</div>
                 <pre className={`text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 max-h-[200px] overflow-y-auto ${job.last_error ? 'bg-danger/5 border-danger/20 text-danger' : 'bg-bg-elevated border-border text-text'}`}>{job.last_error || job.last_result}</pre>
               </div>
             )}
@@ -634,7 +639,7 @@ function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }
             <p className="text-sm text-muted mb-4">{i18nT('pages.schedulePage.this_will_permanently_remove_the_scheduled_job_t')}</p>
             <div className="flex gap-2 justify-end">
               <Btn onClick={() => setConfirmDelete(false)}>{i18nT('pages.schedulePage.cancel')}</Btn>
-              <Btn danger disabled={deleting} onClick={async () => { try { setDeleteError(null); setDeleting(true); await api.deleteCron(job.id); onSaved() } catch (e: unknown) { setDeleteError(e instanceof Error ? e.message : 'Delete failed') } finally { setDeleting(false) } }}>{deleting ? 'Deleting...' : 'Delete'}</Btn>
+              <Btn danger disabled={deleting} onClick={async () => { try { setDeleteError(null); setDeleting(true); await api.deleteCron(job.id); onSaved() } catch (e: unknown) { setDeleteError(e instanceof Error ? e.message : i18nT('pages.schedulePage.delete_failed')) } finally { setDeleting(false) } }}>{deleting ? i18nT('pages.schedulePage.deleting_2') : i18nT('pages.schedulePage.delete')}</Btn>
             </div>
             {deleteError && <p className="text-danger text-[12px] mt-2">{deleteError}</p>}
           </div>

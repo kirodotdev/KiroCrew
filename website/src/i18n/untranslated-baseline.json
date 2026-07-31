@@ -1,6 +1,6 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — regenerate with `node scripts/check-i18n-strings.mjs --update`. This is both the CI ratchet and the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 2389,
+  "_total": 1985,
   "files": {
     "api/client.ts": {
       "total": 39,
@@ -763,12 +763,12 @@
       "template": 20
     },
     "pages/AgentsPage.tsx": {
-      "total": 22,
+      "total": 14,
       "array": 2,
-      "expression": 9,
+      "expression": 3,
       "object-prop": 1,
-      "prose": 4,
-      "template": 6
+      "prose": 3,
+      "template": 5
     },
     "pages/aidlc/DagView.tsx": {
       "total": 2,
@@ -785,17 +785,15 @@
       "template": 2
     },
     "pages/AppDetailPage.tsx": {
-      "total": 24,
-      "expression": 10,
-      "prose": 4,
+      "total": 13,
+      "prose": 3,
       "template": 10
     },
     "pages/AppsPage.tsx": {
-      "total": 31,
-      "expression": 9,
-      "object-prop": 4,
-      "prose": 6,
-      "template": 12
+      "total": 14,
+      "expression": 2,
+      "prose": 3,
+      "template": 9
     },
     "pages/ArtifactDeployPage.tsx": {
       "total": 53,
@@ -805,22 +803,18 @@
       "template": 20
     },
     "pages/ArtifactDetailPage.tsx": {
-      "total": 49,
-      "expression": 15,
-      "prose": 12,
-      "template": 22
+      "total": 23,
+      "expression": 2,
+      "prose": 1,
+      "template": 20
     },
     "pages/ArtifactPopoutFrame.tsx": {
-      "total": 2,
-      "prose": 1,
+      "total": 1,
       "template": 1
     },
     "pages/ArtifactsPage.tsx": {
-      "total": 36,
-      "expression": 13,
-      "object-prop": 2,
-      "prose": 5,
-      "template": 16
+      "total": 13,
+      "template": 13
     },
     "pages/CapabilitiesPage.tsx": {
       "total": 14,
@@ -828,10 +822,8 @@
       "template": 2
     },
     "pages/ChannelPage.tsx": {
-      "total": 13,
-      "expression": 8,
-      "prose": 4,
-      "template": 1
+      "total": 2,
+      "prose": 2
     },
     "pages/chat/ActivityViewer.tsx": {
       "total": 8,
@@ -898,42 +890,33 @@
       "template": 3
     },
     "pages/ChatPage.tsx": {
-      "total": 56,
-      "attribute": 2,
-      "expression": 17,
-      "object-prop": 3,
-      "prose": 14,
-      "template": 20
+      "total": 25,
+      "expression": 3,
+      "object-prop": 1,
+      "prose": 2,
+      "template": 19
     },
     "pages/ChatSidebar.tsx": {
-      "total": 89,
-      "attribute": 5,
-      "expression": 37,
+      "total": 47,
+      "expression": 12,
       "object-prop": 1,
-      "prose": 12,
-      "template": 34
+      "prose": 3,
+      "template": 31
     },
     "pages/DevFleetPage.tsx": {
-      "total": 150,
-      "expression": 35,
-      "object-prop": 7,
-      "prose": 87,
-      "status-call": 8,
-      "template": 13
+      "total": 56,
+      "expression": 1,
+      "prose": 44,
+      "template": 11
     },
     "pages/HooksPage.tsx": {
-      "total": 24,
-      "expression": 6,
-      "object-prop": 4,
-      "prose": 7,
+      "total": 8,
+      "prose": 1,
       "template": 7
     },
     "pages/KiroCrewAgentsPage.tsx": {
-      "total": 17,
+      "total": 6,
       "array": 5,
-      "expression": 3,
-      "prose": 7,
-      "status-call": 1,
       "template": 1
     },
     "pages/knowledge/DetailView.tsx": {
@@ -983,19 +966,9 @@
       "prose": 1,
       "template": 1
     },
-    "pages/LogsPage.tsx": {
-      "total": 6,
-      "expression": 6
-    },
     "pages/MigrationPage.tsx": {
-      "total": 7,
-      "expression": 5,
-      "prose": 1,
-      "template": 1
-    },
-    "pages/NotificationsPage.tsx": {
       "total": 1,
-      "prose": 1
+      "template": 1
     },
     "pages/overview/AgentCfgTab.tsx": {
       "total": 2,
@@ -1072,8 +1045,7 @@
       "template": 2
     },
     "pages/OverviewPage.tsx": {
-      "total": 9,
-      "expression": 3,
+      "total": 6,
       "object-prop": 6
     },
     "pages/overviewStatCards.tsx": {
@@ -1081,23 +1053,15 @@
       "template": 1
     },
     "pages/PopoutFrame.tsx": {
-      "total": 2,
-      "expression": 1,
+      "total": 1,
       "template": 1
     },
-    "pages/ProjectDetailPage.tsx": {
-      "total": 2,
-      "expression": 2
-    },
     "pages/ProjectsPage.tsx": {
-      "total": 8,
-      "expression": 3,
-      "prose": 4,
+      "total": 1,
       "template": 1
     },
     "pages/RemoteArtifactDetailPage.tsx": {
-      "total": 8,
-      "expression": 4,
+      "total": 4,
       "prose": 2,
       "template": 2
     },
@@ -1148,11 +1112,10 @@
       "template": 1
     },
     "pages/SchedulePage.tsx": {
-      "total": 57,
-      "expression": 37,
+      "total": 15,
       "object-prop": 5,
-      "prose": 5,
-      "template": 10
+      "prose": 1,
+      "template": 9
     },
     "pages/SessionArchive.tsx": {
       "total": 1,
@@ -1285,24 +1248,15 @@
       "prose": 1
     },
     "pages/SystemPage.tsx": {
-      "total": 40,
-      "expression": 2,
-      "object-prop": 8,
-      "prose": 29,
+      "total": 9,
+      "object-prop": 4,
+      "prose": 4,
       "template": 1
     },
     "pages/TelemetryPanel.tsx": {
-      "total": 12,
-      "prose": 9,
+      "total": 8,
+      "prose": 5,
       "template": 3
-    },
-    "pages/WorldsPage.tsx": {
-      "total": 4,
-      "expression": 4
-    },
-    "pages/WorldsPopout.tsx": {
-      "total": 2,
-      "expression": 2
     },
     "providers/adapters/acp.ts": {
       "total": 15,
