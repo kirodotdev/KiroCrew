@@ -338,10 +338,16 @@ def _install_child_watcher() -> None:
     shrank the surface; the reaper storm itself remained on the default
     watcher).
 
-    Forward-compat note: ``set_child_watcher`` / ``PidfdChildWatcher`` /
-    ``SafeChildWatcher`` are deprecated in CPython 3.12 and removed in 3.14 (the
-    event loop reaps children directly).  This whole function should become a
-    no-op / be deleted when KiroCrew moves off 3.10; guard or drop it then.
+    Python 3.14: ``set_child_watcher`` / ``PidfdChildWatcher`` /
+    ``SafeChildWatcher`` are deprecated in CPython 3.12 and REMOVED in 3.14 --
+    the event loop reaps children directly.  The whole function is therefore a
+    no-op there, short-circuited by the ``hasattr`` guard below; without it the
+    unguarded Linux pidfd branch raised ``AttributeError: module 'asyncio' has
+    no attribute 'set_child_watcher'`` and killed ``kirocrew gateway`` on
+    startup, before the port was ever bound.  The mitigation is not lost: 3.14
+    reaps with a single non-thread reaper, so the thread-per-child storm this
+    function exists to prevent cannot occur (verified on 3.14.6 -- 24
+    concurrent children, ``threading.active_count()`` never left 1).
     ``set_child_watcher`` on a pre-run policy is attached to the loop by
     ``asyncio.run`` -> ``set_event_loop`` (main thread), so installing before
     ``asyncio.run`` here is correct on 3.10 for both watchers.
@@ -379,6 +385,17 @@ def _install_child_watcher() -> None:
     fall through to the SIGCHLD-based SafeChildWatcher, the same watcher the
     macOS path uses.
     """
+    # CPython 3.14 removed the child-watcher API (set_child_watcher,
+    # PidfdChildWatcher, SafeChildWatcher, and the ThreadedChildWatcher default);
+    # the Unix event loop reaps children itself. Bail out BEFORE the Linux pidfd
+    # branch below, which references the removed names unconditionally and would
+    # raise AttributeError during `kirocrew gateway` startup. This is a true
+    # no-op and not a lost mitigation: 3.14's reaper spawns no thread per child,
+    # so the loop-starvation wedge cannot recur. Probed via hasattr rather than
+    # sys.version_info so a backport/vendored runtime that still ships the API
+    # keeps the mitigation.
+    if not hasattr(asyncio, "set_child_watcher"):
+        return
     if sys.platform == "linux":
         try:
             # Probe real kernel support (pidfd_open: Linux 5.3+) BEFORE installing,
