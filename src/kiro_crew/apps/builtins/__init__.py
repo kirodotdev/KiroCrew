@@ -6,6 +6,7 @@ BUILTIN_NAMES: list[str] = [
     "issue_radar",
     "meetings",
     "papyrus",
+    "pptx_maker",
 ]
 
 # Formerly a builtin, now folded into core deploy module.

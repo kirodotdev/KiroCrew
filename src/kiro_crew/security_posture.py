@@ -427,6 +427,20 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # here reaches a user-facing surface — the app's egress paths (compile log,
         # git stderr) redact separately in papyrus/backend/routes.py.
         "apps/builtins/papyrus/backend/tectonic.py",
+        # Same shape again: pptx-maker's digest-pinned engine download redacts the
+        # DOWNLOAD URL (userinfo + signed query) before logging it, so a
+        # mirrored/presigned KIROCREW_PPTX_ENGINE_URL override cannot leak
+        # credentials into a log. Nothing here reaches a user-facing surface — the
+        # app's own egress path (model-authored deck names and brief previews)
+        # redacts separately in pptx_maker/backend/decks.py.
+        "apps/builtins/pptx_maker/backend/engine_source.py",
+        # Uses the redactor as a PREDICATE, not a transform: `resolve_deck_dir`
+        # compares `redact(deck_id) != deck_id` to decide whether to refuse the deck
+        # outright. A deck id cannot be scrubbed on the way out — it is the directory
+        # name, the `preview/<deckId>/...` URL segment and the handle every later
+        # request sends back — so the only safe answer is not to serve that deck at
+        # all. Nothing is emitted here; the app's egress path is decks.py/routes.py.
+        "apps/builtins/pptx_maker/backend/paths.py",
         # Redacts INBOUND attacker-controllable provider metadata before it is
         # stored/displayed — a sanitizer on the way in, not an output boundary.
         "dashboard/handlers/mcp_discover.py",
@@ -464,6 +478,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/meetings/backend/routes/meeting_lifecycle.py",
         "apps/builtins/meetings/backend/routes/tasks.py",
         "apps/builtins/papyrus/backend/routes.py",
+        "apps/builtins/pptx_maker/backend/decks.py",
+        "apps/builtins/pptx_maker/backend/routes.py",
         "apps/builtins/workflows/server.py",
         # Bundled dev-skill script: prints CI/review findings to a
         # developer terminal, not an agent-output egress path.

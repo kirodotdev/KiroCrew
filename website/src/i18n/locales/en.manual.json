@@ -346,6 +346,11 @@
         "repeat_days": "every {{n}} days",
         "repeat_daily": "every day"
       }
+    },
+    "pptxMaker": {
+      "libraryPanel": {
+        "font_specimen": "Aa"
+      }
     }
   },
   "components": {

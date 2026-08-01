@@ -19,6 +19,8 @@
   "apps.papyrus.workspace.error_count",
   "apps.papyrus.workspace.warning_count",
   "apps.papyrus.workspace.word_count",
+  "apps.pptxMaker.libraryPanel.layouts",
+  "apps.pptxMaker.pptxMakerPage.slide_count",
   "apps.workflows.workflowRunTree.agent",
   "components.appstore.categoryRail.app",
   "components.appstore.installedAppCard.agent",
