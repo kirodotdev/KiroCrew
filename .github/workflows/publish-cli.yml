@@ -6,8 +6,10 @@ name: Publish CLI (reusable)
 #
 # Key properties:
 #   - CI-direct feed: writes feed/<channel>/latest-cli.json straight from CI.
-#   - Never gated on signing/notarization (Linux has no Gatekeeper), so a macOS
-#     signing failure never blocks a CLI release.
+#   - Independently verifiable manifest: KMS signs every artifact field and the
+#     installer verifies against an offline public key pinned in cli.sh.
+#   - Never gated on macOS signing/notarization (Linux has no Gatekeeper); the
+#     CLI lane uses its own non-exportable asymmetric KMS key.
 #   - Publishes the wheel exactly as built; the manifest version is parsed from
 #     the wheel filename so it always matches what pip will install.
 
@@ -45,11 +47,23 @@ jobs:
     # every job in sign-and-notarize.yml.
     environment: prod
     env:
-      HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
+      HAS_PUBLISH_ROLE: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
+      HAS_MANIFEST_KEY: ${{ vars.CLI_MANIFEST_SIGNING_KEY_ARN != '' && 'true' || '' }}
       CHANNEL: ${{ inputs.channel }}
       VERSION_LABEL: ${{ inputs.version }}
     steps:
+      - name: Refuse partial CLI signing configuration
+        if: env.HAS_PUBLISH_ROLE != env.HAS_MANIFEST_KEY
+        run: |
+          echo "::error::CLI publishing requires BOTH AWS_SIGNING_ROLE_ARN and CLI_MANIFEST_SIGNING_KEY_ARN. Refusing to publish an unsigned manifest."
+          exit 1
+
+      - name: Checkout manifest verifier contract
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Download wheel artifact
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.wheel_artifact }}
@@ -57,19 +71,22 @@ jobs:
 
       - name: Locate wheel and compute checksum
         id: wheel
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
         run: |
           set -euo pipefail
-          WHEEL=$(find cli-dist -name '*.whl' | head -1)
-          if [ -z "$WHEEL" ]; then
-            echo "::error::No .whl found in artifact '${{ inputs.wheel_artifact }}'"
+          mapfile -t WHEELS < <(find cli-dist -type f -name '*.whl' -print)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one .whl in artifact '${{ inputs.wheel_artifact }}'; found ${#WHEELS[@]}"
             exit 1
           fi
+          WHEEL="${WHEELS[0]}"
           WHEEL_DIR=$(dirname "$WHEEL")
           WHEEL_NAME=$(basename "$WHEEL")
-          # PEP 427: wheel filename fields are '-'-separated and the distribution
-          # name contains no '-', so the version is always the second field. Using
-          # the wheel's own version keeps the manifest in sync with what pip installs.
-          WHEEL_VERSION=$(echo "$WHEEL_NAME" | awk -F- '{print $2}')
+          if [[ ! "$WHEEL_NAME" =~ ^kirocrew-([A-Za-z0-9][A-Za-z0-9._+]{0,127})-py3-none-any\.whl$ ]]; then
+            echo "::error::Wheel name does not match the canonical KiroCrew pure-Python artifact contract: $WHEEL_NAME"
+            exit 1
+          fi
+          WHEEL_VERSION="${BASH_REMATCH[1]}"
           ( cd "$WHEEL_DIR" && sha256sum "$WHEEL_NAME" > SHA256SUMS )
           SHA256=$(awk '{print $1}' "$WHEEL_DIR/SHA256SUMS")
           {
@@ -82,6 +99,7 @@ jobs:
           echo "Wheel: $WHEEL_NAME (version $WHEEL_VERSION, label '${VERSION_LABEL}')"
 
       - name: Attest wheel provenance
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
         # Signed SLSA provenance binding the published wheel's digest to this
         # repo/workflow/commit (CWE-1104) — complements the self-hosted
         # SHA256SUMS (integrity, not authenticity). Runs before the wheel is
@@ -91,14 +109,58 @@ jobs:
           subject-path: ${{ steps.wheel.outputs.path }}
 
       - name: Configure AWS credentials
-        if: env.HAS_SIGNING_SECRETS
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Publish wheel and channel manifest
-        if: env.HAS_SIGNING_SECRETS
+      - name: Build and sign CLI artifact manifest
+        id: manifest
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        env:
+          CDN_BASE: ${{ vars.CLI_CDN_BASE }}
+          KEY_ARN: ${{ vars.CLI_MANIFEST_SIGNING_KEY_ARN }}
+          WHEEL_PATH: ${{ steps.wheel.outputs.path }}
+          WHEEL_NAME: ${{ steps.wheel.outputs.name }}
+          WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
+          SHA256: ${{ steps.wheel.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          case "${CDN_BASE}" in
+            https://*) ;;
+            *) echo "::error::CLI_CDN_BASE must be HTTPS before signing."; exit 1 ;;
+          esac
+          CDN_BASE="${CDN_BASE%/}"
+          PUBLIC_KEY="packaging/signing/cli-manifest-public.pem"
+          PAYLOAD="$RUNNER_TEMP/cli-manifest-payload.json"
+          MANIFEST="$(dirname "$WHEEL_PATH")/cli-manifest.json"
+          PYREQ=$(unzip -p "$WHEEL_PATH" '*.dist-info/METADATA' 2>/dev/null \
+            | awk -F': ' 'tolower($1)=="requires-python"{print $2; exit}' | tr -d '\r')
+          PYREQ="${PYREQ:->=3.10}"
+          # The immutable manifest must be byte-identical when a failed job is
+          # retried. Wall-clock time would change the signed payload and make
+          # put_immutable reject a safe retry, so bind publication time to the
+          # source commit instead.
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          PUB_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+          python3 packaging/signing/cli-manifest.py payload \
+            --channel "$CHANNEL" --version "$WHEEL_VERSION" \
+            --wheel-url "${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}" \
+            --sha256 "$SHA256" --python-requires "$PYREQ" \
+            --pub-date "$PUB_DATE" \
+            --public-key "$PUBLIC_KEY" --output "$PAYLOAD"
+          python3 packaging/signing/cli-manifest.py kms-sign \
+            --payload "$PAYLOAD" --key-arn "$KEY_ARN" \
+            --public-key "$PUBLIC_KEY" --output "$MANIFEST"
+          KEY_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key_id"])' "$MANIFEST")
+          {
+            echo "path=$MANIFEST"
+            echo "key_id=$KEY_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish wheel and signed channel manifest
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
         env:
           BUCKET: ${{ vars.CLI_DIST_BUCKET }}
           CDN_BASE: ${{ vars.CLI_CDN_BASE }}
@@ -107,6 +169,8 @@ jobs:
           SUMS_DIR: ${{ steps.wheel.outputs.sumsdir }}
           WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
           SHA256: ${{ steps.wheel.outputs.sha256 }}
+          MANIFEST_PATH: ${{ steps.manifest.outputs.path }}
+          MANIFEST_KEY_ID: ${{ steps.manifest.outputs.key_id }}
         run: |
           set -euo pipefail
           # The origin bucket is private (OAC), so the raw S3 URL is not publicly
@@ -148,38 +212,27 @@ jobs:
             echo "::error::$key exists with DIFFERENT content -- refusing to republish an immutable versioned key"
             return 1
           }
+          [ -s "$MANIFEST_PATH" ] || { echo "::error::Signed CLI manifest is missing"; exit 1; }
           put_immutable "${PREFIX}/${WHEEL_NAME}" "$WHEEL_PATH"
           put_immutable "${PREFIX}/SHA256SUMS" "${SUMS_DIR}/SHA256SUMS"
+          put_immutable "${PREFIX}/cli-manifest.json" "$MANIFEST_PATH"
 
-          WHEEL_URL="${CDN_BASE}/${PREFIX}/${WHEEL_NAME}"
-
-          # Requires-Python straight from the wheel metadata so the manifest never drifts.
-          PYREQ=$(unzip -p "$WHEEL_PATH" '*.dist-info/METADATA' 2>/dev/null \
-            | awk -F': ' 'tolower($1)=="requires-python"{print $2; exit}' | tr -d '\r')
-          PYREQ="${PYREQ:->=3.10}"
-
-          cat > /tmp/latest-cli.json <<EOF
-          {
-            "channel": "${CHANNEL}",
-            "version": "${WHEEL_VERSION}",
-            "wheel_url": "${WHEEL_URL}",
-            "sha256": "${SHA256}",
-            "python_requires": "${PYREQ}",
-            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
-          aws s3 cp /tmp/latest-cli.json "s3://${BUCKET}/feed/${CHANNEL}/latest-cli.json" \
+          # Signature fields are additive to the legacy channel/version/
+          # wheel_url/sha256 schema, so old clients remain parse-compatible.
+          aws s3 cp "$MANIFEST_PATH" "s3://${BUCKET}/feed/${CHANNEL}/latest-cli.json" \
             --content-type application/json --cache-control no-cache
 
           {
             echo "## CLI Published (${CHANNEL})"
             echo "- Wheel: \`${WHEEL_NAME}\`"
             echo "- Version: \`${WHEEL_VERSION}\`"
+            echo "- Signed manifest: \`${PREFIX}/cli-manifest.json\`"
+            echo "- Key: \`${MANIFEST_KEY_ID}\`"
             echo "- Feed: \`feed/${CHANNEL}/latest-cli.json\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish PEP 503 simple index
-        if: env.HAS_SIGNING_SECRETS
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
         env:
           BUCKET: ${{ vars.CLI_DIST_BUCKET }}
           CDN_BASE: ${{ vars.CLI_CDN_BASE }}
@@ -239,7 +292,7 @@ jobs:
           done
           echo "- Simple index: \`${CDN_BASE}/${SIMPLE}/\` ($(wc -l < links.txt) version(s))" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Skipped (no signing secrets)
-        if: ${{ !env.HAS_SIGNING_SECRETS }}
+      - name: Skipped (no publish role or manifest key)
+        if: ${{ !env.HAS_PUBLISH_ROLE && !env.HAS_MANIFEST_KEY }}
         run: |
-          echo "AWS_SIGNING_ROLE_ARN not set - skipping CLI publish (fork / feature-branch run)." >> "$GITHUB_STEP_SUMMARY"
+          echo "CLI publish role and manifest KMS key are not configured - skipping CLI publish (fork / feature-branch run)." >> "$GITHUB_STEP_SUMMARY"

@@ -210,7 +210,7 @@ Every public URL is one of exactly two classes:
 | Human download permalink | `/desktop/{channel}/latest/KiroCrew.dmg` | Pointer (max-age=300) |
 | Versioned desktop artifacts | `/desktop/{channel}/{version}/…` (zip + DMG) | Immutable |
 | Desktop update feed | `/feed/{channel}/latest-mac.yml`, `/feed/{channel}/latest-linux.yml` | Pointer (uncached) |
-| CLI update feed | `/feed/{channel}/latest-cli.json` (version + sha256) | Pointer (uncached) |
+| CLI update feed | `/feed/{channel}/latest-cli.json` (signed manifest: version + URL + sha256 + key id) | Pointer (uncached) |
 | pip index (PEP 503) | `/feed/{channel}/simple/` | Pointer |
 | GitHub Releases | `github.com/kirodotdev/KiroCrew/releases/tag/v…` | Immutable |
 
@@ -229,8 +229,13 @@ Rules that make the scheme work:
    `files[].url` + base64 `sha512`, `path`, `sha512`, and `releaseDate`.
    The client fetches the static file and compares versions client-side;
    the yml sits on the pointer host while `files[].url` points
-   absolutely at the byte host. CLI feed carries the wheel version and
-   sha256 so the installer verifies fail-closed before installing.
+   absolutely at the byte host. The CLI feed is a backward-compatible
+   RSA-signed artifact manifest. Its canonical payload authenticates the
+   channel, wheel version and URL, sha256, Python requirement, publication
+   date, schema, algorithm, and key id. The installer verifies that signature
+   against its offline pin before consuming artifact metadata, then verifies
+   the downloaded wheel against the authenticated digest. Both checks fail
+   closed.
 5. pip installs use `--extra-index-url` against the channel's simple
    index, keeping PyPI available for dependency resolution.
 

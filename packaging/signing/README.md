@@ -28,3 +28,73 @@ trigger macOS Gatekeeper warnings).
 
 Access to the signing service must be onboarded (a security review plus
 sign-off). See `docs/release-automation.md` for the full onboarding runbook.
+
+## CLI artifact manifests (separate trust domain)
+
+The wheel installer does **not** reuse Apple/CDSigner. `publish-cli.yml` signs a
+canonical JSON artifact manifest with an asymmetric AWS KMS key and publishes the
+same signed JSON at both:
+
+- `cli/<channel>/<version>/cli-manifest.json` (immutable, used by `--version`)
+- `feed/<channel>/latest-cli.json` (mutable channel pointer)
+
+The legacy `channel`, `version`, `wheel_url`, `sha256`, `python_requires`, and
+`pub_date` fields remain top-level for older installers. Schema v1 adds
+`schema`, `algorithm`, `key_id`, and `signature`. The signature is RSA
+PKCS#1 v1.5 with SHA-256 over canonical JSON containing every field except
+`signature`. `cli.sh` reconstructs those exact bytes, verifies them with the
+offline public key embedded in the installer, validates the authenticated URL,
+channel, version, and digest, and only then downloads the wheel. The SHA-256
+check remains a second fail-closed check over the downloaded bytes. There is no
+`SHA256SUMS` or unsigned-feed fallback in the strict installer.
+
+Threat model: this protects against unauthorized mutation of distribution
+objects or channel feeds while the installer trust root and signing-enabled
+publisher role remain trusted. The publisher role holds `kms:Sign`, so its
+compromise can produce a valid manifest and is explicitly out of scope; the
+signature does not create a separate trust boundary from that role.
+
+### Repository bootstrap state
+
+The repository intentionally carries `UNCONFIGURED` in both
+`cli-manifest-public.pem` and the two `CLI_MANIFEST_*` constants in `cli.sh`.
+This is fail-closed: the installer exits before network I/O, and a trusted
+publisher configuration with only one of the role/key settings fails before any
+upload. Forks with neither setting still skip publication.
+
+No private key should be generated, exported, committed, pasted into CI, or
+handled by an agent. Operational enablement is a human/infrastructure step:
+
+1. Create a non-exportable asymmetric KMS key in `us-west-2` with key usage
+   `SIGN_VERIFY` and key spec `RSA_3072` or `RSA_4096`.
+2. Grant the existing CLI publication role only `kms:GetPublicKey` and
+   `kms:Sign` on that one key. Keep the existing OIDC subject/environment
+   restriction; do not grant decrypt or broad `kms:*` access.
+3. Retrieve the **public** key with `kms:GetPublicKey`, convert its
+   SubjectPublicKeyInfo DER bytes to PEM, and replace
+   `packaging/signing/cli-manifest-public.pem`.
+4. Run
+   `python3 packaging/signing/cli-manifest.py key-info --public-key packaging/signing/cli-manifest-public.pem`.
+   Copy the returned public `key_id` and `public_key_pem_base64` values into the
+   matching constants in `cli.sh`. Commit the public-key pin normally.
+5. Set the protected `prod` environment variable
+   `CLI_MANIFEST_SIGNING_KEY_ARN` to the key ARN. The workflow compares KMS
+   `GetPublicKey` output byte-for-byte with the committed key before every sign,
+   and verifies the returned signature locally before publishing.
+6. Run `test/test_cli_manifest_signature.py`, then dispatch a publish and verify
+   the immutable manifest is present. Publish the strict `cli.sh` only after a
+   signed channel feed exists. Because the added fields are backward-compatible,
+   the signed feed may safely go live before the strict installer. This ordering
+   is enforced mechanically: `publish-installer.yml` refuses to publish while
+   `cli.sh` still pins `CLI_MANIFEST_KEY_ID="UNCONFIGURED"`, and — once a key
+   is pinned — refuses unless every LIVE channel feed verifies against that
+   key (`cli-manifest.py verify`, the same checks the installer runs), so
+   neither the pin commit nor any later merge can replace the live installer
+   with one that refuses the feeds it is pointed at.
+
+Pinned versions released before enablement have no immutable signed manifest and
+therefore fail closed under the new installer unless an authorized backfill signs
+the already-published digest. Do not replace the KMS key in place: schema v1 pins
+one key. For rotation, first ship an installer revision that trusts both old and
+new public keys, then switch the publisher, and retire the old key only after the
+overlap window.

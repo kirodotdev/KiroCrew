@@ -8,7 +8,7 @@ human process (release branches, RC numbering, promotion, back-merge);
 **docs/release-process-design.md** records the design rationale and the
 platform-lane contract. This file documents what the pipeline does.
 
-## As built (authoritative, 2026-07-30)
+## As built (authoritative, 2026-08-01)
 
 This section is the contract. An earlier revision of this file carried a
 ~440-line original design below it — a release-branch automation model
@@ -143,14 +143,17 @@ older run finishing last from rolling a channel feed backward. There is no
 `blocked-versions.json` and no rollback workflow: the recovery path is to
 **roll forward** — cut a new version and let the feed advance to it.
 
-**CLI channel (as built):** `publish-cli.yml` publishes the wheel +
-SHA256SUMS + PEP 503 index to `cli/{channel}/`, called by `nightly.yml`
-(`channel: nightly`) and by `release.yml` (`channel: insider | stable`,
-derived from the tag) — so all three channels are wired, and wheels also
-ship as GitHub Release assets. It depends only on the wheel build, never on
-CDSigner, so a macOS signing failure cannot block a CLI release. The
-signing trust domain for the wheel (minisign/cosign detached signatures)
-remains an open item.
+**CLI channel (repository implementation; external enablement pending):**
+`publish-cli.yml` is wired to publish the wheel +
+backward-compatible signed JSON manifest + SHA256SUMS + PEP 503 index to
+`cli/{channel}/`, then copies the same signed manifest to
+`feed/{channel}/latest-cli.json`. It is called by `nightly.yml` (`channel:
+nightly`) and by `release.yml` (`channel: insider | stable`, derived from the
+tag), so all three channels are wired, and wheels also ship as GitHub Release
+assets. The manifest is signed by a non-exportable RSA KMS key after its public
+half is byte-compared with the repository/installer pin. It depends only on the
+wheel build and this CLI-specific key, never on Apple/CDSigner, so a macOS
+signing failure cannot block a CLI release.
 
 **Docker channel (as built):** `publish-docker.yml` publishes the same wheel
 inside a multi-arch image to `ghcr.io/kirodotdev/kirocrew`, with immutable
@@ -173,8 +176,18 @@ no beta→insider name mapping.
 
 ### How it differs from the desktop path
 
-- **No notarization, but a signature is required.** Linux has no Gatekeeper, so the CLI never touches CDSigner or Apple. A `SHA256SUMS` beside the wheel is only a corruption check — whoever can overwrite the wheel in S3/CloudFront (or via compromised CI) can rewrite `SHA256SUMS` and the feed's `sha256` in the same breath. So the installer verifies a required signature over the manifest — Sigstore cosign (keyless, identity-pinned) or minisign with a public key pinned in the installer/repo — against a trust root that is not stored beside the artifact. That pinned-key signature, not the checksum, is the authenticity anchor.
-- **CI-direct feed, independent of signing.** The wheel has no `signed/` stage at all, so `publish-cli.yml` writes `latest-cli.json` straight from CI (as every lane now does — see "Feed (as built)" above). It depends only on the built wheel, so a macOS signing failure never blocks a CLI release.
+- **No notarization; a signature is mandatory.** Linux has no Gatekeeper, so
+  the CLI never touches CDSigner or Apple. `SHA256SUMS` remains beside the wheel
+  for legacy tooling, but it is only a corruption check. The publisher signs
+  the complete artifact metadata with a non-exportable RSA KMS key; `cli.sh`
+  reconstructs canonical JSON and verifies that signature against an offline
+  public key pinned in the installer/repository before it reads `wheel_url` or
+  `sha256`. It then validates the authenticated URL/channel/version and checks
+  the downloaded wheel against the signed digest. Missing key, missing
+  signature, malformed/duplicate fields, wrong key id, bad signature, redirect
+  metadata, and digest mismatch all refuse installation with no unsigned
+  fallback.
+- **CI-direct feed, independent of desktop signing.** The wheel has no desktop `signed/` stage. `publish-cli.yml` signs the artifact manifest with the CLI-specific KMS key and writes `latest-cli.json` straight from CI (as every lane now does — see "Feed (as built)" above). It depends only on the built wheel and that manifest key, so an Apple/CDSigner failure never blocks a CLI release.
 - **Build once per tag.** `nightly.yml` publishes the nightly wheel;
   `release.yml` publishes the tagged wheel to insider (RC tag) or stable
   (bare tag). Promotion is a human step — tagging the good RC's commit — so
@@ -234,21 +247,27 @@ flowchart TB
 ```
 cli/{channel}/{version}/
   ├── kirocrew-{version}-py3-none-any.whl
-  └── SHA256SUMS
-feed/{channel}/latest-cli.json
+  ├── SHA256SUMS                         # legacy integrity metadata
+  └── cli-manifest.json                  # immutable signed manifest
+feed/{channel}/latest-cli.json            # same signed JSON, mutable pointer
 ```
 
-`feed/{channel}/latest-cli.json`:
+The manifest keeps the six legacy fields and adds four signature fields, so
+older channel installers remain parse-compatible while strict installers can
+authenticate the same object:
 
 ```json
 {
+  "algorithm": "RSASSA_PKCS1_V1_5_SHA_256",
   "channel": "insider",
-  "version": "0.2.0",
-  "wheel_url": "https://download.crew.kiro.dev/cli/insider/0.2.0/kirocrew-0.2.0-py3-none-any.whl",
-  "sha256": "…",
-  "sig_url": "https://download.crew.kiro.dev/cli/insider/0.2.0/kirocrew-0.2.0-py3-none-any.whl.sig",
+  "key_id": "sha256:<SubjectPublicKeyInfo digest>",
+  "pub_date": "2026-07-18T06:15:00Z",
   "python_requires": ">=3.10",
-  "pub_date": "2026-07-18T06:15:00Z"
+  "schema": "kirocrew-cli-artifact-manifest-v1",
+  "sha256": "<wheel digest>",
+  "signature": "<base64 RSA signature over canonical JSON without this field>",
+  "version": "0.2.0",
+  "wheel_url": "https://download.crew.kiro.dev/cli/insider/0.2.0/kirocrew-0.2.0-py3-none-any.whl"
 }
 ```
 
@@ -267,7 +286,8 @@ The wheel version is read from `pyproject.toml` `[project].version`, so the nigh
 ```bash
 # install, or switch channels
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel {nightly|insider|stable}
-#   reads feed/{channel}/latest-cli.json -> downloads wheel -> verifies SHA256
+#   reads the signed feed -> verifies RSA signature with the offline pin
+#   -> validates artifact metadata -> downloads wheel -> verifies signed SHA256
 #   installs isolated via pipx (or uv tool) -> records channel in ~/.kiro/crew/channel
 
 # self-update, staying on the recorded channel
@@ -278,11 +298,18 @@ This is a new download path, separate from the source-build `install.sh` (git cl
 
 ### CI and infrastructure delta
 
-Remaining open item: a detached signature (cosign/minisign) over the manifest,
-verified against a trust root not stored beside the artifact. `SHA256SUMS`
-alone is a corruption check, not an authenticity anchor — see "How it differs
-from the desktop path" above. The `cli/*` + `feed/*` PutObject grants and
-`cli.sh` serving are deployed.
+The repository contract is implemented, but signing remains intentionally
+fail-closed until operators provision the non-exportable KMS key and pin its
+public half. The protected `prod` environment must set
+`CLI_MANIFEST_SIGNING_KEY_ARN`, and the publication role needs only
+`kms:GetPublicKey` + `kms:Sign` on that key in addition to its existing publish
+permissions. A role/key mismatch or an `UNCONFIGURED` public key aborts before
+artifact upload; a fork with neither setting skips publication. Follow
+`packaging/signing/README.md` for the key-pinning and signed-feed-first rollout
+sequence. The `cli/*` + `feed/*` PutObject grants and `cli.sh` serving
+pre-date this change; this change does not claim that KMS/IAM provisioning,
+signed-feed publication, CDN propagation, or the final strict-installer rollout
+has been performed or externally validated.
 
 ## Superseded design
 
