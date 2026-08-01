@@ -1914,7 +1914,7 @@ function ChatSidebar({
           role="button"
           tabIndex={0}
           aria-expanded={!folder.collapsed}
-          aria-label={`${folder.collapsed ? 'Expand' : 'Collapse'} folder ${folder.name}`}
+          aria-label={folder.collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
           {...(draggable ? dragHandleProps : {})}
           onClick={() => toggleCollapse(folder.id)}
           onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapse(folder.id) } }}
@@ -2314,9 +2314,9 @@ function ChatSidebar({
               const hidden = typeof s.source_links_total === 'number'
                 ? s.source_links_total - s.source_links.length
                 : 0
-              const overflowNoun = issueLinks.length
-                ? (hidden === 1 ? 'pull request or issue' : 'pull requests or issues')
-                : (hidden === 1 ? 'pull request' : 'pull requests')
+              const overflowTitle = issueLinks.length
+                ? i18nT('pages.chatSidebar.more_pull_request_or_issue_in_this_session', { count: hidden })
+                : i18nT('pages.chatSidebar.more_pull_request_in_this_session', { count: hidden })
               return (
                 <div className="flex flex-wrap gap-1.5 mt-1">
                   {changeLinks.map(link => (
@@ -2370,7 +2370,7 @@ function ChatSidebar({
                     </a>
                   ))}
                   {hidden > 0 && (
-                    <span className="inline-flex items-center px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60" title={`${hidden} more ${overflowNoun} in this session`}>
+                    <span className="inline-flex items-center px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted border border-border bg-bg-elevated/60" title={overflowTitle}>
                       +{hidden}
                     </span>
                   )}
@@ -2486,7 +2486,7 @@ function ChatSidebar({
             <button type="button"
               className="flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
               aria-expanded={!folder.collapsed}
-              aria-label={`${folder.collapsed ? 'Expand' : 'Collapse'} folder ${folder.name}`}
+              aria-label={folder.collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
               onClick={() => toggleCollapse(folder.id)}>
               <FolderGlyph icon={folder.icon} size={14} open={!folder.collapsed} testId={`folder-collapse-${folder.id}`} />
               {/* Double-click rename is a mouse-only power shortcut; the accessible
@@ -2851,7 +2851,7 @@ function ChatSidebar({
                   : noStale
                     ? i18nT('pages.chatSidebar.no_inactive_sessions_to_archive')
                     : cleanupPreview != null && <>
-                      {i18nT('pages.chatSidebar.session', { count: archivable.length })} {i18nT('pages.chatSidebar.will_be_moved_to_older_sessions')}{activeIsStale ? ' (1 skipped — currently selected)' : ''} {i18nT('pages.chatSidebar.pinned_sessions_are_kept')}
+                      {i18nT('pages.chatSidebar.session', { count: archivable.length })} {i18nT('pages.chatSidebar.will_be_moved_to_older_sessions')}{activeIsStale ? ` ${i18nT('pages.chatSidebar.1_skipped_currently_selected')}` : ''} {i18nT('pages.chatSidebar.pinned_sessions_are_kept')}
                       {archivable.length > 0 && (
                         <button className="ml-1 text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => setCleanupExpanded(!cleanupExpanded)}>
                           {cleanupExpanded ? i18nT('pages.chatSidebar.hide') : i18nT('pages.chatSidebar.show')} {i18nT('pages.chatSidebar.session', { count: archivable.length })} ▸
@@ -3699,9 +3699,10 @@ function ChatSidebar({
                 if (historyFilter.trim().length >= SEARCH_MIN_CHARS && historySearchResults) {
                   return groupHistoryByFolder(sortedHistory, folders).map(({ key: gid, folder, rows }) => {
                     const collapsed = collapsedHistoryGroups.has(gid)
+                    const groupName = folder ? folder.name : i18nT('pages.chatSidebar.unfiled')
                     return (
                       <Fragment key={gid}>
-                        <button type="button" aria-expanded={!collapsed} aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${folder ? folder.name : 'Unfiled'} results`} className="w-full flex items-center gap-1.5 px-2 pt-3 pb-1 text-[11px] font-semibold text-muted select-none bg-transparent border-none cursor-pointer hover:text-text first:pt-1" onClick={() => setCollapsedHistoryGroups(prev => { const next = new Set(prev); if (next.has(gid)) next.delete(gid); else next.add(gid); return next })}>
+                        <button type="button" aria-expanded={!collapsed} aria-label={collapsed ? i18nT('pages.chatSidebar.expand_group_results', { group: groupName }) : i18nT('pages.chatSidebar.collapse_group_results', { group: groupName })} className="w-full flex items-center gap-1.5 px-2 pt-3 pb-1 text-[11px] font-semibold text-muted select-none bg-transparent border-none cursor-pointer hover:text-text first:pt-1" onClick={() => setCollapsedHistoryGroups(prev => { const next = new Set(prev); if (next.has(gid)) next.delete(gid); else next.add(gid); return next })}>
                           {collapsed ? <ChevronRight size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
                           {folder ? <FolderGlyph icon={folder.icon} size={12} open={!collapsed} /> : <Folder size={12} className="text-muted shrink-0" />}
                           <span className="truncate">{folder ? folder.name : i18nT('pages.chatSidebar.unfiled')}</span>

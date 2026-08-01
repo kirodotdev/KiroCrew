@@ -9,13 +9,13 @@ import { i18nT } from '../../i18n/t'
 const extractError = (err: unknown): string => {
   if (err != null && typeof err === 'object' && !(err instanceof Error)) {
     const obj = err as Record<string, unknown>;
-    if (obj.error != null || obj.detail != null) return String(obj.error ?? obj.detail) || 'Unknown error';
+    if (obj.error != null || obj.detail != null) return String(obj.error ?? obj.detail) || i18nT('pages.overview.vectorMemoryCard.unknown_error');
     if (obj.message) return String(obj.message);
-    try { return JSON.stringify(obj) } catch { return 'Unknown error' }
+    try { return JSON.stringify(obj) } catch { return i18nT('pages.overview.vectorMemoryCard.unknown_error') }
   }
-  const msg = err instanceof Error ? err.message : String(err ?? 'Unknown error');
-  try { const p = JSON.parse(msg); return String(p?.error ?? p?.detail ?? p?.message ?? msg) || 'Unknown error' }
-  catch { return msg || 'Unknown error' }
+  const msg = err instanceof Error ? err.message : String(err ?? i18nT('pages.overview.vectorMemoryCard.unknown_error'));
+  try { const p = JSON.parse(msg); return String(p?.error ?? p?.detail ?? p?.message ?? msg) || i18nT('pages.overview.vectorMemoryCard.unknown_error') }
+  catch { return msg || i18nT('pages.overview.vectorMemoryCard.unknown_error') }
 }
 
 interface VectorStats {
@@ -269,7 +269,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
   // Derive the download step label from the raw status
   const downloadStepLabel = (step: string, status: EmbeddingStatus | null): string => {
     const rawStep = status?.download_step
-    if (rawStep === 'verifying') return 'Verifying model integrity…'
+    if (rawStep === 'verifying') return i18nT('pages.overview.vectorMemoryCard.verifying_model_integrity')
     if (rawStep === 'waiting_retry') {
       const attempt = status?.download_attempt ?? 0
       return `Retrying download (attempt ${attempt})…`
@@ -283,7 +283,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
         const totalMB = (total / 1e6).toFixed(0)
         return `Downloading embedding model (${dlMB}/${totalMB} MB — ${pctDone}%)…`
       }
-      return 'Downloading embedding model (~610MB)…'
+      return i18nT('pages.overview.vectorMemoryCard.downloading_embedding_model_610mb')
     }
     return step
   }
@@ -298,7 +298,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
 
   return (<>
     <Card>
-      <CardTitle><Brain className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.vector_memory')} <InfoTip text="Structured semantic (key-value) + episodic (conversation fragments) memory with vector search. Embeddings are always-on — the model downloads automatically in the background." /></CardTitle>
+      <CardTitle><Brain className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.vector_memory')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.structured_semantic_key_value_episodic_conversat')} /></CardTitle>
       {!active && !enabling && (
         <div className="flex flex-col gap-3 items-start">
           {embStatus?.setup_error
@@ -329,18 +329,18 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
               <div className="text-2xl animate-pulse"><Brain className="lucide-inline" /></div>
               <div className="flex-1">
                 <div className="text-sm font-medium text-text-strong mb-1">
-                  {step === 'checking' && 'Checking system status…'}
+                  {step === 'checking' && i18nT('pages.overview.vectorMemoryCard.checking_system_status')}
                   {step === 'downloading' && downloadStepLabel(step, embStatus)}
                   {step === 'done' && <><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.ready')}</>}
-                  {step === 'error' && <><XCircle className="lucide-inline" /> {embStatus?.setup_error || 'Setup failed'}</>}
+                  {step === 'error' && <><XCircle className="lucide-inline" /> {embStatus?.setup_error || i18nT('pages.overview.vectorMemoryCard.setup_failed')}</>}
                 </div>
                 <div className="w-full bg-bg-elevated rounded-full h-2 border border-border overflow-hidden">
                   <div className={`h-full rounded-full ${hasDeterminatePct ? 'transition-all duration-1000 ease-out' : step === 'downloading' ? 'animate-[grow_300s_ease-out_forwards]' : 'transition-all duration-700 ease-out'}`}
                     style={{ width: hasDeterminatePct ? `${pct}%` : step === 'downloading' ? undefined : `${pct}%`, background: step === 'error' ? 'var(--danger)' : 'var(--accent)' }} />
                 </div>
                 <div className="text-[12px] text-muted mt-1">
-                  {step === 'downloading' && 'Downloading from CDN…'}
-                  {step === 'error' && 'Download failed. Check network connectivity and try again.'}
+                  {step === 'downloading' && i18nT('pages.overview.vectorMemoryCard.downloading_from_cdn')}
+                  {step === 'error' && i18nT('pages.overview.vectorMemoryCard.download_failed_check_network_connectivity_and_t')}
                 </div>
               </div>
             </div>
@@ -395,7 +395,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
 
     {active && view === 'semantic' && (
       <Card>
-        <CardTitle>{i18nT('pages.overview.vectorMemoryCard.semantic_memory')} <InfoTip text="Structured key-value facts about you. Confidence: how certain the system is (1.0 = you set it, 0.85 = extracted from chat). Source: who wrote it (user_explicit = you, consolidation = auto-extracted)." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.vectorMemoryCard.semantic_memory')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.structured_key_value_facts_about_you_confidence')} /></CardTitle>
         <div className="flex gap-2 items-center mb-3 relative">
           <div className="relative" style={{ flex: 1 }}>
             <Input placeholder={i18nT('pages.overview.vectorMemoryCard.key_e_g_pref_backend_framework')} value={newKey} onChange={e => { setNewKey(e.target.value); setWriteError('') }}
@@ -415,7 +415,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
         <table className="w-full border-collapse table-striped"><thead><tr>
           {['Key','Value','Confidence','Source',''].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
         </tr></thead><tbody>
-          {filteredSemantic.length === 0 ? <tr><td colSpan={5} className="text-muted italic px-2.5 py-3.5 text-sm">{semFilter ? 'No matching entries' : 'No semantic entries'}</td></tr> : visibleSemantic.map(e => {
+          {filteredSemantic.length === 0 ? <tr><td colSpan={5} className="text-muted italic px-2.5 py-3.5 text-sm">{semFilter ? i18nT('pages.overview.vectorMemoryCard.no_matching_entries') : i18nT('pages.overview.vectorMemoryCard.no_semantic_entries')}</td></tr> : visibleSemantic.map(e => {
             const valStr = semanticValueText(e)
             const isEditing = editKey === e.key
             return (
@@ -447,7 +447,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
         </div>
         {filteredSemantic.length > 0 && (
           <p className="text-muted text-[12px] mt-2">
-            {i18nT('pages.overview.vectorMemoryCard.showing')} {visibleSemantic.length} {i18nT('pages.overview.vectorMemoryCard.of')} {filteredSemantic.length}{filteredSemantic.length !== semantic.length ? ` (filtered from ${semantic.length})` : ''}{filteredSemantic.length > visibleSemantic.length ? ' — refine your filter to narrow further' : ''}
+            {i18nT('pages.overview.vectorMemoryCard.showing')} {visibleSemantic.length} {i18nT('pages.overview.vectorMemoryCard.of')} {filteredSemantic.length}{filteredSemantic.length !== semantic.length ? ` (filtered from ${semantic.length})` : ''}{filteredSemantic.length > visibleSemantic.length ? <> {i18nT('pages.overview.vectorMemoryCard.refine_your_filter_to_narrow_further')}</> : ''}
           </p>
         )}
       </Card>
@@ -455,7 +455,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
 
     {active && view === 'episodic' && (
       <Card>
-        <CardTitle>{i18nT('pages.overview.vectorMemoryCard.episodic_memory')} <InfoTip text="Conversation fragments with vector search. Importance: how significant (0-1, higher = more important). Score: cosine similarity to your search query (closer to 1.0 = more relevant)." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.vectorMemoryCard.episodic_memory')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.conversation_fragments_with_vector_search_import')} /></CardTitle>
         <div className="flex gap-2 items-center mb-3">
           <Input placeholder={i18nT('pages.overview.vectorMemoryCard.search_episodic_memories')} style={{ flex: 1 }} value={epQuery} onChange={e => setEpQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') loadEpisodic() }} />
@@ -501,7 +501,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
 
     {active && view === 'audit' && (
       <Card>
-        <CardTitle>{i18nT('pages.overview.vectorMemoryCard.audit_trail')} <InfoTip text="Every memory create, update, delete, conflict, and injection block is logged here." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.vectorMemoryCard.audit_trail')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.every_memory_create_update_delete_conflict_and_i')} /></CardTitle>
         <div className="flex gap-1.5 flex-wrap mb-3">
           <Btn onClick={() => setEventFilter('all')} className={eventFilter === 'all' ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.vectorMemoryCard.all')}</Btn>
           {eventTypes.map((t: string) => (
@@ -531,7 +531,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
 
     {active && view === 'inspector' && (
       <Card>
-        <CardTitle><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.memory_inspector')} <InfoTip text="Preview what gets injected into prompts. Enter a query to see episodic retrieval results." /></CardTitle>
+        <CardTitle><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.memory_inspector')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.preview_what_gets_injected_into_prompts_enter_a')} /></CardTitle>
         <div className="flex gap-2 items-center mb-3">
           <Input placeholder={i18nT('pages.overview.vectorMemoryCard.test_query_e_g_what_database_should_i_use')} style={{ flex: 1 }} value={inspectorQuery} onChange={e => setInspectorQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') loadPreview(inspectorQuery) }} />

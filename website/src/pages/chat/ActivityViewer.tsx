@@ -321,14 +321,14 @@ function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
         const res = await fetch(fileReadUrl(path))
         const text = res.ok
           ? await res.text()
-          : res.status === 404 ? '_File not found on disk. It may have been moved or deleted._'
-            : '_Unable to read file._'
+          : res.status === 404 ? i18nT('pages.chat.activityViewer.file_not_found_on_disk_it_may_have_been_moved_or')
+            : i18nT('pages.chat.activityViewer.unable_to_read_file')
         return { text, ok: res.ok }
       } catch {
         // Network-level failure (fetch rejected) — return a NOT-ok result rather
         // than throwing, so `data` is always defined and the editor is never
         // mounted over an empty buffer that a save could write to the file.
-        return { text: '_Unable to read file._', ok: false }
+        return { text: i18nT('pages.chat.activityViewer.unable_to_read_file'), ok: false }
       }
     },
     staleTime: 10_000,

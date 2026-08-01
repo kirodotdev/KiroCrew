@@ -98,7 +98,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
         className={`flex items-center gap-2 px-3.5 py-2 rounded-md text-[13px] font-mono text-muted bg-card border cursor-pointer transition-all w-full text-left ${needsAttention && !expanded ? 'border-amber-400 hover:border-amber-300' : localResolved ? 'border-ok/60 hover:border-ok/80' : 'border-border hover:border-border-strong'} hover:text-text`}
         onClick={() => { userToggled.current = true; setExpanded(e => !e) }}
         aria-expanded={expanded}
-        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${labelText}`}
+        aria-label={`${expanded ? i18nT('pages.chat.collapsibleToolGroup.collapse') : i18nT('pages.chat.collapsibleToolGroup.expand')} ${labelText}`}
       >
         {needsAttention ? (
           <span className="relative w-2.5 h-2.5 flex-shrink-0" aria-label={i18nT('pages.chat.collapsibleToolGroup.approval_needed')}>

@@ -1341,7 +1341,7 @@ export const api = {
     let body: { paths?: unknown; error?: string }
     try { body = await res.json() } catch { body = {} }
     if (!res.ok) return { paths: [] as string[], error: body.error || res.statusText, resized, resizedByPath: {} as Record<string, ResizeInfo> }
-    if (!Array.isArray(body.paths)) return { paths: [] as string[], error: 'Unexpected server response', resized, resizedByPath: {} as Record<string, ResizeInfo> }
+    if (!Array.isArray(body.paths)) return { paths: [] as string[], error: i18nT('api.client.unexpected_server_response'), resized, resizedByPath: {} as Record<string, ResizeInfo> }
     // The server appends one path per multipart 'file' part in order, so
     // paths[i] is prepared[i]'s stored location — zip them to key resize
     // details by the exact server path the attachment chip renders from.
@@ -1476,7 +1476,7 @@ export const api = {
           }
         }
       }
-      return { ok: false, error: 'Stream ended without completion' }
+      return { ok: false, error: i18nT('api.client.stream_ended_without_completion') }
     } finally {
       reader.releaseLock()
     }

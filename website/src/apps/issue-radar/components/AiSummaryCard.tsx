@@ -98,7 +98,7 @@ export default function AiSummaryCard({
                 : `Generated ${new Date(generatedAt as string).toLocaleString()}`
             }
           >
-            {age}{stale ? ' · outdated' : ''}
+            {age}{stale ? <> · {i18nT('apps.issueRadar.components.aiSummaryCard.outdated')}</> : ''}
           </span>
         )}
         <button

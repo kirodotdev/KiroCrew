@@ -177,7 +177,7 @@ function connectionHint(spec: BotChannelSpec, config: BotChannelConfigData): str
     return `${spec.name} channel failed to start (${config.connect_error}). Check the bot token and network access to ${spec.host}, then restart the gateway.`
   }
   if (config.configured) {
-    return 'Configuration is saved but the channel is not running. Restart the gateway to connect.'
+    return i18nT('pages.settings.botChannelPanel.configuration_is_saved_but_the_channel_is_not_ru')
   }
   if (config.bot_token_set && (config.bot_id_set ?? true) && config.enabled && config.allowed_user_ids.length === 0 && !config.allow_all_users) {
     return spec.emptyAllowlistHint
@@ -234,7 +234,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
     onError: (e: unknown) => {
       // The API client throws with the raw response body; extract the
       // server's error field for clean display.
-      let msg = 'Save failed. Is the gateway running?'
+      let msg = i18nT('pages.settings.botChannelPanel.save_failed_is_the_gateway_running')
       if (e instanceof Error && e.message) {
         try {
           msg = JSON.parse(e.message).error ?? e.message
@@ -262,7 +262,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
     setError('')
     const pct = parseInt(draft.soft_threshold_pct, 10)
     if (!Number.isInteger(pct) || pct < 1 || pct > 100) {
-      setError('Soft context threshold must be a number between 1 and 100')
+      setError(i18nT('pages.settings.botChannelPanel.soft_context_threshold_must_be_a_number_between'))
       setTimeout(() => setError(''), 8000)
       return
     }
@@ -326,7 +326,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       )}
 
       {/* ── Credentials guide ── */}
-      <SettingsSection title={spec.guideTitle ?? 'Get your bot token'}>
+      <SettingsSection title={spec.guideTitle ?? i18nT('pages.settings.botChannelPanel.get_your_bot_token')}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">{spec.guideBody}</p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
@@ -383,7 +383,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             onChange={setBotToken}
             cleared={botClear}
             onClearedChange={setBotClear}
-            setupLink={{ href: spec.setupGuide, label: 'Where to find the bot token' }}
+            setupLink={{ href: spec.setupGuide, label: i18nT('pages.settings.botChannelPanel.where_to_find_the_bot_token') }}
           />
         </SettingsCard>
       </SettingsSection>
@@ -489,11 +489,11 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       {/* ── Save (hidden on read-only remote sessions) ── */}
       {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
-          {saveMut.isPending ? 'Saving…' : `Save ${spec.name} settings`}
+          {saveMut.isPending ? i18nT('pages.settings.botChannelPanel.saving') : i18nT('pages.settings.botChannelPanel.save_channel_settings', { channel: spec.name })}
         </Btn>
         {saved && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-ok">
-            <Check size={14} /> {tokenVerified ? `Verified with ${spec.name} and saved. Restart the gateway to connect.` : restartHint ? 'Saved. Restart the gateway to apply.' : 'Saved.'}
+            <Check size={14} /> {tokenVerified ? i18nT('pages.settings.botChannelPanel.verified_with_channel_and_saved', { channel: spec.name }) : restartHint ? i18nT('pages.settings.botChannelPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.botChannelPanel.saved')}
           </span>
         )}
         {saved && verifyWarning && (

@@ -85,10 +85,10 @@ const REACTION_KEYS: ReadonlyArray<{ key: keyof NonNullable<IssueSource['reactio
  *  closes on GitHub, which is the difference between "fixed" and "won't do" —
  *  the single most useful fact about a closed issue. GitLab reports no reason. */
 export function issueStateLabel(source: IssueSource): string {
-  if (source.state !== 'closed') return 'Open'
-  if (source.stateReason === 'not_planned') return 'Closed as not planned'
-  if (source.stateReason === 'completed') return 'Closed as completed'
-  return 'Closed'
+  if (source.state !== 'closed') return i18nT('components.issuePanel.open_state')
+  if (source.stateReason === 'not_planned') return i18nT('components.issuePanel.closed_as_not_planned')
+  if (source.stateReason === 'completed') return i18nT('components.issuePanel.closed_as_completed')
+  return i18nT('components.issuePanel.closed')
 }
 
 function stateTone(source: IssueSource): string {
@@ -457,8 +457,8 @@ export default function IssuePanel({
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
               {source.author && <span>{source.author}</span>}
-              {source.createdAt && <span>opened {age(source.createdAt)}</span>}
-              {source.updatedAt && <span>updated {age(source.updatedAt)}</span>}
+              {source.createdAt && <span>{i18nT('components.issuePanel.opened_time', { time: age(source.createdAt) })}</span>}
+              {source.updatedAt && <span>{i18nT('components.issuePanel.updated_time', { time: age(source.updatedAt) })}</span>}
               {source.assignees.length > 0 && (
                 <span className="inline-flex items-center gap-1" title={`Assigned to ${source.assignees.join(', ')}`}>
                   <Users className="lucide-inline" aria-hidden="true" />
@@ -501,7 +501,9 @@ export default function IssuePanel({
             <div role="status" className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">
               <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" aria-hidden="true" />
               <span>
-                Provider results may be partial for {source.partialSections.join(', ')}. Open the issue for the complete set.
+                {i18nT('components.issuePanel.provider_results_may_be_partial_for_sections_ope', {
+                  sections: source.partialSections.join(', '),
+                })}
               </span>
             </div>
           )}

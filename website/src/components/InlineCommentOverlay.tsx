@@ -168,7 +168,9 @@ export function InlineCommentOverlay({
           onClick={() => onActivate(g.id)}
           className={`mc-cmt-bubble${g.id === activeId ? ' active' : ''}${g.unread ? ' unread' : ''}`}
           style={{ position: 'absolute', left: g.x, top: g.y - 1, pointerEvents: 'auto' }}
-          title={`${g.count} comment${g.count === 1 ? '' : 's'}${g.unread ? ' · unread' : ''}`}
+          title={g.unread
+            ? i18nT('components.inlineCommentOverlay.comment_unread', { count: g.count })
+            : i18nT('components.inlineCommentOverlay.comment', { count: g.count })}
         >
           {g.count}
         </button>

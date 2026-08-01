@@ -21,9 +21,9 @@ const displayName = (s: Skill) => s.name.replace(/[-_]/g, ' ').replace(/\b\w/g, 
 /** Short, human label for a skill's provenance — drives the source badge. */
 function sourceLabel(source: Skill['source']): string | null {
   switch (source) {
-    case 'package': return 'Package'
+    case 'package': return i18nT('pages.overview.skillsTab.package')
     case 'kiro-user': return '~/.kiro/skills'
-    case 'kiro-workspace': return 'workspace'
+    case 'kiro-workspace': return i18nT('pages.overview.skillsTab.workspace')
     default: return null  // kirocrew — the default home, no badge needed
   }
 }
@@ -164,7 +164,7 @@ export default function SkillsTab() {
   }
 
   if (isLoading) return (<>
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills')} <InfoTip text="On-demand skills loaded when the agent determines they're relevant." /> <Btn primary disabled>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></h4>
+    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills')} <InfoTip text={i18nT('pages.overview.skillsTab.on_demand_skills_loaded_when_the_agent_determine')} /> <Btn primary disabled>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></h4>
     <Card>
       <div className="flex items-center gap-2 mb-3"><div className="h-8 max-w-[480px] flex-1 rounded-md animate-pulse" style={{ background: 'var(--border)', opacity: 0.5 }} /></div>
       <div className="flex gap-3 h-[calc(100vh-260px)] min-h-[420px]">
@@ -317,7 +317,7 @@ function PendingCandidateRow({ p, onApprove, onDismiss }: {
           <div className="text-sm font-medium text-text-strong truncate">
             {p.name}
             {isUpdate && (
-              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-accent-subtle text-accent font-bold">Update</span>
+              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-accent-subtle text-accent font-bold">{i18nT('pages.overview.skillsTab.update')}</span>
             )}
             {p.has_scripts && (
               <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn font-bold">{i18nT('pages.overview.skillsTab.script')}</span>
@@ -329,7 +329,7 @@ function PendingCandidateRow({ p, onApprove, onDismiss }: {
               : p.description}
           </div>
         </div>
-        <Btn onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'Review'}</Btn>
+        <Btn onClick={() => setOpen(o => !o)}>{open ? i18nT('pages.overview.skillsTab.hide') : i18nT('pages.overview.skillsTab.review')}</Btn>
         {/* An update whose target was archived/removed after staging has nothing
             to apply, and a stale update (live moved on since the merge) would
             replace the newer approved content — the backend refuses both, so keep
@@ -341,16 +341,13 @@ function PendingCandidateRow({ p, onApprove, onDismiss }: {
         <div className="mt-2 space-y-2">
           {isUpdate && detail.stale_base && (
             <div className="text-[11px] p-2 rounded bg-warn-subtle text-warn border border-border">
-              This skill changed after this update was written, so applying it now
-              would undo those newer changes. Approving is blocked — dismiss this
-              candidate and a fresh update will be proposed against the current
-              version.
+              {i18nT('pages.overview.skillsTab.this_skill_changed_after_this_update_was_written')}
             </div>
           )}
           {isUpdate && detail.diff ? (
             <>
               <div className="text-[11px] font-semibold text-muted">
-                Proposed change{detail.from_version != null && detail.to_version != null
+                {i18nT('pages.overview.skillsTab.proposed_change')}{detail.from_version != null && detail.to_version != null
                   ? ` (v${detail.from_version} → v${detail.to_version})`
                   : ''}
               </div>
@@ -358,8 +355,7 @@ function PendingCandidateRow({ p, onApprove, onDismiss }: {
             </>
           ) : isUpdate ? (
             <div className="text-[11px] p-2 rounded bg-bg-elevated border border-border text-muted">
-              The skill this update targets no longer exists, so there is nothing
-              to update. Dismiss this candidate.
+              {i18nT('pages.overview.skillsTab.the_skill_this_update_targets_no_longer_exists_s')}
             </div>
           ) : (
             <>
@@ -422,7 +418,7 @@ function PendingSkillsPanel() {
     <div className="mt-4 mb-2">
       <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
         {i18nT('pages.overview.skillsTab.pending_review_count', { count: pending.length })}
-        <InfoTip text="Auto-generated skill candidates awaiting your approval. Click Review to inspect the SKILL.md and any bundled script before approving. Approve makes the skill live (and marks scripts executable); dismiss discards it. Nothing goes live until you approve it." />
+        <InfoTip text={i18nT('pages.overview.skillsTab.auto_generated_skill_candidates_awaiting_your_ap')} />
       </h4>
       <Card>
         <div className="space-y-2">

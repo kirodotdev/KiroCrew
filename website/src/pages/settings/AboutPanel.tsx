@@ -244,10 +244,10 @@ export function AboutPanel() {
         <div className="flex flex-col gap-0.5 min-w-0">
           <span className="text-[13px] font-medium text-text flex items-center gap-1.5">
             <ArrowUp size={13} className="lucide-inline text-accent" />
-            {botName || 'Kiro Crew'} {updateState?.version || 'update'}
+            {botName || 'Kiro Crew'} {updateState?.version || i18nT('pages.settings.aboutPanel.update_noun')}
           </span>
           <span className="text-[12px] text-muted">
-            {channel ? `${channel} channel` : 'update'}
+            {channel ? `${channel} channel` : i18nT('pages.settings.aboutPanel.update_noun')}
             {cardPubDate && !isNaN(cardPubDate.getTime()) ? ` · published ${cardPubDate.toLocaleString()}` : ''}
           </span>
         </div>
@@ -385,7 +385,7 @@ export function AboutPanel() {
       // with a status code — surface it. A bare network failure means the POST's
       // connection was reset by the gateway restart the update itself triggers;
       // that is the expected success path, not a failure.
-      if (e instanceof ApiError) setApplyError(e.message || 'Update failed')
+      if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.update_failed'))
       else setRestarting(true)
     },
   })
@@ -467,7 +467,7 @@ export function AboutPanel() {
               <div className="shrink-0 flex items-center gap-2">
                 {channelMutation.isPending && <RefreshCw size={13} className="lucide-inline animate-spin text-muted" />}
                 <SegmentedControl
-                  segments={[{ key: 'stable', label: 'Stable' }, { key: 'insider', label: 'Insider' }]}
+                  segments={[{ key: 'stable', label: i18nT('pages.settings.aboutPanel.stable') }, { key: 'insider', label: i18nT('pages.settings.aboutPanel.insider') }]}
                   value={channel === 'insider' ? 'insider' : 'stable'}
                   onChange={next => { if (next !== channel && !channelMutation.isPending) channelMutation.mutate(next) }}
                   layoutId="update-channel"
@@ -562,7 +562,7 @@ export function AboutPanel() {
             className="text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none px-0"
             onClick={() => setShowFull(v => !v)}
           >
-            {showFull ? '▾ Hide Full Changelog' : '▸ View Full Changelog'}
+            {showFull ? i18nT('pages.settings.aboutPanel.hide_full_changelog') : i18nT('pages.settings.aboutPanel.view_full_changelog')}
           </button>
           {showFull && (
             <div className="mt-2 p-3 bg-bg rounded-lg border border-border max-h-[360px] overflow-y-auto text-[13px] text-text">
@@ -611,7 +611,7 @@ export function AboutPanel() {
               </div>
             ) : (
               <Btn primary className="w-full justify-center" disabled={gwApply.isPending} onClick={() => gwApply.mutate()}>
-                {gwApply.isPending ? <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating')}</> : 'Update now'}
+                {gwApply.isPending ? <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating')}</> : i18nT('pages.settings.aboutPanel.update_now')}
               </Btn>
             )}
           </div>

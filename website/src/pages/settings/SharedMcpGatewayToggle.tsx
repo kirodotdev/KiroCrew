@@ -45,9 +45,9 @@ export function SharedMcpGatewayToggle() {
   }
 
   const subStatus = !supported ? i18nT('pages.settings.sharedMcpGatewayToggle.not_available_on_windows')
-    : !enabled ? 'Disabled — each session spawns its own MCP backends.'
-    : pingOk ? 'Active — sessions share pooled MCP backends. See the live pool under Developer > System.'
-    : 'Enabled — broker not reachable; toggle off and on to re-apply.'
+    : !enabled ? i18nT('pages.settings.sharedMcpGatewayToggle.disabled_each_session_spawns_its_own_mcp_backend')
+    : pingOk ? i18nT('pages.settings.sharedMcpGatewayToggle.active_sessions_share_pooled_mcp_backends_see_th')
+    : i18nT('pages.settings.sharedMcpGatewayToggle.enabled_broker_not_reachable_toggle_off_and_on_t')
 
   const btn = 'text-[13px] px-3 py-1.5 rounded-md transition-colors cursor-pointer'
 
@@ -67,7 +67,7 @@ export function SharedMcpGatewayToggle() {
       <Modal
         open={phase === 'confirm'}
         onClose={() => setPhase('idle')}
-        title={target ? 'Enable shared MCP gateway?' : 'Disable shared MCP gateway?'}
+        title={target ? i18nT('pages.settings.sharedMcpGatewayToggle.enable_shared_mcp_gateway') : i18nT('pages.settings.sharedMcpGatewayToggle.disable_shared_mcp_gateway')}
         maxWidth={460}
         footer={<>
           <button className={`${btn} border border-border text-text hover:bg-bg-hover`} onClick={() => setPhase('idle')}>{i18nT('pages.settings.sharedMcpGatewayToggle.cancel')}</button>
@@ -81,7 +81,7 @@ export function SharedMcpGatewayToggle() {
       <Modal
         open={busy || phase === 'done' || phase === 'failed'}
         onClose={() => { if (!busy) setPhase('idle') }}
-        title={phase === 'done' ? 'Done' : phase === 'failed' ? 'Could not apply' : (target ? 'Enabling shared MCP gateway' : 'Disabling shared MCP gateway')}
+        title={phase === 'done' ? i18nT('pages.settings.sharedMcpGatewayToggle.done') : phase === 'failed' ? i18nT('pages.settings.sharedMcpGatewayToggle.could_not_apply') : (target ? i18nT('pages.settings.sharedMcpGatewayToggle.enabling_shared_mcp_gateway') : i18nT('pages.settings.sharedMcpGatewayToggle.disabling_shared_mcp_gateway'))}
         maxWidth={460}
         footer={phase === 'done' ? (
           <button className={`${btn} bg-accent text-accent-fg hover:bg-accent-hover`} onClick={() => setPhase('idle')}>{i18nT('pages.settings.sharedMcpGatewayToggle.close')}</button>
@@ -93,17 +93,19 @@ export function SharedMcpGatewayToggle() {
         {phase === 'done' ? (
           <div className="flex items-center gap-2 text-[13px] text-text">
             <Check size={16} className="text-ok" />
-            {target ? 'Shared MCP gateway is active.' : 'Shared MCP gateway is disabled.'}
+            {target ? i18nT('pages.settings.sharedMcpGatewayToggle.shared_mcp_gateway_is_active') : i18nT('pages.settings.sharedMcpGatewayToggle.shared_mcp_gateway_is_disabled')}
           </div>
         ) : phase === 'failed' ? (
           <div className="flex items-start gap-2 text-[13px] text-text">
             <AlertTriangle size={16} className="text-danger mt-0.5 shrink-0" />
-            <span>{i18nT('pages.settings.sharedMcpGatewayToggle.the_gateway_did_not_reach_the_expected_state')}{target ? ' Roll back to the safe (disabled) state, or try again.' : ' Try again.'}</span>
+            <span>{target
+              ? i18nT('pages.settings.sharedMcpGatewayToggle.gateway_stuck_roll_back')
+              : i18nT('pages.settings.sharedMcpGatewayToggle.gateway_stuck_retry')}</span>
           </div>
         ) : (
           <div className="flex items-center gap-2 text-[13px] text-text">
             <Loader2 size={16} className="text-accent animate-spin shrink-0" />
-            {target ? 'Starting broker, restarting sessions, verifying connectivity…' : 'Stopping broker and restarting sessions…'}
+            {target ? i18nT('pages.settings.sharedMcpGatewayToggle.starting_broker_restarting_sessions_verifying_co') : i18nT('pages.settings.sharedMcpGatewayToggle.stopping_broker_and_restarting_sessions')}
           </div>
         )}
       </Modal>

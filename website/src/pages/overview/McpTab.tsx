@@ -381,7 +381,7 @@ export default function McpTab() {
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">
                   <Badge variant={s.status === 'ok' ? 'ok' : s.status === 'error' ? 'err' : 'warn'}>
-                    {s.status === 'ok' ? 'Online' : s.status === 'error' ? 'Error' : s.status === 'outdated' ? 'Outdated' : s.status === 'disabled' ? 'Disabled' : 'Unknown'}
+                    {s.status === 'ok' ? i18nT('pages.overview.mcpTab.online') : s.status === 'error' ? i18nT('pages.overview.mcpTab.error') : s.status === 'outdated' ? i18nT('pages.overview.mcpTab.outdated') : s.status === 'disabled' ? i18nT('pages.overview.mcpTab.disabled') : i18nT('pages.overview.mcpTab.unknown')}
                   </Badge>
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-[13px] w-full">
@@ -400,7 +400,7 @@ export default function McpTab() {
                         onClick={() => toggleToolPending(s.name, t, !effectivelyEnabled)}
                         title={hasPending
                           ? `Pending: ${effectivelyEnabled ? 'enable' : 'disable'} (click to revert)`
-                          : effectivelyEnabled ? 'Click to disable (pending until Apply)' : 'Click to enable (pending until Apply)'}
+                          : effectivelyEnabled ? i18nT('pages.overview.mcpTab.click_to_disable_pending_until_apply') : i18nT('pages.overview.mcpTab.click_to_enable_pending_until_apply')}
                       ><span className={`w-1.5 h-1.5 rounded-full shrink-0 ${effectivelyEnabled ? 'bg-ok' : 'bg-muted'}`} />{t}</button>
                     })}</div></motion.div>}</AnimatePresence>
                   </div>) : '—'}

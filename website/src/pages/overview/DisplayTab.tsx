@@ -18,7 +18,7 @@ export default function DisplayTab() {
   return (
     <div className="grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
       <Card>
-        <CardTitle>{i18nT('pages.overview.displayTab.zoom')} <InfoTip text={zoomSupported ? `Native window zoom, the same setting as ${modKey}+ / ${modKey}−. Click the percentage to reset to 100%.` : 'Use your browser\u2019s zoom. Your browser remembers it for this site.'} /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.displayTab.zoom')} <InfoTip text={zoomSupported ? i18nT('pages.overview.displayTab.native_window_zoom_tip', { mod: modKey }) : i18nT('pages.overview.displayTab.use_your_browser_s_zoom_your_browser_remembers_i')} /></CardTitle>
         {zoomSupported ? (
           <div className="flex items-center gap-2">
             <button className={BTN + ' ' + active(false)} onClick={zoomOut}>−</button>
@@ -30,17 +30,17 @@ export default function DisplayTab() {
         )}
       </Card>
       <Card>
-        <CardTitle>{i18nT('pages.overview.displayTab.font')} <InfoTip text="Change the dashboard font family. Persists across sessions." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.displayTab.font')} <InfoTip text={i18nT('pages.overview.displayTab.change_the_dashboard_font_family_persists_across')} /></CardTitle>
         <div className="flex items-center gap-2">
           {(['sans', 'mono', 'system'] as const).map(f => (
             <button key={f} className={BTN + ' ' + active(family === f)} onClick={() => setFontFamily(f)}>
-              {f === 'sans' ? 'Sans' : f === 'mono' ? 'Mono' : 'System'}
+              {f === 'sans' ? i18nT('pages.overview.displayTab.sans') : f === 'mono' ? i18nT('pages.overview.displayTab.mono') : i18nT('pages.overview.displayTab.system')}
             </button>
           ))}
         </div>
       </Card>
       <Card>
-        <CardTitle>{i18nT('pages.overview.displayTab.mode')} <InfoTip text="Switch between color schemes. Auto follows your OS preference." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.displayTab.mode')} <InfoTip text={i18nT('pages.overview.displayTab.switch_between_color_schemes_auto_follows_your_o')} /></CardTitle>
         <div className="flex items-center gap-2">
           {(['system', 'light', 'dark'] as const).map(t => (
             <button key={t} className={BTN + ' ' + active(preference === t)} onClick={() => setTheme(t)}>
@@ -50,7 +50,7 @@ export default function DisplayTab() {
         </div>
       </Card>
       <Card>
-        <CardTitle>{i18nT('pages.overview.displayTab.color_theme')} <InfoTip text="Choose a color palette. Each theme supports dark and light modes. Custom themes are stored in ~/.kiro/crew/themes/." /></CardTitle>
+        <CardTitle>{i18nT('pages.overview.displayTab.color_theme')} <InfoTip text={i18nT('pages.overview.displayTab.choose_a_color_palette_each_theme_supports_dark')} /></CardTitle>
         <div className="flex flex-wrap items-center gap-2">
           {allThemes.map(t => (
             <div key={t.value} className="relative group">
@@ -73,7 +73,7 @@ export default function DisplayTab() {
             )}
             onClick={editor.editorOpen ? editor.closeEditor : editor.openNewTheme}
           >
-            {editor.editorOpen && !editor.isEditing ? <><Pencil className="lucide-inline" /> {i18nT('pages.overview.displayTab.creating')}</> : editor.editorOpen && editor.isEditing ? <><Pencil className="lucide-inline" /> {i18nT('pages.overview.displayTab.editing')}</> : '+ New Theme'}
+            {editor.editorOpen && !editor.isEditing ? <><Pencil className="lucide-inline" /> {i18nT('pages.overview.displayTab.creating')}</> : editor.editorOpen && editor.isEditing ? <><Pencil className="lucide-inline" /> {i18nT('pages.overview.displayTab.editing')}</> : i18nT('pages.overview.displayTab.new_theme')}
           </button>
         </div>
 

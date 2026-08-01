@@ -245,7 +245,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
       )}
 
       <div className="flex gap-2 flex-wrap">
-        <Btn onClick={copyContent}><Copy size={12} /> {copied ? 'Copied!' : 'Copy Content'}</Btn>
+        <Btn onClick={copyContent}><Copy size={12} /> {copied ? i18nT('pages.knowledge.detailView.copied') : i18nT('pages.knowledge.detailView.copy_content')}</Btn>
         <Btn onClick={() => { const a = document.createElement('a'); a.href = `/api/knowledge/items/${item.id}/export`; a.download = `${item.title}.knowledge`; a.click() }}><Download size={12} /> {i18nT('pages.knowledge.detailView.export')}</Btn>
         {item.status === 'archived'
           ? <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'active' })}><RefreshCw size={12} /> {i18nT('pages.knowledge.detailView.unarchive')}</Btn>
@@ -254,7 +254,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
       </div>
       {(archiveMutation.isError || deleteMutation.isError) && (
         <div className="mt-2 text-[12px] text-danger flex items-center gap-1">
-          <AlertCircle size={12} /> {(archiveMutation.error || deleteMutation.error)?.message || 'Action failed'}
+          <AlertCircle size={12} /> {(archiveMutation.error || deleteMutation.error)?.message || i18nT('pages.knowledge.detailView.action_failed')}
         </div>
       )}
     </div>

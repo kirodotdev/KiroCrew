@@ -26,7 +26,7 @@ export function BrowserPanel() {
       await api.restartSessions()
     },
     onError: () => {
-      setError('Cannot reach gateway. Is it running?')
+      setError(i18nT('pages.settings.browserPanel.cannot_reach_gateway_is_it_running'))
       setTimeout(() => setError(''), 5000)
     },
     onSuccess: () => {
@@ -121,7 +121,7 @@ export function BrowserPanel() {
                   className="px-4 py-2 text-[13px] font-medium rounded border border-border bg-card hover:bg-bg-hover disabled:opacity-50 transition-colors"
                   style={{ color: 'var(--text)', marginBottom: 4 }}
                 >
-                  {saveMut.isPending ? 'Saving...' : 'Save'}
+                  {saveMut.isPending ? i18nT('pages.settings.browserPanel.saving') : i18nT('pages.settings.browserPanel.save')}
                 </button>
               </div>
               {error && (
@@ -148,7 +148,7 @@ export function BrowserPanel() {
                 className="px-4 py-2 text-[13px] font-medium rounded border border-border bg-card hover:bg-bg-hover disabled:opacity-50 transition-colors"
                 style={{ color: 'var(--text)' }}
               >
-                {saveMut.isPending ? 'Saving...' : 'Confirm'}
+                {saveMut.isPending ? i18nT('pages.settings.browserPanel.saving') : i18nT('pages.settings.browserPanel.confirm')}
               </button>
             </div>
           </SettingsCard>

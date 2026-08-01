@@ -138,7 +138,7 @@ function TreeRow({
         >
           <ChevronRight size={12} className={`shrink-0 text-muted transition-transform ${isOpen ? 'rotate-90' : ''}`} />
           {isOpen ? <FolderOpen size={14} className="shrink-0 text-muted" /> : <Folder size={14} className="shrink-0 text-muted" />}
-          <span className="truncate">{node.name || '(root)'}</span>
+          <span className="truncate">{node.name || i18nT('components.skillDirectoryBrowser.root')}</span>
           {node.children.length > 0 && (
             <span className="ml-auto text-[10px] text-muted/60 mr-2">{node.children.length}</span>
           )}
@@ -278,7 +278,7 @@ export default function SkillDirectoryBrowser({
           tags={stripTags}
           loadedByAgents={skill?.loaded_by_agents}
         />
-        <div className="text-[11px] font-mono text-muted mb-2 truncate" title={selected}>{selected || '(no file selected)'}</div>
+        <div className="text-[11px] font-mono text-muted mb-2 truncate" title={selected}>{selected || i18nT('components.skillDirectoryBrowser.no_file_selected')}</div>
         {fileLoading && <div className="text-muted text-[12px] animate-pulse">{i18nT('components.skillDirectoryBrowser.loading_file')}</div>}
         {fileErr && (
           <div className="text-danger text-[12px] flex items-start gap-1.5">

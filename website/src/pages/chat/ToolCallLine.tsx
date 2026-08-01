@@ -13,6 +13,7 @@ import { extractToolFilePath } from '../../utils/toolFilePath'
 import { isSafePath } from '../../utils/safePath'
 import { fileReadUrl } from '../../utils/fileReadUrl'
 import McpAppFrame from '../../components/McpAppFrame'
+import { i18nT } from '../../i18n/t'
 
 // Tool-call ids that have already played their one-shot `.ft-block-reveal`
 // entrance fade. A CSS animation re-fires on every DOM *mount*, and a pill
@@ -346,7 +347,11 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         ref={pillButtonRef}
         className={`inline-flex items-start gap-1 text-[13px] px-2 py-0.5 rounded-md transition-all text-left focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${hasPendingPerm ? 'cursor-default' : 'cursor-pointer hover:brightness-110'}`}
         aria-expanded={effectivelyExpanded}
-        aria-label={hasPendingPerm ? `Awaiting approval for tool: ${label}` : `${effectivelyExpanded ? 'Hide' : 'Show'} details for tool: ${label}`}
+        aria-label={hasPendingPerm
+          ? i18nT('pages.chat.toolCallLine.aria_awaiting_approval', { label })
+          : effectivelyExpanded
+            ? i18nT('pages.chat.toolCallLine.aria_hide_details', { label })
+            : i18nT('pages.chat.toolCallLine.aria_show_details', { label })}
         onClick={onToggle}
       >
         <Icon size={12} className={`shrink-0 ${iconClass}`} style={{ marginTop: '3px' }} />

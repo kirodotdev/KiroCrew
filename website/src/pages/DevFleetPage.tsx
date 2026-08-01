@@ -616,7 +616,7 @@ export default function DevFleetPage() {
         setSyncRun({ rid, status: okRun ? 'done' : 'error', phase: okRun ? SYNC_TOTAL_STEPS : phase, lines: out, startedAt: t0, exit: run.exit_code, last })
         setFlag('__syncmain', false)
         if (okRun) notify(i18nT('pages.devFleetPage.synced_restart_gateway_to_apply_the_new_build'), { type: 'success' })
-        else notify('Pull+Build failed (exit ' + run.exit_code + '): ' + last, { type: 'error' })
+        else notify(i18nT('pages.devFleetPage.pull_build_failed_exit_code_detail', { code: run.exit_code, detail: last }), { type: 'error' })
         invalidateFleet()
         return
       }
@@ -650,9 +650,9 @@ export default function DevFleetPage() {
         if (r?.ok && r.url) { if (w) w.location.href = r.url; else window.open(r.url, '_blank', 'noopener') }
         else { w?.close(); notify(r?.error || i18nT('pages.devFleetPage.token_mint_failed'), { type: 'error' }) }
       }
-      else if (kind === 'up') { notify('Starting pod for ' + name + '\u2026 (can take ~1 min)', { type: 'info' }); const r = await api.post<{ ok?: boolean; error?: string }>('/pod/up', { name }); notify(r?.ok ? 'Pod up: ' + name : (r?.error || i18nT('pages.devFleetPage.pod_start_failed')), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
-      else if (kind === 'down') { const r = await api.post<{ ok?: boolean; error?: string }>('/pod/down', { name }); notify(r?.ok ? 'Stopped ' + name : (r?.error || i18nT('pages.devFleetPage.failed')), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
-      else if (kind === 'restart') { const r = await api.post<{ ok?: boolean; error?: string }>('/pod/restart', { name }); notify(r?.ok ? 'Restarted ' + name : (r?.error || i18nT('pages.devFleetPage.failed')), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
+      else if (kind === 'up') { notify(i18nT('pages.devFleetPage.starting_pod_for_name_can_take_1_min', { name }), { type: 'info' }); const r = await api.post<{ ok?: boolean; error?: string }>('/pod/up', { name }); notify(r?.ok ? i18nT('pages.devFleetPage.pod_up_name', { name }) : (r?.error || i18nT('pages.devFleetPage.pod_start_failed')), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
+      else if (kind === 'down') { const r = await api.post<{ ok?: boolean; error?: string }>('/pod/down', { name }); notify(r?.ok ? i18nT('pages.devFleetPage.stopped_name', { name }) : (r?.error || i18nT('pages.devFleetPage.failed')), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
+      else if (kind === 'restart') { const r = await api.post<{ ok?: boolean; error?: string }>('/pod/restart', { name }); notify(r?.ok ? i18nT('pages.devFleetPage.restarted_name', { name }) : (r?.error || i18nT('pages.devFleetPage.failed')), { type: r?.ok ? 'success' : 'error' }); invalidateFleet() }
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setFlag(flag, false) }
   }
@@ -685,7 +685,7 @@ export default function DevFleetPage() {
       const lines = acc
       if (run.status === 'done') {
         const ok = run.exit_code === 0
-        notify(ok ? i18nT('pages.devFleetPage.provisioned') : 'Provision failed (exit ' + run.exit_code + ')', { type: ok ? 'success' : 'error' })
+        notify(ok ? i18nT('pages.devFleetPage.provisioned') : i18nT('pages.devFleetPage.provision_failed_exit_code', { code: run.exit_code }), { type: ok ? 'success' : 'error' })
         if (ok) {
           // Flash a brief green "Provisioned", then clear (as before). The
           // fleet refetch flips the row to its built state in the meantime.
@@ -706,7 +706,7 @@ export default function DevFleetPage() {
         return
       }
       if (run.status !== 'running') {
-        notify(run.status === 'timeout' ? i18nT('pages.devFleetPage.provision_timed_out') : 'Provision failed (' + run.status + ')', { type: 'error' })
+        notify(run.status === 'timeout' ? i18nT('pages.devFleetPage.provision_timed_out') : i18nT('pages.devFleetPage.provision_failed_status', { status: run.status }), { type: 'error' })
         setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: lines.length ? lines : ['Provision ' + run.status], startedAt, exit: run.exit_code ?? null } }))
         setProvLogOpen((o) => ({ ...o, [name]: true }))
         invalidateFleet()
@@ -753,10 +753,10 @@ export default function DevFleetPage() {
     if (d?.is_main) { notify(i18nT('pages.devFleetPage.cannot_remove_the_main_worktree'), { type: 'error' }); return }
     const shipped = !!d?.shipped; const empty = d && d.own_commits === 0 && d.real_dirty === false
     const desc = shipped ? i18nT('pages.devFleetPage.pr_merged_safe_to_remove_runs_git_worktree_remov') : empty ? i18nT('pages.devFleetPage.empty_worktree_cannot_be_undone') : i18nT('pages.devFleetPage.has_unmerged_work_removing_deletes_permanently')
-    const ok = await askConfirm('Remove "' + name + '"?', desc, { confirmLabel: shipped || empty ? i18nT('pages.devFleetPage.remove') : i18nT('pages.devFleetPage.delete_anyway'), danger: true })
+    const ok = await askConfirm(i18nT('pages.devFleetPage.remove_name', { name }), desc, { confirmLabel: shipped || empty ? i18nT('pages.devFleetPage.remove') : i18nT('pages.devFleetPage.delete_anyway'), danger: true })
     if (!ok) return
     setFlag(name + ':remove', true)
-    try { const r = await api.post<{ ok?: boolean; error?: string }>('/worktree/remove', { name, force: !shipped && !empty }); if (r?.ok) { notify('Removed ' + name, { type: 'success' }); invalidateAll() } else notify(r?.error || i18nT('pages.devFleetPage.failed'), { type: 'error' }) }
+    try { const r = await api.post<{ ok?: boolean; error?: string }>('/worktree/remove', { name, force: !shipped && !empty }); if (r?.ok) { notify(i18nT('pages.devFleetPage.removed_name', { name }), { type: 'success' }); invalidateAll() } else notify(r?.error || i18nT('pages.devFleetPage.failed'), { type: 'error' }) }
     catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setFlag(name + ':remove', false) }
   }
@@ -772,11 +772,11 @@ export default function DevFleetPage() {
   }
 
   async function rebaseWorktree(name: string) {
-    const ok = await askConfirm('Rebase "' + name + '"?', i18nT('pages.devFleetPage.fetches_latest_main_and_replays_refused_if_dirty'), { confirmLabel: i18nT('pages.devFleetPage.rebase') })
+    const ok = await askConfirm(i18nT('pages.devFleetPage.rebase_name', { name }), i18nT('pages.devFleetPage.fetches_latest_main_and_replays_refused_if_dirty'), { confirmLabel: i18nT('pages.devFleetPage.rebase') })
     if (!ok) return; setFlag(name + ':rebase', true)
     try {
       const r = await api.post<{ ok?: boolean; head?: string; ahead?: number; behind?: number; conflict?: boolean; error?: string }>('/rebase', { name })
-      if (r?.ok) { const txt = 'Rebased (HEAD ' + (r.head || '?').slice(0, 7) + ')'; showRebaseResult(name, { kind: 'ok', text: txt }); notify(txt, { type: 'success' }) }
+      if (r?.ok) { const txt = i18nT('pages.devFleetPage.rebased_head', { head: (r.head || '?').slice(0, 7) }); showRebaseResult(name, { kind: 'ok', text: txt }); notify(txt, { type: 'success' }) }
       else if (r?.conflict) { showRebaseResult(name, { kind: 'conflict', text: i18nT('pages.devFleetPage.conflicts_aborted') }); notify(i18nT('pages.devFleetPage.rebase_conflicts'), { type: 'error' }) }
       else { showRebaseResult(name, { kind: 'error', text: r?.error || 'failed' }); notify(r?.error || i18nT('pages.devFleetPage.rebase_failed'), { type: 'error' }) }
       invalidateFleet()
@@ -917,8 +917,8 @@ export default function DevFleetPage() {
     // Only the already-live row is blocked. Main is a valid target when it is
     // NOT live (after a cutover to a feature worktree, this is the way back).
     if (w.is_live) return
-    if (!w.path) { notify('Cannot resolve worktree path for ' + w.name, { type: 'error' }); return }
-    const ok = await askConfirm('Make "' + w.name + '" live?',
+    if (!w.path) { notify(i18nT('pages.devFleetPage.cannot_resolve_worktree_path_for_name', { name: w.name }), { type: 'error' }); return }
+    const ok = await askConfirm(i18nT('pages.devFleetPage.make_name_live', { name: w.name }),
       i18nT('pages.devFleetPage.swaps_the_code_behind_the_live_dashboard_to_this'),
       { confirmLabel: i18nT('pages.devFleetPage.make_live') })
     if (!ok) return
@@ -1103,7 +1103,7 @@ export default function DevFleetPage() {
     if (pr.failed) {
       return (
         <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } as CSSProperties}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4 }}><X size={12} className="lucide-inline" />{'Provision failed' + (pr.exit != null ? ' (exit ' + pr.exit + ')' : '')}</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4 }}><X size={12} className="lucide-inline" />{pr.exit != null ? i18nT('pages.devFleetPage.provision_failed_exit_code', { code: pr.exit }) : i18nT('pages.devFleetPage.provision_failed')}</span>
           <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={lastLine(pr.lines)}>{lastLine(pr.lines)}</span>
           {logToggle}
           <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_provision_status')} onClick={() => dismissProv(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
@@ -1162,7 +1162,7 @@ export default function DevFleetPage() {
           {isMainWithStepper ? renderSyncStepper() : provActive ? renderProvStepper(w) : (
             <>
               {rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>{"\u2014"}</span>}
-              <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? w.behind + ' commits behind main' : i18nT('pages.devFleetPage.up_to_date_with_main')}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
+              <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? i18nT('pages.devFleetPage.commits_behind_main_2', { count: w.behind ?? 0 }) : i18nT('pages.devFleetPage.up_to_date_with_main')}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
               <span style={{ ...mut, opacity: 0.85 }}>{relTime(w.last_updated_at).replace(' ago', '')}</span>
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', minWidth: 0, flexWrap: 'wrap' } as CSSProperties}>{rowButtons(w)}</div>
             </>

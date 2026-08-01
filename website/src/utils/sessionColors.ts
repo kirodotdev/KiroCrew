@@ -1,5 +1,7 @@
 /** Session color palettes and utilities. */
 
+import { i18nT } from '../i18n/t'
+
 export type SessionColorMode = 'tint' | 'gradient'
 export type PaletteName = 'trailhead' | 'horizon' | 'voyage' | 'odyssey'
 export type IntensityName = 'soft' | 'clear' | 'vivid' | 'bold' | 'intense'
@@ -45,7 +47,7 @@ export function colorName(hex: string): string {
   // Neutral test on chroma (d) directly, not HSL saturation: s = d/(1-|2l-1|)
   // is singular near l=0/l=1, so a 1-bit channel delta on a near-white/black
   // swatch blows up past any saturation threshold and gets a false hue label.
-  if (d < 0.04) return l > 0.8 ? 'White' : l < 0.2 ? 'Black' : 'Gray'
+  if (d < 0.04) return l > 0.8 ? i18nT('utils.sessionColors.white') : l < 0.2 ? i18nT('utils.sessionColors.black') : i18nT('utils.sessionColors.gray')
   let h = 0
   if (d !== 0) {
     if (max === r) h = ((g - b) / d) % 6

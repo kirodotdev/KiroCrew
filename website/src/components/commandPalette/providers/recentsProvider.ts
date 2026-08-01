@@ -269,7 +269,7 @@ export function useRecentsProvider(): ResourceProvider {
             icon: sessionIcon(),
             score: 0,
             indices: [],
-            groupLabel: 'Current',
+            groupLabel: i18nT('components.commandPalette.providers.recentsProvider.current'),
             statusDot: st.rightDot,
             statusStyle: st.style,
             statusColorVar: st.colorVar,
@@ -299,7 +299,7 @@ export function useRecentsProvider(): ResourceProvider {
             icon: sessionIcon(),
             score: 0,
             indices: [],
-            groupLabel: 'Current',
+            groupLabel: i18nT('components.commandPalette.providers.recentsProvider.current'),
             isNew: true,
             onActivate: () => {
               // Await the create BEFORE navigating: landing on /chat with no
@@ -328,6 +328,11 @@ export function useRecentsProvider(): ResourceProvider {
             icon: plannedIcon(),
             score: 0,
             indices: [],
+            // NOT localized: `CommandPalette.tsx` compares `groupLabel ===
+            // 'Scheduled'` to pick the Clock header icon, so this value is
+            // dual-role (copy AND control). Translating it here alone would
+            // silently swap the icon for every non-English language. Fixing it
+            // needs a `groupKind` discriminant on `Result` — see types.ts.
             groupLabel: 'Scheduled',
             onActivate: () => navigate('/schedule'),
           }))
@@ -347,7 +352,7 @@ export function useRecentsProvider(): ResourceProvider {
             icon: sessionIcon(),
             score: 0,
             indices: [],
-            groupLabel: 'Older Sessions',
+            groupLabel: i18nT('components.commandPalette.providers.recentsProvider.older_sessions'),
             faded: true,
             folder: folderName(s.folder_id),
             timestamp: fmtRelativeTime(s.modified),

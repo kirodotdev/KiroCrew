@@ -20,7 +20,7 @@ export default function PortabilityTab() {
   const fileRef = useRef<HTMLInputElement>(null)
 
   const handleExport = async () => {
-    setExportStatus({ type: 'loading', msg: 'Generating export...' })
+    setExportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.generating_export') })
     try {
       const resp = await fetch('/api/portability/export')
       if (!resp.ok) {
@@ -39,9 +39,9 @@ export default function PortabilityTab() {
       a.click()
       a.remove()
       URL.revokeObjectURL(url)
-      setExportStatus({ type: 'ok', msg: 'Download started.' })
+      setExportStatus({ type: 'ok', msg: i18nT('pages.overview.portabilityTab.download_started') })
     } catch (e: unknown) {
-      setExportStatus({ type: 'error', msg: e instanceof Error ? e.message : 'Network error' })
+      setExportStatus({ type: 'error', msg: e instanceof Error ? e.message : i18nT('pages.overview.portabilityTab.network_error') })
     }
   }
 
@@ -60,10 +60,10 @@ export default function PortabilityTab() {
       if (data.ok) {
         setPreview(data.manifest)
       } else {
-        setPreviewError(data.error || 'Invalid archive')
+        setPreviewError(data.error || i18nT('pages.overview.portabilityTab.invalid_archive'))
       }
     } catch {
-      setPreviewError('Network error during preview')
+      setPreviewError(i18nT('pages.overview.portabilityTab.network_error_during_preview'))
     }
   }
 
@@ -72,7 +72,7 @@ export default function PortabilityTab() {
     if (!file) return
     if (mode === 'replace' && !confirm(i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin'))) return
 
-    setImportStatus({ type: 'loading', msg: 'Importing...' })
+    setImportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.importing') })
     const fd = new FormData()
     fd.append('file', file)
     try {
@@ -82,10 +82,10 @@ export default function PortabilityTab() {
         const items = data.summary?.items || []
         setImportStatus({ type: 'ok', msg: `Import complete (${items.length} items). Restart gateway to apply all changes.` })
       } else {
-        setImportStatus({ type: 'error', msg: data.error || 'Import failed' })
+        setImportStatus({ type: 'error', msg: data.error || i18nT('pages.overview.portabilityTab.import_failed') })
       }
     } catch (e: unknown) {
-      setImportStatus({ type: 'error', msg: e instanceof Error ? e.message : 'Network error' })
+      setImportStatus({ type: 'error', msg: e instanceof Error ? e.message : i18nT('pages.overview.portabilityTab.network_error') })
     }
   }
 
@@ -103,7 +103,7 @@ export default function PortabilityTab() {
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold font-body cursor-pointer bg-accent text-accent-fg border-none hover:bg-accent-hover transition-colors disabled:opacity-60"
           >
             <Download size={14} />
-            {exportStatus.type === 'loading' ? 'Generating...' : 'Download Export (.zip)'}
+            {exportStatus.type === 'loading' ? i18nT('pages.overview.portabilityTab.generating') : i18nT('pages.overview.portabilityTab.download_export_zip')}
           </button>
           {exportStatus.msg && (
             <span className={`text-[12px] inline-flex items-center gap-1 ${exportStatus.type === 'ok' ? 'text-ok' : exportStatus.type === 'error' ? 'text-danger' : 'text-muted'}`}>
@@ -148,7 +148,7 @@ export default function PortabilityTab() {
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold font-body cursor-pointer bg-accent text-accent-fg border-none hover:bg-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <FileArchive size={14} />
-            {importStatus.type === 'loading' ? 'Importing...' : 'Import'}
+            {importStatus.type === 'loading' ? i18nT('pages.overview.portabilityTab.importing') : i18nT('pages.overview.portabilityTab.import')}
           </button>
         </div>
 

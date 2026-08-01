@@ -307,7 +307,7 @@ function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number; tokens
         aria-expanded={expanded}
         aria-label={expanded ? i18nT('pages.chatPage.collapse_knowledge_context') : i18nT('pages.chatPage.expand_knowledge_context')}
       >
-        <BookOpen size={12} className="shrink-0" /> {knowledge.items} {i18nT('pages.chatPage.knowledge')} {knowledge.items === 1 ? 'item' : 'items'} · {knowledge.tokens.toLocaleString()} {i18nT('pages.chatPage.tokens')}
+        <BookOpen size={12} className="shrink-0" /> {i18nT('pages.chatPage.knowledge_item', { count: knowledge.items })} · {knowledge.tokens.toLocaleString()} {i18nT('pages.chatPage.tokens')}
       </button>
       {expanded && knowledge.content && (
         <div className="mt-1 max-h-[300px] overflow-auto rounded border border-border bg-bg-elevated p-2 text-[11px]">
@@ -2842,7 +2842,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   const followupStartInWorktree = useCallback(async (item: FollowupItem) => {
     const repo = currentSlot?.project
-    if (!repo) throw new Error('This session has no project directory to branch from.')
+    if (!repo) throw new Error(i18nT('pages.chatPage.this_session_has_no_project_directory_to_branch'))
     const originSlot = activeSlot
     // Capture the card's ts up front so completion clears only THIS card. A
     // newer card can arrive for the same slot while the request is in flight;
@@ -2853,7 +2853,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // up. The card surfaces the thrown message inline.
     const res = await api.createWorktree(repo, followupBranchFor(item))
     const path = res?.path
-    if (!path) throw new Error(res?.error || 'Worktree creation returned no path')
+    if (!path) throw new Error(res?.error || i18nT('pages.chatPage.worktree_creation_returned_no_path'))
     let slotKey = ''
     try {
       // `activate: false` on purpose: the slot must be SCOPED to the worktree

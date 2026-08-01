@@ -124,7 +124,7 @@ export default function SttSettings() {
   const mut = useMutation({
     mutationFn: (patch: Partial<SttConfig>) => api.saveSttConfig(patch),
     onSuccess: data => qc.setQueryData(['sttConfig'], data),
-    onError: (e: Error) => setErr(e.message || 'Failed to save STT config'),
+    onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.failed_to_save_stt_config')),
   })
   const set = (patch: Partial<SttConfig>) => mut.mutate(patch)
   const saving = mut.isPending
@@ -137,10 +137,10 @@ export default function SttSettings() {
       qc.setQueryData<SttConfig>(['sttConfig'], prev => (prev ? { ...prev, install_step: 'starting' } : prev))
     },
     onSuccess: (res: { ok?: boolean; ffmpeg?: boolean }) => {
-      if (res?.ok && res.ffmpeg === false) setErr('Whisper installed but ffmpeg is missing — voice transcription needs ffmpeg.')
+      if (res?.ok && res.ffmpeg === false) setErr(i18nT('pages.settings.sttSettings.whisper_installed_but_ffmpeg_is_missing_voice_tr'))
       qc.invalidateQueries({ queryKey: ['sttConfig'] })
     },
-    onError: (e: Error) => setErr(e.message || 'Install failed'),
+    onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.install_failed')),
   })
 
   const stt = sttQ.data
@@ -221,7 +221,7 @@ export default function SttSettings() {
         )}
 
         <InfoRow label={i18nT('pages.settings.sttSettings.runtime')}>
-          <span className="text-[13px] font-mono text-muted">{stt.docker_mode ? 'Docker' : 'Native'}</span>
+          <span className="text-[13px] font-mono text-muted">{stt.docker_mode ? i18nT('pages.settings.sttSettings.docker') : i18nT('pages.settings.sttSettings.native')}</span>
         </InfoRow>
 
         {!stt.available && (
@@ -258,10 +258,10 @@ export default function SttSettings() {
                 </Btn>
                 <p className="text-muted text-[13px] mt-2">
                   {stt.docker_mode
-                    ? 'Pulls python:3.11-slim for Docker-based transcription (AL2).'
+                    ? i18nT('pages.settings.sttSettings.pulls_python_3_11_slim_for_docker_based_transcri')
                     : provider === 'mlx'
-                      ? 'Installs mlx-whisper via pipx + ffmpeg. Apple Silicon (arm64) only.'
-                      : 'Installs openai-whisper + ffmpeg. Uses system python3 (≥ 3.10).'}
+                      ? i18nT('pages.settings.sttSettings.installs_mlx_whisper_via_pipx_ffmpeg_apple_silic')
+                      : i18nT('pages.settings.sttSettings.installs_openai_whisper_ffmpeg_uses_system_pytho')}
                 </p>
               </>
             )}

@@ -140,7 +140,7 @@ function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
         <div className="flex items-center gap-2 mt-1">
           {msg.replyCount > 0 && (
             <Btn onClick={onOpenThread!} className="!p-0 !border-none !rounded-none text-[13px] text-accent hover:underline">
-              <MessageSquare className="lucide-inline" /> {msg.replyCount} {i18nT('pages.channelPage.repl')}{msg.replyCount === 1 ? 'y' : 'ies'}
+              <MessageSquare className="lucide-inline" /> {i18nT('pages.channelPage.reply_2', { count: msg.replyCount })}
             </Btn>
           )}
           {onReply && (

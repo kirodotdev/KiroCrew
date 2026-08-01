@@ -585,7 +585,7 @@ export function useWebSocket() {
                   dispatch(sseSubagentPending({ slot: data.slot, id: agentId, task: (data.tool as string || '').replace('spawn_run(', '').replace(/\)$/, ''), approval_id: rid }))
                 }
               } else if (data.source !== 'subagent') {
-                dispatch(sseActivityEvent({ slot: targetSlot, kind: 'approval', text: data.tool || 'Unknown', approval_id: data.id, approval_type: 'chat' }))
+                dispatch(sseActivityEvent({ slot: targetSlot, kind: 'approval', text: data.tool || i18nT('hooks.useWebSocket.unknown'), approval_id: data.id, approval_type: 'chat' }))
               }
             }
             break

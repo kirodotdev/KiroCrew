@@ -90,7 +90,7 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
   const err = addMutation.error
     ? addMutation.error instanceof ApiError
       ? addMutation.error.message
-      : 'Failed to add remote crew'
+      : i18nT('pages.settings.instancesPanel.failed_to_add_remote_crew')
     : ''
 
   const inputCls =
@@ -149,7 +149,7 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
           onClick={() => addMutation.mutate()}
           disabled={addMutation.isPending || !name.trim() || !sshHost.trim() || dupPort}
         >
-          {addMutation.isPending ? 'Adding…' : 'Add remote crew'}
+          {addMutation.isPending ? i18nT('pages.settings.instancesPanel.adding') : i18nT('pages.settings.instancesPanel.add_remote_crew')}
         </Btn>
       </div>
       <p className="mt-2 text-[12px] text-muted">
@@ -192,7 +192,7 @@ function InstanceRow({
       </div>
       <div className="flex items-center gap-2 shrink-0">
         <Btn onClick={() => onDiagnose(inst.id)} disabled={!!busy} aria-label={`Diagnose ${inst.name}`}>
-          <Stethoscope className="lucide-inline" /> {busy === `diagnose:${inst.id}` ? '…' : 'Diagnose'}
+          <Stethoscope className="lucide-inline" /> {busy === `diagnose:${inst.id}` ? '…' : i18nT('pages.settings.instancesPanel.diagnose')}
         </Btn>
         {connected ? (
           <Btn onClick={() => onDisconnect(inst.id)} disabled={!!busy}>
@@ -200,7 +200,7 @@ function InstanceRow({
           </Btn>
         ) : (
           <Btn primary onClick={() => onConnect(inst.id)} disabled={!!busy}>
-            <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? 'Connecting…' : 'Connect'}
+            <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
         )}
         <Btn danger onClick={() => onRemove(inst.id)} disabled={!!busy} aria-label={`Remove ${inst.name}`}>
@@ -240,7 +240,7 @@ export function InstancesPanel() {
     instancesQuery.error && !disabled
       ? instancesQuery.error instanceof ApiError
         ? instancesQuery.error.message
-        : 'Failed to load remote crews'
+        : i18nT('pages.settings.instancesPanel.failed_to_load_remote_crews')
       : ''
   const loading = instancesQuery.isLoading
   const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data])
@@ -261,10 +261,10 @@ export function InstancesPanel() {
         const name = instances.find(i => i.id === id)?.name || id
         setConnectedNote(`Connected “${name}”. Switch to it from the tab strip in the top header.`)
       } else {
-        setActionErr(st.error || 'Connection did not complete. Try Diagnose for details.')
+        setActionErr(st.error || i18nT('pages.settings.instancesPanel.connection_did_not_complete_try_diagnose_for_det'))
       }
     },
-    onError: (e, id) => setActionErr(`Connect to ${id} failed: ${errMsg(e, 'unknown error')}`),
+    onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.connect_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
     onSettled: () => reload(),
   })
   const disconnectMutation = useMutation({
@@ -274,7 +274,7 @@ export function InstancesPanel() {
     // warm iframe here, together with the backend clearing was_connected, makes
     // the header tab disappear (the tab strip keys on was_connected || warm).
     onSuccess: (_r, id) => dispatch(removeWarm(id)),
-    onError: (e, id) => setActionErr(`Disconnect of ${id} failed: ${errMsg(e, 'unknown error')}`),
+    onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.disconnect_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
     onSettled: () => reload(),
   })
   const removeMutation = useMutation({
@@ -284,7 +284,7 @@ export function InstancesPanel() {
     },
     onMutate: clearNotices,
     onSuccess: (_r, id) => dispatch(removeWarm(id)),
-    onError: (e, id) => setActionErr(`Remove of ${id} failed: ${errMsg(e, 'unknown error')}`),
+    onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.remove_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
     onSettled: () => reload(),
   })
   const diagnoseMutation = useMutation({
@@ -297,7 +297,7 @@ export function InstancesPanel() {
       const kind = code === 'ok' ? 'ok' : code === 'not_connected' ? 'info' : 'warn'
       setDiagNote({ kind, text: `${id}: ${reason}` })
     },
-    onError: (e, id) => setActionErr(`Diagnose of ${id} failed: ${errMsg(e, 'unknown error')}`),
+    onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.diagnose_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
     onSettled: () => reload(),
   })
   // Toggle the instances.enabled config flag from the UI (no CLI). The change
@@ -310,7 +310,7 @@ export function InstancesPanel() {
       setRestartPending(true)
       reload()
     },
-    onError: e => setActionErr(`Failed to update setting: ${errMsg(e, 'unknown error')}`),
+    onError: e => setActionErr(i18nT('pages.settings.instancesPanel.update_setting_failed', { error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
   })
 
   const busy = connectMutation.isPending
@@ -347,7 +347,7 @@ export function InstancesPanel() {
           </div>
         )}
         <Btn primary onClick={() => setEnabledMutation.mutate(true)} disabled={setEnabledMutation.isPending}>
-          <Power className="lucide-inline" /> {setEnabledMutation.isPending ? 'Enabling…' : 'Enable remote crew management'}
+          <Power className="lucide-inline" /> {setEnabledMutation.isPending ? i18nT('pages.settings.instancesPanel.enabling') : i18nT('pages.settings.instancesPanel.enable_remote_crew_management')}
         </Btn>
         {actionErr && <div className="mt-2 text-[13px] text-danger">{actionErr}</div>}
         <p className="mt-2 text-[12px] text-muted">
@@ -371,7 +371,7 @@ export function InstancesPanel() {
           </span>
         </div>
         <Btn onClick={() => setEnabledMutation.mutate(false)} disabled={setEnabledMutation.isPending} aria-label={i18nT('pages.settings.instancesPanel.disable_multi_instance_management')}>
-          <Power className="lucide-inline" /> {setEnabledMutation.isPending ? 'Disabling…' : 'Disable'}
+          <Power className="lucide-inline" /> {setEnabledMutation.isPending ? i18nT('pages.settings.instancesPanel.disabling') : i18nT('pages.settings.instancesPanel.disable')}
         </Btn>
       </div>
       {!active && (

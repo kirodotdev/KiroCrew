@@ -124,7 +124,7 @@ export default function ArtifactDeployPage() {
     mutationFn: (name: string) => jsend<{ error?: string }>(`/profiles/${encodeURIComponent(name)}`, {}, 'DELETE'),
     onSuccess: ({ status, data }) => {
       if (status >= 400) { setNotice(`Error: ${data?.error || 'remove failed'}`); return }
-      setNotice('Removed from registry (your ~/.aws/config is untouched).')
+      setNotice(i18nT('pages.artifactDeployPage.removed_from_registry_your_aws_config_is_untouche'))
       refreshProfiles()
     },
   })
@@ -345,7 +345,7 @@ export default function ArtifactDeployPage() {
                 <tr key={p.name} className="hover:bg-bg-hover transition-colors">
                   <td className="px-2.5 py-2 border-b border-border">
                     <Btn
-                      title={p.name === defaultProfile ? 'Default profile' : 'Make default'}
+                      title={p.name === defaultProfile ? i18nT('pages.artifactDeployPage.default_profile') : i18nT('pages.artifactDeployPage.make_default')}
                       aria-label={p.name === defaultProfile ? `${p.name} is the default profile` : `Make ${p.name} the default profile`}
                       onClick={() => p.name !== defaultProfile && setDefaultProfile.mutate(p.name)}
                       style={{ background: 'transparent', border: 'none', padding: 0, display: 'inline-flex' }}
@@ -416,7 +416,7 @@ export default function ArtifactDeployPage() {
             )}
             <Btn primary disabled={!npName.trim()}
               onClick={() => addProfile.mutate({ name: npName.trim(), region: npRegion.trim() || 'us-west-2', create: npCreate, account: npAccount.trim(), role: npRole.trim() })}>
-              {npCreate ? 'Create + register' : 'Register'}
+              {npCreate ? i18nT('pages.artifactDeployPage.create_register') : i18nT('pages.artifactDeployPage.register')}
             </Btn>
           </div>
         )}
@@ -425,7 +425,7 @@ export default function ArtifactDeployPage() {
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               {reach.reachable
                 ? <><CheckCircle size={12} /> {reach.profile}{i18nT('pages.artifactDeployPage.access_reachable')}{reach.account ? ` (account ${reach.account})` : ''}</>
-                : <><XCircle size={12} /> {reach.detail || reach.error || 'not reachable'}</>}
+                : <><XCircle size={12} /> {reach.detail || reach.error || i18nT('pages.artifactDeployPage.not_reachable')}</>}
             </span>
             <div style={{ color: 'var(--muted)', fontSize: 11 }}>{reach.note}</div>
           </div>
@@ -441,7 +441,7 @@ export default function ArtifactDeployPage() {
             {boundaryPolicy && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 11, color: 'var(--warn)', marginBottom: 4 }}>
-                  {boundaryNote || 'Fullstack also requires the permissions-boundary policy below — create it BEFORE the first deploy (role creation is conditioned on it).'}
+                  {boundaryNote || i18nT('pages.artifactDeployPage.fullstack_also_requires_the_permissions_boundary')}
                 </div>
                 <pre style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 10, fontSize: 11, maxHeight: 200, overflow: 'auto' }}>{boundaryPolicy}</pre>
                 <Btn onClick={() => navigator.clipboard.writeText(boundaryPolicy)}><Copy size={12} /> {i18nT('pages.artifactDeployPage.copy_boundary_policy')}</Btn>
@@ -490,7 +490,7 @@ export default function ArtifactDeployPage() {
                           options={profiles.map((p) => p.name)}
                           value={draftProfiles[a.slug] || defaultProfile || ''}
                           onChange={(v) => setDraftProfiles((m) => ({ ...m, [a.slug]: v }))}
-                          clearLabel={defaultProfile ? `${defaultProfile} (default)` : 'default'}
+                          clearLabel={defaultProfile ? `${defaultProfile} (default)` : i18nT('pages.artifactDeployPage.default')}
                           aria-label={i18nT('pages.artifactDeployPage.deploy_profile_for_slug', { slug: a.slug })}
                           style={{ minWidth: 100 }}
                         />
@@ -545,7 +545,7 @@ export default function ArtifactDeployPage() {
                 <tr key={`static-${s.site_id}`} className="hover:bg-bg-hover transition-colors">
                   <td className="px-2.5 py-2 border-b border-border text-sm font-semibold">{s.site_id}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm"><span style={{ border: '1px solid var(--border)', color: 'var(--muted)', padding: '1px 6px', borderRadius: 9999, fontSize: 10, fontWeight: 500 }}>{i18nT('pages.artifactDeployPage.static')}</span></td>
-                  <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={s.status === 'deployed' || s.status === 'live' ? 'ok' : s.status === 'error' ? 'err' : 'warn'}>{s.status || 'unknown'}</Badge></td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={s.status === 'deployed' || s.status === 'live' ? 'ok' : s.status === 'error' ? 'err' : 'warn'}>{s.status || i18nT('pages.artifactDeployPage.unknown')}</Badge></td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">{s.profile ? <span style={chip}>{s.profile}</span> : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.url ? (safeHttpUrl(s.url) ? <a href={safeHttpUrl(s.url)!} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>{s.url}</a> : <span style={{ color: 'var(--muted)' }}>{s.url}</span>) : '—'}</td>
                   <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{i18nT('pages.artifactDeployPage.0_00_mo')}</td>
@@ -566,7 +566,7 @@ export default function ArtifactDeployPage() {
                   <tr key={`webapp-${a.slug}`} className="hover:bg-bg-hover transition-colors">
                     <td className="px-2.5 py-2 border-b border-border text-sm font-semibold">{a.slug}</td>
                     <td className="px-2.5 py-2 border-b border-border text-sm"><span style={{ background: 'var(--accent-subtle)', color: 'var(--accent)', padding: '1px 6px', borderRadius: 9999, fontSize: 10, fontWeight: 500 }}>{i18nT('pages.artifactDeployPage.webapp_kind_badge')}</span></td>
-                    <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={m.lifecycle?.status === 'deployed' || m.lifecycle?.status === 'live' ? 'ok' : m.lifecycle?.status === 'error' ? 'err' : 'warn'}>{m.lifecycle?.status || 'unknown'}</Badge></td>
+                    <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={m.lifecycle?.status === 'deployed' || m.lifecycle?.status === 'live' ? 'ok' : m.lifecycle?.status === 'error' ? 'err' : 'warn'}>{m.lifecycle?.status || i18nT('pages.artifactDeployPage.unknown')}</Badge></td>
                     <td className="px-2.5 py-2 border-b border-border text-sm">{m.deploy_target?.profile ? <span style={chip}>{m.deploy_target.profile}</span> : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                     <td className="px-2.5 py-2 border-b border-border text-sm" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{url ? (safeHttpUrl(url) ? <a href={safeHttpUrl(url)!} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>{url}</a> : <span style={{ color: 'var(--muted)' }}>{url}</span>) : '—'}</td>
                     <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{cost > 0 ? `≤$${cost.toFixed(4)}` : '~$0.00'}</td>
@@ -661,14 +661,14 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
         {pending.map((e) => {
           const age = Math.round((Date.now() / 1000 - e.created_at_epoch) / 60)
-          const source = e.artifact_slug || e.local_dir || '(unknown)'
+          const source = e.artifact_slug || e.local_dir || i18nT('pages.artifactDeployPage.unknown_2')
           return (
             <div key={e.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)' }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 500 }}>{e.site_id}</div>
                   <div style={{ color: 'var(--muted)', fontSize: 11 }}>
-                    {i18nT('pages.artifactDeployPage.source')} {source} {i18nT('pages.artifactDeployPage.profile_2')} {e.profile || 'default'} {i18nT('pages.artifactDeployPage.ttl')} {e.ttl_hours}{i18nT('pages.artifactDeployPage.h_scan')} {e.scan_summary} &middot; {age}{i18nT('pages.artifactDeployPage.m_ago')}
+                    {i18nT('pages.artifactDeployPage.source')} {source} {i18nT('pages.artifactDeployPage.profile_2')} {e.profile || i18nT('pages.artifactDeployPage.default')} {i18nT('pages.artifactDeployPage.ttl')} {e.ttl_hours}{i18nT('pages.artifactDeployPage.h_scan')} {e.scan_summary} &middot; {age}{i18nT('pages.artifactDeployPage.m_ago')}
                   </div>
                   {e.override_scan_required && (
                     <div style={{ color: 'var(--warn)', fontSize: 11, marginTop: 2 }}>
@@ -677,7 +677,7 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
                   )}
                 </div>
                 <Btn danger onClick={() => confirmMut.mutate({ id: e.id, overrideScan: !!e.override_scan_required })} disabled={confirmMut.isPending}>
-                  {e.override_scan_required ? 'Deploy anyway' : 'Confirm Deploy'}
+                  {e.override_scan_required ? i18nT('pages.artifactDeployPage.deploy_anyway') : i18nT('pages.artifactDeployPage.confirm_deploy')}
                 </Btn>
                 <Btn onClick={() => dismissMut.mutate(e.id)} disabled={dismissMut.isPending}>
                   {i18nT('pages.artifactDeployPage.dismiss')}

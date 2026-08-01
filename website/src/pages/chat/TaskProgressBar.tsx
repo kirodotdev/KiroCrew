@@ -57,7 +57,9 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
           data-testid="todo-pill"
           onClick={toggle}
           aria-expanded={expanded}
-          aria-label={`${done} of ${total} tasks complete. ${expanded ? 'Collapse' : 'Expand'} task list`}
+          aria-label={expanded
+            ? i18nT('pages.chat.taskProgressBar.aria_collapse_task_list', { done, total })
+            : i18nT('pages.chat.taskProgressBar.aria_expand_task_list', { done, total })}
           className={`flex items-center gap-2 py-1.5 text-[13px] font-mono bg-transparent border-none cursor-pointer hover:bg-accent/5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
             expanded ? 'w-full px-3' : 'px-3 min-w-0'
           }`}

@@ -195,7 +195,7 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
               ? i18nT('apps.workflows.workflowRunTree.result')
               : status === 'cancelled'
                 ? i18nT('apps.workflows.workflowRunTree.cancelled')
-                : `Failed: ${sanitizeLlmOutput(error || 'unknown error').slice(0, 200)}`}
+                : i18nT('apps.workflows.workflowRunTree.failed_with_error', { error: sanitizeLlmOutput(error || i18nT('apps.workflows.workflowRunTree.unknown_error')).slice(0, 200) })}
           </div>
           {status === 'finished' && result !== undefined && (
             <pre className="font-mono text-[11px] whitespace-pre-wrap break-all max-h-40 overflow-auto">

@@ -326,9 +326,9 @@ export default function GhostScene({ agents, visible = true }: Props) {
 
       // Title
       T.fillStyle = '#a89ee0'; T.font = sceneFont('title', 'bold')
-      T.fillText('Kiro Haunt', (W / 2 - 22) * S, 26 * S)
+      T.fillText(i18nT('pages.scenes.ghostScene.kiro_haunt'), (W / 2 - 22) * S, 26 * S)
       T.fillStyle = '#7a70ad'; T.font = sceneFont('detail')
-      T.fillText('friendly hauntings only', (W / 2 - 20) * S, 34 * S)
+      T.fillText(i18nT('pages.scenes.ghostScene.friendly_hauntings_only'), (W / 2 - 20) * S, 34 * S)
     }
 
     /* ── Update ── */

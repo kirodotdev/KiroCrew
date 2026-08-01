@@ -92,7 +92,7 @@ export function VoicePanel() {
         setLocalPiperModel(ctx.prev.piper_model || '')
         window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: ctx.prev }))
       }
-      setSaveError('Failed to save voice config')
+      setSaveError(i18nT('pages.settings.voicePanel.failed_to_save_voice_config'))
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ['voiceConfig'] }),
   })

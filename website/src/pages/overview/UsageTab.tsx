@@ -45,7 +45,7 @@ export default function UsageTab() {
           <CardTitle><BarChart3 className="lucide-inline" /> {i18nT('pages.overview.usageTab.billing')}</CardTitle>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
             <Row label={i18nT('pages.overview.usageTab.plan')} value={b.plan} />
-            <Row label={b.unit === 'tokens' ? 'Tokens' : b.unit === 'usd' ? 'Spend' : 'Credits'}
+            <Row label={b.unit === 'tokens' ? i18nT('pages.overview.usageTab.tokens') : b.unit === 'usd' ? i18nT('pages.overview.usageTab.spend') : i18nT('pages.overview.usageTab.credits')}
               value={b.limit ? `${b.used ?? 0} / ${b.limit}` : String(b.used ?? 0)}
               badge={pct != null ? (pct >= 90 ? 'err' : pct >= 70 ? 'warn' : 'ok') : undefined}
               badgeText={pct != null ? `${pct}%` : undefined} />

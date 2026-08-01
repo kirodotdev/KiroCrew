@@ -190,7 +190,7 @@ export default function SteeringTab() {
 
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
       {i18nT('pages.overview.steeringTab.steering_count', { count: files.length })}
-      <InfoTip text="Always-on markdown conventions injected into every session. Global files live in ~/.kiro/steering and apply everywhere; workspace files live in <project>/.kiro/steering and apply to that project only." />
+      <InfoTip text={i18nT('pages.overview.steeringTab.always_on_markdown_conventions_injected_into_eve')} />
       <span className="ml-auto">
         <Btn primary onClick={() => setCreating(true)}>{i18nT('pages.overview.steeringTab.new_steering_file_2')}</Btn>
       </span>

@@ -309,7 +309,7 @@ function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: b
   const surfaceHasBadgeSource = surface !== undefined && (surface.unreadSelector !== undefined || surface.slotMode !== undefined)
   const appName = navId.startsWith('app-') ? navId.slice(4) : navId
   const dynamicCount = surfaceHasBadgeSource ? 0 : (appBadges[appName] || 0)
-  const builtinLabel = surface?.badgeLabel ?? 'updates'
+  const builtinLabel = surface?.badgeLabel ?? i18nT('app.updates')
   const activityCount = useAppSelector(selectSurfaceActivityCount(navId))
   const activityLabel = surface?.activityLabel ?? 'in flight'
   return (
@@ -1570,7 +1570,7 @@ export default function App() {
                 key="conn"
                 className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
-                title={`${connected ? 'Gateway connected' : authRequired ? 'Gateway offline — session expired, see banner above' : 'Gateway offline — reconnecting'} · click to ${capsuleCollapsed ? 'expand' : 'collapse'} readouts`}
+                title={`${connected ? i18nT('app.gateway_connected') : authRequired ? i18nT('app.gateway_offline_session_expired_see_banner_above') : i18nT('app.gateway_offline_reconnecting')} · ${capsuleCollapsed ? i18nT('app.click_to_expand_readouts') : i18nT('app.click_to_collapse_readouts')}`}
                 aria-label={connected ? i18nT('app.gateway_connected') : i18nT('app.gateway_offline')}
                 aria-expanded={!capsuleCollapsed}
               >
@@ -2242,7 +2242,7 @@ export default function App() {
                 </div>
                 <div className="min-w-0">
                   <div className="text-[15px] font-medium text-text truncate" title={who}>{who}</div>
-                  {signedInWith && <div className="text-[12px] text-muted truncate">Signed in with {signedInWith}</div>}
+                  {signedInWith && <div className="text-[12px] text-muted truncate">{i18nT('app.signed_in_with', { provider: signedInWith })}</div>}
                 </div>
               </div>
             )}

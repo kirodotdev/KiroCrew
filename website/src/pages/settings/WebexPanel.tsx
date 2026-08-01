@@ -34,10 +34,10 @@ function draftFrom(c: WebexConfigData): Draft {
 /** Status pill mirroring the Slack panel's connection states. */
 function StatusBadge({ config }: { config: WebexConfigData }) {
   const [dot, text, cls] = config.connected
-    ? ['var(--ok)', 'Active', 'text-ok']
+    ? ['var(--ok)', i18nT('pages.settings.webexPanel.active'), 'text-ok']
     : config.configured
-      ? ['var(--warn)', 'Not active', 'text-warn']
-      : ['var(--muted)', 'Needs setup', 'text-muted']
+      ? ['var(--warn)', i18nT('pages.settings.webexPanel.not_active'), 'text-warn']
+      : ['var(--muted)', i18nT('pages.settings.webexPanel.needs_setup'), 'text-muted']
   return (
     <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${cls}`}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
@@ -52,7 +52,7 @@ function connectionHint(config: WebexConfigData): string {
   if (config.connect_error) {
     return `Webex connection failed (${config.connect_error}). Check the bot token and network access to webexapis.com, then restart the gateway.`
   }
-  return 'Settings are saved but the channel is not running. Restart the gateway to connect.'
+  return i18nT('pages.settings.webexPanel.settings_are_saved_but_the_channel_is_not_runnin')
 }
 
 /** Webex channel-integration settings. */
@@ -92,7 +92,7 @@ export function WebexPanel() {
   const saveMut = useMutation({
     mutationFn: (body: Partial<WebexConfigSave>) => api.saveWebexConfig(body),
     onError: (e: unknown) => {
-      let msg = 'Save failed. Is the gateway running?'
+      let msg = i18nT('pages.settings.webexPanel.save_failed_is_the_gateway_running')
       if (e instanceof Error && e.message) {
         try {
           msg = JSON.parse(e.message).error ?? e.message
@@ -204,7 +204,7 @@ export function WebexPanel() {
             onChange={setBotToken}
             cleared={botClear}
             onClearedChange={setBotClear}
-            setupLink={{ href: SETUP_GUIDE, label: 'Where to find the bot token' }}
+            setupLink={{ href: SETUP_GUIDE, label: i18nT('pages.settings.webexPanel.where_to_find_the_bot_token') }}
           />
         </SettingsCard>
       </SettingsSection>
@@ -234,11 +234,11 @@ export function WebexPanel() {
       {/* ── Save (hidden on read-only remote sessions) ── */}
       {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
-          {saveMut.isPending ? 'Saving…' : 'Save Webex settings'}
+          {saveMut.isPending ? i18nT('pages.settings.webexPanel.saving') : i18nT('pages.settings.webexPanel.save_webex_settings')}
         </Btn>
         {saved && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-ok">
-            <Check size={14} /> {tokenVerified ? 'Verified with Webex and saved. Restart the gateway to connect.' : restartHint ? 'Saved. Restart the gateway to apply.' : 'Saved.'}
+            <Check size={14} /> {tokenVerified ? i18nT('pages.settings.webexPanel.verified_with_webex_and_saved_restart_the_gatewa') : restartHint ? i18nT('pages.settings.webexPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.webexPanel.saved')}
           </span>
         )}
         {saved && verifyWarning && (

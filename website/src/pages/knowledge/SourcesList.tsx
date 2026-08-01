@@ -94,7 +94,7 @@ function FolderConfirmDialog({ fileCount, uri, onConfirm, onCancel, isPending }:
     <div className="border border-border rounded-lg p-4 bg-bg-elevated space-y-2">
       <div className="text-sm font-medium flex items-center gap-1.5">
         {isLarge && <AlertCircle size={14} className="text-warn" />}
-        <FolderOpen size={14} className="inline" /> {uri} — {fileCount === 0 ? 'empty (0 supported files)' : `${fileCount} supported file${fileCount > 1 ? 's' : ''} found`}
+        <FolderOpen size={14} className="inline" /> {uri} — {fileCount === 0 ? i18nT('pages.knowledge.sourcesList.empty_0_supported_files') : i18nT('pages.knowledge.sourcesList.supported_file_found', { count: fileCount })}
       </div>
       {isLarge && (
         <div className="text-[12px] text-warn">
@@ -103,14 +103,14 @@ function FolderConfirmDialog({ fileCount, uri, onConfirm, onCancel, isPending }:
       )}
       <div className="text-[12px] text-muted">
         {fileCount === 0
-          ? 'This folder will be watched. Any supported files added here will be auto-ingested on the next scan cycle (~5 min).'
-          : 'This folder will be watched continuously. New files added here will be auto-ingested on the next scan cycle (~5 min).'}
+          ? i18nT('pages.knowledge.sourcesList.this_folder_will_be_watched_any_supported_files')
+          : i18nT('pages.knowledge.sourcesList.this_folder_will_be_watched_continuously_new_fil')}
       </div>
       <div className="flex gap-2 justify-end pt-1">
         <button onClick={onCancel} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
         <button onClick={onConfirm} disabled={isPending}
           className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">
-          {isPending ? 'Starting...' : fileCount === 0 ? 'Watch Anyway' : 'Start Scanning'}
+          {isPending ? i18nT('pages.knowledge.sourcesList.starting') : fileCount === 0 ? i18nT('pages.knowledge.sourcesList.watch_anyway') : i18nT('pages.knowledge.sourcesList.start_scanning')}
         </button>
       </div>
     </div>
@@ -375,7 +375,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <IngestionProgress jobs={ingestionJobs} />
               <div className="text-[11px] text-muted bg-bg rounded border border-border p-2">
                 {i18nT('pages.knowledge.sourcesList.supports_markdown_plain_text_code_files_html_jso')}
-                {acceptsNoExtension && ' Files with no extension (e.g. README) are ingested as plain text — drag-and-drop them here, since the file picker cannot list extensionless files.'}
+                {acceptsNoExtension && ' ' + i18nT('pages.knowledge.sourcesList.files_with_no_extension_e_g_readme_are_ingested')}
               </div>
             </>
           ) : (
@@ -392,7 +392,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   <button type="button" onClick={() => pickFolderMutation.mutate()} disabled={pickFolderMutation.isPending}
                     aria-label={i18nT('pages.knowledge.sourcesList.browse_for_a_folder')}
                     className="shrink-0 px-3 py-1.5 text-sm border border-border rounded text-text hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
-                    <FolderOpen size={14} /> {pickFolderMutation.isPending ? 'Opening...' : 'Browse...'}
+                    <FolderOpen size={14} /> {pickFolderMutation.isPending ? i18nT('pages.knowledge.sourcesList.opening') : i18nT('pages.knowledge.sourcesList.browse')}
                   </button>
                 )}
               </div>
@@ -408,9 +408,9 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <div className="flex gap-2 justify-end">
                 <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
                 <button onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim()}
-                  className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? 'Adding...' : 'Add Folder'}</button>
+                  className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_folder')}</button>
               </div>
-              {addMutation.isError && <div className="text-[12px] text-danger flex items-center gap-1"><AlertCircle size={12} /> {addMutation.error?.message || 'Failed to add source'}</div>}
+              {addMutation.isError && <div className="text-[12px] text-danger flex items-center gap-1"><AlertCircle size={12} /> {addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')}</div>}
             </>
           )}
         </div>
@@ -446,7 +446,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <div className="flex items-start sm:items-center gap-2 sm:gap-3 min-w-0 flex-1">
               {isFolderType ? (
                 <button onClick={() => setExpandedSource(isExpanded ? null : s.id)} className="text-muted shrink-0 mt-0.5 sm:mt-0"
-                  aria-label={isExpanded ? 'Collapse folder details' : 'Expand folder details'}>
+                  aria-label={isExpanded ? i18nT('pages.knowledge.sourcesList.collapse_folder_details') : i18nT('pages.knowledge.sourcesList.expand_folder_details')}>
                   {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
               ) : (
@@ -478,7 +478,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   {s.source_type === 'local_file'
                     ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title={i18nT('pages.knowledge.sourcesList.auto_watches_for_file_changes_every_5_min')}>{i18nT('pages.knowledge.sourcesList.auto')}</span>
                     : isFolderType
-                    ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? 'Paused' : isPending ? 'Awaiting confirmation' : 'Watching folder'}>● {isPaused ? 'paused' : isPending ? 'pending' : 'folder'}</span>
+                    ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}>● {isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
                     : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.use_sync_button_to_update')}>{i18nT('pages.knowledge.sourcesList.manual')}</span>}
                 </div>
                 <SourceSummaryDisplay source={s} />

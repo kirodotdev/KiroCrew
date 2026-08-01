@@ -96,7 +96,7 @@ export function WeixinPanel() {
     },
     onSuccess: r => {
       if (r.error || !r.session_id) {
-        setErrMsg(r.error || 'Could not reach the WeChat login service.')
+        setErrMsg(r.error || i18nT('pages.settings.weixinPanel.could_not_reach_the_wechat_login_service'))
         setPhase('error')
         return
       }
@@ -106,7 +106,7 @@ export function WeixinPanel() {
       setPhase('waiting')
     },
     onError: (e: unknown) => {
-      setErrMsg(e instanceof Error ? e.message : 'Could not start the login flow.')
+      setErrMsg(e instanceof Error ? e.message : i18nT('pages.settings.weixinPanel.could_not_start_the_login_flow'))
       setPhase('error')
     },
   })
@@ -183,7 +183,7 @@ export function WeixinPanel() {
               ) : (
                 <QrCode size={13} />
               )}
-              {credentialSet ? 'Sign in again' : 'Connect via QR'}
+              {credentialSet ? i18nT('pages.settings.weixinPanel.sign_in_again') : i18nT('pages.settings.weixinPanel.connect_via_qr')}
             </button>
           )}
         </div>
@@ -203,7 +203,7 @@ export function WeixinPanel() {
             )}
             <div className="flex items-center gap-1.5 text-[12px] text-muted">
               <Loader2 size={12} className="animate-spin" />
-              {phase === 'scanned' ? 'Scanned — confirm in WeChat' : 'Waiting for scan…'}
+              {phase === 'scanned' ? i18nT('pages.settings.weixinPanel.scanned_confirm_in_wechat') : i18nT('pages.settings.weixinPanel.waiting_for_scan')}
             </div>
           </div>
         )}

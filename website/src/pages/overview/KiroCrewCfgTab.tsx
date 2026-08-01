@@ -181,7 +181,7 @@ export default function KiroCrewCfgTab() {
 
       {/* Workspaces */}
       <Card>
-        <CardTitle><FolderOpen className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.workspaces')} <InfoTip text="Named workspace directories. Each agent binds to one workspace." /></CardTitle>
+        <CardTitle><FolderOpen className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.workspaces')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.named_workspace_directories_each_agent_binds_to')} /></CardTitle>
         <table className="w-full border-collapse table-striped">
           <thead>
             <tr>
@@ -209,7 +209,7 @@ export default function KiroCrewCfgTab() {
 
       {/* Memory Stores */}
       <Card>
-        <CardTitle><Brain className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.memory_stores')} <InfoTip text="Named memory stores with optional per-store embedding overrides. Unset fields inherit from the top-level memory section." /></CardTitle>
+        <CardTitle><Brain className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.memory_stores')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.named_memory_stores_with_optional_per_store_embe')} /></CardTitle>
         {stores.length === 0 ? (
           <EmptyState icon={<Brain className="lucide-inline" />} title={i18nT('pages.overview.kiroCrewCfgTab.no_memory_stores')} subtitle={i18nT('pages.overview.kiroCrewCfgTab.using_global_memory_settings')} />
         ) : (
@@ -251,7 +251,7 @@ export default function KiroCrewCfgTab() {
         {saveErr && <p className="text-danger text-[13px] mb-2">{saveErr}</p>}
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
           <CfgNumber key={`poolsize-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_size')} path="session.pool_size" value={cfg.session.pool_size ?? 0} min={0} max={10} hint={i18nT('pages.overview.kiroCrewCfgTab.number_of_pre_spawned_processes_0_disables_resta')} onSave={save} />
-          <CfgSelect key={`poolagent-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_agent')} path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': `(${cfg.default_agent || 'default agent'})`}} hint={i18nT('pages.overview.kiroCrewCfgTab.agent_for_pool_processes_empty_uses_default_agen')} onSave={save} />
+          <CfgSelect key={`poolagent-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_agent')} path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': `(${cfg.default_agent || i18nT('pages.overview.kiroCrewCfgTab.default_agent')})`}} hint={i18nT('pages.overview.kiroCrewCfgTab.agent_for_pool_processes_empty_uses_default_agen')} onSave={save} />
           <CfgNumber key={`poolttl-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_ttl')} path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix="s" min={0} max={7200} hint={i18nT('pages.overview.kiroCrewCfgTab.max_age_for_pooled_processes_0_disables_expiry_r')} onSave={save} />
         </div>
       </Card>
@@ -308,21 +308,21 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
 
   return (
     <Card>
-      <CardTitle><Bot className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.subagent_settings')} <InfoTip text="Controls how many subagents can run concurrently and how many tool calls each subagent is allowed. Changes take effect on the next subagent spawn." /></CardTitle>
+      <CardTitle><Bot className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.subagent_settings')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.controls_how_many_subagents_can_run_concurrently')} /></CardTitle>
       <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-[600px]:grid-cols-1">
         {/* label-has-for flags a label whose only control is a <button>; the
             toggle button is self-labeling (its text is the value) and the label
             wrapper only extends the click target to the row text — intentional. */}
         {/* eslint-disable-next-line jsx-a11y/label-has-for */}
         <label htmlFor="subagent-orchestrator-mode" className="flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm">
-          <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.orchestrator_mode')} <InfoTip text="Enable conductor skill for multi-agent orchestration. Restart required." /></span>
+          <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.orchestrator_mode')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.enable_conductor_skill_for_multi_agent_orchestra')} /></span>
           <button id="subagent-orchestrator-mode" aria-label={i18nT('pages.overview.kiroCrewCfgTab.orchestrator_mode')} onClick={() => setConductor(!conductor)}
             className={`px-3 py-1 rounded text-[13px] font-medium border cursor-pointer transition-all ${conductor ? 'bg-accent/10 border-accent text-accent' : 'bg-transparent border-border text-muted'}`}>
-            {conductor ? 'Enabled' : 'Disabled'}
+            {conductor ? i18nT('pages.overview.kiroCrewCfgTab.enabled') : i18nT('pages.overview.kiroCrewCfgTab.disabled')}
           </button>
         </label>
         <label htmlFor="subagent-max-turns" className="flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm">
-          <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.max_turns_per_subagent')} <InfoTip text="Tool-call budget per subagent (1–200). Default: 100." /></span>
+          <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.max_turns_per_subagent')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.tool_call_budget_per_subagent_1_200_default_100')} /></span>
           <input id="subagent-max-turns" aria-label={i18nT('pages.overview.kiroCrewCfgTab.max_turns_per_subagent')} type="number" min={1} max={200} value={maxTurns} onChange={e => setMaxTurns(parseInt(e.target.value) || 1)}
             className="w-20 px-2 py-1 rounded border border-border bg-bg-elevated text-text font-mono text-[13px] text-right" />
         </label>
@@ -336,7 +336,7 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
         </label>
         {maxSubs === 0 && (
           <label htmlFor="subagent-auto-size-max" className="flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm">
-            <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.auto_size_max')} <InfoTip text="Ceiling on the auto-sized concurrent subagent count (only applies when Max Concurrent Subagents = 0). The host memory/CPU formula never exceeds this. Range 1–64. Default: 16." /></span>
+            <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.auto_size_max')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.ceiling_on_the_auto_sized_concurrent_subagent_co')} /></span>
             <input id="subagent-auto-size-max" aria-label={i18nT('pages.overview.kiroCrewCfgTab.auto_size_max')} type="number" min={1} max={64} value={autoMax} onChange={e => { const v = parseInt(e.target.value); setAutoMax(Number.isNaN(v) ? 1 : Math.min(64, Math.max(1, v))) }}
               className="w-20 px-2 py-1 rounded border border-border bg-bg-elevated text-text font-mono text-[13px] text-right" />
           </label>
@@ -345,7 +345,7 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
       <div className="flex items-center gap-3 mt-3">
         <button onClick={save} disabled={!dirty || saving}
           className="px-3 py-1.5 rounded text-sm font-medium bg-accent text-accent-fg hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed">
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? i18nT('pages.overview.kiroCrewCfgTab.saving') : i18nT('pages.overview.kiroCrewCfgTab.save')}
         </button>
         {msg && <span className={`text-[13px] ${msgOk ? 'text-ok' : 'text-danger'}`}>{msg}</span>}
       </div>

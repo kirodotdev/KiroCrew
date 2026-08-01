@@ -42,7 +42,7 @@ export function SkillsPanel() {
     },
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData(['kirocrewConfig'], ctx.prev)
-      setSaveError('Failed to save skills setting')
+      setSaveError(i18nT('pages.settings.skillsPanel.failed_to_save_skills_setting'))
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
   })

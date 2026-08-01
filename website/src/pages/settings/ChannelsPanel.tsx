@@ -57,11 +57,11 @@ export const CHANNEL_KEYS = CHANNELS.map(c => c.key)
 const TWO_PANE_MIN_WIDTH = 760
 
 function statusLine(s: ChannelStatus | undefined, isError: boolean): { text: string; color: string; dot: boolean } {
-  if (isError) return { text: 'Status unavailable', color: 'var(--muted)', dot: false }
-  if (!s) return { text: 'Checking…', color: 'var(--muted)', dot: false }
-  if (s.connected) return { text: 'Connected', color: 'var(--ok)', dot: true }
-  if (s.configured) return { text: 'Not connected', color: 'var(--warn)', dot: true }
-  return { text: 'Needs setup', color: 'var(--muted)', dot: false }
+  if (isError) return { text: i18nT('pages.settings.channelsPanel.status_unavailable'), color: 'var(--muted)', dot: false }
+  if (!s) return { text: i18nT('pages.settings.channelsPanel.checking'), color: 'var(--muted)', dot: false }
+  if (s.connected) return { text: i18nT('pages.settings.channelsPanel.connected'), color: 'var(--ok)', dot: true }
+  if (s.configured) return { text: i18nT('pages.settings.channelsPanel.not_connected'), color: 'var(--warn)', dot: true }
+  return { text: i18nT('pages.settings.channelsPanel.needs_setup'), color: 'var(--muted)', dot: false }
 }
 
 /** Channels tab: responsive list-detail over the five chat integrations.

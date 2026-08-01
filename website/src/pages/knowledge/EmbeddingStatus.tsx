@@ -62,7 +62,7 @@ export function EmbeddingStatus() {
               disabled={generateMutation.isPending}
               className="text-accent underline bg-transparent border-none cursor-pointer text-[12px] p-0"
             >
-              {generateMutation.isPending ? 'Generating…' : 'Generate now'}
+              {generateMutation.isPending ? i18nT('pages.knowledge.embeddingStatus.generating') : i18nT('pages.knowledge.embeddingStatus.generate_now')}
             </button>
           </>
         )

@@ -108,7 +108,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
     <div className="mb-3">
       <div className="flex items-center gap-2 mb-1.5">
         <span className="text-[12px] text-muted font-medium uppercase tracking-wider">{i18nT('components.agentSkillsEditor.skills')}</span>
-        <InfoTip text="Skills this agent template loads. Written as skill:// resources in the agent config, so kiro-cli loads them natively when the agent starts. An agent with no skills mapped falls back to the default behavior: the kirocrew agent sees the whole catalog, other agents see none." />
+        <InfoTip text={i18nT('components.agentSkillsEditor.skills_this_agent_template_loads_written_as_skil')} />
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
         {skills.map(key => {

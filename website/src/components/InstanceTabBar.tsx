@@ -57,7 +57,7 @@ function ttlToSeconds(ttl: string): number {
 
 /** Compact human duration: "4h 12m", "12m", or "<1m". */
 function fmtDuration(secs: number): string {
-  if (secs < 60) return '<1m'
+  if (secs < 60) return i18nT('components.instanceTabBar.1m')
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
   return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`

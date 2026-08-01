@@ -446,7 +446,7 @@ function useFileKnowledgeState(filePath: string) {
       if (res.status === 409) return 'exists' as const
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: 'failed' }))
-        throw new Error(err.error || 'Failed to add source')
+        throw new Error(err.error || i18nT('components.markdownPanel.failed_to_add_source'))
       }
       return 'created' as const
     },

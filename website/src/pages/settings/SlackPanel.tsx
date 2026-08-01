@@ -31,10 +31,10 @@ function draftFrom(c: SlackConfigData): Draft {
 /** Status pill mirroring the connection state of the messaging gateway. */
 function StatusBadge({ config }: { config: SlackConfigData }) {
   const [dot, text, cls] = config.connected
-    ? ['var(--ok)', 'Connected', 'text-ok']
+    ? ['var(--ok)', i18nT('pages.settings.slackPanel.connected'), 'text-ok']
     : config.configured
-      ? ['var(--warn)', 'Not connected', 'text-warn']
-      : ['var(--muted)', 'Needs setup', 'text-muted']
+      ? ['var(--warn)', i18nT('pages.settings.slackPanel.not_connected'), 'text-warn']
+      : ['var(--muted)', i18nT('pages.settings.slackPanel.needs_setup'), 'text-muted']
   return (
     <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${cls}`}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
@@ -47,12 +47,12 @@ function StatusBadge({ config }: { config: SlackConfigData }) {
 function connectionHint(config: SlackConfigData): string {
   if (config.connected || !config.configured) return ''
   if (config.connect_error === 'invalid_auth') {
-    return 'Slack rejected the stored tokens (invalid_auth). Replace them below, then restart the gateway.'
+    return i18nT('pages.settings.slackPanel.slack_rejected_the_stored_tokens_invalid_auth_re')
   }
   if (config.connect_error) {
     return `Slack connection failed at startup (${config.connect_error}). Check network access to slack.com, then restart the gateway.`
   }
-  return 'Tokens are saved but not yet active. Restart the gateway to connect.'
+  return i18nT('pages.settings.slackPanel.tokens_are_saved_but_not_yet_active_restart_the')
 }
 
 /** Editor for a list of plain string IDs (channels, enterprise orgs, user IDs, emails). */
@@ -168,7 +168,7 @@ export function SlackPanel() {
       // The API client throws with the raw response body; extract the
       // server's error field (e.g. "bot_token rejected by Slack
       // (invalid_auth)") for clean display.
-      let msg = 'Save failed. Is the gateway running?'
+      let msg = i18nT('pages.settings.slackPanel.save_failed_is_the_gateway_running')
       if (e instanceof Error && e.message) {
         try {
           msg = JSON.parse(e.message).error ?? e.message
@@ -264,7 +264,7 @@ export function SlackPanel() {
               {i18nT('pages.settings.slackPanel.create_slack_app')} <ExternalLink size={13} />
             </a>
             <Btn onClick={copyManifest} disabled={!manifestQ.data}>
-              {manifestCopied ? <><Check size={13} /> {i18nT('pages.settings.slackPanel.copied')}</> : 'Copy manifest YAML'}
+              {manifestCopied ? <><Check size={13} /> {i18nT('pages.settings.slackPanel.copied')}</> : i18nT('pages.settings.slackPanel.copy_manifest_yaml')}
             </Btn>
             <a href={SETUP_GUIDE} target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline">
@@ -289,7 +289,7 @@ export function SlackPanel() {
             onChange={setBotToken}
             cleared={botClear}
             onClearedChange={setBotClear}
-            setupLink={{ href: SETUP_GUIDE, label: 'Where to find the bot token' }}
+            setupLink={{ href: SETUP_GUIDE, label: i18nT('pages.settings.slackPanel.where_to_find_the_bot_token') }}
           />
           <SecretField
             key={`app-${formKey}`}
@@ -303,7 +303,7 @@ export function SlackPanel() {
             onChange={setAppToken}
             cleared={appClear}
             onClearedChange={setAppClear}
-            setupLink={{ href: SETUP_GUIDE, label: 'Where to find the app token' }}
+            setupLink={{ href: SETUP_GUIDE, label: i18nT('pages.settings.slackPanel.where_to_find_the_app_token') }}
           />
         </SettingsCard>
       </SettingsSection>
@@ -362,11 +362,11 @@ export function SlackPanel() {
       {/* ── Save (hidden on read-only remote sessions) ── */}
       {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
-          {saveMut.isPending ? 'Saving…' : 'Save Slack settings'}
+          {saveMut.isPending ? i18nT('pages.settings.slackPanel.saving') : i18nT('pages.settings.slackPanel.save_slack_settings')}
         </Btn>
         {saved && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-ok">
-            <Check size={14} /> {tokensVerified ? 'Verified with Slack and saved. Restart the gateway to connect.' : restartHint ? 'Saved. Restart the gateway to apply.' : 'Saved.'}
+            <Check size={14} /> {tokensVerified ? i18nT('pages.settings.slackPanel.verified_with_slack_and_saved_restart_the_gatewa') : restartHint ? i18nT('pages.settings.slackPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.slackPanel.saved')}
           </span>
         )}
         {saved && verifyWarning && (

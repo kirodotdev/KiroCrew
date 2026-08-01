@@ -58,7 +58,7 @@ function connectionHint(config: TeamsConfigData): string {
   if (config.connect_error) {
     return `Teams credential check failed (${config.connect_error}). Verify the App ID / password / tenant, then restart the gateway.`
   }
-  return 'Settings are saved but the channel is not running. Restart the gateway to connect.'
+  return i18nT('pages.settings.teamsPanel.settings_are_saved_but_the_channel_is_not_runnin')
 }
 
 /** Microsoft Teams channel-integration settings. */
@@ -92,7 +92,7 @@ export function TeamsPanel() {
   const saveMut = useMutation({
     mutationFn: (body: Partial<TeamsConfigSave>) => api.saveTeamsConfig(body),
     onError: (e: unknown) => {
-      let msg = 'Save failed. Is the gateway running?'
+      let msg = i18nT('pages.settings.teamsPanel.save_failed_is_the_gateway_running')
       if (e instanceof Error && e.message) {
         try {
           msg = JSON.parse(e.message).error ?? e.message
@@ -253,7 +253,7 @@ export function TeamsPanel() {
               aria-label={i18nT('pages.settings.teamsPanel.app_client_id')}
               className={inputCls}
               type="text"
-              placeholder={data.app_id_set ? '•••••• (set — paste to replace)' : 'Microsoft App ID'}
+              placeholder={data.app_id_set ? i18nT('pages.settings.teamsPanel.set_paste_to_replace') : i18nT('pages.settings.teamsPanel.microsoft_app_id')}
               value={draft.app_id}
               disabled={ro}
               onChange={e => upd({ app_id: e.target.value })}
@@ -271,7 +271,7 @@ export function TeamsPanel() {
             onChange={setAppPassword}
             cleared={pwClear}
             onClearedChange={setPwClear}
-            setupLink={{ href: SETUP_GUIDE, label: 'Where to find the client secret' }}
+            setupLink={{ href: SETUP_GUIDE, label: i18nT('pages.settings.teamsPanel.where_to_find_the_client_secret') }}
           />
           <label htmlFor="teams-tenant-id" className="flex flex-col gap-1.5 py-1.5 text-[13px] font-semibold text-text">
             {i18nT('pages.settings.teamsPanel.tenant_id')}
@@ -315,11 +315,11 @@ export function TeamsPanel() {
       {/* ── Save (hidden on read-only remote sessions) ── */}
       {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
-          {saveMut.isPending ? 'Saving…' : 'Save Teams settings'}
+          {saveMut.isPending ? i18nT('pages.settings.teamsPanel.saving') : i18nT('pages.settings.teamsPanel.save_teams_settings')}
         </Btn>
         {saved && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-ok">
-            <Check size={14} /> {restartHint ? 'Saved. Restart the gateway to apply.' : 'Saved.'}
+            <Check size={14} /> {restartHint ? i18nT('pages.settings.teamsPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.teamsPanel.saved')}
           </span>
         )}
         {error && (

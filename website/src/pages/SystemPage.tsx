@@ -82,10 +82,10 @@ function Info({ k, v }: { k: string; v?: ReactNode }) {
 /** Governance enforcement health indicator. Minimal colored text. */
 function GovernanceStatus({ value }: { value?: 'active' | 'degraded' | 'disabled' | 'unknown' }) {
   const map = {
-    active: { label: 'Active', color: 'var(--ok)', tip: 'Governance is enforcing an admission policy; no degradation detected.' },
-    degraded: { label: 'Degraded', color: 'var(--danger)', tip: 'A governance check failed closed, an integrity mismatch was detected, or the admission policy is unverified (absent/unreadable). Investigate the SEL audit log.' },
-    disabled: { label: 'Disabled', color: 'var(--muted)', tip: 'No enforcing admission policy is configured (permissive default). Plugins are admitted unless explicitly banned.' },
-    unknown: { label: 'Unknown', color: 'var(--muted)', tip: 'Governance status not yet determined this session.' },
+    active: { label: i18nT('pages.systemPage.status_active'), color: 'var(--ok)', tip: i18nT('pages.systemPage.governance_is_enforcing_an_admission_policy_no_d') },
+    degraded: { label: i18nT('pages.systemPage.status_degraded'), color: 'var(--danger)', tip: i18nT('pages.systemPage.a_governance_check_failed_closed_an_integrity_mi') },
+    disabled: { label: i18nT('pages.systemPage.status_disabled'), color: 'var(--muted)', tip: i18nT('pages.systemPage.no_enforcing_admission_policy_is_configured_perm') },
+    unknown: { label: i18nT('pages.systemPage.status_unknown'), color: 'var(--muted)', tip: i18nT('pages.systemPage.governance_status_not_yet_determined_this_sessio') },
   } as const
   const s = map[value ?? 'unknown'] ?? map.unknown
   return <span style={{ color: s.color }} className="inline-flex items-center gap-1">{s.label}<InfoTip text={s.tip} /></span>

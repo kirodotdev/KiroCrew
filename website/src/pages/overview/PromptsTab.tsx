@@ -148,7 +148,7 @@ export default function PromptsTab() {
       )}
       {prompts.length === 0 && !loading && !error && <p className="text-muted italic text-sm px-3 py-4">{i18nT('pages.overview.promptsTab.no_prompts_found_install_a')} {provider.labels.pluginRegistryName.toLowerCase().replace(/s$/, '')} {i18nT('pages.overview.promptsTab.with_prompts_or_create_prompts_in_kiro_prompts')}</p>}
       {loading && <p className="text-muted italic text-sm px-3 py-4">{i18nT('pages.overview.promptsTab.loading_prompts')}</p>}
-      {error && <p className="text-red-400 text-sm px-3 py-4">{error.message || 'Failed to load prompts'}</p>}
+      {error && <p className="text-red-400 text-sm px-3 py-4">{error.message || i18nT('pages.overview.promptsTab.failed_to_load_prompts')}</p>}
     </Card>
     {filteredUser.length > 0 && <Card>
       <CardTitle>{filter ? i18nT('pages.overview.promptsTab.user_prompts_filtered_count', { count: filteredUser.length, total: userPrompts.length }) : i18nT('pages.overview.promptsTab.user_prompts_count', { count: userPrompts.length })}</CardTitle>

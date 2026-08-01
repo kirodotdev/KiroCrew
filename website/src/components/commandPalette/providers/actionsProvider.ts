@@ -12,6 +12,8 @@ import { useTheme } from '../../../hooks/useTheme'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import type { ResourceProvider, Result } from '../types'
 
+import { i18nT } from '../../../i18n/t'
+
 /**
  * Actions provider (Search Everywhere).
  *
@@ -86,21 +88,21 @@ export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvid
     {
       key: 'new-session',
       title: 'New session',
-      subtitle: 'Start a fresh chat',
+      subtitle: i18nT('components.commandPalette.providers.actionsProvider.start_a_fresh_chat'),
       icon: inlineIcon(MessageSquarePlus),
       run: deps.newSession,
     },
     {
       key: 'toggle-theme',
       title: 'Toggle theme',
-      subtitle: 'Cycle light / dark / system',
+      subtitle: i18nT('components.commandPalette.providers.actionsProvider.cycle_light_dark_system'),
       icon: inlineIcon(SunMoon),
       run: deps.toggleTheme,
     },
     {
       key: 'open-shortcuts',
       title: 'Open Shortcuts',
-      subtitle: 'Keyboard shortcuts help',
+      subtitle: i18nT('components.commandPalette.providers.actionsProvider.keyboard_shortcuts_help'),
       icon: inlineIcon(Keyboard),
       run: deps.openShortcuts,
     },
@@ -110,8 +112,12 @@ export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvid
     const { pinned, toggle } = deps.pinCurrentSession
     actions.push({
       key: 'pin-session',
-      title: pinned ? 'Unpin current session' : 'Pin current session',
-      subtitle: pinned ? 'Remove pin from this chat' : 'Pin this chat to the top',
+      title: pinned
+        ? i18nT('components.commandPalette.providers.actionsProvider.unpin_current_session')
+        : i18nT('components.commandPalette.providers.actionsProvider.pin_current_session'),
+      subtitle: pinned
+        ? i18nT('components.commandPalette.providers.actionsProvider.remove_pin_from_this_chat')
+        : i18nT('components.commandPalette.providers.actionsProvider.pin_this_chat_to_the_top'),
       icon: inlineIcon(Pin),
       run: toggle,
     })

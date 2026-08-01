@@ -51,7 +51,7 @@ function ChannelsSection() {
     let cancelled = false
     api.notificationChannels()
       .then((d: { channels?: NotificationChannel[] }) => { if (!cancelled) setChannels(d.channels || []) })
-      .catch(() => { if (!cancelled) setError('Failed to load channels') })
+      .catch(() => { if (!cancelled) setError(i18nT('pages.settings.notificationsPanel.failed_to_load_channels')) })
     return () => { cancelled = true }
   }, [])
 
@@ -97,9 +97,9 @@ function ChannelsSection() {
                   </div>
                   <div className="text-[11px] text-muted">
                     {!c.registered
-                      ? 'Channel not active (app disabled) — setting retained'
+                      ? i18nT('pages.settings.notificationsPanel.channel_not_active_app_disabled_setting_retained')
                       : c.protected
-                        ? 'Always interrupts — cannot be muted or lowered'
+                        ? i18nT('pages.settings.notificationsPanel.always_interrupts_cannot_be_muted_or_lowered')
                         : `Default priority: ${c.default_priority || 'default'}`}
                   </div>
                 </div>

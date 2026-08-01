@@ -1597,9 +1597,7 @@
       "add_to_chat": "Add to chat",
       "auto_merge_enabled": "Auto-merge enabled",
       "cancel": "Cancel",
-      "changed": "Changed",
       "could_not_resolve": "Could not resolve",
-      "for_the_complete_set": "for the complete set.",
       "kiro_crew_uses_your_local_provider_cli_to_load_p": "Kiro Crew uses your local provider CLI to load pull requests. Run this command in your terminal, then retry.",
       "loading_diff": "Loading diff…",
       "loading_source_provider": "Loading source provider…",
@@ -1611,8 +1609,6 @@
       "no_written_comment": "No written comment.",
       "open": "Open",
       "open_pull_request": "Open pull request",
-      "open_the": ". Open the",
-      "provider_results_may_be_partial_for": "Provider results may be partial for",
       "pull_request_sections": "Pull request sections",
       "pull_requests": "Pull requests",
       "ready_for_review": "Ready for review",
@@ -1620,7 +1616,6 @@
       "resolved": "Resolved",
       "retry": "Retry",
       "the_provider_did_not_return_a_patch_for_this_fil": "The provider did not return a patch for this file.",
-      "this_authorizes_the_merge": "This authorizes the merge",
       "updated": "Updated"
     },
     "questionCard": {
@@ -2212,7 +2207,6 @@
       "discover_install_and_manage_agentic_apps": "Discover, install, and manage agentic apps",
       "dismiss_error": "Dismiss error",
       "dismiss_message": "Dismiss message",
-      "installed_from_apps_kirocrew_metadata": "Installed from Apps — KiroCrew metadata",
       "keep_app_data": "Keep app data",
       "keep_this_dependency": "Keep this dependency",
       "kept": "Kept —",
@@ -2227,7 +2221,6 @@
       "skill_other": "{{count}} skills",
       "sort": "Sort:",
       "sort_apps": "Sort apps",
-      "the_downloaded_source_code_will_be_removed": "the downloaded source code will be removed.",
       "this_app_has_an_uninstall_script_that_will_run_b": "This app has an uninstall script that will run before removal. It may delete the app binary, agent configs, skills, and other resources it created during installation.",
       "this_is_a_self_managed_app_only_kirocrew_metadat": "This is a self-managed app — only KiroCrew metadata and the app secret will be removed.\n                    The app itself and its agent/skill registrations are managed externally and will not be affected.\n                    If the app is still running, it may re-register on next launch.",
       "this_will_remove_all_resources_provided_by_this": "This will remove all resources provided by this app:",
@@ -2522,7 +2515,6 @@
       "new_channel_2": "New Channel",
       "no_channels_yet": "No channels yet",
       "ok": "OK",
-      "repl": "repl",
       "reply": "Reply",
       "role": "Role",
       "role_e_g_logs_agent": "Role (e.g. Logs Agent)",
@@ -2814,7 +2806,6 @@
       "focus_popped_out_window": "Focus popped-out window",
       "in_split": "In split",
       "incognito_memory_writes_disabled": "Incognito — memory writes disabled",
-      "knowledge": "knowledge",
       "loading": "Loading…",
       "mcp_servers": "MCP servers",
       "mcp_servers_2": "MCP Servers",
@@ -4204,7 +4195,6 @@
         "security_posture_detail_is_temporarily_unavailab": "Security posture detail is temporarily unavailable. Enforcement is unaffected — this view could not resolve the control list for display.",
         "the_strictest_boundary_in_effect_for_each_govern": "The strictest boundary in effect for each governed scope on the",
         "tool_approval": "Tool Approval",
-        "turn_off_every_built_in_denied_command_rule_at_o": "Turn off every built-in denied-command rule at once. Independent defense-in-depth controls (sensitive paths, IMDS, git-publish) stay enforced",
         "your_custom_denies": "Your custom denies"
       },
       "sharedMcpGatewayToggle": {
@@ -4214,7 +4204,6 @@
         "not_available_on_windows": "Not available on Windows — the shared gateway needs Unix-domain sockets. Supported on macOS and Linux.",
         "roll_back_disable": "Roll back (disable)",
         "shared_mcp_gateway": "Shared MCP gateway",
-        "the_gateway_did_not_reach_the_expected_state": "The gateway did not reach the expected state.",
         "this_restarts_all_active_sessions_onto_the_new_m": "This restarts all active sessions onto the new MCP routing — in-flight work will be interrupted. Your dashboard stays signed in. Continue?"
       },
       "shortcutsPanel": {

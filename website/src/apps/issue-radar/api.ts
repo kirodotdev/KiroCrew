@@ -3,6 +3,8 @@
 // — so the base path is /api/apps/issue-radar, matching code-review-sage's
 // convention, NOT the /apps/{name}/api reverse-proxy prefix used by apps like
 // file-explorer that run as a separate child process).
+import { i18nT } from '../../i18n/t'
+
 const API = '/api/apps/issue-radar'
 
 export interface ConnectResponse {
@@ -920,7 +922,7 @@ export const issueRadarApi = {
     if (r.status === 409) {
       const body = (await r.json().catch(() => ({}))) as { error?: string; settings?: RepoSettings }
       throw new SettingsConflictError(
-        body.error || 'These settings changed elsewhere.',
+        body.error || i18nT('apps.issueRadar.api.these_settings_changed_elsewhere'),
         body.settings ?? DEFAULT_REPO_SETTINGS,
       )
     }

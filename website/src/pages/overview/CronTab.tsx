@@ -76,7 +76,7 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
     if (editSchedule !== (editing.schedule || '')) {
       const parts = editSchedule.trim().split(/\s+/)
       if (parts.length === 5) { body.cron = editSchedule.trim() }
-      else { const n = parseInt(editSchedule); if (!isNaN(n) && n >= 60) body.every = n; else { setEditError('Enter a 5-field cron expression or interval in seconds (≥60)'); return } }
+      else { const n = parseInt(editSchedule); if (!isNaN(n) && n >= 60) body.every = n; else { setEditError(i18nT('pages.overview.cronTab.enter_a_5_field_cron_expression_or_interval_in_s')); return } }
     }
     if (editTz !== (editing.timezone || 'UTC')) {
       body.timezone = editTz
@@ -85,12 +85,12 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
     try {
       const res = await api.updateCron(editing.id, body)
       if (res.error) { setEditError(res.error); return }
-    } catch { setEditError('Failed to update job — check server connection'); return }
+    } catch { setEditError(i18nT('pages.overview.cronTab.failed_to_update_job_check_server_connection')); return }
     setEditing(null); load()
   }
   const add = async () => {
     setError('')
-    if (!name || !msg) { setError('Name and message are required'); return }
+    if (!name || !msg) { setError(i18nT('pages.overview.cronTab.name_and_message_are_required')); return }
     const body: Record<string, string | number | boolean> = { name, message: msg, agent }
     if (channel) body.channel = channel
     if (approvalMode) body.approval_mode = approvalMode
@@ -99,7 +99,7 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
       const secs = intervalVal * (intervalUnit === 'minutes' ? 60 : intervalUnit === 'hours' ? 3600 : 86400)
       body.every = secs
     } else {
-      if (days.length === 0) { setError('Select at least one day'); return }
+      if (days.length === 0) { setError(i18nT('pages.overview.cronTab.select_at_least_one_day')); return }
       const [h, m] = time.split(':').map(Number)
       const cronDow = days.map(d => PY_TO_CRON[d - 1]).join(',')
       body.cron = `${m} ${h} * * ${cronDow}`
@@ -160,9 +160,9 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
             <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtAgo(j.last_run_ts)}</td>
             <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">
               <span title={i18nT('pages.overview.cronTab.edit')}><Btn aria-label={i18nT('pages.overview.cronTab.edit')} onClick={() => openEdit(j)}><Pencil className="lucide-inline" /></Btn></span>{' '}
-              <span title={j.enabled ? "Run now" : "Resume job to run"} style={{ color: 'var(--ok)' }}><Btn aria-label={running.has(j.id) ? "Running" : "Run now"} onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)}>{running.has(j.id) ? <Hourglass className="lucide-inline" /> : <><Play className="lucide-inline" /> {i18nT('pages.overview.cronTab.run')}</>}</Btn></span>{' '}
-              <span title={j.has_slot ? "Continue session" : j.has_result ? "View last result" : "No result yet"}><Btn aria-label={j.has_slot ? "Continue session" : j.has_result ? "View last result" : "No result yet"} onClick={() => openInChat(j.id)} disabled={!j.has_result && !j.has_slot}><MessageSquare className="lucide-inline" /></Btn></span>{' '}
-              <Btn onClick={async () => { await api.toggleCron(j.id, !j.enabled); load() }}>{j.enabled ? 'Pause' : 'Resume'}</Btn>{' '}
+              <span title={j.enabled ? i18nT('pages.overview.cronTab.run_now') : i18nT('pages.overview.cronTab.resume_job_to_run')} style={{ color: 'var(--ok)' }}><Btn aria-label={running.has(j.id) ? i18nT('pages.overview.cronTab.running') : i18nT('pages.overview.cronTab.run_now')} onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)}>{running.has(j.id) ? <Hourglass className="lucide-inline" /> : <><Play className="lucide-inline" /> {i18nT('pages.overview.cronTab.run')}</>}</Btn></span>{' '}
+              <span title={j.has_slot ? i18nT('pages.overview.cronTab.continue_session') : j.has_result ? i18nT('pages.overview.cronTab.view_last_result') : i18nT('pages.overview.cronTab.no_result_yet')}><Btn aria-label={j.has_slot ? i18nT('pages.overview.cronTab.continue_session') : j.has_result ? i18nT('pages.overview.cronTab.view_last_result') : i18nT('pages.overview.cronTab.no_result_yet')} onClick={() => openInChat(j.id)} disabled={!j.has_result && !j.has_slot}><MessageSquare className="lucide-inline" /></Btn></span>{' '}
+              <Btn onClick={async () => { await api.toggleCron(j.id, !j.enabled); load() }}>{j.enabled ? i18nT('pages.overview.cronTab.pause') : i18nT('pages.overview.cronTab.resume')}</Btn>{' '}
               <Btn danger onClick={async () => { await api.deleteCron(j.id); load() }}>{i18nT('pages.overview.cronTab.delete')}</Btn>
               {actionError?.id === j.id && <span className="text-danger text-[12px] ml-1">{actionError.msg}</span>}
             </td></tr>

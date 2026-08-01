@@ -118,7 +118,7 @@ export function statusBadge(status: string | null | undefined): StatusBadgeSpec 
     case 'cancelled':
       return { variant: 'warn', label: 'Cancelled', active: false }
     default:
-      return { variant: 'warn', label: status ? String(status) : 'Unknown', active: false }
+      return { variant: 'warn', label: status ? String(status) : i18nT('apps.workflows.workflowsRuns.unknown'), active: false }
   }
 }
 

@@ -136,7 +136,7 @@ function BuiltinDenyRow({ rule, dimmed, onToggle }: { rule: DeniedCommandRule; d
           type="button"
           className="shrink-0 text-muted hover:text-text transition-colors bg-transparent border-none cursor-pointer p-0"
           onClick={() => setOpen(o => !o)}
-          aria-label={open ? 'Hide pattern' : 'Show pattern'}
+          aria-label={open ? i18nT('pages.settings.securityPanel.hide_pattern') : i18nT('pages.settings.securityPanel.show_pattern')}
           aria-expanded={open}
         >
           <Chevron size={14} />
@@ -191,7 +191,9 @@ function CategoryGroup({
         className="w-full flex items-center gap-2 py-2.5 bg-transparent border-none cursor-pointer text-left group"
         onClick={onToggleOpen}
         aria-expanded={open}
-        aria-label={`${open ? 'Collapse' : 'Expand'} ${categoryLabel(category)} rules`}
+        aria-label={open
+          ? i18nT('pages.settings.securityPanel.collapse_category_rules', { category: categoryLabel(category) })
+          : i18nT('pages.settings.securityPanel.expand_category_rules', { category: categoryLabel(category) })}
       >
         <Chevron size={14} className="shrink-0 text-muted group-hover:text-text transition-colors" />
         <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted group-hover:text-text transition-colors">
@@ -249,7 +251,7 @@ function AddDenyInput({ onAdd, busy }: { onAdd: (pattern: string) => void; busy:
     try {
       new RegExp(pattern)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Invalid regular expression')
+      setError(e instanceof Error ? e.message : i18nT('pages.settings.securityPanel.invalid_regular_expression'))
       return
     }
     setError('')
@@ -313,17 +315,17 @@ function rulesetLabel(d: GovernanceScopeDetail): string {
     return (d.components ?? []).map(rulesetLabel).join(' ∩ ')
   }
   if (d.mode === 'allow') {
-    return (d.allow_count ?? 0) === 0 ? 'Nothing allowed' : `Allow-list · ${nRules(d.allow_count ?? 0)}`
+    return (d.allow_count ?? 0) === 0 ? i18nT('pages.settings.securityPanel.nothing_allowed') : i18nT('pages.settings.securityPanel.allow_list_rules', { rules: nRules(d.allow_count ?? 0) })
   }
   if (d.mode === 'deny') {
-    return (d.deny_count ?? 0) === 0 ? 'All allowed' : `Block-list · ${nRules(d.deny_count ?? 0)}`
+    return (d.deny_count ?? 0) === 0 ? i18nT('pages.settings.securityPanel.all_allowed') : i18nT('pages.settings.securityPanel.block_list_rules', { rules: nRules(d.deny_count ?? 0) })
   }
   return ''
 }
 
 /** Compact human label for a scope's EFFECTIVE state, by archetype. */
 function effectiveLabel(row: GovernanceScope): string {
-  if (!row.governed) return 'Not restricted'
+  if (!row.governed) return i18nT('pages.settings.securityPanel.not_restricted')
   const d = row.detail
   switch (row.archetype) {
     case 'ruleset':
@@ -331,9 +333,9 @@ function effectiveLabel(row: GovernanceScope): string {
     case 'ordinal':
       return `Floor: ${d.floor ?? '?'}`
     case 'capability': {
-      if (!d.enabled) return 'Disabled by policy'
+      if (!d.enabled) return i18nT('pages.settings.securityPanel.disabled_by_policy')
       const inner = Object.entries(d.inner ?? {})
-      if (inner.length === 0) return 'Enabled'
+      if (inner.length === 0) return i18nT('pages.settings.securityPanel.enabled')
       // Use rulesetLabel (not the allow-count alone) so a deny-mode inner ruleset
       // reads as a block-list, not a misleading "none".
       return `Enabled · ${inner.map(([k, v]) => `${k}: ${rulesetLabel(v)}`).join('; ')}`
@@ -374,11 +376,11 @@ const GOV_PLANES: GovPlane[] = [
 function sourceBadgeLabel(source: GovernanceScope['source']): string {
   switch (source) {
     case 'policy+profile':
-      return 'policy ∩ profile'
+      return i18nT('pages.settings.securityPanel.policy_profile')
     case 'profile':
-      return 'profile'
+      return i18nT('pages.settings.securityPanel.profile_2')
     case 'policy':
-      return 'policy'
+      return i18nT('pages.settings.securityPanel.policy')
     default:
       return source
   }
@@ -609,9 +611,7 @@ export function SecurityPanel() {
   }
 
   const confirmBody = !confirm ? '' : confirm.kind === 'disable-all'
-    ? 'Disabling all built-in denies removes KiroCrew’s protection against destructive '
-      + 'and credential-exfiltration commands. Some commands may stay blocked by independent '
-      + 'defense-in-depth controls (sensitive paths, IMDS, git-publish).'
+    ? i18nT('pages.settings.securityPanel.disabling_all_built_in_denies_removes_kirocrew_s')
     : `Disabling "${confirm.description}" weakens protection against destructive or `
       + 'credential-exfiltration commands. Some commands may stay blocked by independent '
       + 'defense-in-depth controls.'
@@ -633,12 +633,12 @@ export function SecurityPanel() {
       <SettingsSection title={i18nT('pages.settings.securityPanel.live_security_posture')}>
         <SettingsCard>
           {/* Non-expandable rows: single-valued modes, not counted sets. */}
-          <StatusRow icon={<Lock size={14} />} label={i18nT('pages.settings.securityPanel.process_sandbox')} value="Standard" variant="ok"
+          <StatusRow icon={<Lock size={14} />} label={i18nT('pages.settings.securityPanel.process_sandbox')} value={i18nT('pages.settings.securityPanel.standard')} variant="ok"
             href={`${CODE_BASE}/src/kiro_crew/sandbox.py`} />
           <StatusRow
             icon={yolo ? <ShieldAlert size={14} /> : <ShieldCheck size={14} />}
             label={i18nT('pages.settings.securityPanel.tool_approval')}
-            value={yolo ? 'YOLO (auto-approve)' : 'Interactive'}
+            value={yolo ? i18nT('pages.settings.securityPanel.yolo_auto_approve') : i18nT('pages.settings.securityPanel.interactive')}
             variant={yolo ? 'err' : 'ok'}
           />
 
@@ -717,7 +717,9 @@ export function SecurityPanel() {
                 {governanceLocked && <Lock size={13} className="text-muted" />}
               </div>
               <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
-                {i18nT('pages.settings.securityPanel.turn_off_every_built_in_denied_command_rule_at_o')}{governanceLocked ? ', and rules pinned by your organization’s policy remain on.' : '.'}
+                {governanceLocked
+                  ? i18nT('pages.settings.securityPanel.turn_off_every_rule_governance_locked')
+                  : i18nT('pages.settings.securityPanel.turn_off_every_rule')}
               </div>
             </div>
             {/* Disable-all stays available even when governance-locked: the
@@ -819,8 +821,8 @@ export function SecurityPanel() {
         <SettingsCard>
           <div className="flex flex-col gap-2">
             {[
-              { label: 'Security Deep Dive', href: `${CODE_BASE}/docs/security-deep-dive.md` },
-              { label: 'Security Module Spec', href: `${CODE_BASE}/docs/system-specs/modules/security.md` },
+              { label: i18nT('pages.settings.securityPanel.security_deep_dive'), href: `${CODE_BASE}/docs/security-deep-dive.md` },
+              { label: i18nT('pages.settings.securityPanel.security_module_spec'), href: `${CODE_BASE}/docs/system-specs/modules/security.md` },
             ].map(link => (
               <a key={link.label} href={link.href} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-[13px] text-accent hover:underline py-1">
                 <ExternalLink size={12} />
@@ -835,7 +837,7 @@ export function SecurityPanel() {
       <Modal
         open={confirm !== null}
         onClose={() => setConfirm(null)}
-        title={confirm?.kind === 'disable-all' ? 'Disable all built-in denies?' : 'Disable this denied command?'}
+        title={confirm?.kind === 'disable-all' ? i18nT('pages.settings.securityPanel.disable_all_built_in_denies_2') : i18nT('pages.settings.securityPanel.disable_this_denied_command')}
         maxWidth={480}
         footer={
           <>

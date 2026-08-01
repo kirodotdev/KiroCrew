@@ -124,6 +124,18 @@ export default [
               // which excluded most English prose and hid five of six strings in a
               // six-string probe file.
               '^[^A-Za-z]*$',
+              // The product brand, which the do-not-translate glossary already covers as
+              // `KiroCrew`; the spaced form is the same name and is equally DNT. Anchored
+              // to the whole value, so a sentence merely *containing* the brand is still
+              // reported — only the bare name is exempt.
+              '^Kiro ?Crew$',
+              // Physical modifier key caps, chosen by platform (`isMac ? '⌘' : 'Ctrl'`).
+              // The glyph half is already exempt for having no letters; this exempts the
+              // spelled half on the same do-not-translate grounds `en.context.json`
+              // states for `Tab`, `Esc` and `K` — the string names a key the user
+              // presses, so translating it would mislabel their keyboard. Anchored and
+              // enumerated, not a pattern: ordinary copy cannot match it.
+              '^(Ctrl|Alt|Shift|Cmd|Win)$',
             ],
           },
 
@@ -166,6 +178,10 @@ export default [
               // user-visible copy, not a machine value.
               'className', 'class', 'id', 'key', 'href', 'src', 'to', 'type',
               'name', 'role', 'rel', 'target', 'method', 'action', 'style',
+              // A dotted config path (`path="session.pool_agent"`) addressing a key in
+              // `config.json`, not copy. Already exempt as an object property below; a
+              // JSX attribute of the same name carries the same machine value.
+              'path',
               'data-\\w+', 'aria-(hidden|live|orientation|current|haspopup)',
               'autoComplete', 'inputMode', 'enterKeyHint', 'spellCheck',
               'viewBox', 'xmlns', 'fill', 'stroke', 'd', 'points', 'transform',

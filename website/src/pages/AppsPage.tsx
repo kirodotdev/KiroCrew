@@ -434,7 +434,7 @@ export default function AppsPage() {
                 )}
                 {uninstallTarget.origin === 'registry' && (
                   <div className="bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    {i18nT('pages.appsPage.installed_from_apps_kirocrew_metadata')}{uninstallTarget.resources === 'app' ? ', the app secret, and' : ' and'} {i18nT('pages.appsPage.the_downloaded_source_code_will_be_removed')}{uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall ? ' The app itself is managed externally.' : ''}
+                    {uninstallTarget.resources === 'app' ? i18nT('pages.appsPage.uninstall_removes_metadata_secret_and_source') : i18nT('pages.appsPage.uninstall_removes_metadata_and_source')}{uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall ? ' ' + i18nT('pages.appsPage.the_app_itself_is_managed_externally') : ''}
                   </div>
                 )}
                 {uninstallTarget.origin !== 'registry' && uninstallTarget.resources === 'app' && uninstallTarget.manifest?.setup?.onUninstall && (

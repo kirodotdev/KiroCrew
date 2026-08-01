@@ -112,7 +112,7 @@ export function DisplayPanel() {
           : ({ type: 'local', path: v } as const)
       const res = await api.installTheme(source)
       if (!res?.ok) {
-        setInstallError(res?.error || 'Install failed')
+        setInstallError(res?.error || i18nT('pages.settings.displayPanel.install_failed'))
         return
       }
       setInstallPhase('applying')
@@ -120,7 +120,7 @@ export function DisplayPanel() {
       if (res.slug) setColorTheme(`custom-${res.slug}` as ColorTheme)
       setInstallValue('')
     } catch (e) {
-      setInstallError(e instanceof Error ? e.message : 'Install failed')
+      setInstallError(e instanceof Error ? e.message : i18nT('pages.settings.displayPanel.install_failed'))
     } finally {
       setInstallBusy(false)
       setInstallPhase(null)
@@ -253,7 +253,7 @@ export function DisplayPanel() {
                 aria-live="polite"
                 className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md border border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent disabled:opacity-50 disabled:cursor-not-allowed">
                 {installBusy && <StatusSpinner />}
-                {installBusy ? (installPhase === 'applying' ? 'Applying…' : 'Fetching…') : 'Install'}
+                {installBusy ? (installPhase === 'applying' ? i18nT('pages.settings.displayPanel.applying') : i18nT('pages.settings.displayPanel.fetching')) : i18nT('pages.settings.displayPanel.install')}
               </button>
             </div>
             {installError && <span className="text-[12px] text-danger">{installError}</span>}
@@ -263,9 +263,9 @@ export function DisplayPanel() {
 
       {editor.editorOpen && (
         <Clickable className="fixed inset-0 z-[49] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={e => { if (!e || e.target === e.currentTarget) editor.closeEditor() }}>
-          <div role="dialog" aria-modal="true" aria-label={editor.isEditing ? 'Edit Theme' : 'Create Theme'} className="relative z-10 w-full max-w-2xl max-h-[85vh] overflow-y-auto mx-4 bg-card border border-border rounded-xl p-6 shadow-xl animate-rise">
+          <div role="dialog" aria-modal="true" aria-label={editor.isEditing ? i18nT('pages.settings.displayPanel.edit_theme') : i18nT('pages.settings.displayPanel.create_theme')} className="relative z-10 w-full max-w-2xl max-h-[85vh] overflow-y-auto mx-4 bg-card border border-border rounded-xl p-6 shadow-xl animate-rise">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-bold text-text-strong">{editor.isEditing ? 'Edit Theme' : 'Create Theme'}</h3>
+              <h3 className="text-sm font-bold text-text-strong">{editor.isEditing ? i18nT('pages.settings.displayPanel.edit_theme') : i18nT('pages.settings.displayPanel.create_theme')}</h3>
               <button className="text-muted text-[13px] cursor-pointer hover:text-text bg-transparent border-none" onClick={editor.closeEditor}><X className="lucide-inline" /></button>
             </div>
             <ThemeEditorPanel editor={editor} />

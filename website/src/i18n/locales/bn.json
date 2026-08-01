@@ -3,7 +3,9 @@
     "client": {
       "paste_token_url_or_raw_token": "টোকেন URL অথবা সরাসরি টোকেন পেস্ট করো…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "টানেল এজ রেট লিমিট করেছে (HTTP 429) — অল্প সময়ে অনেক বেশি রিকোয়েস্ট। ড্যাশবোর্ড নিজেই আবার চেষ্টা করে; যদি এটা চলতেই থাকে, কয়েক সেকেন্ড অপেক্ষা করে রিলোড করো।",
-      "session_expired": "সেশনের মেয়াদ শেষ হয়ে গেছে।"
+      "session_expired": "সেশনের মেয়াদ শেষ হয়ে গেছে।",
+      "stream_ended_without_completion": "স্ট্রিম সম্পূর্ণ হওয়ার আগেই শেষ হয়ে গেছে",
+      "unexpected_server_response": "সার্ভার থেকে অপ্রত্যাশিত সাড়া"
     }
   },
   "app": {
@@ -88,7 +90,13 @@
     "star_us": "আমাদের স্টার দিন",
     "report_issue": "সমস্যা জানান",
     "star_kirocrew_on_github": "GitHub-এ KiroCrew-কে স্টার দিন",
-    "report_an_issue_on_github": "GitHub-এ সমস্যা জানান"
+    "report_an_issue_on_github": "GitHub-এ সমস্যা জানান",
+    "click_to_collapse_readouts": "রিডআউট সংকুচিত করতে ক্লিক করো",
+    "click_to_expand_readouts": "রিডআউট প্রসারিত করতে ক্লিক করো",
+    "gateway_offline_reconnecting": "গেটওয়ে অফলাইন — আবার কানেক্ট হচ্ছে",
+    "gateway_offline_session_expired_see_banner_above": "গেটওয়ে অফলাইন — সেশনের মেয়াদ শেষ, উপরের ব্যানার দেখো",
+    "signed_in_with": "{{provider}} দিয়ে সাইন ইন করা হয়েছে",
+    "updates": "আপডেট"
   },
   "appSdk": {
     "chatEmbed": {
@@ -396,7 +404,8 @@
           "reading_summarizing": "পড়া ও সারসংক্ষেপ তৈরি হচ্ছে…",
           "regenerate_ai_summary": "AI সারসংক্ষেপ আবার তৈরি করুন",
           "regenerate_summary": "সারসংক্ষেপ আবার তৈরি করুন",
-          "retry": "আবার চেষ্টা করুন"
+          "retry": "আবার চেষ্টা করুন",
+          "outdated": "পুরোনো"
         },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "এই ফিল্টার ব্যবহার করতে gh CLI দিয়ে সাইন ইন করো"
@@ -625,7 +634,8 @@
           "deep": "গভীর",
           "loading": "লোড হচ্ছে #",
           "open_in_the_list_detail_column": "তালিকা + বিস্তারিত কলামে খুলুন",
-          "open_this_item_in_the_workspace": "এই আইটেমটি ওয়ার্কস্পেসে খুলুন"
+          "open_this_item_in_the_workspace": "এই আইটেমটি ওয়ার্কস্পেসে খুলুন",
+          "issue": "ইস্যু"
         },
         "repoSwitcher": {
           "repositories": "রিপোজিটরি"
@@ -850,6 +860,9 @@
         "select_a": "বেছে নিন একটি",
         "select_an_issue_to_see_its_details": "বিবরণ দেখতে একটি ইস্যু বেছে নিন।",
         "to_see_its_details": "— এর বিবরণ দেখতে।"
+      },
+      "api": {
+        "these_settings_changed_elsewhere": "এই সেটিংস অন্য কোথাও বদলে গেছে।"
       }
     },
     "workflows": {
@@ -859,7 +872,9 @@
         "budget": "বাজেট",
         "cancelled": "বাতিল করা হয়েছে",
         "result": "ফলাফল",
-        "waiting_for_events": "ইভেন্টের অপেক্ষায়…"
+        "waiting_for_events": "ইভেন্টের অপেক্ষায়…",
+        "failed_with_error": "ব্যর্থ: {{error}}",
+        "unknown_error": "অজানা ত্রুটি"
       },
       "workflowSourcePanel": {
         "cancel": "বাতিল",
@@ -897,7 +912,8 @@
         "events": "ইভেন্ট",
         "no_background_runs_yet_runs_started_in_the_backg": "এখনও কোনো ব্যাকগ্রাউন্ড রান নেই। ব্যাকগ্রাউন্ডে শুরু হওয়া রান এখানে দেখা যাবে।",
         "run_detail": "রানের বিবরণ",
-        "select_a_run_to_see_its_phases_agents_and_result": "ফেজ, এজেন্ট ও ফলাফল দেখতে একটি রান বেছে নিন।"
+        "select_a_run_to_see_its_phases_agents_and_result": "ফেজ, এজেন্ট ও ফলাফল দেখতে একটি রান বেছে নিন।",
+        "unknown": "অজানা"
       }
     },
     "designCritique": {
@@ -1111,7 +1127,8 @@
       "no_matching_skills": "মিলে যাওয়া কোনো স্কিল নেই",
       "no_skills_mapped_this_agent_uses_the_default_beh": "কোনো স্কিল ম্যাপ করা নেই — এই এজেন্ট ডিফল্ট আচরণ ব্যবহার করে।",
       "skills": "স্কিল",
-      "type_to_filter": "ফিল্টার করতে টাইপ করুন…"
+      "type_to_filter": "ফিল্টার করতে টাইপ করুন…",
+      "skills_this_agent_template_loads_written_as_skil": "এই এজেন্ট টেমপ্লেট যে স্কিলগুলো লোড করে। এজেন্ট কনফিগে skill:// রিসোর্স হিসেবে লেখা হয়, তাই এজেন্ট চালু হলে kiro-cli সেগুলো নিজেই লোড করে। কোনো স্কিল ম্যাপ করা না থাকলে এজেন্ট ডিফল্ট আচরণে ফিরে যায়: kirocrew এজেন্ট পুরো ক্যাটালগ দেখে, বাকি এজেন্টরা কিছুই দেখে না।"
     },
     "appHost": {
       "agent_only_app": "শুধুমাত্র এজেন্ট অ্যাপ",
@@ -1272,7 +1289,11 @@
       "delete_folder_and_all_contents": "ফোল্ডার ও সব বিষয়বস্তু মুছে ফেলুন",
       "delete_folder_only_keep_artifacts": "শুধু ফোল্ডার মুছুন, আর্টিফ্যাক্ট রাখুন",
       "permanently_deletes_every_artifact_and_subfolder": "ভিতরের প্রতিটি আর্টিফ্যাক্ট ও সাবফোল্ডার স্থায়ীভাবে মুছে ফেলে। এটি আর ফেরানো যাবে না।",
-      "this_folder_contains": "এই ফোল্ডারে রয়েছে"
+      "this_folder_contains": "এই ফোল্ডারে রয়েছে",
+      "artifact_one": "{{count}}টি আর্টিফ্যাক্ট",
+      "artifact_other": "{{count}}টি আর্টিফ্যাক্ট",
+      "subfolder_one": "{{count}}টি সাবফোল্ডার",
+      "subfolder_other": "{{count}}টি সাবফোল্ডার"
     },
     "artifactPanel": {
       "add_instruction": "নির্দেশ যোগ করুন",
@@ -1435,7 +1456,18 @@
           "approve": "অনুমোদন",
           "new_session": "নতুন সেশন…",
           "recent": "সাম্প্রতিক",
-          "thinking": "ভাবছে…"
+          "thinking": "ভাবছে…",
+          "current": "বর্তমান",
+          "older_sessions": "পুরোনো সেশন"
+        },
+        "actionsProvider": {
+          "cycle_light_dark_system": "লাইট / ডার্ক / সিস্টেম-এর মধ্যে ঘোরাও",
+          "keyboard_shortcuts_help": "কীবোর্ড শর্টকাট সহায়িকা",
+          "pin_current_session": "বর্তমান সেশন পিন করো",
+          "pin_this_chat_to_the_top": "এই চ্যাট উপরে পিন করো",
+          "remove_pin_from_this_chat": "এই চ্যাট থেকে পিন সরাও",
+          "start_a_fresh_chat": "নতুন একটি চ্যাট শুরু করো",
+          "unpin_current_session": "বর্তমান সেশনের পিন সরাও"
         }
       },
       "search_everywhere": "সর্বত্র অনুসন্ধান করুন",
@@ -1606,7 +1638,10 @@
       "no_matches": "কোনো মিল নেই",
       "open_in_viewer": "ভিউয়ারে খুলুন",
       "searching": "খোঁজা হচ্ছে…",
-      "type_2_chars_to_search_files": "ফাইল খুঁজতে 2+ অক্ষর টাইপ করুন…"
+      "type_2_chars_to_search_files": "ফাইল খুঁজতে 2+ অক্ষর টাইপ করুন…",
+      "n_d_ago": "{{n}} দিন আগে",
+      "n_h_ago": "{{n}} ঘ আগে",
+      "n_m_ago": "{{n}} মি আগে"
     },
     "fileRenderers": {
       "empty_file": "খালি ফাইল",
@@ -1661,7 +1696,11 @@
       "tooltip": "এই সেশনটি {{label}}-এর সঙ্গে দ্বিমুখীভাবে সংযুক্ত: উত্তর সেখানে পৌঁছায়, আর সেখানে পাঠানো বার্তা এখানে আসে।"
     },
     "inlineCommentOverlay": {
-      "open_comment_thread": "কমেন্ট থ্রেড খুলুন"
+      "open_comment_thread": "কমেন্ট থ্রেড খুলুন",
+      "comment_one": "{{count}}টি মন্তব্য",
+      "comment_other": "{{count}}টি মন্তব্য",
+      "comment_unread_one": "{{count}}টি মন্তব্য · অপঠিত",
+      "comment_unread_other": "{{count}}টি মন্তব্য · অপঠিত"
     },
     "instanceTabBar": {
       "connected": "সংযুক্ত",
@@ -1672,7 +1711,8 @@
       "local_dashboard": "লোকাল ড্যাশবোর্ড",
       "tunnel_connected": "টানেল সংযুক্ত।",
       "tunnel_connecting": "টানেল কানেক্ট হচ্ছে…",
-      "tunnel_error": "টানেল ত্রুটি"
+      "tunnel_error": "টানেল ত্রুটি",
+      "1m": "<1মি"
     },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",
@@ -1707,7 +1747,14 @@
       "retry": "আবার চেষ্টা করো",
       "this_issue_is_locked": "এই ইস্যু লক করা আছে",
       "unknown_author": "অজানা লেখক",
-      "untitled": "শিরোনামহীন"
+      "untitled": "শিরোনামহীন",
+      "closed": "বন্ধ",
+      "closed_as_completed": "সম্পন্ন হিসেবে বন্ধ",
+      "closed_as_not_planned": "পরিকল্পনার বাইরে হিসেবে বন্ধ",
+      "open_state": "খোলা",
+      "opened_time": "{{time}} খোলা হয়েছে",
+      "provider_results_may_be_partial_for_sections_ope": "{{sections}}-এর জন্য প্রোভাইডারের ফলাফল আংশিক হতে পারে। সম্পূর্ণ তালিকার জন্য ইস্যুটি খোলো।",
+      "updated_time": "{{time}} আপডেট হয়েছে"
     },
     "jobForm": {
       "a_short_label_for_this_job": "এই জবের জন্য একটি সংক্ষিপ্ত লেবেল",
@@ -1904,7 +1951,8 @@
       "unsaved_changes": "অসংরক্ষিত পরিবর্তন",
       "view_preview": "প্রিভিউ দেখো",
       "view_source": "সোর্স দেখো",
-      "word_wrap": "ওয়ার্ড র‍্যাপ"
+      "word_wrap": "ওয়ার্ড র‍্যাপ",
+      "failed_to_add_source": "সোর্স যোগ করা যায়নি"
     },
     "markdownRenderer": {
       "click_to_open_shift_click_to_reveal_in_finder": "খুলতে ক্লিক করুন / Finder-এ দেখাতে Shift+ক্লিক করুন",
@@ -2163,7 +2211,6 @@
       "all_checks_passed": "সব চেক পাস হয়েছে",
       "auto_merge_enabled": "স্বয়ংক্রিয় মার্জ চালু",
       "cancel": "বাতিল",
-      "changed": "পরিবর্তিত",
       "changes": "পরিবর্তন",
       "checks": "চেক",
       "checks_running": "চেক চলছে",
@@ -2176,7 +2223,6 @@
       "description": "বিবরণ",
       "enable_auto_merge": "অটো-মার্জ চালু করো",
       "expand_comment": "মন্তব্য প্রসারিত করো",
-      "for_the_complete_set": "সম্পূর্ণ তালিকার জন্য।",
       "github_merges_this_pull_request_automatically_on": "প্রয়োজনীয় চেক ও রিভিউ পাস হলে GitHub এই পুল রিকোয়েস্ট স্বয়ংক্রিয়ভাবে মার্জ করে",
       "github_will_merge_this_pull_request_once_its_req": "শর্তগুলো পাস হলে GitHub এই পুল রিকোয়েস্ট মার্জ করবে",
       "gitlab_merges_this_merge_request_when_the_pipeli": "পাইপলাইন সফল হলে GitLab এই মার্জ রিকোয়েস্ট মার্জ করে — কোনো পাইপলাইন অপেক্ষমাণ না থাকলে সাথে সাথেই মার্জ করে",
@@ -2193,8 +2239,6 @@
       "no_written_comment": "কোনো লিখিত মন্তব্য নেই।",
       "open": "খুলুন",
       "open_pull_request": "পুল রিকোয়েস্ট খুলুন",
-      "open_the": ". খুলুন:",
-      "provider_results_may_be_partial_for": "প্রোভাইডারের ফলাফল আংশিক হতে পারে, যার জন্য:",
       "pull_request_sections": "পুল রিকোয়েস্ট বিভাগসমূহ",
       "pull_requests": "Pull requests",
       "ready_for_review": "রিভিউয়ের জন্য প্রস্তুত",
@@ -2205,10 +2249,27 @@
       "retry": "আবার চেষ্টা করুন",
       "reviews": "রিভিউ",
       "the_provider_did_not_return_a_patch_for_this_fil": "প্রোভাইডার এই ফাইলের জন্য কোনো প্যাচ ফেরত দেয়নি।",
-      "this_authorizes_the_merge": "এটি মার্জের অনুমোদন দেয়",
       "unknown_reviewer": "অজানা রিভিউয়ার",
       "untitled_commit": "শিরোনামহীন কমিট",
-      "updated": "আপডেট হয়েছে"
+      "updated": "আপডেট হয়েছে",
+      "branch_is_behind": "ব্রাঞ্চ পিছিয়ে আছে",
+      "branch_protection_requirements_approving_reviews": "ব্রাঞ্চ প্রোটেকশনের শর্ত (অনুমোদনকারী রিভিউ বা আবশ্যক চেক) এখনো পূরণ হয়নি।",
+      "closed": "বন্ধ",
+      "draft": "ড্রাফট",
+      "files_changed_one": "{{count}}টি ফাইল পরিবর্তিত",
+      "files_changed_other": "{{count}}টি ফাইল পরিবর্তিত",
+      "github_cli_login_required": "GitHub CLI লগইন প্রয়োজন",
+      "gitlab_cli_login_required": "GitLab CLI লগইন প্রয়োজন",
+      "merge_blocked": "মার্জ ব্লক করা আছে",
+      "merge_conflicts": "মার্জ কনফ্লিক্ট",
+      "merged": "মার্জ হয়েছে",
+      "provider_results_may_be_partial_merge_request": "{{sections}}-এর জন্য প্রোভাইডারের ফলাফল আংশিক হতে পারে। সম্পূর্ণ তালিকার জন্য মার্জ রিকোয়েস্টটি খোলো।",
+      "provider_results_may_be_partial_pull_request": "{{sections}}-এর জন্য প্রোভাইডারের ফলাফল আংশিক হতে পারে। সম্পূর্ণ তালিকার জন্য পুল রিকোয়েস্টটি খোলো।",
+      "rebase_required": "রিবেস প্রয়োজন",
+      "take_this_merge_request_out_of_draft": "এই মার্জ রিকোয়েস্ট ড্রাফট থেকে বের করো",
+      "take_this_pull_request_out_of_draft": "এই পুল রিকোয়েস্ট ড্রাফট থেকে বের করো",
+      "this_authorizes_the_merge_as_soon_as_requirement": "শর্তগুলো পাস হওয়ার সাথে সাথেই এটি মার্জের অনুমতি দেয়, আর এই রিপোজিটরি অনুমোদন করলে স্কোয়াশ করে (নাহলে একটি মার্জ কমিট, তারপর রিবেস)।",
+      "this_authorizes_the_merge_when_the_pipeline_succ": "পাইপলাইন সফল হলে এটি মার্জের অনুমতি দেয়।"
     },
     "questionCard": {
       "custom_answer": "কাস্টম উত্তর",
@@ -2415,7 +2476,9 @@
       "loading_file": "ফাইল লোড হচ্ছে…",
       "loading_tree": "ট্রি লোড হচ্ছে…",
       "tags": "ট্যাগ",
-      "triggers": "ট্রিগার"
+      "triggers": "ট্রিগার",
+      "no_file_selected": "(কোনো ফাইল বেছে নেওয়া হয়নি)",
+      "root": "(রুট)"
     },
     "skillForm": {
       "always_loaded": "সর্বদা লোড করা হয়",
@@ -2475,7 +2538,8 @@
     },
     "terminalCompletion": {
       "path_completions": "পাথ কমপ্লিশন",
-      "use_this_folder": "এই ফোল্ডার ব্যবহার করো"
+      "use_this_folder": "এই ফোল্ডার ব্যবহার করো",
+      "dir_truncated": "{{dir}} (সংক্ষিপ্ত করা হয়েছে)"
     },
     "terminalKeyBar": {
       "terminal_keys": "টার্মিনাল কী"
@@ -2765,7 +2829,8 @@
     },
     "useWebSocket": {
       "a_task_needs_your_decision": "একটা কাজের জন্য তোমার সিদ্ধান্ত দরকার",
-      "approval_required": "অনুমোদন দরকার"
+      "approval_required": "অনুমোদন দরকার",
+      "unknown": "অজানা"
     }
   },
   "nav": {
@@ -2865,7 +2930,10 @@
         "task_2_one": "{{count}}টি টাস্ক",
         "task_2_other": "{{count}}টি টাস্ক",
         "task_description": "টাস্কের বিবরণ",
-        "task_title": "টাস্কের শিরোনাম"
+        "task_title": "টাস্কের শিরোনাম",
+        "requires_approval_before_execution_2": "চালানোর আগে অনুমোদন দরকার।",
+        "save_failed_try_again": "সেভ করা যায়নি — আবার চেষ্টা করো",
+        "this_gate_blocks_force_approval_true": "এই গেট আটকে দেয়। force_approval=true।"
       }
     },
     "appDetailPage": {
@@ -2964,7 +3032,6 @@
       "failed_to_load_registry": "রেজিস্ট্রি লোড করা যায়নি",
       "find_apps_in_the_discover_tab_or_install_from_a": "আবিষ্কার ট্যাবে অ্যাপ খুঁজে নাও, বা উপরের সোর্স গিয়ার দিয়ে কোনো লোকাল পাথ থেকে ইনস্টল করো।",
       "hidden_you_can_re_enable_it_from_the_discover_ta": "লুকানো আছে। আবিষ্কার ট্যাব থেকে আবার সক্রিয় করতে পারো।",
-      "installed_from_apps_kirocrew_metadata": "অ্যাপ থেকে ইনস্টল করা — KiroCrew মেটাডেটা",
       "keep_app_data": "অ্যাপের ডেটা রেখে দিন",
       "keep_this_dependency": "এই ডিপেনডেন্সিটি রেখে দিন",
       "kept": "রাখা হয়েছে —",
@@ -2984,7 +3051,6 @@
       "skill_other": "{{count}}টি স্কিল",
       "sort": "সাজান:",
       "sort_apps": "অ্যাপ সাজান",
-      "the_downloaded_source_code_will_be_removed": "ডাউনলোড করা সোর্স কোড সরিয়ে দেওয়া হবে।",
       "this_app_has_an_uninstall_script_that_will_run_b": "এই অ্যাপটিতে একটি আনইনস্টল স্ক্রিপ্ট আছে, যা সরানোর আগে চলবে। এটি ইনস্টলেশনের সময় তৈরি করা অ্যাপ বাইনারি, এজেন্ট কনফিগ, স্কিল এবং অন্যান্য রিসোর্স মুছে দিতে পারে।",
       "this_is_a_self_managed_app_only_kirocrew_metadat": "এটি একটি স্ব-পরিচালিত অ্যাপ — শুধু KiroCrew মেটাডেটা এবং অ্যাপের সিক্রেট সরিয়ে দেওয়া হবে।\n                    অ্যাপটি নিজে এবং তার এজেন্ট/স্কিল নিবন্ধনগুলো বাইরে থেকে পরিচালিত হয় এবং প্রভাবিত হবে না।\n                    অ্যাপটি এখনও চলতে থাকলে পরবর্তী চালুর সময় এটি আবার নিবন্ধিত হতে পারে।",
       "this_will_remove_all_resources_provided_by_this": "এটি এই অ্যাপের দেওয়া সব রিসোর্স সরিয়ে দেবে:",
@@ -2994,7 +3060,10 @@
       "update_all": "সব আপডেট করো",
       "update_one": "{{count}}টি আপডেট",
       "update_other": "{{count}}টি আপডেট",
-      "v": "v"
+      "v": "v",
+      "the_app_itself_is_managed_externally": "অ্যাপটি নিজে বাইরে থেকে পরিচালিত হয়।",
+      "uninstall_removes_metadata_and_source": "অ্যাপ থেকে ইনস্টল করা — KiroCrew মেটাডেটা এবং ডাউনলোড করা সোর্স কোড সরিয়ে দেওয়া হবে।",
+      "uninstall_removes_metadata_secret_and_source": "অ্যাপ থেকে ইনস্টল করা — KiroCrew মেটাডেটা, অ্যাপের সিক্রেট এবং ডাউনলোড করা সোর্স কোড সরিয়ে দেওয়া হবে।"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/মাস",
@@ -3123,7 +3192,19 @@
       "your_host_not_your_laptop_artifact_deploy_shells": "(আপনার হোস্ট), আপনার ল্যাপটপ নয় — Artifact Deploy শেল করে চালায়",
       "aws_profiles_tip": "প্রতিটি ডিপ্লয় একটি নিবন্ধিত প্রোফাইল হিসেবে চলে। আপনার বিদ্যমান AWS CLI প্রোফাইল নিবন্ধন করুন বা নতুন তৈরি করুন — KiroCrew কেবল নামটি সংরক্ষণ করে, কখনও ক্রেডেনশিয়াল নয়।",
       "ready_to_deploy_tip": "যে ওয়েবঅ্যাপ আর্টিফ্যাক্টগুলি এখনও ডিপ্লয় করা হয়নি। ডিপ্লয় একটি স্কিল-লোডেড চ্যাট সেশন খোলে যা অ্যাপটি অনুকূল করে প্রকাশ করে।",
-      "deployments_tip": "সমস্ত ডিপ্লয় করা সম্পদ — আর্টিফ্যাক্ট থেকে প্রকাশিত স্ট্যাটিক সাইট এবং ফুল-স্ট্যাক ওয়েবঅ্যাপ ডিপ্লয়মেন্ট। প্রত্যাহার = ফেরানো যায় এমন অপসারণ; ধ্বংস = পরিকাঠামোর স্থায়ী অপসারণ।"
+      "deployments_tip": "সমস্ত ডিপ্লয় করা সম্পদ — আর্টিফ্যাক্ট থেকে প্রকাশিত স্ট্যাটিক সাইট এবং ফুল-স্ট্যাক ওয়েবঅ্যাপ ডিপ্লয়মেন্ট। প্রত্যাহার = ফেরানো যায় এমন অপসারণ; ধ্বংস = পরিকাঠামোর স্থায়ী অপসারণ।",
+      "confirm_deploy": "ডিপ্লয় নিশ্চিত করো",
+      "create_register": "তৈরি করো + রেজিস্টার করো",
+      "default": "ডিফল্ট",
+      "default_profile": "ডিফল্ট প্রোফাইল",
+      "deploy_anyway": "তবুও ডিপ্লয় করো",
+      "fullstack_also_requires_the_permissions_boundary": "ফুল-স্ট্যাকের জন্য নিচের permissions-boundary পলিসিটিও দরকার — প্রথম ডিপ্লয়ের আগেই এটি তৈরি করো (রোল তৈরি হওয়া এর উপর নির্ভরশীল)।",
+      "make_default": "ডিফল্ট বানাও",
+      "not_reachable": "পৌঁছানো যাচ্ছে না",
+      "register": "রেজিস্টার করো",
+      "removed_from_registry_your_aws_config_is_untouche": "রেজিস্ট্রি থেকে সরানো হয়েছে (তোমার ~/.aws/config অপরিবর্তিত)।",
+      "unknown": "অজানা",
+      "unknown_2": "(অজানা)"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· রিমোট কপিতে একটি নতুন সংস্করণ পাওয়া যাচ্ছে",
@@ -3366,7 +3447,6 @@
       "new_channel_2": "নতুন চ্যানেল",
       "no_channels_yet": "এখনও কোনো চ্যানেল নেই",
       "ok": "ঠিক আছে",
-      "repl": "repl",
       "reply": "উত্তর দিন",
       "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}}-এর LLM সেশন রিসেট করো। চ্যানেলের শেয়ার করা মেসেজ ইতিহাস অটুট থাকে।",
       "role": "ভূমিকা",
@@ -3380,7 +3460,9 @@
       "this_will_reset_conversation_history_for_all_age": "এটি সব এজেন্টের কথোপকথনের ইতিহাস রিসেট করবে। কনফিগ অপরিবর্তিত থাকবে।",
       "thread": "থ্রেড",
       "topic": "টপিক",
-      "unknown_error": "অজানা ত্রুটি"
+      "unknown_error": "অজানা ত্রুটি",
+      "reply_2_one": "{{count}}টি উত্তর",
+      "reply_2_other": "{{count}}টি উত্তর"
     },
     "chat": {
       "activityViewer": {
@@ -3444,7 +3526,9 @@
         "trusted_command": "বিশ্বস্ত কমান্ড",
         "unable_to_read_this_file": "এই ফাইলটি পড়া যাচ্ছে না।",
         "waiting_for_output": "আউটপুটের অপেক্ষায়…",
-        "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে"
+        "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে",
+        "file_not_found_on_disk_it_may_have_been_moved_or": "ডিস্কে ফাইলটি পাওয়া যায়নি। হয়তো সরানো বা মুছে ফেলা হয়েছে।",
+        "unable_to_read_file": "ফাইল পড়া যাচ্ছে না।"
       },
       "assistantMessage": {
         "applied_to_tasks": "টাস্কে প্রয়োগ করা হয়েছে",
@@ -3536,7 +3620,9 @@
         "tool_call_other": "{{count}}টি টুল কল",
         "trust": "বিশ্বাস করুন",
         "trusted": "বিশ্বস্ত",
-        "view_full_activity": "সম্পূর্ণ অ্যাক্টিভিটি দেখুন →"
+        "view_full_activity": "সম্পূর্ণ অ্যাক্টিভিটি দেখুন →",
+        "collapse": "সংকুচিত করো",
+        "expand": "প্রসারিত করো"
       },
       "cronAckBar": {
         "acknowledge": "স্বীকৃতি দিন",
@@ -3663,7 +3749,9 @@
         "current_task": "বর্তমান টাস্ক",
         "more": "আরও…",
         "of": "/",
-        "task_completion": "টাস্ক সম্পন্নতা"
+        "task_completion": "টাস্ক সম্পন্নতা",
+        "aria_collapse_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা সংকুচিত করো",
+        "aria_expand_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা প্রসারিত করো"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "মডেলের রিজনিং সংকুচিত করো",
@@ -3708,6 +3796,11 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "স্ন্যাপশট লোড করা যায়নি:",
         "events": "ইভেন্ট"
+      },
+      "toolCallLine": {
+        "aria_awaiting_approval": "টুলের অনুমোদনের অপেক্ষায়: {{label}}",
+        "aria_hide_details": "টুলের বিস্তারিত লুকাও: {{label}}",
+        "aria_show_details": "টুলের বিস্তারিত দেখাও: {{label}}"
       }
     },
     "chatPage": {
@@ -3734,7 +3827,6 @@
       "hide_sessions_sidebar": "সেশন সাইডবার লুকাও",
       "in_split": "স্প্লিটে আছে",
       "incognito_memory_writes_disabled": "ছদ্মবেশী — মেমরিতে লেখা বন্ধ",
-      "knowledge": "নলেজ",
       "loading": "লোড হচ্ছে…",
       "mcp_servers": "MCP সার্ভার",
       "mcp_servers_2": "MCP সার্ভার",
@@ -3779,7 +3871,11 @@
       "unknown_error": "অজানা ত্রুটি",
       "upload_failed_check_file_type_and_size_max_50_mb": "আপলোড ব্যর্থ — ফাইলের ধরন ও আকার দেখে নাও (সর্বোচ্চ 50 MB)",
       "upload_failed_error": "আপলোড ব্যর্থ: {{error}}",
-      "what_can_i_do_for_you": "আপনার জন্য কী করতে পারি?"
+      "what_can_i_do_for_you": "আপনার জন্য কী করতে পারি?",
+      "knowledge_item_one": "{{count}}টি নলেজ আইটেম",
+      "knowledge_item_other": "{{count}}টি নলেজ আইটেম",
+      "this_session_has_no_project_directory_to_branch": "এই সেশনের ব্রাঞ্চ করার মতো কোনো প্রজেক্ট ডিরেক্টরি নেই।",
+      "worktree_creation_returned_no_path": "worktree তৈরি করে কোনো পাথ ফেরত আসেনি"
     },
     "chatSidebar": {
       "streaming": "স্ট্রিমিং",
@@ -3935,7 +4031,16 @@
       "untagged_2": "ট্যাগবিহীন",
       "will_be_moved_to_older_sessions": "পুরোনো সেশনে সরিয়ে নেওয়া হবে।",
       "within": "গত",
-      "yesterday": "গতকাল"
+      "yesterday": "গতকাল",
+      "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",
+      "collapse_folder_name": "{{name}} ফোল্ডার সংকুচিত করো",
+      "collapse_group_results": "{{group}} ফলাফল সংকুচিত করো",
+      "expand_folder_name": "{{name}} ফোল্ডার প্রসারিত করো",
+      "expand_group_results": "{{group}} ফলাফল প্রসারিত করো",
+      "more_pull_request_in_this_session_one": "এই সেশনে আরও {{count}}টি পুল রিকোয়েস্ট",
+      "more_pull_request_in_this_session_other": "এই সেশনে আরও {{count}}টি পুল রিকোয়েস্ট",
+      "more_pull_request_or_issue_in_this_session_one": "এই সেশনে আরও {{count}}টি পুল রিকোয়েস্ট বা ইস্যু",
+      "more_pull_request_or_issue_in_this_session_other": "এই সেশনে আরও {{count}}টি পুল রিকোয়েস্ট বা ইস্যু"
     },
     "devFleetPage": {
       "actions": "অ্যাকশন",
@@ -4096,7 +4201,23 @@
       "worktree": "Worktree",
       "worktrees": "Worktrees",
       "worktrees_count": "Worktrees ({{count}})",
-      "worktrees_created_under_a_previous_repository_na": "পূর্ববর্তী রিপোজিটরির নামে তৈরি worktree। ডিফল্টভাবে লুকানো; তবুও Prune merged এগুলো পরিষ্কার করে।"
+      "worktrees_created_under_a_previous_repository_na": "পূর্ববর্তী রিপোজিটরির নামে তৈরি worktree। ডিফল্টভাবে লুকানো; তবুও Prune merged এগুলো পরিষ্কার করে।",
+      "cannot_resolve_worktree_path_for_name": "{{name}}-এর worktree পাথ নির্ণয় করা যাচ্ছে না",
+      "commits_behind_main_2_one": "main থেকে {{count}}টি কমিট পিছিয়ে",
+      "commits_behind_main_2_other": "main থেকে {{count}}টি কমিট পিছিয়ে",
+      "make_name_live": "\"{{name}}\"-কে লাইভ করবে?",
+      "pod_up_name": "pod চালু: {{name}}",
+      "provision_failed": "প্রভিশন ব্যর্থ",
+      "provision_failed_exit_code": "প্রভিশন ব্যর্থ (exit {{code}})",
+      "provision_failed_status": "প্রভিশন ব্যর্থ ({{status}})",
+      "pull_build_failed_exit_code_detail": "পুল+বিল্ড ব্যর্থ (exit {{code}}): {{detail}}",
+      "rebase_name": "\"{{name}}\" রিবেস করবে?",
+      "rebased_head": "রিবেস হয়েছে (HEAD {{head}})",
+      "remove_name": "\"{{name}}\" সরিয়ে ফেলবে?",
+      "removed_name": "{{name}} সরিয়ে ফেলা হয়েছে",
+      "restarted_name": "{{name}} রিস্টার্ট হয়েছে",
+      "starting_pod_for_name_can_take_1_min": "{{name}}-এর জন্য pod চালু হচ্ছে… (~1 মিনিট লাগতে পারে)",
+      "stopped_name": "{{name}} বন্ধ করা হয়েছে"
     },
     "developerPage": {
       "developer": "ডেভেলপার"
@@ -4213,13 +4334,18 @@
         "shared": "শেয়ার করা",
         "summary": "সারসংক্ষেপ",
         "tag1_tag2_tag3": "ট্যাগ১, ট্যাগ২, ট্যাগ৩",
-        "unarchive": "আর্কাইভ থেকে সরান"
+        "unarchive": "আর্কাইভ থেকে সরান",
+        "action_failed": "কাজটি ব্যর্থ হয়েছে",
+        "copied": "কপি হয়েছে!",
+        "copy_content": "কনটেন্ট কপি করো"
       },
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} এমবেড করা ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "এমবেডিং ইঞ্জিন প্রস্তুত — নলেজ আইটেমগুলোর এমবেডিং প্রয়োজন।",
         "smart_search_active": "স্মার্ট সার্চ সক্রিয়",
-        "smart_search_unavailable_embedding_model_is_down": "স্মার্ট সার্চ অনুপলব্ধ — এমবেডিং মডেল ব্যাকগ্রাউন্ডে ডাউনলোড হচ্ছে।"
+        "smart_search_unavailable_embedding_model_is_down": "স্মার্ট সার্চ অনুপলব্ধ — এমবেডিং মডেল ব্যাকগ্রাউন্ডে ডাউনলোড হচ্ছে।",
+        "generate_now": "এখনই তৈরি করো",
+        "generating": "তৈরি হচ্ছে…"
       },
       "index": {
         "all_namespaces": "সব নেমস্পেস",
@@ -4264,7 +4390,10 @@
         "sources": "সোর্স",
         "to_search_esc_to_back_to_page": "/ সার্চ করতে, Esc ফিরে যেতে, ←→ পৃষ্ঠা বদলাতে",
         "try_a_different_type_status_or_namespace": "অন্য কোনো ধরন, স্ট্যাটাস বা নেমস্পেস চেষ্টা করুন",
-        "try_different_keywords_or_filters": "অন্য কীওয়ার্ড বা ফিল্টার চেষ্টা করুন"
+        "try_different_keywords_or_filters": "অন্য কীওয়ার্ড বা ফিল্টার চেষ্টা করুন",
+        "copied": "কপি হয়েছে!",
+        "copy_content": "কনটেন্ট কপি করো",
+        "embeddings_loading": "এমবেডিং লোড হচ্ছে"
       },
       "knowledgeGraph": {
         "edges": "এজ",
@@ -4279,7 +4408,10 @@
         "next": "পরবর্তী →",
         "of": "মোট",
         "page": "পৃষ্ঠা",
-        "prev": "← পূর্ববর্তী"
+        "prev": "← পূর্ববর্তী",
+        "items_added_directly": "সরাসরি যোগ করা আইটেম",
+        "no_source": "কোনো সোর্স নেই",
+        "unknown_source": "অজানা সোর্স"
       },
       "sourcesList": {
         "add_source": "+ সোর্স যোগ করুন",
@@ -4329,7 +4461,36 @@
         "upload_files": "ফাইল আপলোড করুন",
         "upload_local_files_or_watch_a_local_folder_to_in": "ডকুমেন্ট ইনজেস্ট করতে লোকাল ফাইল আপলোড করুন বা কোনো লোকাল ফোল্ডার পর্যবেক্ষণ করুন",
         "use_sync_button_to_update": "আপডেট করতে সিঙ্ক বোতাম ব্যবহার করুন",
-        "watches_folder_recursively_supported_files_auto": "ফোল্ডার রিকার্সিভভাবে পর্যবেক্ষণ করে। সমর্থিত ফাইল স্বয়ংক্রিয়ভাবে ইনজেস্ট হয়। প্রতি সোর্সে সর্বোচ্চ 5,000 ফাইল।"
+        "watches_folder_recursively_supported_files_auto": "ফোল্ডার রিকার্সিভভাবে পর্যবেক্ষণ করে। সমর্থিত ফাইল স্বয়ংক্রিয়ভাবে ইনজেস্ট হয়। প্রতি সোর্সে সর্বোচ্চ 5,000 ফাইল।",
+        "add_folder": "ফোল্ডার যোগ করো",
+        "adding": "যোগ করা হচ্ছে...",
+        "awaiting_confirmation": "নিশ্চিতকরণের অপেক্ষায়",
+        "browse": "ব্রাউজ করো...",
+        "collapse_folder_details": "ফোল্ডারের বিস্তারিত গুটিয়ে নাও",
+        "empty_0_supported_files": "খালি (0 সমর্থিত ফাইল)",
+        "expand_folder_details": "ফোল্ডারের বিস্তারিত দেখাও",
+        "failed_to_add_source": "সোর্স যোগ করা যায়নি",
+        "files_with_no_extension_e_g_readme_are_ingested": "এক্সটেনশনহীন ফাইল (যেমন README) সাধারণ টেক্সট হিসেবে নেওয়া হয় — এখানে ড্র্যাগ-অ্যান্ড-ড্রপ করো, কারণ ফাইল পিকার এক্সটেনশনহীন ফাইল দেখাতে পারে না।",
+        "folder": "ফোল্ডার",
+        "opening": "খোলা হচ্ছে...",
+        "paused": "থামানো আছে",
+        "paused_2": "থামানো",
+        "pending": "অপেক্ষমাণ",
+        "start_scanning": "স্ক্যান শুরু করো",
+        "starting": "শুরু হচ্ছে...",
+        "supported_file_found_one": "{{count}}টি সমর্থিত ফাইল পাওয়া গেছে",
+        "supported_file_found_other": "{{count}}টি সমর্থিত ফাইল পাওয়া গেছে",
+        "this_folder_will_be_watched_any_supported_files": "এই ফোল্ডারটি নজরে রাখা হবে। এখানে যোগ করা যেকোনো সমর্থিত ফাইল পরের স্ক্যান চক্রে (~5 মিনিট) স্বয়ংক্রিয়ভাবে নেওয়া হবে।",
+        "this_folder_will_be_watched_continuously_new_fil": "এই ফোল্ডারটি নিয়মিত নজরে রাখা হবে। এখানে যোগ করা নতুন ফাইল পরের স্ক্যান চক্রে (~5 মিনিট) স্বয়ংক্রিয়ভাবে নেওয়া হবে।",
+        "watch_anyway": "তবুও নজরে রাখো",
+        "watching_folder": "ফোল্ডার নজরে রাখা হচ্ছে"
+      },
+      "itemCard": {
+        "copied": "কপি হয়েছে!",
+        "copy": "কপি",
+        "other": "অন্যান্য",
+        "select_item": "{{title}} বেছে নাও",
+        "untitled": "শিরোনামহীন"
       }
     },
     "localStorageDebug": {
@@ -4433,7 +4594,8 @@
         "loading": "লোড হচ্ছে…",
         "save_failed": "সেভ ব্যর্থ হয়েছে",
         "saved": "সেভ হয়েছে",
-        "agent_config_tip": "{{process}} এজেন্ট সংজ্ঞা — প্রম্পট, টুল, MCP সার্ভার, মডেল সেটিংস। এটি এক্সিকিউশন লেয়ারের কনফিগ, KiroCrew-এর অপারেশনাল বাইন্ডিং থেকে পৃথক।"
+        "agent_config_tip": "{{process}} এজেন্ট সংজ্ঞা — প্রম্পট, টুল, MCP সার্ভার, মডেল সেটিংস। এটি এক্সিকিউশন লেয়ারের কনফিগ, KiroCrew-এর অপারেশনাল বাইন্ডিং থেকে পৃথক।",
+        "save": "সেভ করো"
       },
       "cronTab": {
         "0_9_1_5_or_3600": "0 9 * * 1-5 বা 3600",
@@ -4487,7 +4649,19 @@
         "silent": "নীরব",
         "status": "স্ট্যাটাস",
         "timezone": "টাইমজোন",
-        "weekly_schedule": "সাপ্তাহিক সময়সূচি"
+        "weekly_schedule": "সাপ্তাহিক সময়সূচি",
+        "continue_session": "সেশন চালিয়ে যাও",
+        "enter_a_5_field_cron_expression_or_interval_in_s": "5-ফিল্ডের cron এক্সপ্রেশন বা সেকেন্ডে বিরতি (≥60) লেখো",
+        "failed_to_update_job_check_server_connection": "জব আপডেট করা যায়নি — সার্ভার সংযোগ দেখে নাও",
+        "name_and_message_are_required": "নাম ও মেসেজ দেওয়া বাধ্যতামূলক",
+        "no_result_yet": "এখনো কোনো ফলাফল নেই",
+        "pause": "থামাও",
+        "resume": "আবার চালাও",
+        "resume_job_to_run": "চালাতে জবটি আবার শুরু করো",
+        "run_now": "এখনই চালাও",
+        "running": "চলছে",
+        "select_at_least_one_day": "অন্তত একটি দিন বেছে নাও",
+        "view_last_result": "শেষ ফলাফল দেখো"
       },
       "displayTab": {
         "auto": "স্বয়ংক্রিয়",
@@ -4500,7 +4674,16 @@
         "light": "লাইট",
         "mode": "মোড",
         "zoom": "জুম",
-        "zoom_with": "জুম করুন"
+        "zoom_with": "জুম করুন",
+        "change_the_dashboard_font_family_persists_across": "ড্যাশবোর্ডের ফন্ট পরিবার বদলাও। সেশনের পরেও টিকে থাকে।",
+        "choose_a_color_palette_each_theme_supports_dark": "একটি রঙের প্যালেট বেছে নাও। প্রতিটি থিমে ডার্ক ও লাইট মোড আছে। কাস্টম থিম ~/.kiro/crew/themes/ এ রাখা হয়।",
+        "mono": "মনো",
+        "native_window_zoom_tip": "নেটিভ উইন্ডো জুম, {{mod}}+ / {{mod}}− এর মতো একই সেটিং। 100%-এ রিসেট করতে শতাংশে ক্লিক করো।",
+        "new_theme": "+ নতুন থিম",
+        "sans": "স্যান্স",
+        "switch_between_color_schemes_auto_follows_your_o": "রঙের স্কিমের মধ্যে বদল করো। অটো তোমার OS-এর পছন্দ অনুসরণ করে।",
+        "system": "সিস্টেম",
+        "use_your_browser_s_zoom_your_browser_remembers_i": "ব্রাউজারের নিজের জুম ব্যবহার করো। ব্রাউজার এই সাইটের জন্য তা মনে রাখে।"
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agen": "পুল প্রসেসের জন্য এজেন্ট। খালি রাখলে ডিফল্ট এজেন্ট ব্যবহার হয়। রিস্টার্ট প্রয়োজন।",
@@ -4549,7 +4732,18 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "লিগ্যাসি মোড ব্যবহার হচ্ছে — এজেন্ট টেম্পলেট হিসেবে agent.default_agent",
         "warm_pool": "ওয়ার্ম পুল",
         "workspace": "ওয়ার্কস্পেস",
-        "workspaces": "ওয়ার্কস্পেস"
+        "workspaces": "ওয়ার্কস্পেস",
+        "ceiling_on_the_auto_sized_concurrent_subagent_co": "স্বয়ংক্রিয়ভাবে ঠিক করা সমসাময়িক সাবএজেন্ট সংখ্যার সর্বোচ্চ সীমা (শুধু Max Concurrent Subagents = 0 হলে প্রযোজ্য)। হোস্টের মেমরি/CPU সূত্র কখনো এটি ছাড়ায় না। পরিসর 1–64। ডিফল্ট: 16।",
+        "controls_how_many_subagents_can_run_concurrently": "কতগুলি সাবএজেন্ট একসাথে চলতে পারে এবং প্রতিটি সাবএজেন্ট কতগুলি টুল কল করতে পারে তা নিয়ন্ত্রণ করে। পরের সাবএজেন্ট চালু হওয়ার সময় পরিবর্তন কার্যকর হয়।",
+        "default_agent": "ডিফল্ট এজেন্ট",
+        "disabled": "নিষ্ক্রিয়",
+        "enable_conductor_skill_for_multi_agent_orchestra": "মাল্টি-এজেন্ট অর্কেস্ট্রেশনের জন্য কনডাক্টর স্কিল সক্রিয় করো। রিস্টার্ট দরকার।",
+        "enabled": "সক্রিয়",
+        "named_memory_stores_with_optional_per_store_embe": "নাম দেওয়া মেমরি স্টোর, চাইলে প্রতি স্টোরে আলাদা এমবেডিং সেটিং দেওয়া যায়। খালি ফিল্ড উপরের মেমরি সেকশন থেকে উত্তরাধিকারে পায়।",
+        "named_workspace_directories_each_agent_binds_to": "নাম দেওয়া ওয়ার্কস্পেস ডিরেক্টরি। প্রতিটি এজেন্ট একটি ওয়ার্কস্পেসের সাথে বাঁধা থাকে।",
+        "save": "সেভ করো",
+        "saving": "সেভ হচ্ছে…",
+        "tool_call_budget_per_subagent_1_200_default_100": "প্রতি সাবএজেন্টের টুল-কল বাজেট (1–200)। ডিফল্ট: 100।"
       },
       "mcpTab": {
         "actions": "অ্যাকশন",
@@ -4577,7 +4771,14 @@
         "tools": "টুল",
         "tools_2": "টুল",
         "undo": "আনডু",
-        "uninstall": "আনইনস্টল"
+        "uninstall": "আনইনস্টল",
+        "click_to_disable_pending_until_apply": "নিষ্ক্রিয় করতে ক্লিক করো (Apply দেওয়া পর্যন্ত অপেক্ষমাণ)",
+        "click_to_enable_pending_until_apply": "সক্রিয় করতে ক্লিক করো (Apply দেওয়া পর্যন্ত অপেক্ষমাণ)",
+        "disabled": "নিষ্ক্রিয়",
+        "error": "ত্রুটি",
+        "online": "অনলাইন",
+        "outdated": "পুরোনো",
+        "unknown": "অজানা"
       },
       "memoryGraphTab": {
         "all_count": "সব ({{count}})",
@@ -4586,7 +4787,8 @@
         "no_memory_data_to_visualize_add_preferences_proj": "দেখানোর মতো কোনো মেমরি ডেটা নেই। প্রথমে পছন্দ, প্রজেক্ট বা শিক্ষা যোগ করুন।",
         "refresh": "রিফ্রেশ",
         "search_memory_nodes": "মেমরি নোড অনুসন্ধান",
-        "search_nodes": "নোড অনুসন্ধান…"
+        "search_nodes": "নোড অনুসন্ধান…",
+        "gpu_rendered_visualization_of_all_kirocrew_memor": "সব KiroCrew মেমরির GPU-রেন্ডার করা ভিজ্যুয়ালাইজেশন। নোডগুলি ধরন অনুযায়ী রঙ করা। লেবেল দেখতে জুম করো, নোড দেখতে ক্লিক করো, ফোকাস করতে ফিল্টার ব্যবহার করো।"
       },
       "memoryTab": {
         "actions": "অ্যাকশন",
@@ -4617,7 +4819,11 @@
         "session_other": "{{count}}টি সেশন",
         "summarize_now": "এখনই সারসংক্ষেপ করুন",
         "tool": "টুল",
-        "when": "কখন"
+        "when": "কখন",
+        "controls_how_conversation_history_is_consolidate": "কথাবার্তার ইতিহাস কীভাবে মেমরিতে জমা হয় তা নিয়ন্ত্রণ করে।",
+        "learned_user_preferences_coding_style_tools_work": "শেখা ব্যবহারকারী পছন্দ (কোডিং স্টাইল, টুল, ওয়ার্কফ্লো)। মেমরি সংহতকরণ স্বয়ংক্রিয়ভাবে আপডেট করে।",
+        "persistent_lessons_injected_into_every_session_a": "প্রতিটি সেশনে ঢোকানো স্থায়ী শিক্ষা। টাস্ক রানারের ব্যর্থতা থেকে স্বয়ংক্রিয়ভাবে বের করা হয়। হাতে যোগ করতে 'kirocrew learn add' ব্যবহার করো। ভেক্টর মেমরি সক্রিয় থাকলে শিক্ষাগুলি Semantic ট্যাবে lesson.* এন্ট্রি হিসেবে পরিচালিত হয়।",
+        "save": "সেভ করো"
       },
       "portabilityTab": {
         "archive_contents": "আর্কাইভের বিষয়বস্তু:",
@@ -4638,7 +4844,17 @@
         "replace_mode_will_overwrite_existing_data_contin": "প্রতিস্থাপন মোড বিদ্যমান ডেটার ওপরে লিখে দেবে। চালিয়ে যাবেন?",
         "skills": "স্কিল:",
         "upload_a_kirocrew_export_zip_to_restore_settings": "এই ইনস্ট্যান্সে সেটিংস পুনরুদ্ধার করতে একটি KiroCrew এক্সপোর্ট zip আপলোড করুন।\n          ডিফল্টভাবে বিদ্যমান ডেটার সঙ্গে মার্জ করা হবে (ডুপ্লিকেট বাদ দেওয়া হয়)।",
-        "workspace_files": "ওয়ার্কস্পেস ফাইল:"
+        "workspace_files": "ওয়ার্কস্পেস ফাইল:",
+        "download_export_zip": "এক্সপোর্ট ডাউনলোড করো (.zip)",
+        "download_started": "ডাউনলোড শুরু হয়েছে।",
+        "generating": "তৈরি হচ্ছে...",
+        "generating_export": "এক্সপোর্ট তৈরি হচ্ছে...",
+        "import": "ইমপোর্ট করো",
+        "import_failed": "ইমপোর্ট করা যায়নি",
+        "importing": "ইমপোর্ট হচ্ছে...",
+        "invalid_archive": "আর্কাইভটি বৈধ নয়",
+        "network_error": "নেটওয়ার্ক ত্রুটি",
+        "network_error_during_preview": "প্রিভিউয়ের সময় নেটওয়ার্ক ত্রুটি"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",
@@ -4659,7 +4875,8 @@
         "use_in_chat": "চ্যাটে ব্যবহার করুন",
         "user_prompts_count": "ব্যবহারকারীর প্রম্পট ({{count}})",
         "user_prompts_filtered_count": "ব্যবহারকারীর প্রম্পট ({{total}}টির মধ্যে {{count}}টি)",
-        "with_prompts_or_create_prompts_in_kiro_prompts": "প্রম্পটসহ ইনস্টল করুন অথবা ~/.kiro/prompts/-এ প্রম্পট তৈরি করুন।"
+        "with_prompts_or_create_prompts_in_kiro_prompts": "প্রম্পটসহ ইনস্টল করুন অথবা ~/.kiro/prompts/-এ প্রম্পট তৈরি করুন।",
+        "failed_to_load_prompts": "প্রম্পট লোড করা যায়নি"
       },
       "skillsTab": {
         "add_skill": "স্কিল যোগ করুন",
@@ -4689,7 +4906,16 @@
         "skill_md": "SKILL.md",
         "skills": "স্কিল",
         "skills_count": "স্কিল ({{count}})",
-        "skills_tip": "চাহিদা অনুযায়ী লোড হওয়া স্কিল, যখন এজেন্ট সেগুলিকে প্রাসঙ্গিক বলে নির্ধারণ করে। auto ব্যাজযুক্ত স্কিল সব সময় প্রতিটি সেশনে যুক্ত হয়। স্কিল KiroCrew, kiro-cli এবং AIM প্যাকেজ থেকে আবিষ্কৃত হয়।"
+        "skills_tip": "চাহিদা অনুযায়ী লোড হওয়া স্কিল, যখন এজেন্ট সেগুলিকে প্রাসঙ্গিক বলে নির্ধারণ করে। auto ব্যাজযুক্ত স্কিল সব সময় প্রতিটি সেশনে যুক্ত হয়। স্কিল KiroCrew, kiro-cli এবং AIM প্যাকেজ থেকে আবিষ্কৃত হয়।",
+        "auto_generated_skill_candidates_awaiting_your_ap": "স্বয়ংক্রিয়ভাবে তৈরি স্কিল প্রার্থী, তোমার অনুমোদনের অপেক্ষায়। অনুমোদনের আগে SKILL.md ও সাথের যেকোনো স্ক্রিপ্ট দেখতে Review-তে ক্লিক করো। Approve স্কিলটি চালু করে দেয় (এবং স্ক্রিপ্টগুলিকে এক্সিকিউটেবল করে); dismiss সেটি বাতিল করে। তুমি অনুমোদন না দিলে কিছুই চালু হয় না।",
+        "hide": "লুকাও",
+        "on_demand_skills_loaded_when_the_agent_determine": "প্রয়োজনমাফিক স্কিল, এজেন্ট প্রাসঙ্গিক মনে করলে লোড হয়।",
+        "proposed_change": "প্রস্তাবিত পরিবর্তন",
+        "review": "রিভিউ",
+        "the_skill_this_update_targets_no_longer_exists_s": "এই আপডেটটি যে স্কিলের জন্য, সেটি আর নেই, তাই আপডেট করার কিছু নেই। এই প্রার্থীটি বাতিল করো।",
+        "this_skill_changed_after_this_update_was_written": "এই আপডেট লেখার পরে স্কিলটি বদলে গেছে, তাই এখন এটি প্রয়োগ করলে সেই নতুন পরিবর্তনগুলি মুছে যাবে। অনুমোদন আটকানো আছে — প্রার্থীটি বাতিল করো, বর্তমান সংস্করণের বিপরীতে নতুন একটি আপডেট প্রস্তাব করা হবে।",
+        "update": "আপডেট করো",
+        "workspace": "ওয়ার্কস্পেস"
       },
       "steeringTab": {
         "api_standards_md": "api-standards.md",
@@ -4715,7 +4941,8 @@
         "steering_file_content": "স্টিয়ারিং ফাইলের বিষয়বস্তু",
         "steering_file_name": "স্টিয়ারিং ফাইলের নাম",
         "steering_files": "স্টিয়ারিং ফাইল",
-        "workspace_this_project_only": "ওয়ার্কস্পেস — শুধু এই প্রজেক্ট"
+        "workspace_this_project_only": "ওয়ার্কস্পেস — শুধু এই প্রজেক্ট",
+        "always_on_markdown_conventions_injected_into_eve": "সব সময় চালু Markdown নিয়মকানুন, প্রতিটি সেশনে ঢোকানো হয়। গ্লোবাল ফাইল ~/.kiro/steering এ থাকে ও সব জায়গায় খাটে; ওয়ার্কস্পেস ফাইল <project>/.kiro/steering এ থাকে ও শুধু সেই প্রজেক্টে খাটে।"
       },
       "tokenDailyChart": {
         "all": "সব",
@@ -4759,7 +4986,10 @@
         "total_cost": "মোট খরচ",
         "total_sessions_30d": "মোট সেশন (30d)",
         "total_tokens": "মোট টোকেন",
-        "total_turns": "মোট টার্ন"
+        "total_turns": "মোট টার্ন",
+        "credits": "ক্রেডিট",
+        "spend": "খরচ",
+        "tokens": "টোকেন"
       },
       "vectorMemoryCard": {
         "active": "সক্রিয়",
@@ -4800,7 +5030,22 @@
         "test_query_e_g_what_database_should_i_use": "টেস্ট কোয়েরি (যেমন 'আমি কোন ডেটাবেস ব্যবহার করব?')",
         "value": "ভ্যালু",
         "vector_memory": "ভেক্টর মেমরি",
-        "vector_memory_is_initializing_the_embedding_mode": "ভেক্টর মেমরি চালু হচ্ছে। এমবেডিং মডেল (~610MB) স্বয়ংক্রিয়ভাবে ব্যাকগ্রাউন্ডে ডাউনলোড হয়, আর পুরোনো মেমরি নিজে নিজেই মাইগ্রেট হয় — কিছু করার প্রয়োজন নেই।"
+        "vector_memory_is_initializing_the_embedding_mode": "ভেক্টর মেমরি চালু হচ্ছে। এমবেডিং মডেল (~610MB) স্বয়ংক্রিয়ভাবে ব্যাকগ্রাউন্ডে ডাউনলোড হয়, আর পুরোনো মেমরি নিজে নিজেই মাইগ্রেট হয় — কিছু করার প্রয়োজন নেই।",
+        "checking_system_status": "সিস্টেমের অবস্থা যাচাই করা হচ্ছে…",
+        "conversation_fragments_with_vector_search_import": "ভেক্টর সার্চসহ কথাবার্তার টুকরো। Importance: কতটা গুরুত্বপূর্ণ (0-1, বেশি মানে বেশি গুরুত্বপূর্ণ)। Score: তোমার সার্চ কোয়েরির সাথে কোসাইন সাদৃশ্য (1.0-এর কাছাকাছি মানে বেশি প্রাসঙ্গিক)।",
+        "download_failed_check_network_connectivity_and_t": "ডাউনলোড করা যায়নি। নেটওয়ার্ক সংযোগ দেখে নিয়ে আবার চেষ্টা করো।",
+        "downloading_embedding_model_610mb": "এমবেডিং মডেল ডাউনলোড হচ্ছে (~610MB)…",
+        "downloading_from_cdn": "CDN থেকে ডাউনলোড হচ্ছে…",
+        "every_memory_create_update_delete_conflict_and_i": "মেমরির প্রতিটি তৈরি, আপডেট, মুছে ফেলা, দ্বন্দ্ব ও ইনজেকশন ব্লক এখানে লেখা হয়।",
+        "no_matching_entries": "মিলে যাওয়া কোনো এন্ট্রি নেই",
+        "no_semantic_entries": "কোনো সিমান্টিক এন্ট্রি নেই",
+        "preview_what_gets_injected_into_prompts_enter_a": "প্রম্পটে কী ঢোকানো হয় তার প্রিভিউ দেখো। এপিসোডিক রিট্রিভালের ফলাফল দেখতে একটি কোয়েরি লেখো।",
+        "refine_your_filter_to_narrow_further": "— আরও কমাতে ফিল্টার আরও নির্দিষ্ট করো",
+        "setup_failed": "সেটআপ করা যায়নি",
+        "structured_key_value_facts_about_you_confidence": "তোমার সম্পর্কে গঠিত কী-ভ্যালু তথ্য। Confidence: সিস্টেম কতটা নিশ্চিত (1.0 = তুমি নিজে দিয়েছ, 0.85 = চ্যাট থেকে নেওয়া)। Source: কে লিখেছে (user_explicit = তুমি, consolidation = স্বয়ংক্রিয়ভাবে নেওয়া)।",
+        "structured_semantic_key_value_episodic_conversat": "গঠিত সিমান্টিক (কী-ভ্যালু) + এপিসোডিক (কথাবার্তার টুকরো) মেমরি, ভেক্টর সার্চসহ। এমবেডিং সব সময় চালু — মডেলটি পেছনে স্বয়ংক্রিয়ভাবে ডাউনলোড হয়।",
+        "unknown_error": "অজানা ত্রুটি",
+        "verifying_model_integrity": "মডেলের অখণ্ডতা যাচাই করা হচ্ছে…"
       }
     },
     "overviewPage": {
@@ -4924,11 +5169,14 @@
     "scenes": {
       "ghostScene": {
         "kiro_ghost_haunt_animation": "Kiro ভূতের ভুতুড়ে অ্যানিমেশন",
-        "kiro_ghost_haunt_text_overlay": "Kiro ভূতের ভুতুড়ে টেক্সট ওভারলে"
+        "kiro_ghost_haunt_text_overlay": "Kiro ভূতের ভুতুড়ে টেক্সট ওভারলে",
+        "friendly_hauntings_only": "শুধু বন্ধুত্বপূর্ণ ভূতুড়েপনা",
+        "kiro_haunt": "Kiro ভূতুড়ে ডেরা"
       },
       "missionControl": {
         "missionControlScene": {
-          "mission_control_scene": "মিশন কন্ট্রোল দৃশ্য"
+          "mission_control_scene": "মিশন কন্ট্রোল দৃশ্য",
+          "lv_level_title": "লেভেল {{level}} {{title}}"
         }
       },
       "neuralConstellationScene": {
@@ -4950,7 +5198,8 @@
       },
       "pandaOfficeScene": {
         "panda_office_scene": "পান্ডা অফিস দৃশ্য",
-        "panda_office_scene_labels": "পান্ডা অফিস দৃশ্যের লেবেল"
+        "panda_office_scene_labels": "পান্ডা অফিস দৃশ্যের লেবেল",
+        "panda_den": "🐼 পান্ডার ডেরা"
       },
       "underwaterLabScene": {
         "deep_sea_lab": "গভীর সমুদ্র ল্যাব",
@@ -5069,7 +5318,8 @@
       "no_archives_archives_are_created_when_session_fi": "কোনো আর্কাইভ নেই। সেশন ফাইল রোটেট (>2MB) বা কম্প্যাক্ট হলে আর্কাইভ তৈরি হয়।",
       "no_matches_for_query": "কোনো মিল পাওয়া যায়নি: \"{{query}}\"।",
       "reload": "আবার লোড করুন",
-      "select_an_archive_to_view_its_contents": "বিষয়বস্তু দেখতে একটি আর্কাইভ নির্বাচন করুন।"
+      "select_an_archive_to_view_its_contents": "বিষয়বস্তু দেখতে একটি আর্কাইভ নির্বাচন করুন।",
+      "truncated_showing_first_200kb": "… সংক্ষিপ্ত করা হয়েছে (প্রথম 200KB দেখানো হচ্ছে) …"
     },
     "settings": {
       "aboutPanel": {
@@ -5128,7 +5378,14 @@
         "view_this_commit_on_github": "GitHub-এ এই কমিট দেখুন",
         "what_s_new": "নতুন কী আছে",
         "you_are_on_the_latest_version": "আপনি সর্বশেষ সংস্করণ ব্যবহার করছেন।",
-        "you_re_on_the_latest_version": "আপনি সর্বশেষ সংস্করণেই আছেন।"
+        "you_re_on_the_latest_version": "আপনি সর্বশেষ সংস্করণেই আছেন।",
+        "hide_full_changelog": "▾ পূর্ণ চেঞ্জলগ লুকাও",
+        "insider": "ইনসাইডার",
+        "stable": "স্টেবল",
+        "update_failed": "আপডেট করা যায়নি",
+        "update_noun": "আপডেট",
+        "update_now": "এখনই আপডেট করো",
+        "view_full_changelog": "▸ পূর্ণ চেঞ্জলগ দেখো"
       },
       "botChannelPanel": {
         "allowed_user_ids": "অনুমোদিত ইউজার ID",
@@ -5142,7 +5399,17 @@
         "required": "আবশ্যক",
         "settings_are_managed_on_the_machine_running_kiro": "সেটিংস KiroCrew যে মেশিনে চলছে সেখানে পরিচালিত হয় এবং রিমোট সেশন থেকে শুধু-পঠনযোগ্য।",
         "setup_guide": "সেটআপ গাইড",
-        "soft_context_threshold": "সফট কনটেক্সট থ্রেশহোল্ড %"
+        "soft_context_threshold": "সফট কনটেক্সট থ্রেশহোল্ড %",
+        "configuration_is_saved_but_the_channel_is_not_ru": "কনফিগারেশন সেভ হয়েছে কিন্তু চ্যানেলটি চলছে না। সংযোগের জন্য গেটওয়ে রিস্টার্ট করো।",
+        "get_your_bot_token": "তোমার বট টোকেন নাও",
+        "save_channel_settings": "{{channel}} সেটিংস সেভ করো",
+        "save_failed_is_the_gateway_running": "সেভ করা যায়নি। গেটওয়ে চলছে কি?",
+        "saved": "সেভ হয়েছে।",
+        "saved_restart_the_gateway_to_apply": "সেভ হয়েছে। কার্যকর করতে গেটওয়ে রিস্টার্ট করো।",
+        "saving": "সেভ হচ্ছে…",
+        "soft_context_threshold_must_be_a_number_between": "সফট কনটেক্সট থ্রেশহোল্ড 1 থেকে 100-এর মধ্যে একটি সংখ্যা হতে হবে",
+        "verified_with_channel_and_saved": "{{channel}} দিয়ে যাচাই হয়েছে ও সেভ হয়েছে। সংযোগ করতে গেটওয়ে রিস্টার্ট করো।",
+        "where_to_find_the_bot_token": "বট টোকেন কোথায় পাবে"
       },
       "browserPanel": {
         "1_install_the": "1. ইনস্টল করুন",
@@ -5159,7 +5426,11 @@
         "paste_token_here": "টোকেন এখানে পেস্ট করুন...",
         "playwright_chrome_extension": "Playwright Chrome এক্সটেনশন",
         "saved_and_applied_sessions_restarted": "সেভ ও প্রয়োগ করা হয়েছে। সেশন পুনরায় চালু হয়েছে।",
-        "switch_to_headless_mode_this_will_remove_the_sav": "হেডলেস মোডে স্যুইচ করবেন? এতে সেভ করা এক্সটেনশন টোকেন মুছে যাবে।"
+        "switch_to_headless_mode_this_will_remove_the_sav": "হেডলেস মোডে স্যুইচ করবেন? এতে সেভ করা এক্সটেনশন টোকেন মুছে যাবে।",
+        "cannot_reach_gateway_is_it_running": "গেটওয়েতে পৌঁছানো যাচ্ছে না। এটি চলছে কি?",
+        "confirm": "নিশ্চিত করো",
+        "save": "সেভ করো",
+        "saving": "সেভ হচ্ছে..."
       },
       "channelDisabledPanel": {
         "checking_your_organization_s_channel_policy": "আপনার প্রতিষ্ঠানের চ্যানেল নীতি যাচাই করা হচ্ছে…",
@@ -5171,7 +5442,12 @@
       "channelsPanel": {
         "channels": "চ্যানেল",
         "chat_channels": "চ্যাট চ্যানেল",
-        "off_by_admin": "অ্যাডমিন বন্ধ করেছেন"
+        "off_by_admin": "অ্যাডমিন বন্ধ করেছেন",
+        "checking": "যাচাই করা হচ্ছে…",
+        "connected": "সংযুক্ত",
+        "needs_setup": "সেটআপ দরকার",
+        "not_connected": "সংযুক্ত নয়",
+        "status_unavailable": "অবস্থা জানা যাচ্ছে না"
       },
       "chatPanel": {
         "about_you": "আপনার সম্পর্কে",
@@ -5241,7 +5517,38 @@
         "which_model_new_sessions_start_with_pick_a_model": "নতুন সেশন কোন মডেল দিয়ে শুরু হবে। কোনো নির্দিষ্ট সেশনে তা বদলাতে সেই সেশনের ভিতরে একটি মডেল বেছে নিন।",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "প্যারেন্ট সেশনে সাবএজেন্টের সমাপ্তি ইভেন্ট ইনজেক্ট করার সময় তার স্ট্রিমের কোন অংশ রাখা হবে। Head শুরুর অংশ রাখে (ডিফল্ট, পুরোনো আচরণের সঙ্গে মেলে)। Tail চূড়ান্ত সারসংক্ষেপ রাখে। Both দুই প্রান্ত থেকেই একটি অংশ রাখে এবং মাঝে একটি মার্কার বসায়।",
         "widget_density": "উইজেট ঘনত্ব",
-        "your_role": "আপনার ভূমিকা"
+        "your_role": "আপনার ভূমিকা",
+        "comfortable": "আরামদায়ক",
+        "compact": "ঘন",
+        "default_auto": "ডিফল্ট (অটো)",
+        "disabled_by_instance_config_tips_enabled_false": "ইনস্ট্যান্স কনফিগ দিয়ে নিষ্ক্রিয় করা (tips_enabled: false)",
+        "enter_for_newline": "নতুন লাইনের জন্য Enter",
+        "enter_sends": "Enter পাঠায়",
+        "enter_sends_mod_enter_newline": "Enter পাঠায়, {{mod}}+Enter নতুন লাইন",
+        "expanded_icon_name_stats": "বিস্তৃত (আইকন + নাম + পরিসংখ্যান)",
+        "failed_to_save_auto_compact_threshold": "অটো-কমপ্যাক্ট থ্রেশহোল্ড সেভ করা যায়নি",
+        "failed_to_save_completion_keep_characters": "কমপ্লিশন-কিপ ক্যারেক্টার সেভ করা যায়নি",
+        "failed_to_save_completion_keep_mode": "কমপ্লিশন-কিপ মোড সেভ করা যায়নি",
+        "failed_to_save_dashboard_config": "ড্যাশবোর্ড কনফিগ সেভ করা যায়নি",
+        "failed_to_save_default_model": "ডিফল্ট মডেল সেভ করা যায়নি",
+        "failed_to_save_default_reasoning_effort": "ডিফল্ট রিজনিং এফোর্ট সেভ করা যায়নি",
+        "failed_to_save_profile": "প্রোফাইল সেভ করা যায়নি",
+        "failed_to_save_soft_stop_budget": "সফট-স্টপ বাজেট সেভ করা যায়নি",
+        "failed_to_save_tips_preference": "টিপস পছন্দ সেভ করা যায়নি",
+        "full": "পূর্ণ",
+        "immediate": "তাৎক্ষণিক",
+        "less_only_when_needed": "কম (শুধু দরকার হলে)",
+        "minimal_stats_only_name_on_hover": "সর্বনিম্ন (শুধু পরিসংখ্যান, হোভারে নাম)",
+        "mod_enter_for_newline": "নতুন লাইনের জন্য {{mod}}+Enter",
+        "mod_enter_sends": "{{mod}}+Enter পাঠায়",
+        "model_default": "মডেল ডিফল্ট",
+        "model_default_applies_no_override_the_model_pick": "'মডেল ডিফল্ট' কোনো ওভাররাইড করে না — মডেল নিজেই তার এফোর্ট বেছে নেয়।",
+        "more_encourage_widgets": "বেশি (উইজেট উৎসাহিত করে)",
+        "multiline": "একাধিক লাইন",
+        "shift_enter_for_newline": "নতুন লাইনের জন্য Shift+Enter",
+        "show_occasional_feature_discovery_tips_above_the": "এজেন্ট কাজ করার সময় কম্পোজারের উপরে মাঝে মাঝে ফিচার আবিষ্কারের টিপস দেখাও",
+        "single_line": "এক লাইন",
+        "smooth": "মসৃণ"
       },
       "computerUsePanel": {
         "accessibility": "অ্যাক্সেসিবিলিটি",
@@ -5303,7 +5610,12 @@
         "use_your_browser_s_zoom_your_browser_remembers_i": "আপনার ব্রাউজারের জুম ব্যবহার করুন। ব্রাউজার এই সাইটের জন্য তা মনে রাখে।",
         "view": "ভিউ",
         "zoom_font": "জুম ও ফন্ট",
-        "zoom_level": "জুম লেভেল"
+        "zoom_level": "জুম লেভেল",
+        "create_theme": "থিম তৈরি করো",
+        "edit_theme": "থিম সম্পাদনা করো",
+        "fetching": "আনা হচ্ছে…",
+        "install": "ইনস্টল করো",
+        "install_failed": "ইনস্টল করা যায়নি"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",
@@ -5363,7 +5675,25 @@
         "token_ttl": "টোকেন TTL",
         "ttl": "· ttl",
         "up_to": "সর্বোচ্চ",
-        "use_an_absolute_path_no": ")।\n            একটি অ্যাবসোলিউট পাথ ব্যবহার করুন (কোনো"
+        "use_an_absolute_path_no": ")।\n            একটি অ্যাবসোলিউট পাথ ব্যবহার করুন (কোনো",
+        "add_remote_crew": "রিমোট crew যোগ করো",
+        "adding": "যোগ করা হচ্ছে…",
+        "connect": "সংযোগ করো",
+        "connect_failed": "{{id}}-এ সংযোগ করা যায়নি: {{error}}",
+        "connecting": "সংযোগ করা হচ্ছে…",
+        "connection_did_not_complete_try_diagnose_for_det": "সংযোগ সম্পূর্ণ হয়নি। বিস্তারিত জানতে Diagnose দেখো।",
+        "diagnose": "রোগনির্ণয়",
+        "diagnose_failed": "{{id}}-এর রোগনির্ণয় করা যায়নি: {{error}}",
+        "disable": "নিষ্ক্রিয় করো",
+        "disabling": "নিষ্ক্রিয় করা হচ্ছে…",
+        "disconnect_failed": "{{id}}-এর সংযোগ বিচ্ছিন্ন করা যায়নি: {{error}}",
+        "enable_remote_crew_management": "রিমোট crew ব্যবস্থাপনা সক্রিয় করো",
+        "enabling": "সক্রিয় করা হচ্ছে…",
+        "failed_to_add_remote_crew": "রিমোট crew যোগ করা যায়নি",
+        "failed_to_load_remote_crews": "রিমোট crew লোড করা যায়নি",
+        "remove_failed": "{{id}} সরানো যায়নি: {{error}}",
+        "unknown_error": "অজানা ত্রুটি",
+        "update_setting_failed": "সেটিং আপডেট করা যায়নি: {{error}}"
       },
       "mcpPoolableServers": {
         "blocked": "ব্লক করা",
@@ -5386,7 +5716,10 @@
         "sound": "শব্দ",
         "sources": "উৎস",
         "test": "পরীক্ষা করুন",
-        "volume": "ভলিউম"
+        "volume": "ভলিউম",
+        "always_interrupts_cannot_be_muted_or_lowered": "সব সময় বাধা দেয় — মিউট বা কমানো যায় না",
+        "channel_not_active_app_disabled_setting_retained": "চ্যানেল সক্রিয় নয় (অ্যাপ নিষ্ক্রিয়) — সেটিং রাখা হয়েছে",
+        "failed_to_load_channels": "চ্যানেল লোড করা যায়নি"
       },
       "postureDisclosure": {
         "more": "আরও",
@@ -5439,8 +5772,31 @@
         "security_posture_detail_is_temporarily_unavailab": "নিরাপত্তা অবস্থার বিবরণ সাময়িকভাবে অনুপলব্ধ। বলবৎকরণ অপ্রভাবিত — এই ভিউ প্রদর্শনের জন্য নিয়ন্ত্রণ তালিকা নির্ধারণ করতে পারেনি।",
         "the_strictest_boundary_in_effect_for_each_govern": "প্রতিটি নিয়ন্ত্রিত স্কোপের জন্য বলবৎ কঠোরতম সীমা, প্রযোজ্য এই",
         "tool_approval": "টুল অনুমোদন",
-        "turn_off_every_built_in_denied_command_rule_at_o": "একবারে সব বিল্ট-ইন নিষিদ্ধ-কমান্ড নিয়ম বন্ধ করুন। স্বতন্ত্র বহুস্তরীয় প্রতিরক্ষা নিয়ন্ত্রণ (সংবেদনশীল পাথ, IMDS, git-publish) বলবৎ থাকবে",
-        "your_custom_denies": "আপনার কাস্টম নিষেধাজ্ঞা"
+        "your_custom_denies": "আপনার কাস্টম নিষেধাজ্ঞা",
+        "all_allowed": "সব অনুমোদিত",
+        "allow_list_rules": "অনুমোদিত-তালিকা · {{rules}}",
+        "block_list_rules": "নিষিদ্ধ-তালিকা · {{rules}}",
+        "collapse_category_rules": "{{category}} নিয়ম সংকুচিত করো",
+        "disable_all_built_in_denies_2": "সব বিল্ট-ইন ডিনাই নিষ্ক্রিয় করবে?",
+        "disable_this_denied_command": "এই নিষিদ্ধ কমান্ডটি নিষ্ক্রিয় করবে?",
+        "disabled_by_policy": "পলিসি দিয়ে নিষ্ক্রিয় করা",
+        "disabling_all_built_in_denies_removes_kirocrew_s": "সব বিল্ট-ইন ডিনাই নিষ্ক্রিয় করলে ধ্বংসাত্মক ও ক্রেডেনশিয়াল-চুরির কমান্ডের বিরুদ্ধে KiroCrew-এর সুরক্ষা উঠে যায়। কিছু কমান্ড স্বতন্ত্র বহুস্তরীয় নিয়ন্ত্রণে (সংবেদনশীল পাথ, IMDS, git-publish) আটকানো থাকতে পারে।",
+        "enabled": "সক্রিয়",
+        "expand_category_rules": "{{category}} নিয়ম প্রসারিত করো",
+        "hide_pattern": "প্যাটার্ন লুকাও",
+        "interactive": "ইন্টার‌্যাক্টিভ",
+        "invalid_regular_expression": "রেগুলার এক্সপ্রেশনটি বৈধ নয়",
+        "nothing_allowed": "কিছুই অনুমোদিত নয়",
+        "policy": "পলিসি",
+        "policy_profile": "পলিসি ∩ প্রোফাইল",
+        "profile_2": "প্রোফাইল",
+        "security_deep_dive": "সিকিউরিটি ডিপ ডাইভ",
+        "security_module_spec": "সিকিউরিটি মডিউল স্পেক",
+        "show_pattern": "প্যাটার্ন দেখাও",
+        "standard": "স্ট্যান্ডার্ড",
+        "turn_off_every_rule": "একবারে সব বিল্ট-ইন নিষিদ্ধ-কমান্ড নিয়ম বন্ধ করুন। স্বতন্ত্র বহুস্তরীয় প্রতিরক্ষা নিয়ন্ত্রণ (সংবেদনশীল পাথ, IMDS, git-publish) বলবৎ থাকবে।",
+        "turn_off_every_rule_governance_locked": "একবারে সব বিল্ট-ইন নিষিদ্ধ-কমান্ড নিয়ম বন্ধ করুন। স্বতন্ত্র বহুস্তরীয় প্রতিরক্ষা নিয়ন্ত্রণ (সংবেদনশীল পাথ, IMDS, git-publish) বলবৎ থাকবে, এবং তোমার প্রতিষ্ঠানের পলিসিতে পিন করা নিয়মগুলি চালু থাকে।",
+        "yolo_auto_approve": "YOLO (স্বয়ংক্রিয় অনুমোদন)"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "বাতিল",
@@ -5449,8 +5805,22 @@
         "not_available_on_windows": "Windows-এ উপলব্ধ নয় — শেয়ার্ড গেটওয়ের জন্য Unix-ডোমেন সকেট প্রয়োজন। macOS এবং Linux-এ সমর্থিত।",
         "roll_back_disable": "রোল ব্যাক (নিষ্ক্রিয় করুন)",
         "shared_mcp_gateway": "শেয়ারড MCP গেটওয়ে",
-        "the_gateway_did_not_reach_the_expected_state": "গেটওয়ে প্রত্যাশিত অবস্থায় পৌঁছায়নি।",
-        "this_restarts_all_active_sessions_onto_the_new_m": "এটি সব সক্রিয় সেশন নতুন MCP রাউটিংয়ে পুনরায় চালু করবে — চলমান কাজ বাধাপ্রাপ্ত হবে। আপনার ড্যাশবোর্ড সাইন-ইন থাকবে। চালিয়ে যাবেন?"
+        "this_restarts_all_active_sessions_onto_the_new_m": "এটি সব সক্রিয় সেশন নতুন MCP রাউটিংয়ে পুনরায় চালু করবে — চলমান কাজ বাধাপ্রাপ্ত হবে। আপনার ড্যাশবোর্ড সাইন-ইন থাকবে। চালিয়ে যাবেন?",
+        "active_sessions_share_pooled_mcp_backends_see_th": "সক্রিয় — সেশনগুলি পুল করা MCP ব্যাকএন্ড ভাগ করে নেয়। লাইভ পুল দেখো Developer > System-এ।",
+        "could_not_apply": "প্রয়োগ করা গেল না",
+        "disable_shared_mcp_gateway": "শেয়ারড MCP গেটওয়ে নিষ্ক্রিয় করবে?",
+        "disabled_each_session_spawns_its_own_mcp_backend": "নিষ্ক্রিয় — প্রতিটি সেশন নিজের MCP ব্যাকএন্ড চালু করে।",
+        "disabling_shared_mcp_gateway": "শেয়ারড MCP গেটওয়ে নিষ্ক্রিয় করা হচ্ছে",
+        "done": "সম্পন্ন",
+        "enable_shared_mcp_gateway": "শেয়ারড MCP গেটওয়ে সক্রিয় করবে?",
+        "enabled_broker_not_reachable_toggle_off_and_on_t": "সক্রিয় — ব্রোকারে পৌঁছানো যাচ্ছে না; আবার প্রয়োগ করতে বন্ধ করে আবার চালু করো।",
+        "enabling_shared_mcp_gateway": "শেয়ারড MCP গেটওয়ে সক্রিয় করা হচ্ছে",
+        "gateway_stuck_retry": "গেটওয়ে প্রত্যাশিত অবস্থায় পৌঁছায়নি। আবার চেষ্টা করো।",
+        "gateway_stuck_roll_back": "গেটওয়ে প্রত্যাশিত অবস্থায় পৌঁছায়নি। নিরাপদ (নিষ্ক্রিয়) অবস্থায় ফিরে যাও, বা আবার চেষ্টা করো।",
+        "shared_mcp_gateway_is_active": "শেয়ারড MCP গেটওয়ে সক্রিয় আছে।",
+        "shared_mcp_gateway_is_disabled": "শেয়ারড MCP গেটওয়ে নিষ্ক্রিয় আছে।",
+        "starting_broker_restarting_sessions_verifying_co": "ব্রোকার শুরু হচ্ছে, সেশন রিস্টার্ট হচ্ছে, সংযোগ যাচাই হচ্ছে…",
+        "stopping_broker_and_restarting_sessions": "ব্রোকার বন্ধ করে সেশন রিস্টার্ট করা হচ্ছে…"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "চ্যাট-ট্যাব পরিবর্তনকে Option+সংখ্যার বদলে Ctrl+সংখ্যার সঙ্গে বাঁধুন",
@@ -5464,7 +5834,8 @@
         "auto_generate_skills_from_sessions": "সেশন থেকে স্বয়ংক্রিয়ভাবে স্কিল তৈরি করুন",
         "keep_every_auto_generated_candidate_in_the_pendi": "আপনি অনুমোদন দেওয়া পর্যন্ত প্রতিটি স্বয়ংক্রিয়ভাবে তৈরি প্রার্থী অপেক্ষমাণ কিউতে রাখুন। এটি বন্ধ করলে কেবল-লেখানির্ভর স্কিল স্বয়ংক্রিয়ভাবে প্রকাশিত হবে; যেসব স্কিলে স্ক্রিপ্ট থাকে সেগুলোর জন্য সর্বদা অনুমোদন প্রয়োজন।",
         "require_approval_before_generated_skills_go_live": "তৈরি হওয়া স্কিল সক্রিয় হওয়ার আগে অনুমোদন আবশ্যক",
-        "skills": "স্কিল"
+        "skills": "স্কিল",
+        "failed_to_save_skills_setting": "স্কিল সেটিং সেভ করা যায়নি"
       },
       "slackPanel": {
         "add": "যোগ করুন",
@@ -5500,7 +5871,21 @@
         "talk_to_your_agents_from_slack_over_socket_mode": "Socket Mode-এর মাধ্যমে Slack থেকে আপনার এজেন্টদের সঙ্গে কথা বলুন। সংযুক্ত বট যাতে উত্তর দিতে পারে, সে জন্য অনুমোদিত মেম্বার আইডি যোগ করুন।",
         "the_one_member_who_can_always_interact_with_the": "যে একজন মেম্বার সর্বদা বটের সঙ্গে ইন্টারঅ্যাক্ট করতে পারেন (KIROCREW_OWNER_ID)। U বা W দিয়ে শুরু।",
         "trigger_word_for_the_slack_slash_command_without": "Slack স্ল্যাশ কমান্ডের জন্য ট্রিগার শব্দ (শুরুর / ছাড়া)।",
-        "u0123abc456": "U0123ABC456"
+        "u0123abc456": "U0123ABC456",
+        "connected": "সংযুক্ত",
+        "copy_manifest_yaml": "ম্যানিফেস্ট YAML কপি করো",
+        "needs_setup": "সেটআপ দরকার",
+        "not_connected": "সংযুক্ত নয়",
+        "save_failed_is_the_gateway_running": "সেভ করা যায়নি। গেটওয়ে চলছে কি?",
+        "save_slack_settings": "Slack সেটিং সেভ করো",
+        "saved": "সেভ হয়েছে।",
+        "saved_restart_the_gateway_to_apply": "সেভ হয়েছে। কার্যকর করতে গেটওয়ে রিস্টার্ট করো।",
+        "saving": "সেভ হচ্ছে…",
+        "slack_rejected_the_stored_tokens_invalid_auth_re": "Slack জমা থাকা টোকেনগুলি বাতিল করেছে (invalid_auth)। নিচে সেগুলি বদলাও, তারপর গেটওয়ে রিস্টার্ট করো।",
+        "tokens_are_saved_but_not_yet_active_restart_the": "টোকেন সেভ হয়েছে কিন্তু এখনো সক্রিয় নয়। সংযোগের জন্য গেটওয়ে রিস্টার্ট করো।",
+        "verified_with_slack_and_saved_restart_the_gatewa": "Slack-এর সাথে যাচাই হয়ে সেভ হয়েছে। সংযোগের জন্য গেটওয়ে রিস্টার্ট করো।",
+        "where_to_find_the_app_token": "অ্যাপ টোকেন কোথায় পাবে",
+        "where_to_find_the_bot_token": "বট টোকেন কোথায় পাবে"
       },
       "sttSettings": {
         "allow_microphone_access_to_show_device_names": "ডিভাইসের নাম দেখাতে মাইক্রোফোন অ্যাক্সেসের অনুমতি দিন",
@@ -5535,7 +5920,15 @@
         "transcribe_voice_into_the_message_box_when_you_c": "আপনি মাইকে ক্লিক করলে ভয়েস ট্রান্সক্রাইব করে মেসেজ বক্সে বসানো হয়",
         "us_east_1": "us-east-1",
         "whisper_and_mlx_run_locally_transcribe_calls_aws": "Whisper এবং MLX লোকালি চলে; Transcribe AWS-কে কল করে",
-        "whisper_model_running_on_apple_mlx_metal_gpu_dow": "Apple MLX (Metal GPU)-এ চলা Whisper মডেল। প্রথম ব্যবহারে ডাউনলোড হয়।"
+        "whisper_model_running_on_apple_mlx_metal_gpu_dow": "Apple MLX (Metal GPU)-এ চলা Whisper মডেল। প্রথম ব্যবহারে ডাউনলোড হয়।",
+        "docker": "Docker",
+        "failed_to_save_stt_config": "STT কনফিগ সেভ করা যায়নি",
+        "install_failed": "ইনস্টল করা যায়নি",
+        "installs_mlx_whisper_via_pipx_ffmpeg_apple_silic": "pipx দিয়ে mlx-whisper ও ffmpeg ইনস্টল করে। শুধু Apple Silicon (arm64)।",
+        "installs_openai_whisper_ffmpeg_uses_system_pytho": "openai-whisper ও ffmpeg ইনস্টল করে। সিস্টেমের python3 (≥ 3.10) ব্যবহার করে।",
+        "native": "নেটিভ",
+        "pulls_python_3_11_slim_for_docker_based_transcri": "Docker-ভিত্তিক ট্রান্সক্রিপশনের জন্য python:3.11-slim নামায় (AL2)।",
+        "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper ইনস্টল হয়েছে কিন্তু ffmpeg নেই — ভয়েস ট্রান্সক্রিপশনের জন্য ffmpeg দরকার।"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "উপরে। Slack-এর বিপরীতে, Bot Framework-এ কোনো\n              শুধু-আউটবাউন্ড মোড নেই।",
@@ -5599,7 +5992,16 @@
         "tunnel_or_reverse_proxy_see_the_note_above_note": "(টানেল বা রিভার্স\n              প্রক্সি) — উপরের নোটটি দেখুন। ফলে পাওয়া হোস্টটি নোট করে রাখুন।",
         "under": "এর অধীনে:",
         "you_example_com_or_00000000_0000_0000_0000_00000": "you@example.com বা 00000000-0000-0000-0000-000000000000",
-        "your_host": "<your-host>"
+        "your_host": "<your-host>",
+        "microsoft_app_id": "Microsoft অ্যাপ ID",
+        "save_failed_is_the_gateway_running": "সেভ করা যায়নি। গেটওয়ে চলছে কি?",
+        "save_teams_settings": "Teams সেটিং সেভ করো",
+        "saved": "সেভ হয়েছে।",
+        "saved_restart_the_gateway_to_apply": "সেভ হয়েছে। কার্যকর করতে গেটওয়ে রিস্টার্ট করো।",
+        "saving": "সেভ হচ্ছে…",
+        "set_paste_to_replace": "•••••• (সেট করা আছে — বদলাতে পেস্ট করো)",
+        "settings_are_saved_but_the_channel_is_not_runnin": "সেটিং সেভ হয়েছে কিন্তু চ্যানেলটি চলছে না। সংযোগের জন্য গেটওয়ে রিস্টার্ট করো।",
+        "where_to_find_the_client_secret": "ক্লায়েন্ট সিক্রেট কোথায় পাবে"
       },
       "voicePanel": {
         "auto_detect": "(স্বয়ংক্রিয় শনাক্তকরণ)",
@@ -5629,7 +6031,8 @@
         "speed": "গতি",
         "text_to_speech": "টেক্সট-টু-স্পিচ",
         "us_east_1": "us-east-1",
-        "voice": "কণ্ঠস্বর"
+        "voice": "কণ্ঠস্বর",
+        "failed_to_save_voice_config": "ভয়েস কনফিগ সেভ করা যায়নি"
       },
       "webexPanel": {
         "access": "অ্যাক্সেস",
@@ -5650,7 +6053,18 @@
         "webex_account_emails_permitted_to_dm_the_bot_emp": "যে Webex অ্যাকাউন্ট ইমেলগুলোকে বটকে DM করার অনুমতি দেওয়া হয়েছে। ফাঁকা = কেউ নয় (নিরাপদভাবে বন্ধ) — একটি প্রতিষ্ঠানের যে কেউ Webex বটকে মেসেজ করতে পারে, তাই কেবল আপনার নিজের ইমেলই যোগ করুন।",
         "webex_bot_token": "Webex বট টোকেন",
         "webex_settings_are_managed_on_the_machine_runnin": "Webex সেটিংস যে মেশিনে KiroCrew চলছে সেখানেই পরিচালিত হয় এবং রিমোট সেশন থেকে কেবল পড়া যায়।",
-        "you_example_com": "you@example.com"
+        "you_example_com": "you@example.com",
+        "active": "সক্রিয়",
+        "needs_setup": "সেটআপ দরকার",
+        "not_active": "সক্রিয় নয়",
+        "save_failed_is_the_gateway_running": "সেভ করা যায়নি। গেটওয়ে চলছে কি?",
+        "save_webex_settings": "Webex সেটিং সেভ করো",
+        "saved": "সেভ হয়েছে।",
+        "saved_restart_the_gateway_to_apply": "সেভ হয়েছে। কার্যকর করতে গেটওয়ে রিস্টার্ট করো।",
+        "saving": "সেভ হচ্ছে…",
+        "settings_are_saved_but_the_channel_is_not_runnin": "সেটিং সেভ হয়েছে কিন্তু চ্যানেলটি চলছে না। সংযোগের জন্য গেটওয়ে রিস্টার্ট করো।",
+        "verified_with_webex_and_saved_restart_the_gatewa": "Webex-এর সাথে যাচাই হয়ে সেভ হয়েছে। সংযোগের জন্য গেটওয়ে রিস্টার্ট করো।",
+        "where_to_find_the_bot_token": "বট টোকেন কোথায় পাবে"
       },
       "weixinPanel": {
         "allowed_user_ids": "অনুমোদিত ইউজার ID",
@@ -5674,7 +6088,13 @@
         "wechat": "WeChat",
         "wechat_login_qr_code": "WeChat লগইন QR কোড",
         "who_can_message_the_bot": "কারা বটকে মেসেজ করতে পারবে",
-        "wxid": "wxid_…"
+        "wxid": "wxid_…",
+        "connect_via_qr": "QR দিয়ে সংযোগ করো",
+        "could_not_reach_the_wechat_login_service": "WeChat লগইন সার্ভিসে পৌঁছানো গেল না।",
+        "could_not_start_the_login_flow": "লগইন প্রক্রিয়া শুরু করা গেল না।",
+        "scanned_confirm_in_wechat": "স্ক্যান হয়েছে — WeChat-এ নিশ্চিত করো",
+        "sign_in_again": "আবার সাইন ইন করো",
+        "waiting_for_scan": "স্ক্যানের অপেক্ষায়…"
       }
     },
     "settingsPage": {
@@ -5722,7 +6142,15 @@
       "total": "মোট",
       "upload": "আপলোড",
       "uptime": "আপটাইম",
-      "used": "ব্যবহৃত"
+      "used": "ব্যবহৃত",
+      "a_governance_check_failed_closed_an_integrity_mi": "একটি গভর্নেন্স চেক ফেল-ক্লোজড হয়েছে, ইন্টিগ্রিটিতে অমিল ধরা পড়েছে, অথবা অ্যাডমিশন পলিসি যাচাই করা যায়নি (নেই/পড়া যাচ্ছে না)। SEL অডিট লগ দেখে খতিয়ে দেখো।",
+      "governance_is_enforcing_an_admission_policy_no_d": "গভর্নেন্স একটি অ্যাডমিশন পলিসি প্রয়োগ করছে; কোনো অবনতি ধরা পড়েনি।",
+      "governance_status_not_yet_determined_this_sessio": "এই সেশনে গভর্নেন্স স্ট্যাটাস এখনো নির্ণয় করা হয়নি।",
+      "no_enforcing_admission_policy_is_configured_perm": "প্রয়োগযোগ্য কোনো অ্যাডমিশন পলিসি কনফিগার করা নেই (উদার ডিফল্ট)। স্পষ্টভাবে নিষিদ্ধ না করা থাকলে প্লাগইন গ্রহণ করা হয়।",
+      "status_active": "সক্রিয়",
+      "status_degraded": "অবনত",
+      "status_disabled": "নিষ্ক্রিয়",
+      "status_unknown": "অজানা"
     },
     "telemetryPanel": {
       "acceleration_internals": "অ্যাক্সিলারেশন ইন্টার্নাল",
@@ -5908,6 +6336,16 @@
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "তোমার ব্রাউজার পপ-আউট উইন্ডো ব্লক করেছে। এই সাইটের জন্য পপ-আপ চালু করো, তারপর আবার চেষ্টা করো।"
+    },
+    "sessionColors": {
+      "black": "কালো",
+      "gray": "ধূসর",
+      "white": "সাদা"
+    }
+  },
+  "store": {
+    "chatSlice": {
+      "truncated": "…(সংক্ষিপ্ত করা হয়েছে)"
     }
   }
 }

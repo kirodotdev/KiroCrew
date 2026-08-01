@@ -9,6 +9,7 @@ import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
 import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
+import { i18nT } from '../i18n/t'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -1292,7 +1293,7 @@ const chatSlice = createSlice({
         a.retrying = false
         a.streaming += action.payload.text
         if (a.streaming.length > 50_000) {
-          a.streaming = '…(truncated)\n' + a.streaming.slice(-40_000)
+          a.streaming = i18nT('store.chatSlice.truncated') + '\n' + a.streaming.slice(-40_000)
         }
       }
     },
@@ -1346,7 +1347,7 @@ const chatSlice = createSlice({
         a.retrying = false
         a.streaming += c.text
         if (a.streaming.length > 50_000) {
-          a.streaming = '…(truncated)\n' + a.streaming.slice(-40_000)
+          a.streaming = i18nT('store.chatSlice.truncated') + '\n' + a.streaming.slice(-40_000)
         }
       }
     },

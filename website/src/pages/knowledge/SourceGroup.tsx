@@ -51,8 +51,8 @@ export function SourceGroup({
   const [page, setPage] = useState(1)
 
   const isNoSource = sourceId === NO_SOURCE
-  const name = isNoSource ? 'No source' : (source?.name || 'Unknown source')
-  const subtitle = isNoSource ? 'Items added directly' : (source?.uri || '')
+  const name = isNoSource ? i18nT('pages.knowledge.sourceGroup.no_source') : (source?.name || i18nT('pages.knowledge.sourceGroup.unknown_source'))
+  const subtitle = isNoSource ? i18nT('pages.knowledge.sourceGroup.items_added_directly') : (source?.uri || '')
   const isFolder = source?.source_type === 'local_folder' || source?.source_type === 'obsidian_vault'
   const isArtifact = source?.source_type === 'artifact'
   // Sub-group items: folder/vault sources group by file path; the aggregate

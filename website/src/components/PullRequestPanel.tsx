@@ -176,7 +176,7 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
   if (source.mergeable === 'conflicting') {
     return {
       tone: 'danger',
-      title: 'Merge conflicts',
+      title: i18nT('components.pullRequestPanel.merge_conflicts'),
       detail: `This branch has conflicts with ${base} and cannot be merged until they are resolved.`,
       handoff: [
         ...handoffHeader('Merge conflict'),
@@ -189,7 +189,7 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
     // merge method) -- a merge commit cannot unblock this MR.
     return {
       tone: 'warn',
-      title: 'Rebase required',
+      title: i18nT('components.pullRequestPanel.rebase_required'),
       detail: `This project requires the branch to be rebased onto ${base} before merging; a merge commit will not unblock it.`,
       handoff: [
         ...handoffHeader('Rebase required'),
@@ -200,7 +200,7 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
   if (source.mergeStateStatus === 'behind') {
     return {
       tone: 'warn',
-      title: 'Branch is behind',
+      title: i18nT('components.pullRequestPanel.branch_is_behind'),
       detail: `This branch is out of date with ${base} and must be updated before merging.`,
       handoff: [
         ...handoffHeader('Out-of-date branch'),
@@ -211,8 +211,8 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
   if (source.mergeStateStatus === 'blocked') {
     return {
       tone: 'warn',
-      title: 'Merge blocked',
-      detail: 'Branch protection requirements (approving reviews or required checks) are not yet satisfied.',
+      title: i18nT('components.pullRequestPanel.merge_blocked'),
+      detail: i18nT('components.pullRequestPanel.branch_protection_requirements_approving_reviews'),
     }
   }
   return null
@@ -230,9 +230,9 @@ export function stateLabel(source: PullRequestSource): string {
   // Terminal states win over draft, matching pullRequestLifecycleState below:
   // GitLab keeps `draft` set on a merge request that was closed while still a
   // draft, and the badge must not contradict the tab's lifecycle glyph.
-  if (source.mergedAt || state === 'merged') return 'Merged'
-  if (state === 'closed') return 'Closed'
-  if (source.draft) return 'Draft'
+  if (source.mergedAt || state === 'merged') return i18nT('components.pullRequestPanel.merged')
+  if (state === 'closed') return i18nT('components.pullRequestPanel.closed')
+  if (source.draft) return i18nT('components.pullRequestPanel.draft')
   const label = source.state || 'Open'
   return label.charAt(0).toUpperCase() + label.slice(1).toLowerCase()
 }
@@ -560,7 +560,6 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   const [confirmAutoMerge, setConfirmAutoMerge] = useState(false)
   const [immediateMergeWarning, setImmediateMergeWarning] = useState('')
   const isGitHub = source.provider === 'github'
-  const label = isGitHub ? 'pull request' : 'merge request'
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['pull-request-source'] })
@@ -610,7 +609,9 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
           type="button"
           onClick={() => readyMutation.mutate()}
           disabled={busy}
-          title={`Take this ${label} out of draft`}
+          title={isGitHub
+            ? i18nT('components.pullRequestPanel.take_this_pull_request_out_of_draft')
+            : i18nT('components.pullRequestPanel.take_this_merge_request_out_of_draft')}
           className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {readyMutation.isPending ? <Loader className="lucide-inline animate-spin" /> : <GitPullRequest className="lucide-inline" />}
@@ -655,7 +656,9 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
       )}
       {confirmAutoMerge && !immediateMergeWarning && !autoMergeMutation.isPending && (
         <span className="text-[11px] text-warn">
-          {i18nT('components.pullRequestPanel.this_authorizes_the_merge')}{isGitHub ? ' as soon as requirements pass, squashing if this repository allows it (otherwise a merge commit, then rebase)' : ' when the pipeline succeeds'}.
+          {isGitHub
+            ? i18nT('components.pullRequestPanel.this_authorizes_the_merge_as_soon_as_requirement')
+            : i18nT('components.pullRequestPanel.this_authorizes_the_merge_when_the_pipeline_succ')}
         </span>
       )}
       {error && <span role="alert" className="text-[11px] text-danger">{error}</span>}
@@ -676,7 +679,7 @@ function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSour
     return (
       <div>
         <div className="sticky top-0 z-[1] flex items-center gap-2 px-3 py-2 border-b border-border bg-bg text-[12px]">
-          <span className="font-medium text-text">{source.files.length} {source.files.length === 1 ? 'File' : 'Files'} {i18nT('components.pullRequestPanel.changed')}</span>
+          <span className="font-medium text-text">{i18nT('components.pullRequestPanel.files_changed', { count: source.files.length })}</span>
           <span className="text-ok">+{totalAdds}</span>
           <span className="text-danger">-{totalDels}</span>
         </div>
@@ -986,7 +989,9 @@ export default function PullRequestPanel({
             <AlertCircle className={`lucide-inline mb-2 ${queryError.loginCommand ? 'text-warn' : 'text-danger'}`} />
             <div className="text-[13px] font-medium text-text">
               {queryError.loginCommand
-                ? `${queryError.loginCommand === 'gh auth login' ? 'GitHub' : 'GitLab'} CLI login required`
+                ? queryError.loginCommand === 'gh auth login'
+                  ? i18nT('components.pullRequestPanel.github_cli_login_required')
+                  : i18nT('components.pullRequestPanel.gitlab_cli_login_required')
                 : i18nT('components.pullRequestPanel.could_not_load_this_pull_request')}
             </div>
             {queryError.loginCommand ? (
@@ -1054,7 +1059,9 @@ export default function PullRequestPanel({
             <div role="status" className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">
               <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" />
               <span>
-                {i18nT('components.pullRequestPanel.provider_results_may_be_partial_for')} {source.partialSections.join(', ')}{i18nT('components.pullRequestPanel.open_the')} {source.provider === 'github' ? 'pull request' : 'merge request'} {i18nT('components.pullRequestPanel.for_the_complete_set')}
+                {source.provider === 'github'
+                  ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: source.partialSections.join(', ') })
+                  : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: source.partialSections.join(', ') })}
               </span>
             </div>
           )}

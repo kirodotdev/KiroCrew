@@ -74,7 +74,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
       const result = await onSave(task.index, { title: editTitle, description: editDesc, depends_on: editDeps });
       if (result) { setEditTitle(result.title); setEditDesc(result.description); setEditDeps(result.depends_on); }
       setDirty(false);
-    } catch { setSaveError('Save failed — try again'); } finally { setSaving(false); }
+    } catch { setSaveError(i18nT('pages.aidlc.taskDetailPanel.save_failed_try_again')); } finally { setSaving(false); }
   };
 
   const toggleDep = (idx: number) => {
@@ -186,7 +186,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
 
         {(task.force_approval || task.requires_approval) && task.status === 'in_progress' && onApprove && (
           <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px]" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-            <div className="text-text mb-2">{task.force_approval ? 'This gate blocks. force_approval=true.' : 'Requires approval before execution.'}</div>
+            <div className="text-text mb-2">{task.force_approval ? i18nT('pages.aidlc.taskDetailPanel.this_gate_blocks_force_approval_true') : i18nT('pages.aidlc.taskDetailPanel.requires_approval_before_execution_2')}</div>
             <div className="flex gap-2">
               <button className="px-3 py-1.5 rounded-md bg-ok text-white text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('approve')}><Check className="lucide-inline" /> {i18nT('pages.aidlc.taskDetailPanel.approve')}</button>
               <button className="px-3 py-1.5 rounded-md bg-danger text-white text-[12px] font-semibold cursor-pointer border-none hover:opacity-80 transition-all" onClick={() => onApprove('reject')}><XIcon className="lucide-inline" /> {i18nT('pages.aidlc.taskDetailPanel.deny')}</button>

@@ -386,7 +386,7 @@ export default function PandaOfficeScene({ agents, visible = true }: { agents: A
 
     const drawLogo = () => {
       T.fillStyle = '#8fbc5f'; T.font = sceneFont('title', 'bold')
-      T.fillText('🐼 Panda Den', (W / 2 - 28) * S, 32 * S)
+      T.fillText(i18nT('pages.scenes.pandaOfficeScene.panda_den'), (W / 2 - 28) * S, 32 * S)
       d(W / 2 - 30, 34, 60, 1, '#6b8e23')
     }
 

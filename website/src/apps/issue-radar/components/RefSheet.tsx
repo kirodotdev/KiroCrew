@@ -103,7 +103,7 @@ export default function RefSheet() {
             ref={dialogRef}
             role="dialog"
             aria-modal="true"
-            aria-label={`${isPr ? terms.changeRequestTitle : 'Issue'} ${isPr ? terms.sigil : '#'}${top.number} in ${owner}/${repo}`}
+            aria-label={`${isPr ? terms.changeRequestTitle : i18nT('apps.issueRadar.components.refSheet.issue')} ${isPr ? terms.sigil : '#'}${top.number} in ${owner}/${repo}`}
             tabIndex={-1}
             initial={reduceMotion ? { opacity: 0 } : { y: '100%' }}
             animate={reduceMotion ? { opacity: 1 } : { y: 0 }}
