@@ -1887,7 +1887,10 @@
       "settings_voice": "Settings → Voice",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "Speech-to-text is not enabled yet, so the microphone cannot turn your voice into text.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", then click the mic to dictate into the message box.",
-      "turn_on_voice_input": "Turn on voice input"
+      "turn_on_voice_input": "Turn on voice input",
+      "voice_provider_not_installed": "Voice provider not installed",
+      "provider_is_not_installed_on_this_machine": "Speech-to-text is on, but the \"{{provider}}\" provider isn't installed on this machine, so recordings can't be transcribed.",
+      "pick_an_installed_provider_under_settings_voice": "Pick an installed provider under Settings → Voice, or install the current one."
     },
     "voiceStatusBar": {
       "dismiss_microphone_error": "Dismiss microphone error",

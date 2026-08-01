@@ -2465,7 +2465,10 @@
       "settings_voice": "Настройки → Голос",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "Преобразование речи в текст пока не включено, поэтому микрофон не может превратить ваш голос в текст.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", затем нажмите значок микрофона, чтобы диктовать в поле сообщения.",
-      "turn_on_voice_input": "Включить голосовой ввод"
+      "turn_on_voice_input": "Включить голосовой ввод",
+      "voice_provider_not_installed": "Голосовой провайдер не установлен",
+      "provider_is_not_installed_on_this_machine": "Распознавание речи включено, но провайдер «{{provider}}» не установлен на этом компьютере, поэтому записи невозможно расшифровать.",
+      "pick_an_installed_provider_under_settings_voice": "Выберите установленный провайдер в «Настройки → Голос» или установите текущий."
     },
     "voiceStatusBar": {
       "default_microphone": "Микрофон по умолчанию",

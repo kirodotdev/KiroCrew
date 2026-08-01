@@ -2423,7 +2423,10 @@
       "settings_voice": "Einstellungen → Sprache",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "Sprache-zu-Text ist noch nicht aktiviert, daher kann das Mikrofon Ihre Stimme nicht in Text umwandeln.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", klicken Sie dann auf das Mikrofon, um in das Nachrichtenfeld zu diktieren.",
-      "turn_on_voice_input": "Spracheingabe aktivieren"
+      "turn_on_voice_input": "Spracheingabe aktivieren",
+      "voice_provider_not_installed": "Sprachanbieter nicht installiert",
+      "provider_is_not_installed_on_this_machine": "Spracherkennung ist aktiv, aber der Anbieter „{{provider}}“ ist auf diesem Gerät nicht installiert, daher können Aufnahmen nicht transkribiert werden.",
+      "pick_an_installed_provider_under_settings_voice": "Wählen Sie unter Einstellungen → Sprache einen installierten Anbieter oder installieren Sie den aktuellen."
     },
     "voiceStatusBar": {
       "default_microphone": "Standardmikrofon",

@@ -2444,7 +2444,10 @@
       "settings_voice": "Impostazioni → Voce",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "La funzione da voce a testo non è ancora attiva, quindi il microfono non può trasformare la tua voce in testo.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", poi clicca sul microfono per dettare nella casella del messaggio.",
-      "turn_on_voice_input": "Attiva l'input vocale"
+      "turn_on_voice_input": "Attiva l'input vocale",
+      "voice_provider_not_installed": "Provider vocale non installato",
+      "provider_is_not_installed_on_this_machine": "Il riconoscimento vocale è attivo, ma il provider «{{provider}}» non è installato su questo computer, quindi le registrazioni non possono essere trascritte.",
+      "pick_an_installed_provider_under_settings_voice": "Scegli un provider installato in Impostazioni → Voce, oppure installa quello attuale."
     },
     "voiceStatusBar": {
       "default_microphone": "Microfono predefinito",

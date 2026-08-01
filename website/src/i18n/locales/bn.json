@@ -2423,7 +2423,10 @@
       "settings_voice": "সেটিংস → ভয়েস",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "স্পিচ-টু-টেক্সট এখনও চালু করা হয়নি, তাই মাইক্রোফোন আপনার কণ্ঠস্বরকে টেক্সটে রূপান্তর করতে পারছে না।",
       "then_click_the_mic_to_dictate_into_the_message_b": ", তারপর মেসেজ বক্সে কথা বলে লিখতে মাইকে ক্লিক করুন।",
-      "turn_on_voice_input": "ভয়েস ইনপুট চালু করুন"
+      "turn_on_voice_input": "ভয়েস ইনপুট চালু করুন",
+      "voice_provider_not_installed": "ভয়েস প্রোভাইডার ইনস্টল করা নেই",
+      "provider_is_not_installed_on_this_machine": "স্পিচ-টু-টেক্সট চালু আছে, কিন্তু এই মেশিনে \"{{provider}}\" প্রোভাইডার ইনস্টল করা নেই, তাই রেকর্ডিং ট্রান্সক্রাইব করা যাচ্ছে না।",
+      "pick_an_installed_provider_under_settings_voice": "সেটিংস → ভয়েস-এ একটি ইনস্টল করা প্রোভাইডার বেছে নিন, বা বর্তমানটি ইনস্টল করুন।"
     },
     "voiceStatusBar": {
       "default_microphone": "ডিফল্ট মাইক্রোফোন",

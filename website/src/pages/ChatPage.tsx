@@ -1234,10 +1234,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const isMac = useAppSelector(s => s.dashboard.status?.platform) === 'darwin'
   const { data: sttCfg } = useQuery({
     queryKey: ['sttConfig'],
-    queryFn: () => api.sttConfig() as Promise<{ streaming?: boolean; enabled?: boolean; dictation_panel?: boolean }>,
+    queryFn: () => api.sttConfig() as Promise<{ streaming?: boolean; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string }>,
   })
   const sttStreaming = !!sttCfg?.streaming
   const sttEnabled = !!sttCfg?.enabled
+  // The backend probes for the provider's binary and reports `available`.
+  // Default true so a not-yet-loaded config doesn't flash the modal; the
+  // separate sttConfigLoaded guard already covers the pre-load case.
+  const sttAvailable = sttCfg?.available !== false
+  const sttProvider = sttCfg?.provider || ''
   // Default true so the panel is the standard recording surface; the backend
   // sends an explicit boolean, so `undefined` here means "config not loaded yet"
   // rather than "off", and a pre-load recording would otherwise flash the bar.
@@ -1296,7 +1301,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // audio that never gets transcribed. Point the user at the enable setting
     // instead. Guard on !recording so this only gates the *start* — stopping
     // an in-progress recording is always allowed.
-    if (!voice.recording && (!sttConfigLoaded || !sttEnabled)) {
+    if (!voice.recording && (!sttConfigLoaded || !sttEnabled || !sttAvailable)) {
       setVoiceSetupOpen(true)
       return
     }
@@ -1312,7 +1317,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // `voice` object — `[voice]` would recreate this callback every render and
     // re-render every child that receives `toggleVoice` (see comment above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voice.recording, voice.toggle, sttEnabled, sttConfigLoaded])
+  }, [voice.recording, voice.toggle, sttEnabled, sttConfigLoaded, sttAvailable])
   // Stop any in-flight recording and drop the frozen prefix when the user
   // switches slots so a late-arriving transcript can't leak into the wrong
   // session. Disarm first so any in-flight final from the previous slot is
@@ -4636,6 +4641,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             </div>
             <VoiceDisabledModal
               open={voiceSetupOpen}
+              reason={sttEnabled && !sttAvailable ? 'unavailable' : 'disabled'}
+              provider={sttProvider}
               onClose={() => setVoiceSetupOpen(false)}
               onOpenSettings={() => {
                 setVoiceSetupOpen(false)

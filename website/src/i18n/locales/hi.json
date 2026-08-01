@@ -2423,7 +2423,10 @@
       "settings_voice": "सेटिंग्स → वॉइस",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "स्पीच-टू-टेक्स्ट अभी सक्षम नहीं है, इसलिए माइक्रोफ़ोन आपकी आवाज़ को टेक्स्ट में नहीं बदल सकता।",
       "then_click_the_mic_to_dictate_into_the_message_b": ", फिर संदेश बॉक्स में बोलकर लिखने के लिए माइक पर क्लिक करें।",
-      "turn_on_voice_input": "वॉइस इनपुट चालू करें"
+      "turn_on_voice_input": "वॉइस इनपुट चालू करें",
+      "voice_provider_not_installed": "वॉइस प्रदाता इंस्टॉल नहीं है",
+      "provider_is_not_installed_on_this_machine": "स्पीच-टू-टेक्स्ट चालू है, लेकिन इस मशीन पर \"{{provider}}\" प्रदाता इंस्टॉल नहीं है, इसलिए रिकॉर्डिंग को ट्रांसक्राइब नहीं किया जा सकता।",
+      "pick_an_installed_provider_under_settings_voice": "सेटिंग्स → वॉइस में कोई इंस्टॉल किया गया प्रदाता चुनें, या वर्तमान वाला इंस्टॉल करें।"
     },
     "voiceStatusBar": {
       "default_microphone": "डिफ़ॉल्ट माइक्रोफ़ोन",

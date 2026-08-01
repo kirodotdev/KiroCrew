@@ -2444,7 +2444,10 @@
       "settings_voice": "Configurações → Voz",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "A transcrição de voz ainda não está ativada, então o microfone não pode transformar sua voz em texto.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", depois clique no microfone para ditar na caixa de mensagem.",
-      "turn_on_voice_input": "Ativar entrada de voz"
+      "turn_on_voice_input": "Ativar entrada de voz",
+      "voice_provider_not_installed": "Provedor de voz não instalado",
+      "provider_is_not_installed_on_this_machine": "A transcrição de voz está ativada, mas o provedor \"{{provider}}\" não está instalado nesta máquina, portanto as gravações não podem ser transcritas.",
+      "pick_an_installed_provider_under_settings_voice": "Escolha um provedor instalado em Configurações → Voz, ou instale o atual."
     },
     "voiceStatusBar": {
       "default_microphone": "Microfone padrão",

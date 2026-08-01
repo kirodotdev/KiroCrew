@@ -2402,7 +2402,10 @@
       "settings_voice": "设置 → 语音",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "语音转文字尚未启用，因此麦克风无法把你的语音转成文字。",
       "then_click_the_mic_to_dictate_into_the_message_b": "中启用，然后点击麦克风口述内容到消息框。",
-      "turn_on_voice_input": "开启语音输入"
+      "turn_on_voice_input": "开启语音输入",
+      "voice_provider_not_installed": "未安装语音引擎",
+      "provider_is_not_installed_on_this_machine": "语音转文字已开启，但本机未安装“{{provider}}”引擎，因此无法转写录音。",
+      "pick_an_installed_provider_under_settings_voice": "请在“设置 → 语音”中选择已安装的引擎，或安装当前引擎。"
     },
     "voiceStatusBar": {
       "default_microphone": "默认麦克风",
