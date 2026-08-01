@@ -18,9 +18,12 @@ from aiohttp import web
 from kiro_crew import agent_state, model_registry
 from kiro_crew.agent_discovery import clear_list_agents_cache, list_agents
 from kiro_crew.config.loader import (
+    ConfigReadError,
     KiroCrewAgentConfig,
     KiroCrewConfig,
+    read_config_for_update,
     resolve_agent_config_path,
+    write_config_atomically,
 )
 from kiro_crew.config.schema import SCHEMA_REGISTRY, config_entry_to_dict
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
@@ -133,19 +136,21 @@ async def api_agent_config(request: web.Request) -> web.Response:
                 if diff:
                     removed_per_key[key] = diff
             mc_cfg_path = _h.config_path()  # type: ignore[operator]
+            # Fail closed: writing back a {} baseline would drop every other
+            # setting just to record removedTools. See read_config_for_update.
             try:
-                mc_cfg = (
-                    json.loads(mc_cfg_path.read_text(encoding="utf-8"))
-                    if mc_cfg_path.exists()
-                    else {}
+                mc_cfg = read_config_for_update(mc_cfg_path)
+            except ConfigReadError:
+                logger.exception("Refusing to record removedTools: config unreadable")
+                return web.json_response(
+                    {"error": "failed to read config file", "code": "config_unreadable"},
+                    status=500,
                 )
-            except Exception:
-                mc_cfg = {}
             if removed_per_key:
                 mc_cfg["removedTools"] = removed_per_key
             else:
                 mc_cfg.pop("removedTools", None)
-            mc_cfg_path.write_text(json.dumps(mc_cfg, indent=2) + "\n", encoding="utf-8")
+            write_config_atomically(mc_cfg_path, mc_cfg)
             installed_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
             # Restart kiro-cli sessions so new config takes effect
             await _h._reset_all_sessions(request)
@@ -172,12 +177,15 @@ async def api_default_agent(request: web.Request) -> web.Response:
         name = body.get("agent", "")
         path = _h.config_path()
         try:
-            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        except Exception:
-            data = {}
+            data = read_config_for_update(path)
+        except ConfigReadError:
+            # Fail closed: writing back a {} baseline would drop every other setting.
+            logger.exception("Refusing to set default agent: config unreadable")
+            return web.json_response(
+                {"error": "failed to read config file", "code": "config_unreadable"}, status=500
+            )
         data.setdefault("agent", {})["default_agent"] = name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_config_atomically(path, data)
         return web.json_response({"ok": True, "default_agent": name})
     cfg = KiroCrewConfig.load()
     return web.json_response({"default_agent": cfg.agent.default_agent})

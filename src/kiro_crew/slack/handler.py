@@ -36,8 +36,14 @@ if TYPE_CHECKING:
 
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
-from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import ACTIVATION_REVIEW, KiroCrewConfig, config_path
+from kiro_crew.config.loader import (
+    ACTIVATION_REVIEW,
+    ConfigReadError,
+    KiroCrewConfig,
+    config_path,
+    read_config_for_update,
+    write_config_atomically,
+)
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.context import (
     ContextBuilder,
@@ -1028,13 +1034,14 @@ def _set_default_agent(name: str) -> None:
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except Exception:
-        data = {}
+        data = read_config_for_update(path)
+    except ConfigReadError as e:
+        # Fail closed: writing back a {} baseline would drop every other setting.
+        raise ValueError(f"Failed to read config: {e}") from e
     data.setdefault("agent", {})["default_agent"] = name
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(path, json.dumps(data, indent=2) + "\n")
+        write_config_atomically(path, data)
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
     _cached_default_agent = name
@@ -1050,9 +1057,10 @@ def _persist_channel_config(
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except Exception:
-        data = {}
+        data = read_config_for_update(path)
+    except ConfigReadError as e:
+        # Fail closed: writing back a {} baseline would drop every other setting.
+        raise ValueError(f"Failed to read config: {e}") from e
     slack_data = data.setdefault("slack", {})
     channels = slack_data.setdefault("channels", {})
     ch = channels.setdefault(channel_id, {})
@@ -1061,8 +1069,7 @@ def _persist_channel_config(
     if agent is not None:
         ch["agent"] = agent
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(path, json.dumps(data, indent=2) + "\n")
+        write_config_atomically(path, data)
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
 

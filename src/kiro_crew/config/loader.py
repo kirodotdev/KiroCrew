@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import re as _re
+import stat as _stat
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -24,6 +25,9 @@ from pathlib import Path
 from urllib.parse import urlsplit as _urlsplit
 
 from kiro_crew import __version__, model_registry
+
+# Leaf module (stdlib + platform_compat only) — no import cycle with config.
+from kiro_crew.atomic_write import atomic_write
 
 # Computer-use defaults/ceilings come from the feature's constants module rather
 # than being re-spelled here (AGENTS.md: no hardcoded values in business logic).
@@ -449,6 +453,108 @@ def _raw_config() -> dict:
         return json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+class ConfigReadError(Exception):
+    """``config.json`` exists but could not be read as a config object.
+
+    Raised only by :func:`read_config_for_update`, whose callers are about to
+    write the value back. It deliberately does NOT inherit from ``OSError`` or
+    ``ValueError`` so an existing broad ``except OSError`` around a write cannot
+    swallow it and resume the clobbering path.
+    """
+
+
+def read_config_for_update(path: Path | None = None) -> dict:
+    """Read ``config.json`` for a read-modify-write, failing CLOSED.
+
+    Every partial config update (flip one toggle, persist one channel) has to
+    read the whole file, mutate one key, and write it all back. The obvious
+    ``try: json.loads(...) except Exception: data = {}`` is a **data-loss bug**
+    in that shape: the fallback is indistinguishable from "the user has no
+    settings", so the write-back replaces a fully populated config with a
+    single-key one. Every setting the user ever chose is gone, silently, and
+    the endpoint still reports success.
+
+    The read fails for mundane reasons — most commonly a *torn read*: several
+    config writers still truncate-then-write, so a concurrent reader can
+    observe a half-written file. That window is small, which is exactly what
+    makes the resulting loss so hard to reproduce and report.
+
+    So: an **absent** file returns ``{}`` (a genuine empty starting point), and
+    an unreadable or non-object file raises :class:`ConfigReadError`. Callers
+    must let that abort the update — leaving the existing file untouched is
+    always better than overwriting it with defaults.
+
+    Pair this with :func:`kiro_crew.atomic_write.atomic_write` on the way out so
+    the write cannot create the torn window for the next reader.
+    """
+    p = path if path is not None else config_path()
+    try:
+        if not p.exists():
+            return {}
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        # UnicodeDecodeError is a ValueError, NOT an OSError, so it needs naming
+        # explicitly: a config containing invalid UTF-8 (a truncated multi-byte
+        # sequence from a torn write, or a mojibake'd hand edit) would otherwise
+        # escape this controlled path and crash the caller instead of returning
+        # the clean "config unreadable" refusal.
+        raise ConfigReadError(f"could not read config at {p}: {e}") from e
+    if not isinstance(raw, dict):
+        raise ConfigReadError(f"config at {p} is not a JSON object (got {type(raw).__name__})")
+    return raw
+
+
+def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> None:
+    """Write a config dict to *path* atomically, PRESERVING its permissions.
+
+    The companion to :func:`read_config_for_update`. Two properties matter:
+
+    * **Atomic** (tmp+rename) so a concurrent reader can never observe a
+      half-written file. A truncate-then-write leaves a window in which a reader
+      sees invalid JSON; a reader that mistakes that for "no settings" will write
+      the emptiness back and destroy the user's config.
+    * **Mode-preserving.** Because tmp+rename creates a NEW inode, the umask
+      default (typically ``0644``) would silently replace an operator's tightened
+      ``0600``. ``config.json`` can hold inline credentials, so a settings write
+      must never widen who can read it. An existing file's mode is carried over;
+      a newly created one defaults to owner-only.
+
+    ``atomic_write``'s ``mode`` routes through ``fchmod_safe``, which applies the
+    mode on POSIX and is a documented no-op on Windows.
+
+    **This deliberately does NOT call ``platform_compat.restrict_to_owner``.**
+    That helper shells out to ``icacls`` on Windows (``subprocess.run``, 10s
+    timeout), and this function is called from ``async`` request handlers and from
+    ``KiroCrewConfig.save()`` — so invoking it here would put a blocking subprocess
+    on the gateway's asyncio event loop, freezing every task including the liveness
+    heartbeat (the ``no-blocking-call-on-event-loop`` rule; the repo offloads that
+    helper via ``asyncio.to_thread`` everywhere else for exactly this reason).
+    Omitting it is no worse than the truncate-then-write this replaced, which
+    applied no DACL either, while ``mode`` still tightens the POSIX case and new
+    files are created ``0600``. A caller that needs a hard owner-only guarantee on
+    Windows must offload ``restrict_to_owner`` itself, off the loop.
+
+    **Symlinks are followed, not replaced.** ``os.replace`` renames over the link
+    itself, turning a symlinked ``config.json`` into a regular file and orphaning
+    its target — whereas the ``write_text`` this replaced followed the link and
+    updated the target. Symlinking the config into a dotfiles repo is a normal
+    setup, so the target is resolved first to preserve that behavior.
+    """
+    # Resolve BEFORE stat/write so a symlinked config keeps pointing at its
+    # target (and the mode preserved is the target's, not the link's).
+    try:
+        if path.is_symlink():
+            path = path.resolve()
+    except OSError:
+        pass
+    try:
+        mode = _stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+    except OSError:
+        mode = 0o600
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(path, json.dumps(data, indent=2) + "\n", fsync=fsync, mode=mode)
 
 
 def workspace_dir_for(workspace: str | None = None) -> Path:
@@ -4629,9 +4735,10 @@ class KiroCrewConfig:
                 pass
 
         d = {"meta": meta, **d}
-        p = config_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
+        # Atomic + mode-preserving: a concurrent reader must never observe a
+        # half-written config, and the write must not widen who can read a file
+        # that may hold inline credentials. See write_config_atomically.
+        write_config_atomically(config_path(), d)
         # Drop the validated-data cache so the next load() re-reads this write.
         # mtime-keying already detects the change; this makes it immediate even
         # if the filesystem mtime resolution is coarse.

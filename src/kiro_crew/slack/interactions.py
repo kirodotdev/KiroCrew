@@ -22,7 +22,13 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import aiohttp
 
-from kiro_crew.config.loader import ACTIVATION_REVIEW
+from kiro_crew.config.loader import (
+    ACTIVATION_REVIEW,
+    ConfigReadError,
+    config_path,
+    read_config_for_update,
+    write_config_atomically,
+)
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.security import redact_and_truncate, redact_credentials, redact_exfiltration_urls
@@ -164,10 +170,6 @@ async def _handle_config_submission(payload: dict) -> None:
     if not is_owner(caller):
         logger.warning("config_submission rejected: non-owner %s", caller)
         return
-    import json
-
-    from kiro_crew.config.loader import config_path
-
     view = payload.get("view", {})
     values = view.get("state", {}).get("values", {})
 
@@ -176,28 +178,32 @@ async def _handle_config_submission(payload: dict) -> None:
     chan_vals = values.get("channels_block", {}).get("mc_config_channels", {})
     new_channels = set(chan_vals.get("selected_channels") or [])
 
-    # Update runtime state
-    if _orch:
-        _orch._tracking_channels = new_channels
-        set_tracking_channels(new_channels)
-
-    # Persist to config.json
+    # Read BEFORE mutating runtime state. Fail closed on an unreadable config:
+    # writing back a {} baseline would drop every other setting the user has.
+    # Order matters — applying the in-memory change first would make a refused
+    # save look like it took effect, then silently revert on restart.
     cp = config_path()
     try:
-        data = json.loads(cp.read_text(encoding="utf-8")) if cp.exists() else {}
-    except Exception:
-        data = {}
+        data = read_config_for_update(cp)
+    except ConfigReadError:
+        logger.exception("Refusing to persist config from modal: config unreadable")
+        return
 
     slack_cfg = data.setdefault("slack", {})
     slack_cfg["tracking_channels"] = [{"channel_id": cid} for cid in sorted(new_channels)]
 
+    # Persist FIRST, then mutate runtime state. A failed write (disk full,
+    # permissions) must not leave live state ahead of what is on disk — that
+    # silently reverts on the next restart.
     try:
-        cp.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cp.with_name(cp.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(cp)
+        write_config_atomically(cp, data)
     except OSError:
         logger.exception("Failed to persist config from modal")
+        return
+
+    if _orch:
+        _orch._tracking_channels = new_channels
+        set_tracking_channels(new_channels)
 
     logger.info("Config updated via modal: channels=%d", len(new_channels))
     sel().log_api_access(
@@ -1138,9 +1144,6 @@ async def _handle_voice_config_submission(payload: dict) -> None:
     caller = payload.get("user", {}).get("id", "")
     if not is_owner(caller):
         return
-    import json
-
-    from kiro_crew.config.loader import config_path
     from kiro_crew.slack.handler import _vc
 
     values = payload.get("view", {}).get("state", {}).get("values", {})
@@ -1152,53 +1155,63 @@ async def _handle_voice_config_submission(payload: dict) -> None:
     def _txt(block_id: str, action_id: str) -> str:
         return (values.get(block_id, {}).get(action_id, {}).get("value") or "").strip()
 
-    # Checkboxes
-    tts_block = values.get("tts_enabled_block", {}).get("mc_voice_tts_enabled", {})
-    selected = {o.get("value") for o in tts_block.get("selected_options", [])}
-    _vc.global_enabled = "enabled" in selected
-    auto_speak = "auto_speak" in selected
-    _vc.auto_speak = auto_speak
-
-    # Selects
-    _vc.default_voice = _sel("voice_block", "mc_voice_voice") or _vc.default_voice
-    _vc.default_engine = _sel("engine_block", "mc_voice_engine") or _vc.default_engine
-    _vc.default_rate = _sel("speed_block", "mc_voice_speed") or _vc.default_rate
-    _vc.default_pitch = _sel("pitch_block", "mc_voice_pitch") or _vc.default_pitch
-
-    # Text inputs
-    _vc.aws_profile = _txt("profile_block", "mc_voice_profile")
-    _vc.region = _txt("region_block", "mc_voice_region")
-
-    # Persist to config.json
+    # Read BEFORE mutating the live voice config. Fail closed on an unreadable
+    # config: writing back a {} baseline would drop every other setting. Order
+    # matters — mutating `_vc` first would let rejected settings drive live TTS
+    # until the next restart, even though the save was refused.
     cp = config_path()
     try:
-        data = json.loads(cp.read_text(encoding="utf-8")) if cp.exists() else {}
-    except Exception:
-        data = {}
+        data = read_config_for_update(cp)
+    except ConfigReadError:
+        logger.exception("Refusing to persist voice settings: config unreadable")
+        return
+
+    # Compute the new values WITHOUT touching the live config yet.
+    tts_block = values.get("tts_enabled_block", {}).get("mc_voice_tts_enabled", {})
+    selected = {o.get("value") for o in tts_block.get("selected_options", [])}
+    enabled = "enabled" in selected
+    auto_speak = "auto_speak" in selected
+    voice = _sel("voice_block", "mc_voice_voice") or _vc.default_voice
+    engine = _sel("engine_block", "mc_voice_engine") or _vc.default_engine
+    rate = _sel("speed_block", "mc_voice_speed") or _vc.default_rate
+    pitch = _sel("pitch_block", "mc_voice_pitch") or _vc.default_pitch
+    aws_profile = _txt("profile_block", "mc_voice_profile")
+    region = _txt("region_block", "mc_voice_region")
+
     vr = data.setdefault("voice_reply", {})
-    vr["enabled"] = _vc.global_enabled
+    vr["enabled"] = enabled
     vr["auto_speak"] = auto_speak
-    vr["voice_id"] = _vc.default_voice
-    vr["engine"] = _vc.default_engine
-    vr["rate"] = _vc.default_rate
-    vr["pitch"] = _vc.default_pitch
-    vr["aws_profile"] = _vc.aws_profile
-    vr["region"] = _vc.region
+    vr["voice_id"] = voice
+    vr["engine"] = engine
+    vr["rate"] = rate
+    vr["pitch"] = pitch
+    vr["aws_profile"] = aws_profile
+    vr["region"] = region
+
+    # Persist FIRST, then apply to the live config. A failed write must not leave
+    # rejected settings driving live TTS until the next restart.
     try:
-        cp.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cp.with_name(cp.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(cp)
+        write_config_atomically(cp, data)
     except OSError:
         logger.exception("Failed to persist voice config from modal")
+        return
+
+    _vc.global_enabled = enabled
+    _vc.auto_speak = auto_speak
+    _vc.default_voice = voice
+    _vc.default_engine = engine
+    _vc.default_rate = rate
+    _vc.default_pitch = pitch
+    _vc.aws_profile = aws_profile
+    _vc.region = region
 
     logger.info(
         "Voice config updated: enabled=%s voice=%s engine=%s speed=%s pitch=%s",
-        _vc.global_enabled,
-        _vc.default_voice,
-        _vc.default_engine,
-        _vc.default_rate,
-        _vc.default_pitch,
+        enabled,
+        voice,
+        engine,
+        rate,
+        pitch,
     )
 
 
@@ -1948,32 +1961,37 @@ async def _handle_users_select(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Handle multi_users_select — update allowlist."""
-    import json
-
-    from kiro_crew.config.loader import config_path
     from kiro_crew.slack.handler import is_owner, set_allowed_users
 
     if not is_owner(user_id):
         return
 
     new_users = set(action.get("selected_users") or [])
+
+    # Read BEFORE mutating runtime state. Fail closed on an unreadable config:
+    # writing back a {} baseline would drop every other setting. Order matters —
+    # applying the in-memory change first would make a refused save look applied,
+    # then silently revert on restart.
+    cp = config_path()
+    try:
+        data = read_config_for_update(cp)
+    except ConfigReadError:
+        logger.exception("Refusing to persist users from select: config unreadable")
+        return
+
+    data.setdefault("slack", {})["allowed_users"] = [{"slack_id": uid} for uid in sorted(new_users)]
+
+    # Persist FIRST, then mutate runtime state (a failed write must not leave
+    # live state ahead of disk — it silently reverts on restart).
+    try:
+        write_config_atomically(cp, data)
+    except OSError:
+        logger.exception("Failed to persist users from select")
+        return
+
     if _orch:
         _orch._allowed_users = new_users
         set_allowed_users(new_users)
-
-    cp = config_path()
-    try:
-        data = json.loads(cp.read_text(encoding="utf-8")) if cp.exists() else {}
-    except Exception:
-        data = {}
-    data.setdefault("slack", {})["allowed_users"] = [{"slack_id": uid} for uid in sorted(new_users)]
-    try:
-        cp.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cp.with_name(cp.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(cp)
-    except OSError:
-        logger.exception("Failed to persist users from select")
 
     logger.info("Allowlist updated via select: %d users", len(new_users))
     sel().log_api_access(
@@ -1989,34 +2007,36 @@ async def _handle_channels_select(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Handle multi_channels_select — update tracked channels."""
-    import json
-
-    from kiro_crew.config.loader import config_path
     from kiro_crew.slack.handler import is_owner, set_tracking_channels
 
     if not is_owner(user_id):
         return
 
     new_channels = set(action.get("selected_channels") or [])
-    if _orch:
-        _orch._tracking_channels = new_channels
-        set_tracking_channels(new_channels)
 
+    # Read BEFORE mutating runtime state (see the users-select handler above for
+    # why the order is load-bearing).
     cp = config_path()
     try:
-        data = json.loads(cp.read_text(encoding="utf-8")) if cp.exists() else {}
-    except Exception:
-        data = {}
+        data = read_config_for_update(cp)
+    except ConfigReadError:
+        logger.exception("Refusing to persist channels from select: config unreadable")
+        return
+
     data.setdefault("slack", {})["tracking_channels"] = [
         {"channel_id": cid} for cid in sorted(new_channels)
     ]
+
+    # Persist FIRST, then mutate runtime state (see the users-select handler).
     try:
-        cp.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cp.with_name(cp.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(cp)
+        write_config_atomically(cp, data)
     except OSError:
         logger.exception("Failed to persist channels from select")
+        return
+
+    if _orch:
+        _orch._tracking_channels = new_channels
+        set_tracking_channels(new_channels)
 
     logger.info("Tracked channels updated via select: %d channels", len(new_channels))
     sel().log_api_access(

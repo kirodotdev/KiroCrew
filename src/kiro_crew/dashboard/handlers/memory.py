@@ -12,7 +12,13 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.config.loader import KiroCrewConfig, config_path
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    KiroCrewConfig,
+    config_path,
+    read_config_for_update,
+    write_config_atomically,
+)
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import (
@@ -98,9 +104,14 @@ async def api_memory_settings(request: web.Request) -> web.Response:
         async with _get_config_lock():
             path = config_path()
             try:
-                data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-            except Exception:
-                data = {}
+                data = read_config_for_update(path)
+            except ConfigReadError:
+                # Fail closed: writing back a {} baseline would drop every other setting.
+                logger.exception("Refusing to save memory settings: config unreadable")
+                return web.json_response(
+                    {"error": "failed to read config file", "code": "config_unreadable"},
+                    status=500,
+                )
             mem = data.setdefault("memory", {})
             if "history_idle_hours" in body:
                 try:
@@ -114,8 +125,7 @@ async def api_memory_settings(request: web.Request) -> web.Response:
                     return web.json_response({"error": "history_max_days must be an integer"}, status=400)
             if "migrated" in body:
                 mem["migrated"] = bool(body["migrated"])
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            write_config_atomically(path, data)
         # Apply to running consolidator
         state: DashboardState = request.app["state"]
         if state.consolidator:
@@ -296,8 +306,7 @@ async def _set_migrated(value: bool) -> None:
         else:
             data = {}
         data.setdefault("memory", {})["migrated"] = value
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_config_atomically(path, data)
 
 
 # ModelDownloadManager.status steps → the setup_step vocabulary the shipped
@@ -580,14 +589,18 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
     path = config_path()
     async with _get_config_lock():
         try:
-            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        except Exception:
-            data = {}
+            data = read_config_for_update(path)
+        except ConfigReadError:
+            # Fail closed: writing back a {} baseline would drop every other setting.
+            logger.exception("Refusing to persist embedding config: config unreadable")
+            _embedding_setup_status = {"step": "error", "error": "config unreadable"}
+            return web.json_response(
+                {"error": "failed to read config file", "code": "config_unreadable"}, status=500
+            )
         data.setdefault("memory", {})["embedding_provider"] = "llama_cpp"
         data["memory"]["embedding_dim"] = 1024
         data["memory"]["migrated"] = True
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_config_atomically(path, data)
 
     # Apply migrated to running consolidator
     state = request.app["state"]

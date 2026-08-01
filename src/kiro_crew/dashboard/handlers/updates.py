@@ -17,7 +17,13 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
-from kiro_crew.config.loader import KiroCrewConfig, config_path
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    KiroCrewConfig,
+    config_path,
+    read_config_for_update,
+    write_config_atomically,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform.update_governance import (
     min_version,
@@ -222,15 +228,19 @@ async def api_update_auto(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     enabled = body.get("enabled", True)
-    # Read, modify, write config
+    # Read, modify, write config. The read fails CLOSED: treating an unreadable
+    # config as {} would write back a single-key file and wipe every other
+    # setting the user has (see read_config_for_update).
     path = config_path()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except Exception:
-        data = {}
+        data = read_config_for_update(path)
+    except ConfigReadError:
+        logger.exception("Refusing to toggle auto-update: config is unreadable")
+        return web.json_response(
+            {"error": "failed to read config file", "code": "config_unreadable"}, status=500
+        )
     data["auto_update"] = enabled
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    write_config_atomically(path, data)
     return web.json_response({"ok": True, "auto_update": enabled})
 
 

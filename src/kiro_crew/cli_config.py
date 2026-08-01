@@ -10,7 +10,12 @@ import sys
 from pathlib import Path
 
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.config.loader import _subtract_overlay, config_local_path, config_path
+from kiro_crew.config.loader import (
+    _subtract_overlay,
+    config_local_path,
+    config_path,
+    write_config_atomically,
+)
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.sel import sel
 
@@ -57,9 +62,7 @@ def _config_cmd(args: argparse.Namespace) -> None:
             except (json.JSONDecodeError, OSError) as e:
                 print(f"❌ Invalid JSON: {e}", file=sys.stderr)
                 sys.exit(1)
-            p = config_path()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            write_config_atomically(config_path(), data)
             sel().log_api_access(
                 caller="cli",
                 operation="config_set_file",
@@ -87,6 +90,11 @@ def _config_cmd(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
                 p = config_local_path()
+                # NOTE: unlike the automatic/background config writers (which now
+                # fail closed via read_config_for_update), this interactive path
+                # deliberately overwrites a corrupt overlay — the user typed an
+                # explicit `config set --local` and sees the result on stdout.
+                # Pinned by test_config_overlay.py::TestCliConfigSetLocal.
                 try:
                     d = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
                 except (json.JSONDecodeError, OSError):
@@ -94,8 +102,10 @@ def _config_cmd(args: argparse.Namespace) -> None:
                 if not isinstance(d, dict):
                     d = {}
                 _dict_set_create(d, key, parsed)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
+                # Mode-preserving: config.local.json can hold credentials, so a
+                # tightened 0600 must not be widened to the umask default by the
+                # tmp+rename (which creates a new inode).
+                write_config_atomically(p, d)
                 sel().log_api_access(
                     caller="cli",
                     operation="config_set_local",
@@ -118,9 +128,7 @@ def _config_cmd(args: argparse.Namespace) -> None:
                             d = _subtract_overlay(d, raw_local)
                     except (json.JSONDecodeError, OSError):
                         pass
-                p = config_path()
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
+                write_config_atomically(config_path(), d)
                 sel().log_api_access(
                     caller="cli",
                     operation="config_set",

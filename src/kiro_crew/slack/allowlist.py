@@ -14,12 +14,15 @@ gateway restarts.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.config.loader import config_path
+from kiro_crew.config.loader import (
+    config_path,
+    read_config_for_update,
+    write_config_atomically,
+)
 from kiro_crew.dashboard.origin import (
     dashboard_origin,
     devspaces_proxy_url,
@@ -297,23 +300,19 @@ async def send_dashboard_link(
 
 
 def _read_config() -> dict:
-    """Read config.json, returning {} on any error.
+    """Read config.json for a read-modify-write, failing CLOSED.
 
-    Always re-reads from disk so manual edits are respected.
+    Always re-reads from disk so manual edits are respected. Raises
+    ``ConfigReadError`` on an unreadable (but present) config: the caller
+    rewrites the WHOLE file, so returning ``{}`` here would replace every
+    other setting with an allowlist-only config.
     """
-    cp = config_path()
-    try:
-        return json.loads(cp.read_text(encoding="utf-8")) if cp.exists() else {}
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return read_config_for_update(config_path())
 
 
 def _write_config(data: dict) -> None:
-    """Write *data* back to config.json atomically (write tmp + rename)."""
-    cp = config_path()
-    from kiro_crew.atomic_write import atomic_write
-
-    atomic_write(cp, json.dumps(data, indent=4) + "\n")
+    """Write *data* back to config.json atomically, preserving its mode."""
+    write_config_atomically(config_path(), data)
 
 
 def _update_config_list(

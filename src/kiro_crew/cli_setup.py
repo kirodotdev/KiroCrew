@@ -35,6 +35,7 @@ from kiro_crew.config.loader import (
     _workspace_dir_file,
     config_path,
     env_path,
+    write_config_atomically,
 )
 from kiro_crew.constants import DATA_WARNING
 from kiro_crew.skills import SkillsLoader
@@ -542,8 +543,7 @@ def _setup_slash_command() -> None:
         raw = current
 
     cfg.setdefault("slack", {})["command"] = raw
-    cfg_file.parent.mkdir(parents=True, exist_ok=True)
-    cfg_file.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    write_config_atomically(cfg_file, cfg)
     print(f"  ✅ Slash command: /{raw}\n")
 
 
@@ -626,8 +626,7 @@ def _setup_timezone() -> None:
                 return
 
     data["timezone"] = tz_val
-    cfg_file.parent.mkdir(parents=True, exist_ok=True)
-    cfg_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    write_config_atomically(cfg_file, data)
     print(f"  ✅ Timezone saved: {tz_val}\n")
 
 
@@ -681,8 +680,7 @@ def _maybe_setup_dashboard_url() -> None:
             data = json.loads(cfg_file.read_text(encoding="utf-8"))
         dashboard = data.setdefault("dashboard", {})
         dashboard["url"] = answer
-        cfg_file.parent.mkdir(parents=True, exist_ok=True)
-        cfg_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_config_atomically(cfg_file, data)
         print(f"  ✅ Dashboard URL saved: {answer}")
         print("  Token auth will be required for all requests.\n")
     except Exception as e:

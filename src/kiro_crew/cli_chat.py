@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import gc
-import json
+import logging
 import os
 import shutil
 import subprocess
@@ -13,9 +13,18 @@ from pathlib import Path
 
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.config.loader import build_provider_factory, config_dir, config_path
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    build_provider_factory,
+    config_dir,
+    config_path,
+    read_config_for_update,
+    write_config_atomically,
+)
 from kiro_crew.constants import BANNER, DATA_WARNING
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMProvider
+
+logger = logging.getLogger(__name__)
 
 
 def _tui(args: argparse.Namespace) -> None:
@@ -194,25 +203,30 @@ async def _interactive(provider: LLMProvider, cfg: KiroCrewConfig) -> None:
 
 
 def _ensure_config_key(section: str, key: str, default: object) -> None:
-    """Write a default value to config.json if the key is missing."""
+    """Write a default value to config.json if the key is missing.
+
+    Seeding a default is never worth destroying real settings, so an unreadable
+    config skips the write entirely rather than seeding onto ``{}``.
+    """
     p = config_path()
     try:
-        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-    except Exception:
-        data = {}
+        data = read_config_for_update(p)
+    except ConfigReadError:
+        logger.warning("Skipping config seed for %s.%s: config unreadable", section, key)
+        return
     if key not in data.get(section, {}):
         data.setdefault(section, {})[key] = default
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_config_atomically(p, data)
 
 
 def _ensure_default_agent_in_config() -> None:
     """Ensure config.json includes a default KiroCrew agent for fresh installs."""
     p = config_path()
     try:
-        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-    except Exception:
-        data = {}
+        data = read_config_for_update(p)
+    except ConfigReadError:
+        logger.warning("Skipping default-agent seed: config unreadable")
+        return
     if not data.get("agents"):
         data["agents"] = {
             "default": {
@@ -222,5 +236,4 @@ def _ensure_default_agent_in_config() -> None:
             }
         }
         data["default_agent"] = "default"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_config_atomically(p, data)
