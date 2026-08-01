@@ -281,7 +281,9 @@ const CI_META: Record<NonNullable<PullRequestStatus['ci']>, { icon: typeof Check
 
 /** State markers for one pull-request tab in the source strip: lifecycle glyph
  * plus, while the pull request is still live, its CI rollup. CI is suppressed
- * once merged or closed — the lifecycle glyph is the terminal signal there. */
+ * once merged or closed — the lifecycle glyph is the terminal signal there.
+ * `ChatSidebar.tsx::showsChipCi` applies the same rule to the sidebar chip; the
+ * two render the same pull request and must not disagree about its lifecycle. */
 function SourceTabState({ status }: { status: PullRequestStatus | undefined }) {
   const lifecycle = status?.state
   const ci = lifecycle === 'merged' || lifecycle === 'closed' ? undefined : status?.ci

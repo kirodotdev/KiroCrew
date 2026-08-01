@@ -267,6 +267,34 @@ interface Slot {
   source_links_total?: number
 }
 
+type SourceLinkState = NonNullable<NonNullable<Slot['source_links']>[number]['state']>
+
+/** Lifecycle states after which a pull request can never merge, so its CI
+ * rollup carries no actionable information and the lifecycle glyph is the only
+ * meaningful signal. Named ONCE here because the vocabulary is shared by three
+ * sibling conditionals; an inline literal per glyph is how `closed` came to be
+ * covered by the badge but not by the CI gate.
+ *
+ * `closed` matters as much as `merged`: a closed pull request's check rollup can
+ * stay pending FOREVER (GitHub parks fork-PR checks in PENDING /
+ * ACTION_REQUIRED when the PR is closed before a maintainer approves the run),
+ * so a chip gated only on `merged` spins its "checks running" spinner
+ * indefinitely on a PR nobody is waiting for. Must stay in step with
+ * `PullRequestPanel.tsx::SourceTabState`, which applies the same rule to the
+ * source-strip tab — the chip and the tab describe one pull request and may not
+ * disagree about its lifecycle. */
+const TERMINAL_SOURCE_LINK_STATES: ReadonlySet<SourceLinkState> = new Set<SourceLinkState>([
+  'merged',
+  'closed',
+])
+
+/** Whether a chip should show its CI rollup. An ABSENT state means the provider
+ * status has not been read yet (or the payload predates the field), which is not
+ * terminal — such a chip keeps rendering CI exactly as it always did. */
+function showsChipCi(state: SourceLinkState | undefined): boolean {
+  return state === undefined || !TERMINAL_SOURCE_LINK_STATES.has(state)
+}
+
 interface HistoryItem {
   key: string
   title?: string
@@ -2305,10 +2333,11 @@ function ChatSidebar({
                         </span>
                       )}
                       {link.state === 'closed' && <span className="capitalize text-danger">{link.state}</span>}
-                      {/* CI status is moot once the PR is merged — the merge icon is the terminal signal. */}
-                      {link.state !== 'merged' && link.ci === 'running' && <Loader2 className="lucide-inline shrink-0 animate-spin" aria-label={i18nT('pages.chatSidebar.checks_running')} />}
-                      {link.state !== 'merged' && link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label={i18nT('pages.chatSidebar.checks_passed')} />}
-                      {link.state !== 'merged' && link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label={i18nT('pages.chatSidebar.checks_failed')} />}
+                      {/* CI status is moot once the PR is terminal (merged or closed) —
+                          the lifecycle glyph is the terminal signal. */}
+                      {showsChipCi(link.state) && link.ci === 'running' && <Loader2 className="lucide-inline shrink-0 animate-spin" aria-label={i18nT('pages.chatSidebar.checks_running')} />}
+                      {showsChipCi(link.state) && link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label={i18nT('pages.chatSidebar.checks_passed')} />}
+                      {showsChipCi(link.state) && link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label={i18nT('pages.chatSidebar.checks_failed')} />}
                     </a>
                   ))}
                   {issueLinks.map(link => (

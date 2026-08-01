@@ -66,12 +66,12 @@ const slots = [
   },
 ] as unknown as ChatSlot[]
 
-function renderSidebar() {
+function renderSidebar(rows: ChatSlot[] = slots) {
   const store = createTestStore({
     dashboard: {
       status: { platform: 'darwin' },
       connected: true,
-      slots,
+      slots: rows,
       approvalMode: 'normal', channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -95,7 +95,7 @@ function renderSidebar() {
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={slots} activeSlot={'s1'} unreadSlots={[]}
+              slots={rows} activeSlot={'s1'} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent={'default'} installedAgents={[]}
             />
           </MemoryRouter>
@@ -131,5 +131,81 @@ describe('ChatSidebar – PR chip link', () => {
     switchSlotMock.mockClear()
     fireEvent.click(chip())
     expect(switchSlotMock).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * A terminal pull request can never merge, so its CI rollup is moot and only the
+ * lifecycle glyph is meaningful. `closed` is the case that actually hangs: a PR
+ * closed before its checks were approved to run keeps a PENDING rollup forever,
+ * which the backend faithfully projects as `ci: "running"` — so a chip gated
+ * only on `merged` spins its spinner indefinitely on work nobody is waiting for.
+ *
+ * The `merged` half is asserted here too. It was fixed in PR #301 but its test
+ * lived in the since-split `ChatSidebar.integration.test.tsx` and did not
+ * survive, leaving the whole rule uncovered — which is why the `closed` half
+ * went unnoticed. Both states plus a live control now live in one table.
+ */
+describe('ChatSidebar – terminal PR chips suppress CI', () => {
+  const url = (n: number) => `https://github.com/kirodotdev/KiroCrew/pull/${n}`
+
+  function stateRows(): ChatSlot[] {
+    return [
+      { key: 's1', title: 'Other', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z' },
+      {
+        key: 's2', title: 'PR states', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z',
+        source_links: [
+          // Every chip carries ci: 'running' so the ONLY variable is `state`.
+          { provider: 'github', number: 993, url: url(993), state: 'closed', ci: 'running' },
+          { provider: 'github', number: 994, url: url(994), state: 'merged', ci: 'running' },
+          { provider: 'github', number: 995, url: url(995), state: 'open', ci: 'running' },
+          // No `state` at all: the provider status has not been read yet, which
+          // is NOT terminal — CI must still render.
+          { provider: 'github', number: 996, url: url(996), ci: 'running' },
+        ],
+        source_links_total: 4,
+      },
+    ] as unknown as ChatSlot[]
+  }
+
+  const spinner = (n: number) =>
+    screen.getByTitle(`Open ${url(n)}`).querySelector('[aria-label="Checks running"]')
+
+  it.each([
+    ['closed', 993],
+    ['merged', 994],
+  ])('hides the running-checks spinner on a %s chip', (_state, number) => {
+    renderSidebar(stateRows())
+    expect(spinner(number)).toBeNull()
+  })
+
+  it('still shows the spinner while the PR is live or its state is unknown', () => {
+    renderSidebar(stateRows())
+    // Positive control: proves the fixture really does carry ci: 'running' and
+    // the assertions above are not passing because nothing rendered.
+    expect(spinner(995)).not.toBeNull()
+    expect(spinner(996)).not.toBeNull()
+  })
+
+  it('keeps the closed chip\'s own lifecycle label', () => {
+    renderSidebar(stateRows())
+    // The spinner goes away; the terminal signal must not.
+    expect(screen.getByTitle(`Open ${url(993)}`)).toHaveTextContent('closed')
+    expect(screen.getByTitle(`Open ${url(994)}`).querySelector('[aria-label="Merged"]')).not.toBeNull()
+  })
+
+  it.each(['passed', 'failed'] as const)('hides a %s CI glyph on a closed chip too', (ci) => {
+    const rows = [
+      { key: 's1', title: 'Other', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z' },
+      {
+        key: 's2', title: 'PR states', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z',
+        source_links: [{ provider: 'github', number: 993, url: url(993), state: 'closed', ci }],
+        source_links_total: 1,
+      },
+    ] as unknown as ChatSlot[]
+    renderSidebar(rows)
+    const chipEl = screen.getByTitle(`Open ${url(993)}`)
+    expect(chipEl.querySelector('[aria-label="Checks passed"]')).toBeNull()
+    expect(chipEl.querySelector('[aria-label="Checks failed"]')).toBeNull()
   })
 })
