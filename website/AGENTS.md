@@ -123,19 +123,36 @@ Adding a language is a **data change** — three edits, no component or test cha
 3. one line in `CATALOGS` (`src/i18n/index.ts`)
 
 To translate the corpus, shard it rather than doing one pass — `node
-scripts/i18n-shard.mjs split <dir>` writes flat key→value shards, and `join
-<dir> <tag>` reassembles them, **refusing to write a partial result**. Never
-hand-assemble a catalog: `join`'s fail-closed check is what stops English text
-shipping disguised as a translation. Keep shard dirs OUTSIDE the worktree (Rule
-9 — a dirty tree blocks worktree pruning).
+scripts/i18n-shard.mjs split <dir>` writes flat key→value shards. Keep shard
+dirs OUTSIDE the worktree (Rule 9 — a dirty tree blocks worktree pruning).
+
+**Reassemble with `node scripts/i18n-translate.mjs merge <baseDir>`, never with
+`i18n-shard.mjs join`.** `join` rewrites the catalog from shards keyed off the
+**English** corpus, so any form the locale has and English does not is silently
+dropped — a measured round-trip removes 108 lines from `ru.json` and 45 keys from
+each of `es`/`fr`/`pt`/`it`, all `_few`/`_many` CLDR plural forms. It also cannot
+accept the locale-specific plural keys `emit` asks for, because it validates
+against the English key set. `merge` is insert-only by default and preserves
+both. Never hand-assemble a catalog either — `merge`'s fail-closed checks are
+what stop English text shipping disguised as a translation.
+
+`i18n-translate.mjs` is the whole pipeline, and it is deliberately offline — it
+writes prompts and validates answers, but sends nothing:
+
+| Command | Does |
+|---|---|
+| `plan [pathPrefix]` | what still needs translating, read from `untranslated-baseline.json` |
+| `emit <baseDir> [--locales a,b]` | writes one prompt per (locale, shard), including the per-locale plural forms that locale requires |
+| `verify <baseDir> --locale <tag>` | every rule that can be decided mechanically — run it before `merge` |
+| `merge <baseDir> [--overwrite]` | insert-only reassembly |
 
 `split` also writes `shard-NN.context.json` beside each shard, carrying the
 translator context from `src/i18n/en.context.json` for the keys in that shard.
 **Read it before translating the shard** — it is the only thing that tells you
 `KB` is kilobytes and not "knowledge base", that `K` is a keyboard key you must
-leave alone, and that `Run` is the verb. `join` ignores those files. If a short
-or ambiguous string has no entry, add one there rather than guessing twice.
-`split` warns and emits no context files if the sidecar is not present.
+leave alone, and that `Run` is the verb. If a short or ambiguous string has no
+entry, add one to `en.context.json` rather than guessing twice. `split` warns and
+emits no context files if the sidecar is not present.
 
 **Don't pin a test fixture to a language you might later ship.** Assertions like
 "`fr` is unsupported, so it falls back" silently invert the moment French ships.
@@ -208,15 +225,137 @@ value is wrong.
 catalogs from the runtime `CATALOGS` map, so the new language automatically gets
 its own key-parity, placeholder-preservation, and no-empty-value tests. Miss one
 of the three edits and CI fails naming the gap; it can't silently ship as
-English. To seed a catalog for translation, `node scripts/i18n-shard.mjs split
-<dir>` writes flat key→value shards and `join <dir> <tag>` reassembles them,
-refusing to write a partial result. Each shard gets a `shard-NN.context.json`
-sibling holding the translator context for its keys — read it first.
+English. **There is no allowlist**, so every language has to land in the same
+commit — this is what makes each new language add marginal cost to every
+subsequent i18n change.
+
+### Formatting follows the app language, not the browser
+
+`d.toLocaleDateString()`, `d.toLocaleDateString([])` and
+`d.toLocaleTimeString(undefined, { … })` all mean the same thing: **format in the
+host locale**. They ignore the language setting entirely. `LanguageProvider` sets
+`<html lang>`, but `<html lang>` has no effect on `Intl`, so a dashboard running
+in Chinese on an en-US browser rendered `7/30/2026` inside Chinese UI.
+`a.localeCompare(b)` has the same flaw for ordering — the sort order of a list of
+names silently depended on the browser.
+
+Route it through `src/i18n/format.ts` instead. It is the **seam**: the only module
+allowed to resolve a locale, and it reads the active language per call, so a
+language switch takes effect without a remount.
+
+```ts
+import { fmtDate, fmtRelative, compareText } from '../i18n/format'
+
+fmtDate(iso)                 // not new Date(iso).toLocaleDateString()
+fmtRelative(ts)              // not a hand-written "3d ago"
+names.sort(compareText)      // not (a, b) => a.localeCompare(b)
+```
+
+Each helper carries its own preset, and the options type omits the field the
+preset owns — `fmtDate` is already `dateStyle: 'medium'`, so pass
+`fmtDateFields(value, { … })` when you need explicit components instead.
+
+Available: `fmtNumber`, `fmtPercent`, `fmtCurrency`, `fmtUnit`, `fmtDate`,
+`fmtTime`, `fmtDateTime`, `fmtDateFields`, `fmtWeekday`, `fmtRelative`, `fmtList`,
+`collator`, `compareText`, plus `activeLocale` and `toDate`.
+
+`localeFormatting.test.ts` is an AST ratchet over the remaining un-migrated
+calls. **Naming a locale IS the opt-out**, which is why there is no allowlist
+file:
+
+```ts
+d.toLocaleDateString()                  // finding
+d.toLocaleDateString([])                // finding — 2 args, still the host locale
+d.toLocaleTimeString(undefined, opts)   // finding
+a.localeCompare(b)                      // finding
+d.toLocaleDateString('en-US', opts)     // allowed — the pin is visible to a reviewer
+a.localeCompare(b, 'en-US')             // allowed
+a < b ? -1 : 1                          // allowed — byte order, not matched at all
+```
+
+A machine-parse site (an ISO timestamp sort, a filesystem path sort, a value fed
+to `Date.parse` on the other side) has to state its pin **in the code**, not in a
+registry a reviewer has to go look up. Two things the gate cannot see: a pinned
+locale can still be the *wrong* locale, and `toFixed`/`String(n)`/`join(', ')` are
+not locale-aware APIs at all, so nothing syntactic detects them.
+
+Do not hand-format numbers. Latin digits are wrong for `bn`, and for `ar-EG`,
+`ar-SA` and `fa` if they ever ship. `Intl.DurationFormat` is unavailable on Node
+20, so durations go through `fmtUnit`.
+
+### Script fonts: keep the aliases first
+
+`index.css` declares `@font-face` aliases carrying `unicode-range` for Han,
+Devanagari and Bengali, collects them into `--script-fallbacks` and
+`--script-fallbacks-mono`, and puts **that token first** in `--font-body` and
+`--mono`. The range restriction is what makes this safe: the alias is never
+consulted for Latin, so it cannot change Latin metrics or leading, and it is a
+no-op when the face is not installed.
+
+**Do not reorder those stacks or drop the token when adding a family** — moving a
+Latin family in front silently returns zh-CN/hi/bn to whatever the platform picks
+for a missing glyph. `scriptFonts.test.ts` pins the `:root` tokens, every
+declaration site, and the ordering.
+
+### The gates
+
+`npm run i18n:check` is the whole chain, and it runs in CI as part of
+**Frontend Lint & Type Check**. Run it locally before pushing:
+
+| Gate | Catches |
+|---|---|
+| `gen-pseudolocale.mjs --check` | `en-XA.json` is stale relative to its generator |
+| `i18n-codemod.mjs --check` | a new literal in markup the codemod could have extracted |
+| `i18n-plural-codemod.mjs --check` | a plural suffix concatenated outside `i18nT()` |
+| `check-source-strings.mjs` | source-string quality, scoped to **only the keys your branch adds** |
+| `check-i18n-strings.mjs` | `no-literal-string` at `mode:'all'`, per-file, via `eslint.i18n.config.js` |
+
+`eslint.i18n.config.js` is a deliberately separate ESLint invocation with
+`--no-inline-config`, so an i18n finding cannot be silenced with an inline
+comment. It documents its own false-negative classes at the top — single-word
+copy like `'saved'`, and prose containing a hyphen or a digit — because a shape
+that excludes Tailwind class strings cannot also catch those. **Do not treat a
+green gate as proof of coverage.** Untranslated buttons have twice been found in a
+screenshot while every static gate passed; the pseudolocale and a real render are
+the ground truth.
+
+**Two kinds of gate, and the difference decides what you edit.**
+
+*Diff-scoped, zero tolerance, no stored state.* These read your diff against the
+base ref and cannot be bought past — there is no number to regenerate:
+`[added-lines]` fails on any user-visible literal sitting on a line **this branch
+wrote**, including copy you did not author but merely shared a line with;
+`[vs-base]` fails if a file you touched gained untranslated strings; and
+`[changed-values]` runs catalog QA over every value you added or changed, in all
+languages. `[added-lines]` is the real coverage gate — wrap the literal, or exclude
+it by shape in `eslint.i18n.config.js` if it is genuinely not copy.
+
+*Ledgers, upward-only.* Going over fails; going under is silent and does **not**
+require you to commit the lower number. So **do not re-snapshot a baseline just
+because your change improved it** — leaving it alone is correct, and it keeps the
+file from conflicting with every other branch in flight. The ledgers:
+`untranslated-baseline.json` (a per-file ceiling, and also the remaining worklist),
+the `--baseline=N` literal in the `i18n:check` script, the `CEILINGS` map in
+`qa.test.ts`, and `dynamic-keys-baseline.json`. The goal for each is zero, at which
+point the ledger is deleted and its gate becomes unconditional.
+
+A few AST ratchets are still exact (`.toBe`) because no diff-scoped check can
+replace an AST-counted site: the `BASELINE` consts in `deadKeys.test.ts`,
+`localeFormatting.test.ts`, and `unitLiterals.test.ts`. Lower these when you
+improve them — never raise them. Being exact, they break on unrelated drift in
+`main`, so expect to re-measure when you rebase.
 
 Guard tests that must stay green: `catalogParity.test.ts` (cross-language key
 parity), `englishIdentity.test.ts` (catalog holds real prose — no encoded HTML
 entities, raw keys, or JSX fragments), `detect.test.ts` (resolution precedence),
-`LanguageProvider.test.tsx` (persistence + cross-tab sync).
+`LanguageProvider.test.tsx` (persistence + cross-tab sync), `renderSwitch.test.tsx`
+and `memoBailout.test.tsx` (a language change actually repaints, including through
+a `memo()` boundary), `moduleLevel.test.ts` (`i18nT` never evaluated at module
+load), `dynamicKeys.test.ts` (every key is a static literal),
+`contextSidecar.test.ts`, `glossary.test.ts` (DNT terms verbatim in every
+language), `pseudolocaleBundle.test.ts` (`en-XA` in dev builds, absent from
+production), and one `style/<lang>Style.test.ts` per language, each citing the
+clause it enforces in that language's `style/<lang>.md`.
 
 ### A ratchet may only be upward-only if a DIFF-SCOPED gate covers the same defect
 
