@@ -14,13 +14,13 @@ export default function CapabilitiesPage() {
 
   const tabs = useMemo(() => {
     return [
-      { key: 'crews', label: 'Crews', icon: <Users size={16} />, description: 'Crews you chat with, each with its own workspace and memory' },
-      { key: 'templates', label: 'Agent Templates', icon: <LayoutTemplate size={16} />, description: `Installed agent configurations and packages` },
-      { key: 'mcp', label: 'Integrations(MCP)', icon: <Plug size={16} />, description: 'Add tools that let your agent work with Slack, AWS, code repos, and other services' },
-      { key: 'skills', label: 'Skills', icon: <BookOpen size={16} />, description: 'Specialized knowledge files your agent loads on demand for specific tasks' },
-      { key: 'steering', label: 'Steering', icon: <Compass size={16} />, description: 'Always-on markdown conventions from ~/.kiro/steering and your project\u2019s .kiro/steering' },
-      { key: 'hooks', label: 'Hooks', icon: <Webhook size={16} />, description: 'Shell commands that run automatically on agent events like prompts, tool calls, and session start/stop' },
-      { key: 'prompts', label: 'Prompts', icon: <MessageSquareText size={16} />, description: `Reusable prompt templates from ${provider.labels.pluginRegistryName || 'packages'}` },
+      { key: 'crews', label: i18nT('pages.capabilitiesPage.crews_label'), icon: <Users size={16} />, description: i18nT('pages.capabilitiesPage.crews_description') },
+      { key: 'templates', label: i18nT('pages.capabilitiesPage.templates_label'), icon: <LayoutTemplate size={16} />, description: i18nT('pages.capabilitiesPage.templates_description') },
+      { key: 'mcp', label: i18nT('pages.capabilitiesPage.mcp_label'), icon: <Plug size={16} />, description: i18nT('pages.capabilitiesPage.mcp_description') },
+      { key: 'skills', label: i18nT('pages.capabilitiesPage.skills_label'), icon: <BookOpen size={16} />, description: i18nT('pages.capabilitiesPage.skills_description') },
+      { key: 'steering', label: i18nT('pages.capabilitiesPage.steering_label'), icon: <Compass size={16} />, description: i18nT('pages.capabilitiesPage.steering_description') },
+      { key: 'hooks', label: i18nT('pages.capabilitiesPage.hooks_label'), icon: <Webhook size={16} />, description: i18nT('pages.capabilitiesPage.hooks_description') },
+      { key: 'prompts', label: i18nT('pages.capabilitiesPage.prompts_label'), icon: <MessageSquareText size={16} />, description: i18nT('pages.capabilitiesPage.prompts_description', { registry: provider.labels.pluginRegistryName || 'packages' }) },
     ]
   }, [provider])
 

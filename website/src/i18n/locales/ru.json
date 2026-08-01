@@ -848,6 +848,19 @@
       "trusted_auto_approving_future_calls": "Доверенный — последующие вызовы разрешаются автоматически"
     },
     "approvalModePicker": {
+      "approval_mode_aria": "Режим подтверждения: {{mode}}",
+      "normal_label": "Обычный",
+      "normal_tooltip": "KiroCrew спрашивает вас перед любым действием",
+      "normal_desc": "KiroCrew уточняет у вас перед любым действием",
+      "reads_label": "Чтение",
+      "reads_tooltip": "KiroCrew ищет информацию сам, но спрашивает перед внесением изменений",
+      "reads_desc": "KiroCrew ищет информацию сам, но спрашивает перед внесением любых изменений",
+      "trust_label": "Доверие",
+      "trust_tooltip": "В этом чате KiroCrew работает, не спрашивая вас заранее",
+      "trust_desc": "В этом чате KiroCrew работает, не спрашивая вас заранее",
+      "yolo_label": "YOLO",
+      "yolo_tooltip": "В каждом чате KiroCrew работает, не спрашивая вас заранее",
+      "yolo_desc": "В каждом чате KiroCrew работает, не спрашивая вас заранее",
       "all_tools_will_get_auto_approved_across_all_sess": "Все инструменты будут автоматически разрешены во всех сеансах.",
       "approval_mode": "Режим разрешений",
       "cancel": "Отмена",
@@ -1039,6 +1052,7 @@
       "retrying": "Повтор..."
     },
     "chatInput": {
+      "message_placeholder": "Написать {{bot}}… (/command · @file · $skill)",
       "add_files_options": "Добавить файлы и параметры",
       "allow_once": "Разрешить один раз",
       "apply_a_ready_made_set_of_instructions": "Применить готовый набор инструкций",
@@ -3011,6 +3025,20 @@
       "your_artifacts": "Ваши артефакты"
     },
     "capabilitiesPage": {
+      "crews_label": "Crews",
+      "crews_description": "Crews, с которыми вы общаетесь, у каждой своё рабочее пространство и память",
+      "templates_label": "Шаблоны агентов",
+      "templates_description": "Установленные конфигурации и пакеты агентов",
+      "mcp_label": "Интеграции (MCP)",
+      "mcp_description": "Добавляйте инструменты, позволяющие вашему агенту работать со Slack, AWS, репозиториями кода и другими сервисами",
+      "skills_label": "Навыки",
+      "skills_description": "Файлы специализированных знаний, которые ваш агент загружает по требованию для конкретных задач",
+      "steering_label": "Направляющие правила",
+      "steering_description": "Всегда активные markdown-соглашения из ~/.kiro/steering и .kiro/steering вашего проекта",
+      "hooks_label": "Hooks",
+      "hooks_description": "Команды shell, автоматически запускаемые при событиях агента, таких как запросы, вызовы инструментов и запуск/остановка сессии",
+      "prompts_label": "Промпты",
+      "prompts_description": "Многоразовые шаблоны промптов из {{registry}}",
       "agent_capabilities": "Возможности агента"
     },
     "channelPage": {
@@ -3473,6 +3501,7 @@
       "what_can_i_do_for_you": "Чем могу помочь?"
     },
     "chatSidebar": {
+      "streaming": "Потоковая передача",
       "add_column_after_this_one": "Добавить столбец после этого",
       "agent_finished_your_turn": "Агент завершил — ваш ход",
       "all_sessions": "Все сессии",

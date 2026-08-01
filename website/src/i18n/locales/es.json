@@ -843,6 +843,19 @@
       "trusted_auto_approving_future_calls": "De confianza — se aprobarán automáticamente las llamadas futuras"
     },
     "approvalModePicker": {
+      "approval_mode_aria": "Modo de aprobación: {{mode}}",
+      "normal_label": "Normal",
+      "normal_tooltip": "KiroCrew te pregunta antes de hacer cualquier cosa",
+      "normal_desc": "KiroCrew consulta contigo antes de hacer cualquier cosa",
+      "reads_label": "Lecturas",
+      "reads_tooltip": "KiroCrew busca cosas por su cuenta, pero pregunta antes de hacer cambios",
+      "reads_desc": "KiroCrew busca cosas por su cuenta, pero pregunta antes de hacer cualquier cambio",
+      "trust_label": "Confianza",
+      "trust_tooltip": "En este chat, KiroCrew trabaja sin preguntarte primero",
+      "trust_desc": "En este chat, KiroCrew trabaja sin preguntarte primero",
+      "yolo_label": "YOLO",
+      "yolo_tooltip": "En cada chat, KiroCrew trabaja sin preguntarte primero",
+      "yolo_desc": "En cada chat, KiroCrew trabaja sin preguntarte primero",
       "all_tools_will_get_auto_approved_across_all_sess": "Todas las herramientas se aprobarán automáticamente en todas las sesiones.",
       "approval_mode": "Modo de aprobación",
       "cancel": "Cancelar",
@@ -1027,6 +1040,7 @@
       "retrying": "Reintentando…"
     },
     "chatInput": {
+      "message_placeholder": "Enviar mensaje a {{bot}}… (/command · @file · $skill)",
       "add_files_options": "Añadir archivos y opciones",
       "allow_once": "Permitir una vez",
       "apply_a_ready_made_set_of_instructions": "Aplicar un conjunto de instrucciones ya preparado",
@@ -2980,6 +2994,20 @@
       "your_artifacts": "Tus artefactos"
     },
     "capabilitiesPage": {
+      "crews_label": "Crews",
+      "crews_description": "Crews con las que chateas, cada una con su propio espacio de trabajo y memoria",
+      "templates_label": "Plantillas de agente",
+      "templates_description": "Configuraciones y paquetes de agente instalados",
+      "mcp_label": "Integraciones (MCP)",
+      "mcp_description": "Añade herramientas que permiten a tu agente trabajar con Slack, AWS, repositorios de código y otros servicios",
+      "skills_label": "Habilidades",
+      "skills_description": "Archivos de conocimiento especializado que tu agente carga a demanda para tareas específicas",
+      "steering_label": "Directrices",
+      "steering_description": "Convenciones markdown siempre activas de ~/.kiro/steering y del .kiro/steering de tu proyecto",
+      "hooks_label": "Hooks",
+      "hooks_description": "Comandos de shell que se ejecutan automáticamente en eventos del agente como prompts, llamadas a herramientas e inicio/parada de sesión",
+      "prompts_label": "Prompts",
+      "prompts_description": "Plantillas de prompt reutilizables de {{registry}}",
       "agent_capabilities": "Capacidades del agente"
     },
     "channelPage": {
@@ -3439,6 +3467,7 @@
       "what_can_i_do_for_you": "¿Qué puedo hacer por ti?"
     },
     "chatSidebar": {
+      "streaming": "Transmitiendo",
       "add_column_after_this_one": "Añadir una columna después de esta",
       "agent_finished_your_turn": "El agente terminó — es tu turno",
       "all_sessions": "Todas las sesiones",

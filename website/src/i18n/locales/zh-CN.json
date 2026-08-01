@@ -833,6 +833,19 @@
       "trusted_auto_approving_future_calls": "已信任 — 后续调用将自动批准"
     },
     "approvalModePicker": {
+      "approval_mode_aria": "审批模式：{{mode}}",
+      "normal_label": "常规",
+      "normal_tooltip": "KiroCrew 在执行任何操作前都会先询问你",
+      "normal_desc": "KiroCrew 在做任何事之前都会与你确认",
+      "reads_label": "读取",
+      "reads_tooltip": "KiroCrew 会自行查阅信息，但在做出更改前会先询问",
+      "reads_desc": "KiroCrew 会自行查阅信息，但在做出任何更改前都会先询问",
+      "trust_label": "信任",
+      "trust_tooltip": "在此对话中，KiroCrew 无需先询问即可工作",
+      "trust_desc": "在此对话中，KiroCrew 无需先询问即可工作",
+      "yolo_label": "YOLO",
+      "yolo_tooltip": "在每个对话中，KiroCrew 无需先询问即可工作",
+      "yolo_desc": "在每个对话中，KiroCrew 无需先询问即可工作",
       "all_tools_will_get_auto_approved_across_all_sess": "所有会话中的全部工具都将自动批准。",
       "approval_mode": "审批模式",
       "cancel": "取消",
@@ -1003,6 +1016,7 @@
       "retrying": "重试中…"
     },
     "chatInput": {
+      "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
       "add_files_options": "添加文件与选项",
       "allow_once": "允许一次",
       "apply_a_ready_made_set_of_instructions": "套用现成的指令集",
@@ -2918,6 +2932,20 @@
       "your_artifacts": "你的工件"
     },
     "capabilitiesPage": {
+      "crews_label": "Crews",
+      "crews_description": "你与之聊天的 Crew，每个都有自己的工作区和记忆",
+      "templates_label": "Agent 模板",
+      "templates_description": "已安装的 agent 配置和包",
+      "mcp_label": "集成 (MCP)",
+      "mcp_description": "添加工具，让你的 agent 能与 Slack、AWS、代码仓库等服务协作",
+      "skills_label": "技能",
+      "skills_description": "agent 按需加载、用于特定任务的专业知识文件",
+      "steering_label": "引导规则",
+      "steering_description": "来自 ~/.kiro/steering 和你项目 .kiro/steering 的常驻 markdown 约定",
+      "hooks_label": "Hooks",
+      "hooks_description": "在 agent 事件（如提示、工具调用、会话开始/停止）时自动运行的 Shell 命令",
+      "prompts_label": "提示词",
+      "prompts_description": "来自 {{registry}} 的可复用提示词模板",
       "agent_capabilities": "代理能力"
     },
     "channelPage": {
@@ -3371,6 +3399,7 @@
       "what_can_i_do_for_you": "我能帮你做什么？"
     },
     "chatSidebar": {
+      "streaming": "流式输出中",
       "add_column_after_this_one": "在此列之后添加列",
       "agent_finished_your_turn": "代理已完成 — 轮到你了",
       "all_sessions": "全部会话",

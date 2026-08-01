@@ -9,15 +9,53 @@ import { safeSetItem } from '../utils/safeStorage'
 import { i18nT } from '../i18n/t'
 /** Single source of truth for approval-mode presentation. Previously this
  *  lived three times: APPROVAL_DISPLAY in ChatInput plus duplicated
- *  APPROVAL_SEGMENTS in ChatPage and ChatPane (which had drifted apart). */
+ *  APPROVAL_SEGMENTS in ChatPage and ChatPane (which had drifted apart).
+ *
+ *  Only the language-INDEPENDENT metadata (key, icon, colour) lives at module
+ *  scope. Human-readable strings are resolved through `i18nT` at RENDER time via
+ *  `segmentText()` — a module-level constant would freeze them in whichever
+ *  language was active at import and never re-translate on a language switch. */
 export const APPROVAL_SEGMENTS = [
-  { key: 'normal' as const, label: 'Normal', icon: <ShieldCheck size={13} />, color: '', tooltip: 'KiroCrew asks you before doing anything', desc: 'KiroCrew checks with you before doing anything' },
-  { key: 'trust_reads' as const, label: 'Reads', icon: <BookOpen size={13} />, color: 'text-accent', tooltip: 'KiroCrew looks things up on its own, but asks before making changes', desc: 'KiroCrew looks things up on its own, but asks before making any changes' },
-  { key: 'trust' as const, label: 'Trust', icon: <Handshake size={13} />, color: 'text-ok', tooltip: 'In this chat, KiroCrew works without asking you first', desc: 'In this chat, KiroCrew works without asking you first' },
-  { key: 'yolo' as const, label: 'YOLO', icon: <Rocket size={13} />, color: 'text-danger', tooltip: 'In every chat, KiroCrew works without asking you first', desc: 'In every chat, KiroCrew works without asking you first' },
+  { key: 'normal' as const, icon: <ShieldCheck size={13} />, color: '' },
+  { key: 'trust_reads' as const, icon: <BookOpen size={13} />, color: 'text-accent' },
+  { key: 'trust' as const, icon: <Handshake size={13} />, color: 'text-ok' },
+  { key: 'yolo' as const, icon: <Rocket size={13} />, color: 'text-danger' },
 ]
 
 export type ApprovalModeKey = (typeof APPROVAL_SEGMENTS)[number]['key']
+
+/** Localized label / tooltip / description for a segment, read at call time.
+ *  Static literal keys (no runtime assembly) keep the dead-key and dynamic-key
+ *  i18n guards happy. */
+function segmentText(key: ApprovalModeKey): { label: string; tooltip: string; desc: string } {
+  switch (key) {
+    case 'trust_reads':
+      return {
+        label: i18nT('components.approvalModePicker.reads_label'),
+        tooltip: i18nT('components.approvalModePicker.reads_tooltip'),
+        desc: i18nT('components.approvalModePicker.reads_desc'),
+      }
+    case 'trust':
+      return {
+        label: i18nT('components.approvalModePicker.trust_label'),
+        tooltip: i18nT('components.approvalModePicker.trust_tooltip'),
+        desc: i18nT('components.approvalModePicker.trust_desc'),
+      }
+    case 'yolo':
+      return {
+        label: i18nT('components.approvalModePicker.yolo_label'),
+        tooltip: i18nT('components.approvalModePicker.yolo_tooltip'),
+        desc: i18nT('components.approvalModePicker.yolo_desc'),
+      }
+    case 'normal':
+    default:
+      return {
+        label: i18nT('components.approvalModePicker.normal_label'),
+        tooltip: i18nT('components.approvalModePicker.normal_tooltip'),
+        desc: i18nT('components.approvalModePicker.normal_desc'),
+      }
+  }
+}
 
 /** Approval-mode picker (Normal / Reads / Trust / YOLO) for the chat footer.
  *
@@ -41,6 +79,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
   const [yoloDontAsk, setYoloDontAsk] = useState(false)
 
   const display = APPROVAL_SEGMENTS.find(s => s.key === mode) || APPROVAL_SEGMENTS[0]
+  const displayText = segmentText(display.key)
 
   const onOpenChange = (o: boolean) => {
     setOpen(o)
@@ -58,16 +97,18 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
         {/* Chrome type ("Normal" / "Reads" / "Trust" / "YOLO" are labels), so no
             `font-mono` — that pinned `var(--mono)`, which the Font Family
             setting never writes. */}
-        <button className="h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap" title={i18nT('components.approvalModePicker.approval_mode')} aria-label={`Approval mode: ${display.label}`}>
+        <button className="h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap" title={i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })}>
           <span className={`shrink-0 ${display.color}`}>{display.icon}</span>
-          {!compact && display.label}
+          {!compact && displayText.label}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" collisionPadding={8} className="w-[280px]">
-        {APPROVAL_SEGMENTS.map(s => (
+        {APPROVAL_SEGMENTS.map(s => {
+          const t = segmentText(s.key)
+          return (
           <DropdownMenuItem
             key={s.key}
-            title={s.tooltip}
+            title={t.tooltip}
             onSelect={e => {
               if (s.key === 'yolo') {
                 if (mode === 'yolo') { e.preventDefault(); return }
@@ -82,12 +123,13 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
           >
             <span className="shrink-0">{s.icon}</span>
             <span className="flex flex-col min-w-0 flex-1">
-              <span className="font-medium">{s.label}</span>
-              <span className="text-[11px] font-normal text-muted leading-snug">{s.desc}</span>
+              <span className="font-medium">{t.label}</span>
+              <span className="text-[11px] font-normal text-muted leading-snug">{t.desc}</span>
             </span>
             {s.key === mode && <Check size={12} className="shrink-0 text-accent" />}
           </DropdownMenuItem>
-        ))}
+          )
+        })}
         {yoloConfirm > 0 && (
           <>
             <DropdownMenuSeparator />

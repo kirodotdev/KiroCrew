@@ -830,7 +830,7 @@ function ChatInput({
   const { botName } = useBranding()
   const isMobile = useIsMobile()
   const ime = useImeGuard()
-  const resolvedPlaceholder = placeholder || `Message ${botName}…  (/command · @file · $skill)`
+  const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [filePickerOpen, setFilePickerOpen] = useState(false)
   const [fileQuery, setFileQuery] = useState('')

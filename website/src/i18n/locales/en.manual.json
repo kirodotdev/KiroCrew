@@ -1,5 +1,20 @@
 {
   "components": {
+    "approvalModePicker": {
+      "approval_mode_aria": "Approval mode: {{mode}}",
+      "normal_label": "Normal",
+      "normal_tooltip": "KiroCrew asks you before doing anything",
+      "normal_desc": "KiroCrew checks with you before doing anything",
+      "reads_label": "Reads",
+      "reads_tooltip": "KiroCrew looks things up on its own, but asks before making changes",
+      "reads_desc": "KiroCrew looks things up on its own, but asks before making any changes",
+      "trust_label": "Trust",
+      "trust_tooltip": "In this chat, KiroCrew works without asking you first",
+      "trust_desc": "In this chat, KiroCrew works without asking you first",
+      "yolo_label": "YOLO",
+      "yolo_tooltip": "In every chat, KiroCrew works without asking you first",
+      "yolo_desc": "In every chat, KiroCrew works without asking you first"
+    },
     "agentImportFlow": {
       "choose_sources": "Choose sources",
       "could_not_save_onboarding_state": "Could not save onboarding state.",
@@ -69,6 +84,7 @@
       "retrying": "Retrying..."
     },
     "chatInput": {
+      "message_placeholder": "Message {{bot}}… (/command · @file · $skill)",
       "approve": "Approve",
       "approve_all": "Approve all",
       "could_not_submit_that_decision_see_the_console_f": "Could not submit that decision — see the console for details.",
@@ -521,6 +537,22 @@
     "task_runner": "Task Runner"
   },
   "pages": {
+    "capabilitiesPage": {
+      "crews_label": "Crews",
+      "crews_description": "Crews you chat with, each with its own workspace and memory",
+      "templates_label": "Agent Templates",
+      "templates_description": "Installed agent configurations and packages",
+      "mcp_label": "Integrations(MCP)",
+      "mcp_description": "Add tools that let your agent work with Slack, AWS, code repos, and other services",
+      "skills_label": "Skills",
+      "skills_description": "Specialized knowledge files your agent loads on demand for specific tasks",
+      "steering_label": "Steering",
+      "steering_description": "Always-on markdown conventions from ~/.kiro/steering and your project’s .kiro/steering",
+      "hooks_label": "Hooks",
+      "hooks_description": "Shell commands that run automatically on agent events like prompts, tool calls, and session start/stop",
+      "prompts_label": "Prompts",
+      "prompts_description": "Reusable prompt templates from {{registry}}"
+    },
     "agentsPage": {
       "agent_templates_grouped_by_package_update_and_un": "Agent templates grouped by package. Update and uninstall at package level. Individual agents can be deleted (removes config file).",
       "remove_default_agent": "Remove default agent",
@@ -747,6 +779,7 @@
       "upload_failed_error": "Upload failed: {{error}}"
     },
     "chatSidebar": {
+      "streaming": "Streaming",
       "all_sessions": "All sessions",
       "archive_failed": "Archive failed",
       "archiving": "Archiving…",

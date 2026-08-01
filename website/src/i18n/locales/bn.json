@@ -838,6 +838,19 @@
       "trusted_auto_approving_future_calls": "বিশ্বস্ত — ভবিষ্যতের কলগুলি স্বয়ংক্রিয়ভাবে অনুমোদন করা হচ্ছে"
     },
     "approvalModePicker": {
+      "approval_mode_aria": "অনুমোদন মোড: {{mode}}",
+      "normal_label": "সাধারণ",
+      "normal_tooltip": "KiroCrew কিছু করার আগে আপনাকে জিজ্ঞাসা করে",
+      "normal_desc": "KiroCrew যেকোনো কিছু করার আগে আপনার সাথে যাচাই করে",
+      "reads_label": "রিডস",
+      "reads_tooltip": "KiroCrew নিজে থেকে তথ্য খোঁজে, তবে পরিবর্তন করার আগে জিজ্ঞাসা করে",
+      "reads_desc": "KiroCrew নিজে থেকে তথ্য খোঁজে, তবে যেকোনো পরিবর্তন করার আগে জিজ্ঞাসা করে",
+      "trust_label": "ট্রাস্ট",
+      "trust_tooltip": "এই চ্যাটে, KiroCrew আগে জিজ্ঞাসা না করেই কাজ করে",
+      "trust_desc": "এই চ্যাটে, KiroCrew আগে জিজ্ঞাসা না করেই কাজ করে",
+      "yolo_label": "YOLO",
+      "yolo_tooltip": "প্রতিটি চ্যাটে, KiroCrew আগে জিজ্ঞাসা না করেই কাজ করে",
+      "yolo_desc": "প্রতিটি চ্যাটে, KiroCrew আগে জিজ্ঞাসা না করেই কাজ করে",
       "all_tools_will_get_auto_approved_across_all_sess": "সব সেশনে সব টুল স্বয়ংক্রিয়ভাবে অনুমোদিত হবে।",
       "approval_mode": "অনুমোদন মোড",
       "cancel": "বাতিল",
@@ -1015,6 +1028,7 @@
       "retrying": "আবার চেষ্টা করা হচ্ছে..."
     },
     "chatInput": {
+      "message_placeholder": "{{bot}}-কে মেসেজ করুন… (/command · @file · $skill)",
       "add_files_options": "ফাইল ও অপশন যোগ করুন",
       "allow_once": "একবারের জন্য অনুমতি দিন",
       "apply_a_ready_made_set_of_instructions": "আগে থেকে তৈরি নির্দেশের একটি সেট প্রয়োগ করুন",
@@ -2949,6 +2963,20 @@
       "your_artifacts": "আপনার আর্টিফ্যাক্ট"
     },
     "capabilitiesPage": {
+      "crews_label": "Crews",
+      "crews_description": "যে Crews-এর সাথে আপনি চ্যাট করেন, প্রতিটির নিজস্ব ওয়ার্কস্পেস এবং মেমরি রয়েছে",
+      "templates_label": "এজেন্ট টেমপ্লেট",
+      "templates_description": "ইনস্টল করা এজেন্ট কনফিগারেশন এবং প্যাকেজ",
+      "mcp_label": "ইন্টিগ্রেশন (MCP)",
+      "mcp_description": "এমন টুল যোগ করুন যা আপনার এজেন্টকে Slack, AWS, কোড রিপোজিটরি এবং অন্যান্য পরিষেবার সাথে কাজ করতে দেয়",
+      "skills_label": "স্কিল",
+      "skills_description": "নির্দিষ্ট কাজের জন্য আপনার এজেন্ট চাহিদা অনুযায়ী লোড করে এমন বিশেষায়িত জ্ঞান ফাইল",
+      "steering_label": "স্টিয়ারিং",
+      "steering_description": "~/.kiro/steering এবং আপনার প্রকল্পের .kiro/steering থেকে সর্বদা-সক্রিয় markdown কনভেনশন",
+      "hooks_label": "Hooks",
+      "hooks_description": "এজেন্ট ইভেন্ট যেমন প্রম্পট, টুল কল এবং সেশন শুরু/বন্ধে স্বয়ংক্রিয়ভাবে চলা Shell কমান্ড",
+      "prompts_label": "প্রম্পট",
+      "prompts_description": "{{registry}} থেকে পুনঃব্যবহারযোগ্য প্রম্পট টেমপ্লেট",
       "agent_capabilities": "এজেন্টের সক্ষমতা"
     },
     "channelPage": {
@@ -3405,6 +3433,7 @@
       "what_can_i_do_for_you": "আপনার জন্য কী করতে পারি?"
     },
     "chatSidebar": {
+      "streaming": "স্ট্রিমিং",
       "add_column_after_this_one": "এটির পরে কলাম যোগ করুন",
       "agent_finished_your_turn": "এজেন্ট শেষ করেছে — এখন আপনার পালা",
       "all_sessions": "সব সেশন",

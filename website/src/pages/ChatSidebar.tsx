@@ -62,6 +62,17 @@ import {
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
+
+/** Translate a slot's running-status line. The status `text` is stored as a raw
+ *  English literal by the websocket layer (a plain `.ts` module the i18n codemod
+ *  never scans), so it must be localized at render time. The two fixed phases
+ *  (`thinking`/`streaming`) map to catalog keys; a `tool` phase or a
+ *  server-supplied status carries its own dynamic text and is passed through. */
+function slotStatusText(detail?: { kind?: string; text?: string }): string {
+  if (detail?.kind === 'streaming') return i18nT('pages.chatSidebar.streaming')
+  if (detail?.kind === 'thinking' && detail.text === 'Thinking…') return i18nT('pages.chatSidebar.thinking')
+  return detail?.text || i18nT('pages.chatSidebar.thinking')
+}
 /** Telegram-style relative time: time today, "Yesterday hh:mm", weekday+time this week,
  *  short date this year, full date otherwise.
  *  Accepts ISO string (active slots) or Unix epoch seconds (history `modified`). */
@@ -2035,7 +2046,7 @@ function ChatSidebar({
       : subagentCount > 0
         ? subagentLabel
         : s.running
-          ? (slotStatusDetail[s.key]?.text || i18nT('pages.chatSidebar.thinking'))
+          ? slotStatusText(slotStatusDetail[s.key])
           : (s.last_message || '')
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
     const rowColor = ci != null ? paletteColors[ci] : null
@@ -2251,7 +2262,7 @@ function ChatSidebar({
                 <span className="truncate">{subagentLabel}</span>
               </div>
             ) : s.running ? (
-              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusDetail[s.key]?.text || i18nT('pages.chatSidebar.thinking')}</div>
+              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusText(slotStatusDetail[s.key])}</div>
             ) : s.last_message ? (
               <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
             ) : null}
