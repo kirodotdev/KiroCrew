@@ -28,6 +28,10 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.discord.attachments import (
+    append_attachment_context,
+    process_discord_attachments,
+)
 from kiro_crew.discord.commands import (
     ConversationState,
     parse_command,
@@ -38,6 +42,8 @@ from kiro_crew.discord.session_resume import DiscordSessionResume
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.messaging.attachments import IngestLimits
+from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
@@ -71,6 +77,8 @@ _AGENT_SENTINELS = frozenset({"default", "auto"})
 
 # Upper bound on how many queued messages collapse into a single combined turn.
 _MAX_COLLAPSE = 50
+# Keep queue collapse within the shared ingestion layer's per-turn file cap.
+_MAX_COLLAPSED_ATTACHMENTS = IngestLimits().max_attachments
 
 _HELP_TEXT = """\
 🦞 **KiroCrew — Discord**
@@ -201,14 +209,24 @@ class DiscordDispatcher:
         scope_id = self._scope_id(user_id, thread_id)
         text = msg.text
 
+        # Attachments make this a content-bearing turn, not a control command.
+        # Otherwise a caption such as ``!help`` would intercept before ingestion
+        # and silently discard the attached file — the exact class of bug this
+        # path is meant to eliminate.
+        interpret_as_command = interpret_commands and not msg.attachments
+
         # Per-message mid-turn override (!queue/!steer) — see the Telegram
         # dispatcher for the full precedence rationale.
         override_mode = None
-        if interpret_commands and parse_command(text) is None:
+        if interpret_as_command and parse_command(text) is None:
             override_mode, text = parse_mid_turn_override(text)
 
         # ── Command intercept (no LLM session needed) ──
-        cmd = parse_command(text) if interpret_commands and override_mode is None else None
+        cmd = (
+            parse_command(text)
+            if interpret_as_command and override_mode is None
+            else None
+        )
         if cmd == "new":
             left_resumed = self._session_resume.leave_resumed_session(channel_id)
             self._conv.bump_gen(scope_id)
@@ -307,17 +325,29 @@ class DiscordDispatcher:
             self.client, channel_id, DISCORD_CAPABILITIES, session_key=session_key
         )
         self._active_renderers[session_key] = renderer
+        attachment_temp_paths: list[str] = []
 
         # Everything acquire-dependent runs INSIDE the try so the finally
         # always finalizes the renderer; release() is gated on _acquired.
         # Mirrors telegram/transport_dispatch.py.
         _acquired = False
         try:
-            await renderer.on_turn_start()
+            # Acquire before attachment I/O. A large download yields repeatedly;
+            # leaving the session idle in that window lets a later message run
+            # first and persist the conversation in reverse order.
             provider, is_new, resumed = await self.sessions.get_or_create(
                 session_key, agent=agent, channel_id=chan_id
             )
             _acquired = True
+            if msg.attachments:
+                attachment_result = await process_discord_attachments(
+                    self.client, msg.attachments
+                )
+                attachment_temp_paths = list(attachment_result.temp_paths)
+                text = append_attachment_context(text, attachment_result)
+            if not text:
+                return
+            await renderer.on_turn_start()
             # New-session bookkeeping belongs to THIS conversation's own session
             # only. A resumed dashboard session is pre-existing by definition, and
             # `get_or_create` returns is_new whenever its ACP session is merely
@@ -441,6 +471,9 @@ class DiscordDispatcher:
             self._active_renderers.pop(session_key, None)
             if _acquired:
                 self.sessions.release(session_key)
+            await asyncio.to_thread(
+                cleanup_attachments, attachment_temp_paths
+            )
 
         # Drain anything queued during the turn (queue_mode == "queue").
         if drain:
@@ -457,7 +490,7 @@ class DiscordDispatcher:
         assert self.client is not None
         channel_id = msg.conversation_id
         mode = override_mode or self.cfg.messaging.queue_mode
-        if mode != "queue":
+        if mode != "queue" and not msg.attachments:
             provider = self.sessions.get_provider(session_key)
             steer = getattr(provider, "steer", None)
             # Only steer when a turn is GENUINELY in flight (see the Telegram
@@ -485,7 +518,12 @@ class DiscordDispatcher:
                 return
         # queue mode (or !queue override, or steer unavailable). Atomic
         # enqueue + receipt under _receipt_lock — see the Telegram dispatcher.
-        if not await self._enqueue_with_receipt(session_key, channel_id, text):
+        if not await self._enqueue_with_receipt(
+            session_key,
+            channel_id,
+            text,
+            attachments=msg.attachments,
+        ):
             await self.handle_message(msg)
 
     async def _drain_queue(
@@ -494,61 +532,112 @@ class DiscordDispatcher:
         """Collapse every message queued during the just-finished turn into ONE
         combined turn (order preserved). See the Telegram dispatcher for the
         lock/ordering rationale."""
-        texts: list[str] = []
-        remainder: list[tuple[str, str, dict]] = []
-        async with self._receipt_lock:
-            while True:
-                item = self.sessions.dequeue(session_key)
-                if item is None:
-                    break
-                if len(texts) < _MAX_COLLAPSE:
-                    texts.append(item[1])
-                else:
-                    remainder.append(item)
-            for _ts, rtext, _kw in remainder:
-                self.sessions.enqueue(session_key, str(time.time()), rtext, force=True)
-            if texts:
-                await self._receipt_flip_locked(session_key, channel_id, texts, len(remainder))
-        if not texts:
-            return
-        if remainder:
-            logger.debug(
-                "discord: drain hit collapse cap=%d for %s; %d message(s) "
-                "deferred (in order) to the next turn",
-                _MAX_COLLAPSE,
-                session_key,
-                len(remainder),
+        # Iterate rather than recurse: one burst can span multiple
+        # attachment-capped turns, and messages arriving during a drained turn
+        # join the same FIFO pump instead of waiting for unrelated future input.
+        while True:
+            texts: list[str] = []
+            attachments: list[Any] = []
+            remainder: list[tuple[str, str, dict]] = []
+            defer_rest = False
+            async with self._receipt_lock:
+                while True:
+                    item = self.sessions.dequeue(session_key)
+                    if item is None:
+                        break
+                    item_attachments = list(item[2].get("attachments") or [])
+                    exceeds_attachment_cap = bool(
+                        texts
+                        and item_attachments
+                        and len(attachments) + len(item_attachments)
+                        > _MAX_COLLAPSED_ATTACHMENTS
+                    )
+                    if (
+                        not defer_rest
+                        and len(texts) < _MAX_COLLAPSE
+                        and not exceeds_attachment_cap
+                    ):
+                        texts.append(item[1])
+                        attachments.extend(item_attachments)
+                    else:
+                        # Once one message no longer fits, defer it and everything
+                        # behind it so queue order remains exact.
+                        defer_rest = True
+                        remainder.append(item)
+                for _ts, rtext, rkw in remainder:
+                    self.sessions.enqueue(
+                        session_key,
+                        str(time.time()),
+                        rtext,
+                        force=True,
+                        attachments=list(rkw.get("attachments") or []),
+                    )
+                if texts:
+                    await self._receipt_flip_locked(
+                        session_key,
+                        channel_id,
+                        [text or "[attachment]" for text in texts],
+                        len(remainder),
+                    )
+            if not texts:
+                return
+            if remainder:
+                logger.debug(
+                    "discord: drain deferred %d message(s) for %s "
+                    "to preserve collapse/attachment caps and FIFO order",
+                    len(remainder),
+                    session_key,
+                )
+            combined = "\n\n".join(texts)
+            await self.handle_message(
+                InboundMessage(
+                    channel_type="discord",
+                    user_id=user_id,
+                    conversation_id=channel_id,
+                    text=combined,
+                    thread_id=thread_id or None,
+                    attachments=attachments,
+                ),
+                drain=False,
+                interpret_commands=False,
             )
-        combined = "\n\n".join(texts)
-        await self.handle_message(
-            InboundMessage(
-                channel_type="discord",
-                user_id=user_id,
-                conversation_id=channel_id,
-                text=combined,
-                thread_id=thread_id or None,
-            ),
-            drain=False,
-            interpret_commands=False,
-        )
 
     # ── Mid-turn queue receipt (single, in-place, persistent record) ───────
 
-    async def _enqueue_with_receipt(self, session_key: str, channel_id: str, text: str) -> bool:
+    async def _enqueue_with_receipt(
+        self,
+        session_key: str,
+        channel_id: str,
+        text: str,
+        *,
+        attachments: list[Any] | None = None,
+    ) -> bool:
         """Atomically enqueue a mid-turn message and create/grow its collapsing
         receipt, under ``_receipt_lock``. Returns True if queued; False if the
         turn finished in the window (caller runs the message as a fresh turn)."""
         assert self.client is not None
         async with self._receipt_lock:
-            if not self.sessions.enqueue(session_key, str(time.time()), text, force=False):
+            if not self.sessions.enqueue(
+                session_key,
+                str(time.time()),
+                text,
+                force=False,
+                attachments=list(attachments or []),
+            ):
                 return False
+            receipt_text = text or "[attachment]"
             receipt = self._queue_receipts.get(session_key)
             if receipt is None:
-                msg_id = await self.client.send_message(channel_id, _receipt_text([text]))
+                msg_id = await self.client.send_message(
+                    channel_id, _receipt_text([receipt_text])
+                )
                 if msg_id is not None:
-                    self._queue_receipts[session_key] = _QueueReceipt(msg_id=msg_id, texts=[text])
+                    self._queue_receipts[session_key] = _QueueReceipt(
+                        msg_id=msg_id,
+                        texts=[receipt_text],
+                    )
                 return True
-            receipt.texts.append(text)
+            receipt.texts.append(receipt_text)
             try:
                 await self.client.edit_message(
                     channel_id, receipt.msg_id, _receipt_text(receipt.texts)

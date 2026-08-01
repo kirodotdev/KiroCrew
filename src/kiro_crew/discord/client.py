@@ -25,7 +25,7 @@ import logging
 import os
 import random
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 import aiohttp
@@ -39,6 +39,11 @@ DISCORD_CHUNK_LIMIT = 1900
 
 _API_BASE = "https://discord.com/api/v10"
 _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
+
+# Attachment URLs are signed but unauthenticated. Keep the exact CDN host
+# allow-list here at the channel boundary; redirects are disabled during fetch
+# so an allowed URL cannot bounce the downloader to an arbitrary host.
+_ATTACHMENT_HOSTS = frozenset({"cdn.discordapp.com", "media.discordapp.net"})
 
 # Gateway intents. DM-only installations request DIRECT_MESSAGES alone. When
 # an explicit server-thread allow-list is configured, GUILD_MESSAGES delivers
@@ -77,6 +82,7 @@ class DiscordInbound:
     message_id: str = ""
     guild_id: str = ""  # empty string == DM channel
     is_bot: bool = False
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -265,6 +271,42 @@ class DiscordClient:
             f"/interactions/{interaction_id}/{interaction_token}/callback",
             {"type": _CALLBACK_DEFERRED_UPDATE_MESSAGE},
         )
+
+    async def download_attachment(self, url: str, dest: str) -> None:
+        """Download a signed Discord CDN attachment without bot credentials.
+
+        Only Discord's two documented delivery hosts are accepted. Redirects
+        are deliberately refused so host validation remains true for the bytes
+        ultimately written to ``dest``.
+        """
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("invalid Discord attachment URL") from exc
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in _ATTACHMENT_HOSTS
+            or port not in (None, 443)
+        ):
+            raise ValueError("refusing non-Discord attachment URL")
+
+        session = await self._ensure_session()
+        async with session.get(
+            url,
+            proxy=self._proxy,
+            timeout=aiohttp.ClientTimeout(total=30),
+            allow_redirects=False,
+        ) as resp:
+            if 300 <= resp.status < 400:
+                raise ValueError("refusing redirected Discord attachment URL")
+            resp.raise_for_status()
+            fh = await asyncio.to_thread(open, dest, "wb")
+            try:
+                async for chunk in resp.content.iter_chunked(8192):
+                    await asyncio.to_thread(fh.write, chunk)
+            finally:
+                await asyncio.to_thread(fh.close)
 
     async def create_dm_channel(self, user_id: str) -> str:
         """Create (or fetch) the DM channel for a user id. Returns the channel
@@ -482,6 +524,11 @@ class DiscordClient:
                 message_id=str(d.get("id", "")),
                 guild_id=str(d.get("guild_id", "") or ""),
                 is_bot=bool(author.get("bot", False)),
+                attachments=[
+                    attachment
+                    for attachment in (d.get("attachments") or [])
+                    if isinstance(attachment, dict)
+                ],
             )
             if inbound.is_bot or inbound.user_id == self.bot_user_id:
                 return  # never respond to bots (incl. ourselves) — loop guard

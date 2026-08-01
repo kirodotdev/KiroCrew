@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -146,6 +147,129 @@ class TestTranscribeAudio:
         cfg = SttConfig(enabled=True, whisper_path="/nonexistent")
         result = await transcribe_audio("/tmp/test.webm", cfg)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_whisper_discovery_runs_off_event_loop(self, tmp_path, monkeypatch):
+        from threading import get_ident
+
+        audio = tmp_path / "test.webm"
+        audio.write_text("fake audio")
+        cfg = SttConfig(enabled=True)
+        loop_thread = get_ident()
+        discovery_threads = []
+
+        def discover_python_bin_dir():
+            discovery_threads.append(get_ident())
+            return ""
+
+        monkeypatch.setattr(
+            "kiro_crew.transcribe._python3_bin_dir", discover_python_bin_dir
+        )
+        monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            result = await transcribe_audio(str(audio), cfg)
+
+        assert result is None
+        assert discovery_threads
+        assert discovery_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_aws_audio_read_runs_off_event_loop(self, tmp_path, monkeypatch):
+        from threading import get_ident
+
+        from kiro_crew import transcribe as tr
+
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake audio")
+        cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
+        loop_thread = get_ident()
+        read_threads = []
+
+        def read_audio(path):
+            assert path == str(audio)
+            read_threads.append(get_ident())
+            return b"fake audio"
+
+        input_stream = SimpleNamespace(
+            send_audio_event=AsyncMock(),
+            end_stream=AsyncMock(),
+        )
+        stream = SimpleNamespace(input_stream=input_stream, output_stream=object())
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def start_stream_transcription(self, **kwargs):
+                return stream
+
+        class FakeHandler:
+            def __init__(self, output_stream, transcript_parts):
+                pass
+
+            async def handle_events(self):
+                pass
+
+        monkeypatch.setattr(tr, "boto3", object())
+        monkeypatch.setattr(tr, "_read_audio_bytes", read_audio)
+        monkeypatch.setattr(
+            tr,
+            "_load_aws_transcribe_components",
+            lambda: (FakeClient, FakeHandler),
+        )
+
+        result = await tr._transcribe_aws(str(audio), cfg)
+
+        assert result is None
+        assert read_threads
+        assert read_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_whisper_output_file_io_runs_off_event_loop(
+        self, tmp_path, monkeypatch
+    ):
+        from threading import get_ident
+
+        binary = tmp_path / "whisper"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        audio = tmp_path / "test.webm"
+        audio.write_text("fake audio")
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        cfg = SttConfig(enabled=True, whisper_path=str(binary), timeout_secs=10)
+        loop_thread = get_ident()
+        io_threads = []
+
+        def make_output_dir():
+            io_threads.append(get_ident())
+            return str(output_dir)
+
+        def collect_output(*args, **kwargs):
+            io_threads.append(get_ident())
+            return "Hello world"
+
+        def remove_output_dir(*args, **kwargs):
+            io_threads.append(get_ident())
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        monkeypatch.setattr("kiro_crew.transcribe.tempfile.mkdtemp", make_output_dir)
+        monkeypatch.setattr(
+            "kiro_crew.transcribe._collect_whisper_output", collect_output
+        )
+        monkeypatch.setattr("kiro_crew.transcribe.shutil.rmtree", remove_output_dir)
+        with patch(
+            "kiro_crew.transcribe.asyncio.create_subprocess_exec",
+            return_value=mock_proc,
+        ):
+            result = await transcribe_audio(str(audio), cfg)
+
+        assert result == "Hello world"
+        assert len(io_threads) == 3
+        assert all(thread != loop_thread for thread in io_threads)
 
     @pytest.mark.asyncio
     async def test_successful_transcription(self, tmp_path):

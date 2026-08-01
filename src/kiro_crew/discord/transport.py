@@ -59,7 +59,7 @@ DISCORD_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
     reactions=True,  # add_reaction — used for the steer-ack receipt
-    files=False,
+    files=True,
     rich_blocks=False,
     threads=True,
     max_message_chars=DISCORD_CHUNK_LIMIT,
@@ -157,13 +157,13 @@ class DiscordTransport(MessagingTransport):
         The low-level client's Gateway loop normalizes MESSAGE_CREATE into
         ``DiscordInbound``; this adapter maps that onto the neutral
         ``InboundMessage``, enforces deny-by-default auth, and hands an
-        authorized message to the turn dispatcher. Non-text messages
-        (attachments/stickers only) are dropped.
+        authorized message to the turn dispatcher. Attachment-only messages
+        continue through the same authorized path; sticker-only messages do not.
         """
         if not isinstance(raw_envelope, DiscordInbound):
             return
         inbound = raw_envelope
-        if not inbound.text:
+        if not inbound.text and not inbound.attachments:
             return
         thread_id: str | None = None
         if inbound.guild_id:
@@ -189,6 +189,7 @@ class DiscordTransport(MessagingTransport):
             text=inbound.text,
             thread_id=thread_id,
             message_id=inbound.message_id,
+            attachments=list(inbound.attachments),
         )
         if not self.authorize(msg):
             return

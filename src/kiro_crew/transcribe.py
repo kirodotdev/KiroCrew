@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import platform_compat
 
@@ -190,20 +191,39 @@ def is_available(stt_config=None) -> bool:  # type: ignore[no-untyped-def]
     return _find_whisper(stt_config.whisper_path) is not None
 
 
+def _load_stt_config() -> Any:
+    """Load STT configuration without importing or reading config on the loop."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    return KiroCrewConfig.load().stt
+
+
+def _is_sensitive_audio_path(audio_path: str) -> bool:
+    """Run the filesystem-resolving sensitive-path guard off the event loop."""
+    from kiro_crew.security import is_sensitive_path
+
+    return is_sensitive_path(audio_path)
+
+
+def _redact_transcript(transcript: str) -> str:
+    """Apply transcript redaction without consuming event-loop time."""
+    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+    transcript, _ = redact_exfiltration_urls(transcript)
+    transcript, _ = redact_credentials(transcript)
+    return transcript
+
+
 async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # type: ignore[no-untyped-def]
     """Transcribe audio file. Returns text or None."""
     if stt_config is None:
-        from kiro_crew.config.loader import KiroCrewConfig
-
-        stt_config = KiroCrewConfig.load().stt
+        stt_config = await asyncio.to_thread(_load_stt_config)
 
     if not stt_config.enabled:
         logger.debug("STT disabled in config")
         return None
 
-    from kiro_crew.security import is_sensitive_path
-
-    if is_sensitive_path(audio_path):
+    if await asyncio.to_thread(_is_sensitive_audio_path, audio_path):
         logger.error("Refusing to read sensitive path: %s", audio_path)
         return None
 
@@ -211,17 +231,14 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
     if provider == "transcribe":
         result = await _transcribe_aws(audio_path, stt_config)
     elif provider == "mlx":
-        ensure_ffmpeg_in_path()
+        await asyncio.to_thread(ensure_ffmpeg_in_path)
         result = await _transcribe_mlx(audio_path, stt_config)
     else:
-        ensure_ffmpeg_in_path()
+        await asyncio.to_thread(ensure_ffmpeg_in_path)
         result = await _transcribe_native(audio_path, stt_config)
 
     if result:
-        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-
-        result, _ = redact_exfiltration_urls(result)
-        result, _ = redact_credentials(result)
+        result = await asyncio.to_thread(_redact_transcript, result)
     return result
 
 
@@ -256,6 +273,54 @@ TRANSCRIBE_SAMPLE_RATE_HZ = 48000
 _TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024  # 25 MB Transcribe API limit
 
 
+def _load_aws_transcribe_components() -> tuple[Any, Any]:
+    """Import optional AWS Transcribe components outside the event loop."""
+    from amazon_transcribe.client import TranscribeStreamingClient
+    from amazon_transcribe.handlers import TranscriptResultStreamHandler
+    from amazon_transcribe.model import TranscriptEvent
+
+    class TranscriptCollector(TranscriptResultStreamHandler):
+        def __init__(self, output_stream: Any, transcript_parts: list[str]) -> None:
+            super().__init__(output_stream)
+            self._transcript_parts = transcript_parts
+
+        async def handle_transcript_event(
+            self, transcript_event: TranscriptEvent
+        ) -> None:
+            for result in transcript_event.transcript.results:
+                if not result.is_partial and result.alternatives:
+                    self._transcript_parts.append(result.alternatives[0].transcript)
+
+    return TranscribeStreamingClient, TranscriptCollector
+
+
+def _find_ffmpeg() -> str | None:
+    """Return an ffmpeg binary after probing known install locations."""
+    ensure_ffmpeg_in_path()
+    return shutil.which("ffmpeg")
+
+
+def _make_temp_ogg() -> str:
+    """Create and close a temporary OGG file without leaking its descriptor."""
+    fd, path = tempfile.mkstemp(suffix=".ogg")
+    os.close(fd)
+    return path
+
+
+def _unlink_if_exists(path: str) -> None:
+    """Remove *path*, tolerating another cleanup path winning the race."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def _read_audio_bytes(audio_path: str) -> bytes:
+    """Read at most one byte beyond AWS Transcribe's upload limit."""
+    with open(audio_path, "rb") as audio_file:
+        return audio_file.read(_TRANSCRIBE_MAX_BYTES + 1)
+
+
 async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
     """Transcribe using AWS Transcribe Streaming API (ogg-opus)."""
     ext = os.path.splitext(audio_path)[1].lower()
@@ -269,9 +334,9 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
         logger.error("AWS Transcribe not available: install 'kirocrew[voice]'")
         return None
     try:
-        from amazon_transcribe.client import TranscribeStreamingClient
-        from amazon_transcribe.handlers import TranscriptResultStreamHandler
-        from amazon_transcribe.model import TranscriptEvent
+        TranscribeStreamingClient, TranscriptCollector = await asyncio.to_thread(
+            _load_aws_transcribe_components
+        )
     except ImportError:
         logger.error("AWS Transcribe not available: install 'kirocrew[voice]'")
         return None
@@ -280,15 +345,14 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
     tmp_ogg = None
     actual_path = audio_path
     if ext in (".webm",):
-        ensure_ffmpeg_in_path()
-        if not shutil.which("ffmpeg"):
+        ffmpeg_bin = await asyncio.to_thread(_find_ffmpeg)
+        if not ffmpeg_bin:
             logger.error("ffmpeg required to remux webm to ogg for Transcribe")
             return None
-        fd, tmp_ogg = tempfile.mkstemp(suffix=".ogg")
-        os.close(fd)
+        tmp_ogg = await asyncio.to_thread(_make_temp_ogg)
         try:
             proc = await asyncio.create_subprocess_exec(
-                "ffmpeg",
+                ffmpeg_bin,
                 "-y",
                 "-i",
                 audio_path,
@@ -308,30 +372,31 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
                 raise RuntimeError(f"ffmpeg exited with {proc.returncode}")
         except Exception:
             logger.exception("ffmpeg remux failed for %s", audio_path)
-            if tmp_ogg and os.path.exists(tmp_ogg):
-                os.unlink(tmp_ogg)
+            if tmp_ogg:
+                await asyncio.to_thread(_unlink_if_exists, tmp_ogg)
             return None
         actual_path = tmp_ogg
 
     transcript_parts: list[str] = []
-
-    class Handler(TranscriptResultStreamHandler):
-        async def handle_transcript_event(self, transcript_event: TranscriptEvent) -> None:
-            for result in transcript_event.transcript.results:
-                if not result.is_partial and result.alternatives:
-                    transcript_parts.append(result.alternatives[0].transcript)
-
     stream = None
     try:
-        file_size = os.path.getsize(actual_path)
-        if file_size > _TRANSCRIBE_MAX_BYTES:
-            logger.error("Audio file too large for Transcribe: %d bytes", file_size)
+        audio_bytes = await asyncio.to_thread(_read_audio_bytes, actual_path)
+        if len(audio_bytes) > _TRANSCRIBE_MAX_BYTES:
+            logger.error(
+                "Audio file too large for Transcribe: >%d bytes",
+                _TRANSCRIBE_MAX_BYTES,
+            )
             return None
 
         profile = stt_config.transcribe_profile or None
-        credential_resolver = _ProfileCredentialResolver(profile) if profile else None
+        credential_resolver = (
+            await asyncio.to_thread(_ProfileCredentialResolver, profile)
+            if profile
+            else None
+        )
 
-        client = TranscribeStreamingClient(
+        client = await asyncio.to_thread(
+            TranscribeStreamingClient,
             region=region,
             credential_resolver=credential_resolver,
         )
@@ -342,7 +407,6 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
         )
 
         async def write_chunks():
-            audio_bytes = Path(actual_path).read_bytes()
             chunk_size = 8192
             for i in range(0, len(audio_bytes), chunk_size):
                 await stream.input_stream.send_audio_event(
@@ -350,7 +414,7 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
                 )
             await stream.input_stream.end_stream()
 
-        handler = Handler(stream.output_stream)
+        handler = TranscriptCollector(stream.output_stream, transcript_parts)
         await asyncio.wait_for(
             asyncio.gather(write_chunks(), handler.handle_events()),
             timeout=stt_config.timeout_secs,
@@ -367,8 +431,8 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
                 await stream.input_stream.end_stream()
             except Exception:
                 pass
-        if tmp_ogg and os.path.exists(tmp_ogg):
-            os.unlink(tmp_ogg)
+        if tmp_ogg:
+            await asyncio.to_thread(_unlink_if_exists, tmp_ogg)
 
 
 def _collect_whisper_output(
@@ -406,7 +470,7 @@ async def _run_whisper_cli(
     up. ``build_args`` lets callers express their differing flags (the two CLIs
     use hyphenated vs underscored option names).
     """
-    out_dir = tempfile.mkdtemp()
+    out_dir = await asyncio.to_thread(tempfile.mkdtemp)
     proc = None
     try:
         clean_env = os.environ.copy()
@@ -420,7 +484,13 @@ async def _run_whisper_cli(
             env=clean_env,
         )
         _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
-        return _collect_whisper_output(proc.returncode, stderr, out_dir, label=label)
+        return await asyncio.to_thread(
+            _collect_whisper_output,
+            proc.returncode,
+            stderr,
+            out_dir,
+            label,
+        )
     except asyncio.TimeoutError:
         if proc is not None:
             try:
@@ -431,7 +501,7 @@ async def _run_whisper_cli(
         logger.error("%s transcription timed out after %ds", label, timeout_secs)
         return None
     finally:
-        shutil.rmtree(out_dir, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, out_dir, ignore_errors=True)
 
 
 # Defense in depth: ``mlx_model`` is read from config.json. The dashboard PUT
@@ -449,7 +519,7 @@ async def _transcribe_mlx(audio_path: str, stt_config) -> str | None:  # type: i
     the hyphenated flags (``--output-dir``/``--output-format``), which differ
     from the underscore flags used by the openai-whisper CLI.
     """
-    mlx_bin = _find_mlx_whisper()
+    mlx_bin = await asyncio.to_thread(_find_mlx_whisper)
     if not mlx_bin:
         logger.error("mlx_whisper not found — install: pipx install mlx-whisper")
         return None
@@ -481,7 +551,7 @@ async def _transcribe_mlx(audio_path: str, stt_config) -> str | None:  # type: i
 
 async def _transcribe_native(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
     """Transcribe using the native openai-whisper binary."""
-    whisper_bin = _find_whisper(stt_config.whisper_path)
+    whisper_bin = await asyncio.to_thread(_find_whisper, stt_config.whisper_path)
     if not whisper_bin:
         logger.error("whisper not found — install: pip install openai-whisper")
         return None

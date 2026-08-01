@@ -10,6 +10,8 @@ turn + interaction routing (transport_dispatch.py). Mirrors test_telegram.py.
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,6 +22,7 @@ from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_TEXT_CHUNK,
 )
+from kiro_crew.discord.attachments import process_discord_attachments
 from kiro_crew.discord.client import (
     _INTENT_DIRECT_MESSAGES,
     _INTENT_GUILD_MESSAGES,
@@ -53,8 +56,11 @@ from kiro_crew.discord.transport_dispatch import (
     DiscordDispatcher,
     _receipt_text,
 )
+from kiro_crew.messaging.attachments import cleanup
 from kiro_crew.messaging.link import dashboard_mirror_key
 from kiro_crew.messaging.transport import InboundMessage
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 # ── Fakes ──────────────────────────────────────────────────────────────────
 
@@ -69,6 +75,8 @@ class FakeClient:
         self.acked: list[str] = []
         self.reactions: list[tuple[str, str]] = []
         self.thread_channels: set[str] = set()
+        self.attachment_bodies: dict[str, bytes] = {}
+        self.attachment_downloads: list[str] = []
         self._mid = 100
 
     async def is_thread_channel(self, channel_id: str) -> bool:
@@ -115,6 +123,11 @@ class FakeClient:
 
     async def create_dm_channel(self, user_id: str) -> str:
         return f"dm-{user_id}"
+
+    async def download_attachment(self, url: str, dest: str) -> None:
+        self.attachment_downloads.append(url)
+        with open(dest, "wb") as fh:
+            fh.write(self.attachment_bodies[url])
 
     def final_text(self) -> Any:
         """Text the user ultimately sees on the live message: the last edit if
@@ -288,8 +301,10 @@ class _FakeHooks:
 class FakeCtx:
     def __init__(self) -> None:
         self.hooks = _FakeHooks()
+        self.messages: list[str] = []
 
     def build_message(self, text: str, is_new: bool, key: str, **kw: Any) -> Any:
+        self.messages.append(text)
         return text, None
 
 
@@ -496,7 +511,204 @@ class TestFindButtonLabel:
         assert _find_button_label(components, "opt:9") == ""
 
 
-# ── client.py Gateway intents ────────────────────────────────────────────
+# ── client.py Gateway + attachment download ──────────────────────────────
+
+
+class TestGatewayAttachmentNormalization:
+    @pytest.mark.asyncio
+    async def test_message_create_copies_attachments(self) -> None:
+        captured: list[DiscordInbound] = []
+
+        async def _capture(inbound: DiscordInbound) -> None:
+            captured.append(inbound)
+
+        client = DiscordClient(token="test", on_message=_capture)
+        raw_attachment = {
+            "filename": "photo.png",
+            "content_type": "image/png",
+            "size": len(_PNG),
+            "url": "https://cdn.discordapp.com/attachments/c/m/photo.png",
+        }
+        client._on_dispatch(
+            "MESSAGE_CREATE",
+            {
+                "channel_id": "c1",
+                "id": "m1",
+                "content": "caption",
+                "author": {"id": "u1", "username": "user"},
+                "attachments": [raw_attachment],
+            },
+        )
+        tasks = tuple(client._handler_tasks)
+        assert tasks
+        await asyncio.gather(*tasks)
+
+        assert captured[0].text == "caption"
+        assert captured[0].attachments == [raw_attachment]
+
+    @pytest.mark.asyncio
+    async def test_download_file_operations_run_off_loop(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop_thread = threading.get_ident()
+        operation_threads: dict[str, list[int]] = {
+            "open": [],
+            "write": [],
+            "close": [],
+        }
+        real_open = open
+
+        class _TrackedFile:
+            def __init__(self, inner: Any) -> None:
+                self._inner = inner
+
+            def write(self, chunk: bytes) -> int:
+                operation_threads["write"].append(threading.get_ident())
+                return self._inner.write(chunk)
+
+            def close(self) -> None:
+                operation_threads["close"].append(threading.get_ident())
+                self._inner.close()
+
+        def _tracked_open(*args: Any, **kwargs: Any) -> _TrackedFile:
+            operation_threads["open"].append(threading.get_ident())
+            return _TrackedFile(real_open(*args, **kwargs))
+
+        class _Content:
+            async def iter_chunked(self, size: int) -> Any:
+                assert size == 8192
+                yield b"first"
+                yield b"second"
+
+        class _Response:
+            status = 200
+            content = _Content()
+
+            async def __aenter__(self) -> "_Response":
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class _Session:
+            def get(self, *args: Any, **kwargs: Any) -> _Response:
+                return _Response()
+
+        async def _ensure_session() -> _Session:
+            return _Session()
+
+        client = DiscordClient(token="test")
+        monkeypatch.setattr(client, "_ensure_session", _ensure_session)
+        monkeypatch.setattr("builtins.open", _tracked_open)
+        dest = tmp_path / "download.bin"
+
+        await client.download_attachment(
+            "https://cdn.discordapp.com/attachments/c/m/download.bin",
+            str(dest),
+        )
+
+        assert dest.read_bytes() == b"firstsecond"
+        assert all(operation_threads.values())
+        assert all(
+            thread != loop_thread
+            for threads in operation_threads.values()
+            for thread in threads
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/file.png",
+            "https://cdn.discordapp.com.evil.example/file.png",
+            "http://cdn.discordapp.com/file.png",
+            "https://media.discordapp.net:444/file.png",
+        ],
+    )
+    async def test_download_refuses_non_discord_origin(
+        self, tmp_path: Any, url: str
+    ) -> None:
+        client = DiscordClient(token="test")
+        with pytest.raises(ValueError, match="Discord attachment URL"):
+            await client.download_attachment(url, str(tmp_path / "out"))
+        assert client._session is None
+
+
+class TestDiscordAttachmentAdapter:
+    @pytest.mark.asyncio
+    async def test_audio_is_returned_for_transcription(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = FakeClient()
+        url = "https://cdn.discordapp.com/attachments/c/m/voice.ogg"
+        client.attachment_bodies[url] = b"OggS" + b"\x00" * 32
+        transcribed: list[str] = []
+
+        async def _transcribe(path: str) -> str:
+            assert os.path.exists(path)
+            transcribed.append(path)
+            return "spoken words"
+
+        monkeypatch.setattr(
+            "kiro_crew.discord.attachments.stt_available", lambda: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.discord.attachments.transcribe_audio", _transcribe
+        )
+
+        result = await process_discord_attachments(
+            client,  # type: ignore[arg-type]
+            [
+                {
+                    "filename": "voice.ogg",
+                    "content_type": "audio/ogg",
+                    "size": 36,
+                    "url": url,
+                }
+            ],
+        )
+
+        assert transcribed == result.audio_paths
+        assert any("spoken words" in block for block in result.text_blocks)
+        cleanup(result.temp_paths)
+
+    @pytest.mark.asyncio
+    async def test_stt_availability_check_runs_off_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop_thread = threading.get_ident()
+        observed: list[int] = []
+        client = FakeClient()
+        url = "https://cdn.discordapp.com/attachments/c/m/voice.ogg"
+        client.attachment_bodies[url] = b"OggS" + b"\x00" * 32
+
+        def _available() -> bool:
+            observed.append(threading.get_ident())
+            return False
+
+        monkeypatch.setattr(
+            "kiro_crew.discord.attachments.stt_available", _available
+        )
+        result = await process_discord_attachments(
+            client,  # type: ignore[arg-type]
+            [
+                {
+                    "filename": "voice.ogg",
+                    "content_type": "audio/ogg",
+                    "size": 36,
+                    "url": url,
+                }
+            ],
+        )
+
+        assert observed and loop_thread not in observed
+        assert result.rejections == [
+            "[Audio attachment — transcription is unavailable]"
+        ]
+        cleanup(result.temp_paths)
 
 
 class _FakeWs:
@@ -555,6 +767,7 @@ class TestTransportAuth:
         assert DISCORD_CAPABILITIES.streaming is True
         assert DISCORD_CAPABILITIES.edit is True
         assert DISCORD_CAPABILITIES.reactions is True
+        assert DISCORD_CAPABILITIES.files is True
         assert DISCORD_CAPABILITIES.threads is True
 
 
@@ -685,6 +898,27 @@ class TestTransportReceive:
         t, dispatched, _ = self._transport(["u1"])
         await t.receive(DiscordInbound(channel_id="c1", user_id="u1", text=""))
         assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_attachment_only_message_dispatches(self) -> None:
+        t, dispatched, _ = self._transport(["u1"])
+        attachment = {
+            "filename": "photo.png",
+            "content_type": "image/png",
+            "size": len(_PNG),
+            "url": "https://cdn.discordapp.com/attachments/c/m/photo.png",
+        }
+        await t.receive(
+            DiscordInbound(
+                channel_id="c1",
+                user_id="u1",
+                text="",
+                attachments=[attachment],
+            )
+        )
+        assert len(dispatched) == 1
+        assert dispatched[0].text == ""
+        assert dispatched[0].attachments == [attachment]
 
     @pytest.mark.asyncio
     async def test_non_inbound_envelope_ignored(self) -> None:
@@ -899,6 +1133,240 @@ class TestDispatcher:
         await d.handle_message(self._msg("hello"))
         assert sess.released  # release still happened
         assert d._active_renderers == {}  # renderer entry cleaned up
+
+    @pytest.mark.asyncio
+    async def test_text_and_image_reach_prompt_then_temp_is_cleaned(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop_thread = threading.get_ident()
+        cleanup_threads: list[int] = []
+
+        def _cleanup(paths: list[str]) -> None:
+            cleanup_threads.append(threading.get_ident())
+            cleanup(paths)
+
+        monkeypatch.setattr(
+            "kiro_crew.discord.transport_dispatch.cleanup_attachments",
+            _cleanup,
+        )
+        d, cli, _ = _dispatcher({"u1"})
+        url = "https://cdn.discordapp.com/attachments/c/m/photo.png"
+        cli.attachment_bodies[url] = _PNG
+        await d.handle_message(
+            InboundMessage(
+                channel_type="discord",
+                user_id="u1",
+                conversation_id="c1",
+                text="look at this",
+                attachments=[
+                    {
+                        "filename": "photo.png",
+                        "content_type": "image/png",
+                        "size": len(_PNG),
+                        "url": url,
+                    }
+                ],
+            )
+        )
+        await asyncio.sleep(0)
+
+        prompt = d.ctx_builder.messages[-1]
+        lines = prompt.splitlines()
+        assert lines[0] == "look at this"
+        assert lines[1].endswith(".png")
+        assert cli.attachment_downloads == [url]
+        assert not os.path.exists(lines[1])
+        assert cleanup_threads and loop_thread not in cleanup_threads
+
+    @pytest.mark.asyncio
+    async def test_attachment_turn_acquires_before_download_yields(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        d.cfg.messaging.queue_mode = "queue"
+        download_started = asyncio.Event()
+        finish_download = asyncio.Event()
+        url = "https://cdn.discordapp.com/attachments/c/m/slow.png"
+
+        real_get_or_create = sess.get_or_create
+        real_release = sess.release
+
+        async def _get_or_create(*args: Any, **kwargs: Any) -> Any:
+            result = await real_get_or_create(*args, **kwargs)
+            sess._busy = True
+            return result
+
+        def _release(key: str) -> None:
+            sess._busy = False
+            real_release(key)
+
+        async def _slow_download(download_url: str, dest: str) -> None:
+            cli.attachment_downloads.append(download_url)
+            download_started.set()
+            await finish_download.wait()
+            with open(dest, "wb") as fh:
+                fh.write(_PNG)
+
+        monkeypatch.setattr(sess, "get_or_create", _get_or_create)
+        monkeypatch.setattr(sess, "release", _release)
+        monkeypatch.setattr(cli, "download_attachment", _slow_download)
+
+        first = asyncio.create_task(
+            d.handle_message(
+                InboundMessage(
+                    channel_type="discord",
+                    user_id="u1",
+                    conversation_id="c1",
+                    text="first",
+                    attachments=[
+                        {
+                            "filename": "slow.png",
+                            "content_type": "image/png",
+                            "size": len(_PNG),
+                            "url": url,
+                        }
+                    ],
+                )
+            )
+        )
+        await asyncio.wait_for(download_started.wait(), timeout=1)
+
+        assert sess._busy, "session must be acquired before attachment download"
+        await d.handle_message(self._msg("second"))
+        assert [queued[1] for queued in sess.queued] == ["second"]
+
+        finish_download.set()
+        await first
+
+        assert d.ctx_builder.messages[0].splitlines()[0] == "first"
+        assert d.ctx_builder.messages[1] == "second"
+        assert sess.queued == []
+
+    @pytest.mark.asyncio
+    async def test_command_like_caption_does_not_discard_attachment(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        url = "https://cdn.discordapp.com/attachments/c/m/command.png"
+        cli.attachment_bodies[url] = _PNG
+        await d.handle_message(
+            InboundMessage(
+                channel_type="discord",
+                user_id="u1",
+                conversation_id="c1",
+                text="!help",
+                attachments=[
+                    {
+                        "filename": "command.png",
+                        "content_type": "image/png",
+                        "size": len(_PNG),
+                        "url": url,
+                    }
+                ],
+            )
+        )
+        await asyncio.sleep(0)
+
+        prompt = d.ctx_builder.messages[-1]
+        assert prompt.splitlines()[0] == "!help"
+        assert prompt.splitlines()[1].endswith(".png")
+        assert "KiroCrew — Discord" not in "\n".join(text for text, _ in cli.sent)
+
+    @pytest.mark.asyncio
+    async def test_attachment_rejection_is_not_silent(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        await d.handle_message(
+            InboundMessage(
+                channel_type="discord",
+                user_id="u1",
+                conversation_id="c1",
+                text="",
+                attachments=[
+                    {
+                        "filename": "archive.bin",
+                        "content_type": "application/octet-stream",
+                        "size": 10,
+                        "url": "https://cdn.discordapp.com/a.bin",
+                    }
+                ],
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert "unsupported type" in d.ctx_builder.messages[-1]
+        assert cli.attachment_downloads == []
+
+    @pytest.mark.asyncio
+    async def test_busy_attachment_waits_for_queued_turn_before_cleanup(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        url = "https://media.discordapp.net/attachments/c/m/queued.png"
+        attachment = {
+            "filename": "queued.png",
+            "content_type": "image/png",
+            "size": len(_PNG),
+            "url": url,
+        }
+        cli.attachment_bodies[url] = _PNG
+        sess._busy = True
+        await d.handle_message(
+            InboundMessage(
+                channel_type="discord",
+                user_id="u1",
+                conversation_id="c1",
+                text="",
+                attachments=[attachment],
+            )
+        )
+
+        assert cli.attachment_downloads == []
+        assert sess.queued[0][2]["attachments"] == [attachment]
+        sess._busy = False
+        await d._drain_queue(d._session_key("u1"), "u1", "c1")
+        await asyncio.sleep(0)
+
+        prompt_path = d.ctx_builder.messages[-1].splitlines()[0]
+        assert cli.attachment_downloads == [url]
+        assert prompt_path.endswith(".png")
+        assert not os.path.exists(prompt_path)
+
+    @pytest.mark.asyncio
+    async def test_drain_defers_messages_that_exceed_attachment_cap(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+
+        def _batch(prefix: str) -> list[dict[str, Any]]:
+            batch: list[dict[str, Any]] = []
+            for i in range(10):
+                url = (
+                    "https://cdn.discordapp.com/attachments/c/m/"
+                    f"{prefix}-{i}.png"
+                )
+                cli.attachment_bodies[url] = _PNG
+                batch.append(
+                    {
+                        "filename": f"{prefix}-{i}.png",
+                        "content_type": "image/png",
+                        "size": len(_PNG),
+                        "url": url,
+                    }
+                )
+            return batch
+
+        first = _batch("first")
+        second = _batch("second")
+        sess.queued = [
+            ("t1", "first batch", {"attachments": first}),
+            ("t2", "second batch", {"attachments": second}),
+            ("t3", "after second", {"attachments": []}),
+        ]
+
+        await d._drain_queue(d._session_key("u1"), "u1", "c1")
+
+        assert cli.attachment_downloads == [
+            item["url"] for item in [*first, *second]
+        ]
+        assert sess.queued == []
+        assert len(d.ctx_builder.messages) == 2
+        assert d.ctx_builder.messages[0].splitlines()[0] == "first batch"
+        assert d.ctx_builder.messages[1].splitlines()[0] == "second batch"
+        assert "after second" in d.ctx_builder.messages[1]
 
     @pytest.mark.asyncio
     async def test_busy_steers_and_acks_with_reaction(self) -> None:
