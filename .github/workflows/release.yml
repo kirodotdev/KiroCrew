@@ -180,28 +180,76 @@ jobs:
         with:
           path: artifacts
 
-      # Assemble release assets: everything built, with the macOS zip and DMG
-      # replaced by the notarized ones from the notarize job. The unsigned
-      # electron-builder DMG (built before signing) must never ship; the
-      # shipping DMG is Developer ID signed + notarized + stapled inside
-      # sign-and-notarize.yml (see its header note for the adhoc-DMG
-      # incident that made the signature mandatory).
-      - name: Flatten artifacts (notarized macOS assets win)
+      # Assemble release assets: everything built, with macOS assets accepted
+      # only from the exact gated artifact emitted after notarization, stapling,
+      # and Gatekeeper verification. The unsigned electron-builder zip/DMG are
+      # inter-job inputs only and must never become GitHub Release assets.
+      - name: Assemble release assets (require gated macOS artifacts)
         run: |
+          set -euo pipefail
           mkdir -p release
           find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.AppImage" \) -exec cp {} release/ \;
-          NOTARIZED=$(find artifacts -path "*KiroCrew-notarized-*" -name "notarized.zip" | head -1)
-          if [ -n "$NOTARIZED" ]; then
-            cp "$NOTARIZED" "release/KiroCrew-${{ needs.version.outputs.version }}-universal-mac.zip"
-          else
-            # Unsigned fallback (CDSigner not configured): the electron-builder
-            # mac zip always ends in "-mac.zip" whatever the arch token.
-            find artifacts -type f -name "*-mac.zip" -exec cp {} release/ \;
-          fi
-          NOTARIZED_DMG=$(find artifacts -path "*KiroCrew-notarized-*" -name "*.dmg" | head -1)
-          if [ -n "$NOTARIZED_DMG" ]; then
-            cp "$NOTARIZED_DMG" "release/KiroCrew-${{ needs.version.outputs.version }}-universal.dmg"
-          fi
+
+          NOTARIZED_DIR="artifacts/KiroCrew-notarized-${{ needs.version.outputs.channel }}-${{ needs.version.outputs.version }}"
+          NOTARIZED_ZIP="${NOTARIZED_DIR}/notarized.zip"
+          NOTARIZED_DMG="${NOTARIZED_DIR}/KiroCrew.dmg"
+          [ -s "$NOTARIZED_ZIP" ] || {
+            echo "::error::Required gated macOS ZIP is missing or empty: ${NOTARIZED_ZIP}"
+            exit 1
+          }
+          [ -s "$NOTARIZED_DMG" ] || {
+            echo "::error::Required gated macOS DMG is missing or empty: ${NOTARIZED_DMG}"
+            exit 1
+          }
+
+          # Fail closed on corrupt or mis-shaped handoff files before granting
+          # the GitHub Release job's contents:write capability to publish them.
+          # Cryptographic Gatekeeper checks happen immediately before the
+          # notarize job uploads this exact, name-bound artifact.
+          python3 - "$NOTARIZED_ZIP" "$NOTARIZED_DMG" <<'PY_VALIDATE'
+          from pathlib import Path, PurePosixPath
+          import sys
+          import zipfile
+
+          zip_path = Path(sys.argv[1])
+          dmg_path = Path(sys.argv[2])
+
+          try:
+              with zipfile.ZipFile(zip_path) as archive:
+                  corrupt_member = archive.testzip()
+                  names = archive.namelist()
+          except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+              raise SystemExit(f"::error::{zip_path} is not a valid ZIP archive: {exc}")
+
+          if corrupt_member is not None:
+              raise SystemExit(
+                  f"::error::{zip_path} failed its CRC check at {corrupt_member}"
+              )
+          app_roots = {
+              parts[0]
+              for name in names
+              if (parts := PurePosixPath(name).parts) and parts[0].endswith(".app")
+          }
+          if len(app_roots) != 1:
+              raise SystemExit(
+                  f"::error::{zip_path} must contain exactly one top-level .app; "
+                  f"found {sorted(app_roots)}"
+              )
+
+          try:
+              if dmg_path.stat().st_size < 512:
+                  raise ValueError("file is smaller than the 512-byte UDIF trailer")
+              with dmg_path.open("rb") as dmg:
+                  dmg.seek(-512, 2)
+                  signature = dmg.read(4)
+              if signature != b"koly":
+                  raise ValueError("UDIF trailer signature is missing")
+          except (OSError, ValueError) as exc:
+              raise SystemExit(f"::error::{dmg_path} is not a valid UDIF DMG: {exc}")
+          PY_VALIDATE
+
+          cp "$NOTARIZED_ZIP" "release/KiroCrew-${{ needs.version.outputs.version }}-universal-mac.zip"
+          cp "$NOTARIZED_DMG" "release/KiroCrew-${{ needs.version.outputs.version }}-universal.dmg"
           ls -la release/
 
       - name: Create GitHub Release
