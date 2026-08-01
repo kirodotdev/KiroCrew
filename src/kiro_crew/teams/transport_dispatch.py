@@ -23,17 +23,13 @@ Dependency direction is ``teams -> messaging`` (allowed).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
-from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
+from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn, inbound_permitted
+from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
-from kiro_crew.sel import sel
 from kiro_crew.teams.commands import HELP_TEXT, ConversationState, parse_command
 from kiro_crew.teams.renderer import TeamsRenderer
 from kiro_crew.teams.transport import TEAMS_CAPABILITIES
@@ -90,8 +86,7 @@ class TeamsDispatcher:
         # Inbound channels-governance gate (off-loop) — recheck per message so a
         # host-profile deny added after connect stops dispatch without a restart
         # (the startup gate only blocks CONNECTING). Silently drop on deny.
-        if not await channel_inbound_permitted("teams"):
-            logger.info("teams inbound dropped: denied by channels governance policy")
+        if not await inbound_permitted("teams"):
             return
         email = inbound.user_email or inbound.aad_object_id
         conversation_id = inbound.conversation_id
@@ -130,7 +125,6 @@ class TeamsDispatcher:
             daily_reset_hour=self.cfg.messaging.daily_reset_hour,
         )
         session_key = self._session_key(email)
-        channel_id = f"teams:{email}"
         agent = self._resolve_agent()
 
         # Teams has no interactive buttons -> no decider (deny-by-default for
@@ -143,98 +137,33 @@ class TeamsDispatcher:
             session_key=session_key,
         )
 
-        _acquired = False
-        try:
-            # Typing indicator first (before the potentially slow cold-start);
-            # on_turn_start is idempotent so the driver's later call no-ops.
-            await renderer.on_turn_start()
-            provider, is_new, resumed = await self.sessions.get_or_create(
-                session_key, agent=agent, channel_id=channel_id
-            )
-            _acquired = True
-            if is_new:
-                await self.sessions.set_channel(session_key, channel_id)
-            # Publish this turn's session identity so managed MCP tools resolve
-            # X-Session-Key; one shared writer lives in messaging.identity.
-            await publish_turn_identity(self.sessions, session_key)
-            # Off-loop: build_message embeds the episodic query (blocking urllib).
-            full_message, _ = await run_in_embed_pool(
-                self.ctx_builder.build_message,
-                text,
-                is_new,
-                session_key,
-                channel_id=channel_id,
+        # The turn skeleton (acquire -> identity -> context -> TurnDriver ->
+        # guarded post-turn -> finally close/release) lives once in
+        # messaging.dispatch. Only the teams-specific pieces are injected.
+        # NOTE: ChannelTurn.conversation_id is the SESSION-attribution id
+        # (``teams:{email}``, what sessions.* has always been given here), not
+        # ``inbound.conversation_id`` -- the Teams platform conversation id the
+        # renderer replies into. The two are deliberately different; passing the
+        # platform id would silently repoint every existing Teams session.
+        await drive_turn(
+            ChannelTurn(
+                channel_type="teams",
+                session_key=session_key,
+                conversation_id=f"teams:{email}",
                 agent=agent,
-                resumed=resumed,
-            )
-
-            # PreToolUse security gate (channel-neutral, off ctx_builder.hooks):
-            # sensitive-path keystone + governance ceiling + deny-list.
-            def _tool_gate(event: Any) -> str:
-                result = self.ctx_builder.hooks.on_tool_call(
-                    getattr(event, "title", "") or "",
-                    session_key=session_key,
-                    agent=agent,
-                    tool_kind=getattr(event, "tool_kind", "") or "",
-                    raw_params=getattr(event, "raw_tool_params", None),
-                    command=getattr(event, "shell_command", None),
-                    is_shell=bool(getattr(event, "is_shell", False)),
-                )
-                if result.action == TOOL_DENY:
-                    return "deny"
-                if result.action == TOOL_AUTO_APPROVE:
-                    return "auto_approve"
-                return ""
-
-            driver = TurnDriver(
-                provider,
-                renderer,
+                user_text=text,
+                renderer=renderer,
                 approval_mode=self.approval_mode,
                 decider=None,  # Teams can't render approve/deny buttons (MVP)
-                auto_approve_tool=lambda title: bool(
-                    self.ctx_builder
-                    and self.ctx_builder.hooks
-                    and self.ctx_builder.hooks.auto_approve_subagent_spawn
-                    and title == "spawn_run"
+                persist=lambda user_text, reply, is_new: self._persist_turn(
+                    session_key, user_text, reply, is_new
                 ),
-                tool_gate=_tool_gate,
-            )
-            accumulated = await driver.run(full_message)
-
-            # ── Post-turn bookkeeping (each guarded). ──
-            self.sessions.record_success(session_key)
-            try:
-                # Offload the flock-backed transcript write off the event loop
-                # (matches webex/telegram/wecom/discord): an on-loop persist
-                # blocks the sole loop and, under strict-on-loop or a contended
-                # session file, raises and silently loses the transcript.
-                await asyncio.to_thread(
-                    self._persist_turn, session_key, text, accumulated, is_new
-                )
-            except Exception:
-                logger.warning("Teams: persist_turn failed session=%s", session_key, exc_info=True)
-            try:
-                await self._maybe_notice(inbound, session_key, provider)
-            except Exception:
-                logger.warning("Teams: maybe_notice failed session=%s", session_key, exc_info=True)
-            try:
-                sel().log_api_access(
-                    caller=f"teams:{email}",
-                    operation="transport_dispatch.handle",
-                    outcome="success",
-                    source="teams",
-                    resources=f"session={session_key}",
-                )
-            except Exception:
-                logger.debug("Teams: success audit failed", exc_info=True)
-        except Exception:
-            logger.exception("Teams transport_dispatch: error handling message")
-            if _acquired:
-                await self.sessions.record_failure(session_key)
-        finally:
-            await renderer.close()
-            if _acquired:
-                self.sessions.release(session_key)
+                notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
+                audit_caller=f"teams:{email}",
+            ),
+            sessions=self.sessions,
+            ctx_builder=self.ctx_builder,
+        )
 
     async def _handle_busy(self, inbound: Any, session_key: str) -> None:
         """Mid-turn message: fold into the running turn via steer.

@@ -317,8 +317,13 @@ class TestInboundGovernance:
         async def _deny(_member: str) -> bool:
             return False
 
+        # Patched on messaging.dispatch: the gate moved into the shared
+        # pipeline, and the teams dispatcher's own early check calls the
+        # ``inbound_permitted`` wrapper, which resolves
+        # ``channel_inbound_permitted`` from dispatch's globals at call time --
+        # so this one patch covers both the channel-side and pipeline gates.
         monkeypatch.setattr(
-            "kiro_crew.teams.transport_dispatch.channel_inbound_permitted", _deny
+            "kiro_crew.messaging.dispatch.channel_inbound_permitted", _deny
         )
         provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
         sessions = FakeSessions(provider)
