@@ -30,6 +30,34 @@ export function isNonInteractiveQueued(m: ChatMessage): boolean {
   return isSystemDelivery(m) || parseRecoveryMessage(m.content || '') !== null
 }
 
+/** Split a slot's message list into the three things a pane surface needs:
+ *  the transcript (everything not queued), the INTERACTIVE queue cards, and a
+ *  count of held sub-agent deliveries for the collapsed progress line.
+ *
+ *  One pass, and one place. Callers own the composer's `input` state, so they
+ *  re-render on every keystroke; deriving these in a render body handed the
+ *  transcript array a fresh identity per character, which defeated the memo()
+ *  on ChatMessageList and re-ran its O(N) turn grouping while the user typed.
+ *  Callers must wrap this in a `useMemo` keyed on the input array. */
+export function splitPaneMessages(allMessages: ChatMessage[]): {
+  messages: ChatMessage[]
+  queuedMessages: ChatMessage[]
+  systemDeliveryCount: number
+} {
+  const messages: ChatMessage[] = []
+  const queuedMessages: ChatMessage[] = []
+  let systemDeliveryCount = 0
+  for (const m of allMessages) {
+    if (m.role !== 'queued') { messages.push(m); continue }
+    // Both queue predicates are independent, not mutually exclusive: a
+    // sub-agent delivery is excluded from the interactive stack AND counted
+    // for the progress line.
+    if (!isNonInteractiveQueued(m)) queuedMessages.push(m)
+    if (isSystemDelivery(m)) systemDeliveryCount++
+  }
+  return { messages, queuedMessages, systemDeliveryCount }
+}
+
 /** One quiet, non-interactive line summarizing held sub-agent deliveries —
  *  "the results are in; they'll be processed when the current turn finishes". */
 export function SubagentDeliveryProgress({ count }: { count: number }) {

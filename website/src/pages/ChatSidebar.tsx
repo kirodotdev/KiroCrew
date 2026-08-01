@@ -9,6 +9,7 @@ import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyb
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { modelListRefetchInterval } from '../providers/modelListHealth'
+import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
@@ -707,7 +708,11 @@ function ChatSidebar({
   // has arrived. Used by the auto-drain effect to distinguish "data not yet
   // loaded" from "data loaded and genuinely empty".
   const slotsLoaded = useAppSelector(s => s.dashboard.slotsLoaded)
-  const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail)
+  // shallowEqual: this is a whole-map subscription read only for each row's
+  // `.text`, so re-render when some slot's detail object actually changed —
+  // not merely because a reducer produced a new map wrapper. Without it, any
+  // write to one slot's detail re-renders the entire sidebar.
+  const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail, shallowEqual)
   // Presence in this map means "this session is in an active goal loop".
   const goalLoops = useAppSelector(s => s.chat.goalLoops)
   // Live subagent activity per slot, for the sidebar row's "N agents running"

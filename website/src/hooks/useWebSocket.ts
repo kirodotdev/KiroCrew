@@ -838,13 +838,25 @@ export function useWebSocket() {
           case 'context_usage':
             dispatch(sseContextUsage(data as { slot: string; pct: number; used_tokens?: number; window_tokens?: number }))
             break
-          case 'chat_thinking':
+          case 'chat_thinking': {
             // kiro-cli/ACP reasoning (agent_thought_chunk) -> collapsible block.
             dispatch(sseThinkingChunk({ slot: data.slot, content: (data as { content?: string }).content || '' }))
-            if (data.slot && store.getState().chat.slotStatusDetail[data.slot]?.kind !== 'streaming') {
+            // Dispatch the status detail only on a genuine kind TRANSITION into
+            // 'thinking'. The old guard tested `!== 'streaming'` and then wrote
+            // 'thinking', which is itself `!== 'streaming'` — so it never
+            // self-limited and re-dispatched on EVERY thought frame with a fresh
+            // `ts`. Because setSlotStatusDetail replaces slotStatusDetail[slot]
+            // wholesale, that bumped the map identity per frame and re-rendered
+            // every whole-map subscriber (ChatSidebar, CommandPalette) for the
+            // duration of the model's reasoning. The sibling chat_chunk guard
+            // above writes 'streaming' and so is naturally idempotent; this is
+            // the same shape, made explicit.
+            const detailKind = data.slot ? store.getState().chat.slotStatusDetail[data.slot]?.kind : undefined
+            if (data.slot && detailKind !== 'streaming' && detailKind !== 'thinking') {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', text: 'Thinking…', ts: Date.now() }))
             }
             break
+          }
           case 'chat_segment':
             flushChunks()
             dispatch(sseChatMessage({ ...data, role: '_segment' }))
