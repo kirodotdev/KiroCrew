@@ -1432,7 +1432,9 @@ class AcpClient:
         servers — nothing is written to the user's project or to
         ``~/.kiro/agents/``. Empty when the shared gateway is disabled.
         """
-        return pooled_session_servers(self._mcp_gateway_overlay, self._agent)
+        return pooled_session_servers(
+            self._mcp_gateway_overlay, self._agent, self._channel_id
+        )
 
     def _claude_session_mcp_servers(self) -> list:
         """MCP server array passed to a claude ``session/new`` / ``session/load``.

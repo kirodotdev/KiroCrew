@@ -21,11 +21,11 @@ import json
 import logging
 import os
 import re
-import signal
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.mcp_caller import (
@@ -1741,25 +1741,34 @@ class Backend:
         # No consumers left — hard kill the backend process
         if self.is_alive:
             pid = self.process.pid
-            pgid = None
+            # Tree-scoped kill via platform_compat, not os.killpg/os.getpgid:
+            # those names do not exist on Windows, and the old `except
+            # (ProcessLookupError, OSError)` here did NOT catch the resulting
+            # AttributeError, so this raised out of recycle_if_idle instead of
+            # degrading. Windows also ignores spawn's start_new_session=True
+            # (it is `unused_start_new_session` in CPython's Windows
+            # _execute_child), so there is no process group there to signal at
+            # all — kill_process_tree covers both (killpg / taskkill /T) and
+            # already enforces the pid <= 1, pgid <= 1 and own-process-group
+            # refusals this call site used to hand-roll.
+            # The _async variant is mandatory from a coroutine: the Windows branch
+            # spawns taskkill with a 5s timeout, which would stall the daemon's
+            # loop. On POSIX it dispatches inline to the sync helper, so
+            # os.killpg/os.getpgid monkeypatching still intercepts.
+            recycled = True
             try:
-                pgid = os.getpgid(pid) if isinstance(pid, int) and pid > 1 else None
-            except (ProcessLookupError, OSError):
-                pass
-            # Guard per learned correction: only kill pids > 1, pgid > 1,
-            # pgid != our own process group
-            if (
-                isinstance(pid, int) and pid > 1
-                and pgid is not None and pgid > 1
-                and pgid != os.getpgid(0)
-            ):
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except (ProcessLookupError, OSError):
-                        pass
+                await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
+            except ValueError:
+                # Refused pid (non-int, or <= 1 which is a killpg broadcast).
+                recycled = False
+            except (ProcessLookupError, PermissionError, OSError):
+                # Tree already gone or not signalable — fall back to a
+                # pid-scoped kill, as this call site did before.
+                with contextlib.suppress(
+                    ProcessLookupError, PermissionError, OSError, ValueError
+                ):
+                    await platform_compat.kill_pid_async(pid, platform_compat.SIGKILL)
+            if recycled:
                 self._dead_reason = "recycled after last stub detached with in-flight work"
                 logger.info(
                     "backend pid=%s recycled (killed): last stub detached with "
@@ -1804,15 +1813,23 @@ class Backend:
                     "escalating to SIGKILL",
                     self.process.pid, timeout,
                 )
-                # Kill the whole process GROUP, not just the launcher PID:
-                # spawn uses start_new_session=True, so the backend is a
-                # session/group leader with worker children. process.kill()
-                # SIGKILLs only the launcher, reparenting its workers to init
-                # where they leak under LRU-eviction churn. Fall back to the
-                # single-process kill if the group is already gone.
+                # Kill the whole process TREE, not just the launcher PID:
+                # on POSIX spawn uses start_new_session=True, so the backend is
+                # a session/group leader with worker children, and
+                # process.kill() SIGKILLs only the launcher, reparenting its
+                # workers to init where they leak under LRU-eviction churn.
+                # Via platform_compat rather than os.killpg(os.getpgid(...)):
+                # neither name exists on Windows, and the except clause below
+                # does not catch AttributeError — so on Windows this raised out
+                # of shutdown() and the process.kill() fallback never ran,
+                # leaving the backend alive. The _async variant is required per
+                # test_kill_process_awaits_async_variant_not_sync (Windows
+                # taskkill would otherwise block this loop).
                 try:
-                    os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
+                    await platform_compat.kill_process_tree_async(
+                        self.process.pid, platform_compat.SIGKILL
+                    )
+                except (ProcessLookupError, PermissionError, OSError, ValueError):
                     try:
                         self.process.kill()
                     except ProcessLookupError:

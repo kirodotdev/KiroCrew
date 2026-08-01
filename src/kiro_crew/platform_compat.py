@@ -19,6 +19,7 @@ import signal
 import struct
 import subprocess
 import sys
+import zlib
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional
@@ -1554,8 +1555,193 @@ _OWNER_RIGHTS_SID = "*S-1-3-4"
 _USER_SID_CACHE: list[str] = []
 
 
+_TOKEN_QUERY = 0x0008
+_TOKEN_USER_CLASS = 1  # TOKEN_INFORMATION_CLASS.TokenUser
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _process_token_sid() -> str | None:
+    """The invoking user's SID read from this process's own access token.
+
+    Preferred over ``whoami`` because it spawns nothing: the SID is already in
+    the process token, so this cannot time out under load, cannot be defeated
+    by a stripped PATH or a locked-down host, and is safe to call on the event
+    loop. Returns ``None`` on any failure so the caller can fall back.
+    """
+    if IS_POSIX:
+        return None
+    try:
+        return _process_token_sid_unguarded()
+    except Exception:  # noqa: BLE001 - best-effort: the caller falls back
+        logger.debug("_process_token_sid failed", exc_info=True)
+        return None
+
+
+def _process_token_sid_unguarded(pid: int | None = None) -> str | None:
+    """Body of :func:`_process_token_sid`; may raise.
+
+    ``pid`` selects whose token to read: ``None`` means this process (via the
+    ``GetCurrentProcess`` pseudo-handle), any other value opens that process
+    with ``PROCESS_QUERY_LIMITED_INFORMATION`` -- the least right that still
+    permits ``OpenProcessToken``, and one a user always holds over their own
+    processes without elevation.
+    """
+
+    class _SidAndAttributes(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+    class _TokenUser(ctypes.Structure):
+        _fields_ = [("User", _SidAndAttributes)]
+
+    try:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    except (OSError, AttributeError):
+        # AttributeError: ctypes has no WinDLL off Windows. Reachable because
+        # tests exercise the Windows branch from Linux by patching IS_POSIX.
+        return None
+
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    # Every prototype is declared and every argument below is passed as a
+    # ctypes instance rather than a Python int. Leaving either to the default
+    # lets ctypes convert a pointer-sized value through a C int, which either
+    # truncates it silently or raises OverflowError depending on the call --
+    # both observed on Windows, neither reproducible on Linux.
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.LPWSTR),
+    ]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+
+    # Hand the pseudo-handle over as a HANDLE instance rather than the int
+    # ctypes hands back for a c_void_p restype: converting that int through the
+    # declared argtype raises OverflowError on Windows because the value is
+    # pointer-sized and unsigned.
+    #
+    # own_handle tracks whether this is a real handle we must close. The
+    # GetCurrentProcess pseudo-handle must NOT be closed.
+    own_handle = pid is not None
+    if pid is None:
+        process = wintypes.HANDLE(kernel32.GetCurrentProcess())
+    else:
+        process = wintypes.HANDLE(
+            kernel32.OpenProcess(
+                wintypes.DWORD(_PROCESS_QUERY_LIMITED_INFORMATION),
+                wintypes.BOOL(False),
+                wintypes.DWORD(int(pid)),
+            )
+        )
+        if not process.value:
+            return None
+    try:
+        token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(
+            process, wintypes.DWORD(_TOKEN_QUERY), ctypes.byref(token)
+        ):
+            return None
+        try:
+            size = wintypes.DWORD()
+            # First call sizes the buffer and is expected to fail.
+            advapi32.GetTokenInformation(
+                token,
+                ctypes.c_int(_TOKEN_USER_CLASS),
+                None,
+                wintypes.DWORD(0),
+                ctypes.byref(size),
+            )
+            if size.value == 0:
+                return None
+            buf = (ctypes.c_byte * size.value)()
+            if not advapi32.GetTokenInformation(
+                token,
+                ctypes.c_int(_TOKEN_USER_CLASS),
+                ctypes.cast(buf, ctypes.c_void_p),
+                size,
+                ctypes.byref(size),
+            ):
+                return None
+            user = ctypes.cast(buf, ctypes.POINTER(_TokenUser)).contents
+            out = wintypes.LPWSTR()
+            if not advapi32.ConvertSidToStringSidW(
+                ctypes.c_void_p(user.User.Sid), ctypes.byref(out)
+            ):
+                return None
+            try:
+                sid = out.value
+            finally:
+                kernel32.LocalFree(out)
+        finally:
+            kernel32.CloseHandle(token)
+    finally:
+        if own_handle:
+            kernel32.CloseHandle(process)
+    if not sid or not sid.startswith("S-1-"):
+        return None
+    return sid
+
+
+def process_owner_sid(pid: int) -> str | None:
+    """The SID of the user owning *pid*, as a string, or ``None``.
+
+    Windows' answer to :func:`process_owner_uid`, which returns ``None`` there
+    because Windows has no uid. Reads the target process's access token
+    directly -- no subprocess, no WMI round trip -- so it is safe to call on the
+    event loop.
+
+    This is what lets a Windows peer-principal check work at *connect* time.
+    The obvious alternative, ``ImpersonateNamedPipeClient``, cannot:
+    per Microsoft's documentation it impersonates "the security context of the
+    last message read from the pipe", so before the first read there is no
+    context to adopt and the call fails (or yields an anonymous token that
+    ``OpenThreadToken`` then refuses). Reading the peer process's own token has
+    no such ordering requirement, and it never borrows the peer's token onto one
+    of our threads.
+
+    PID reuse is not exploitable here. The window between learning the peer PID
+    and opening it is tiny, and either outcome is safe: if the PID has been
+    recycled to a process owned by *another* user the comparison reports a
+    mismatch and the caller denies; if it was recycled to another process owned
+    by *us* then the principal genuinely is us, which is the only question this
+    function answers. Ownership -- not process identity -- is the assertion.
+
+    Returns ``None`` on POSIX and on any failure, so callers must treat ``None``
+    as "unverifiable" rather than as a match.
+    """
+    if IS_POSIX:
+        return None
+    try:
+        return _process_token_sid_unguarded(int(pid))
+    except Exception:  # noqa: BLE001 - best-effort: the caller fails closed
+        logger.debug("process_owner_sid(%s) failed", pid, exc_info=True)
+        return None
+
+
 def _current_user_sid() -> str | None:
-    """Return the current user's SID via ``whoami /user /fo csv``, or None.
+    """Return the current user's SID, ``*``-prefixed for icacls, or None.
+
+    Resolved from this process's access token when possible, falling back to
+    ``whoami /user /fo csv``.
 
     Used by :func:`restrict_to_owner` on Windows to grant the invoking user
     Full Control even when the file is owned by a different principal (e.g.
@@ -1566,15 +1752,23 @@ def _current_user_sid() -> str | None:
     retries) and the caller refuses the DACL write.
 
     Success is cached at module scope: the user's SID is constant for the
-    process lifetime, so a single whoami spawn covers every restrict_to_owner
-    call (six secret-write sites) instead of one spawn per call. Called on
-    the event loop under token_secret._SECRET_LOCK first-token-verify path,
-    so the memoization keeps that first stall bounded to a single spawn.
+    process lifetime, so one lookup covers every restrict_to_owner call (six
+    secret-write sites). That matters for the whoami fallback specifically --
+    this is called on the event loop under token_secret._SECRET_LOCK's
+    first-token-verify path, so the memo bounds that stall to one spawn even
+    when the token read is unavailable.
     """
     if IS_POSIX:
         return None
     if _USER_SID_CACHE:
         return _USER_SID_CACHE[0]
+    # Own access token first: no spawn, so it survives a stripped PATH, a
+    # hermetic test harness and load that would time the whoami call out.
+    from_token = _process_token_sid()
+    if from_token:
+        result = "*" + from_token
+        _USER_SID_CACHE.append(result)
+        return result
     whoami = shutil.which("whoami") or r"C:\Windows\System32\whoami.exe"
     try:
         r = subprocess.run(
@@ -1599,6 +1793,102 @@ def _current_user_sid() -> str | None:
     result = "*" + sid
     _USER_SID_CACHE.append(result)
     return result
+
+
+#: Memo for :func:`current_user_sid`. Separate from ``_USER_SID_CACHE``, which
+#: holds the ``*``-prefixed icacls form and is populated by a path that may
+#: spawn; this one only ever holds a token-derived bare SID.
+_TOKEN_SID_CACHE: list[str] = []
+
+
+def current_user_sid() -> str | None:
+    """Return the invoking user's bare SID (``S-1-5-...``), or ``None``.
+
+    Read from this process's own access token and nothing else. Deliberately
+    NOT :func:`_current_user_sid`, which falls back to a ``whoami`` subprocess
+    with a 5 s timeout: every caller of this function runs on the event loop --
+    the gatewayd admission check, the client-side server check, and the pipe
+    DACL builder, which runs once per pipe instance and therefore sits on the
+    accept path. A token-lookup failure there would stall accepts for seconds
+    at a time, repeatedly. :func:`restrict_to_owner` keeps the fallback because
+    it is always invoked through ``asyncio.to_thread``.
+
+    Failing closed is correct for every caller: each treats ``None`` as
+    "principal unverifiable" and refuses the connection, which degrades to a
+    per-session MCP server rather than admitting an unattributable peer.
+
+    SDDL and the Win32 security APIs want the bare SID, so the ``*`` prefix the
+    icacls form carries is stripped here rather than in each consumer. Memoised:
+    the SID is constant for the process lifetime and this is on a hot path.
+    Returns ``None`` on POSIX and on any lookup failure.
+    """
+    if _TOKEN_SID_CACHE:
+        return _TOKEN_SID_CACHE[0]
+    raw = _process_token_sid()
+    if not raw:
+        return None
+    sid = raw.lstrip("*") or None
+    if sid:
+        _TOKEN_SID_CACHE.append(sid)
+    return sid
+
+
+def make_owner_only_dir(path: str | os.PathLike) -> None:
+    """Create *path* (with parents) and make it readable only by this user.
+
+    ``mkdir(mode=...)`` alone is not enough on either platform: POSIX masks the
+    mode with the umask and ignores it entirely for a directory that already
+    exists, and Windows derives access from the DACL rather than the mode bits,
+    so the mode argument is inert there. Both cases matter for the same reason --
+    a directory created before the owner-only guarantee existed, or created on
+    Windows at all, would silently stay readable.
+
+    ``0o700`` and not :func:`restrict_to_owner` on POSIX: that helper applies
+    ``0o600``, correct for a secret-bearing file and wrong for a directory,
+    which needs the execute bit to be traversable at all. Windows has no such
+    split (``icacls ... :F`` grants traverse with everything else), and there the
+    DACL is the only carrier of access, so the fail-loud helper is right.
+
+    Best-effort on the tightening step: the directory is still created, and the
+    caller decides whether an un-tightened directory is fatal.
+    """
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        if IS_WINDOWS:
+            restrict_to_owner(p)
+        else:
+            p.chmod(0o700)
+    except OSError:
+        logger.warning("could not restrict directory %s to owner-only", p, exc_info=True)
+
+
+def local_user_id() -> int:
+    """A stable integer identifying the invoking user on this host.
+
+    POSIX: ``os.getuid()``. Windows has no uid, so this is a CRC-32 of the
+    user's SID -- an arbitrary but stable and collision-resistant-enough
+    integer for the one thing the value is used for: partitioning a cache or a
+    pool so two different users can never share an entry.
+
+    An integer rather than the SID string because the consumer
+    (``mcp_gateway.PoolKey``) type-checks this dimension strictly and refuses to
+    coerce -- ``bool("false")`` is ``True`` and ``int()`` on a bool passes
+    silently, so a wire value of the wrong type could land a peer in the wrong
+    trust partition. Keeping the type identical across platforms keeps that
+    check meaningful.
+
+    Returns ``0`` when the SID cannot be resolved. That is a partition
+    collapse, not a privilege change: the gateway's endpoint is already
+    per-user (owner-only DACL) and its daemon runs per user, so two users
+    cannot reach the same pool regardless.
+    """
+    if IS_POSIX:
+        return os.getuid()
+    sid = current_user_sid()
+    if not sid:
+        return 0
+    return zlib.crc32(sid.encode("utf-8"))
 
 
 def restrict_to_owner(path: str | os.PathLike) -> None:

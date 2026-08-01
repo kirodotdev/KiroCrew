@@ -52,13 +52,24 @@ def _acp_env(raw: Any) -> list[dict[str, str]]:
     return [{"name": str(k), "value": str(v)} for k, v in raw.items()]
 
 
-def _acp_server_entry(name: str, entry: dict[str, Any]) -> dict[str, Any] | None:
+def _acp_server_entry(
+    name: str, entry: dict[str, Any], channel_id: str | None = None
+) -> dict[str, Any] | None:
     """Shape one rewritten ``mcpServers`` entry into an ACP array element.
 
     Operator-set passthrough keys (``timeout``, ``type``, ``disabledTools``,
     ``autoApprove``, vendor keys) are preserved: kiro-cli tolerates them on the
     session-injected element, and dropping ``autoApprove`` in particular would
     re-prompt for tools the agent spec had already auto-approved.
+
+    ``channel_id`` is APPENDED as ``--channel-id <value>`` rather than
+    prepended: the overlay entry runs the interpreter, so ``args`` opens with
+    ``-m kiro_crew.mcp_gateway.stub`` and anything inserted ahead of that would
+    be eaten by the interpreter instead of the stub. argparse does not care
+    about order. This is the channel the stub used to recover by walking its
+    ancestors' ``/proc/<pid>/environ`` from a bash launcher, which is why that
+    launcher no longer exists: the value is known here, at the one place that
+    runs per session.
     """
     command = entry.get("command")
     if not isinstance(command, str) or not command:
@@ -68,6 +79,8 @@ def _acp_server_entry(name: str, entry: dict[str, Any]) -> dict[str, Any] | None
         return None
     args = [a if isinstance(a, str) else json.dumps(a, sort_keys=True, default=str)
             for a in (entry.get("args") or [])]
+    if channel_id and "--channel-id" not in args:
+        args.extend(["--channel-id", channel_id])
     shaped: dict[str, Any] = {
         k: v for k, v in entry.items() if k not in _ACP_RESERVED and k != "command"
     }
@@ -83,6 +96,7 @@ def _acp_server_entry(name: str, entry: dict[str, Any]) -> dict[str, Any] | None
 def pooled_session_servers(
     overlay_dir: str | Path | None,
     agent: str | None,
+    channel_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return ACP ``session/new`` entries for *agent*'s broker stubs.
 
@@ -90,6 +104,13 @@ def pooled_session_servers(
     ``<config_dir>/mcp-gateway/agents/``); it is ``None`` when the shared
     gateway is disabled, which is the natural off switch — this returns ``[]``
     and the session runs entirely on the agent's own servers.
+
+    ``channel_id`` scopes the pool key so sessions in different channels do not
+    share a backend. It is passed here rather than baked into the overlay
+    because the overlay is written once at gateway startup and is
+    session-agnostic, while this function runs per session. ``None`` (the
+    default, and what a runtime with no channel concept supplies) leaves the
+    flag off and the stub collapses to the channel-less pool key.
 
     Fail-soft by design: any unreadable or malformed overlay yields ``[]``, so a
     bad rewrite degrades to unpooled operation rather than breaking the spawn.
@@ -116,7 +137,7 @@ def pooled_session_servers(
         if not isinstance(entry, dict) or not entry.get(_WRAPPER_MARKER):
             # Not a broker stub: leave it to the agent spec entirely.
             continue
-        shaped = _acp_server_entry(str(name), entry)
+        shaped = _acp_server_entry(str(name), entry, channel_id)
         if shaped is not None:
             out.append(shaped)
     return out

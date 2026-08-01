@@ -169,13 +169,16 @@ async def test_disable_allowed_on_unsupported_platform(
 
 @pytest.mark.parametrize(
     "platform,expected",
-    [("linux", True), ("darwin", True), ("win32", False), ("cygwin", False)],
+    [("linux", True), ("darwin", True), ("win32", True), ("cygwin", False)],
 )
 def test_is_gateway_supported_platform_matrix(
     monkeypatch: pytest.MonkeyPatch, platform: str, expected: bool
 ) -> None:
-    """The single source of truth: POSIX-with-AF_UNIX (linux + darwin) yes,
-    Windows no."""
+    """The single source of truth: every platform the transport layer covers.
+
+    win32 is supported via the named-pipe transport. cygwin is not: it reports
+    its own ``sys.platform`` and has neither the POSIX nor the proactor path.
+    """
     import kiro_crew.mcp_gateway as gw
 
     monkeypatch.setattr(gw.sys, "platform", platform)

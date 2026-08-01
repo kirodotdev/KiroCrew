@@ -68,12 +68,12 @@ any future KiroCrew-owned MCP server must go through this module.
 from __future__ import annotations
 
 import os
-import platform
-import subprocess
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
+
+from kiro_crew import platform_compat
 
 # --- Protocol identifiers ---------------------------------------------------
 
@@ -91,29 +91,37 @@ CALLER_CAPABILITY_KEY = "kirocrew.caller-identity"
 CALLER_SCHEMA_VERSION = 1
 
 #: Process-lifetime cache of a RESOLVED ``from_env()`` identity. The env var
-#: and ancestor pidfile chain are immutable once present, so the ancestor walk
-#: — which forks ``ps`` per ancestor on non-Linux and can stall an event loop —
-#: need run at most once. Only a non-empty result is cached (see ``from_env``).
+#: and ancestor pidfile chain are immutable once present, so the walk need run
+#: at most once. It no longer forks ``ps`` per ancestor (``_parent_pid``
+#: delegates to ``platform_compat.get_ppid``), but it is still a chain of file
+#: reads or syscalls on a hot path. Only a non-empty result is cached, so a
+#: warm-pool session claimed after the first call can still resolve once its
+#: pidfile appears (see ``from_env``).
 _FROM_ENV_CACHE: "CallerContext | None" = None
 
 
 def _parent_pid(pid: int) -> int:
-    """Best-effort parent-PID lookup (Linux /proc, ``ps`` fallback). Returns 0
-    on failure so an ancestor walk terminates safely."""
-    try:
-        if platform.system() == "Linux":
-            with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
-                for line in fh:
-                    if line.startswith("PPid:"):
-                        return int(line.split()[1])
-        else:
-            out = subprocess.check_output(
-                ["ps", "-o", "ppid=", "-p", str(pid)], text=True, timeout=2
-            )
-            return int(out.strip())
-    except Exception:
-        pass
-    return 0
+    """Best-effort parent-PID lookup. Returns 0 on failure so an ancestor walk
+    terminates safely.
+
+    Delegates to :func:`kiro_crew.platform_compat.get_ppid`, which reads
+    ``/proc/<pid>/status`` on Linux, ``libproc.proc_pidinfo`` on macOS and
+    ``CreateToolhelp32Snapshot`` on Windows -- none of which spawns a process.
+
+    The previous implementation shelled out to ``ps`` on every non-Linux
+    platform, which cost one fork per ancestor. That is paid on the stub's
+    Register path (bounded at ten levels) and again on every iteration of the
+    recaller poll, whose backoff caps at 30s but does not terminate while the
+    session key is unresolved -- and an unresolved key is exactly the condition
+    that starts the poll, so the walk could not be served from the
+    non-empty-only cache. It also returned 0 on Windows, where ``ps`` does not
+    exist, which silently disabled session-key resolution there.
+
+    ``get_ppid`` reports failure as ``-1``; normalise it to ``0`` so the walk
+    loops (``while pid > 1``) and the callers' guards behave exactly as before.
+    """
+    ppid = platform_compat.get_ppid(pid)
+    return ppid if ppid > 0 else 0
 
 
 # --- Typed context ----------------------------------------------------------

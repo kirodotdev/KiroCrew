@@ -32,8 +32,10 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_caller import CallerContext, _parent_pid
+from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.hashing import hash_command
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
 
@@ -256,10 +258,14 @@ _ANCESTOR_WALK_MAX = 10
 def _ancestor_pids() -> list[int]:
     """Ancestor PID chain of this stub, nearest parent first.
 
-    Uses :func:`kiro_crew.mcp_caller._parent_pid` (Linux /proc read, macOS
-    libproc — never spawns a subprocess). Stops at PID 1, a lookup failure,
-    or the depth cap. Always contains at least ``os.getppid()`` when
-    resolvable.
+    Uses :func:`kiro_crew.mcp_caller._parent_pid`, which delegates to
+    ``platform_compat.get_ppid``: ``/proc`` on Linux, libproc on macOS,
+    ``CreateToolhelp32Snapshot`` on Windows -- none of which spawns a
+    subprocess. (This docstring previously claimed the same, but the
+    implementation it named forked ``ps`` per ancestor on every non-Linux
+    platform; the claim is true now that it delegates.) Stops at PID 1, a
+    lookup failure, or the depth cap. Always contains at least
+    ``os.getppid()`` when resolvable.
     """
     chain: list[int] = []
     pid = os.getppid()
@@ -330,7 +336,14 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         work_dir = str(args.work_dir)
 
     caller = _build_caller_block(channel_id)
-    user_identity = caller["principal_id"] or os.environ.get("USER", "") or "unknown"
+    # USERNAME is the Windows spelling of USER; check both so this diagnostic
+    # dimension is not empty on one platform.
+    user_identity = (
+        caller["principal_id"]
+        or os.environ.get("USER", "")
+        or os.environ.get("USERNAME", "")
+        or "unknown"
+    )
 
     return {
         "type": "register",
@@ -341,7 +354,13 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "effective_env_hash": _hash_effective_env(env_pairs),
         "work_dir": work_dir,
         "binary_version": _binary_version(args.target_command),
-        "os_uid": os.getuid(),
+        # Not os.getuid(): that attribute does not exist on Windows, where an
+        # AttributeError here would abort the Register frame and send every
+        # session to per-session exec -- pooling would appear enabled and
+        # never take effect. local_user_id() is the uid on POSIX and a
+        # SID-derived int on Windows, so the PoolKey dimension keeps both its
+        # type and its partitioning meaning.
+        "os_uid": platform_compat.local_user_id(),
         "sandbox_mode": args.sandbox_mode,
         "autoapprove_set_hash": _hash_permission_profile(
             auto_approve, args.approval_mode, bool(args.trust_all)
@@ -425,7 +444,7 @@ async def handshake(
     gateway-unavailable condition (connect refused, socket missing,
     rejected register, unexpected reply)."""
     try:
-        reader, writer = await asyncio.open_unix_connection(
+        reader, writer = await transport.connect(
             socket_path, limit=READ_BUFFER_LIMIT_BYTES,
         )
     except (FileNotFoundError, ConnectionRefusedError, OSError) as exc:

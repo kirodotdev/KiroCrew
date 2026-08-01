@@ -2585,7 +2585,10 @@ class McpGatewayConfig:
         default="",
         metadata=_meta(
             "Socket Path",
-            "Unix socket for the broker. Empty -> $KIROCREW_HOME/mcp-gateway/gateway.sock.",
+            "Local endpoint for the broker. Empty -> "
+            "$KIROCREW_HOME/mcp-gateway/gateway.sock. A unix socket at this path "
+            "on POSIX; on Windows the path is not created, it only derives the "
+            "named-pipe name and locates the lock file beside it.",
         ),
     )
     overlay_dir: str = field(

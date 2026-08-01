@@ -2128,7 +2128,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Socket Path",
-      "help": "Unix socket for the broker. Empty -> $KIROCREW_HOME/mcp-gateway/gateway.sock.",
+      "help": "Local endpoint for the broker. Empty -> $KIROCREW_HOME/mcp-gateway/gateway.sock. A unix socket at this path on POSIX; on Windows the path is not created, it only derives the named-pipe name and locates the lock file beside it.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

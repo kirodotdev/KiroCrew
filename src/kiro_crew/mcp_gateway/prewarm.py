@@ -32,6 +32,7 @@ sound without any shared-fallback path.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -41,6 +42,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from kiro_crew import platform_compat
 from kiro_crew.mcp_gateway.pool import PoolKey
 from kiro_crew.metrics.provider import get_recorder
 
@@ -342,12 +344,36 @@ class HotKeyStore:
             fd, tmp = tempfile.mkstemp(
                 prefix=".hot-keys-", suffix=".tmp", dir=str(self._path.parent)
             )
+            fd_owned = True  # True until os.fdopen takes ownership
             try:
-                os.fchmod(fd, 0o600)  # identity-bearing keys — owner-only
+                # fchmod_safe, not os.fchmod: that name does not exist on
+                # Windows, and the enclosing handler catches OSError only -- so
+                # the AttributeError escaped flush() entirely, after _dirty had
+                # already been cleared, meaning the re-arm below never ran and
+                # every observation was lost. The shim is a no-op off POSIX,
+                # where the DACL applied below is the real carrier.
+                platform_compat.fchmod_safe(fd, 0o600)  # identity-bearing keys
+                if not platform_compat.IS_POSIX:
+                    # POSIX mode bits are inert on Windows; the DACL is the real
+                    # carrier. Applied to the temp file BEFORE any content is
+                    # written, so the keys never exist in a readable file, and
+                    # before os.replace, which preserves an explicit
+                    # (non-inherited) descriptor across the rename.
+                    # restrict_to_owner is fail-loud: the OSError is caught by
+                    # the enclosing handler, which unlinks the temp in its
+                    # finally and re-arms _dirty so the write is retried rather
+                    # than silently dropped.
+                    platform_compat.restrict_to_owner(tmp)
                 with os.fdopen(fd, "w") as fh:
+                    fd_owned = False  # os.fdopen now owns the descriptor
                     json.dump(payload, fh)
                 os.replace(tmp, self._path)
             finally:
+                # Close the raw fd if os.fdopen never took ownership (e.g.
+                # restrict_to_owner raised before we reached fdopen).
+                if fd_owned:
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
                 # If replace failed the temp may linger; best-effort cleanup.
                 try:
                     os.unlink(tmp)

@@ -93,7 +93,7 @@ that dir is appended to the MCP spawn `PATH` automatically
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply (Piper TTS) | not yet — upstream rhasspy/piper ships no Windows binary; Polly (optional) works if the `aws` CLI is present |
 | SSH tunnel (`kirocrew cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
-| MCP gateway (opt-in, OFF by default) | not yet — the AF_UNIX socket + `SO_PEERCRED` peer check are POSIX-only |
+| MCP gateway (opt-in, OFF by default) | works — a named-pipe transport replaces the AF_UNIX socket, and the peer check uses `GetNamedPipeClientProcessId` + a SID comparison in place of `SO_PEERCRED`. Still opt-in: set `mcp_gateway.enabled` to turn it on |
 
 The not-yet items are tracked as Windows feature-parity follow-ups.
 

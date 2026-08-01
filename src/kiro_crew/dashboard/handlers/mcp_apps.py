@@ -28,6 +28,7 @@ from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session, _read_session_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.mcp_apps_render import load_spool
+from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.rewriter import default_socket_path
 from kiro_crew.sel import SecurityEventLog
 
@@ -84,7 +85,7 @@ async def _gateway_app_call(frame: dict) -> dict:
     # limit: asyncio's default StreamReader limit is 64 KiB — readline() on a
     # legitimate reply above that raises instead of relaying. Size the buffer
     # to our own reply cap (+1 so a cap-sized line still parses).
-    reader, writer = await asyncio.open_unix_connection(
+    reader, writer = await transport.connect(
         _socket_path(), limit=_MAX_REPLY_BYTES + 1
     )
     try:

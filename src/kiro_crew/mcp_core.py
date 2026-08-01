@@ -1971,10 +1971,19 @@ def _get_ppid(pid: int) -> int:
       their parent session key (empty ``KIROCREW_SESSION_KEY``) and surfacing
       spurious tool-approval cards on trusted sessions. libproc needs no
       ``exec``, so it works under the sandbox.
+    - Windows: ``CreateToolhelp32Snapshot`` via
+      ``platform_compat.get_ppid``. Without this branch the walk fell through
+      to ``ps``, which does not exist on Windows, so every lookup returned 0
+      and ``_resolve_session_key`` could never resolve a key -- silently
+      breaking every session-keyed tool (``learn_add``, cron management,
+      callback delivery) with ``missing X-Session-Key``.
     - Other/unknown platforms: fall back to ``ps`` (may be blocked, then 0).
     """
     system = platform.system()
     try:
+        if system == "Windows":
+            ppid = platform_compat.get_ppid(pid)
+            return ppid if ppid > 0 else 0
         if system == "Linux":
             for line in Path(f"/proc/{pid}/status").read_text().splitlines():
                 if line.startswith("PPid:"):

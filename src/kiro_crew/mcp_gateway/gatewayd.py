@@ -35,20 +35,17 @@ import logging
 import os
 import shlex
 import signal
-import socket as _socket
-import stat
 import sys
 import time
 import traceback
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir as _config_dir
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_caller import _parent_pid as _ppid_fn
-from kiro_crew.mcp_gateway import credwatch, socketsec
+from kiro_crew.mcp_gateway import credwatch, socketsec, transport
 from kiro_crew.mcp_gateway.apps import sweep_spool as apps_sweep_spool
 from kiro_crew.mcp_gateway.backend import Backend, BackendGone, spawn_backend
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
@@ -202,12 +199,21 @@ def _default_cli_socket_path() -> Path:
 
     Preference order for this CLI fallback:
     1. ``$XDG_RUNTIME_DIR/kirocrew/mcp-gateway.sock`` when XDG is set.
-    2. ``/tmp/kirocrew-mcp-gateway.sock`` fallback.
+    2. ``$KIROCREW_HOME``/config-dir ``/mcp-gateway/mcp-gateway.sock``.
+
+    There is deliberately no ``/tmp`` tier. ``XDG_RUNTIME_DIR`` is unset on
+    Windows, so a ``/tmp`` fallback would resolve against the current drive and
+    have the daemon create a stray ``C:\\tmp`` for its lock file. The data-home
+    tier is correct on every platform and matches where production puts the
+    endpoint, so the CLI default and the production default now agree on
+    everything but the leaf filename.
     """
     xdg = os.environ.get("XDG_RUNTIME_DIR")
     if xdg:
         return Path(xdg) / _DEFAULT_SOCKET_SUBDIR / _DEFAULT_SOCKET_NAME
-    return Path("/tmp") / f"kirocrew-{_DEFAULT_SOCKET_NAME}"
+    home = os.environ.get("KIROCREW_HOME")
+    base = Path(home) if home else _config_dir()
+    return base / "mcp-gateway" / _DEFAULT_SOCKET_NAME
 
 
 async def run_gatewayd(
@@ -266,18 +272,22 @@ async def run_gatewayd(
     path) propagate so the caller can surface a clear error.
     """
     socket_path = Path(socket_path)
-    _prepare_socket_dir(socket_path)
-    # Singleton guard (race-free): acquire an exclusive advisory flock on a
-    # lockfile beside the socket BEFORE probing/unlinking/binding. Without it,
+    # Off the event loop for the same reason as the manager's call: the
+    # owner-only step shells out to icacls on Windows. Startup is the least
+    # contended moment in this process, but the daemon's signal handlers and
+    # supervising ping are already live, so it is offloaded here too.
+    await asyncio.to_thread(transport.prepare_dir, socket_path)
+    # Singleton guard (race-free): acquire an exclusive advisory lock on a
+    # lockfile beside the endpoint BEFORE probing/unlinking/binding. Without it,
     # two daemons that start in the same instant both pass the connect-probe
-    # in _remove_stale_socket, both unlink+bind, and the later bind silently
+    # in remove_stale, both unlink+bind, and the later bind silently
     # steals the socket from the earlier — leaving the earlier daemon
     # orphaned-but-listening. Repeated, this leaks N daemons on one socket
     # path and splits stub<->backend routing across them, surfacing to
-    # kiro-cli as intermittent "transport closed". The flock lets exactly one
-    # daemon win; losers exit cleanly below. The kernel releases the lock on
+    # kiro-cli as intermittent "transport closed". The lock lets exactly one
+    # daemon win; losers exit cleanly below. The OS releases the lock on
     # process death, so there is no stale-lock mode.
-    lock_fd = _acquire_singleton_lock(socket_path)
+    lock_fd = transport.acquire_singleton_lock(socket_path)
     if lock_fd is None:
         logger.warning(
             "gatewayd: another instance already owns %s — exiting without "
@@ -285,7 +295,7 @@ async def run_gatewayd(
             socket_path,
         )
         return
-    await _remove_stale_socket(socket_path)
+    await transport.remove_stale(socket_path)
 
     resolver = target_resolver if target_resolver is not None else env_target_resolver
     # Shared circuit breaker keyed by server name: a server
@@ -369,13 +379,13 @@ async def run_gatewayd(
                 pass
 
     # --- Resource-guarded startup block ---
-    # The flock (lock_fd) and the bound unix socket are acquired/created
+    # The singleton lock (lock_fd) and the bound endpoint are acquired/created
     # below. If ANY step between bind and the main await-stop_event raises
-    # (EADDRINUSE from start_unix_server, chmod failure, a create_task OOM),
-    # the finally block ensures both the flock and the socket file are
-    # released/unlinked — preventing a leaked flock that blocks restart and
+    # (EADDRINUSE from the bind, a hardening failure, a create_task OOM),
+    # the finally block ensures both the lock and the endpoint are
+    # released/torn down — preventing a leaked lock that blocks restart and
     # a dangling socket that confuses the next startup probe.
-    server: Optional[asyncio.base_events.Server] = None
+    server: Optional[transport.TransportServer] = None
     sweeper: Optional[asyncio.Task[None]] = None
     diagnostic: Optional[asyncio.Task[None]] = None
     heartbeat: Optional[asyncio.Task[None]] = None
@@ -386,20 +396,22 @@ async def run_gatewayd(
     _prewarm_lock = asyncio.Lock()  # serialize passes so unpin sees latest state
 
     try:
-        # Windows: not yet supported — AF_UNIX / start_unix_server (and the
-        # SO_PEERCRED peer check below) are POSIX-only; a TCP-loopback or named-pipe
-        # abstraction is needed. The MCP gateway is opt-in and OFF by default, so this
-        # is no parity loss at launch. Tracked as follow-on work.
-        server = await asyncio.start_unix_server(
+        # Local IPC endpoint: an AF_UNIX socket on POSIX, a named pipe on
+        # Windows. ``transport`` owns the platform split so nothing here (or in
+        # the stub, the manager, claim or abort) has to know which is in play.
+        server = await transport.serve(
+            socket_path,
             _on_client_connected,
-            path=str(socket_path),
             limit=READ_BUFFER_LIMIT_BYTES,
         )
-        # Socket hardening: tighten the freshly-bound socket to
-        # 0600 so only the owning uid can connect. Defense-in-depth on top of the
-        # 0700 $KIROCREW_HOME directory; the per-connection SO_PEERCRED check in
-        # _handle_connection is the second layer.
-        socketsec.chmod_socket_0600(socket_path)
+        # Endpoint hardening: restrict the freshly-bound endpoint to the owning
+        # user. POSIX tightens the socket file to 0600 here; Windows applies an
+        # owner-only DACL at creation instead, because a default-descriptor pipe
+        # is readable by Everyone and fixing it after the fact would leave a
+        # window. Defense-in-depth on top of the 0700 $KIROCREW_HOME directory;
+        # the per-connection peer check in _handle_connection is the second
+        # layer.
+        transport.harden_endpoint(socket_path)
         # Clean up stale spill files from prior runs (older than 24h).
         try:
             await asyncio.get_running_loop().run_in_executor(
@@ -573,10 +585,12 @@ async def run_gatewayd(
         await stop_event.wait()
     finally:
         logger.info("gatewayd shutting down (connections=%d)", len(connections))
+        # Stop accepting first, but do NOT await wait_closed() yet: since
+        # Python 3.12 it waits for every accepted connection to finish, so
+        # awaiting it here would block for as long as any stub stayed
+        # connected -- the drain and cancel below are what let it return.
         if server is not None:
             server.close()
-            with contextlib.suppress(Exception):
-                await server.wait_closed()
 
         # Phase 1: let in-flight handlers drain cleanly. ``return_exceptions``
         # because a handler that was already errored will raise from the
@@ -592,6 +606,13 @@ async def run_gatewayd(
         if connections:
             await asyncio.gather(*connections, return_exceptions=True)
         connections.clear()
+
+        # Now that nothing is holding a connection open, the server can finish
+        # closing. Suppressed: a teardown-time error here is not worth failing
+        # a shutdown that has already stopped serving.
+        if server is not None:
+            with contextlib.suppress(Exception):
+                await server.wait_closed()
 
         if sweeper is not None:
             sweeper.cancel()
@@ -644,19 +665,14 @@ async def run_gatewayd(
         with contextlib.suppress(OSError):
             Path(f"{socket_path}.backends").unlink()
 
-        # Only unlink the socket WE bound. On the EADDRINUSE path a foreign
-        # live daemon already owns it (server stays None, _remove_stale_socket
-        # deliberately refused to remove the live socket) — unlinking here
+        # Only tear down the endpoint WE bound. On the EADDRINUSE path a foreign
+        # live daemon already owns it (server stays None, transport.remove_stale
+        # deliberately refused to remove the live socket) — tearing down here
         # would delete the running daemon's socket and send every stub to
         # per-session fallback. Mirror the ``server.close()`` guard above.
         if server is not None:
-            try:
-                socket_path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                logger.warning("could not unlink gateway socket %s: %s", socket_path, exc)
-        # Release the singleton flock (the kernel also releases it on process
+            transport.teardown(socket_path)
+        # Release the singleton lock (the OS also releases it on process
         # death; this is the clean-path release).
         with contextlib.suppress(OSError):
             os.close(lock_fd)
@@ -1404,31 +1420,32 @@ async def _handle_connection(
        stdout pump. Exits on any of: stub EOF, backend death, shutdown
        cancellation.
     """
-    # Socket hardening: deny-by-default peer-uid check on every
-    # platform. Where the platform can read SO_PEERCRED (Linux), reject any
-    # connection whose peer uid is not a positively-confirmed MATCH (both a
-    # MISMATCH and an UNVERIFIABLE socket-level failure fail closed). Where
-    # SO_PEERCRED is structurally unavailable (e.g. macOS), peer-uid cannot be
-    # read, so rather than silently proceeding we positively verify the
-    # filesystem access gate -- the 0600 socket mode that already prevents any
-    # other uid from connecting -- and fail closed if it has been loosened.
-    if socketsec.PEERCRED_SUPPORTED:
-        peer_result = socketsec.check_peer_uid(writer, os.getuid())
+    # Endpoint hardening: deny-by-default peer-principal check on every
+    # platform. Where the platform can confirm the peer principal (Linux via
+    # SO_PEERCRED, Windows via a pipe-client SID comparison), reject any
+    # connection that is not a positively-confirmed MATCH -- both a MISMATCH and
+    # an UNVERIFIABLE lookup failure fail closed. Where no mechanism is wired
+    # (macOS), the principal cannot be read, so rather than silently proceeding
+    # we positively verify the filesystem access gate -- the 0600 socket mode
+    # that already prevents any other uid from connecting -- and fail closed if
+    # it has been loosened.
+    if socketsec.PEER_IDENTITY_SUPPORTED:
+        peer_result = socketsec.check_peer_is_self(writer)
         if peer_result is not socketsec.PeerCredResult.MATCH:
             logger.warning(
-                "rejecting gateway connection: peer uid not confirmed (%s)",
+                "rejecting gateway connection: peer principal not confirmed (%s)",
                 peer_result.value,
             )
-            _audit_peer_denied(f"peer uid not confirmed ({peer_result.value})")
+            _audit_peer_denied(f"peer principal not confirmed ({peer_result.value})")
             return
     else:
         if not socketsec.socket_owner_only(socket_path):
             logger.warning(
-                "rejecting gateway connection: peer uid unverifiable on this "
-                "platform and socket %s is not owner-only (0600)",
+                "rejecting gateway connection: peer principal unverifiable on "
+                "this platform and socket %s is not owner-only (0600)",
                 socket_path,
             )
-            _audit_peer_denied(f"peer uid unverifiable and socket not owner-only: {socket_path}")
+            _audit_peer_denied(f"peer principal unverifiable and socket not owner-only: {socket_path}")
             return
         logger.debug(
             "peer uid unverifiable on this platform; socket %s verified "
@@ -1550,7 +1567,7 @@ async def _handle_connection(
     peer_host_pids: list[int] = []
     if caller is None or not caller.session_key:
         peer_pid = socketsec.get_peer_pid(writer)
-        peer_uid_ok = socketsec.check_peer_uid(writer, os.getuid())
+        peer_uid_ok = socketsec.check_peer_is_self(writer)
         if peer_pid is None or peer_uid_ok is not socketsec.PeerCredResult.MATCH:
             _audit_peer_identity_denied(
                 reason=(
@@ -2357,106 +2374,6 @@ async def _write_json_line(writer: asyncio.StreamWriter, obj: Any) -> None:
 # --- Utilities --------------------------------------------------------------
 
 
-def _prepare_socket_dir(socket_path: Path) -> None:
-    socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # mkdir's mode is masked by umask and is NOT applied to a pre-existing
-    # directory; re-chmod so the documented owner-only (0700) containing-dir
-    # guarantee holds even when $KIROCREW_HOME/mcp-gateway already existed
-    # with looser permissions (matches how the socket is chmod'd to 0600).
-    try:
-        socket_path.parent.chmod(0o700)
-    except OSError:
-        pass
-
-
-_SINGLETON_LOCK_SUFFIX = ".lock"
-
-
-def _acquire_singleton_lock(socket_path: Path) -> Optional[int]:
-    """Acquire an exclusive, non-blocking advisory lock guarding ``socket_path``.
-
-    Returns the held lock fd on success, or ``None`` if another live gatewayd
-    already holds it. The fd must stay open for the daemon's lifetime; the
-    kernel releases the flock automatically when the holder dies, so there is
-    no stale-lock failure mode and the guard is race-free even when multiple
-    daemons start in the same instant (only one wins ``LOCK_EX``).
-
-    ``O_CLOEXEC`` keeps the lock fd from leaking into the MCP backend
-    subprocesses gatewayd spawns — otherwise a backend would hold the lock
-    open past the daemon's own exit and block the next daemon from starting.
-    """
-    lock_path = socket_path.parent / (socket_path.name + _SINGLETON_LOCK_SUFFIX)
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
-    if not platform_compat.try_acquire_lock(fd, exclusive=True):
-        os.close(fd)
-        return None
-    return fd
-
-
-async def _remove_stale_socket(socket_path: Path) -> None:
-    """Remove a socket left behind by a prior crash.
-
-    Distinguishes a *real* stale socket (file that is not a socket, or a
-    socket with no listener) from a live peer (another daemon currently
-    bound). Refuses to unlink anything that looks like a live socket —
-    ``asyncio.start_unix_server`` will fail later with ``EADDRINUSE``,
-    which is the correct user-visible error.
-
-    The blocking ``socket.connect()`` probe is offloaded to a thread via
-    :func:`asyncio.to_thread` so the event loop is never blocked on a
-    potentially slow or hanging unix-socket connect.
-    """
-    try:
-        st = os.stat(socket_path)
-    except FileNotFoundError:
-        return
-    # S_IFSOCK == 0o140000. For non-socket files this is operator error;
-    # removing them is not our call.
-    if not stat.S_ISSOCK(st.st_mode):
-        logger.warning(
-            "path %s exists and is not a socket (mode=%o); leaving in place",
-            socket_path,
-            st.st_mode,
-        )
-        return
-    # Probe whether the socket is live before unlinking. If connect
-    # succeeds, another daemon is actively listening — don't unlink;
-    # let asyncio.start_unix_server fail with EADDRINUSE instead.
-    # The blocking connect is offloaded to a thread so the event loop
-    # is never stalled.
-    is_live = await asyncio.to_thread(_probe_socket_live, socket_path)
-    if is_live:
-        logger.warning(
-            "socket %s is live (connect succeeded); refusing to unlink — "
-            "another gatewayd instance may be running",
-            socket_path,
-        )
-        return
-    try:
-        socket_path.unlink()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        logger.warning("could not remove stale socket %s: %s", socket_path, exc)
-
-
-def _probe_socket_live(socket_path: Path) -> bool:
-    """Blocking probe: return True if a listener is bound to ``socket_path``.
-
-    Designed to run inside :func:`asyncio.to_thread` so the event loop is
-    never blocked by the connect syscall.
-    """
-    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-    try:
-        s.settimeout(1.0)
-        s.connect(str(socket_path))
-        return True
-    except (ConnectionRefusedError, OSError):
-        return False
-    finally:
-        s.close()
-
-
 # --- Zombie diagnostic ------------------------------------------------------
 
 # Chronic post-M5 issue: gatewayd's accept coroutine has been observed to
@@ -2545,7 +2462,7 @@ def _collect_task_stacks() -> list[dict[str, Any]]:
 
 def _snapshot_state(
     *,
-    server: Optional[asyncio.base_events.Server],
+    server: Optional[transport.TransportServer],
     pool: BackendPool,
     connections: set[asyncio.Task[None]],
     task_count: int,
@@ -2583,7 +2500,7 @@ def _write_diagnostic(path: Path, record: dict[str, Any]) -> None:
 
 
 async def _zombie_diagnostic(
-    server: asyncio.base_events.Server,
+    server: transport.TransportServer,
     pool: BackendPool,
     connections: set[asyncio.Task[None]],
     stop_event: asyncio.Event,

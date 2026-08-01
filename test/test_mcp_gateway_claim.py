@@ -29,10 +29,12 @@ from typing import Any, Optional
 
 import pytest
 
+from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import claim as claim_mod
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import socketsec
 from kiro_crew.mcp_gateway import stub as stub_mod
+from kiro_crew.mcp_gateway import transport
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
@@ -177,9 +179,9 @@ def _clean_index() -> Any:
 
 
 def _patch_env(monkeypatch: pytest.MonkeyPatch) -> tuple[_FakeBackend, list[dict[str, Any]]]:
-    monkeypatch.setattr(socketsec, "PEERCRED_SUPPORTED", True)
+    monkeypatch.setattr(socketsec, "PEER_IDENTITY_SUPPORTED", True)
     monkeypatch.setattr(
-        socketsec, "check_peer_uid", lambda _w, _uid: socketsec.PeerCredResult.MATCH
+        socketsec, "check_peer_is_self", lambda _w: socketsec.PeerCredResult.MATCH
     )
     fake_backend = _FakeBackend()
     sel_calls: list[dict[str, Any]] = []
@@ -329,7 +331,7 @@ async def test_no_host_indexing_when_peer_pid_unavailable(
     claim naming a host pid updates nothing. Non-MATCH uids never reach this
     code: they are rejected at connection level before Register."""
     fb, sel = _patch_env(monkeypatch)
-    monkeypatch.setattr(socketsec, "PEERCRED_SUPPORTED", False)
+    monkeypatch.setattr(socketsec, "PEER_IDENTITY_SUPPORTED", False)
     monkeypatch.setattr(socketsec, "socket_owner_only", lambda _p: True)
     monkeypatch.setattr(socketsec, "get_peer_pid", lambda _w: None)
     resolve_calls: list[int] = []
@@ -552,13 +554,23 @@ def test_classify_session_type() -> None:
     assert claim_mod.classify_session_type("") == "unknown"
 
 
+def _endpoint_dir() -> str | None:
+    """Where to put a test endpoint.
+
+    On POSIX these tests bind a real socket, and ``AF_UNIX`` caps ``sun_path``
+    at ~104 bytes -- pytest's ``tmp_path`` blows past that on macOS -- so they
+    bind under ``/tmp``. A Windows named pipe has neither the length limit nor a
+    ``/tmp``, so the platform default applies there.
+    """
+    return None if pc.IS_WINDOWS else "/tmp"
+
+
 @pytest.mark.asyncio
 async def test_send_claim_roundtrip() -> None:
     """The sender round-trips a claim frame over a real unix socket and treats
     a ``claimed`` ack as success, anything else as failure."""
     received: list[dict[str, Any]] = []
-    # Use /tmp directly — macOS tmp_path exceeds the 104-char AF_UNIX sun_path limit.
-    sock = Path(tempfile.mkdtemp(dir="/tmp")) / "gw.sock"
+    sock = Path(tempfile.mkdtemp(dir=_endpoint_dir())) / "gw.sock"
 
     async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         raw = await reader.readline()
@@ -567,7 +579,7 @@ async def test_send_claim_roundtrip() -> None:
         await writer.drain()
         writer.close()
 
-    server = await asyncio.start_unix_server(_serve, path=str(sock))
+    server = await transport.serve(sock, _serve, limit=1 << 16)
     try:
         ok = await claim_mod.send_claim(str(sock), 777, "dashboard:chat-RT-1", "C1")
     finally:
@@ -582,8 +594,7 @@ async def test_send_claim_roundtrip() -> None:
 @pytest.mark.asyncio
 async def test_send_claim_failure_paths() -> None:
     """A missing socket or a non-ack response returns False without raising."""
-    # Use /tmp directly — macOS tmp_path exceeds the 104-char AF_UNIX sun_path limit.
-    base = Path(tempfile.mkdtemp(dir="/tmp"))
+    base = Path(tempfile.mkdtemp(dir=_endpoint_dir()))
     assert await claim_mod.send_claim(str(base / "absent.sock"), 7, "dashboard:x") is False
 
     sock = base / "nak.sock"
@@ -594,7 +605,7 @@ async def test_send_claim_failure_paths() -> None:
         await writer.drain()
         writer.close()
 
-    server = await asyncio.start_unix_server(_serve, path=str(sock))
+    server = await transport.serve(sock, _serve, limit=1 << 16)
     try:
         assert await claim_mod.send_claim(str(sock), 7, "dashboard:x") is False
     finally:
@@ -610,8 +621,7 @@ async def test_send_claim_aggregate_timeout_bound(
     budget — not one budget per phase (connect/drain/readline), which would
     triple the worst-case stall (review-bot finding f-d76c6f17)."""
     monkeypatch.setattr(claim_mod, "_CLAIM_TIMEOUT_SECS", 0.3)
-    # Use /tmp directly — macOS tmp_path exceeds the 104-char AF_UNIX sun_path limit.
-    sock = Path(tempfile.mkdtemp(dir="/tmp")) / "stall.sock"
+    sock = Path(tempfile.mkdtemp(dir=_endpoint_dir())) / "stall.sock"
     stalled = asyncio.Event()
 
     async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -619,7 +629,7 @@ async def test_send_claim_aggregate_timeout_bound(
         await stalled.wait()
         writer.close()
 
-    server = await asyncio.start_unix_server(_serve, path=str(sock))
+    server = await transport.serve(sock, _serve, limit=1 << 16)
     try:
         loop = asyncio.get_running_loop()
         start = loop.time()
@@ -642,3 +652,54 @@ async def test_schedule_claim_preconditions() -> None:
     claim_mod.schedule_claim("/tmp/x.sock", 0, "dashboard:x")
     claim_mod.schedule_claim("/tmp/x.sock", 42, "")
     assert claim_mod._PENDING == set()
+
+
+@pytest.mark.asyncio
+async def test_connection_rejected_when_owner_only_gate_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback gate must actually deny.
+
+    Where no peer-principal mechanism is wired (macOS), admission rests entirely
+    on the endpoint being owner-only. Every other test in this file asserts the
+    allow side by stubbing that gate to ``True``; this one asserts the deny side,
+    so a regression that turns the fallback into a pass-through cannot land
+    silently. The handler must return before the Register frame is consumed --
+    no backend acquired, nothing forwarded, nothing written back.
+    """
+    fb, _sel = _patch_env(monkeypatch)
+    monkeypatch.setattr(socketsec, "PEER_IDENTITY_SUPPORTED", False)
+    monkeypatch.setattr(socketsec, "socket_owner_only", lambda _p: False)
+
+    reader = _QueueReader()
+    reader.feed(_register("dashboard:chat-NS-1"))
+    reader.feed(_CALL)
+    writer = _RecordingWriter()
+    await _handle(reader, writer)
+
+    assert writer.frames == [], f"rejected connection replied: {writer.frames}"
+    assert not fb.forwarded.is_set(), "a denied connection reached the backend"
+
+
+@pytest.mark.asyncio
+async def test_connection_rejected_when_peer_principal_mismatches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A positively-confirmed foreign principal is denied, and so is a lookup
+    that could not confirm one: only MATCH proceeds."""
+    for outcome in (
+        socketsec.PeerCredResult.MISMATCH,
+        socketsec.PeerCredResult.UNVERIFIABLE,
+    ):
+        fb, _sel = _patch_env(monkeypatch)
+        monkeypatch.setattr(socketsec, "PEER_IDENTITY_SUPPORTED", True)
+        monkeypatch.setattr(socketsec, "check_peer_is_self", lambda _w, o=outcome: o)
+
+        reader = _QueueReader()
+        reader.feed(_register("dashboard:chat-NS-1"))
+        reader.feed(_CALL)
+        writer = _RecordingWriter()
+        await _handle(reader, writer)
+
+        assert writer.frames == [], f"{outcome.value}: replied {writer.frames}"
+        assert not fb.forwarded.is_set(), f"{outcome.value}: reached the backend"

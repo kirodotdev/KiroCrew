@@ -13,7 +13,10 @@ This stops tool work that was executing inside pooled backends.
 Trust model: same uid-gated 0700 unix socket as Register/Claim — the gateway
 is the authority. A valid abort frame always takes effect.
 
-Stdlib-only on purpose: imported from ``session.py`` hot paths.
+Import-light on purpose: imported from ``session.py`` hot paths. The only
+non-stdlib import is ``mcp_gateway.transport`` (chain: ``transport ->
+platform_compat -> executors``, no config loader), needed because the
+endpoint is a unix socket on POSIX and a named pipe on Windows.
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ import asyncio
 import json
 import logging
 from typing import Optional
+
+from kiro_crew.mcp_gateway import transport
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +54,7 @@ async def _send_abort_inner(
 ) -> dict:
     """Unbounded socket round-trip; ``send_abort`` enforces the time budget."""
     frame = build_abort_frame(pids, reason)
-    reader, writer = await asyncio.open_unix_connection(socket_path)
+    reader, writer = await transport.connect(socket_path)
     try:
         writer.write(json.dumps(frame).encode("utf-8") + b"\n")
         await writer.drain()

@@ -127,10 +127,10 @@ def _rekey_events(sel_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def _run(
     frames: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> tuple[_FakeBackend, list[dict[str, Any]]]:
-    monkeypatch.setattr(socketsec, "PEERCRED_SUPPORTED", True)
+    monkeypatch.setattr(socketsec, "PEER_IDENTITY_SUPPORTED", True)
     monkeypatch.setattr(
-        socketsec, "check_peer_uid",
-        lambda _w, _uid: socketsec.PeerCredResult.MATCH,
+        socketsec, "check_peer_is_self",
+        lambda _w: socketsec.PeerCredResult.MATCH,
     )
     monkeypatch.setattr(socketsec, "socket_owner_only", lambda _path: True)
     fake_backend = _FakeBackend()

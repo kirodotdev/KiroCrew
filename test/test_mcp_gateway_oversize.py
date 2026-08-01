@@ -18,6 +18,7 @@ import os
 import time
 from unittest.mock import patch
 
+from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway.spill import (
     cleanup_old_spill_files,
     extract_id_from_bytes,
@@ -134,7 +135,38 @@ class TestSpillToFile:
             maybe_spill_response(line, "server", 100_000)
 
         spill_dir = tmp_path / "mcp_spill"
-        assert spill_dir.stat().st_mode & 0o777 == 0o700
+        assert spill_dir.is_dir()
+        if not pc.IS_WINDOWS:
+            assert spill_dir.stat().st_mode & 0o777 == 0o700
+
+    def test_spill_dir_is_tightened_when_it_already_exists(self, tmp_path, monkeypatch):
+        """A pre-existing loose directory must be tightened, not accepted.
+
+        ``mkdir(mode=...)`` is ignored for a directory that already exists, so a
+        spill directory created before the owner-only guarantee (or by a looser
+        umask) would keep its permissions while holding spilled tool responses.
+        """
+        if pc.IS_WINDOWS:
+            calls: list[str] = []
+            monkeypatch.setattr(
+                pc, "restrict_to_owner", lambda p: calls.append(str(p))
+            )
+        loose = tmp_path / "mcp_spill"
+        loose.mkdir(mode=0o755)
+
+        msg = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"content": [{"type": "text", "text": "y" * 200_000}]},
+        }
+        line = json.dumps(msg, separators=(",", ":")).encode("utf-8") + b"\n"
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            maybe_spill_response(line, "server", 100_000)
+
+        if pc.IS_WINDOWS:
+            assert str(loose) in calls
+        else:
+            assert loose.stat().st_mode & 0o777 == 0o700
 
 
 # --- (e) Spill failure -> original forwarded unmodified ---

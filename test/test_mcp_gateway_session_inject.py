@@ -188,6 +188,16 @@ def test_non_dict_server_entry_is_skipped(tmp_path):
 
 REAL_CLI = shutil.which("kiro-cli")
 
+#: A probe MCP server that records that it launched and then lingers, in place
+#: of ``sh -c "touch X; sleep 20"``. The interpreter is portable where a POSIX
+#: shell is not, and the marker path arrives as ``argv`` so a Windows path's
+#: backslashes never pass through a string literal.
+_PROBE_SNIPPET = (
+    "import pathlib,sys,time;"
+    "pathlib.Path(sys.argv[1]).write_text('x');"
+    "time.sleep(20)"
+)
+
 _DRIVER = r"""
 import json, os, subprocess, sys, time
 w = sys.argv[1]
@@ -202,18 +212,23 @@ send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
 time.sleep(3)
 send({"jsonrpc": "2.0", "id": 2, "method": "session/new",
       "params": {"cwd": w + "/proj", "mcpServers": [
-          {"name": "shared", "command": "sh",
-           "args": ["-c", "touch " + w + "/marks/INJECTED; sleep 20"], "env": []}]}})
+          {"name": "shared", "command": sys.executable,
+           "args": ["-c", sys.argv[2], w + "/marks/INJECTED"], "env": []}]}})
 time.sleep(8)
 p.kill()
 """
 
 
 @pytest.mark.skipif(not REAL_CLI, reason="kiro-cli not on PATH")
-@pytest.mark.skipif(not sys.platform.startswith(("linux", "darwin")),
-                    reason="driver uses a POSIX shell")
 def test_real_kiro_cli_prefers_session_injected_server():
     """ANTI-DRIFT GUARD. Pins the undocumented precedence pooling relies on.
+
+    Runs on every platform now that both probe servers are launched through
+    ``sys.executable`` instead of a POSIX shell. That matters because the CI
+    Windows runner has no kiro-cli, so CI alone can never verify this
+    assumption -- but any Windows machine with the CLI installed verifies it by
+    running the suite, which is the only way this precedence gets checked on the
+    platform where the transport is newest.
 
     kiro-cli documents priority only among the three *file* tiers (agent config
     > workspace mcp.json > global mcp.json); it does not document that a
@@ -234,13 +249,13 @@ def test_real_kiro_cli_prefers_session_injected_server():
             "tools": [],
             "prompt": "probe",
             "mcpServers": {"shared": {
-                "command": "sh",
-                "args": ["-c", f"touch {root / 'marks' / 'FROM_SPEC'}; sleep 20"],
+                "command": sys.executable,
+                "args": ["-c", _PROBE_SNIPPET, str(root / "marks" / "FROM_SPEC")],
             }},
         }), encoding="utf-8")
         driver = root / "drive.py"
         driver.write_text(_DRIVER, encoding="utf-8")
-        subprocess.run([sys.executable, str(driver), str(root)],
+        subprocess.run([sys.executable, str(driver), str(root), _PROBE_SNIPPET],
                        capture_output=True, timeout=180, check=False)
         deadline = time.time() + 5
         while time.time() < deadline and not (root / "marks" / "INJECTED").exists():

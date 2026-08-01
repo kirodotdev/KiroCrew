@@ -4739,10 +4739,9 @@ class GatewayOrchestrator:
         cfg_gw = self._cfg.mcp_gateway
         if not cfg_gw.enabled:
             return
-        # Runs on any platform with an AF_UNIX broker socket (Linux + macOS);
-        # stub delivery is ACP session/new injection, not a bind-mount, so no
-        # mount namespace is needed. Windows lacks AF_UNIX in the proactor loop
-        # and is excluded until a loopback/named-pipe transport exists.
+        # Runs on every platform the transport layer covers -- an AF_UNIX socket
+        # on POSIX, a named pipe on Windows. Stub delivery is ACP session/new
+        # injection, not a bind-mount, so no mount namespace is needed anywhere.
         if not is_gateway_supported():
             return
 
