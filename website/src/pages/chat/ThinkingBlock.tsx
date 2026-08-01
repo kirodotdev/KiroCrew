@@ -1,6 +1,7 @@
-import { useState, memo } from 'react'
+import { memo } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
+import { useRowDisclosure } from './rowDisclosure'
 
 import { i18nT } from '../../i18n/t'
 /**
@@ -16,8 +17,10 @@ import { i18nT } from '../../i18n/t'
  * is rendered as dim pre-wrapped text rather than markdown -- thought streams
  * are often partial/ill-formed and shouldn't run through the markdown renderer.
  */
-function ThinkingBlock({ content }: { content: string }) {
-  const [expanded, setExpanded] = useState(false)
+function ThinkingBlock({ content, disclosureKey }: { content: string; disclosureKey?: string }) {
+  // Held outside the row: the transcript is virtualised, so this block is
+  // unmounted whenever its row leaves the mounted window.
+  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   if (!content) return null
 
   return (

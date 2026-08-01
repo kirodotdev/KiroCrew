@@ -1,8 +1,9 @@
-import { useState, useMemo, useCallback, memo } from 'react'
+import { useMemo, useCallback, memo } from 'react'
 import { ListTodo, ChevronDown, ChevronRight, CheckCircle2, Circle } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { TodoList } from '../../types'
+import { useRowDisclosure } from './rowDisclosure'
 
 import { i18nT } from '../../i18n/t'
 /** Rows rendered before the list scrolls internally — bounds DOM on long plans. */
@@ -19,8 +20,8 @@ const MAX_VISIBLE_ROWS = 12
  * present list is also hidden (there is nothing to show), but is distinct from
  * absent at the data layer.
  */
-const TaskProgressBar = memo(function TaskProgressBar({ slot }: { slot: string | null }) {
-  const [expanded, setExpanded] = useState(false)
+const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: { slot: string | null; disclosureKey?: string }) {
+  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   // Select the primitive-bearing todo object for this slot only, so unrelated
   // slot churn in the slots array doesn't re-render the pill.
   const todo = useAppSelector(s =>
@@ -28,7 +29,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot }: { slot: string |
   ) as TodoList | null
 
   const tasks = useMemo(() => todo?.tasks ?? [], [todo])
-  const toggle = useCallback(() => setExpanded(v => !v), [])
+  const toggle = useCallback(() => setExpanded(v => !v), [setExpanded])
 
   if (!slot || !todo || tasks.length === 0) return null
 

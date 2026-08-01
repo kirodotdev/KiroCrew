@@ -13,7 +13,7 @@
  * based (not the WS `kind`, which is dropped when the message is persisted), so
  * it works live and when a conversation is reloaded from history.
  */
-import { memo, useState } from 'react'
+import { memo } from 'react'
 import { Workflow, CheckCircle2, AlertCircle, ChevronDown, PanelRight } from 'lucide-react'
 import { useAppDispatch } from '../../store'
 import { openActivityToTab } from '../../store/chatSlice'
@@ -22,6 +22,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
+import { useRowDisclosure } from './rowDisclosure'
 const WF_COMPLETION_PREFIX = '[Workflow completion event]'
 // Name is backtick-delimited; allow any char except a backtick (including
 // newlines) so an unusual name doesn't make the header fail to parse. If it
@@ -66,12 +67,14 @@ export function parseWorkflowCompletion(content: string): ParsedCompletion | nul
 const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
   message,
   onFileOpen,
+  disclosureKey,
 }: {
   message: ChatMessage
   onFileOpen?: (path: string) => void
+  disclosureKey?: string
 }) {
   const dispatch = useAppDispatch()
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const parsed = parseWorkflowCompletion(message.content || '')
   if (!parsed) return null
 

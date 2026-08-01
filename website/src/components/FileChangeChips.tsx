@@ -1,6 +1,7 @@
-import { memo, useState } from 'react'
+import { memo } from 'react'
 import { FileDiff, ChevronDown, ChevronUp } from 'lucide-react'
 import type { FileChipStyle } from '../pages/chat/ChatSettings'
+import { useRowDisclosure } from '../pages/chat/rowDisclosure'
 import { colorForExt, fileIcon } from '../utils/fileIcons'
 
 import { i18nT } from '../i18n/t'
@@ -132,12 +133,13 @@ function ExpandedRow({ fc, added, removed, isArtifact, onClick }: { fc: FileChan
  *   shows the true total + aggregate stats while collapsed).                */
 const COLLAPSED_COUNT = 8
 
-function ExpandedList({ fileChanges, onOpenDiff, artifactPaths }: {
+function ExpandedList({ fileChanges, onOpenDiff, artifactPaths, disclosureKey }: {
   fileChanges: FileChangeEntry[]
   onOpenDiff?: (path: string, modified: string, original: string) => void
   artifactPaths?: Set<string>
+  disclosureKey?: string
 }) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const n = fileChanges.length
   // Count once per file: reused by each row AND the header roll-up.
   const stats = fileChanges.map(fc => countLines(fc.before, fc.after))
@@ -203,13 +205,14 @@ function MinimalChip({ fc, onClick }: { fc: FileChangeEntry; onClick: () => void
  * Clicking any file opens the Monaco diff panel via
  * `onOpenDiff(path, after, before)`.
  */
-const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff, style = 'expanded', artifactPaths }: {
+const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff, style = 'expanded', artifactPaths, disclosureKey }: {
   fileChanges: FileChangeEntry[]
   onOpenDiff?: (path: string, modified: string, original: string) => void
   style?: FileChipStyle
   /** Paths the session tracks as documents/artifacts — badged in the expanded
    *  card so generated docs read distinctly from source-file edits. */
   artifactPaths?: Set<string>
+  disclosureKey?: string
 }) {
   if (!fileChanges?.length) return null
   // Minimal keeps the wrapping pill row; anything else uses the grouped card.
@@ -222,7 +225,7 @@ const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff,
       </div>
     )
   }
-  return <ExpandedList fileChanges={fileChanges} onOpenDiff={onOpenDiff} artifactPaths={artifactPaths} />
+  return <ExpandedList fileChanges={fileChanges} onOpenDiff={onOpenDiff} artifactPaths={artifactPaths} disclosureKey={disclosureKey} />
 })
 
 export default FileChangeChips

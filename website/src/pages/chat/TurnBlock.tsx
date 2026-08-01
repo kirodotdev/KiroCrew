@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
 import type { DisplayItem, TurnItem } from './types'
@@ -131,11 +131,31 @@ function findConclusionIdx(items: TurnItem[]): number {
  *  renders it for ChatEmbed with no Provider mounted, and a pane must scope the
  *  set to its OWN session key, not the globally-active slot.
  */
-export default function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMPTY_ID_SET }: { turn: Extract<DisplayItem, {kind:'turn'}>; renderItem: (item: TurnItem, i: number) => ReactNode; collapseAll?: boolean; appToolCallIds?: ReadonlySet<string> }) {
-  const [expanded, setExpanded] = useState(!turn.complete)
+export default function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMPTY_ID_SET, disclosure, onDisclosureChange }: { turn: Extract<DisplayItem, {kind:'turn'}>; renderItem: (item: TurnItem, i: number) => ReactNode; collapseAll?: boolean; appToolCallIds?: ReadonlySet<string>; disclosure?: boolean; onDisclosureChange?: (expanded: boolean) => void }) {
+  const [localExpanded, setLocalExpanded] = useState(!turn.complete)
+  // Disclosure is HOST-OWNED when `disclosure` is supplied, and that is what
+  // makes an explicit choice durable: the transcript is virtualised, so this
+  // row is unmounted whenever it leaves the mounted window and any state held
+  // here dies with it. `undefined` means the user has not chosen yet, so the
+  // local default below applies.
+  const expanded = disclosure ?? localExpanded
+  // An explicit click PINS the disclosure state, and the auto-collapse below
+  // honours that pin. `turn.complete` is not a stable property of the turn: it
+  // is derived from the slot's running flag, which ChatPage re-reconciles from
+  // every slots broadcast, so a broadcast that catches the slot momentarily
+  // idle between tool calls flips it true mid-turn. The pin is what keeps an
+  // incidental transport-level event from overriding a deliberate user
+  // gesture. CollapsibleToolGroup pins its own auto-collapse the same way.
+  const userToggled = useRef(false)
+  const toggle = useCallback(() => {
+    userToggled.current = true
+    const next = !expanded
+    if (onDisclosureChange) onDisclosureChange(next)
+    else setLocalExpanded(next)
+  }, [expanded, onDisclosureChange])
   const wasComplete = useRef(turn.complete)
   useEffect(() => {
-    if (turn.complete && !wasComplete.current) setExpanded(false)
+    if (turn.complete && !wasComplete.current && !userToggled.current) setLocalExpanded(false)
     wasComplete.current = turn.complete
   }, [turn.complete])
 
@@ -162,8 +182,17 @@ export default function TurnBlock({ turn, renderItem, collapseAll = false, appTo
     // Only the non-visible-inline pre-conclusion items are actually collapsed.
     return beforeItems.some(it => !isVisibleInline(it, appToolCallIds) && msgIdxs(it).includes(currentMessageIdx))
   }, [turn.items, term, currentMessageIdx, collapseAll, appToolCallIds])
+  // Revealing a search match must win over the current disclosure state, and it
+  // has to travel the SAME channel the host owns, or a controlled row would
+  // stay collapsed and hide the <mark>. Held in a ref so an inline parent
+  // callback cannot re-fire this effect on every render.
+  const onDisclosureChangeRef = useRef(onDisclosureChange)
+  onDisclosureChangeRef.current = onDisclosureChange
   useEffect(() => {
-    if (matchInCollapsedSegment) setExpanded(true)
+    if (!matchInCollapsedSegment) return
+    const notify = onDisclosureChangeRef.current
+    if (notify) notify(true)
+    else setLocalExpanded(true)
   }, [matchInCollapsedSegment])
 
   // collapseAll mode: collapse everything except the last assistant message (original behavior)
@@ -202,7 +231,7 @@ export default function TurnBlock({ turn, renderItem, collapseAll = false, appTo
 
     return (
       <>
-        <CollapseToggle expanded={expanded} onToggle={() => setExpanded(e => !e)}
+        <CollapseToggle expanded={expanded} onToggle={toggle}
           label={expanded ? 'Hide reasoning' : `Worked through ${stepCount} step${stepCount !== 1 ? 's' : ''}`} />
         {segs.map((seg, si) => seg.type === 'visible' ? (
           <div key={`v-${si}`}>{renderItem(seg.it, seg.idx)}</div>
@@ -238,7 +267,7 @@ export default function TurnBlock({ turn, renderItem, collapseAll = false, appTo
 
   return (
     <>
-      <CollapseToggle expanded={expanded} onToggle={() => setExpanded(e => !e)}
+      <CollapseToggle expanded={expanded} onToggle={toggle}
         label={expanded ? 'Hide tool calls' : `${toolCount} tool call${toolCount !== 1 ? 's' : ''}`} />
       {segments.map((seg, si) => seg.type === 'visible' ? (
         <div key={si}>{renderItem(seg.it, seg.idx)}</div>

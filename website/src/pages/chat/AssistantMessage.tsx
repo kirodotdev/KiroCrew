@@ -210,7 +210,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
       {!isStreaming && selectionActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={selectionActions} />}
     </div>
     {fileChanges && fileChanges.length > 0 && !isStreaming && (
-      <FileChangeChips fileChanges={fileChanges} onOpenDiff={onOpenDiff} style={fileChipStyle} artifactPaths={artifactPaths} />
+      <FileChangeChips fileChanges={fileChanges} onOpenDiff={onOpenDiff} style={fileChipStyle} artifactPaths={artifactPaths} disclosureKey={messageTs ? `fcc-${messageTs}` : undefined} />
     )}
     {!isStreaming && showFooter && turnStats && turnStats.elapsed_ms > 0 && (
       <div className="flex items-center gap-1 mt-1 text-[11px] text-muted/60 font-mono tabular-nums" data-testid="turn-stats" title={`Turn took ${fmtTurnElapsed(turnStats.elapsed_ms)}${(turnStats.credits ?? 0) > 0 ? ` and used ${fmtCredits(turnStats.credits!)} credits` : ''}${(turnStats.cost_usd ?? 0) > 0 ? ` ($${turnStats.cost_usd!.toFixed(4)} API cost)` : ''}`}>
