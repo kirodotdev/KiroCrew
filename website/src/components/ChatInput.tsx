@@ -2472,8 +2472,11 @@ function ChatInput({
         <div ref={shelfRef} className="pt-1 flex items-center gap-2 min-w-0">
           <div className="flex items-center gap-2 min-w-0 flex-1">
           {onAgentClick && agentName && (
+            /* Chrome type: an agent name is a label, not code. `font-mono` here
+               pinned `var(--mono)`, which Settings → Display → Font Family never
+               writes, so the shelf ignored the user's typeface entirely. */
             <button
-              className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
+              className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
               onClick={e => onAgentClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
               title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : `Agent: ${agentName}`}
@@ -2489,9 +2492,9 @@ function ChatInput({
              copies. A <button> inside a <button> is invalid HTML and browsers
              collapse it, so the pill is a plain container and each segment owns
              its own click target and hover state. */
-          <div className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono text-muted">
+          <div className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted">
           <button
-            className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
+            className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
             onClick={e => onProjectClick(e.currentTarget.getBoundingClientRect())}
             disabled={isRunning}
             title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : projectChipTitle}
@@ -2509,11 +2512,13 @@ function ChatInput({
             <>
               <span className="opacity-40 shrink-0" aria-hidden="true">·</span>
               {/* Copying stays enabled while a response is running — unlike
-                  switching project, reading the branch name is harmless. */}
+                  switching project, reading the branch name is harmless. A git
+                  ref IS code, so it keeps mono now that the pill container no
+                  longer supplies it. */}
               <CopyBranchButton
                 branch={projectBranch}
                 label={projectDetached ? 'commit' : 'branch name'}
-                className="max-w-[220px] opacity-70 hover:opacity-100 hover:text-text"
+                className="max-w-[220px] font-mono opacity-70 hover:opacity-100 hover:text-text"
               />
             </>
           )}
@@ -2530,7 +2535,7 @@ function ChatInput({
                 aria-label={i18nT('components.chatInput.context_usage')}
               >
                 <ContextBar pct={contextPct} width={40} height={3} />
-                {showContextPct && <span className="text-[11px] font-mono ml-1.5 tabular-nums" style={{ color: contextColor(contextPct) }}>{contextPctClamped(contextPct)}%</span>}
+                {showContextPct && <span className="text-[11px] ml-1.5 tabular-nums" style={{ color: contextColor(contextPct) }}>{contextPctClamped(contextPct)}%</span>}
               </button>
               {ctxPopoverOpen && (
                 <div className="absolute bottom-full right-0 mb-1 z-[60] w-52 rounded-xl border border-border bg-bg-elevated shadow-xl p-3 animate-slide-up">
@@ -2567,7 +2572,7 @@ function ChatInput({
           )}
           {onModelClick && modelName && (
             <button
-              className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] font-mono text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
+              className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
               onClick={e => onModelClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
               title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_model') : `Model: ${modelName}`}

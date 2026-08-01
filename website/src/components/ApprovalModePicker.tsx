@@ -55,7 +55,10 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
-        <button className="h-7 px-2 rounded-lg text-[12px] font-mono text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap" title={i18nT('components.approvalModePicker.approval_mode')} aria-label={`Approval mode: ${display.label}`}>
+        {/* Chrome type ("Normal" / "Reads" / "Trust" / "YOLO" are labels), so no
+            `font-mono` — that pinned `var(--mono)`, which the Font Family
+            setting never writes. */}
+        <button className="h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap" title={i18nT('components.approvalModePicker.approval_mode')} aria-label={`Approval mode: ${display.label}`}>
           <span className={`shrink-0 ${display.color}`}>{display.icon}</span>
           {!compact && display.label}
         </button>

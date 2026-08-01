@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
-import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentQueued, sseSubagentDone } from '../store/chatSlice'
+import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentQueued, sseSubagentDone, sseSubagentTool, sseSubagentStalled } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -176,5 +176,68 @@ describe('sseSubagentQueued reducer', () => {
     expect(store.getState().chat.subagentQueued[SLOT]).toBeUndefined()
     store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 2.9 }))
     expect(store.getState().chat.subagentQueued[SLOT]).toBe(2)
+  })
+})
+
+/** The wave chip is CHROME: prose and labels must follow the user's Font Family
+ *  choice (`--font-body`), while the code-shaped fragments keep monospace
+ *  explicitly. Tailwind's `font-mono` resolves to `var(--mono)`, which the Font
+ *  Family setting never writes — so any `font-mono` on a prose element pins
+ *  JetBrains Mono regardless of the setting, and that is what these assert
+ *  against. The class is the observable here (jsdom applies no stylesheet), so
+ *  each case checks the class on the SPECIFIC element that renders the text. */
+describe('SubagentProgressBar — chrome follows the Font Family setting', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('keeps prose chrome off font-mono while the tree glyph and counter keep it', () => {
+    const store = makeStore(['a1'])
+    store.dispatch(sseSubagentTool({ slot: SLOT, id: 'a1', tool: 'gh pr list --state all', tool_count: 5 }))
+    const { container } = renderBar(store)
+
+    // The task-preview row: prose, must inherit --font-body.
+    const row = screen.getByLabelText(/^Open task a1 in subagents sidebar$/)
+    expect(row.className).not.toContain('font-mono')
+
+    // The histogram header's own container is prose/labels too.
+    const header = screen.getByTestId('subagent-histogram').parentElement!
+    expect(header.className).not.toContain('font-mono')
+
+    // Box-drawing glyph: mono, so `├─` and `└─` keep one advance width.
+    const glyph = [...container.querySelectorAll('span')].find(s => s.textContent === '└─')
+    expect(glyph).toBeTruthy()
+    expect(glyph!.className).toContain('font-mono')
+
+    // Elapsed / tool counter: mono + tabular-nums so the column does not jitter.
+    // Anchored match — the enclosing flex row's textContent also ENDS with this,
+    // so an unanchored regex picks up the wrapper instead of the counter itself.
+    const counter = [...container.querySelectorAll('span')].find(s => /^\d+s · 5 tools$/.test(s.textContent || ''))
+    expect(counter).toBeTruthy()
+    expect(counter!.className).toContain('font-mono')
+
+    // The tool command IS code.
+    const cmd = [...container.querySelectorAll('span')].find(s => s.textContent === '→ gh pr list --state all')
+    expect(cmd).toBeTruthy()
+    expect(cmd!.className).toContain('font-mono')
+  })
+
+  it('monospaces the tool name on the STALLED path too, matching the running path', () => {
+    // Regression guard: the stalled line interpolates the same `lastTool` value
+    // as the running line. Both used to inherit mono from the row; when the row
+    // stopped supplying it, only the running path had it re-added.
+    const store = makeStore(['a1'])
+    store.dispatch(sseSubagentTool({ slot: SLOT, id: 'a1', tool: 'npx vitest run', tool_count: 3 }))
+    store.dispatch(sseSubagentStalled({ slot: SLOT, id: 'a1', stalled: true }))
+    const { container } = renderBar(store)
+
+    const toolFragment = [...container.querySelectorAll('span')]
+      .find(s => s.textContent === ' at npx vitest run')
+    expect(toolFragment).toBeTruthy()
+    expect(toolFragment!.className).toContain('font-mono')
+
+    // The surrounding stalled prose is NOT monospaced.
+    expect(toolFragment!.parentElement!.className).not.toContain('font-mono')
+    // And the sanitised value is still what gets rendered — the whole line reads
+    // as one sentence with exactly one space before `at`.
+    expect(toolFragment!.parentElement!.textContent).toContain('at npx vitest run')
   })
 })

@@ -5,7 +5,7 @@ vi.mock('../api/client', () => ({
   api: { chatMode: vi.fn().mockResolvedValue({}) },
 }))
 
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import ApprovalModePicker from '../components/ApprovalModePicker'
 import { createTestStore } from './helpers'
@@ -108,5 +108,21 @@ describe('ApprovalModePicker', () => {
     fireEvent.click(screen.getAllByRole('menuitem')[3])
     expect(api.chatMode).not.toHaveBeenCalled()
     expect(screen.queryByText('YOLO mode is an app-wide setting')).not.toBeInTheDocument()
+  })
+})
+
+/** The trigger pill is CHROME: "Normal" / "Reads" / "Trust" / "YOLO" are labels,
+ *  so the pill must follow the user's Font Family choice (`--font-body`).
+ *  Tailwind's `font-mono` resolves to `var(--mono)`, a token that setting never
+ *  writes, so a `font-mono` here would pin JetBrains Mono in every mode. */
+describe('ApprovalModePicker — trigger follows the Font Family setting', () => {
+  beforeEach(() => { localStorage.clear() })
+
+  it('does not pin the trigger to font-mono in any mode', () => {
+    for (const [mode, label] of [['normal', 'Normal'], ['trust_reads', 'Reads'], ['trust', 'Trust'], ['yolo', 'YOLO']] as const) {
+      renderPicker(mode)
+      expect(screen.getByLabelText(`Approval mode: ${label}`).className).not.toContain('font-mono')
+      cleanup()
+    }
   })
 })

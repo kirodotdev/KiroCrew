@@ -319,9 +319,13 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         : undefined}
     >
       <div className="inline-flex items-start gap-1 group/toolpill">
+      {/* No `font-mono`: the pill's label is prose with the odd argument spliced
+          in ("Searching for 'YOLO' in src"), not code, and Tailwind's
+          `font-mono` pins `var(--mono)` — which the Font Family setting never
+          writes. The file-path chip below keeps mono, where it is earned. */}
       <button
         ref={pillButtonRef}
-        className={`inline-flex items-start gap-1 text-[13px] font-mono px-2 py-0.5 rounded-md transition-all text-left focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${hasPendingPerm ? 'cursor-default' : 'cursor-pointer hover:brightness-110'}`}
+        className={`inline-flex items-start gap-1 text-[13px] px-2 py-0.5 rounded-md transition-all text-left focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${hasPendingPerm ? 'cursor-default' : 'cursor-pointer hover:brightness-110'}`}
         aria-expanded={effectivelyExpanded}
         aria-label={hasPendingPerm ? `Awaiting approval for tool: ${label}` : `${effectivelyExpanded ? 'Hide' : 'Show'} details for tool: ${label}`}
         onClick={onToggle}

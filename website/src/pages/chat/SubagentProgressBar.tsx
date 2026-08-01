@@ -118,7 +118,13 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     // an activate-time transition wipe) covers it for the overlay's lifetime.
     <div className="px-5 mx-auto w-full relative z-[46]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       <div className="mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-1.5 text-[13px] font-mono">
+        {/* Chrome type, so no `font-mono`: the wave chip is prose and labels,
+            and Tailwind's `font-mono` pins `var(--mono)` — a token the Font
+            Family setting never writes, so a hardcoded one here overrode the
+            user's choice and put JetBrains Mono (no CJK coverage) under a
+            translated UI. Mono is re-applied below on the parts that earn it:
+            the tree glyphs, the elapsed/tool counter and the tool command. */}
+        <div className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
           <Bot size={14} className="text-accent shrink-0" />
           {/* Histogram header: whole-wave counts so mid-wave failures stay visible */}
           <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
@@ -162,15 +168,17 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               <div key={a.id} data-testid="subagent-row" className="flex items-start gap-1">
                 <button
                   type="button"
-                  className="min-w-0 flex-1 flex items-start gap-1.5 rounded-sm text-left text-[12px] text-muted font-mono hover:bg-accent/5 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                  className="min-w-0 flex-1 flex items-start gap-1.5 rounded-sm text-left text-[12px] text-muted hover:bg-accent/5 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
                   onClick={() => openAgent(a.id)}
                   aria-label={`Open ${agentLabel} in subagents sidebar`}
                 >
-                  <span aria-hidden="true" className="shrink-0 text-border select-none">{isLast ? '└─' : '├─'}</span>
+                  {/* Box-drawing glyphs stay mono so `├─` and `└─` keep an
+                      identical advance width and the rows line up. */}
+                  <span aria-hidden="true" className="shrink-0 font-mono text-border select-none">{isLast ? '└─' : '├─'}</span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
                       <span className="min-w-0 flex-1 truncate text-text">{agentLabel}</span>
-                      <span className="shrink-0 tabular-nums text-muted/50">{elapsed}{i18nT('pages.chat.subagentProgressBar.s')}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${a.toolCount} tool${a.toolCount > 1 ? 's' : ''}` : ''}</span>
+                      <span className="shrink-0 font-mono tabular-nums text-muted/50">{elapsed}{i18nT('pages.chat.subagentProgressBar.s')}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${a.toolCount} tool${a.toolCount > 1 ? 's' : ''}` : ''}</span>
                     </span>
                     {a.retrying ? (
                       <span className="text-info flex items-center gap-1">
@@ -180,9 +188,12 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                     ) : a.stalled ? (
                       <span className="text-warn flex items-center gap-1">
                         <AlertTriangle size={11} className="shrink-0" />
-                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.stalled')}{a.lastTool ? ` at ${sanitizeLlmOutput(a.lastTool)}` : ''} {i18nT('pages.chat.subagentProgressBar.no_activity')}</span>
+                        {/* The tool name carries the same mono as the non-stalled
+                            `→ lastTool` line below — the two render the SAME value
+                            and diverged once the parent stopped supplying it. */}
+                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.stalled')}{a.lastTool ? <span className="font-mono">{` at ${sanitizeLlmOutput(a.lastTool)}`}</span> : ''} {i18nT('pages.chat.subagentProgressBar.no_activity')}</span>
                       </span>
-                    ) : (a.lastTool && <span className="block text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</span>)}
+                    ) : (a.lastTool && <span className="block font-mono text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</span>)}
                   </span>
                 </button>
                 {stoppable && (
@@ -202,11 +213,11 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             <button
               type="button"
               data-testid="subagent-overflow-row"
-              className="w-full flex items-center gap-1.5 rounded-sm text-left text-[12px] text-muted/60 font-mono hover:bg-accent/5 transition-colors cursor-pointer bg-transparent border-none"
+              className="w-full flex items-center gap-1.5 rounded-sm text-left text-[12px] text-muted/60 hover:bg-accent/5 transition-colors cursor-pointer bg-transparent border-none"
               onClick={() => dispatch(openActivityToTab('subagents'))}
               aria-label={`Show ${hiddenCount} more running subagents in the sidebar`}
             >
-              <span aria-hidden="true" className="shrink-0 text-border select-none">└─</span>
+              <span aria-hidden="true" className="shrink-0 font-mono text-border select-none">└─</span>
               <span>+ {hiddenCount} {i18nT('pages.chat.subagentProgressBar.more_running_normally')}</span>
             </button>
           )}
