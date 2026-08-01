@@ -4196,6 +4196,10 @@ class TestPrintTokenUrl:
         assert "kirocrew token" in out
 
 
+@pytest.mark.skipif(
+    not hasattr(__import__("asyncio"), "set_child_watcher"),
+    reason="asserts the 3.10-3.13 child-watcher semantics; the API was removed in 3.14",
+)
 class TestInstallPidfdChildWatcher:
     """Verify _install_child_watcher's platform behavior."""
 
@@ -4389,8 +4393,22 @@ class TestInstallPidfdChildWatcher:
         Runs in a clean child process (its own main thread) so it is immune to
         pytest-xdist executing this test body on a non-main worker thread, where
         set_event_loop's main-thread-guarded attach_loop would be skipped.
+
+        The expected watcher is derived from the SAME probe the installer uses
+        rather than hard-coded: a Python build that omits the ``os.pidfd_open``
+        wrapper (observed on uv-managed CPython) correctly installs
+        SafeChildWatcher instead — the documented fallback. Asserting
+        PidfdChildWatcher unconditionally made this test fail on such an
+        interpreter even though the product behaved exactly as designed.
         """
-        self._install_then_spawn_in_child(expected_watcher="PidfdChildWatcher")
+        try:
+            fd = os.pidfd_open(os.getpid())
+            os.close(fd)
+        except (OSError, AttributeError):
+            expected = "SafeChildWatcher"
+        else:
+            expected = "PidfdChildWatcher"
+        self._install_then_spawn_in_child(expected_watcher=expected)
 
     @pytest.mark.skipif(
         sys.platform == "linux" or not hasattr(__import__("asyncio"), "SafeChildWatcher"),
@@ -4413,6 +4431,91 @@ class TestInstallPidfdChildWatcher:
         pytest-xdist worker thread would fail spuriously.
         """
         self._install_then_spawn_in_child(expected_watcher="SafeChildWatcher")
+
+
+class TestChildWatcherApiRemoved:
+    """``_install_child_watcher()`` must no-op when the child-watcher API is gone.
+
+    CPython 3.14 removed ``set_child_watcher`` / ``PidfdChildWatcher`` /
+    ``SafeChildWatcher`` (the event loop reaps children directly). The Linux
+    pidfd branch referenced those names unconditionally, so on 3.14 the FIRST
+    thing ``kirocrew gateway`` did was raise ``AttributeError: module 'asyncio'
+    has no attribute 'set_child_watcher'`` -- the gateway died before binding
+    its port, while every other subcommand (``chat``, ``doctor``) kept working
+    because this installer is only called on the gateway path.
+    """
+
+    @staticmethod
+    def _remove_child_watcher_api(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Make asyncio look like 3.14: no child-watcher API at all."""
+        import asyncio
+
+        for name in (
+            "set_child_watcher",
+            "get_child_watcher",
+            "PidfdChildWatcher",
+            "SafeChildWatcher",
+            "ThreadedChildWatcher",
+            "AbstractChildWatcher",
+        ):
+            monkeypatch.delattr(asyncio, name, raising=False)
+
+    @pytest.mark.parametrize("platform", ["linux", "darwin"])
+    def test_noop_when_child_watcher_api_removed(self, monkeypatch, platform) -> None:
+        """Simulated removal, so 3.10-3.13 CI also protects the 3.14 code path."""
+        import asyncio
+
+        from kiro_crew.cli import _install_child_watcher
+
+        monkeypatch.setattr("kiro_crew.cli.sys.platform", platform)
+        # A pidfd-capable kernel is the WORST case: without the guard the Linux
+        # branch reaches `asyncio.set_child_watcher(asyncio.PidfdChildWatcher())`
+        # and raises. Keep the probe succeeding so the regression is real.
+        # Hand back a REAL fd (the real os.close then reclaims it) rather than
+        # stubbing os.close: `kiro_crew.cli.os` IS the shared os module, so a
+        # stub there would also be seen by asyncio's own internals.
+        monkeypatch.setattr(
+            "kiro_crew.cli.os.pidfd_open",
+            lambda pid: os.open(os.devnull, os.O_RDONLY),
+            raising=False,
+        )
+        self._remove_child_watcher_api(monkeypatch)
+
+        _install_child_watcher()  # must not raise
+
+        assert not hasattr(
+            asyncio, "set_child_watcher"
+        ), "the guard must not resurrect the removed API"
+
+    @pytest.mark.skipif(
+        hasattr(__import__("asyncio"), "set_child_watcher"),
+        reason="only meaningful on a runtime that really removed the API (3.14+)",
+    )
+    def test_real_subprocess_works_after_noop_install(self) -> None:
+        """On a real 3.14+ runtime, the gateway's install-before-run call must be
+        survivable AND leave subprocess support working.
+
+        No monkeypatching: the API is genuinely absent here, so this asserts the
+        property that actually matters (spawning still works after the no-op)
+        rather than the mechanism. 3.14 reaps children in the event loop with a
+        single non-thread reaper, so nothing is lost by not installing a watcher.
+        """
+        import asyncio
+
+        from kiro_crew.cli import _install_child_watcher
+
+        _install_child_watcher()  # mirror the gateway: install BEFORE run
+
+        async def _spawn_true() -> int:
+            proc = await asyncio.create_subprocess_exec(
+                "true",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            return proc.returncode
+
+        assert asyncio.run(_spawn_true()) == 0
 
 
 class TestTokenCommand:

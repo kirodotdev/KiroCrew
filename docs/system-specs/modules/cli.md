@@ -363,6 +363,33 @@ CLI compaction is blocking (single-user, acceptable).
 
 `console_scripts` in `setup.cfg` maps `kirocrew` → `kiro_crew.cli:main`.
 
+### Gateway asyncio child watcher
+
+`_install_child_watcher()` runs once on the **`gateway` command path only** (not
+`chat`, `doctor`, or any other subcommand) and must be called before
+`asyncio.run`, on the main thread. It replaces CPython's default
+thread-per-child `ThreadedChildWatcher` — whose `os.waitpid` reaper threads can
+starve the event loop when many `kiro-cli`/MCP children die at once — with a
+single-descriptor alternative:
+
+| Runtime | Installed watcher |
+|---------|-------------------|
+| Linux, `os.pidfd_open` probe succeeds (kernel ≥ 5.3) | `PidfdChildWatcher` |
+| Linux, probe raises `OSError`/`AttributeError` | `SafeChildWatcher` (SIGCHLD) |
+| macOS / other non-Linux Unix | `SafeChildWatcher` (SIGCHLD) |
+| **Python ≥ 3.14** (child-watcher API removed) | **none — no-op** |
+| `SafeChildWatcher` unavailable (e.g. Windows) | none — default retained |
+
+**Python 3.14+ is a deliberate no-op.** CPython 3.14 removed
+`set_child_watcher`, `PidfdChildWatcher`, `SafeChildWatcher`, and
+`ThreadedChildWatcher`; the Unix event loop reaps children itself with a single
+non-thread reaper, so the loop-starvation wedge this installer exists to prevent
+cannot occur. The function short-circuits on `hasattr(asyncio,
+"set_child_watcher")` — probed by capability, not `sys.version_info`, so a
+runtime that still ships the API keeps the mitigation. Without that guard the
+Linux pidfd branch raised `AttributeError` and `kirocrew gateway` died before
+binding its port, while every other subcommand kept working.
+
 ## Environment Variables
 
 | Variable | Purpose |
