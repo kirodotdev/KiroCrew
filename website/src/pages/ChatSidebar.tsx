@@ -40,7 +40,7 @@ import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgen
 import ProjectPicker from '../components/ProjectPicker'
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import SessionActionsMenu from '../components/SessionActionsMenu'
-import { ChannelBrandIcon } from '../components/ChannelBrandIcon'
+import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBrandIcon'
 import TagManagerList from '../components/TagManagerList'
 import { DndDraggable, DndDroppable } from '../components/dnd'
 import { collectFolderSubtreeIds } from '../utils/folderTree'
@@ -2182,10 +2182,21 @@ function ChatSidebar({
                 // `unified` gets its own key rather than an interpolated label:
                 // it has no proper noun, and an English article fragment inside
                 // a translated sentence is not something a locale can repair.
-                const label = slotChannelNamespace(s.key) === 'unified'
+                const ns = slotChannelNamespace(s.key)
+                const label = ns === 'unified'
                   ? i18nT('pages.chatSidebar.copied_from_direct_message')
                   : i18nT('pages.chatSidebar.copied_from_channel', { channel: slotChannelLabel(s.key) })
-                return <span className="text-muted shrink-0" title={label} aria-label={label}><MessageSquare size={10} /></span>
+                // Brand mark rather than a generic bubble: the row already tells
+                // you a chat happened, so the only new information this glyph can
+                // carry is WHICH app it came from. Namespaces with no mark of
+                // their own keep the bubble — ChannelBrandIcon would fall through
+                // to its `Link2` default, which reads as live mirroring and would
+                // collide with the link glyphs rendered just below.
+                return (
+                  <span className="text-muted shrink-0 inline-flex items-center" title={label} aria-label={label}>
+                    {hasChannelBrandIcon(ns) ? <ChannelBrandIcon channel={ns} size={10} /> : <MessageSquare size={10} />}
+                  </span>
+                )
               })()}
               {/* Live mirroring, per channel. The origin glyph above is derived
                *  from the slot KEY (channelOrigin.ts) and already says where the
