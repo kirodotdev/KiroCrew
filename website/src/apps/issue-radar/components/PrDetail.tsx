@@ -326,7 +326,7 @@ function eventVisual(
         body: (
           <>
             {who} {i18nT('apps.issueRadar.components.prDetail.referenced_this_in')}{' '}
-            <a href={ev.source?.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+            <a href={safeHttpUrl(ev.source?.url ?? '') ?? undefined} target="_blank" rel="noreferrer" className="text-accent hover:underline">
               {ev.source?.is_pr ? providerTerms(repoRef).changeRequestShort : 'issue'}
               {providerTerms(repoRef).sigil}{ev.source?.number}
             </a>
@@ -680,7 +680,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                 >
                   {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
                 </button>
-                <a href={detail?.url ?? pull.url} target="_blank" rel="noreferrer" title={`Open on ${terms.providerName}`} className="font-mono text-muted hover:text-accent hover:underline">
+                <a href={safeHttpUrl(detail?.url ?? pull.url ?? '') ?? undefined} target="_blank" rel="noreferrer" title={`Open on ${terms.providerName}`} className="font-mono text-muted hover:text-accent hover:underline">
                   #{pull.number}
                 </a>
               </span>

@@ -13,6 +13,7 @@ import { api, ApiError } from '../api/client'
 import Modal from './Modal'
 import { Btn } from './ui'
 import MarkdownRenderer from './MarkdownRenderer'
+import { safeHttpUrl } from '../lib/safeUrl'
 import { DiscoverySearchBar, DiscoveryStates } from './DiscoverySearchBar'
 import { SkillMetaStrip } from './SkillDirectoryBrowser'
 import { parseFrontmatter } from './SkillForm'
@@ -417,9 +418,9 @@ function SkillDetailPanel({
             <FileText size={11} aria-hidden="true" /> {i18nT('components.skillBrowserModal.file', { count: preview!.file_count })}
           </span>
         )}
-        {skill.repo_url && (
+        {safeHttpUrl(skill.repo_url ?? '') && (
           <a
-            href={skill.repo_url}
+            href={safeHttpUrl(skill.repo_url ?? '')!}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-accent hover:underline"

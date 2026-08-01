@@ -10,6 +10,7 @@ import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
 import { KIND_META, DEFAULT_META, fmtFull, safeInternalUrl } from './notifMeta'
+import { safeHttpUrl } from '../../lib/safeUrl'
 
 import { i18nT } from '../../i18n/t'
 /** Intentional failure diagnostic for the navigation/approval actions below. */
@@ -95,8 +96,8 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
         {!directSlot && !n.slot && relatedSlot && (
           <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => { dispatch(switchSlot(relatedSlot.key)); navigate('/chat') }}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
         )}
-        {n.slack_link && (
-          <a href={n.slack_link} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-md border border-border text-[13px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong transition-all font-body no-underline inline-flex items-center gap-1"><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.open_in_slack')}</a>
+        {safeHttpUrl(n.slack_link ?? '') && (
+          <a href={safeHttpUrl(n.slack_link ?? '')!} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-md border border-border text-[13px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong transition-all font-body no-underline inline-flex items-center gap-1"><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.open_in_slack')}</a>
         )}
         {/* RFC Phase 4: dashboard-internal deep link (validated path-only). */}
         {safeInternalUrl(n.url) && (

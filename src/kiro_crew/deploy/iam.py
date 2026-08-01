@@ -229,6 +229,26 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
             "Resource": [f"arn:aws:s3:::{S3_PREFIX}/*", f"{S3_PREFIX_WEB}/*"],
         },
         {
+            # CWE-732: the S3BucketLevel/S3ObjectLevel grants above use the
+            # kirocrew-deploy-* wildcard, which also matches the append-only
+            # audit bucket kirocrew-deploy-logs-* (CloudTrail data events + S3
+            # server access logs, base-stack.yaml). Deny overrides Allow, so
+            # this blocks the deploy principal from DIRECT object write/delete
+            # and bucket deletion on that bucket. It does NOT cover bucket-config
+            # tamper (PutLifecycleConfiguration / Put|DeleteBucketPolicy) — base-
+            # stack CFN legitimately calls those on the log bucket at create time,
+            # so safely denying them needs an aws:CalledVia=cloudformation
+            # condition, tracked as a follow-up. Legitimate deploys never write
+            # objects to the -logs- bucket, so this Deny has no functional cost.
+            "Sid": "S3DenyAuditLogTamper",
+            "Effect": "Deny",
+            "Action": ["s3:PutObject", "s3:DeleteObject", "s3:DeleteBucket"],
+            "Resource": [
+                "arn:aws:s3:::kirocrew-deploy-logs-*",
+                "arn:aws:s3:::kirocrew-deploy-logs-*/*",
+            ],
+        },
+        {
             "Sid": "CloudFrontCreateList",
             "Effect": "Allow",
             "Action": [
