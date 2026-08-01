@@ -15,7 +15,8 @@
 // window — matching ConnectRepoModal.
 import { useCallback, useRef } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { ChevronLeft, CircleDot, ExternalLink, GitPullRequest, Loader2, PanelRightOpen, X } from 'lucide-react'
+import { ChevronLeft, CircleDot, ExternalLink, GitPullRequest, Loader2, X } from 'lucide-react'
+import { PanelRightSolid } from '../../../components/icons/panels'
 import Clickable from '../../../components/Clickable'
 import { useDialogFocusTrap } from '../../../hooks/useDialogFocusTrap'
 import { useIssueRadar } from '../context'
@@ -143,9 +144,9 @@ export default function RefSheet() {
                     onClick={openInWorkspace}
                     aria-label={i18nT('apps.issueRadar.components.refSheet.open_this_item_in_the_workspace')}
                     title={i18nT('apps.issueRadar.components.refSheet.open_in_the_list_detail_column')}
-                    className={ICON_BTN}
+                    className={`pi-morph ${ICON_BTN}`}
                   >
-                    <PanelRightOpen className="lucide-inline" aria-hidden="true" />
+                    <PanelRightSolid className="lucide-inline" aria-hidden="true" />
                   </button>
                 )}
                 <a

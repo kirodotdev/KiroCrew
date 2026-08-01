@@ -370,6 +370,9 @@ export default [
               // `api.fetch`, never `prefetch`). A leading `^` opts out of the dotted
               // prefix, which is what is wanted here — `i18nT`, not `obj.i18nT`.
               '^i18nT$', '^t$',
+              // Icon component factory: the string argument is a React DevTools
+              // displayName, not user-visible copy.
+              '^makePanelIcon$',
               // A per-app `request` wrapper takes an ENDPOINT PATH — the same class as
               // the `fetch` exclusion above, and the only thing standing between a
               // route string and the fetch it performs. Anchored, so it cannot match a

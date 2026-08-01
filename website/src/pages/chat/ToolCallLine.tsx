@@ -4,7 +4,8 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
-import { LoaderCircle, CircleSlash, CircleDot, Lock, PanelRight } from 'lucide-react'
+import { LoaderCircle, CircleSlash, CircleDot, Lock } from 'lucide-react'
+import { PanelRightSolid } from '../../components/icons/panels'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { ChatMessage } from '../../types'
 import { ToolDetails } from './ToolDetails'
@@ -382,14 +383,14 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           on hover; the icon inherits the button's currentColor. */}
       {showFileOpen && filePath && (
         <button
-          className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[12px] leading-tight bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          className="pi-morph shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[12px] leading-tight bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           style={{ marginTop: '1px' }}
           onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
           title={`Open ${filePath} in side panel`}
           aria-label={`Open ${filePath} in side panel`}
         >
           <span className="max-w-[240px] truncate">{basename}</span>
-          <PanelRight size={12} className="shrink-0" />
+          <PanelRightSolid size={12} className="shrink-0" />
         </button>
       )}
       </div>

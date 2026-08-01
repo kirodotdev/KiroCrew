@@ -14,7 +14,8 @@
  * the Subagents side panel.
  */
 import { memo } from 'react'
-import { Bot, Loader2, CheckCircle2, AlertCircle, Clock, Square, PanelRight } from 'lucide-react'
+import { Bot, Loader2, CheckCircle2, AlertCircle, Clock, Square } from 'lucide-react'
+import { PanelRightSolid } from '../../components/icons/panels'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
@@ -218,7 +219,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
         onClick={open}
         title={i18nT('pages.chat.subagentRunCard.open_in_the_subagents_panel')}
         data-testid="subagent-run-card"
-        className="group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
+        className="pi-morph group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
       >
         <span className="shrink-0 mt-0.5">
           {counts.running > 0
@@ -265,7 +266,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
             {i18nT('pages.chat.subagentRunCard.open_subagents_panel')}
           </div>
         </div>
-        <PanelRight
+        <PanelRightSolid
           size={14}
           className="text-muted shrink-0 mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity"
         />

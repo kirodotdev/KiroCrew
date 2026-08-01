@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence, Reorder } from 'framer-motion'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useLocation } from 'react-router-dom'
-import { TerminalSquare, Plus, X, ChevronDown, PanelRight } from 'lucide-react'
+import { TerminalSquare, Plus, X, ChevronDown } from 'lucide-react'
+import { PanelRightSolid } from './icons/panels'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from './CliPanel'
 import { useTerminalTitle } from '../utils/terminalRegistry'
 import { usePanelTabs } from '../hooks/usePanelTabs'
@@ -31,7 +32,7 @@ function TabChip({ tab, active, onSelect, onClose, onTransfer, canTransfer }: {
   onTransfer: () => void; canTransfer: boolean
 }) {
   const transferCls = canTransfer
-    ? `shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`
+    ? `pi-morph shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`
     : 'shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full bg-transparent border-none text-muted opacity-30 cursor-not-allowed'
   return (
     <div
@@ -59,7 +60,7 @@ function TabChip({ tab, active, onSelect, onClose, onTransfer, canTransfer }: {
           title={canTransfer ? i18nT('components.bottomTerminalPanel.move_to_side_panel') : i18nT('components.bottomTerminalPanel.open_a_chat_page_to_move_this_terminal_there')}
           aria-label={i18nT('components.bottomTerminalPanel.move_to_side_panel')}
         >
-          <PanelRight size={12} />
+          <PanelRightSolid size={12} />
         </button>
         <button
           onClick={(e) => { e.stopPropagation(); onClose() }}

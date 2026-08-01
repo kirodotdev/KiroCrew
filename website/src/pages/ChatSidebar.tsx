@@ -535,10 +535,9 @@ interface ChatSidebarProps {
    *  When provided, this fires AFTER the switchSlot dispatch so consumers
    *  can react to user-driven selection (e.g. to navigate the URL). */
   onSelectSlot?: (key: string) => void
-  /** When true, the sidebar is externally collapsible — a persistent toggle
-   *  button lives in the chat container at the top-left, so the header
-   *  reserves left space for it. Omitted in embed/sessions mode where the
-   *  sidebar is the whole view. */
+  /** When true, ChatPage floats a hide-sidebar button over this header's
+   *  top-left (open state), so the header reserves left space for it.
+   *  Omitted in embed/sessions mode where the sidebar is the whole view. */
   collapsible?: boolean
   /** Split View (session grid) opt-in feature. When `splitEnabled`, a pinned
    *  "Split View" entry renders at the top; clicking it calls `onOpenSplit`.
@@ -2706,14 +2705,17 @@ function ChatSidebar({
         <div className="w-[2px] h-full bg-transparent group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-colors duration-200" />
       </div>
 
-      {/* Header — per Figma (node 3108:9725): all elements (collapse icon,
-          "Sessions" title, kebab, New button) centered on one line at ~28px
-          from the panel top (mt-2 ≈ panel 8px pad, then centered in a 40px row),
-          matching the left-menu header baseline. Equal top/right gap so the New
-          button sits equidistant from the panel's top and right edges. */}
-      <div className="flex justify-between items-center pl-2 pr-3.5 mt-2 h-10">
-        <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-8' : ''}`}>
-          {!tinyHeader && <span className="sessions-panel-title text-sm font-medium text-muted tracking-[.04em] truncate">{i18nT('pages.chatSidebar.sessions')}</span>}
+      {/* Header — all elements ("Sessions" title, kebab, New button) centered
+          on one line 23px from the panel top (1px card border + mt-0.5, then
+          centered in a 40px row) — the shared control baseline: the nav rail
+          header, chat title row, and activity strip icons center on the same
+          line.
+          px-2 is symmetric so the New button ends 9px from the card's right
+          edge (8 + 1px border) — the same as its 9px gap to the top edge
+          (1px border + mt-0.5 + 6px of the h-10 row around the h-7 button). */}
+      <div className="flex justify-between items-center px-2 mt-0.5 h-10">
+        <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-9' : 'pl-1.5'}`}>
+          {!tinyHeader && <span className="sessions-panel-title text-sm font-semibold text-text-strong tracking-[.04em] truncate">{i18nT('pages.chatSidebar.sessions')}</span>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <DropdownMenu>

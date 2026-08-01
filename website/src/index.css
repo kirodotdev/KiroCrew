@@ -1496,6 +1496,23 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* lucide-react icons — inline sizing to match surrounding text */
 .lucide-inline { display: inline-block; width: 1em; height: 1em; vertical-align: -0.125em; flex-shrink: 0; }
 
+/* ── Panel icon pane morph (components/icons/panels.tsx) ──
+   Pure mechanism: all geometry arrives as CSS custom properties emitted by the
+   icon component (PANE_GEOMETRY is the single source of truth). Resting values
+   also exist as SVG attributes, the fallback for browsers without SVG
+   geometry-property CSS support (they render static icons, no morph).
+   The hover morph — previewing the click's outcome by flipping the pane to the
+   opposite state — is OPT-IN via the `pi-morph` class on the enclosing
+   control: apply it to live panel toggles/openers, never to pure indicators
+   (e.g. SplitGlyph's split-direction glyph). */
+.pi-pane {
+  transition: x .18s ease, y .18s ease, width .18s ease, height .18s ease, rx .18s ease, fill-opacity .18s ease;
+  x: var(--pi-x); y: var(--pi-y); width: var(--pi-w); height: var(--pi-h); rx: var(--pi-rx); fill-opacity: var(--pi-o);
+}
+:is(button, [role="button"], a).pi-morph:hover .pi-pane {
+  x: var(--pi-hx); y: var(--pi-hy); width: var(--pi-hw); height: var(--pi-hh); rx: var(--pi-hrx); fill-opacity: var(--pi-ho);
+}
+
 /* ── Search highlights ── */
 .search-match {
   background-color: var(--search-highlight);
