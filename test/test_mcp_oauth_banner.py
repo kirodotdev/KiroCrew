@@ -18,13 +18,13 @@ from unittest.mock import MagicMock
 import pytest
 from oauth_url_corpus import LEGIT_OAUTH_URLS
 
-from kiro_crew.dashboard.chat_persistence import _redact_meta_for_role
 from kiro_crew.dashboard.chat_runner import (
     _emit_mcp_oauth_request,
     _is_safe_oauth_url,
     _mark_mcp_oauth_completed,
     _oauth_url_contains_credential,
 )
+from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
 from kiro_crew.dashboard.state import _ChatSlot
 
 # ── _is_safe_oauth_url ──

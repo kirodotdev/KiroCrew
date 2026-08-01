@@ -31,8 +31,6 @@ from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
     _attach_variants,
-    _redact_meta,
-    _redact_meta_for_role,
     get_reasoning_effort_values,
     save_slot_off_loop,
 )
@@ -46,6 +44,8 @@ from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     _prepare_messages,
     _redact_for_display,
+    _redact_meta,
+    _redact_meta_for_role,
     _remove_queued_by_id,
     _sync_dashboard_slots,
 )
@@ -661,7 +661,10 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "key": slot.key,
-            "title": slot.display_title,
+            # Redacted at emit like every sibling path (_ChatSlot.to_dict does the
+            # same for the sidebar payload). Titles can be LLM-generated or set by
+            # a rename, so they are content, not configuration.
+            "title": _redact_for_display(slot.display_title),
             "running": slot.running,
             "stopping": slot._stopping,
             "messages": prepared,

@@ -64,6 +64,7 @@ from kiro_crew.dashboard.chat_utils import (
     _maybe_inject_persona,
     _normalize_model,
     _redact_for_display,
+    _redact_meta_for_role,
     _redact_tool_field,
     _remove_queued_by_id,
     _validate_tool_name,
@@ -767,7 +768,39 @@ def _mark_mcp_oauth_completed(
         break
     if target is None:
         return
-    new_meta = dict(target.get("meta") or {})
+    # Redact the RESTORED payload before it is re-emitted. This function copies the
+    # whole stored dict into both slot.messages and the `chat_message_update`
+    # broadcast below, and that broadcast bypasses _prepare_messages — a genuine
+    # egress point.
+    #
+    # Scope of the exposure, stated precisely: the SAVE path already redacts meta
+    # (`_build_message_entry`), and `ConversationLog.append` has no `meta` parameter
+    # at all, so meta this version wrote to disk comes back already clean. What this
+    # guards is history lines this version did not write — legacy lines, a tampered
+    # session file, or the verbatim-preserved foreign byte ranges. That is the same
+    # threat model the sibling gates are written against, so it is defence in depth
+    # rather than a live hole.
+    #
+    # The matching loop above reads only control fields (`server_name`,
+    # `completed`, `failed`), which is why this reader looked safe on a first pass.
+    # What decides safety is not which fields a reader INSPECTS but whether it
+    # re-emits the dict. This one does.
+    #
+    # CAREFUL — `_redact_meta_for_role` is STRICTER than the emit-path gate and does
+    # NOT preserve realistic `oauth_url`s: it calls `redact_exfiltration_urls`,
+    # whose query-length (>=200) and base64-blob heuristics blank a real Google OIDC
+    # or GitHub PKCE consent URL. (Measured: those two are blanked; only a short URL
+    # survives.) The emit-path gate `_oauth_url_contains_credential` deliberately
+    # exempts OAuth params from exactly those heuristics — its docstring notes they
+    # "would reject every real OAuth URL".
+    #
+    # That is harmless HERE only because `oauth_url` is dead data by this point:
+    # every path through this function sets `completed` or `failed`, and
+    # McpOAuthBanner.tsx returns on the `failed` (line 50) and `completed` (line 61)
+    # branches BEFORE the link-rendering branch (line 73). Do NOT reuse this gate on
+    # a path where the authorize link is still rendered — there it would break the
+    # user's ability to authorize an MCP server.
+    new_meta = _redact_meta_for_role("mcp_oauth", dict(target.get("meta") or {}))
     if success:
         new_meta["completed"] = True
         new_meta.pop("failed", None)

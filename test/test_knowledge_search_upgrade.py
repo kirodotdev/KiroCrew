@@ -293,7 +293,7 @@ class TestRedactMeta:
 
     def test_redacts_strings(self):
         try:
-            from kiro_crew.dashboard.chat_persistence import _redact_meta
+            from kiro_crew.dashboard.chat_utils import _redact_meta
         except TypeError:
             pytest.skip("requires Python 3.10+")
         meta = {"title": "safe text", "content": "key is AKIAIOSFODNN7EXAMPLE here"}
@@ -303,7 +303,7 @@ class TestRedactMeta:
 
     def test_redacts_nested_dicts(self):
         try:
-            from kiro_crew.dashboard.chat_persistence import _redact_meta
+            from kiro_crew.dashboard.chat_utils import _redact_meta
         except TypeError:
             pytest.skip("requires Python 3.10+")
         meta = {"knowledge": {"content": [{"title": "ok", "text": "AKIAIOSFODNN7EXAMPLE"}]}}
@@ -312,7 +312,7 @@ class TestRedactMeta:
 
     def test_preserves_non_strings(self):
         try:
-            from kiro_crew.dashboard.chat_persistence import _redact_meta
+            from kiro_crew.dashboard.chat_utils import _redact_meta
         except TypeError:
             pytest.skip("requires Python 3.10+")
         meta = {"items": 3, "tokens": 1054, "titles": ["safe"]}

@@ -487,6 +487,69 @@ def _sync_dashboard_slots(state: "DashboardState") -> None:
     )
 
 
+def _redact_value(v):  # type: ignore[no-untyped-def]
+    """Recursively redact any value (str, dict, list, or passthrough)."""
+    if isinstance(v, str):
+        v, _ = redact_exfiltration_urls(v)
+        v, _ = redact_credentials(v)
+        return v
+    if isinstance(v, dict):
+        return _redact_meta(v)
+    if isinstance(v, list):
+        return [_redact_value(i) for i in v]
+    return v
+
+
+def _redact_meta(meta: dict) -> dict:
+    """Recursively redact string values in meta dict."""
+    return {k: _redact_value(v) for k, v in meta.items()}
+
+
+def _redact_meta_for_role(role: str, meta: dict) -> dict:
+    """Redact meta, but preserve role-specific user-actionable external URLs (e.g. mcp_oauth).
+
+    Lives here (the display-redaction module) rather than in chat_persistence
+    because it is now called on the EMIT path — see _prepare_messages. The
+    dependency runs chat_persistence -> chat_utils, so keeping it here lets both
+    the save path and the emit path share one implementation without a cycle.
+    """
+    if role == "mcp_oauth":
+        out: dict = {}
+        for k, v in meta.items():
+            if k == "oauth_url" and isinstance(v, str):
+                # Two gates, and deliberately NOT a third:
+                #   1. http(s)-only — a tampered history line can't smuggle a
+                #      javascript:/data: URL into <a href>.
+                #   2. URL must not embed an actual credential — a legit OAuth
+                #      consent URL never carries credential patterns; presence of
+                #      one means it's tampered/bogus.
+                #
+                # The generic EXFIL heuristic is deliberately NOT applied, matching
+                # `_oauth_url_contains_credential` (chat_runner.py), whose docstring
+                # says it omits the long-query heuristic because that heuristic
+                # "would reject every real OAuth URL". test/oauth_url_corpus.py is
+                # the contract: real provider URLs routinely exceed 200 query chars
+                # and carry a 43-char base64url `code_challenge`, so the exfil
+                # heuristic fires on all of them.
+                #
+                # This function runs on the EMIT path (_prepare_messages), which
+                # serves the slot-detail endpoint that the frontend refetches on
+                # `chat_done`, on WS reconnect, and on switchSlot. Blanking the URL
+                # here therefore hits a PRE-TERMINAL banner: renderMcpOAuthMessage
+                # returns null when `oauth_url` is empty and neither completed nor
+                # failed is set, so the Authorize banner would silently vanish and
+                # the user could never authorize the server. Keeping the two gates
+                # aligned is what prevents that.
+                lower = v.lower()
+                safe_scheme = lower.startswith("https://") or lower.startswith("http://")
+                _, hit_cred = redact_credentials(v)
+                out[k] = v if (safe_scheme and not hit_cred) else ""
+            else:
+                out[k] = _redact_value(v)
+        return out
+    return _redact_meta(meta)
+
+
 def _redact_for_display(text: str) -> str:
     """Apply all redaction passes for dashboard/WS display."""
     text, _ = redact_exfiltration_urls(text)
@@ -647,7 +710,16 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
                 out.append({"role": "streaming", "content": redacted_chunk, "cls": "msg msg-a"})
                 chunk_text = ""
             text = m.get("content", "")
-            if role not in ("user", "system") and text:
+            # Gate is `!= "user"`, NOT `not in ("user", "system")`. This is the
+            # display-time redaction boundary for everything the slot detail
+            # endpoint returns — including the frozen-prefix lines read straight
+            # off disk — so it must cover every role the LOAD path used to clean.
+            # `system` content is written to disk unredacted (see
+            # _build_message_entry's historical gate), so excluding it here would
+            # emit raw stored bytes now that the load path no longer launders them.
+            # User-authored content stays raw: the user typed it and is the only
+            # one who sees it back.
+            if role != "user" and text:
                 text, _ = redact_exfiltration_urls(text)
                 text, _ = redact_credentials(text)
                 m = {**m, "content": text}
@@ -659,7 +731,14 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
                 ]
             meta = parse_cls_meta(m.get("cls", ""))
             if meta is not None:
-                msg_out["meta"] = meta
+                msg_out["meta"] = _redact_meta_for_role(role, meta)
+            elif isinstance(msg_out.get("meta"), dict):
+                # Redact the STORED meta too. Without this branch the stored dict
+                # passes through by reference (dict(m) is shallow), so it would
+                # reach the client exactly as loaded. The load path used to redact
+                # meta on the way in; that moved here, so this is now the only
+                # guard on meta for the slot-detail response.
+                msg_out["meta"] = _redact_meta_for_role(role, msg_out["meta"])
             out.append(msg_out)
     if chunk_text:
         redacted_chunk, _ = redact_exfiltration_urls(chunk_text)

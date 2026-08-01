@@ -107,6 +107,13 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Side-chat parent snapshot",
+        "dashboard/side_context.py",
+        "Parent user/assistant turns embedded in the side-chat prompt. The prompt "
+        "leaves the dashboard's own storage and is persisted by kiro-cli into its "
+        "session file, so this is an egress boundary rather than an internal read.",
+    ),
+    (
         "Dashboard live stream",
         "dashboard/chat_runner.py",
         "Per-chunk StreamRedactor on the chat_chunk WebSocket stream — withholds a "

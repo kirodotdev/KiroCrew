@@ -12,6 +12,7 @@ from kiro_crew.dashboard.side_prompts import (
     SIDE_BOUNDARY_PROMPT,
     build_side_system_prompt,
 )
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -45,6 +46,16 @@ def _format_parent_snapshot(slot: _ChatSlot) -> str:
         label = "User" if role == "user" else "Assistant"
         text = entry.get("content", "") or ""
         text = text[:_PARENT_LINE_TRUNCATE]
+        if role != "user":
+            # Defence in depth. The restore path now redacts `content` on load, so
+            # slot.messages should already be clean here — but this block goes into
+            # the side-chat PROMPT, which leaves the dashboard's own storage and is
+            # persisted by kiro-cli into its session file. That is an egress path,
+            # not an internal read, so it does not rely solely on an upstream
+            # guarantee. Redaction is idempotent and this text is truncated to
+            # _PARENT_LINE_TRUNCATE, so the cost is bounded.
+            text, _ = redact_exfiltration_urls(text)
+            text, _ = redact_credentials(text)
         line = f"{label}: {text}"
         if total + len(line) > _MAX_PARENT_SNAPSHOT_CHARS:
             break

@@ -118,7 +118,15 @@ def _capture_stage_result(
         if isinstance(cls, str) and "stage-sep" in cls:
             break  # hit the separator for this stage
         if role == "assistant":
-            result_parts.append(m.get("content", ""))
+            # Defence in depth before this reaches disk. Both upstream sources are
+            # already clean — live turns via chat_runner._flush_segment, restored
+            # turns via the load-time content pass — but this writes a NEW file
+            # outside the history log's own redaction, so it does not depend on
+            # that. Redaction is idempotent, so the common case is a no-op.
+            text = m.get("content", "")
+            text, _ = redact_exfiltration_urls(text)
+            text, _ = redact_credentials(text)
+            result_parts.append(text)
     result_parts.reverse()
     result_text = "\n\n".join(result_parts)
 

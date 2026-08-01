@@ -273,7 +273,14 @@ class TestRestoreRecentSessions:
         assert state._slots["mychat"].messages[0]["content"] == "colon test"
 
     def test_redacts_credentials_in_restored_messages(self, tmp_path, monkeypatch):
-        """LLM-sourced content is redacted before being added to dashboard slots."""
+        """LLM-sourced content is redacted before it can reach a client.
+
+        Redaction moved from load time to display time: the restore now loads
+        stored bytes as-is and every EMIT site cleans them. The security property
+        is unchanged (a credential must never reach a client) but the enforcement
+        point moved, so this asserts the emit path rather than the slot contents.
+        See test_display_time_redaction.py for the per-site coverage.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         _write_session(
             tmp_path,
@@ -293,11 +300,22 @@ class TestRestoreRecentSessions:
         restored = restore_recent_sessions(state, window_minutes=60)
         assert restored == 1
         slot = state._slots["redact"]
-        # User content should be preserved as-is
+        # User content is preserved as-is, on load and on emit.
         assert slot.messages[0]["content"] == "show me the key"
-        # Assistant content should have the AWS key redacted
-        assert "AKIAIOSFODNN7EXAMPLE" not in slot.messages[1]["content"]
-        assert "[REDACTED" in slot.messages[1]["content"]
+
+        # The credential is gone from what the slot-detail endpoint returns...
+        from kiro_crew.dashboard.chat_utils import _prepare_messages
+
+        emitted = _prepare_messages(slot.messages, False)
+        rendered = " ".join(m.get("content", "") for m in emitted)
+        assert "AKIAIOSFODNN7EXAMPLE" not in rendered
+        assert "[REDACTED" in rendered
+        # ...and from the prompt-building paths that leave the process.
+        from kiro_crew.dashboard.chat_persistence import _build_history_prefix
+        from kiro_crew.dashboard.side_context import _format_parent_snapshot
+
+        assert "AKIAIOSFODNN7EXAMPLE" not in _build_history_prefix(slot)
+        assert "AKIAIOSFODNN7EXAMPLE" not in _format_parent_snapshot(slot)
 
     def test_zero_window_restores_all_sessions(self, tmp_path, monkeypatch):
         """window_minutes=0 means infinite — restores sessions regardless of age."""

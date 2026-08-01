@@ -2793,7 +2793,27 @@ class DashboardState:
             meta = parse_cls_meta(cls_val)
             if meta is not None:
                 payload["meta"] = meta
-        # Also include direct meta (e.g. tool_call_id on tool messages)
+        # Also include direct meta (e.g. tool_call_id on tool messages).
+        #
+        # Deliberately NOT redacted here, unlike the `cls` branch above (which is
+        # sanitised by parse_cls_meta). Two reasons, both load-bearing:
+        #
+        # 1. This is the LIVE oauth banner's egress path. _emit_mcp_oauth_request
+        #    appends the banner with a real `oauth_url`, already gated by
+        #    _oauth_url_contains_credential — a gate that deliberately exempts OAuth
+        #    params from the query-length / base64 heuristics because those
+        #    "would reject every real OAuth URL". Running _redact_meta_for_role here
+        #    would blank a genuine Google/GitHub consent URL and break the user's
+        #    ability to authorize an MCP server.
+        # 2. chat_utils imports from this module, so importing the redactors the
+        #    other way would be a cycle.
+        #
+        # What makes that safe: live tool meta is redacted at source (_tool_meta),
+        # and no DISK-LOADED message is ever appended with broadcast=True — both
+        # restore loops pass broadcast=False. That invariant is what lets the load
+        # path skip meta redaction, and it is pinned by
+        # test_rehydrate_does_not_broadcast_replayed_messages and
+        # test_restore_recent_sessions_does_not_broadcast_either. Do not relax it.
         direct_meta = msg.get("meta")
         if direct_meta and isinstance(direct_meta, dict):
             payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}

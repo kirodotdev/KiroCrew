@@ -18,6 +18,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dashboard.chat_utils import (
     _history_key_for,
     _normalize_model,
+    _redact_meta_for_role,
     _sync_dashboard_slots,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, _normalize_slot_key
@@ -27,47 +28,6 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
-
-
-def _redact_value(v):  # type: ignore[no-untyped-def]
-    """Recursively redact any value (str, dict, list, or passthrough)."""
-    if isinstance(v, str):
-        v, _ = redact_exfiltration_urls(v)
-        v, _ = redact_credentials(v)
-        return v
-    if isinstance(v, dict):
-        return _redact_meta(v)
-    if isinstance(v, list):
-        return [_redact_value(i) for i in v]
-    return v
-
-
-def _redact_meta(meta: dict) -> dict:
-    """Recursively redact string values in meta dict."""
-    return {k: _redact_value(v) for k, v in meta.items()}
-
-
-def _redact_meta_for_role(role: str, meta: dict) -> dict:
-    """Redact meta, but preserve role-specific user-actionable external URLs (e.g. mcp_oauth)."""
-    if role == "mcp_oauth":
-        out: dict = {}
-        for k, v in meta.items():
-            if k == "oauth_url" and isinstance(v, str):
-                # Two gates on rehydrate:
-                #   1. http(s)-only — a tampered history line can't smuggle a
-                #      javascript:/data: URL into <a href>.
-                #   2. URL must not embed a credential or exfil-eligible host —
-                #      a legit OAuth consent URL never carries credential
-                #      patterns; presence of one means it's tampered/bogus.
-                lower = v.lower()
-                safe_scheme = lower.startswith("https://") or lower.startswith("http://")
-                _, hit_cred = redact_credentials(v)
-                _, hit_exfil = redact_exfiltration_urls(v)
-                out[k] = v if (safe_scheme and not hit_cred and not hit_exfil) else ""
-            else:
-                out[k] = _redact_value(v)
-        return out
-    return _redact_meta(meta)
 
 
 _MAX_HISTORY_CHARS = 8000
@@ -513,6 +473,38 @@ def _rehydrate_slot_from_history(
         role = m.get("role", "assistant")
         cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
         content = m.get("content", "")
+        # Neither content nor meta is redacted here. Redaction happens where the
+        # data is EMITTED (chat_utils._prepare_messages for the slot detail
+        # endpoint, _ChatSlot.to_dict for the sidebar payload,
+        # _build_history_prefix for the ACP prompt) — every path a client or model
+        # can observe.
+        #
+        # CONTENT, however, is redacted right here, on load. That split is
+        # deliberate and measured, and it is the crux of this change:
+        #
+        #   field    | read sites | share of the ~7s load cost
+        #   ---------|------------|---------------------------
+        #   content  |    ~204    | ~0.4s  (6%)
+        #   meta     |     31     | ~5.5s  (79%)
+        #
+        # `meta.tool_input` carries the large tool payloads, so meta is where the
+        # boot cost actually lives — and its 31 readers are tractable: outside the
+        # emit sites (which redact and are covered by
+        # test_display_time_redaction.py) every one reads only CONTROL fields
+        # (`done`, `tool_call_id`), never payload text. Deferring meta to display
+        # time is therefore both where the win is and safely enumerable.
+        #
+        # `content` is the opposite on both axes: it is cheap (0.4s) and it has
+        # ~204 readers across the dashboard, so "every reader must remember to
+        # redact" is not an invariant anyone can hold. Three separate egress paths
+        # (the side-chat prompt, the orchestrator stage-result file, and the
+        # title-model prompt) were each found leaking restored content one review
+        # round at a time. Paying 0.4s here restores the single chokepoint — any
+        # present or FUTURE reader of `m["content"]` gets clean bytes — instead of
+        # relying on an enumeration that already failed three times.
+        # `role != "user"`, never `not in ("user", "system")`: user-authored text
+        # stays raw because its author is its only reader, but `system` MUST be
+        # redacted — the write path excludes it, so system bytes reach disk raw.
         if role != "user":
             content, _ = redact_exfiltration_urls(content)
             content, _ = redact_credentials(content)
@@ -521,9 +513,20 @@ def _rehydrate_slot_from_history(
             content,
             cls,
             ts=m.get("ts", ""),
-            meta=(
-                _redact_meta_for_role(role, m["meta"]) if isinstance(m.get("meta"), dict) else None
-            ),
+            # broadcast=False: replaying history must not emit N `chat_message`
+            # events. _broadcast_chat_message ships content verbatim, and this
+            # helper also runs for on-demand cold-slot rehydrates while clients
+            # ARE connected, so broadcasting here would push unredacted history
+            # straight to them. Clients get the transcript from the slot detail
+            # endpoint (redacted) and the sidebar from the coalesced slots push.
+            broadcast=False,
+            # meta is NOT redacted here — same reasoning as content, and
+            # it is where the cost actually was: tool `meta.tool_input` carries
+            # the large payloads, so meta redaction was ~5.5s of a ~7s restore
+            # while content redaction was only ~0.4s. Redacted at emit instead
+            # (chat_utils._prepare_messages), which is the only path that returns
+            # meta to a client.
+            meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
         )
         _attach_variants(slot, m)
     slot.drain()
@@ -656,6 +659,10 @@ def _restore_recent_sessions_steps(
             role = m.get("role", "assistant")
             cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
             content = m.get("content", "")
+            # CONTENT is redacted on load; META is deferred to the emit sites.
+            # See the equivalent loop in _rehydrate_slot_from_history for the
+            # measured rationale (content ~0.4s / ~204 readers, meta ~5.5s /
+            # 31 readers that touch only control fields outside the emit sites).
             if role != "user":
                 content, _ = redact_exfiltration_urls(content)
                 content, _ = redact_credentials(content)
@@ -664,11 +671,8 @@ def _restore_recent_sessions_steps(
                 content,
                 cls,
                 ts=m.get("ts", ""),
-                meta=(
-                    _redact_meta_for_role(role, m["meta"])
-                    if isinstance(m.get("meta"), dict)
-                    else None
-                ),
+                broadcast=False,
+                meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
             )
             _attach_variants(slot, m)
         slot.drain()
@@ -783,7 +787,14 @@ def _build_message_entry(m: dict) -> dict | None:
     if role in ("chunk", "done", "streaming", "queued", "permission"):
         return None
     content = m.get("content", "")
-    if role not in ("user", "system"):
+    # Gate is `!= "user"`, NOT `not in ("user", "system")`. _save_slot_to_history
+    # re-serializes the WHOLE in-memory window on every flush, so this is the
+    # write-back boundary. It used to exclude `system`, which was survivable only
+    # because the load path redacted `system` on the way in and this rewrite then
+    # laundered the file. With load-time redaction removed, excluding `system`
+    # here would let unredacted bytes from a legacy or foreign writer survive the
+    # rewrite indefinitely.
+    if role != "user":
         content, _ = redact_exfiltration_urls(content)
         content, _ = redact_credentials(content)
     entry: dict = {
@@ -1405,7 +1416,14 @@ async def save_slot_off_loop(
 
 
 def _build_history_prefix(slot: _ChatSlot) -> str:
-    """Build a condensed history prefix from slot messages for session re-injection."""
+    """Build a condensed history prefix from slot messages for session re-injection.
+
+    Redacts here as defence in depth. The returned prefix is prepended to the ACP
+    prompt, so it leaves the dashboard's own storage and is persisted by kiro-cli
+    into its session file — an egress path, not an internal read, so it does not
+    rely solely on the load-time content pass upstream. Redaction is idempotent,
+    so the common case is a no-op.
+    """
     lines: list[str] = []
     total = 0
     for m in slot.messages:
@@ -1414,6 +1432,9 @@ def _build_history_prefix(slot: _ChatSlot) -> str:
             continue
         label = "User" if role == "user" else "Assistant"
         text = m.get("content", "")[:500]
+        if role != "user":
+            text, _ = redact_exfiltration_urls(text)
+            text, _ = redact_credentials(text)
         line = f"{label}: {text}"
         if total + len(line) > _MAX_HISTORY_CHARS:
             break
