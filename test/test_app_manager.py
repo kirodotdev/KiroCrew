@@ -51,6 +51,10 @@ def app_home(tmp_path, monkeypatch):
     home = tmp_path / "kirocrew-home"
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
+    # Lifecycle success tests explicitly admit their synthetic third-party apps.
+    (home / "config.json").write_text(
+        json.dumps({"agent": {"apps_allow_third_party": True}}), encoding="utf-8"
+    )
     return home
 
 
@@ -517,7 +521,9 @@ class TestAppAdmission:
         })
         result = enable_app("builtin-app")
         assert result.ok
-        assert _read_installed("builtin-app").enabled is True
+        enabled_meta = _read_installed("builtin-app")
+        assert enabled_meta is not None
+        assert enabled_meta.enabled is True
 
     def test_enable_third_party_still_denied_under_require_signature(self, tmp_path, app_home):
         # A non-builtin (unsigned) app is still denied under require_signature.
@@ -1140,6 +1146,20 @@ class TestCopyAppTree:
         assert _read_installed("test-app") is None
 
 
+def _ship_test_builtin(monkeypatch, root, manifest_data):
+    """Give a synthetic builtin immutable package provenance for bridge tests."""
+    from kiro_crew.apps import execution
+
+    shipped = root / "shipped-builtins"
+    shipped_app = shipped / manifest_data["name"]
+    shipped_app.mkdir(parents=True)
+    (shipped_app / "app.json").write_text(
+        json.dumps(manifest_data), encoding="utf-8"
+    )
+    monkeypatch.setattr(execution, "_BUILTINS_DIR", shipped)
+    return shipped_app
+
+
 class TestBootSkillReconcile:
     """Tests for reconcile_app_skills — startup creates missing skill symlinks."""
 
@@ -1148,13 +1168,9 @@ class TestBootSkillReconcile:
         from kiro_crew.apps import bridges, manager
         from kiro_crew.apps.bridges import reconcile_app_skills
 
-        # Set up fake app dir with a skill directory
         apps_root = tmp_path / "apps"
         app_root = apps_root / "test-app"
         app_root.mkdir(parents=True)
-        skill_dir = app_root / "skills" / "my-skill"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# My Skill\n")
 
         # Set up fake skills dir (where symlinks go)
         skills_root = tmp_path / "skills"
@@ -1173,7 +1189,6 @@ class TestBootSkillReconcile:
         }
         (app_root / "installed.json").write_text(json.dumps(installed))
 
-        # Write app.json manifest with skills
         manifest_data = {
             "name": "test-app",
             "version": "1.0.0",
@@ -1183,8 +1198,12 @@ class TestBootSkillReconcile:
             "skills": ["skills/my-skill"],
         }
         (app_root / "app.json").write_text(json.dumps(manifest_data))
+        shipped_app = _ship_test_builtin(monkeypatch, tmp_path, manifest_data)
+        skill_dir = shipped_app / "skills" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# My Skill\n")
 
-        # Monkeypatch paths
+        # Monkeypatch installed-state and registration paths.
         monkeypatch.setattr(manager, "apps_dir", lambda: apps_root)
         monkeypatch.setattr(manager, "app_dir", lambda name: apps_root / name)
         monkeypatch.setattr(bridges, "_skills_dir", lambda: skills_root)
@@ -1194,15 +1213,13 @@ class TestBootSkillReconcile:
         assert not (skills_root / "test-app").exists()
         assert not (skills_root / "my-skill").exists()
 
-        # Run reconcile
         registered = reconcile_app_skills("test-app")
 
-        # Verify symlinks were created
         assert len(registered) == 1
         assert "test-app/my-skill" in registered
         assert (skills_root / "test-app" / "my-skill").is_symlink()
         assert (skills_root / "my-skill").is_symlink()
-        # Symlink target resolves to the actual skill dir
+        # Registration must target the immutable shipped skill, not its install.
         assert (skills_root / "test-app" / "my-skill").resolve() == skill_dir.resolve()
 
     def test_reconcile_removes_stale_skill_symlinks(self, tmp_path, monkeypatch):
@@ -1210,13 +1227,9 @@ class TestBootSkillReconcile:
         from kiro_crew.apps import bridges, manager
         from kiro_crew.apps.bridges import reconcile_app_skills
 
-        # Set up fake app dir with one skill (kept)
         apps_root = tmp_path / "apps"
         app_root = apps_root / "test-app"
         app_root.mkdir(parents=True)
-        kept_skill = app_root / "skills" / "kept-skill"
-        kept_skill.mkdir(parents=True)
-        (kept_skill / "SKILL.md").write_text("# Kept\n")
 
         # Set up skills dir with a STALE symlink (removed from manifest)
         skills_root = tmp_path / "skills"
@@ -1227,7 +1240,7 @@ class TestBootSkillReconcile:
         os.symlink(str(stale_target), str(app_skills_dir / "old-skill"))
         os.symlink(str(stale_target), str(skills_root / "old-skill"))
 
-        # Write metadata
+        # Write installed state and ship the authoritative builtin resources.
         installed = {
             "name": "test-app", "version": "1.0.0", "displayName": "Test",
             "enabled": True, "origin": "builtin", "resources": "gateway",
@@ -1240,6 +1253,10 @@ class TestBootSkillReconcile:
             "skills": ["skills/kept-skill"],  # old-skill NOT listed
         }
         (app_root / "app.json").write_text(json.dumps(manifest_data))
+        shipped_app = _ship_test_builtin(monkeypatch, tmp_path, manifest_data)
+        kept_skill = shipped_app / "skills" / "kept-skill"
+        kept_skill.mkdir(parents=True)
+        (kept_skill / "SKILL.md").write_text("# Kept\n")
 
         monkeypatch.setattr(manager, "apps_dir", lambda: apps_root)
         monkeypatch.setattr(manager, "app_dir", lambda name: apps_root / name)
@@ -1248,9 +1265,12 @@ class TestBootSkillReconcile:
 
         registered = reconcile_app_skills("test-app")
 
-        # Kept skill is registered
+        # Kept skill is registered from immutable provenance.
         assert "test-app/kept-skill" in registered
         assert (skills_root / "test-app" / "kept-skill").is_symlink()
+        assert (
+            skills_root / "test-app" / "kept-skill"
+        ).resolve() == kept_skill.resolve()
         # Stale skill symlinks removed
         assert not (app_skills_dir / "old-skill").exists()
         assert not (skills_root / "old-skill").exists()

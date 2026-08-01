@@ -2950,20 +2950,24 @@ class TestMessagingConfigValidation:
 
 
 class TestAppsAllowThirdParty:
-    """agent.apps_allow_third_party gate (CSE SEC-012 hard off switch)."""
+    """agent.apps_allow_third_party execution admission (CSE SEC-012)."""
 
-    def test_defaults_to_true(self) -> None:
-        """Fresh dataclass and empty-config load both default to True."""
-        assert AgentConfig().apps_allow_third_party is True
+    def test_defaults_to_false(self) -> None:
+        """Fresh dataclass and empty-config load both fail closed."""
+        assert AgentConfig().apps_allow_third_party is False
         cfg = _load_from_dict({})
-        assert cfg.agent.apps_allow_third_party is True
-
-    def test_false_round_trips_from_config(self) -> None:
-        """A false value in config.json is parsed onto agent.apps_allow_third_party."""
-        cfg = _load_from_dict({"agent": {"apps_allow_third_party": False}})
         assert cfg.agent.apps_allow_third_party is False
-        # And survives serialization back out.
-        assert cfg.to_dict()["agent"]["apps_allow_third_party"] is False
+
+    def test_true_round_trips_from_config(self) -> None:
+        """Only an explicit boolean true enables third-party execution."""
+        cfg = _load_from_dict({"agent": {"apps_allow_third_party": True}})
+        assert cfg.agent.apps_allow_third_party is True
+        assert cfg.to_dict()["agent"]["apps_allow_third_party"] is True
+
+    @pytest.mark.parametrize("value", ["true", "false", 1, 0, None])
+    def test_non_boolean_values_fail_closed(self, value) -> None:
+        cfg = _load_from_dict({"agent": {"apps_allow_third_party": value}})
+        assert cfg.agent.apps_allow_third_party is False
 
 
 def test_heartbeat_default_deliver_default_is_slack():

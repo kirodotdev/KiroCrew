@@ -90,6 +90,9 @@ def app_env(tmp_path, monkeypatch):
     import kiro_crew.apps.backend as bmod
     bmod._processes.clear()
     bmod._allocated_ports.clear()
+    monkeypatch.setattr(
+        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
+    )
     return {"home": home, "kiro_agents": kiro_agents}
 
 

@@ -161,6 +161,9 @@ def _setup_env(tmp_path, monkeypatch):
 
     bmod._processes.clear()
     bmod._allocated_ports.clear()
+    monkeypatch.setattr(
+        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
+    )
     return home
 
 

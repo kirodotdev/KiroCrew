@@ -23,6 +23,10 @@ from typing import Any
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.discovery import discover_builtin_apps
+from kiro_crew.apps.execution import (
+    app_execution_denied,
+    shipped_builtin_app_root,
+)
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
@@ -862,6 +866,21 @@ def enable_app(name: str) -> AppResult:
                 ok=False, name=name, error=f"blocked by admission policy: {denied}"
             )
 
+    # Deny before enabled metadata or any route-level registration, dependency,
+    # lifecycle-script, hook, or backend side effect can occur.
+    execution_denied = app_execution_denied(
+        name,
+        action="enable",
+        app_root=shipped_builtin_app_root(name),
+        caller="app_enable",
+    )
+    if execution_denied:
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"blocked by execution policy: {execution_denied}",
+        )
+
     if meta.enabled:
         return AppResult(ok=True, name=name, message=f"{name} is already enabled")
 
@@ -1060,6 +1079,22 @@ def register_external_app(
         return AppResult(
             ok=False, name=name,
             error=f"invalid app name (must be lowercase kebab-case): {name!r}",
+        )
+
+    # Builtin provenance is assigned only by register_builtin_apps(). Accepting
+    # it from self-registration would make the execution exemption caller-controlled.
+    if origin == "builtin":
+        sel().log_api_access(
+            caller="app_register_external",
+            operation="provenance",
+            outcome="rejected",
+            resources=f"name={name!r} origin=builtin",
+            error="builtin origin is reserved",
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error="builtin origin is reserved for KiroCrew-shipped apps",
         )
 
     # Admission: register_external_app writes enabled=True and is HTTP-reachable

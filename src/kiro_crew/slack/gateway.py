@@ -2506,6 +2506,20 @@ class GatewayOrchestrator:
         if self._no_crons:
             logger.info("Cron scheduler disabled (--no-crons)")
         else:
+            # CronService.create has loaded durable jobs but has not armed a
+            # timer yet. Remove jobs owned by disabled or execution-denied apps
+            # at this boundary; if cleanup cannot complete, leave the entire
+            # scheduler stopped rather than risk firing a denied command.
+            from kiro_crew.apps.bridges import reconcile_app_crons_for_execution
+
+            try:
+                await reconcile_app_crons_for_execution(self.cron_svc)
+            except Exception:
+                logger.exception(
+                    "App cron execution reconciliation failed; refusing to arm "
+                    "the cron scheduler"
+                )
+                return
             await self.cron_svc.start()
             if self.sessions:
                 self.cron_svc.start_reaper(self.sessions)

@@ -46,6 +46,7 @@ from kiro_crew.apps.dependency_ledger import (
     classify_for_uninstall,
     declared_capability_keys,
 )
+from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.hooks_integration import on_app_disable, on_app_enable
 from kiro_crew.apps.manager import (
     app_lifecycle_lock,
@@ -107,12 +108,23 @@ async def _run_lifecycle_script(
     *,
     timeout: int = 30,
     extra_env: dict[str, str] | None = None,
+    action: str = "lifecycle_script",
 ) -> dict[str, Any]:
     """Run a lifecycle script (onEnable/onDisable/onUpdate/onUninstall) in the app directory.
 
     Returns dict with ``output`` (str) and ``failed`` (bool).
     """
     app_root = apps_dir() / app_name
+    denied = app_execution_denied(
+        app_name,
+        action=action,
+        app_root=app_root,
+        caller="dashboard",
+    )
+    if denied:
+        logger.warning("Refusing app %s lifecycle action %s: %s", app_name, action, denied)
+        return {"output": denied, "failed": True, "denied": True}
+
     if not app_root.is_dir():
         return {"output": f"app directory not found: {app_root}", "failed": True}
 
@@ -833,6 +845,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                     "KEEP_DATA": "1" if keep_data else "0",
                     "PURGE_DATA": "0" if keep_data else "1",
                 },
+                action="on_uninstall",
             )
             if script_output.get("output"):
                 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -976,7 +989,9 @@ async def handle_enable_app(request: web.Request) -> web.Response:
 
         # Run onEnable script
         if on_enable:
-            script_output = await _run_lifecycle_script(name, on_enable, timeout=enable_timeout)
+            script_output = await _run_lifecycle_script(
+                name, on_enable, timeout=enable_timeout, action="on_enable"
+            )
             if script_output.get("failed"):
                 # Rollback: disable the app again
                 if resources == "gateway":
@@ -1062,7 +1077,9 @@ async def handle_disable_app(request: web.Request) -> web.Response:
     async with app_lifecycle_lock(name):
         # Run onDisable script first
         if on_disable:
-            script_output = await _run_lifecycle_script(name, on_disable, timeout=disable_timeout)
+            script_output = await _run_lifecycle_script(
+                name, on_disable, timeout=disable_timeout, action="on_disable"
+            )
             if script_output.get("failed"):
                 from kiro_crew.security import redact_credentials
                 raw_output = script_output.get("output", "")[:200]
@@ -1137,10 +1154,32 @@ async def handle_open_app(request: web.Request) -> web.Response:
     if not info:
         return web.json_response({"error": f"app {name!r} not found"}, status=404)
 
+    if not info.get("enabled", False):
+        error = f"app {name!r} is disabled"
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_open",
+            outcome="denied",
+            resources=name,
+            error=error,
+        )
+        return web.json_response({"error": error, "code": "app_disabled"}, status=409)
+
     manifest = info.get("manifest", {})
     open_cmd = manifest.get("openCommand", "")
     if not open_cmd:
         return web.json_response({"error": "app has no openCommand"}, status=400)
+
+    denied = app_execution_denied(
+        name,
+        action="open_command",
+        app_root=apps_dir() / name,
+        caller="dashboard",
+    )
+    if denied:
+        return web.json_response(
+            {"error": denied, "code": "app_execution_denied"}, status=403
+        )
 
     # Detect cloud/remote — no DISPLAY and not macOS desktop
     import os

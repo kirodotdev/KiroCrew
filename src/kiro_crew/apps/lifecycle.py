@@ -10,6 +10,7 @@ import logging
 from typing import Any
 
 from kiro_crew.apps.context import AppContext, build_app_context
+from kiro_crew.apps.execution import shipped_builtin_app_root
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.apps.module_loader import load_app_module
 from kiro_crew.sel import sel
@@ -126,7 +127,7 @@ class LifecycleDispatcher:
         """
 
         try:
-            app_root = app_dir(app_name)
+            app_root = shipped_builtin_app_root(app_name) or app_dir(app_name)
             func = load_app_module(app_name, app_root, hook_path)
             result = func(ctx)
             if asyncio.iscoroutine(result):

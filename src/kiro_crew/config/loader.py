@@ -648,15 +648,14 @@ class AgentConfig:
         ),
     )
     apps_allow_third_party: bool = field(
-        default=True,
+        default=False,
         metadata=_meta(
             "Allow Third-Party Apps",
-            "Allow running third-party (non-builtin) app Python. App code runs with "
-            "FULL gateway privileges (filesystem, network, in-memory credentials) and "
-            "is NOT sandboxed — the permission system gates only the SDK tool surface. "
-            "Defaults to true (apps are operator-installed). Set false to refuse both "
-            "in-process module loads AND out-of-process backend spawns for any app "
-            "outside apps/builtins/ until out-of-process isolation ships (CSE SEC-012).",
+            "Explicitly allow executable code from third-party (non-builtin) apps. "
+            "Defaults to false. Only the JSON boolean true admits in-process Python "
+            "hooks, backend processes, lifecycle/install scripts, and openCommand. "
+            "App code can access the filesystem, network, and in-memory credentials; "
+            "enable this only for apps you trust (CSE SEC-012).",
         ),
     )
     jail: str = field(
@@ -3900,7 +3899,9 @@ class KiroCrewConfig:
                 sandbox_allow_unsandboxed_exec=bool(
                     agent_data.get("sandbox_allow_unsandboxed_exec", False)
                 ),
-                apps_allow_third_party=bool(agent_data.get("apps_allow_third_party", True)),
+                apps_allow_third_party=_safe_bool(
+                    agent_data.get("apps_allow_third_party", False), False
+                ),
                 jail=_normalize_jail(agent_data.get("jail", "auto")),
                 yolo=agent_data.get("yolo", False),
                 notify_override_expiry=agent_data.get("notify_override_expiry", True),

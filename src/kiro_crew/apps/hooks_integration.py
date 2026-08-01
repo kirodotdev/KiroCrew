@@ -12,13 +12,21 @@ declared, behavior is identical to before.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.apps.bridges import register_app_crons_with_service
+from kiro_crew.apps.bridges import (
+    disarm_app_crons_for_execution,
+    register_app_crons_with_service,
+)
 from kiro_crew.apps.context import build_app_context
 from kiro_crew.apps.cron_sdk import CronSDK
+from kiro_crew.apps.execution import (
+    app_execution_denied,
+    shipped_builtin_app_root,
+)
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manager import app_dir, list_apps
 from kiro_crew.apps.route_registry import RouteRegistry
@@ -60,6 +68,11 @@ def get_lifecycle_dispatcher() -> LifecycleDispatcher | None:
     return _lifecycle_dispatcher
 
 
+def _app_hook_root(app_name: str) -> Path:
+    """Return the immutable shipped root when one owns this app name."""
+    return shipped_builtin_app_root(app_name) or app_dir(app_name)
+
+
 def _build_app_context_from_info(
     app_info: dict[str, Any],
     cron_service: Any = None,
@@ -93,6 +106,24 @@ async def on_app_enable(
     Returns dict with hook results to include in the enable response.
     """
     result: dict[str, Any] = {}
+    denied = app_execution_denied(
+        app_name,
+        action="hook_enable_register",
+        app_root=_app_hook_root(app_name),
+        caller="gateway",
+    )
+    if denied:
+        logger.warning(
+            "App %s: skipping enable-time hooks and crons: %s",
+            app_name,
+            denied,
+        )
+        if cron_service is not None:
+            await disarm_app_crons_for_execution(app_name, cron_service)
+        if _route_registry:
+            _route_registry.deregister_app_routes(app_name)
+        return result
+
     manifest = app_info.get("manifest", {})
     backend = manifest.get("backend", {})
     hooks = backend.get("hooks", {})
@@ -139,7 +170,7 @@ async def on_app_enable(
     # Register routes if declared
     routes_hook = hooks.get("routes", "")
     if routes_hook and _route_registry:
-        app_root = app_dir(app_name)
+        app_root = _app_hook_root(app_name)
         registered = await _route_registry.register_app_routes(
             app_name, app_root, routes_hook, ctx
         )
@@ -249,6 +280,23 @@ async def on_gateway_startup(*, cron_service: Any = None, broadcast_fn: Any = No
     # route handlers (and vice versa), matching the on_app_enable approach.
     for app_info in sorted(enabled, key=lambda a: a.get("name", "")):
         name = app_info.get("name", "")
+        denied = app_execution_denied(
+            name,
+            action="hook_boot_register",
+            app_root=_app_hook_root(name),
+            caller="gateway",
+        )
+        if denied:
+            logger.warning(
+                "Startup: skipping hooks and crons for denied app %s: %s",
+                name,
+                denied,
+            )
+            if cron_service is not None:
+                await disarm_app_crons_for_execution(name, cron_service)
+            if _route_registry:
+                _route_registry.deregister_app_routes(name)
+            continue
 
         # Reconcile app-declared crons into the running scheduler.
         if cron_service is not None:
@@ -289,7 +337,7 @@ async def on_gateway_startup(*, cron_service: Any = None, broadcast_fn: Any = No
         routes_hook = hooks.get("routes", "")
         if routes_hook and _route_registry:
             await _route_registry.register_app_routes(
-                name, app_dir(name), routes_hook, ctx
+                name, _app_hook_root(name), routes_hook, ctx
             )
 
         # Invoke on_startup hook (if declared)
