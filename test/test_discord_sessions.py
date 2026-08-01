@@ -517,6 +517,44 @@ async def test_choice_binds_replays_and_routes_followup() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resume_replay_sanitizes_internal_protocol() -> None:
+    log = _log()
+    log.messages["dashboard:chat-1"] = [
+        {"role": "user", "content": "Conversation compacted: real question"},
+        {
+            "role": "assistant",
+            "content": "✅ Conversation compacted: ## OBJECTIVE\ninternal guidance",
+            "meta": {"kind": "compaction"},
+        },
+        {
+            "role": "assistant",
+            "content": "Conversation compacted: ## USER GUIDANCE\nlegacy internal body",
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "before [STEERING steer-7e6a4a0d-9431-4d2d-b000-000000000001: "
+                "internal steer] after"
+            ),
+        },
+        {"role": "assistant", "content": "real answer"},
+    ]
+    dispatcher, client, _ = _dispatcher({"u1"}, log)
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    visible = " ".join(text for text, _ in client.sent)
+    assert "Conversation compacted: real question" in visible
+    assert "real question" in visible and "real answer" in visible
+    assert "before" in visible and "after" in visible
+    assert "OBJECTIVE" not in visible and "USER GUIDANCE" not in visible
+    assert "internal guidance" not in visible and "legacy internal body" not in visible
+    assert "STEERING" not in visible and "internal steer" not in visible
+
+
+@pytest.mark.asyncio
 async def test_cold_resume_does_not_stamp_channel_or_retitle() -> None:
     """A cold resumed session must not get new-session bookkeeping.
 

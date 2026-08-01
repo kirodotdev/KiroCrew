@@ -329,33 +329,36 @@ class DiscordRenderer(Renderer):
             self._buf = [f"{self._pending_chip}\n\n{body}"]
             self._pending_chip = ""
 
+    async def on_steer_consumed(self, summary: str = "") -> None:
+        """Seal the pre-steer segment at the driver's structured boundary."""
+        self._materialize_chip()
+        await self._rotate_on_length()
+        sealed = bool(self._segment_text().strip())
+        await self._seal_current()
+        clean_summary = _neutralize_md(summary)
+        if clean_summary:
+            chip: str | None = "> ↪️ " + clean_summary
+        else:
+            chip = self._chip_for_seal(self._seal_count)
+        self._seal_count += 1
+        self._pending_chip = chip or ""
+        self._buf = []
+        if sealed:
+            self._open_new_message()
+
     async def _rotate_at_markers(self) -> None:
+        """Defence for callers that bypass TurnDriver and pass raw markers."""
         while True:
             self._materialize_chip()
             raw = "".join(self._buf)
-            m = _STEER_MARKER_RE.search(raw)  # first COMPLETE marker only
-            if m is None:
+            marker = _STEER_MARKER_RE.search(raw)
+            if marker is None:
                 return
-            self._buf = [raw[: m.start()]]
-            # Length-rotate the pre-marker segment BEFORE sealing (a chunk can
-            # deliver oversized text and the marker together).
-            await self._rotate_on_length()
-            sealed = bool(self._segment_text().strip())
-            await self._seal_current()  # freeze the pre-steer message as-is
-            sm = _STEER_SUMMARY_RE.match(raw, m.start())
-            summary = _neutralize_md(sm.group(1)) if sm else ""
-            if summary:
-                chip: str | None = f"> ↪️ {summary}"
-            else:
-                chip = self._chip_for_seal(self._seal_count)
-            self._seal_count += 1
-            self._pending_chip = chip or ""
-            self._buf = [raw[m.end() :]]  # new segment: steered continuation
-            if sealed:
-                self._open_new_message()
-            # else: the pre-marker segment was empty (e.g. a tool-only live
-            # "🔧 …" message) — keep _stream_mid so the steered continuation
-            # replaces the transient footer in place.
+            self._buf = [raw[: marker.start()]]
+            summary_match = _STEER_SUMMARY_RE.match(raw, marker.start())
+            summary = _neutralize_md(summary_match.group(1)) if summary_match else ""
+            await self.on_steer_consumed(summary)
+            self._buf = [raw[marker.end() :]]
 
     async def _rotate_on_length(self) -> None:
         """Rotate when the segment exceeds one Discord message, keeping fenced

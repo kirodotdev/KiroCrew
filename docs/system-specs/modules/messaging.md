@@ -1,6 +1,6 @@
 # Messaging Transport Module
 
-Last Updated: 2026-07-13 (Initial module spec: channel-neutral `kiro_crew.messaging` package — Layer 1 `MessagingTransport`/`TransportCapabilities`/`InboundMessage`, Layer 2 `TurnDriver` approval ladder, Layer 2b `Renderer`/`OutputEvent`/`chunk_text`, Layer 3 session-key namespacing + ConversationState generations; Slack reference impl + `messaging.use_transport` flag, default ON in KiroCrew; 2026-07-24: added Managed-MCP session-key resolution invariant — every channel transport-dispatch surface (Telegram DM + forum, Discord, Slack, Webex, WeCom) now publishes session_pid_<pid>.txt via the shared messaging.identity.publish_turn_identity helper so managed MCP tools resolve X-Session-Key, #232; 2026-07-24: WeCom settings API — GET/PUT /api/wecom/config with dual credential slots (WECOM_BOT_ID + WECOM_SECRET), Settings→WeCom panel on the shared BotChannelPanel, wecom_connected/wecom_connect_error kept live via WeComClient.on_status transitions)
+Last Updated: 2026-08-01 (channel output framing: shared TurnDriver strips streamed steering protocol markers, converts them to structured boundaries, and replaces summary-bearing compaction notices with a terse receipt; Discord transcript replay drops legacy protocol/compaction text while preserving the stored audit record; direct Slack/Discord/Telegram compaction commands no longer interpolate summary bodies; Initial module spec: channel-neutral `kiro_crew.messaging` package — Layer 1 `MessagingTransport`/`TransportCapabilities`/`InboundMessage`, Layer 2 `TurnDriver` approval ladder, Layer 2b `Renderer`/`OutputEvent`/`chunk_text`, Layer 3 session-key namespacing + ConversationState generations; Slack reference impl + `messaging.use_transport` flag, default ON in KiroCrew; 2026-07-24: added Managed-MCP session-key resolution invariant — every channel transport-dispatch surface (Telegram DM + forum, Discord, Slack, Webex, WeCom) now publishes session_pid_<pid>.txt via the shared messaging.identity.publish_turn_identity helper so managed MCP tools resolve X-Session-Key, #232; 2026-07-24: WeCom settings API — GET/PUT /api/wecom/config with dual credential slots (WECOM_BOT_ID + WECOM_SECRET), Settings→WeCom panel on the shared BotChannelPanel, wecom_connected/wecom_connect_error kept live via WeComClient.on_status transitions)
 
 ## Overview
 
@@ -78,14 +78,17 @@ Normalized, channel-agnostic inbound message: `channel_type`, `user_id`, `conver
 
 Consumes a provider's `AcpEvent` stream and emits abstract `OutputEvent`s to a per-transport `Renderer`. It owns the channel-neutral turn concerns — credential/exfiltration redaction and the tool-approval decision — so every channel inherits them once.
 
-**Redaction** — `_redact()` runs `redact_exfiltration_urls()` then `redact_credentials()` (both from `security.py`) over every text chunk, thinking chunk, tool title/purpose, and each string field of prompt-choice options before it reaches a renderer.
+**Redaction and protocol framing** — before text reaches a renderer, `TurnDriver` first classifies a reserved summary-bearing compaction notice at the start of the turn, then incrementally parses kiro-cli's inline `[STEERING steer-<id>: …]` frame across arbitrary chunk boundaries. Compaction summary bodies become the terse `✅ Context compacted.` receipt. Steering frames never become text: they emit one structured `STEER_CONSUMED` event at the exact boundary (paired with kiro-cli's typed lifecycle event regardless of arrival order). The user-facing `[OPTIONS: …]` trailer is deliberately not part of this filter and passes through unchanged for renderer-native buttons. After framing, `_redact()` runs `redact_exfiltration_urls()` then `redact_credentials()` (both from `security.py`) over every text chunk, thinking chunk, tool title/purpose, and each string field of prompt-choice options before it reaches a renderer.
+
+The dashboard does **not** flow through `TurnDriver`; it remains unchanged as the authoritative transcript surface. Direct channel paths that bypass the driver are sanitized at source: Discord's explicit five-message resume replay strips legacy steering frames and summary-bearing compaction notices, while direct compact commands publish only terse receipts. Stored transcripts remain intact for audit.
 
 **`run(message) -> str`** — calls `renderer.on_turn_start()`, then translates each provider event into a dispatched `OutputEvent` and returns the accumulated (redacted) assistant text:
 
 | Provider event | Emitted `OutputEvent` |
 |----------------|-----------------------|
-| `EVENT_TEXT_CHUNK` | `TEXT_CHUNK` (redacted, accumulated) |
+| `EVENT_TEXT_CHUNK` | `TEXT_CHUNK` (protocol-framed, redacted, accumulated); inline steering frames become `STEER_CONSUMED`, compaction summary notices become a terse receipt |
 | `EVENT_THINKING_CHUNK` | `THINKING` |
+| `EVENT_STEER_CONSUMED` | paired with the inline frame so exactly one `STEER_CONSUMED` boundary reaches the renderer |
 | `EVENT_TOOL_CALL` | `TOOL_CALL` (uniform — each call completes the prior task + starts a new one) |
 | `EVENT_PERMISSION_REQUEST` | `PROMPT_CHOICE` (interactive w/ decider only) then approve/reject |
 | `EVENT_COMPACTION_STATUS` | `COMPACTION` |
@@ -124,6 +127,7 @@ Constructed with a `TransportCapabilities`. `dispatch(event)` routes each kind t
 - `on_tool_call(tool_call_id, title, tool_kind="", tool_purpose="")` — abstract; mirrors native uniform tool-call semantics (each call marks the previous task complete and starts a new in-progress task).
 - `on_prompt_choice(options, request_id)` — abstract; renders the interactive approval/choice prompt.
 - `on_compaction(context_usage_pct)`, `on_done(stop_reason="")` — abstract.
+- `on_steer_consumed(summary="")` — default no-op; Discord/Telegram seal the pre-steer segment and open the continuation with a native acknowledgement chip using the parsed summary, without receiving raw protocol text.
 
 ### `chunk_text(text, max_chars) -> list[str]`
 
@@ -244,6 +248,7 @@ Full new-path dispatch: fires the ack reaction + working status immediately (con
 - **One-way dependency**: `kiro_crew.messaging` never imports `kiro_crew.slack` / `kiro_crew.dashboard`; violations reintroduce the cycle the abstraction removed.
 - **Deny-by-default authorization**: `MessagingTransport.authorize` implementations authorize nobody when unconfigured; interactive approval denies unless positively approved (or a timeout elapses → deny).
 - **Redaction is unconditional**: all LLM/tool-originated text flowing through `TurnDriver` passes `redact_exfiltration_urls()` + `redact_credentials()` before reaching any renderer.
+- **Protocol metadata is not assistant speech**: streamed steering frames are withheld until complete, removed even when split across chunks, and represented as a structured boundary. Summary-bearing compaction activity is never sent to a channel as assistant speech; only a terse receipt may be rendered. `[OPTIONS: …]` remains user-facing and is never stripped by the shared filter.
 - **Conservative capability defaults**: unspecified `TransportCapabilities` degrade safely (WhatsApp-like floor), and renderers must honor `max_message_chars` (`chunk_text`) and `max_buttons`.
 - **Session keys are namespaced**: every key is `channel_type:conversation_id`; only bare legacy Slack `thread_ts` keys are shimmed, via `canonical_key`/`legacy_key`.
 - **Own-channel vs. mirror**: `ChannelLink` models a session's own inbound channel only; the dashboard→Slack mirror binding stays in `SessionMap.get/set_slack_link` (guardrail G3). The generalized channel-neutral outbound mirror (`SessionMap.set_mirror_link`, PR #52) stores a `ChannelLink` under the `mirror` slot for non-Slack channels — still distinct from the session's own inbound link.
@@ -324,7 +329,7 @@ steer/queue with collapsing receipts, drain-collapse, `!compact` under atomic
 `!queue`/`!steer`; `/` aliases accepted) because Discord's client intercepts
 bare `/` as slash-commands. The renderer streams via throttled in-place edits
 under the 2000-char cap (chunked at 1900 with fence-balanced splitting),
-rotates messages at `[STEERING]` markers with quote chips, renders trailing
+rotates messages at the shared driver's structured steer boundaries with quote chips (a defensive raw-marker parser remains only for callers that bypass the driver), renders trailing
 `[OPTIONS:]` as button action rows (`opt:<i>`, label recovered from the
 component at interaction time), and posts Approve/Deny buttons for
 interactive tool approvals. Approval `custom_id`s carry a per-prompt random

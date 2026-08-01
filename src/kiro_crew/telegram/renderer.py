@@ -401,12 +401,8 @@ class TelegramRenderer(Renderer):
     async def on_text_chunk(self, text: str) -> None:
         self._buf.append(text)
         self._tool = ""  # text resumed -> drop the transient tool footer
-        # 1) Rotate to a fresh message at each COMPLETE [STEERING …] marker
-        #    (kiro-cli's in-stream steer injection point). Text before the marker
-        #    seals into the current message; the steered continuation opens a new
-        #    message headed by the steer chip. Splitting at the marker's real
-        #    position — not the racy STEER_CONSUMED offset — avoids the
-        #    "used.BANANA" leak.
+        # 1) Defensive fallback for callers that bypass TurnDriver and
+        #    deliver raw protocol text directly to the renderer.
         await self._rotate_at_markers()
         # 1b) Materialize the pending chip once real post-steer text exists.
         self._materialize_chip()
@@ -424,47 +420,36 @@ class TelegramRenderer(Renderer):
             self._buf = [f"{self._pending_chip}\n\n{body}"]
             self._pending_chip = ""
 
+    async def on_steer_consumed(self, summary: str = "") -> None:
+        """Seal the pre-steer segment at the driver's structured boundary."""
+        self._materialize_chip()
+        await self._rotate_on_length()
+        sealed = bool(self._segment_text().strip())
+        await self._seal_current()
+        clean_summary = _neutralize_md(summary)
+        if clean_summary:
+            chip: str | None = f"> ↪️ {clean_summary}"
+        else:
+            chip = self._chip_for_seal(self._seal_count)
+        self._seal_count += 1
+        self._pending_chip = chip or ""
+        self._buf = []
+        if sealed:
+            self._open_new_message()
+
     async def _rotate_at_markers(self) -> None:
+        """Defence for callers that bypass TurnDriver and pass raw markers."""
         while True:
-            # A chip pending from a PREVIOUS marker materializes now if this
-            # segment carries real text — so a single chunk containing two
-            # markers can't overwrite the first steer's chip (its continuation
-            # seals WITH the chip below). A chip with no continuation text stays
-            # pending and is deliberately dropped on overwrite (no-tail design).
             self._materialize_chip()
             raw = "".join(self._buf)
-            m = _STEER_MARKER_RE.search(raw)  # first COMPLETE marker only
-            if m is None:
+            marker = _STEER_MARKER_RE.search(raw)
+            if marker is None:
                 return
-            self._buf = [raw[: m.start()]]
-            # Length-rotate the pre-marker segment BEFORE sealing: a chunk can
-            # deliver oversized text and the marker together, and sealing an
-            # over-limit segment would silently truncate it at Telegram's cap.
-            await self._rotate_on_length()
-            sealed = bool(self._segment_text().strip())
-            await self._seal_current()  # freeze the pre-steer message as-is
-            # Chip: prefer the SUMMARY embedded in the marker itself (what the
-            # dashboard shows as its "Steered — …" chip) — the user's own words
-            # are already on screen as their message, so the summary is the only
-            # new information. Fall back to the recorded user text.
-            sm = _STEER_SUMMARY_RE.match(raw, m.start())
-            summary = _neutralize_md(sm.group(1)) if sm else ""
-            if summary:
-                chip: str | None = f"> ↪️ {summary}"
-            else:
-                chip = self._chip_for_seal(self._seal_count)
-            self._seal_count += 1
-            # Hold the chip as PENDING — it prepends only when real post-steer
-            # text arrives (see on_text_chunk). An end-of-stream marker thus
-            # produces no chip-only ack bubble.
-            self._pending_chip = chip or ""
-            self._buf = [raw[m.end():]]  # new segment: steered continuation only
-            if sealed:
-                self._open_new_message()
-            # else: the pre-marker segment was empty (e.g. a tool-only live
-            # "🔧 …" message) — nothing was sealed, so KEEP _stream_mid and let
-            # the steered continuation replace the transient footer in place
-            # instead of orphaning it as a permanent tool-footer bubble.
+            self._buf = [raw[: marker.start()]]
+            summary_match = _STEER_SUMMARY_RE.match(raw, marker.start())
+            summary = _neutralize_md(summary_match.group(1)) if summary_match else ""
+            await self.on_steer_consumed(summary)
+            self._buf = [raw[marker.end() :]]
 
     async def _rotate_on_length(self) -> None:
         """Rotate when the segment exceeds one Telegram message. Uses

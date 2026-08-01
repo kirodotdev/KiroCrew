@@ -18,6 +18,7 @@ this driver in Stage 3 (gated by the golden-transcript test).
 
 from __future__ import annotations
 
+import re
 from typing import Any, Awaitable, Callable
 
 from kiro_crew.acp.types import (
@@ -59,6 +60,183 @@ ApprovalDecider = Callable[[Any], Awaitable[bool]]
 #: (keeping the driver channel-neutral) to preserve hook-driven auto-approval
 #: such as ``auto_approve_subagent_spawn`` for the ``spawn_run`` tool.
 AutoApprovePredicate = Callable[[str], bool]
+
+# kiro-cli embeds this protocol frame in ordinary agent_message_chunk text when
+# it folds a mid-turn steer. It is transport metadata, not assistant speech.
+_STEER_PREFIX = "[STEERING"
+_STEER_MARKER_RE = re.compile(
+    r"^\[STEERING\s+steer-[0-9a-f-]+(?:\s*:\s*(.*?))?\]$",
+    re.IGNORECASE | re.DOTALL,
+)
+_MAX_STEER_MARKER_CHARS = 16_384
+
+# These are KiroCrew-generated status prefixes, not model-authored prose. A
+# legacy dashboard transcript can contain the completed summary as an assistant
+# message; after a cold resume that provenance is lost and kiro-cli can echo it
+# back as an ordinary text chunk. The channel boundary is the last layer that
+# still knows the destination is external, so reserve the prefixes and replace
+# the internal summary with a terse user-safe status. The dashboard does not use
+# TurnDriver and retains its authoritative transcript/audit record.
+_COMPACTION_NOTICE_PREFIXES = (
+    "✅ Conversation compacted:",
+    "Conversation compacted:",
+    "✅ Compacted:",
+)
+_COMPACTION_NOTICE_REPLACEMENT = "✅ Context compacted."
+_COMPACTION_PROBE_MAX = max(map(len, _COMPACTION_NOTICE_PREFIXES)) + 64
+
+
+def is_internal_compaction_notice(text: str) -> bool:
+    """Return whether *text* starts with a reserved summary-bearing notice."""
+    probe = (text or "").lstrip()
+    return any(probe.startswith(prefix) for prefix in _COMPACTION_NOTICE_PREFIXES)
+
+
+class _CompactionNoticeFilter:
+    """Classify a streamed turn before exposing its leading text.
+
+    Only a whole-turn reserved prefix is suppressed. Ordinary mentions later in
+    an answer and the user-facing ``[OPTIONS: ...]`` trailer pass unchanged.
+    """
+
+    __slots__ = ("_buffer", "_decided", "_suppress")
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._decided = False
+        self._suppress = False
+
+    def feed(self, chunk: str) -> str:
+        if not chunk or self._suppress:
+            return ""
+        if self._decided:
+            return chunk
+        self._buffer += chunk
+        probe = self._buffer.lstrip()
+        if is_internal_compaction_notice(self._buffer):
+            self._buffer = ""
+            self._suppress = True
+            return _COMPACTION_NOTICE_REPLACEMENT
+        if (
+            not probe or any(prefix.startswith(probe) for prefix in _COMPACTION_NOTICE_PREFIXES)
+        ) and (len(self._buffer) <= _COMPACTION_PROBE_MAX):
+            return ""
+        self._decided = True
+        out, self._buffer = self._buffer, ""
+        return out
+
+    def flush(self) -> str:
+        if self._suppress:
+            return ""
+        out, self._buffer = self._buffer, ""
+        self._decided = True
+        return out
+
+
+class _SteeringMarkerFilter:
+    """Remove streamed ``[STEERING steer-…]`` frames without chunk leaks.
+
+    The parser holds a possible marker prefix until it can classify the complete
+    frame, so a UUID or summary split across provider chunks is never emitted.
+    Complete markers become structured ``STEER_CONSUMED`` output events at the
+    exact text boundary; everything else is returned byte-for-byte.
+    """
+
+    __slots__ = ("_buffer", "_dropping_oversized")
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._dropping_oversized = False
+
+    def feed(self, chunk: str) -> list[tuple[str, str]]:
+        if self._dropping_oversized:
+            close = chunk.find("]")
+            if close < 0:
+                return []
+            self._dropping_oversized = False
+            chunk = chunk[close + 1 :]
+            frames: list[tuple[str, str]] = [("steer", "")]
+        else:
+            frames = []
+        self._buffer += chunk
+        frames.extend(self._drain(final=False))
+        return frames
+
+    def flush(self) -> list[tuple[str, str]]:
+        if self._dropping_oversized:
+            self._dropping_oversized = False
+            self._buffer = ""
+            return []
+        return self._drain(final=True)
+
+    def _drain(self, *, final: bool) -> list[tuple[str, str]]:
+        frames: list[tuple[str, str]] = []
+        while self._buffer:
+            start = self._buffer.find("[")
+            if start < 0:
+                hold = 0 if final else self._partial_prefix_len(self._buffer)
+                emit = self._buffer if hold == 0 else self._buffer[:-hold]
+                if emit:
+                    frames.append(("text", emit))
+                self._buffer = "" if hold == 0 else self._buffer[-hold:]
+                break
+            if start > 0:
+                frames.append(("text", self._buffer[:start]))
+                self._buffer = self._buffer[start:]
+                continue
+
+            upper = self._buffer.upper()
+            prefix = _STEER_PREFIX.upper()
+            if len(self._buffer) < len(_STEER_PREFIX) and prefix.startswith(upper):
+                if final:
+                    self._buffer = ""
+                break
+            if not upper.startswith(prefix):
+                frames.append(("text", self._buffer[0]))
+                self._buffer = self._buffer[1:]
+                continue
+
+            close = self._buffer.find("]")
+            if close < 0:
+                if len(self._buffer) > _MAX_STEER_MARKER_CHARS:
+                    self._buffer = ""
+                    self._dropping_oversized = True
+                elif final:
+                    self._buffer = ""
+                break
+
+            candidate = self._buffer[: close + 1]
+            match = _STEER_MARKER_RE.match(candidate)
+            if match is None:
+                frames.append(("text", self._buffer[0]))
+                self._buffer = self._buffer[1:]
+                continue
+            frames.append(("steer", (match.group(1) or "").strip()))
+            self._buffer = self._buffer[close + 1 :]
+        return frames
+
+    @staticmethod
+    def _partial_prefix_len(text: str) -> int:
+        prefix = _STEER_PREFIX.upper()
+        upper = text.upper()
+        for size in range(min(len(text), len(prefix) - 1), 0, -1):
+            if prefix.startswith(upper[-size:]):
+                return size
+        return 0
+
+
+def sanitize_channel_replay_text(text: str) -> str:
+    """Strip reserved channel protocol from one already-buffered message.
+
+    Direct transcript replays bypass :class:`TurnDriver`, so they use this
+    helper to apply the same fail-closed steering and compaction boundary.
+    """
+    if is_internal_compaction_notice(text):
+        return ""
+    parser = _SteeringMarkerFilter()
+    frames = parser.feed(text)
+    frames.extend(parser.flush())
+    return "".join(payload for kind, payload in frames if kind == "text")
 
 
 def _redact(text: str | None) -> str:
@@ -125,31 +303,74 @@ class TurnDriver:
         self.tool_gate = tool_gate
 
     async def run(self, message: str) -> str:
-        """Drive one turn; return the accumulated (redacted) assistant text."""
+        """Drive one turn; return the accumulated channel-safe assistant text."""
         accumulated = ""
-        # Rolling-buffer redactor for the streamed assistant text so a
-        # credential split across two EVENT_TEXT_CHUNKs (e.g. "...AKIA1234" then
-        # "5678...") is caught — per-chunk redaction alone would miss it and the
-        # concatenation would reach the channel in the clear. feed() emits only
-        # the safe prefix; flush() (on EVENT_COMPLETE) redacts the buffered tail.
-        _sred = StreamRedactor(_redact)
+        # Protocol framing runs BEFORE credential redaction. A steering marker
+        # may split at any byte boundary; parsing it first ensures neither its
+        # UUID nor its internal summary is ever committed to a renderer. The
+        # security redactor then keeps its existing rolling credential boundary.
+        compaction_filter = _CompactionNoticeFilter()
+        steering_filter = _SteeringMarkerFilter()
+        stream_redactor = StreamRedactor(_redact)
+        pending_steer_events = 0
+        unmatched_marker_events = 0
+
+        async def emit_text(text: str) -> None:
+            nonlocal accumulated
+            safe = stream_redactor.feed(text)
+            if safe:
+                accumulated += safe
+                await self.renderer.dispatch(OutputEvent(kind=TEXT_CHUNK, text=safe))
+
+        async def flush_redactor() -> None:
+            nonlocal accumulated
+            tail = stream_redactor.flush()
+            if tail:
+                accumulated += tail
+                await self.renderer.dispatch(OutputEvent(kind=TEXT_CHUNK, text=tail))
+
+        async def dispatch_frames(frames: list[tuple[str, str]]) -> None:
+            nonlocal pending_steer_events, unmatched_marker_events
+            for frame_kind, payload in frames:
+                if frame_kind == "text":
+                    await emit_text(payload)
+                    continue
+                # Preserve a lexical separator where the inline marker was removed.
+                # Flushing an unterminated credential tail directly would emit its
+                # pre-steer half; join-based renderers could then concatenate the
+                # post-steer half back into the full secret. Feeding and emitting a
+                # newline first terminates that run, while the explicit flush keeps
+                # every pre-steer byte ahead of the structured renderer boundary.
+                await emit_text("\n")
+                await flush_redactor()
+                if pending_steer_events:
+                    pending_steer_events -= 1
+                else:
+                    unmatched_marker_events += 1
+                await self.renderer.dispatch(
+                    OutputEvent(kind=STEER_CONSUMED, text=_redact(payload))
+                )
+
         await self.renderer.on_turn_start()
         async for event in self.provider.stream(message):
             kind = event.kind
             if kind == EVENT_TEXT_CHUNK:
-                text = _sred.feed(event.text or "")
-                if text:
-                    accumulated += text
-                    await self.renderer.dispatch(OutputEvent(kind=TEXT_CHUNK, text=text))
+                filtered = compaction_filter.feed(event.text or "")
+                if filtered:
+                    await dispatch_frames(steering_filter.feed(filtered))
             elif kind == EVENT_THINKING_CHUNK:
                 await self.renderer.dispatch(
                     OutputEvent(kind=THINKING, text=_redact(event.text))
                 )
             elif kind == EVENT_STEER_CONSUMED:
-                # kiro-cli folded a mid-turn steer at a boundary — let the
-                # renderer seal the pre-steer message so the steered
-                # continuation opens as its own message.
-                await self.renderer.dispatch(OutputEvent(kind=STEER_CONSUMED))
+                # kiro-cli emits both a typed lifecycle event and an inline
+                # marker, in either order. Pair them so renderers receive one
+                # structured boundary, never two rotations. If an older backend
+                # omits the marker, dispatch the unmatched event at turn end.
+                if unmatched_marker_events:
+                    unmatched_marker_events -= 1
+                else:
+                    pending_steer_events += 1
             elif kind == EVENT_TOOL_CALL:
                 # Native handle_message treats every EVENT_TOOL_CALL uniformly
                 # (complete previous task + start new), regardless of tool_final;
@@ -253,13 +474,14 @@ class TurnDriver:
                     OutputEvent(kind=COMPACTION, context_usage_pct=event.context_usage_pct)
                 )
             elif kind == EVENT_COMPLETE:
-                # Flush the stream redactor's buffered tail BEFORE finalizing so
-                # a credential held back at the last chunk boundary is emitted
-                # (redacted) rather than dropped, and lands before DONE.
-                tail = _sred.flush()
-                if tail:
-                    accumulated += tail
-                    await self.renderer.dispatch(OutputEvent(kind=TEXT_CHUNK, text=tail))
+                pending = compaction_filter.flush()
+                if pending:
+                    await dispatch_frames(steering_filter.feed(pending))
+                await dispatch_frames(steering_filter.flush())
+                await flush_redactor()
+                for _ in range(pending_steer_events):
+                    await self.renderer.dispatch(OutputEvent(kind=STEER_CONSUMED))
+                pending_steer_events = 0
                 await self.renderer.dispatch(
                     OutputEvent(kind=DONE, stop_reason=event.stop_reason)
                 )

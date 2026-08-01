@@ -2616,10 +2616,14 @@ class TestCompactCommand:
         assert any("❌" in t and "out of memory" in t for t in texts)
 
     @pytest.mark.asyncio
-    async def test_compact_with_summary(self):
+    async def test_compact_with_summary_keeps_internal_body_private(self):
         provider = self._make_provider_with_compact(
             [
-                LLMEvent(kind="compaction_status", text="completed", title="Kept 5 key topics"),
+                LLMEvent(
+                    kind="compaction_status",
+                    text="completed",
+                    title="## OBJECTIVE\nKept 5 key topics",
+                ),
             ]
         )
         sessions = self._make_sessions_with_active(provider)
@@ -2628,7 +2632,9 @@ class TestCompactCommand:
         await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
 
         texts = self._posted_texts(slack)
-        assert any("Kept 5 key topics" in t for t in texts)
+        visible = " ".join(texts)
+        assert "Context compacted" in visible
+        assert "OBJECTIVE" not in visible and "Kept 5 key topics" not in visible
 
     @pytest.mark.asyncio
     async def test_compact_does_not_create_session(self):
@@ -2684,7 +2690,9 @@ class TestCompactCommand:
         await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
 
         texts = self._posted_texts(slack)
-        assert any("Deferred summary" in t for t in texts)
+        visible = " ".join(texts)
+        assert "Context compacted" in visible
+        assert "Deferred summary" not in visible
 
     @pytest.mark.asyncio
     async def test_compact_exception_cleans_up(self):

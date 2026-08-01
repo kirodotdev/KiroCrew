@@ -150,6 +150,24 @@ class TestSlackRendererMapping:
         stop = [kw for m, kw in rec.calls if m == "stop_stream"][0]
         assert stop["final_text"] == "Hello world"
 
+    def test_shared_driver_strips_split_steering_marker(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider([
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="Before [STEERING steer-7e6a4a0d"),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="94314d2db: internal ack] after"),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ])
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        visible = "".join(
+            str(kw.get("text") or kw.get("final_text") or "")
+            for method, kw in rec.calls
+            if method in {"append_stream", "stop_stream"}
+        )
+        assert "Before" in visible and "after" in visible
+        assert "STEERING" not in visible and "7e6a4a0d" not in visible
+        assert "internal ack" not in visible
+
     def test_on_turn_start_is_idempotent(self):
         # The dispatcher fires on_turn_start early (before session acquisition)
         # so the ack reaches the user immediately; the driver's later call must

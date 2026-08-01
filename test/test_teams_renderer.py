@@ -3,8 +3,12 @@ OPTIONS trailer stripped, chunking) and command parsing."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
+from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
+from kiro_crew.messaging import TurnDriver
 from kiro_crew.teams.commands import HELP_TEXT, parse_command
 from kiro_crew.teams.renderer import TeamsRenderer, _strip_options
 from kiro_crew.teams.transport import TEAMS_CAPABILITIES
@@ -28,6 +32,21 @@ class _FakeClient:
 
 def _renderer(client: _FakeClient) -> TeamsRenderer:
     return TeamsRenderer(client, "conv-1", "https://smba.example.com/", TEAMS_CAPABILITIES)
+
+
+class _Provider:
+    def __init__(self, events: list[AcpEvent]) -> None:
+        self.events = events
+
+    async def stream(self, message: str) -> Any:
+        for event in self.events:
+            yield event
+
+    async def approve_tool(self, request_id: Any, *, always: bool = False) -> None:
+        return None
+
+    async def reject_tool(self, request_id: Any) -> None:
+        return None
 
 
 class TestCommands:
@@ -88,6 +107,24 @@ class TestRenderer:
         await r.on_done()
         assert len(client.sent) == 3
         assert "".join(client.sent) == "abcdefghijklmnopqrstuvwxyz"
+
+    @pytest.mark.asyncio
+    async def test_shared_driver_hides_compaction_summary_body(self) -> None:
+        client = _FakeClient()
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Conversation comp"),
+                AcpEvent(
+                    kind=EVENT_TEXT_CHUNK,
+                    text="acted: ## OBJECTIVE\ninternal user guidance",
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        await TurnDriver(provider, _renderer(client), approval_mode="auto").run("hi")
+        assert client.sent == ["✅ Context compacted."]
+        assert "OBJECTIVE" not in "".join(client.sent)
+        assert "user guidance" not in "".join(client.sent)
 
     @pytest.mark.asyncio
     async def test_prompt_choice_is_noop(self) -> None:

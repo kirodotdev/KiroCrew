@@ -120,11 +120,12 @@ class Renderer(ABC):
     async def on_done(self, stop_reason: str = "") -> None:
         """Finalize the turn (close any open stream)."""
 
-    async def on_steer_consumed(self) -> None:
+    async def on_steer_consumed(self, summary: str = "") -> None:
         """kiro-cli folded a mid-turn steer at a generation boundary.
 
-        Default no-op: channels that don't split the steered continuation (or
-        render the ack elsewhere, e.g. the dashboard chip) simply ignore it.
+        ``summary`` is parsed from the suppressed inline protocol marker. The
+        default is a no-op; channels that split the continuation can render a
+        native acknowledgement without ever receiving the raw marker text.
         """
         return None
 
@@ -145,6 +146,6 @@ class Renderer(ABC):
         elif event.kind == DONE:
             await self.on_done(event.stop_reason)
         elif event.kind == STEER_CONSUMED:
-            await self.on_steer_consumed()
+            await self.on_steer_consumed(event.text)
         else:
             raise ValueError(f"unknown output event kind: {event.kind!r}")

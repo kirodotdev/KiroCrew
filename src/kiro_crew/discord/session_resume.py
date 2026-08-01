@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from kiro_crew.history import INCOGNITO_MEMORY_MODES
+from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -438,7 +439,10 @@ class DiscordSessionResume:
 
         for message in messages:
             role = message.get("role", "")
-            content = _safe_discord_text(str(message.get("content") or ""), _REPLAY_TEXT_LIMIT)
+            raw_content = str(message.get("content") or "")
+            if role == "assistant":
+                raw_content = sanitize_channel_replay_text(raw_content)
+            content = _safe_discord_text(raw_content, _REPLAY_TEXT_LIMIT)
             if role not in {"user", "assistant"} or not content:
                 continue
             icon = "🧑" if role == "user" else "🤖"

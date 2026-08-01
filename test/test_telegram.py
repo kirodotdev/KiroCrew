@@ -699,8 +699,7 @@ class TestRenderer:
         async def _go() -> None:
             await r.on_turn_start()
             await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="Root at 86% used. "))
-            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="[STEERING steer-abc: stop]"))
-            await r.dispatch(OutputEvent(kind=STEER_CONSUMED))  # event: render no-op
+            await r.dispatch(OutputEvent(kind=STEER_CONSUMED, text="stop"))
             await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="BANANA"))
             await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
 
@@ -1251,6 +1250,26 @@ class TestDispatcher:
         assert sess.acquired == ["telegram:kirocrew:direct:7"]  # acquired the turn semaphore
         assert sess.released == ["telegram:kirocrew:direct:7"]  # and released it in finally
         assert any("Compact" in s[0] for s in cli.sent) or any("Compact" in e[1] for e in cli.edits)
+
+    def test_compact_summary_body_is_not_sent(self) -> None:
+        d, cli, sess = _dispatcher({7})
+
+        async def _completed(timeout: float = 0.0) -> dict:
+            return {"type": "completed", "summary": "## OBJECTIVE\ninternal guidance"}
+
+        sess._gp.wait_for_compaction = _completed
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/compact"
+                )
+            )
+
+        asyncio.run(_go())
+        visible = " ".join([text for text, _ in cli.sent] + [text for _, text, _ in cli.edits])
+        assert "Context compacted" in visible
+        assert "OBJECTIVE" not in visible and "internal guidance" not in visible
 
     def test_compact_timeout_reports_gracefully(self) -> None:
         # Regression: nested 120s timeouts made the graceful-timeout branch

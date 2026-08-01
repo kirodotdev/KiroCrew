@@ -1006,10 +1006,9 @@ class TelegramDispatcher:
                 await asyncio.wait_for(provider.compact(), timeout=120)
                 cr = await provider.wait_for_compaction(timeout=120.0)
                 if cr["type"] == "completed":
-                    summary = cr.get("summary", "")
-                    result_text = (
-                        f"✅ Compacted: {summary}" if summary else "✅ Context compacted."
-                    )
+                    # ``summary`` is model-facing compacted context, not a
+                    # user-facing receipt. Never publish its orchestration text.
+                    result_text = "✅ Context compacted."
                 elif cr["type"] == "failed":
                     err = cr.get("summary", "")
                     result_text = (

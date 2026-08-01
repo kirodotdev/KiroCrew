@@ -938,9 +938,21 @@ class TestDispatcher:
         d, cli, sess = _dispatcher({"u1"})
         await d.handle_message(self._msg("!compact"))
         assert sess.acquired and sess.released
-        assert any("Compacted" in t for _, t, _ in cli.edits) or any(
-            "Compacted" in t for t, _ in cli.sent
-        )
+        visible = " ".join([text for text, _ in cli.sent] + [text for _, text, _ in cli.edits])
+        assert "Context compacted" in visible
+
+    @pytest.mark.asyncio
+    async def test_compact_summary_body_is_not_sent(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+
+        async def _completed(timeout: float = 0.0) -> dict:
+            return {"type": "completed", "summary": "## OBJECTIVE\ninternal guidance"}
+
+        sess._gp.wait_for_compaction = _completed
+        await d.handle_message(self._msg("!compact"))
+        visible = " ".join([text for text, _ in cli.sent] + [text for _, text, _ in cli.edits])
+        assert "Context compacted" in visible
+        assert "OBJECTIVE" not in visible and "internal guidance" not in visible
 
     @pytest.mark.asyncio
     async def test_compact_timeout_reports_gracefully(self) -> None:
