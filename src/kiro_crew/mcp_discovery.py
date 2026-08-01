@@ -25,7 +25,7 @@ from typing import Any
 import aiohttp
 
 from kiro_crew import platform_compat
-from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import augmented_path
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -129,15 +129,41 @@ SCOPE_CC_GLOBAL = "ccGlobal"
 # companion re-adds its provider global through the seam rather than the core
 # scanning a file it can no longer manage (which would surface un-uninstallable
 # "zombie" servers).
-_MCP_SOURCES: tuple[tuple[Path, str], ...] = (
-    (config_dir() / "mcp.json", SCOPE_KIROCREW),
-    (Path.home() / ".kiro" / "settings" / "mcp.json", SCOPE_KIRO_GLOBAL),
-)
+#
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+_MCP_SOURCES: tuple[tuple[Path, str], ...] | None = None
+
+
+def _mcp_sources() -> tuple[tuple[Path, str], ...]:
+    """Core MCP config scopes (path, scope), resolved against the live home.
+
+    The tuple is in merge/priority order, highest first: the kirocrew-specific
+    file, then the Kiro global. Callers depend on this ordering for scope
+    precedence, so the element order and scope constants must stay fixed.
+    """
+    if _MCP_SOURCES is not None:
+        return _MCP_SOURCES
+    return (
+        (data_home() / "mcp.json", SCOPE_KIROCREW),
+        (Path.home() / ".kiro" / "settings" / "mcp.json", SCOPE_KIRO_GLOBAL),
+    )
+
 
 # Legacy name preserved for backward-compat with tests that monkeypatch it.
-# Derived from :data:`_MCP_SOURCES` (core scopes only) so the two can never
+# Derived from :func:`_mcp_sources` (core scopes only) so the two can never
 # drift; seam-contributed scopes are merged in at call time, not baked here.
-_MCP_JSON_PATHS: tuple[Path, ...] = tuple(p for p, _ in _MCP_SOURCES)
+_MCP_JSON_PATHS: tuple[Path, ...] | None = None
+
+
+def _mcp_json_paths() -> tuple[Path, ...]:
+    """Core MCP config file paths, resolved against the live home."""
+    if _MCP_JSON_PATHS is not None:
+        return _MCP_JSON_PATHS
+    return tuple(p for p, _ in _mcp_sources())
 
 
 def _extra_scopes() -> list[Any]:
@@ -412,9 +438,9 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
     extra_sources = _extra_scope_sources()
     for _, scope in extra_sources:
         result.setdefault(scope, {})
-    path_to_scope = {p: scope for p, scope in _MCP_SOURCES}
+    path_to_scope = {p: scope for p, scope in _mcp_sources()}
     path_to_scope.update({p: scope for p, scope in extra_sources})
-    scan_paths: tuple[Path, ...] = tuple(_MCP_JSON_PATHS) + tuple(p for p, _ in extra_sources)
+    scan_paths: tuple[Path, ...] = tuple(_mcp_json_paths()) + tuple(p for p, _ in extra_sources)
     for p in scan_paths:
         scope = path_to_scope.get(p, SCOPE_KIROCREW)
         if not p.is_file():

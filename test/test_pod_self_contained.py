@@ -190,7 +190,12 @@ def test_app_is_refused_because_it_rewrites_the_host_agent_registry():
     would replace or delete symlinks the live gateway depends on."""
     from kiro_crew.apps import bridges
 
-    assert bridges.KIRO_AGENTS_DIR == Path.home() / ".kiro" / "agents"
+    # Resolved through the accessor, not the module constant: since #874 the
+    # constant is an opt-in override that is ``None`` by default, so reading it
+    # directly would assert the override rather than the path bridges actually
+    # writes to. The claim under test is unchanged -- bridges targets the
+    # machine-wide HOST registry, which is why a pod may not run `app`.
+    assert bridges._kiro_agents_dir() == Path.home() / ".kiro" / "agents"
     assert "app" not in rt._POD_SAFE_VERBS
 
 

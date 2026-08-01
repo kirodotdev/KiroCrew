@@ -99,12 +99,23 @@ def _atomic_json_write(path: Path, data: dict) -> None:
         raise
 
 
-# Resolved ONCE at import from ``kiro_agents_dir()``, which honors ``KIRO_HOME``.
-# Import-time resolution is deliberate and matches how kiro-cli itself reads the
-# variable: a non-default instance (a pod, a worktree gateway) exports KIRO_HOME
-# in the environment BEFORE the process starts, so there is nothing to re-read
-# later. Tests patch this attribute directly.
-KIRO_AGENTS_DIR = kiro_agents_dir()
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+KIRO_AGENTS_DIR: Path | None = None
+
+
+def kiro_agents_dir_path() -> Path:
+    """Kiro agents directory, resolved against the live data home.
+
+    Honors the :data:`KIRO_AGENTS_DIR` override hook when a caller (test/tooling)
+    has set it; otherwise resolves live via :func:`kiro_agents_dir`.
+    """
+    return KIRO_AGENTS_DIR if KIRO_AGENTS_DIR is not None else kiro_agents_dir()
+
+
 # AGENT_FILENAME imported from agent_files (single source of truth).
 _MAIN_AGENT_NAME = "kirocrew"
 # Cheap Claude Code model for KiroCrew's background agents (lite / heartbeat).
@@ -1734,10 +1745,10 @@ def migrate_agent_specs() -> int:
     agent loads. Idempotent and cheap (a handful of small JSON files); safe to
     run on every gateway start. Returns the number of spec files cleaned.
     """
-    if not KIRO_AGENTS_DIR.is_dir():
+    if not kiro_agents_dir_path().is_dir():
         return 0
     cleaned = 0
-    for spec_path in sorted(KIRO_AGENTS_DIR.glob("*.json")):
+    for spec_path in sorted(kiro_agents_dir_path().glob("*.json")):
         try:
             data = json.loads(spec_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, ValueError):
@@ -1818,7 +1829,7 @@ def _decline_shared_agent_home() -> Path | None:
     ``~/.kiro/agents`` as private the moment the data home is an ancestor of it
     (``KIROCREW_HOME=$HOME`` is enough).
     """
-    target = KIRO_AGENTS_DIR.resolve()
+    target = kiro_agents_dir_path().resolve()
     if target != kiro_agents_dir().resolve():
         # A caller pointed the write somewhere of its own choosing; nothing is
         # shared with the ambient install, so there is nothing to protect.
@@ -1889,7 +1900,7 @@ def _decline_shared_agent_home() -> Path | None:
             f"data home {own_home or 'default'}) refused write to shared agent home"
         ),
     )
-    return KIRO_AGENTS_DIR / AGENT_FILENAME
+    return kiro_agents_dir_path() / AGENT_FILENAME
 
 
 def rebuild_agent_config(*, clean: bool = False) -> Path:
@@ -1920,8 +1931,8 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     if declined is not None:
         return declined
 
-    KIRO_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = KIRO_AGENTS_DIR / AGENT_FILENAME
+    kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    path = kiro_agents_dir_path() / AGENT_FILENAME
 
     # One-time (idempotent) self-heal: strip KiroCrew bookkeeping keys from
     # every kiro agent spec into the sidecar so kiro-cli accepts them all.
@@ -2298,7 +2309,7 @@ def _remove_bare_lite_if_aim_installed() -> None:
 
 def _install_lite_agent_fallback() -> None:
     """Write a bare kirocrew-lite config (cheap background agent)."""
-    lite_path = KIRO_AGENTS_DIR / _LITE_AGENT_FILENAME
+    lite_path = kiro_agents_dir_path() / _LITE_AGENT_FILENAME
     lite_config = {
         "name": "kirocrew-lite",
         "model": "claude-opus-4.6",
@@ -2334,7 +2345,7 @@ def _install_knowledge_agent() -> None:
     on public installs; the agent ships without MCP servers and relies on the
     model's own capabilities for extraction.  Symbol preserved for callers.
     """
-    path = KIRO_AGENTS_DIR / _KNOWLEDGE_AGENT_FILENAME
+    path = kiro_agents_dir_path() / _KNOWLEDGE_AGENT_FILENAME
 
     config: dict[str, object] = {
         "name": "kirocrew-knowledge",
@@ -2439,8 +2450,8 @@ def _install_research_agent() -> None:
         "in a Research Lab campaign loop."
     )
     config["prompt"] = _RESEARCH_SYSTEM_PROMPT
-    KIRO_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = KIRO_AGENTS_DIR / _RESEARCH_AGENT_FILENAME
+    kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    path = kiro_agents_dir_path() / _RESEARCH_AGENT_FILENAME
     _atomic_json_write(path, config)
     logger.info("Installed research agent config: %s", path)
 
@@ -2515,8 +2526,8 @@ def _install_heartbeat_agent() -> None:
     SEL audit logging stays at the gateway side — see
     ``GatewayOrchestrator._heartbeat_approval``.
     """
-    KIRO_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = KIRO_AGENTS_DIR / _HEARTBEAT_AGENT_FILENAME
+    kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    path = kiro_agents_dir_path() / _HEARTBEAT_AGENT_FILENAME
 
     # Pull the ``kirocrew-core`` entry from the main agent config so the
     # resolved command + skill-paths match the main agent (write-denied
@@ -2525,7 +2536,7 @@ def _install_heartbeat_agent() -> None:
     # filters so all read tools surface to the heartbeat agent — security is
     # enforced gateway-side against ``HEARTBEAT_SAFE_TOOLS`` via
     # ``_heartbeat_approval``, not by per-agent MCP filtering.
-    main_config = _load_json(KIRO_AGENTS_DIR / AGENT_FILENAME)
+    main_config = _load_json(kiro_agents_dir_path() / AGENT_FILENAME)
     main_mcp = main_config.get("mcpServers", {}) or {}
 
     _strip_flags = ("--include-tools", "--include-tool-tags", "--exclude-tools")
@@ -2606,7 +2617,7 @@ def _sanitize_agent_hooks() -> None:
     Auto-repairs configs for users who already have the invalid key from
     prior versions.
     """
-    for f in KIRO_AGENTS_DIR.glob("*.json"):
+    for f in kiro_agents_dir_path().glob("*.json"):
         try:
             mtime = f.stat().st_mtime
         except OSError:

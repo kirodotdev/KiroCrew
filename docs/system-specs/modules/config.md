@@ -182,6 +182,81 @@ eliminate, the one-way-door risk above; the release gate still stands.
 > `release-blocker`); the sign-off must be recorded there and the issue closed
 > before tagging the first release containing this change.
 
+**Paths are resolved per call, never captured at import.** Because
+`config_dir()` re-reads `$KIROCREW_HOME` on every call and the migration above
+is deliberately lazy, the resolved value is only correct at the moment it is
+needed. Modules therefore MUST NOT bind a path factory result to a module-level
+constant:
+
+```python
+_SOME_DIR = config_dir() / "some"        # WRONG -- frozen at import
+```
+
+An import-time binding captures whatever home was active when the module was
+first imported, which breaks three things at once: pod isolation (a pod exports
+its own `KIROCREW_HOME`), the one-time legacy-home migration (resolved after
+import), and test isolation — `conftest.py`'s autouse `_isolate_kirocrew_home`
+fixture runs *after* collection has already imported the module under test, so
+it cannot reach a frozen constant. That last hole let a local test run write
+2128 fixture rows into an operator's real usage store.
+
+The required shape keeps the module-level name as an explicit opt-in override
+(`None` = resolve live), so existing `monkeypatch.setattr(mod, "_SOME_DIR", tmp)`
+call sites keep working:
+
+```python
+_SOME_DIR: Path | None = None
+
+def _some_dir() -> Path:
+    return _SOME_DIR if _SOME_DIR is not None else config_dir() / "some"
+```
+
+Annotating the override as `Path | None` is load-bearing: any consumer that
+still reads the constant directly becomes a **mypy error** rather than a silent
+`None` at runtime. This is enforced repo-wide by
+`test/test_lazy_data_home_paths.py`, which walks the AST of `src/kiro_crew` for
+module-level assignments calling any factory declared in `config/paths.py` and
+fails on every hit. The factory list is derived from `paths.py` itself, so a
+newly added factory is covered without editing the test. Issue #874.
+
+**`config_dir()` maintains; `data_home()` only resolves.** `config_dir()` is
+*resolve + maintain*: besides resolving the home it `mkdir`s it, refreshes the
+`~/.kiro-crew-location` recovery breadcrumb (a stat + a read) and re-runs
+`_sweep_ungated_archive_leftovers()`, which can `shutil.rmtree` a leftover
+archive from an earlier release. That work belongs to process start —
+`ensure_data_home()` is the startup hook — and the distinction did not matter
+while callers froze the result in a module constant, because the maintenance
+then ran exactly once, at import.
+
+Resolving per call makes it load-bearing: a request handler would otherwise
+perform a destructive sweep **on the event loop** as a side effect of asking
+where a directory is. So the accessors above call **`data_home()`**:
+
+| branch | behaviour |
+| --- | --- |
+| a **valid** `KIROCREW_HOME` override | delegates to `config_dir()` every call, so an override set *after* import is honoured. That branch performs neither the breadcrumb refresh nor the sweep — only a cheap `mkdir`. |
+| default home already resolved | returns the cached `_resolved_home` directly — no `mkdir`, no breadcrumb, no sweep. |
+| not yet resolved | delegates to `config_dir()`, so the **first** resolution in a process still migrates, creates the home and sweeps once. |
+
+The first row tests `_valid_override_home()` — the **same predicate `config_dir()`
+gates on**, not merely "is the env var set". An override naming a system
+directory (`/`, `/usr`, …) is rejected there and resolution falls through to the
+default home, so gating on the raw env var would send every call down the
+maintenance path and put the destructive sweep back on the request path for
+anyone with a bad override. The two predicates must not drift apart; a regression
+test pins both directions.
+
+That last row is what keeps the sweep's documented contract intact: it specifies
+"a leftover created between two starts … is still caught on the **next start**".
+The sweep is specified per *start*; running it per *call* was the mechanism, not
+the requirement. `data_home()` keeps no cache of its own — the override branch
+must stay live, and the cached branch reads the same `_resolved_home` that
+`config_dir()` populates, so there is one source of truth for the location.
+
+Existing direct `config_dir()` callers are unchanged and keep the maintenance
+behaviour, including 25 pre-existing calls that already sit inside async
+handlers.
+
 ## Workspace Root
 
 `workspace_root()` returns the base directory for all LLM working directories (kiro-cli cwd, task runner output, etc.):

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import tempfile
+from pathlib import Path
 
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, canonical_key
@@ -18,8 +19,17 @@ logger = logging.getLogger(__name__)
 
 _SESSION_MAP_FILE = "session_map.json"
 
-# kiro-cli session file directory
-_KIRO_SESSIONS_DIR = kiro_sessions_dir()
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+_KIRO_SESSIONS_DIR: Path | None = None
+
+
+def _kiro_sessions_dir() -> Path:
+    """kiro-cli sessions directory, resolved against the live data home."""
+    return _KIRO_SESSIONS_DIR if _KIRO_SESSIONS_DIR is not None else kiro_sessions_dir()
 
 
 class SessionMap:
@@ -169,8 +179,9 @@ class SessionMap:
         sid = entry["sid"]
         if entry.get("provider") == "claude_code":
             return sid
-        if sid and (_KIRO_SESSIONS_DIR / f"{sid}.json").exists():
-            jsonl = _KIRO_SESSIONS_DIR / f"{sid}.jsonl"
+        sessions_dir = _kiro_sessions_dir()
+        if sid and (sessions_dir / f"{sid}.json").exists():
+            jsonl = sessions_dir / f"{sid}.jsonl"
             try:
                 jsonl_size = jsonl.stat().st_size
             except FileNotFoundError:
@@ -243,12 +254,13 @@ class SessionMap:
 
     def prune(self) -> int:
         """Remove entries whose session files no longer exist."""
+        sessions_dir = _kiro_sessions_dir()
         stale = [
             k
             for k, entry in self._data.items()
             if entry.get("provider") != "claude_code"
             and (
-                (entry.get("sid") and not (_KIRO_SESSIONS_DIR / f"{entry['sid']}.json").exists())
+                (entry.get("sid") and not (sessions_dir / f"{entry['sid']}.json").exists())
                 or (
                     not entry.get("sid")
                     and not entry.get("slack_thread_ts")

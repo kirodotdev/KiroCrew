@@ -12,7 +12,7 @@ from collections import deque
 from collections.abc import Iterator
 
 from kiro_crew import model_registry
-from kiro_crew.agent import KIRO_AGENTS_DIR
+from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dashboard.chat_utils import (
@@ -188,7 +188,7 @@ def _build_kiro_model_map() -> dict[str, str]:
     """
     out: dict[str, str] = {}
     try:
-        for f in KIRO_AGENTS_DIR.glob("*.json"):
+        for f in kiro_agents_dir_path().glob("*.json"):
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
                 model = data.get("model", "")

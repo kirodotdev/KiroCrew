@@ -15,7 +15,7 @@ from pathlib import Path
 
 from kiro_crew import __version__ as _mc_version
 from kiro_crew.acp.client import KIRO_CLI_BIN
-from kiro_crew.agent import AGENT_FILENAME, KIRO_AGENTS_DIR
+from kiro_crew.agent import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import config_dir
@@ -24,6 +24,7 @@ from kiro_crew.config.paths import (
     MIGRATION_MARKER_NAME,
     _valid_override_home,
     detect_data_home_conflict,
+    kiro_agents_dir,
     preserved_entries,
 )
 from kiro_crew.dashboard.crash_dump_store import (
@@ -55,6 +56,18 @@ from kiro_crew.platform.governance import CU_MCP_SERVER
 from kiro_crew.transcribe import _find_whisper, ensure_ffmpeg_in_path
 
 _MIN_NODE_VERSION = 16
+
+
+# ``KIRO_AGENTS_DIR`` is an import-time override hook, NOT a frozen path (issue
+# #874). ``None`` means "resolve from the live data home"; tests patch this
+# attribute directly (``patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp)``),
+# so the name is kept and read through ``_agents_dir()``.
+KIRO_AGENTS_DIR: Path | None = None
+
+
+def _agents_dir() -> Path:
+    """Kiro agents directory, honoring the override hook, else the live home."""
+    return KIRO_AGENTS_DIR if KIRO_AGENTS_DIR is not None else kiro_agents_dir()
 
 
 def _os_fix_hint(mac: str, linux: str) -> str:
@@ -509,7 +522,7 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
 
     # ── Agent config ──
     print("\nAgent")
-    agent_path = KIRO_AGENTS_DIR / AGENT_FILENAME
+    agent_path = _agents_dir() / AGENT_FILENAME
     if agent_path.exists():
         print(f"  config:      ✅ {agent_path}")
     else:

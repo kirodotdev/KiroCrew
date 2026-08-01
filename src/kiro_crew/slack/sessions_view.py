@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import data_home
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.blocks import session_task_card
 
@@ -36,7 +37,12 @@ if TYPE_CHECKING:
 # Constants
 # ---------------------------------------------------------------------------
 
-_SESSIONS_DIR = config_dir() / "sessions"
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+_SESSIONS_DIR: Path | None = None
 _SESSIONS_MAX_MSG_CHARS = 4000
 _SESSIONS_MAX_PREVIEW = 5
 _SESSIONS_DEFAULT_LIMIT = 10
@@ -45,6 +51,11 @@ _HOME_TAB_SESSIONS_PER_KIND = 5
 _SESSION_KIND_DASHBOARD = "dashboard"
 _SESSION_KIND_TASKRUNNER = "taskrunner"
 _SESSION_KIND_OTHER = "other"
+
+
+def _sessions_dir() -> Path:
+    """Sessions directory, resolved against the live data home."""
+    return _SESSIONS_DIR if _SESSIONS_DIR is not None else data_home() / "sessions"
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +126,8 @@ def _collect_recent_sessions(
 
     Sorted by mtime descending, capped at *limit*.
     """
-    if not _SESSIONS_DIR.exists():
+    sessions_dir = _sessions_dir()
+    if not sessions_dir.exists():
         return []
 
     if kind is None:
@@ -126,7 +138,7 @@ def _collect_recent_sessions(
         kinds_set = set(kind)
 
     rows: list[dict] = []
-    for jsonl in _SESSIONS_DIR.glob("*.jsonl"):
+    for jsonl in sessions_dir.glob("*.jsonl"):
         if jsonl.is_symlink():
             continue
         raw_key = jsonl.stem

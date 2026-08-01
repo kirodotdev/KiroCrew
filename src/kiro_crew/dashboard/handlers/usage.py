@@ -16,12 +16,33 @@ from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.acp.types import TurnUsage
-from kiro_crew.config.paths import config_dir, kiro_sessions_dir
+from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.hooks import validate_file_path
 
 logger = logging.getLogger(__name__)
 
-_SESSIONS_DIR = kiro_sessions_dir()
+# Data-home paths are resolved per call, never captured at import.
+#
+# ``config_dir()`` / ``kiro_sessions_dir()`` read ``KIROCREW_HOME`` on every
+# call, so binding their result to a module constant freezes whatever the home
+# happened to be when this module was first imported. That breaks three things:
+# pod isolation (a pod sets ``KIROCREW_HOME`` for its own process), the one-time
+# ``~/.kirocrew`` -> ``~/.kiro/crew`` migration (deliberately lazy), and test
+# isolation -- the autouse ``_isolate_kirocrew_home`` fixture runs *after*
+# collection has already imported this module, so it silently cannot reach a
+# frozen constant. See issue #874.
+#
+# The module-level name is kept as an explicit ``None`` override hook so callers
+# that already patch it (tests, tooling) keep working; ``None`` means "resolve
+# from the live home". This mirrors ``instances/registry.py``.
+_SESSIONS_DIR: Path | None = None
+
+
+def _sessions_dir() -> Path:
+    """Kiro sessions directory, resolved against the live data home."""
+    return _SESSIONS_DIR if _SESSIONS_DIR is not None else kiro_sessions_dir()
+
+
 _CACHE: dict[str, Any] = {}
 _CACHE_TS: float = 0.0
 _CACHE_TTL = 120  # 2 min
@@ -50,8 +71,16 @@ _TOKEN_CACHE: dict[str, Any] = {}
 _TOKEN_CACHE_KEY: tuple[tuple[str, float, int], ...] | None = None
 _TOKEN_CACHE_TS: float = 0.0
 _TOKEN_CACHE_TTL = 120  # 2 min
-_TOKEN_USAGE_DIR = config_dir() / "usage" / "tokens"
+# See the _SESSIONS_DIR note above: resolved per call, ``None`` = live home.
+_TOKEN_USAGE_DIR: Path | None = None
 _TOKEN_HISTORY_DAYS = 30
+
+
+def _token_usage_dir() -> Path:
+    """Per-turn usage shard directory, resolved against the live data home."""
+    if _TOKEN_USAGE_DIR is not None:
+        return _TOKEN_USAGE_DIR
+    return data_home() / "usage" / "tokens"
 
 
 def _shard_path_for(ts: datetime) -> Path:
@@ -60,7 +89,7 @@ def _shard_path_for(ts: datetime) -> Path:
     Shards are partitioned by the user's local date so the file boundary
     matches the day boundary the dashboard chart renders against.
     """
-    return _TOKEN_USAGE_DIR / f"{ts.astimezone().strftime('%Y-%m-%d')}.jsonl"
+    return _token_usage_dir() / f"{ts.astimezone().strftime('%Y-%m-%d')}.jsonl"
 
 
 def _shards_in_window(days: int) -> list[Path]:
@@ -71,10 +100,11 @@ def _shards_in_window(days: int) -> list[Path]:
     even on years-old installs.
     """
     paths: list[Path] = []
-    if not _TOKEN_USAGE_DIR.exists():
+    shard_dir = _token_usage_dir()
+    if not shard_dir.exists():
         return paths
     cutoff_date = (datetime.now().astimezone() - timedelta(days=days)).date()
-    for p in _TOKEN_USAGE_DIR.iterdir():
+    for p in shard_dir.iterdir():
         if not p.is_file() or p.suffix != ".jsonl":
             continue
         try:
@@ -756,7 +786,8 @@ def _parse_token_history() -> dict[str, Any]:
 
 def _parse_sessions() -> dict:
     """Parse local kiro session files for usage analytics."""
-    if not _SESSIONS_DIR.exists():
+    sessions_dir = _sessions_dir()
+    if not sessions_dir.exists():
         return {"error": "No sessions directory"}
 
     cutoff = time.time() - (30 * 86400)
@@ -771,7 +802,7 @@ def _parse_sessions() -> dict:
     today_str = now_dt.strftime("%Y-%m-%d")
 
     try:
-        entries = list(_SESSIONS_DIR.iterdir())
+        entries = list(sessions_dir.iterdir())
     except OSError as exc:
         return {"error": f"Cannot read sessions directory: {exc}"}
 
@@ -890,7 +921,7 @@ async def _cached_parse_sessions() -> dict:
     # `is not None` (not truthiness) so a valid-but-empty {} parse is still a hit.
     if now - _SESSIONS_CACHE_TS < _CACHE_TTL and _SESSIONS_CACHE is not None:
         return _SESSIONS_CACHE
-    if not _SESSIONS_DIR.exists():
+    if not _sessions_dir().exists():
         return {}
     async with _SESSIONS_CACHE_LOCK:
         # Re-check: a concurrent request may have refreshed while we waited, so

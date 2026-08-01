@@ -481,6 +481,55 @@ def config_dir() -> Path:
     return d
 
 
+def data_home() -> Path:
+    """The resolved data home, WITHOUT re-running start-of-process maintenance.
+
+    :func:`config_dir` is *resolve + maintain*: besides resolving the home it
+    also ``mkdir``s it, refreshes the recovery breadcrumb (a stat + a read) and
+    re-runs :func:`_sweep_ungated_archive_leftovers`, which can ``shutil.rmtree``
+    a leftover archive. That work belongs to process start --
+    :func:`ensure_data_home` is the startup hook -- not to every caller that
+    merely needs a path. While callers bound the result to a module constant at
+    import the distinction did not matter; resolving per call (issue #874) makes
+    it load-bearing, because a request handler would otherwise perform a
+    destructive sweep on the event loop as a side effect of asking where a
+    directory is.
+
+    Use this from any hot or async path. Three cases, in order:
+
+    1. A **valid** ``KIROCREW_HOME`` override -> delegate to :func:`config_dir`
+       on every call, so an override set *after* this module was imported is
+       still honoured (that is the whole point of #874). That branch does
+       neither the breadcrumb refresh nor the sweep -- only a cheap ``mkdir`` --
+       so it is already safe.
+
+       The test is :func:`_valid_override_home`, i.e. the SAME predicate
+       :func:`config_dir` gates on -- not merely "is the env var set". An
+       override naming a system directory is *rejected* there and resolution
+       falls through to the default home, so gating on the raw env var would
+       send every call down the maintenance path and re-run the destructive
+       sweep per request. The two predicates must not drift apart.
+    2. Default home already resolved -> return the cached value directly. No
+       ``mkdir``, no breadcrumb, no sweep.
+    3. Not yet resolved -> delegate to :func:`config_dir`, so the FIRST
+       resolution in a process still migrates, creates the home and sweeps
+       exactly once. That is precisely the contract
+       :func:`_sweep_ungated_archive_leftovers` documents ("a leftover created
+       between two starts ... is still caught on the next start") -- the sweep is
+       specified per *start*, and running it per *call* was the mechanism, not
+       the requirement.
+
+    Deliberately NOT a cache of its own: case 1 must stay live, and case 2 reads
+    the same ``_resolved_home`` that :func:`config_dir` populates, so there is
+    one source of truth for where the home is.
+    """
+    if _valid_override_home() is not None:
+        return config_dir()
+    if _resolved_home is not None:
+        return _resolved_home
+    return config_dir()
+
+
 def ensure_data_home() -> Path:
     """Eagerly resolve (and, if needed, migrate) the data home — call BEFORE the loop.
 

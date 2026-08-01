@@ -23,7 +23,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.multipart import BodyPartReader
 
 from kiro_crew import platform_compat
-from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir
+from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir, data_home
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.hooks import safe_read_prefix
 from kiro_crew.platform import redact_via_context as redact
@@ -710,9 +710,26 @@ async def api_upload(request: web.Request) -> web.Response:
     return web.json_response({"paths": paths})
 
 
-_SCREENSHOT_DIR = config_dir() / "screenshots"
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+_SCREENSHOT_DIR: Path | None = None
 
-_UPLOAD_DIR = config_dir() / "uploads"
+_UPLOAD_DIR: Path | None = None
+
+
+def _screenshot_dir() -> Path:
+    """Screenshots directory, resolved against the live data home."""
+    return _SCREENSHOT_DIR if _SCREENSHOT_DIR is not None else data_home() / "screenshots"
+
+
+def _upload_dir() -> Path:
+    """Uploads directory, resolved against the live data home."""
+    return _UPLOAD_DIR if _UPLOAD_DIR is not None else data_home() / "uploads"
+
+
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per file
 _MAX_UPLOAD_FILES = 20  # max files per request
 _ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
@@ -820,7 +837,8 @@ async def api_upload_file(request: web.Request) -> web.Response:
     that ACP's _send_prompt() can detect for image inlining.
     """
 
-    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    upload_dir = _upload_dir()
+    upload_dir.mkdir(parents=True, exist_ok=True)
     reader = await request.multipart()
     paths: list[str] = []
     allowed = _ALLOWED_IMAGE_EXT | _ALLOWED_TEXT_EXT | _ALLOWED_DOC_EXT
@@ -906,8 +924,8 @@ async def api_upload_file(request: web.Request) -> web.Response:
                     status=400,
                 )
             # UUID prefix guarantees uniqueness even within a single request
-            dest = _UPLOAD_DIR / f"{uuid.uuid4().hex}_{safe_name}"
-            if not dest.resolve().is_relative_to(_UPLOAD_DIR.resolve()):
+            dest = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+            if not dest.resolve().is_relative_to(upload_dir.resolve()):
                 _cleanup()
                 _sel().log_api_access(
                     caller=caller,
@@ -993,9 +1011,10 @@ async def api_screenshot(request: web.Request) -> web.Response:
     if sys.platform != "darwin":
         return web.json_response({"error": "Screenshot is only available on macOS"}, status=400)
 
-    _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    screenshot_dir = _screenshot_dir()
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
-    dest = _SCREENSHOT_DIR / f"screenshot_{ts}.png"
+    dest = screenshot_dir / f"screenshot_{ts}.png"
 
     proc = await asyncio.create_subprocess_exec(
         "screencapture",

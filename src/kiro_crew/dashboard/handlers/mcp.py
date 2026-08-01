@@ -13,7 +13,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import platform_compat
-from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.mcp_gateway import is_gateway_supported
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -427,7 +427,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
         pass
     # KiroCrew-scope entries: disabled state (consent-disabled installs and
     # custom adds live only here) + which rows the JSON editor can manage.
-    kirocrew_mcps = _load_json_or_empty(_KIROCREW_MCP_JSON).get("mcpServers", {})
+    kirocrew_mcps = _load_json_or_empty(_kirocrew_mcp_json()).get("mcpServers", {})
     result: list[dict] = []
     for s in servers:
         d = s.to_dict()
@@ -465,7 +465,7 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     when ``--agent <name>`` is passed.  For kirocrew (or no agent),
     reads from global ``~/.kiro/settings/mcp.json`` as before.
     """
-    from kiro_crew.agent import KIRO_AGENTS_DIR  # noqa: F811
+    from kiro_crew.agent import kiro_agents_dir_path  # noqa: F811
 
     agent = request.query.get("agent", "")
 
@@ -483,7 +483,7 @@ async def api_mcp_active(request: web.Request) -> web.Response:
 
     # Non-kirocrew agent: read from agent config
     if agent and agent != "kirocrew":
-        for f in KIRO_AGENTS_DIR.glob("*.json"):
+        for f in kiro_agents_dir_path().glob("*.json"):
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
                 if data.get("name") == agent:
@@ -938,7 +938,21 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 
 # ─── Batched scope apply ────────────────────────────────────────────────
 
-_KIROCREW_MCP_JSON = config_dir() / "mcp.json"
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+_KIROCREW_MCP_JSON: Path | None = None
+
+
+def _kirocrew_mcp_json() -> Path:
+    """KiroCrew-scope ``mcp.json`` path, resolved against the live data home."""
+    return (
+        _KIROCREW_MCP_JSON
+        if _KIROCREW_MCP_JSON is not None
+        else data_home() / "mcp.json"
+    )
 
 
 def _extra_mcp_scopes() -> list:
@@ -1011,7 +1025,7 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
     """
     candidates = [
         kiro_agents_dir() / "kirocrew.json",
-        _KIROCREW_MCP_JSON,
+        _kirocrew_mcp_json(),
         _GLOBAL_MCP_JSON,
         *[s.global_json for s in _extra_mcp_scopes()],
     ]
@@ -1037,7 +1051,7 @@ def _set_kirocrew_entry(name: str, *, enabled: bool, spec: dict | None = None) -
     Returns a short label describing what happened: ``"added"``, ``"enabled"``,
     ``"disabled"``, or ``"noop"``.
     """
-    data = _load_json_or_empty(_KIROCREW_MCP_JSON)
+    data = _load_json_or_empty(_kirocrew_mcp_json())
     servers = data.setdefault("mcpServers", {})
     existing = servers.get(name)
     existing = existing if isinstance(existing, dict) else None
@@ -1068,13 +1082,13 @@ def _set_kirocrew_entry(name: str, *, enabled: bool, spec: dict | None = None) -
             existing["disabled"] = True
             action = "disabled"
 
-    _atomic_write(_KIROCREW_MCP_JSON, data)
+    _atomic_write(_kirocrew_mcp_json(), data)
     return action
 
 
 def _get_kirocrew_entry(name: str) -> dict | None:
     """The raw entry for ``name`` from ``<data home>/mcp.json`` (or None)."""
-    data = _load_json_or_empty(_KIROCREW_MCP_JSON)
+    data = _load_json_or_empty(_kirocrew_mcp_json())
     entry = data.get("mcpServers", {}).get(name)
     return dict(entry) if isinstance(entry, dict) else None
 
@@ -1087,7 +1101,7 @@ def _replace_kirocrew_spec(name: str, spec: dict) -> bool:
     Returns False when the name is not in ``<data home>/mcp.json`` (the
     caller decides how to report servers managed elsewhere).
     """
-    data = _load_json_or_empty(_KIROCREW_MCP_JSON)
+    data = _load_json_or_empty(_kirocrew_mcp_json())
     servers = data.setdefault("mcpServers", {})
     existing = servers.get(name)
     if not isinstance(existing, dict):
@@ -1096,18 +1110,18 @@ def _replace_kirocrew_spec(name: str, spec: dict) -> bool:
     if existing.get("disabled") is True:
         entry["disabled"] = True
     servers[name] = entry
-    _atomic_write(_KIROCREW_MCP_JSON, data)
+    _atomic_write(_kirocrew_mcp_json(), data)
     return True
 
 
 def _remove_kirocrew_entry(name: str) -> bool:
     """Delete the server from ``<data home>/mcp.json`` entirely.  Returns True on change."""
-    data = _load_json_or_empty(_KIROCREW_MCP_JSON)
+    data = _load_json_or_empty(_kirocrew_mcp_json())
     servers = data.get("mcpServers", {})
     if name not in servers:
         return False
     del servers[name]
-    _atomic_write(_KIROCREW_MCP_JSON, data)
+    _atomic_write(_kirocrew_mcp_json(), data)
     return True
 
 
@@ -1271,7 +1285,7 @@ def _set_tool_overrides(name: str, tool_overrides: dict[str, bool]) -> list[str]
     """
     if not tool_overrides:
         return []
-    data = _load_json_or_empty(_KIROCREW_MCP_JSON)
+    data = _load_json_or_empty(_kirocrew_mcp_json())
     servers = data.setdefault("mcpServers", {})
     entry = servers.get(name)
     if not isinstance(entry, dict):
@@ -1296,7 +1310,7 @@ def _set_tool_overrides(name: str, tool_overrides: dict[str, bool]) -> list[str]
         entry.pop("disabledTools", None)
 
     if changed:
-        _atomic_write(_KIROCREW_MCP_JSON, data)
+        _atomic_write(_kirocrew_mcp_json(), data)
     return changed
 
 
@@ -1514,7 +1528,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                 # <data home>/mcp.json so MC keeps its config via the merge.
                 preserved_spec: dict | None = None
                 if desired_mc and not desired_kiro and not any(desired_extra.values()):
-                    has_mc = _scope_has_entry(name, _KIROCREW_MCP_JSON)
+                    has_mc = _scope_has_entry(name, _kirocrew_mcp_json())
                     if not has_mc:
                         preserved_spec = _find_server_spec_anywhere(name)
 
@@ -1811,15 +1825,16 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     ``poolable:true``.  HTTP/SSE servers are shared by nature (not poolable);
     denylisted servers (``UNPOOLABLE_SERVERS``) can never be pooled.
     """
-    from kiro_crew.agent import KIRO_AGENTS_DIR
+    from kiro_crew.agent import kiro_agents_dir_path
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
     from kiro_crew.mcp_gateway.rewriter import UNPOOLABLE_SERVERS
 
     allowlist = set(KiroCrewConfig.load().mcp_gateway.poolable_servers)
 
     rows: dict[str, dict[str, Any]] = {}
-    if KIRO_AGENTS_DIR.is_dir():
-        for path in sorted(KIRO_AGENTS_DIR.glob("*.json")):
+    agents_dir = kiro_agents_dir_path()
+    if agents_dir.is_dir():
+        for path in sorted(agents_dir.glob("*.json")):
             try:
                 spec = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):

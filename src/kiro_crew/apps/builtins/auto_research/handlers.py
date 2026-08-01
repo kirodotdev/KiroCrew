@@ -25,7 +25,7 @@ from kiro_crew.apps.builtins.auto_research.workflow_template import (
     build_workflow_args,
 )
 from kiro_crew.autonudge import get_instance as _autonudge_instance
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.knowledge.llm_pool import LLMPool
 
@@ -81,11 +81,29 @@ def _fence_untrusted(text: str) -> str:
     )
 
 
-# Resolve under the active KiroCrew home (honors KIROCREW_HOME for isolated dev
-# gateways) — NOT a hardcoded ~/.kiro/crew, which would make dev instances collide
-# with prod Research Lab state and contend with the prod gateway's watchdog.
-RESEARCH_DIR = config_dir() / "workspace" / "research"
-DB_PATH = config_dir() / "apps" / "auto-research" / "campaigns.db"
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+RESEARCH_DIR: Path | None = None
+DB_PATH: Path | None = None
+
+
+def research_dir() -> Path:
+    """Research workspace dir, resolved against the live data home (issue #874)."""
+    return RESEARCH_DIR if RESEARCH_DIR is not None else data_home() / "workspace" / "research"
+
+
+def db_path() -> Path:
+    """Campaigns sqlite DB path, resolved against the live data home (issue #874)."""
+    return (
+        DB_PATH
+        if DB_PATH is not None
+        else data_home() / "apps" / "auto-research" / "campaigns.db"
+    )
+
+
 # Serializes the one-time WAL switch + schema init per DB file (see
 # _ensure_schema). Keyed by DB path so per-test temp DBs each init once.
 _DB_INIT_LOCK = threading.Lock()
@@ -155,11 +173,12 @@ def _validate_campaign_id(campaign_id: str) -> bool:
 
 
 def _safe_campaign_dir(campaign_id: str) -> Path | None:
-    """Return campaign dir only if it resolves within RESEARCH_DIR."""
+    """Return campaign dir only if it resolves within the research dir."""
     if not _validate_campaign_id(campaign_id):
         return None
-    d = (RESEARCH_DIR / campaign_id).resolve()
-    if not d.is_relative_to(RESEARCH_DIR.resolve()):
+    root = research_dir()
+    d = (root / campaign_id).resolve()
+    if not d.is_relative_to(root.resolve()):
         return None
     return d
 
@@ -168,13 +187,14 @@ def _safe_campaign_dir(campaign_id: str) -> Path | None:
 
 
 def _get_db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    dbp = db_path()
+    dbp.parent.mkdir(parents=True, exist_ok=True)
     # Explicit 30s busy timeout (vs the 5s driver default). The research worker
     # writes findings/status every cycle while the app's HTTP handlers also
     # read/write; the longer busy timeout absorbs brief write contention instead
     # of surfacing "database is locked". WAL journal mode is set once per DB in
     # _ensure_schema() below (it is persistent in the DB header).
-    conn = sqlite3.connect(str(DB_PATH), isolation_level=None, timeout=30.0)
+    conn = sqlite3.connect(str(dbp), isolation_level=None, timeout=30.0)
     conn.row_factory = sqlite3.Row
     # Belt-and-suspenders: also set busy_timeout via PRAGMA so it applies even if
     # a driver ignores the connect kwarg. Neither this nor connect() acquires a
@@ -199,11 +219,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     already set and skip straight to serving queries. Keyed by DB path so
     per-test temp DBs each initialize independently.
     """
-    key = str(DB_PATH)
-    if key in _INITIALIZED_DBS and DB_PATH.exists() and DB_PATH.stat().st_size > 0:
+    dbp = db_path()
+    key = str(dbp)
+    if key in _INITIALIZED_DBS and dbp.exists() and dbp.stat().st_size > 0:
         return
     with _DB_INIT_LOCK:
-        if key in _INITIALIZED_DBS and DB_PATH.exists() and DB_PATH.stat().st_size > 0:
+        if key in _INITIALIZED_DBS and dbp.exists() and dbp.stat().st_size > 0:
             return  # double-checked locking
         try:
             conn.execute("PRAGMA journal_mode=WAL")
@@ -472,7 +493,7 @@ def check_stagnation(campaign_id: str) -> bool:
 
 def _campaign_dir(campaign_id: str) -> Path:
     """Create and return campaign dir. Only call with validated IDs."""
-    d = RESEARCH_DIR / campaign_id
+    d = research_dir() / campaign_id
     d.mkdir(parents=True, exist_ok=True)
     (d / "findings").mkdir(exist_ok=True)
     return d

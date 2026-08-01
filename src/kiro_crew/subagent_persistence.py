@@ -16,12 +16,22 @@ import tempfile
 import time
 from pathlib import Path
 
-from kiro_crew.config.paths import config_dir, kiro_sessions_dir
+from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.providers.cleanup import _is_safe_path
 
 logger = logging.getLogger(__name__)
 
-_SUBAGENTS_DIR: Path = config_dir() / "subagents"
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+_SUBAGENTS_DIR: Path | None = None
+
+
+def _subagents_dir() -> Path:
+    """Subagents registry directory, resolved against the live data home."""
+    return _SUBAGENTS_DIR if _SUBAGENTS_DIR is not None else data_home() / "subagents"
 
 
 def _agent_dir(agent_id: str) -> Path:
@@ -34,8 +44,9 @@ def _agent_dir(agent_id: str) -> Path:
         or "\0" in agent_id
     ):
         raise ValueError(f"Invalid agent_id: {agent_id!r}")
-    resolved = (_SUBAGENTS_DIR / agent_id).resolve()
-    parent = _SUBAGENTS_DIR.resolve()
+    base = _subagents_dir()
+    resolved = (base / agent_id).resolve()
+    parent = base.resolve()
     if resolved == parent or not resolved.is_relative_to(parent):
         raise ValueError(f"Path traversal blocked for agent_id: {agent_id!r}")
     return resolved
@@ -201,9 +212,10 @@ def record_slow_command(agent_id: str, **fields: object) -> None:
     survives per-agent folder cleanup. Best-effort: never raises to the caller.
     """
     entry = {"id": agent_id, "flagged": time.time(), **fields}
+    base = _subagents_dir()
     try:
-        _SUBAGENTS_DIR.mkdir(parents=True, exist_ok=True)
-        with open(_SUBAGENTS_DIR / "slow_commands.jsonl", "a", encoding="utf-8") as fh:
+        base.mkdir(parents=True, exist_ok=True)
+        with open(base / "slow_commands.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, default=str) + "\n")
     except OSError:
         logger.warning("record_slow_command failed for %s", agent_id, exc_info=True)
@@ -225,7 +237,7 @@ def list_orphans() -> list[dict]:
     """Return parsed state for all non-tombstoned agent folders."""
     results: list[dict] = []
     try:
-        dirs = sorted(_SUBAGENTS_DIR.iterdir())
+        dirs = sorted(_subagents_dir().iterdir())
     except (FileNotFoundError, OSError):
         return results
     for d in dirs:
@@ -257,7 +269,7 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
     delivered_cutoff = now - max(0, delivered_ttl_secs)
     pruned = 0
     try:
-        dirs = sorted(_SUBAGENTS_DIR.iterdir())
+        dirs = sorted(_subagents_dir().iterdir())
     except (FileNotFoundError, OSError):
         return 0
     for d in dirs:

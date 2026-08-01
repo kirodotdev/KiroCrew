@@ -32,7 +32,7 @@ from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
-from kiro_crew.session_map import _KIRO_SESSIONS_DIR
+from kiro_crew.session_map import _kiro_sessions_dir
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ async def _delete_orphan_kiro_session(session_id: str) -> None:
     if not session_id:
         return
     for suffix in (".json", ".jsonl"):
-        candidate = _KIRO_SESSIONS_DIR / f"{session_id}{suffix}"
+        candidate = _kiro_sessions_dir() / f"{session_id}{suffix}"
         try:
             await asyncio.to_thread(candidate.unlink, missing_ok=True)
         except OSError as exc:

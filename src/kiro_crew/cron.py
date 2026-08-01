@@ -46,7 +46,7 @@ except ImportError:
 from croniter import croniter  # type: ignore[import-untyped]
 
 from kiro_crew import cron_script, platform_compat, sel, shutdown_event
-from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import subprocess_executor
@@ -55,7 +55,19 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ──
 
-_DEFAULT_DIR = config_dir()
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+_DEFAULT_DIR: Path | None = None
+
+
+def _default_dir() -> Path:
+    """Cron data directory, resolved against the live data home."""
+    return _DEFAULT_DIR if _DEFAULT_DIR is not None else data_home()
+
+
 _CRONS_FILE = "crons.json"
 
 # ``$skill`` token pattern (mirrors skills._DOLLAR_SKILL_PATTERN; duplicated
@@ -563,7 +575,7 @@ class CronService:
         *,
         _defer_initial_load: bool = False,
     ):
-        self._dir = base_dir or _DEFAULT_DIR
+        self._dir = base_dir if base_dir is not None else _default_dir()
         self._path = self._dir / _CRONS_FILE
         self._on_job = on_job
         self._jobs: list[CronJob] = []
@@ -622,7 +634,7 @@ class CronService:
         self._push_refresh: Callable[[str], None] | None = None  # set externally
         _cfg = KiroCrewConfig.load().cron_history
         self._history = CronHistoryStore(
-            base_dir=base_dir or _DEFAULT_DIR,
+            base_dir=base_dir if base_dir is not None else _default_dir(),
             cron_summary_cap=_cfg.cron_summary_cap,
             cron_trace_cap_kb=_cfg.cron_trace_cap_kb,
             cron_max_records_per_job=_cfg.cron_max_records_per_job,

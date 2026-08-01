@@ -92,9 +92,9 @@ def _installed_agent_config() -> Path:
     This is the live config that kiro-cli reads.  Dashboard MCP toggle
     and sync operations write here — NOT to agents/defaults.json.
     """
-    from kiro_crew.agent import AGENT_FILENAME, KIRO_AGENTS_DIR  # noqa: F811
+    from kiro_crew.agent import AGENT_FILENAME, kiro_agents_dir_path  # noqa: F811
 
-    return KIRO_AGENTS_DIR / AGENT_FILENAME
+    return kiro_agents_dir_path() / AGENT_FILENAME
 
 
 async def api_agent_config(request: web.Request) -> web.Response:
@@ -863,7 +863,7 @@ async def api_slash_commands(request: web.Request) -> web.Response:
 async def api_agent_detail(request: web.Request) -> web.Response:
     """GET/DELETE/PATCH /api/agents/detail/{name} — view, delete, or update agent config."""
     name = request.match_info["name"]
-    from kiro_crew.agent import KIRO_AGENTS_DIR  # noqa: F811
+    from kiro_crew.agent import kiro_agents_dir_path  # noqa: F811
 
     # Parse body early so JSONDecodeError returns 400, not 404 from the file loop.
     patch_body = None
@@ -880,7 +880,7 @@ async def api_agent_detail(request: web.Request) -> web.Response:
             return web.json_response({"error": "body must be a JSON object"}, status=400)
 
     state: DashboardState = request.app["state"]
-    for f in KIRO_AGENTS_DIR.glob("*.json"):
+    for f in kiro_agents_dir_path().glob("*.json"):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             if data.get("name") == name or f.stem == name:
@@ -1091,7 +1091,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
         discovered_names = {a.name for a in discovered_agents}
 
         # Add new agents
-        from kiro_crew.agent import KIRO_AGENTS_DIR  # noqa: F811
+        from kiro_crew.agent import kiro_agents_dir_path  # noqa: F811
 
         mc_kiro_agents = {a.kiro_agent for a in cfg.agents.values()}
         for disc in discovered_agents:
@@ -1110,7 +1110,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 # would itself be a correctness bug. The warning turns an
                 # otherwise silent spawn-time (ACP session/set_mode) failure into
                 # an actionable log line pointing at the offending seam row.
-                if not (KIRO_AGENTS_DIR / f"{disc.name}.json").exists():
+                if not (kiro_agents_dir_path() / f"{disc.name}.json").exists():
                     logger.warning(
                         "syncing agent %r (source=%s) with no on-disk config at "
                         "%s — if it is not ACP-resolvable it will persist into "
@@ -1118,7 +1118,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                         "INVARIANT)",
                         disc.name,
                         disc.source,
-                        KIRO_AGENTS_DIR / f"{disc.name}.json",
+                        kiro_agents_dir_path() / f"{disc.name}.json",
                     )
                 cfg.agents[disc.name] = KiroCrewAgentConfig(
                     kiro_agent=disc.name,

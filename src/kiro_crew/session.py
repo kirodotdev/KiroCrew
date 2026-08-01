@@ -100,8 +100,8 @@ from kiro_crew.messaging.link import ChannelLink, canonical_key, legacy_key
 from kiro_crew.providers.base import CancelOutcome, LLMProvider
 from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
 from kiro_crew.sel import sel
-from kiro_crew.session_map import _KIRO_SESSIONS_DIR  # noqa: F401
 from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
+from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
 from kiro_crew.session_pid import (
     _build_child_map,
     _cleanup_orphaned_mcp_servers,
@@ -1768,10 +1768,10 @@ class SessionManager:
           mtime, so entries also expire after ``_AGENT_MODEL_CACHE_TTL`` seconds
           and are re-resolved.
         """
-        from kiro_crew.agent import KIRO_AGENTS_DIR
+        from kiro_crew.agent import kiro_agents_dir_path
 
         try:
-            dir_mtime = KIRO_AGENTS_DIR.stat().st_mtime
+            dir_mtime = kiro_agents_dir_path().stat().st_mtime
         except OSError:
             dir_mtime = 0.0
         now = time.monotonic()
@@ -1790,7 +1790,7 @@ class SessionManager:
         try:
             import json as _json
 
-            for af in KIRO_AGENTS_DIR.glob("*.json"):
+            for af in kiro_agents_dir_path().glob("*.json"):
                 try:
                     ad = _json.loads(af.read_text(encoding="utf-8"))
                 except (ValueError, OSError):

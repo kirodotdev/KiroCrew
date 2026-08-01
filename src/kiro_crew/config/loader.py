@@ -64,6 +64,7 @@ from kiro_crew.config.paths import (  # noqa: F401, kiro_agents_dir
     _safe_dir_name,
     config_dir,
     config_package_dir,
+    data_home,
     ensure_data_home,
     kiro_agents_dir,
 )

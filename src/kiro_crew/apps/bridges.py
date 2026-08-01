@@ -33,8 +33,20 @@ from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
-# Where kiro-cli looks for agent definitions
-KIRO_AGENTS_DIR = kiro_agents_dir()
+# Where kiro-cli looks for agent definitions.
+#
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+KIRO_AGENTS_DIR: Path | None = None
+
+
+def _kiro_agents_dir() -> Path:
+    """The kiro-cli agents directory, resolved against the live data home."""
+    return KIRO_AGENTS_DIR if KIRO_AGENTS_DIR is not None else kiro_agents_dir()
+
 
 # Where KiroCrew loads skills from
 SKILLS_DIR_NAME = "skills"
@@ -64,7 +76,8 @@ def _register_agents(app_name: str, manifest: AppManifest, app_root: Path) -> li
     Returns list of registered agent names (namespaced).
     """
     registered: list[str] = []
-    KIRO_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    agents_dir = _kiro_agents_dir()
+    agents_dir.mkdir(parents=True, exist_ok=True)
 
     for agent_path_str in manifest.agents:
         agent_path = app_root / agent_path_str
@@ -85,7 +98,7 @@ def _register_agents(app_name: str, manifest: AppManifest, app_root: Path) -> li
 
         # Namespaced link name: app-name--agent-name.json
         link_name = _safe_link_name(_namespace(app_name, agent_name)) + ".json"
-        link_path = KIRO_AGENTS_DIR / link_name
+        link_path = agents_dir / link_name
 
         # Remove existing link if present
         if link_path.exists() or link_path.is_symlink():
@@ -105,9 +118,10 @@ def _deregister_agents(app_name: str) -> int:
     """Remove all agent symlinks for an app from ~/.kiro/agents/."""
     prefix = _safe_link_name(app_name + "/")
     removed = 0
-    if not KIRO_AGENTS_DIR.is_dir():
+    agents_dir = _kiro_agents_dir()
+    if not agents_dir.is_dir():
         return 0
-    for entry in KIRO_AGENTS_DIR.iterdir():
+    for entry in agents_dir.iterdir():
         if entry.name.startswith(prefix) and entry.name.endswith(".json"):
             try:
                 entry.unlink()

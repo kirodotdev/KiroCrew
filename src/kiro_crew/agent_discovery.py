@@ -24,7 +24,18 @@ from kiro_crew.sel import sel as _sel
 
 logger = logging.getLogger(__name__)
 
-_KIRO_AGENTS_DIR = kiro_agents_dir()
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+_KIRO_AGENTS_DIR: Path | None = None
+
+
+def _kiro_agents_dir() -> Path:
+    """The kiro-cli agents directory, resolved against the live data home."""
+    return _KIRO_AGENTS_DIR if _KIRO_AGENTS_DIR is not None else kiro_agents_dir()
+
 
 # ── list_agents() result cache ──
 # list_agents() reads and JSON-parses every ~/.kiro/agents/*.json on each call.
@@ -163,7 +174,7 @@ def agent_skill_globs(agent: str, agents_dir: Path | None = None) -> list[str]:
     Best-effort and never raises: an unreadable, invalid, or sensitive-path
     agent file yields ``[]``.
     """
-    d = agents_dir or _KIRO_AGENTS_DIR
+    d = agents_dir or _kiro_agents_dir()
     if not agent or not d.is_dir():
         return []
     try:
@@ -279,7 +290,7 @@ def list_agents(agents_dir: Path | None = None) -> list[AgentInfo]:
     is unchanged, so repeated calls avoid re-reading and re-parsing every agent
     JSON on the event loop.
     """
-    d = agents_dir or _KIRO_AGENTS_DIR
+    d = agents_dir or _kiro_agents_dir()
     cache_key = str(d)
     signature = _dir_signature(d)
     cached = _LIST_AGENTS_CACHE.get(cache_key)

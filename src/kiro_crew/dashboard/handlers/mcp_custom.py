@@ -121,7 +121,7 @@ def _load_kirocrew_config_strict() -> dict | None:
     while reporting success.
     """
     try:
-        text = _mcp._KIROCREW_MCP_JSON.read_text(encoding="utf-8")
+        text = _mcp._kirocrew_mcp_json().read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
     except OSError:
@@ -202,7 +202,7 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
             return web.json_response(
                 {
                     "error": "existing MCP config file is malformed — fix or"
-                    f" remove {_mcp._KIROCREW_MCP_JSON} and retry"
+                    f" remove {_mcp._kirocrew_mcp_json()} and retry"
                 },
                 status=500,
             )
@@ -224,7 +224,7 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
             if not enable:
                 entry["disabled"] = True
             entries[name] = entry
-        _mcp._atomic_write(_mcp._KIROCREW_MCP_JSON, data)
+        _mcp._atomic_write(_mcp._kirocrew_mcp_json(), data)
 
     await _rebuild_agent_config()
 

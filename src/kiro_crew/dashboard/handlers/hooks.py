@@ -7,10 +7,11 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 
 from aiohttp import web
 
-from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.loader import KiroCrewConfig, data_home
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.validation import sanitize_string
@@ -48,10 +49,10 @@ async def api_hooks(request: web.Request) -> web.Response:
 
 async def api_kiro_hooks(request: web.Request) -> web.Response:
     """GET /api/kiro-hooks — read-only view of kiro-cli agent hooks from kirocrew.json."""
-    from kiro_crew.agent import _VALID_HOOK_EVENTS, KIRO_AGENTS_DIR, _shipped_defaults
+    from kiro_crew.agent import _VALID_HOOK_EVENTS, _shipped_defaults, kiro_agents_dir_path
     from kiro_crew.platform import redact_via_context as redact
 
-    agent_cfg = KIRO_AGENTS_DIR / "kirocrew.json"
+    agent_cfg = kiro_agents_dir_path() / "kirocrew.json"
     try:
         raw = json.loads(agent_cfg.read_text())
         hooks = raw.get("hooks", {}) if isinstance(raw, dict) else {}
@@ -251,7 +252,19 @@ async def api_hook_test(request: web.Request) -> web.Response:
 _HOOK_SESSION_PREFIX = "hook:"
 _HOOK_TIMEOUT_DEFAULT = 599  # ~10 min — prime to avoid thundering herd with cron intervals
 _HOOK_TIMEOUT_MAX = 3593  # ~1 hour — prime for same reason
-_HOOK_STORE_PATH = config_dir() / "hooks.json"
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home" and
+# issue #874; dashboard/handlers/usage.py is the reference implementation.
+_HOOK_STORE_PATH: Path | None = None
+
+
+def _hook_store_path() -> Path:
+    """hooks.json path, resolved against the live data home."""
+    return _HOOK_STORE_PATH if _HOOK_STORE_PATH is not None else data_home() / "hooks.json"
+
+
 _HOOK_MESSAGE_MAX_LEN = 49_999  # ~50K chars — leave 1 char headroom
 _HOOK_MAX_CONCURRENT = 6
 _hook_semaphore = asyncio.Semaphore(_HOOK_MAX_CONCURRENT)
@@ -265,10 +278,11 @@ def _load_hook_context(hook_id: str) -> str:
     Horizon 2 (1-24h): context injected with staleness warning
     Horizon 3 (> 24h): context skipped (too stale to be useful)
     """
-    if not _HOOK_STORE_PATH.exists():
+    store_path = _hook_store_path()
+    if not store_path.exists():
         return ""
     try:
-        hooks = json.loads(_HOOK_STORE_PATH.read_text(encoding="utf-8"))
+        hooks = json.loads(store_path.read_text(encoding="utf-8"))
         entry = hooks.get(hook_id, {})
         ctx = entry.get("context_summary", "") or entry.get("summary", "")
         if not ctx:
