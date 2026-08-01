@@ -60,3 +60,16 @@ def test_body_does_not_span_newlines():
     assert _parse_options("Earlier [OPTIONS: draft\nmore prose ]") == []
     # A genuine single-line block after mid-text prose still parses.
     assert _parse_options("Earlier [OPTIONS text.\nNow:\n[OPTIONS: A | B]") == ["A", "B"]
+
+
+def test_trailing_markdown_link_close_tolerated():
+    # Models sometimes append a stray "(OPTIONS)" (or any "(...)") right after the
+    # marker, e.g. "[OPTIONS: A | B](OPTIONS)". That both breaks the end anchor and
+    # forms a valid [label](url) Markdown link, so the marker used to leak as a
+    # clickable link instead of buttons. The optional link-close is now absorbed —
+    # and stays OUTSIDE the label capture, so choices are unaffected.
+    assert _parse_options("Pick one.\n[OPTIONS: A | B | C](OPTIONS)") == ["A", "B", "C"]
+    assert _parse_options("[OPTIONS: Ship it | Park it](https://x)") == ["Ship it", "Park it"]
+    # The "(" must abut the "]" — a spaced "] (note)" is NOT a link close, so the
+    # anchor fails and the marker is left unparsed (deliberate trailing-note case).
+    assert _parse_options("[OPTIONS: A | B] (see note)") == []

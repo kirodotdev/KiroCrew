@@ -15,6 +15,18 @@
 // question, or diff on later lines is left intact. `i` = case-insensitive OPTION(S);
 // `g` = take the LAST marker / strip all. Group 1 = optional "S"; group 2 = labels.
 //
+// The optional `(?:\([^\s()]*\))?` after the `]` tolerates a stray markdown-link
+// close that models sometimes append, e.g. `[OPTIONS: A | B](OPTIONS)`. Without it
+// that suffix (a) breaks the end anchor so the marker leaks unparsed and (b) forms a
+// valid `[label](url)` link, so the dashboard renders the whole thing as a purple
+// link instead of buttons. The `(` must abut the `]` (no gap), so real trailing
+// prose or a spaced `] (note)` still fails the anchor and is preserved. The group is
+// OUTSIDE the label capture, so choices are unaffected — and because the regex is
+// used with `replace`, the stray `(...)` is stripped from the displayed text too.
+// The inner class is `[^\s()]` (not `[^)\n]`) so it shares no character with the
+// trailing `[ \t]*` — that keeps the group unambiguous and ReDoS-safe (mirrors the
+// backend OPTIONS_RE_LINE). The real tic contains no whitespace, so nothing is lost.
+//
 // Only use with String#matchAll and String#replace (which don't carry the global
 // regex `lastIndex` hazard); do NOT call `.exec`/`.test` on this shared const.
-export const OPTION_MARKER_RE = /\[OPTION(S)?:((?:[^[\n]|\[(?!OPTIONS?:))*)\][ \t]*$/gim
+export const OPTION_MARKER_RE = /\[OPTION(S)?:((?:[^[\n]|\[(?!OPTIONS?:))*)\](?:\([^\s()]*\))?[ \t]*$/gim

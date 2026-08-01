@@ -276,6 +276,27 @@ describe('parseOptions', () => {
     expect(text).toContain('```diff')
   })
 
+  // Regression: the model sometimes appends a stray "(OPTIONS)" (or any "(...)")
+  // immediately after the marker — "[OPTIONS: A | B | C](OPTIONS)". That both broke
+  // the end anchor (marker leaked unparsed) and formed a valid [label](url) Markdown
+  // link, so the whole thing rendered as a purple link instead of buttons. The parser
+  // now absorbs a tightly-attached link-close: options are surfaced and the stray
+  // "(...)" is stripped from the text.
+  it('parses options when a stray markdown-link close follows the marker', () => {
+    const { options, multi, text } = parseOptions('Pick one.\n[OPTIONS: Alpha | Beta | Gamma](OPTIONS)')
+    expect(options).toEqual(['Alpha', 'Beta', 'Gamma'])
+    expect(multi).toBe(true)
+    expect(text).not.toContain('[OPTIONS:')
+    expect(text).not.toContain('(OPTIONS)')
+  })
+
+  // The "(" must abut the "]": a spaced "] (note)" is NOT a link close, so the anchor
+  // fails and the marker is left unparsed — preserving the deliberate trailing-note case.
+  it('does NOT treat a spaced parenthetical after the marker as a link close', () => {
+    const { options } = parseOptions('[OPTIONS: A | B] (see note)')
+    expect(options).toEqual([])
+  })
+
   it('takes the last marker for options and strips ALL markers from text', () => {
     const { options, text } = parseOptions('[OPTION: A | B]\nlater\n[OPTION: Go | Go All | Cancel]')
     expect(options).toEqual(['Go', 'Go All', 'Cancel'])

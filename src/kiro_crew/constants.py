@@ -75,13 +75,32 @@ CHAT_TURN_TIMEOUT = 7200.0
 # lines (deleting/splitting a multi-line span the old single-line ``.*`` never
 # matched). Trailing class is ``[ \t]`` (NOT ``\s``, which under MULTILINE would
 # also match ``\n``).
-OPTIONS_RE_LINE = re.compile(r"\[OPTIONS:((?:[^[\n]|\[(?!OPTIONS:))*)\][ \t]*$", re.MULTILINE)
+#
+# OPTIONAL MARKDOWN-LINK CLOSE ``(?:\(...\))?`` after the ``]``: models sometimes
+# append a stray ``(OPTIONS)`` (or any ``(...)``) right after the marker, e.g.
+# ``[OPTIONS: A | B | C](OPTIONS)``. That does TWO bad things at once: the extra
+# text after ``]`` breaks the end anchor so the marker leaks unparsed, AND
+# ``[label](url)`` is valid Markdown so the dashboard renders the whole thing as a
+# clickable link instead of buttons. Absorbing a single tightly-attached ``(...)``
+# here (it stays OUTSIDE the captured label group, so choices are unaffected)
+# makes the parser resilient to that tic. The ``(`` must follow the ``]`` with no
+# gap, so genuine trailing prose (``] and then...``) or a spaced note (``] (note)``)
+# still fails the anchor and is left intact — the deliberate "trailing note on the
+# same line" behaviour is preserved. The inner class is ``[^\s()]`` (NOT ``[^)\n]``)
+# so it shares NO character with the trailing ``[ \t]*`` — that keeps the added group
+# unambiguous and avoids a polynomial-ReDoS (``py/polynomial-redos``) backtracking
+# path over ``[OPTIONS:`` + a long whitespace run. The real tic (``(OPTIONS)``, a
+# bare ``(url)``) contains no whitespace or nested parens, so nothing is lost.
+OPTIONS_RE_LINE = re.compile(r"\[OPTIONS:((?:[^[\n]|\[(?!OPTIONS:))*)\](?:\([^\s()]*\))?[ \t]*$", re.MULTILINE)
 
 # TRAILER (``re.DOTALL``, ``\Z`` anchor) — for the Discord/Telegram/WeCom
 # renderers, which match the marker only at the very END of the message and
 # allow it to span newlines (the body keeps ``[^[]`` because the old ``.*``
-# already spanned newlines under DOTALL). Trailing ``\s*`` before ``\Z``.
-OPTIONS_RE_TRAILER = re.compile(r"\[OPTIONS:((?:[^[]|\[(?!OPTIONS:))*)\]\s*\Z", re.DOTALL)
+# already spanned newlines under DOTALL). Trailing ``\s*`` before ``\Z``. Carries
+# the same optional markdown-link close as LINE (same ``[^\s()]`` inner class, so it
+# shares no character with the trailing ``\s*`` — ReDoS-safe) so the grammar stays
+# identical.
+OPTIONS_RE_TRAILER = re.compile(r"\[OPTIONS:((?:[^[]|\[(?!OPTIONS:))*)\](?:\([^\s()]*\))?\s*\Z", re.DOTALL)
 
 
 # The product wordmark, figlet `small`. ONE definition on purpose: it used to be
