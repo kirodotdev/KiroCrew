@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppSelector } from '../store'
-import { switchSlot, deleteSlot } from '../store/chatSlice'
+import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { i18nT } from '../i18n/t'
@@ -22,7 +22,11 @@ export interface ShortcutDef {
   id: string
   key: string
   alt?: boolean
-  ctrl?: boolean  // When true, uses Ctrl on Mac (instead of alt/Option)
+  // Literal Ctrl on EVERY platform (rendered ⌃ on Mac, "Ctrl" elsewhere — see
+  // formatShortcut). The chat-jump digits set this to `IS_MAC` so that Mac alone
+  // uses Ctrl instead of Option; a chord that sets it unconditionally (agent
+  // monitor) is Ctrl everywhere. For the ⌘-on-Mac/Ctrl-elsewhere shape use `meta`.
+  ctrl?: boolean
   meta?: boolean  // Cmd on Mac, Ctrl on Windows/Linux
   shift?: boolean
   label: string
@@ -66,6 +70,9 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
   { id: 'cycle-model', key: 's', alt: true, shift: true, label: 'Cycle model', group: 'Actions' },
   { id: 'cycle-prev-model', key: 'x', alt: true, shift: true, label: 'Previous model', group: 'Actions' },
   { id: 'optimize-prompt', key: 'Enter', meta: true, shift: true, label: 'Optimize prompt', group: 'Actions' },
+  // Literal Ctrl on every platform — see isAgentMonitorChord for why this one
+  // does NOT follow the ⌘-on-Mac convention.
+  { id: 'agent-monitor', key: 'g', ctrl: true, label: 'Open agent monitor (subagents)', group: 'Actions' },
   // Instance switcher — Cmd on Mac / Ctrl on Win-Linux. 1 = Local, 2..6 = the
   // 1st..5th remote instance, matching the InstanceTabBar left-to-right order.
   // Handled by useInstanceShortcuts (not the Alt-based handler below); listed
@@ -225,6 +232,32 @@ export function sessionCycleStep(
 }
 
 /**
+ * True when `e` is the agent-monitor chord: literal Ctrl+G on EVERY platform.
+ *
+ * Deliberately NOT the usual ⌘-on-Mac substitution the other primary-modifier
+ * chords use. The kiro-cli backend prints "Press ctrl+g to monitor progress."
+ * into its crew-pipeline tool result, and that string lives inside the backend
+ * binary — we cannot re-word it per OS. So the chord the user is TOLD to press
+ * has to be the chord that actually fires, on every platform. On macOS
+ * find-next is ⌘G, leaving ⌃G free.
+ *
+ * Keyed by KeyboardEvent.code, so the chord is POSITIONAL like every other in
+ * this module. Exactly one primary modifier and no Alt/Shift, so it cannot fire
+ * from ⌃⌘G / ⌃⌥G misses, and cannot shadow the Mac Ctrl+digit chat-jumps.
+ *
+ * Requiring `ctrlKey && !altKey` is also why 'KeyG' is NOT added to
+ * RESERVED_PANEL_CODES: this branch is unreachable for an Alt+G keystroke, so it
+ * cannot shadow a downstream Alt+G panel registration and reserving the code
+ * would over-claim the extension seam.
+ */
+export function isAgentMonitorChord(
+  e: Pick<KeyboardEvent, 'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
+): boolean {
+  if (e.code !== 'KeyG') return false
+  return e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+}
+
+/**
  * Neighbour of `curIdx` in a list of `len`, stepping by `step` and wrapping at
  * both ends. Returns -1 for an empty list. With no current selection (-1) a
  * backward step lands on the last entry and a forward step on the first —
@@ -363,6 +396,27 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       e.preventDefault()
       const nextIdx = wrapIndex(slots.length, activeSlot ? slots.findIndex(s => s.key === activeSlot) : -1, step)
       if (nextIdx >= 0) { dispatch(switchSlot(slots[nextIdx].key)); navigate('/chat') }
+      return
+    }
+
+    // Ctrl+G: open the agent monitor — the Subagents activity tab ("Live agent
+    // activity & transcripts"). This is the chord the kiro-cli backend advertises
+    // in its crew-pipeline tool result ("Press ctrl+g to monitor progress"), which
+    // until now was unbound on every non-TUI surface. Handled BEFORE the Alt gate
+    // because the chord carries no Alt.
+    //
+    // Deliberately fires INSIDE text fields: the hint is read while a crew runs
+    // and focus is normally in the composer, so an isInput bail-out would make it
+    // dead exactly when it is needed. Ctrl+G has no text-editing meaning there.
+    // Skipped for terminal targets, where Ctrl+G is BEL and belongs to the PTY.
+    //
+    // Routes to /chat as well as opening the tab, because the activity panel is
+    // owned by the chat page — same reasoning as the bracket chords above.
+    if (isAgentMonitorChord(e) && !isTerminalTarget(e.target)) {
+      if (!enabled || disabled) return
+      e.preventDefault()
+      dispatch(openActivityToTab('subagents'))
+      navigate('/chat')
       return
     }
 

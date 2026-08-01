@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, act } from '@testing-library/react'
-import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts, sessionCycleStep, wrapIndex } from '../hooks/useKeyboardShortcuts'
+import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts, sessionCycleStep, wrapIndex, isAgentMonitorChord, RESERVED_PANEL_CODES } from '../hooks/useKeyboardShortcuts'
 import { renderHookWithProviders, createTestStore, renderWithProviders } from './helpers'
 import ShortcutsModal from '../components/ShortcutsModal'
 import type { RootState } from '../store'
@@ -516,5 +516,149 @@ describe('Alt+Shift+X previous model', () => {
     )
     fireEvent.keyDown(document, { code: 'KeyX', altKey: true, shiftKey: true })
     expect(onCyclePrevModel).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * Ctrl+G — agent monitor. Regression coverage for the dead-end hint: the
+ * kiro-cli backend prints "Press ctrl+g to monitor progress." into its
+ * crew-pipeline tool result, and the dashboard bound no Ctrl+G at all, so the
+ * advice did nothing on every non-TUI surface.
+ */
+describe('isAgentMonitorChord', () => {
+  const chord = (o: Partial<Record<'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey', unknown>> = {}) =>
+    ({ code: 'KeyG', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...o }) as Parameters<typeof isAgentMonitorChord>[0]
+
+  it('matches plain Ctrl+G', () => {
+    expect(isAgentMonitorChord(chord({ ctrlKey: true }))).toBe(true)
+  })
+
+  it('ignores G without Ctrl', () => {
+    expect(isAgentMonitorChord(chord())).toBe(false)
+  })
+
+  it('ignores Cmd+G (find-next on macOS stays with the browser)', () => {
+    expect(isAgentMonitorChord(chord({ metaKey: true }))).toBe(false)
+  })
+
+  it('ignores Alt+G, so the downstream panel seam keeps the chord', () => {
+    expect(isAgentMonitorChord(chord({ altKey: true }))).toBe(false)
+    expect(isAgentMonitorChord(chord({ ctrlKey: true, altKey: true }))).toBe(false)
+  })
+
+  it('ignores Ctrl+Shift+G and Ctrl+Cmd+G near-misses', () => {
+    expect(isAgentMonitorChord(chord({ ctrlKey: true, shiftKey: true }))).toBe(false)
+    expect(isAgentMonitorChord(chord({ ctrlKey: true, metaKey: true }))).toBe(false)
+  })
+
+  it('ignores Ctrl on any other key', () => {
+    expect(isAgentMonitorChord(chord({ code: 'KeyH', ctrlKey: true }))).toBe(false)
+  })
+
+  /**
+   * The chord requires ctrlKey && !altKey, so it is unreachable for an Alt+G
+   * keystroke and cannot shadow a downstream Alt+G panel registration.
+   * Reserving 'KeyG' would over-claim the extension seam — assert it stays free
+   * so a future "just add it to be safe" edit has to justify itself here.
+   */
+  it('does not reserve KeyG from the panel-navigation seam', () => {
+    expect(RESERVED_PANEL_CODES.has('KeyG')).toBe(false)
+  })
+})
+
+describe('agent monitor shortcut registration', () => {
+  it('is advertised in DEFAULT_SHORTCUTS as a literal-Ctrl chord', () => {
+    const def = DEFAULT_SHORTCUTS.find(s => s.id === 'agent-monitor')
+    expect(def).toBeDefined()
+    expect(def!.key).toBe('g')
+    expect(def!.ctrl).toBe(true)
+    // Not meta/alt: the backend hint says "ctrl+g" on every platform.
+    expect(def!.meta).toBeUndefined()
+    expect(def!.alt).toBeUndefined()
+  })
+
+  it('renders as Ctrl + G on Windows/Linux', () => {
+    Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true })
+    const def = DEFAULT_SHORTCUTS.find(s => s.id === 'agent-monitor')!
+    expect(formatShortcut(def)).toBe('Ctrl + G')
+  })
+
+  it('renders as the Control glyph (not Command) on macOS', () => {
+    Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true })
+    const def = DEFAULT_SHORTCUTS.find(s => s.id === 'agent-monitor')!
+    expect(formatShortcut(def)).toBe('\u2303G')
+  })
+})
+
+describe('Ctrl+G opens the agent monitor', () => {
+  function setup(opts: { enabled?: boolean; disabled?: boolean } = {}) {
+    if (opts.enabled === false) localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: 'slot-1', slotHistory: [], activityOpen: false, activityTab: 'logs' } as unknown as RootState['chat'],
+    })
+    renderHookWithProviders(
+      () => useKeyboardShortcuts({ onToggleShortcutsModal: vi.fn(), onNewChat: vi.fn(), disabled: opts.disabled }),
+      { store },
+    )
+    return store
+  }
+
+  it('opens the Subagents activity tab', () => {
+    const store = setup()
+    fireEvent.keyDown(document, { code: 'KeyG', ctrlKey: true })
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(store.getState().chat.activityTab).toBe('subagents')
+  })
+
+  it('claims the keystroke so the browser does not run find-next', () => {
+    setup()
+    const event = new KeyboardEvent('keydown', { code: 'KeyG', ctrlKey: true, cancelable: true, bubbles: true })
+    expect(!document.dispatchEvent(event)).toBe(true)
+  })
+
+  /* Fires inside the composer on purpose: the hint is read while a crew runs and
+     focus is normally in the textarea, so bailing on input targets would make the
+     chord dead exactly when it is needed. */
+  it('still fires when a textarea has focus', () => {
+    const store = setup()
+    const ta = document.createElement('textarea')
+    document.body.appendChild(ta)
+    ta.focus()
+    fireEvent.keyDown(ta, { code: 'KeyG', ctrlKey: true })
+    expect(store.getState().chat.activityTab).toBe('subagents')
+    ta.remove()
+  })
+
+  /* Ctrl+G is BEL in a PTY — it belongs to the terminal, not to us. */
+  it('does not fire for a keystroke inside an embedded terminal', () => {
+    const store = setup()
+    const term = document.createElement('div')
+    term.className = 'xterm'
+    const inner = document.createElement('textarea')
+    term.appendChild(inner)
+    document.body.appendChild(term)
+    fireEvent.keyDown(inner, { code: 'KeyG', ctrlKey: true })
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(store.getState().chat.activityTab).toBe('logs')
+    term.remove()
+  })
+
+  it('is suppressed when shortcuts are globally disabled', () => {
+    const store = setup({ enabled: false })
+    fireEvent.keyDown(document, { code: 'KeyG', ctrlKey: true })
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('is suppressed while a modal holds the shortcuts (disabled prop)', () => {
+    const store = setup({ disabled: true })
+    fireEvent.keyDown(document, { code: 'KeyG', ctrlKey: true })
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('does not open the panel on Alt+G', () => {
+    const store = setup()
+    fireEvent.keyDown(document, { code: 'KeyG', altKey: true })
+    expect(store.getState().chat.activityOpen).toBe(false)
   })
 })
