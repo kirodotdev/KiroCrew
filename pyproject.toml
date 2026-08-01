@@ -41,6 +41,15 @@ dev = [
     "mypy==1.14.1",
     "black==24.10.0",
     "isort==6.0.0",
+    # Not a dev TOOL. kiro_crew.config.validation imports jsonschema behind a
+    # try/except and returns the config unvalidated when the import fails, so a
+    # run without it exercises none of the schema-validation path and silently
+    # SKIPS the 11 tests that cover it (pytest scores a skip as a pass). It is
+    # declared here so those guards actually run. Whether jsonschema should also
+    # be a runtime dependency -- making validation always-on for users rather
+    # than opt-in-by-accident -- is a separate, user-visible call and is
+    # deliberately not made here.
+    "jsonschema==4.26.0",
 ]
 
 [tool.black]
