@@ -292,6 +292,24 @@ export function virtualKeyFor(
   return turnLeadKey(it, msgKey)
 }
 
+/** React key for a message row's INNER bubble (the virtualizer row key is
+ *  virtualKeyFor). Prefer the optimistic client ts (stashed by the steer-echo
+ *  reconcile, and stamped at birth on streaming/thinking messages) over the
+ *  server ts, so a mid-stream ts overwrite never remounts the bubble.
+ *
+ *  Role-prefixed for cross-role uniqueness, EXCEPT that 'streaming' normalizes
+ *  to 'assistant': finalization (`_done` / `_segment`) mutates the SAME logical
+ *  message's role from streaming to assistant, and a role-sensitive key
+ *  remounted the bubble at end-of-turn — destroying useSmoothStream's drain
+ *  state, so the trailing unrevealed text (a standing ~LAG_SECS of it under the
+ *  constant-latency controller) snapped into view instead of finishing its
+ *  reveal. Exported for tests. */
+export function messageRowKey(m: ChatMessage, i: number): string {
+  const keyTs = (m.meta?.clientTs as string | undefined) || m.ts
+  const role = m.role === 'streaming' ? 'assistant' : m.role
+  return keyTs ? `${role}-${keyTs}` : `${role}-${i}`
+}
+
 /** Render user message content with file chips and image markdown. Handles:
  *  - Fresh messages: meta.files present, displayTxt has @relative/path tokens
  *  - Replayed history: no meta.files, content has [attached_file N] /full/path
@@ -3733,14 +3751,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
-    // Prefer the optimistic client ts (stashed by the steer-echo reconcile in
-    // chatSlice.appendSlotMessage) over the server ts for the React key. A
-    // steered bubble is appended optimistically with a client ts, then the
-    // steer_push echo overwrites ts with the server ts — keying on ts alone
-    // would change the key mid-stream, remounting the bubble and replaying its
-    // one-shot entrance animation. clientTs keeps the key (and DOM) stable.
-    const keyTs = (m.meta?.clientTs as string | undefined) || m.ts
-    const key = keyTs ? `${m.role}-${keyTs}` : `${m.role}-${i}`
+    // Key identity rules (clientTs preference + streaming→assistant role
+    // normalization) live in messageRowKey — see its doc comment.
+    const key = messageRowKey(m, i)
     if (m.role === 'thinking') return m.content ? <ThinkingBlock key={key} content={m.content} disclosureKey={key} /> : null
     if (m.role === 'tool') {
       // Skip ✅/🚫 completion messages — completion shown via CircleCheckBig icon
