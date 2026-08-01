@@ -287,6 +287,81 @@ def test_slow_noack_ignores_cancel(monkeypatch, fast_slow_stream):
     assert _messages(buf)[-1]["result"]["stopReason"] == "end_turn"
 
 
+def test_slow_lateack_winds_down_then_acks(monkeypatch):
+    """LATEACK keeps streaming for SLOW_LATEACK_CHUNKS, then acks.
+
+    Asserted in CHUNKS, not seconds: the point of the wind-down is that the
+    host's `soft_pending` state lasts long enough to be observed, and chunk
+    count is the deterministic proxy for that duration. Contrast the SLOW case
+    below, which emits nothing before acking.
+    """
+    monkeypatch.setattr(fake, "SLOW_CHUNKS", 10)
+    monkeypatch.setattr(fake, "SLOW_CHUNK_DELAY_SECS", 0)
+    monkeypatch.setattr(fake, "SLOW_LATEACK_CHUNKS", 4)
+    buf = _capture(monkeypatch)
+    fake._INBOX.put(
+        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
+    )
+    fake._handle(_prompt(fake.SLOW_LATEACK_TRIGGER))
+    msgs = _messages(buf)
+    chunks = [m for m in msgs if m.get("method") == "session/update"]
+    # Four wind-down chunks, then the cooperative ack -- NOT the full 10.
+    assert len(chunks) == 4
+    assert msgs[-1]["result"]["stopReason"] == "cancelled"
+
+
+def test_slow_acks_immediately_unlike_lateack(monkeypatch):
+    """Pins the contrast: plain SLOW emits zero chunks before acking.
+
+    This is the ~250ms window that made chat.spec.ts's pulsing assertion flaky
+    on a loaded runner. If this ever starts emitting chunks, SLOW has acquired
+    a wind-down of its own and LATEACK is redundant.
+    """
+    monkeypatch.setattr(fake, "SLOW_CHUNKS", 10)
+    monkeypatch.setattr(fake, "SLOW_CHUNK_DELAY_SECS", 0)
+    buf = _capture(monkeypatch)
+    fake._INBOX.put(
+        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
+    )
+    fake._handle(_prompt(fake.SLOW_TRIGGER))
+    msgs = _messages(buf)
+    assert [m for m in msgs if m.get("method") == "session/update"] == []
+    assert msgs[-1]["result"]["stopReason"] == "cancelled"
+
+
+def test_slow_lateack_without_a_cancel_ends_the_turn_normally(
+    monkeypatch, fast_slow_stream
+):
+    """No cancel means no wind-down: the stream runs to completion."""
+    buf = _capture(monkeypatch)
+    fake._handle(_prompt(fake.SLOW_LATEACK_TRIGGER))
+    msgs = _messages(buf)
+    assert len([m for m in msgs if m.get("method") == "session/update"]) == 3
+    assert msgs[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_slow_lateack_acks_even_if_the_stream_ends_first(monkeypatch):
+    """The ack must survive the wind-down outliving the stream.
+
+    `_cancel_requested` CONSUMES the message from `_INBOX`, so the observation
+    has to be latched. If the wind-down runs past the last chunk and the final
+    return re-polls instead of reading the latch, the poll comes back False and
+    the turn reports `end_turn` -- the host then waits out the whole soft-stop
+    budget and hard-kills a session the agent actually cancelled.
+    """
+    monkeypatch.setattr(fake, "SLOW_CHUNKS", 3)
+    monkeypatch.setattr(fake, "SLOW_CHUNK_DELAY_SECS", 0)
+    monkeypatch.setattr(fake, "SLOW_LATEACK_CHUNKS", 5)
+    buf = _capture(monkeypatch)
+    fake._INBOX.put(
+        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
+    )
+    fake._handle(_prompt(fake.SLOW_LATEACK_TRIGGER))
+    # Inbox drained by the single consuming poll, yet the ack still lands.
+    assert fake._INBOX.empty()
+    assert _messages(buf)[-1]["result"]["stopReason"] == "cancelled"
+
+
 def _permission_answer(option_id: str) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",

@@ -1,9 +1,11 @@
 import { test, expect } from '@playwright/test'
 
 // Prompt sentinels understood by the stub ACP backend. Keep in sync with
-// SLOW_TRIGGER / SLOW_NOACK_TRIGGER in src/kiro_crew/testing/fake_acp_backend.py.
+// SLOW_TRIGGER / SLOW_NOACK_TRIGGER / SLOW_LATEACK_TRIGGER in
+// src/kiro_crew/testing/fake_acp_backend.py.
 const SLOW = '[[SLOW]]'
 const SLOW_NOACK = '[[SLOW_NOACK]]'
+const SLOW_LATEACK = '[[SLOW_LATEACK]]'
 
 // @needs-agent: these specs drive a live agent turn (send/stream/soft-stop),
 // so they require model/agent credentials the credential-less CI gateway
@@ -153,10 +155,33 @@ test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
     await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
   })
 
+  /**
+   * Uses [[SLOW_LATEACK]] rather than [[SLOW]] because this is the only spec
+   * here that asserts an INTERMEDIATE state, and [[SLOW]] destroys that state
+   * before a loaded browser can paint it.
+   *
+   * `stop-button-pulsing` renders only while `stop_state === 'soft_pending'`
+   * (ChatInput.tsx). The client keeps no optimistic copy: ChatPage passes
+   * `currentSlot?.stop_state` straight through. So the element exists for
+   * exactly as long as the host waits for the cancel ack. Under [[SLOW]] the
+   * stub checks for the cancel once per chunk and acks on the first check, so
+   * that is under 500ms, averaging ~250ms. Two WebSocket pushes bracket it and
+   * the first push's render can consume the whole window.
+   *
+   * [[SLOW_LATEACK]] acks after SLOW_LATEACK_CHUNKS more chunks (~3s at the
+   * default chunk delay), so the state is observable with real margin. It still
+   * acks well inside `agent.soft_stop_budget_secs`, so the turn ends
+   * cooperatively and nothing leaks into the spec that follows.
+   *
+   * [[SLOW_NOACK]] would also widen the window, but it leaves the slot mid-budget
+   * with a hard kill pending, which makes the sibling spec below fail. Measured:
+   * with NOACK here, `stop resolves to Stopped on soft ack` failed 4 of 4 runs.
+   */
   test('stop mid-tool-call triggers pulsing', async ({ page }) => {
-    // A cancel-aware slow turn, so the Stop button stays live long enough to click.
+    // A cancel-aware slow turn that winds down before acking, so the
+    // soft_pending state is observable rather than a ~250ms race.
     const messageInput = page.getByPlaceholder(/message/i)
-    await messageInput.fill(`Run a long command: sleep 30 ${SLOW}`)
+    await messageInput.fill(`Run a long command: sleep 30 ${SLOW_LATEACK}`)
     await page.keyboard.press('Enter')
 
     // Wait for the stop button to appear (agent is running)

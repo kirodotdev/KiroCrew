@@ -34,6 +34,11 @@ Prompt-driven behaviour on ``session/prompt`` (the reply is always sent last):
 * ``[[SLOW_NOACK]]`` -> the same slow stream but deliberately DEAF to cancel,
   so the host's ``soft_stop_budget_secs`` expires. Models an agent wedged in a
   long tool call, which is the "Stop Failed, Session Reset" path.
+* ``[[SLOW_LATEACK]]`` -> honours the cancel like ``[[SLOW]]`` but winds down
+  over ``SLOW_LATEACK_CHUNKS`` more chunks first. ``[[SLOW]]`` acks within one
+  chunk, so the host's ``soft_pending`` state lasts ~250ms on average and a
+  loaded browser can miss it entirely; the wind-down makes that state
+  observable while still acking well inside the budget.
 * ``[[ERROR]]`` -> reply with a JSON-RPC error instead of a result.
 * ``[[MAXTOKENS]]`` / ``[[REFUSAL]]`` -> alternate terminal ``stopReason``.
 
@@ -79,9 +84,12 @@ PERMISSION_TRIGGER = "[[PERMISSION]]"
 GATED_PERMISSION_TRIGGER = "[[GATED]]"
 # A turn long enough for a host to press Stop mid-flight. SLOW honours
 # session/cancel; SLOW_NOACK deliberately ignores it so the host's soft-stop
-# budget expires (the "Stop Failed, Session Reset" path).
+# budget expires (the "Stop Failed, Session Reset" path). SLOW_LATEACK honours
+# it but winds down over a few chunks first, so the host's `soft_pending` state
+# is observable for a bounded interval instead of a race.
 SLOW_TRIGGER = "[[SLOW]]"
 SLOW_NOACK_TRIGGER = "[[SLOW_NOACK]]"
+SLOW_LATEACK_TRIGGER = "[[SLOW_LATEACK]]"
 # Terminal outcomes other than end_turn.
 ERROR_TRIGGER = "[[ERROR]]"
 MAX_TOKENS_TRIGGER = "[[MAXTOKENS]]"
@@ -93,6 +101,14 @@ REFUSAL_TRIGGER = "[[REFUSAL]]"
 SLOW_CHUNKS = 30
 SLOW_CHUNK_DELAY_SECS = 0.5
 SLOW_CHUNK_TEXT = "fake slow chunk "
+# How many MORE chunks a SLOW_LATEACK turn emits after it notices the cancel,
+# before acking. Counted in chunks rather than seconds so the unit test is
+# deterministic and does not depend on wall clock. At the default
+# SLOW_CHUNK_DELAY_SECS that is ~3s, which is well inside the 0.5s-60s
+# soft_stop_budget_secs range (so the ack always beats the budget and the turn
+# ends cooperatively) and roughly 12x the ~250ms window a plain SLOW cancel
+# leaves, which is too short for a loaded browser to paint.
+SLOW_LATEACK_CHUNKS = 6
 # How long a gated permission waits for the host's answer before giving up.
 # Bounded on purpose: the headless backend suite has nothing to resolve a modal,
 # and a hang there would stall the whole turn.
@@ -302,15 +318,34 @@ def _emit_tool_call(
     )
 
 
-def _stream_slowly(session_id: str, *, cancel_aware: bool) -> bool:
+def _stream_slowly(
+    session_id: str, *, cancel_aware: bool, ack_after_chunks: int = 0
+) -> bool:
     """Stream SLOW_CHUNKS chunks with a delay. True if cancelled mid-stream.
 
     cancel_aware=False models an agent stuck in a long tool call that cannot
     acknowledge a stop, so the host's soft-stop budget expires.
+
+    ack_after_chunks>0 models an agent that notices the cancel but takes a
+    bounded moment to wind down: it emits that many more chunks, then acks. The
+    host stays in `soft_pending` for the whole wind-down, which is what makes
+    that state observable to a UI assertion instead of a ~250ms race, while
+    still ending the turn cooperatively so nothing leaks into the next turn.
+
+    The cancel observation is LATCHED because `_cancel_requested` consumes the
+    message from the inbox: a second call after the wind-down starts would
+    return False and the ack would never fire.
     """
+    cancelled = False
+    winding_down = 0
     for i in range(SLOW_CHUNKS):
-        if cancel_aware and _cancel_requested(session_id):
-            return True
+        if cancel_aware and not cancelled and _cancel_requested(session_id):
+            cancelled = True
+            winding_down = ack_after_chunks
+        if cancelled:
+            if winding_down <= 0:
+                return True
+            winding_down -= 1
         _update(
             session_id,
             {
@@ -320,7 +355,7 @@ def _stream_slowly(session_id: str, *, cancel_aware: bool) -> bool:
         )
         time.sleep(SLOW_CHUNK_DELAY_SECS)
     # A cancel arriving during the final sleep still counts.
-    return bool(cancel_aware and _cancel_requested(session_id))
+    return bool(cancelled or (cancel_aware and _cancel_requested(session_id)))
 
 
 def _handle(msg: dict[str, Any]) -> None:
@@ -362,6 +397,11 @@ def _handle(msg: dict[str, Any]) -> None:
         if SLOW_NOACK_TRIGGER in text:
             _stream_slowly(session_id, cancel_aware=False)
             stop_reason = "end_turn"
+        elif SLOW_LATEACK_TRIGGER in text:
+            cancelled = _stream_slowly(
+                session_id, cancel_aware=True, ack_after_chunks=SLOW_LATEACK_CHUNKS
+            )
+            stop_reason = "cancelled" if cancelled else "end_turn"
         elif SLOW_TRIGGER in text:
             cancelled = _stream_slowly(session_id, cancel_aware=True)
             stop_reason = "cancelled" if cancelled else "end_turn"
