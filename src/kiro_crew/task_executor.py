@@ -342,6 +342,12 @@ async def execute_task(
             result_text = ""
             _chunk_count = 0
             _complete_event: LLMEvent | None = None
+            # Wall clock for THIS turn only. The acp provider never assigns
+            # TurnUsage.duration_ms, so the record builder falls back to this
+            # local measurement (elapsed_ms). Bracket ONLY the stream: the prompt
+            # build and episodic-query embed above are turn setup, not the turn,
+            # and this loop re-runs per attempt so each row measures its own turn.
+            _turn_t0 = _time.monotonic()
             async for event in client.stream(full_prompt):
                 if event.kind == EVENT_TEXT_CHUNK:
                     result_text += event.text
@@ -549,6 +555,7 @@ async def execute_task(
                     agent=read_effective_agent(client) or agent or "",
                     context_used=_used,
                     context_window=_window,
+                    elapsed_ms=int((_time.monotonic() - _turn_t0) * 1000),
                     model_source=client,
                 )
             except Exception:
@@ -854,6 +861,10 @@ async def self_review(
             agent=agent or None,
             cwd=str(run.work_dir) if run.work_dir else None,
         )
+        # Wall clock for the review turn (see execute_task): the acp provider
+        # reports no duration, so this local measurement is the fallback. Bracket
+        # ONLY the model stream, not open_task_session / diff fetch / prompt build.
+        _review_t0 = _time.monotonic()
         result = await stream_and_collect_json(client, prompt)
 
         # ── Per-turn usage row (issue #647): self-review is a separate model turn. ──
@@ -880,6 +891,7 @@ async def self_review(
                 agent=read_effective_agent(client) or agent or "",
                 context_used=_used,
                 context_window=_window,
+                elapsed_ms=int((_time.monotonic() - _review_t0) * 1000),
                 model_source=client,
             )
         except Exception:

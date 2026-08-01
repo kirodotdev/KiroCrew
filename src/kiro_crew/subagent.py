@@ -3709,6 +3709,14 @@ class SubagentManager:
                     msg = _TRANSIENT_CONTINUE_MSG if _had_activity else full_message
 
         _complete_event: LLMEvent | None = None
+        # Wall clock for THIS subagent's own turn. Deliberately started here,
+        # at the subagent's own stream, not on the parent side: under session
+        # sharing this subagent reuses the parent's runtime, so a parent-side
+        # clock would charge the child for the parent's elapsed time. acp
+        # leaves TurnUsage.duration_ms at 0, so the row needs this.
+        # Includes transient-retry backoff, which is real wall time the caller
+        # waited for this turn.
+        _turn_t0 = time.monotonic()
         async for event in _stream_with_transient_retry():
             # Refresh the activity clock for EVERY event kind (thinking chunks,
             # tool-call updates, etc.) before dispatch, so idle-stall detection
@@ -3970,6 +3978,7 @@ class SubagentManager:
                 agent=agent or read_effective_agent(client) or "",
                 context_used=_used,
                 context_window=_window,
+                elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
                 model_source=client,
             )
         except Exception:

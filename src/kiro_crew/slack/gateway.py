@@ -2000,6 +2000,11 @@ class GatewayOrchestrator:
                             interactive=False,
                             agent=agent,
                         )
+                        # Wall clock for the cron agent turn: acp never assigns
+                        # TurnUsage.duration_ms, so the row falls back to this.
+                        # Brackets only the model turn — session acquisition and
+                        # the episodic-query embed above are setup, not the turn.
+                        _turn_t0 = time.monotonic()
                         result_text = await stream_and_collect(
                             client,
                             full_message,
@@ -2037,6 +2042,7 @@ class GatewayOrchestrator:
                                 agent=read_effective_agent(client) or agent or "",
                                 context_used=_used,
                                 context_window=_window,
+                                elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
                                 model_source=client,
                             )
                         except Exception:
@@ -2086,6 +2092,9 @@ class GatewayOrchestrator:
                     minimal_context=job.minimal_context,
                 )
 
+                # Wall clock for the cron agent turn — see the sequential site
+                # above. acp reports no duration, so this is the row's fallback.
+                _turn_t0 = time.monotonic()
                 result_text = await stream_and_collect(
                     client,
                     full_message,
@@ -2123,6 +2132,7 @@ class GatewayOrchestrator:
                         agent=read_effective_agent(client) or job.agent_id or "",
                         context_used=_used,
                         context_window=_window,
+                        elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
                         model_source=client,
                     )
                 except Exception:
@@ -2570,6 +2580,10 @@ class GatewayOrchestrator:
                 # the user's ``auto_approve_tools`` MUST NOT widen the heartbeat
                 # allowlist — ``llm_helpers._resolve_permission`` consults
                 # ``hooks.on_tool_call()`` BEFORE ``on_tool_approval``.
+                #
+                # Clock started outside wait_for so BOTH the success path and the
+                # TimeoutError branch below can report the real elapsed time.
+                _turn_t0 = time.monotonic()
                 result_text = await asyncio.wait_for(
                     stream_and_collect(
                         client,
@@ -2597,6 +2611,7 @@ class GatewayOrchestrator:
                         agent=read_effective_agent(client) or "kirocrew-heartbeat",
                         context_used=_used,
                         context_window=_window,
+                        elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
                         model_source=client,
                     )
                 except Exception:
@@ -2614,6 +2629,35 @@ class GatewayOrchestrator:
                     HEARTBEAT_TASK_TIMEOUT_SECS,
                     task_text[:80],
                 )
+                # ── Timeout spend is REAL spend (issue #874 follow-up). ──
+                # Before this, a timed-out heartbeat wrote no row at all, so
+                # every cancelled turn silently dropped whatever it had already
+                # cost. Record it here, BEFORE the session reset below tears the
+                # client down and takes its last-turn usage with it.
+                #
+                # No new schema field: the record has never carried a
+                # success/failure outcome for ANY surface, so a timeout row is
+                # no less honest than any other row. The duration recorded is
+                # the real elapsed time, which for a timeout is ~the ceiling.
+                try:
+
+                    _used, _window = read_context_tokens(client)
+                    await persist_token_record_async(
+                        session_key,
+                        "",
+                        provider_last_turn_usage(client),
+                        provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                        surface="heartbeat",
+                        agent=read_effective_agent(client) or "kirocrew-heartbeat",
+                        context_used=_used,
+                        context_window=_window,
+                        elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
+                        model_source=client,
+                    )
+                except Exception:
+                    logger.debug(
+                        "usage row (heartbeat timeout) persist failed", exc_info=True
+                    )
                 try:
                     await self.sessions.reset(session_key)
                 except Exception:
@@ -2727,6 +2771,10 @@ class GatewayOrchestrator:
             full_msg, _ = await run_in_embed_pool(
                 self.ctx_builder.build_message, tagged, is_new, key, provider_type=_provider
             )
+            # Clock started outside wait_for so BOTH the success path and the
+            # TimeoutError branch below can report the real elapsed time. acp
+            # never assigns TurnUsage.duration_ms, so the row needs this.
+            _turn_t0 = time.monotonic()
             response = await asyncio.wait_for(
                 stream_and_collect(
                     client,
@@ -2756,10 +2804,47 @@ class GatewayOrchestrator:
                     agent=read_effective_agent(client) or _get_agent_for_session(key),
                     context_used=_used,
                     context_window=_window,
+                    elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
                     model_source=client,
                 )
             except Exception:
                 logger.debug("usage row (monitor) persist failed", exc_info=True)
+        except asyncio.TimeoutError:
+            # ── Timeout spend is REAL spend (issue #874 follow-up). ──
+            # A timed-out nudge turn previously fell through to the generic
+            # handler below and wrote no row at all, silently dropping whatever
+            # the cancelled turn had already cost. Record it, then bail as
+            # before. Runs before the `finally` cancels/releases the session.
+            #
+            # No new schema field: the record has never carried a
+            # success/failure outcome for ANY surface, so a timeout row is no
+            # less honest than any other row.
+            logger.warning(
+                "AutoNudge: slack nudge turn timed out after %ss for %s (loop %s)",
+                _NUDGE_TURN_TIMEOUT,
+                key,
+                loop.id,
+            )
+            try:
+
+                _used, _window = read_context_tokens(client)
+                await persist_token_record_async(
+                    key,
+                    "",
+                    provider_last_turn_usage(client),
+                    provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                    surface="monitor",
+                    agent=read_effective_agent(client) or _get_agent_for_session(key),
+                    context_used=_used,
+                    context_window=_window,
+                    elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
+                    model_source=client,
+                )
+            except Exception:
+                logger.debug(
+                    "usage row (monitor timeout) persist failed", exc_info=True
+                )
+            return False
         except Exception:
             logger.exception("AutoNudge: slack nudge turn failed for %s (loop %s)", key, loop.id)
             return False
