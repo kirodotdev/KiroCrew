@@ -6,6 +6,7 @@ import asyncio
 import os
 import pathlib
 import shutil
+import socket
 import sys
 
 import pytest
@@ -176,32 +177,201 @@ def pytest_configure(config: pytest.Config) -> None:
         pass  # Probe failure must not break unrelated tests.
 
 
-def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
-    """Cap the worker count used by ``-n auto`` (and ``-n logical``).
+_MAX_WORKERS_ENV = "KIROCREW_MAX_TEST_WORKERS"
+_SLOT_DIR_ENV = "KIROCREW_TEST_SLOT_DIR"
+_DEFAULT_WORKER_CAP = 32
+_GIB = 1024**3
+# Headroom to reserve per worker. Measured peak RSS for a worker on a heavy
+# 1,231-test subset is ~0.37 GiB (~0.50 GiB under --cov), so 2 GiB reserves
+# roughly 4x typical and keeps the term from binding on ordinary hosts while
+# still refusing to spawn, say, 32 workers on an 8 GiB machine. Note this sizes
+# for EXPECTED footprint: it cannot save a host from a genuinely leaking worker
+# (one orphaned run was observed at 4.3 GiB RSS), which is a separate bug.
+_GIB_PER_WORKER = 2
 
-    The optimal worker count for this suite plateaus around 24-32 and then
-    *regresses*: every extra xdist worker pays a fixed cost -- it re-imports the
-    full app (aiohttp/boto3/numpy/pdfplumber/transcribe) and writes its own
-    ``.coverage.*`` data file that must be combined at the end. Past ~32 that
-    fixed cost outweighs the added parallelism. Measured on a 64-core host:
+# Lock files this process holds for its whole lifetime -- the fds MUST stay open,
+# because the lock lives exactly as long as the fd does.
+_held_slots: list[int] = []
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
+def _slot_root() -> pathlib.Path:
+    override = os.environ.get(_SLOT_DIR_ENV)
+    if override:
+        return pathlib.Path(override)
+    return pathlib.Path.home() / ".cache" / "kirocrew" / "test-slots"
+
+
+def _host_key() -> str:
+    """Filesystem-safe identity for this machine, as a single path segment."""
+    raw = socket.gethostname() or ""
+    safe = "".join(ch if (ch.isalnum() or ch in "-._") else "_" for ch in raw)[:64]
+    return safe.strip(".") or "unknown-host"
+
+
+def _slot_dir() -> pathlib.Path:
+    """Where concurrent pytest runs ON THIS HOST contend for worker capacity.
+
+    Deliberately host-global and *not* derived from ``KIROCREW_HOME``: the point
+    is that two worktrees -- which have different homes and know nothing about
+    each other -- still coordinate over the one thing they truly share, the
+    machine's cores and RAM.
+
+    Scoped by hostname because ``~/.cache`` is frequently a network home shared
+    by many machines, whose contention is not ours.
+    """
+    return _slot_root() / _host_key()
+
+
+def _slot_path(slot_dir: pathlib.Path, index: int) -> pathlib.Path:
+    return slot_dir / f"worker-{index:03d}.lock"
+
+
+def _host_total_gib() -> int:
+    """Total physical RAM in GiB, or 0 when it cannot be determined."""
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):
+        return 0
+    if pages <= 0 or page_size <= 0:
+        return 0
+    return int(pages * page_size // _GIB)
+
+
+def _claim_worker_slots(capacity: int, cap: int) -> int:
+    """Take up to ``cap`` of the host's ``capacity`` worker slots and HOLD them.
+
+    ``capacity`` is how many slots the HOST has (cores, bounded by RAM) and is
+    the range probed; ``cap`` is the most any single run may take. Keeping these
+    separate matters on a large host: with 64 cores and a cap of 32, a first run
+    takes slots 0-31 and a second still finds 32-63 free and gets its full 32.
+    Probing only ``cap`` slots would have collapsed that second run to one
+    worker while half the machine sat idle.
+
+    Each slot is an advisory lock on its own file, acquired non-blocking and
+    never released until the process exits. That is the whole design: the kernel
+    owns the lease, so capacity returns automatically when a run ends --
+    including a run that is orphaned or terminated outright, which is exactly
+    the state that caused the incident this budget exists to prevent.
+
+    This deliberately replaces an earlier design where runs wrote reservation
+    FILES describing themselves. Files outlive their owners, so that version
+    needed PID-liveness probing, a staleness backstop, ownership proof against
+    look-alike files, and boot/suspend forensics to decide when a reservation
+    was defunct -- and every one of those cleanup paths produced a real bug. A
+    held lock needs none of it.
+
+    Returns the number of slots taken, at least 1: a run arriving at a genuinely
+    full host proceeds single-worker rather than stalling.
+    """
+    if _held_slots:
+        # Already claimed in this process. Re-locking would fail: flock treats
+        # two fds on one file as independent even within the same process, so a
+        # second pass would take nothing and collapse the run to one worker.
+        return len(_held_slots)
+    try:
+        # Resolution itself must be inside the guard: Path.home() raises
+        # RuntimeError when the home directory cannot be determined, and
+        # gethostname() can raise OSError. Neither may break pytest startup.
+        root = _slot_root()
+        slot_dir = _slot_dir()
+        # Refuse a symlink at either level: the root is caller-supplied via
+        # KIROCREW_TEST_SLOT_DIR and could redirect our writes.
+        if root.exists() and root.is_symlink():
+            return min(capacity, cap)
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        if slot_dir.is_symlink() or not slot_dir.is_dir():
+            return min(capacity, cap)
+    except (OSError, RuntimeError, ValueError):
+        return min(capacity, cap)  # fail open to the unbudgeted ceiling
+
+    taken = 0
+    for index in range(capacity):
+        if taken >= cap:
+            break
+        try:
+            fd = os.open(str(_slot_path(slot_dir, index)), os.O_CREAT | os.O_RDWR, 0o600)
+        except OSError:
+            break
+        if platform_compat.try_acquire_lock(fd, exclusive=True):
+            _held_slots.append(fd)  # keep the fd -- closing it drops the lock
+            taken += 1
+        else:
+            os.close(fd)
+    return max(1, taken)
+
+
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
+    """Budget the worker count for ``-n auto`` (and ``-n logical``).
+
+    Two separate quantities.
+
+    **Host capacity** -- how many slots exist to compete for:
+
+    1. **Cores.** ``os.cpu_count()``.
+    2. **RAM.** ~2 GiB per worker. Cores alone are the wrong unit: a 10-core /
+       32 GiB laptop cannot back 32 multi-GiB workers, and once it starts
+       swapping the run stops making progress altogether.
+
+    **Per-run cap** (``KIROCREW_MAX_TEST_WORKERS``, default 32) -- the most any
+    single run may take. The optimal worker count for this suite plateaus around
+    24-32 and then *regresses*: every extra worker re-imports the full app
+    (aiohttp/boto3/numpy/pdfplumber/transcribe) and writes its own
+    ``.coverage.*`` file to combine at the end. Measured on a 64-core host:
     156s @ 64 workers vs 92s @ 32 workers (-41%).
 
-    ``min(cpu, CAP)`` stays optimal on every machine and is architecture-
-    agnostic -- the cap addresses fixed per-worker serialization cost, not
-    per-core speed, so it holds across Intel / ARM / Apple silicon. An 8-core
-    laptop gets 8 workers (the cap never binds, so no oversubscription), a
-    16-core build host gets 16 (unchanged from today), while 64/128-core
-    desktops are held at 32 instead of stampeding. Override the ceiling with
-    ``KIROCREW_MAX_TEST_WORKERS`` for a host that profiles differently. An
-    explicit ``-n <N>`` on the command line always wins; this hook only fires
+    Keeping them separate is what makes a big host behave: with 64 cores and a
+    cap of 32, two runs get 32 workers each rather than the second collapsing
+    while half the machine idles.
+
+    Sharing is what stops the failure this hook was extended for. Two worktrees
+    each running ``-n auto`` on a 10-core box previously took 10 workers *each*,
+    and the resulting swap thrash produced a load average of ~590 with zero
+    tests completing in 21 minutes. Now each run holds a lock per worker it
+    intends to spawn (under ``~/.cache/kirocrew/test-slots/<hostname>``, root
+    overridable with ``KIROCREW_TEST_SLOT_DIR``): a run alone takes the whole
+    machine, and a later run takes only what is unlocked. The locks are held for
+    the process's lifetime and released by the kernel when it exits, so an
+    orphaned or terminated run frees its share with no cleanup logic at all.
+
+    The cost is fairness, not safety, and only when the host is GENUINELY full:
+    a late run arriving at a fully-locked machine drops to its floor of one
+    worker -- slow, but never stalled, and never oversubscribing the host the
+    way the incident did. While free capacity remains, a later run gets its full
+    share.
+
+    An explicit ``-n <N>`` on the command line always wins; this hook only fires
     for ``auto`` / ``logical``.
     """
-    cpu = os.cpu_count() or 1
-    try:
-        cap = int(os.environ.get("KIROCREW_MAX_TEST_WORKERS", "32"))
-    except ValueError:
-        cap = 32
-    return min(cpu, max(1, cap))
+    capacity = os.cpu_count() or 1
+    total_gib = _host_total_gib()
+    if total_gib:
+        capacity = min(capacity, max(1, total_gib // _GIB_PER_WORKER))
+    cap = max(1, _int_env(_MAX_WORKERS_ENV, _DEFAULT_WORKER_CAP))
+    return _claim_worker_slots(capacity, cap)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Drop this run's worker slots promptly.
+
+    Not strictly required -- the kernel releases every lock when the process
+    exits -- but it returns capacity at the end of the run rather than at
+    interpreter teardown, and is a no-op in xdist workers, which hold no slots.
+    """
+    while _held_slots:
+        fd = _held_slots.pop()
+        platform_compat.release_lock(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 @pytest.fixture(autouse=True)

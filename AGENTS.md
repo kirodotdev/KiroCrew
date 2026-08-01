@@ -216,20 +216,25 @@ npm run test     # vitest unit/integration tests
 For faster iteration during development, use `pytest-testmon` to run only tests affected by changed files instead of the full suite. This uses dependency tracking to skip unaffected tests.
 
 ```bash
-# Fast iteration — only tests affected by your changes (no coverage overhead).
-# Multi-test runs MUST keep the xdist flags (-n auto --dist loadgroup):
-# loadgroup keeps @pytest.mark.xdist_group-serialized tests on one worker, and
-# a bare addopts override silently drops it, producing flaky races.
-python -m pytest --testmon --override-ini="addopts=-v --ignore=build/private -n auto --dist loadgroup --durations=5 --color=yes" -q 2>&1 | tail -25
+# Fast iteration — only tests affected by your changes.
+# Coverage is NOT in addopts, so you no longer need an override to avoid it;
+# override only when you actually want to change the xdist flags.
+# Multi-test runs MUST keep the xdist flags (-n auto --dist loadgroup) and the
+# restart cap: loadgroup keeps @pytest.mark.xdist_group-serialized tests on one
+# worker, a bare addopts override silently drops it (producing flaky races), and
+# --max-worker-restart=2 turns worker loss into a fast loud failure instead of a
+# long silent thrash.
+python -m pytest --testmon --override-ini="addopts=-v --ignore=build/private -n auto --dist loadgroup --max-worker-restart=2 --durations=5 --color=yes" -q 2>&1 | tail -25
 
 # Only previously failed tests:
-python -m pytest --lf --override-ini="addopts=-v --ignore=build/private -n auto --dist loadgroup --durations=5 --color=yes" -q
+python -m pytest --lf --override-ini="addopts=-v --ignore=build/private -n auto --dist loadgroup --max-worker-restart=2 --durations=5 --color=yes" -q
 
-# Specific test file only (serial — xdist not needed for one file):
-python -m pytest test/test_dashboard_chat.py --override-ini="addopts=-v --ignore=build/private --durations=5 --color=yes" -q
+# Specific test file only — use -n0; per-worker startup dominates a small
+# selection (one test measured 36.9s under -n 2 vs ~1.4s under -n0):
+python -m pytest test/test_dashboard_chat.py -n0 -q
 
 # Specific test by keyword:
-python -m pytest -k "flush_segment" --override-ini="addopts=-v --ignore=build/private --durations=5 --color=yes" -q
+python -m pytest -k "flush_segment" -n0 -q
 ```
 
 **When to use which:**
