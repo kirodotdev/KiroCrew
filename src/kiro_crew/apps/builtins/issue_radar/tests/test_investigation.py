@@ -100,6 +100,84 @@ class TestInvestigationStore(unittest.TestCase):
         self.assertEqual(rec["findings"]["summary"], "done")
         self.assertEqual(rec["status"], "resolved")
 
+    def test_partial_findings_patch_does_not_destroy_the_other_fields(self):
+        """A later patch carrying ONE finding must not wipe the rest.
+
+        ``findings`` used to be replaced wholesale, so a second write with only a
+        ``verdict`` permanently lost the root cause, summary and labels an earlier
+        write had stored — and the record is the only copy. Reachable from the
+        ``issue_radar_record_investigation`` MCP tool, whose contract is that a
+        partial update is fine.
+        """
+        store.write_investigation(
+            "o", "r", 7,
+            {"findings": {
+                "verdict": "needs-info",
+                "root_cause": "off-by-one",
+                "suggested_labels": ["bug"],
+                "next_action": "add a test",
+                "summary": "It crashes on empty input.",
+            }},
+            root=self.tmp,
+        )
+        rec = store.write_investigation(
+            "o", "r", 7, {"findings": {"verdict": "bug"}}, root=self.tmp
+        )
+        f = rec["findings"]
+        self.assertEqual(f["verdict"], "bug")           # overridden
+        self.assertEqual(f["root_cause"], "off-by-one")  # preserved
+        self.assertEqual(f["summary"], "It crashes on empty input.")
+        self.assertEqual(f["next_action"], "add a test")
+        self.assertEqual(f["suggested_labels"], ["bug"])
+
+    def test_empty_string_leaves_a_stored_finding_alone(self):
+        # No per-field clear: "" means "leave this alone", which is what makes a
+        # partial patch safe for an LLM writer.
+        store.write_investigation(
+            "o", "r", 7, {"findings": {"summary": "kept"}}, root=self.tmp
+        )
+        rec = store.write_investigation(
+            "o", "r", 7, {"findings": {"summary": "   "}}, root=self.tmp
+        )
+        self.assertEqual(rec["findings"]["summary"], "kept")
+
+    def test_empty_findings_dict_is_a_no_op_not_a_wipe(self):
+        store.write_investigation(
+            "o", "r", 7, {"findings": {"verdict": "bug"}}, root=self.tmp
+        )
+        rec = store.write_investigation("o", "r", 7, {"findings": {}}, root=self.tmp)
+        self.assertEqual(rec["findings"]["verdict"], "bug")
+
+    def test_explicit_null_findings_clears_everything(self):
+        # The UI's clear path — putInvestigation types findings as
+        # Partial<InvestigationFindings> | null.
+        store.write_investigation(
+            "o", "r", 7, {"findings": {"verdict": "bug", "summary": "s"}}, root=self.tmp
+        )
+        rec = store.write_investigation("o", "r", 7, {"findings": None}, root=self.tmp)
+        self.assertIsNone(rec["findings"])
+
+    def test_malformed_findings_keeps_the_stored_object(self):
+        # Garbage must not be a data-loss path; the route + tool schema reject it
+        # upstream, so this is the conservative floor.
+        store.write_investigation(
+            "o", "r", 7, {"findings": {"verdict": "bug"}}, root=self.tmp
+        )
+        rec = store.write_investigation(
+            "o", "r", 7, {"findings": "not a dict"}, root=self.tmp
+        )
+        self.assertEqual(rec["findings"]["verdict"], "bug")
+
+    def test_new_labels_replace_rather_than_append(self):
+        # A recommendation set is a whole value, not an additive list.
+        store.write_investigation(
+            "o", "r", 7, {"findings": {"suggested_labels": ["bug", "old"]}}, root=self.tmp
+        )
+        rec = store.write_investigation(
+            "o", "r", 7, {"findings": {"suggested_labels": ["area:apps"]}}, root=self.tmp
+        )
+        self.assertEqual(rec["findings"]["suggested_labels"], ["area:apps"])
+
     def test_removed_with_repo_cache(self):
         store.add_connected_repo("o", "r", root=self.tmp)
         store.write_investigation("o", "r", 7, {"slot_key": "s"}, root=self.tmp)

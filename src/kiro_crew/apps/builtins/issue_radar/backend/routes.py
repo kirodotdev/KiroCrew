@@ -2158,6 +2158,18 @@ async def _handle_put_investigation(request: web.Request) -> web.Response:
     # bool is a subclass of int: JSON `true` would otherwise validate as #1.
     if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
         return web.json_response({"error": "'number' must be a positive integer"}, status=400)
+    # Same upper bound the ?number= routes enforce via _parse_item_number. It
+    # matters more on this write than on a read: the number becomes part of the
+    # record's FILENAME (investigation-<n>.json), so an absurd value is an
+    # ENAMETOOLONG write rather than just a miss.
+    if number > MAX_ITEM_NUMBER:
+        return web.json_response(
+            {
+                "error": f"number must be at most {MAX_ITEM_NUMBER}",
+                "code": "item_number_out_of_range",
+            },
+            status=400,
+        )
 
     if not await asyncio.to_thread(_connected, key):
         return web.json_response(

@@ -37,6 +37,23 @@ export default [
       // Test files assert on visible English by design.
       'src/**/*.test.{ts,tsx}',
       'src/test/**',
+      // MODEL-FACING PROMPTS, by naming convention. A `*.prompt.ts` module may
+      // contain ONLY the text of a message sent to an agent — no UI copy — so the
+      // suffix IS the boundary and its sibling module stays fully covered. Same
+      // category as the test files above: English by design, not suppressed debt.
+      //
+      // Translating a prompt would change agent BEHAVIOUR (the agent reads the
+      // instructions and acts on them), not the interface language. It is still shown
+      // to the user — the seed prompt is sent with `api.sendChat`, so it appears in the
+      // transcript — which is why this is an explicit, named boundary rather than a
+      // shape rule pretending the text is invisible.
+      //
+      // A `words.exclude` shape rule was tried first and cannot do this job. It IS
+      // consulted for a template literal — eslint-plugin-i18next validates each quasi's
+      // trimmed text (`no-literal-string.js` → `isValidLiteral` → `shouldSkip`) and only
+      // reports at the whole node — but these quasis are ordinary English sentences, so
+      // no regex covers them without also exempting genuine UI copy.
+      'src/**/*.prompt.ts',
       // Generated and data-only.
       'src/i18n/locales/**',
     ],

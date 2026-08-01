@@ -1427,6 +1427,52 @@ def _normalize_findings(raw: Any) -> dict[str, Any] | None:
     return findings
 
 
+def _merge_findings(existing: Any, raw: Any) -> dict[str, Any] | None:
+    """Merge a (possibly partial) findings patch over the stored findings.
+
+    The record's other fields merge per-field, and ``findings`` must behave the
+    same way: replacing the whole object meant a second write that carried only
+    a ``verdict`` silently DESTROYED the ``root_cause``/``summary``/labels an
+    earlier write had stored. That is reachable from the
+    ``issue_radar_record_investigation`` MCP tool, whose whole contract is "a
+    partial update is fine", and the loss is permanent (the record is the only
+    copy).
+
+    Semantics, so callers can rely on them:
+
+    * ``raw is None`` — explicit null CLEARS the whole findings object. This is
+      the UI's clear path (``putInvestigation`` types findings as
+      ``Partial<InvestigationFindings> | null``).
+    * ``raw`` is a dict — each supplied, non-empty value overrides its key;
+      omitted or empty values keep what is stored. ``suggested_labels`` is a
+      whole value: a non-empty list replaces the stored list, an empty or
+      absent one keeps it (a recommendation set is not additive). An empty dict
+      is therefore a no-op, not a wipe.
+    * ``raw`` is neither — malformed input keeps the stored findings rather than
+      destroying them; the route and the tool schema both reject it upstream.
+
+    There is deliberately NO per-field clear: an empty string means "leave this
+    alone", which is what makes a partial patch safe for an LLM writer. Clear
+    everything with an explicit null and re-write what should remain.
+    """
+    if raw is None:
+        return None
+    base = _normalize_findings(existing) or {}
+    if not isinstance(raw, dict):
+        return _normalize_findings(base)
+    combined: dict[str, Any] = dict(base)
+    for key in ("verdict", "root_cause", "next_action", "summary"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            combined[key] = value
+    labels = raw.get("suggested_labels")
+    if isinstance(labels, list) and any(isinstance(x, str) and x.strip() for x in labels):
+        combined["suggested_labels"] = labels
+    # Re-normalize so the merged object gets the same trimming / de-duplication /
+    # unknown-key drop / all-empty-collapses-to-None treatment as a fresh write.
+    return _normalize_findings(combined)
+
+
 def write_investigation(
     owner: str, repo: str, number: int, patch: dict[str, Any], *,
     root: Path | None = None, kind: str = "issue",
@@ -1436,8 +1482,10 @@ def write_investigation(
     on first create; ``last_opened_at`` is refreshed on every write. Only known,
     validated fields are applied — ``slot_key``/``folder_id`` (strings; ``""``
     clears to None), ``status`` (one of ``_INVESTIGATION_STATUSES``), and
-    ``findings`` (normalized). A partial patch (even ``{}``, which just bumps the
-    open stamp) is valid. Returns the stored record."""
+    ``findings`` (merged per key by :func:`_merge_findings`, so a patch carrying
+    only ``verdict`` keeps the stored ``root_cause``/``summary``/labels; an
+    explicit ``None`` clears them). A partial patch (even ``{}``, which just bumps
+    the open stamp) is valid. Returns the stored record."""
     number = int(number)
     now = _now_iso()
     lock_path = investigation_path(owner, repo, number, root, kind=kind).with_suffix(".lock")
@@ -1467,7 +1515,9 @@ def write_investigation(
                 if st in _INVESTIGATION_STATUSES:
                     record["status"] = st
             if "findings" in patch:
-                record["findings"] = _normalize_findings(patch.get("findings"))
+                record["findings"] = _merge_findings(
+                    existing.get("findings"), patch.get("findings")
+                )
 
             atomic_write(
                 investigation_path(owner, repo, number, root, kind=kind),

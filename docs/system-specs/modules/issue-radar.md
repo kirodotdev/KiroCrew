@@ -42,12 +42,57 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET | `/pull-ai` | AI summary of a PR (description + whole conversation + check state), cached against a fingerprint that hashes the conversation's CONTENT — so an edited comment invalidates it, not just a new one |
 | POST | `/labels/apply` | Apply label changes (add/remove) |
 | POST | `/issue/state` | Close/reopen an issue |
-| GET/PUT | `/investigation` | Per-issue investigation record |
+| GET/PUT | `/investigation` | Per-issue investigation record. The PUT is the ONE app route also reachable with the gateway internal secret (`_MIXED_INTERNAL_API_PATHS`), because it is the write behind the `issue_radar_record_investigation` MCP tool — see [Recording findings](#recording-findings) |
 | GET/POST | `/recommendations` | AI label taxonomy recommendations |
 | POST | `/labels/create` | Create a new repo label |
 | GET | `/tagging` | The untagged queue (also serves `bulk_max`, the bulk-apply cap, so the client chunks on the server's real limit; and `titles` bounded to the slice a recommendation's examples can cite) (open issues with ZERO labels) plus any cached per-issue label suggestions for it. Never runs the model, so opening the Tagging dashboard costs nothing; suggestions for issues that have since been labelled elsewhere are filtered out |
 | POST | `/tagging` | Generate per-issue label suggestions with ONE batched model call (`_TAG_BATCH_MAX` = 50 issues). Without `numbers` it takes the next un-analysed slice, so repeated calls walk a long backlog without re-paying; with `numbers` it re-analyses specific issues. Proposals are intersected with the repo's real label set AND with the batch that was shown, so injected issue text can neither invent a label nor reach an issue outside the batch |
 | POST | `/labels/apply-bulk` | Apply label ADDITIONS to many issues at once (add-only — removal stays a per-issue action). Unknown labels are rejected before any write, so a typo cannot half-apply the batch; per-issue failures are reported rather than swallowed, and only the issues that actually got labelled leave the queue |
+
+## Recording findings
+
+The Investigate / Review buttons open a KiroCrew chat session seeded with a
+triage prompt. When the agent concludes it writes its verdict back into the
+item's investigation record — that is what puts a verdict + summary on the
+issue's card instead of leaving it in chat scrollback.
+
+That write goes through the **`issue_radar_record_investigation` MCP tool**, not
+a raw HTTP call. An agent session holds no dashboard credential:
+
+- the access cookie is `httpOnly`, so the frontend cannot hand it to the agent;
+- `KIROCREW_INTERNAL_SECRET` is stripped from agent env by
+  `sandbox._AGENT_DENIED_ENV_KEYS`;
+- `.local_secret` — needed for the `GET /api/token/local` bootstrap — is on the
+  `security.py` sensitive-path denylist, for tool reads and for the shell forms.
+
+So a direct `PUT /api/apps/issue-radar/investigation` from the agent is refused
+with `403 {"error": "Token required"}`. It used to be exactly what the seed
+prompt asked for, which meant no investigation ever recorded findings and the
+card's verdict/summary render path was unreachable. The tool runs in the
+`kirocrew-core` MCP server, which holds the internal secret legitimately, so the
+route is listed in `_MIXED_INTERNAL_API_PATHS` — the full path only, never the
+`/api/apps/issue-radar` prefix, which would also admit the forge-write routes
+(`/labels/apply`, `/issue/state`) to any internal-secret holder.
+
+The tool takes the findings as **flat** args (`verdict`, `root_cause`,
+`suggested_labels`, `next_action`, `summary`) rather than a nested object:
+`FieldSpec` validates scalars and string lists, so a `findings` dict would reach
+the gateway unvalidated. Empty fields are dropped, because the store merges
+findings **per key** (`store._merge_findings`) and reads an empty value as "leave
+this alone" — so a patch carrying only a `verdict` keeps the `root_cause`,
+`summary` and labels an earlier write stored. An explicit `null` clears the whole
+findings object (the UI's clear path); there is deliberately no per-field clear.
+`provider`/`host`/`kind` are always sent explicitly — the record is keyed on them,
+and defaulting them records a GitLab item into a same-slug GitHub repo's ledger.
+
+**In the MCP tool**, every finding string and label goes through the platform
+redaction shim (`platform.redact_via_context` → exfil URLs + credentials) before the
+PUT: findings are LLM prose about an untrusted issue body, they are stored verbatim,
+and the card re-renders them on every visit, so a credential quoted into a
+`root_cause` would otherwise be persisted and redisplayed. This is a tool-level
+guarantee, not a route-level one — the route itself does not redact, because its
+other caller is the cookie-authed frontend writing the session link, not model
+output.
 
 ## Storage Schema
 

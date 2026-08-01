@@ -339,6 +339,19 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         "/api/remote-artifacts",
         "/api/workflows",  # DW engine: MCP tools + Workflows tab polling
         "/api/deploy",  # MCP deploy_artifact tool — server enforces preview-only (confirm/override_scan stripped for internal-secret callers)
+        # Issue Radar investigation record — the ONE app route reachable with the
+        # internal secret, for the ``issue_radar_record_investigation`` MCP tool.
+        # An investigating chat agent has no dashboard token (cookies are
+        # httpOnly, ``KIROCREW_INTERNAL_SECRET`` is stripped from agent env by
+        # ``sandbox._AGENT_DENIED_ENV_KEYS``, and ``.local_secret`` is on the
+        # ``security.py`` sensitive-path denylist), so the PUT the Investigate
+        # seed prompt asks for used to 403 unconditionally and no investigation
+        # ever recorded its findings. Deliberately the FULL path, not the
+        # ``/api/apps/issue-radar`` prefix: prefix-matching here would also admit
+        # the app's GitHub/GitLab WRITE routes (label, close/reopen, comment) to
+        # anything holding the internal secret. This route is local-only triage
+        # state — no forge write, no shared ledger.
+        "/api/apps/issue-radar/investigation",
         "/v1/chat/completions",  # OpenAI-compat API
     }
 )

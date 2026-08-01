@@ -1677,6 +1677,61 @@ DEPLOY_ARTIFACT_SCHEMA = ToolSchema(
     ],
 )
 
+# ── Tool Schemas (Issue Radar app) ──
+#
+# ``issue_radar_record_investigation`` is the agent's ONLY write path into an
+# Issue Radar investigation record. The findings sub-object is flattened into
+# per-field args on purpose: ``FieldSpec`` validates scalars and string lists,
+# not nested dicts, so a single ``findings`` dict arg would reach the gateway
+# unvalidated. The tool re-assembles the object from these fields.
+
+_ISSUE_RADAR_PROVIDERS = frozenset({"github", "gitlab"})
+_ISSUE_RADAR_ITEM_KINDS = frozenset({"issue", "pull"})
+_ISSUE_RADAR_STATUSES = frozenset({"investigating", "resolved", "archived"})
+# Mirrors ``issue_radar.backend.routes.MAX_ITEM_NUMBER``: bounds the number that
+# becomes part of the record's FILENAME (``investigation-<n>.json``), so an
+# absurd value cannot produce an ENAMETOOLONG write.
+_ISSUE_RADAR_MAX_ITEM_NUMBER = 1_000_000_000
+
+ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA = ToolSchema(
+    tool_name="issue_radar_record_investigation",
+    fields=[
+        FieldSpec("owner", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("repo", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec(
+            "number", int, required=True, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER
+        ),
+        # provider/host/kind are REQUIRED, with no defaults, because together
+        # with owner/repo they select the record's STORAGE NAMESPACE (see
+        # ``store.provider_root``: public GitHub keeps the original
+        # ``repos/{owner}/{repo}`` path, everything else lives under the
+        # ``@providers`` subtree). Defaulting them to GitHub would let a caller
+        # that simply omits the identity — a GitLab investigation, say — write
+        # into the GitHub ledger and silently overwrite a same-slug GitHub
+        # record, since a GitLab group can share a name with a GitHub owner.
+        # The caller always has this information to hand (`recordIdentityJson`
+        # in ``website/src/apps/issue-radar/lib/links.ts`` emits all three), so
+        # requiring them costs nothing and removes the ambiguity.
+        FieldSpec(
+            "provider", str, required=True, max_len=16, allowed=_ISSUE_RADAR_PROVIDERS
+        ),
+        FieldSpec("host", str, required=True, max_len=253),
+        FieldSpec("kind", str, required=True, max_len=8, allowed=_ISSUE_RADAR_ITEM_KINDS),
+        FieldSpec("status", str, max_len=16, allowed=_ISSUE_RADAR_STATUSES, default="resolved"),
+        FieldSpec("verdict", str, max_len=MAX_SHORT_STRING),
+        FieldSpec("root_cause", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("next_action", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("summary", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec(
+            "suggested_labels",
+            list,
+            item_type=str,
+            item_max_len=MAX_SHORT_STRING,
+            max_items=20,
+        ),
+    ],
+)
+
 # ── Tool Schemas (MCP Cron) ──
 
 
@@ -2009,6 +2064,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "workflow_cancel": WORKFLOW_RUN_ID_SCHEMA,
     "workflow_rerun_subtree": WORKFLOW_RERUN_SCHEMA,
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
+    "issue_radar_record_investigation": ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
 }
 
 MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {

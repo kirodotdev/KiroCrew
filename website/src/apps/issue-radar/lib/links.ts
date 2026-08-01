@@ -191,15 +191,18 @@ export function changeDiffCommand(ref: RepoRef, number: number): string {
 
 /** The identity fields an agent must echo back when recording an investigation.
  *
- * The record endpoint keys on provider + host, so a PUT that omits them is
+ * The record endpoint keys on provider + host, so a write that omits them is
  * treated as public GitHub. On a GitLab item that silently writes into -- and can
  * overwrite -- a same-slug GitHub repo's investigation ledger. Emitting them in
  * the prompt is what makes the agent's write land in the right tree.
  *
  * `kind` is part of that identity for the same reason: on GitLab, issue `#5` and
- * merge request `!5` are unrelated items, so a PUT without it records against the
- * ISSUE with that number. It is emitted explicitly rather than relying on the
- * server default, because the cost of being wrong is another item's record. */
+ * merge request `!5` are unrelated items, so a write without it records against
+ * the ISSUE with that number. It is emitted explicitly rather than relying on the
+ * server default, because the cost of being wrong is another item's record.
+ *
+ * These are emitted as JSON fragments because the seed prompt shows the agent the
+ * exact argument object to pass to `issue_radar_record_investigation`. */
 export function recordIdentityJson(ref: RepoRef, kind: ItemKind = 'issue'): string {
   return (
     `"owner":"${ref.owner}","repo":"${ref.repo}"`

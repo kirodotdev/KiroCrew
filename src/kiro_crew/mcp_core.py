@@ -2000,6 +2000,68 @@ def _list_tools() -> list[dict[str, Any]]:
                 "required": ["run_id"],
             },
         },
+        {
+            "name": "issue_radar_record_investigation",
+            "description": (
+                "Record your conclusion on an Issue Radar investigation, so the "
+                "verdict and summary appear on the issue's card instead of living "
+                "only in this chat. Call this when you finish investigating an "
+                "issue or PR opened via Issue Radar's Investigate button — the "
+                "seed prompt names the owner, repo and number to pass back. Do "
+                "NOT call it from a Review session: that prompt asks for a draft "
+                "and forbids recording anything. "
+                "This is the ONLY way to persist findings: a raw HTTP PUT to the "
+                "same endpoint has no credential and is refused with 403. Local "
+                "triage state only — nothing is written to GitHub or GitLab. "
+                "Merges into any existing record, so a partial update is fine."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": {"type": "string", "description": "Repo owner / group"},
+                    "repo": {"type": "string", "description": "Repo / project name"},
+                    "number": {"type": "integer", "description": "Issue or PR number"},
+                    "provider": {
+                        "type": "string",
+                        "enum": ["github", "gitlab"],
+                        "description": "Forge the repo lives on (default github)",
+                    },
+                    "host": {
+                        "type": "string",
+                        "description": "Forge host, e.g. github.com or a self-hosted GitLab",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["issue", "pull"],
+                        "description": (
+                            "Which sequence the number belongs to. Matters on GitLab, "
+                            "where issue #5 and merge request !5 are unrelated items"
+                        ),
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["investigating", "resolved", "archived"],
+                        "description": "Record status (default resolved)",
+                    },
+                    "verdict": {
+                        "type": "string",
+                        "description": "bug | feature | question | duplicate | needs-info",
+                    },
+                    "root_cause": {
+                        "type": "string",
+                        "description": "Root cause or the code area involved",
+                    },
+                    "suggested_labels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Labels you recommend for this item",
+                    },
+                    "next_action": {"type": "string", "description": "Recommended next action"},
+                    "summary": {"type": "string", "description": "One-paragraph summary"},
+                },
+                "required": ["owner", "repo", "number"],
+            },
+        },
     ]
 
 
@@ -2656,6 +2718,38 @@ def _patch(path: str, body: dict | None = None) -> dict:
         data=data,
         headers=headers,
         method="PATCH",
+    )
+    try:
+        # _API is the hardcoded loopback dashboard base and `path` is a code
+        # literal — never attacker-controlled, so no file:// scheme risk.
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosemgrep  # noqa: E501
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return _http_error_body(e)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _put(path: str, body: dict | None = None) -> dict:
+    """PUT to a loopback gateway path with the internal-secret handshake.
+
+    Same trust model as :func:`_post` / :func:`_patch` — the target path must be
+    listed in ``dashboard.server._MIXED_INTERNAL_API_PATHS`` (or the strict set)
+    or the gateway answers 403 ``Token required``.
+    """
+    data = json.dumps(body or {}).encode()
+    headers = {"Content-Type": "application/json", "X-Internal-Secret": _internal_secret()}
+    sk = _resolve_session_key()
+    _sk_err = _session_key_header_error(sk)
+    if _sk_err:
+        return {"error": _sk_err}
+    if sk:
+        headers["X-Session-Key"] = sk
+    req = urllib.request.Request(
+        f"{_API}{path}",
+        data=data,
+        headers=headers,
+        method="PUT",
     )
     try:
         # _API is the hardcoded loopback dashboard base and `path` is a code
@@ -5376,6 +5470,70 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             outcome="success",
         )
         return result
+
+    if name == "issue_radar_record_investigation":
+        # Args are already validated, defaulted and length-bounded by
+        # _validate_args via MCP_CORE_SCHEMAS — no re-validation here.
+        #
+        # The flat findings args are re-assembled into the object the app's
+        # store expects. Empty fields are DROPPED rather than sent as "": the
+        # store merges findings PER KEY (store._merge_findings) and treats an
+        # empty value as "leave this alone", so omitting a field is how a
+        # partial update keeps what an earlier write stored. Sending "" would
+        # be equivalent, but dropping it keeps the request honest about what
+        # this call is actually asserting.
+        #
+        # Redact on the way IN, not only on the way out. These strings are
+        # LLM-authored prose about an UNTRUSTED issue body / code / logs, they
+        # are stored verbatim in the record, and the item's card renders them
+        # (AgentSessionButton reads findings.verdict / .summary) — so a
+        # credential or exfil URL quoted into a root_cause would be persisted
+        # and then re-displayed on every visit. ``redact`` here is the module's
+        # platform.redact_via_context shim — the canonical egress helper (exfil
+        # URLs + credentials, plus any companion's extra patterns). It leaves
+        # ordinary text, and legitimate links like the issue URL, untouched.
+        _ir_findings: dict[str, Any] = {
+            key: redact(args[key])
+            for key in ("verdict", "root_cause", "next_action", "summary")
+            if args.get(key)
+        }
+        _ir_labels = [redact(s) for s in (args.get("suggested_labels") or []) if s]
+        if _ir_labels:
+            _ir_findings["suggested_labels"] = _ir_labels
+        # provider/host/kind are sent EXPLICITLY, never left to the server
+        # default: the record is keyed on them, so a GitLab item recorded as
+        # public GitHub would write into — and could overwrite — a same-slug
+        # GitHub repo's record. Same reason the seed prompt echoes them.
+        _ir_body: dict[str, Any] = {
+            "owner": args["owner"],
+            "repo": args["repo"],
+            "number": args["number"],
+            "provider": args.get("provider") or "github",
+            "host": args.get("host") or "github.com",
+            "kind": args.get("kind") or "issue",
+            "status": args.get("status") or "resolved",
+        }
+        if _ir_findings:
+            _ir_body["findings"] = _ir_findings
+        _ir_resp = _put("/api/apps/issue-radar/investigation", _ir_body)
+        if _ir_resp.get("error"):
+            return f"Error: {_ir_resp['error']}"
+        _ir_saved = (_ir_resp.get("investigation") or {}).get("findings") or {}
+        _ir_ref = (
+            f"{_ir_body['owner']}/{_ir_body['repo']}"
+            f"{'!' if _ir_body['kind'] == 'pull' and _ir_body['provider'] == 'gitlab' else '#'}"
+            f"{_ir_body['number']}"
+        )
+        if not _ir_saved:
+            return (
+                f"Recorded status `{_ir_body['status']}` for {_ir_ref} "
+                "(no findings supplied — the card will show the status badge only)."
+            )
+        _ir_verdict = _ir_saved.get("verdict") or "(no verdict)"
+        return (
+            f"Recorded investigation for {_ir_ref}: status `{_ir_body['status']}`, "
+            f"verdict `{_ir_verdict}`. It now shows on the item's Issue Radar card."
+        )
 
     if name == "set_project":
         args = validate_tool_args(args, SET_PROJECT_SCHEMA)
