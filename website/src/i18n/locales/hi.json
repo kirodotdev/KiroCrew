@@ -1679,6 +1679,7 @@
       "origin": "मूल",
       "post_reminder": "{{label}} में रिमाइंडर पोस्ट करें",
       "release": "{{label}} से अलग करें",
+      "released": "{{label}} से अलग किया गया",
       "reminder_failed": "रिमाइंडर पोस्ट नहीं किया जा सका: {{reason}}",
       "reminder_sent": "{{label}} में रिमाइंडर पोस्ट किया गया",
       "stop_failed": "मिरर करना बंद नहीं किया जा सका: {{reason}}",

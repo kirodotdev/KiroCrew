@@ -499,6 +499,7 @@
       "origin": "Origin",
       "post_reminder": "Post reminder in {{label}}",
       "release": "Release {{label}}",
+      "released": "Released from {{label}}",
       "reminder_failed": "Could not post reminder: {{reason}}",
       "reminder_sent": "Reminder posted in {{label}}",
       "stop_failed": "Could not stop mirroring: {{reason}}",

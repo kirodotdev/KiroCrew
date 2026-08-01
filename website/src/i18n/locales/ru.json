@@ -1713,6 +1713,7 @@
       "origin": "Источник",
       "post_reminder": "Опубликовать напоминание в {{label}}",
       "release": "Отвязать от {{label}}",
+      "released": "Отвязано от {{label}}",
       "reminder_failed": "Не удалось опубликовать напоминание: {{reason}}",
       "reminder_sent": "Напоминание опубликовано в {{label}}",
       "stop_failed": "Не удалось остановить зеркалирование: {{reason}}",

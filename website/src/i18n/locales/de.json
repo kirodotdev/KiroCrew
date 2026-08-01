@@ -1679,6 +1679,7 @@
       "origin": "Ursprung",
       "post_reminder": "Erinnerung in {{label}} posten",
       "release": "{{label}} lösen",
+      "released": "Von {{label}} gelöst",
       "reminder_failed": "Erinnerung konnte nicht gepostet werden: {{reason}}",
       "reminder_sent": "Erinnerung in {{label}} gepostet",
       "stop_failed": "Spiegelung konnte nicht beendet werden: {{reason}}",

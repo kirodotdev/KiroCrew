@@ -1696,6 +1696,7 @@
       "origin": "Origen",
       "post_reminder": "Publicar recordatorio en {{label}}",
       "release": "Desvincular de {{label}}",
+      "released": "Se desvinculó de {{label}}",
       "reminder_failed": "No se pudo publicar el recordatorio: {{reason}}",
       "reminder_sent": "Recordatorio publicado en {{label}}",
       "stop_failed": "No se pudo dejar de copiar: {{reason}}",

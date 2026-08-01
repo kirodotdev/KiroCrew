@@ -1696,6 +1696,7 @@
       "origin": "Origine",
       "post_reminder": "Pubblica un promemoria in {{label}}",
       "release": "Scollega {{label}}",
+      "released": "Scollegata da {{label}}",
       "reminder_failed": "Impossibile pubblicare il promemoria: {{reason}}",
       "reminder_sent": "Promemoria pubblicato in {{label}}",
       "stop_failed": "Impossibile interrompere il rispecchiamento: {{reason}}",

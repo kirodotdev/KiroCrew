@@ -1696,6 +1696,7 @@
       "origin": "Origem",
       "post_reminder": "Publicar lembrete em {{label}}",
       "release": "Desvincular de {{label}}",
+      "released": "Desvinculada de {{label}}",
       "reminder_failed": "Não foi possível publicar o lembrete: {{reason}}",
       "reminder_sent": "Lembrete publicado em {{label}}",
       "stop_failed": "Não foi possível parar o espelhamento: {{reason}}",

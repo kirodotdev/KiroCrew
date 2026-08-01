@@ -1679,6 +1679,7 @@
       "origin": "উৎস",
       "post_reminder": "{{label}}-এ রিমাইন্ডার পোস্ট করুন",
       "release": "{{label}} থেকে বিচ্ছিন্ন করুন",
+      "released": "{{label}} থেকে বিচ্ছিন্ন করা হয়েছে",
       "reminder_failed": "রিমাইন্ডার পোস্ট করা যায়নি: {{reason}}",
       "reminder_sent": "{{label}}-এ রিমাইন্ডার পোস্ট করা হয়েছে",
       "stop_failed": "মিরর করা বন্ধ করা যায়নি: {{reason}}",

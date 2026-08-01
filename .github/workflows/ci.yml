@@ -423,7 +423,7 @@ jobs:
         working-directory: website
         run: npx jscpd .
 
-      - name: Check i18n extraction and plurals
+      - name: Check i18n extraction, key references and plurals
         working-directory: website
         env:
           # `check-source-strings.mjs` compares en.json against the merge base to find
@@ -456,6 +456,22 @@ jobs:
         #   `lint:i18n` / `untranslated-baseline.json` — a PER-FILE count over every
         #     string position eslint can see, including the ternary and expression-container
         #     literals the codemod cannot rewrite. Trips on a new literal anywhere.
+        #   `check-i18n-keys.mjs` / `dynamic-keys-baseline.json` — asks the one question none
+        #     of the others do: does the key a call site names actually EXIST. Every gate
+        #     above starts from the catalogs and works outward, so a reference to a key that
+        #     was renamed or deleted is invisible to all of them — `catalogParity` included,
+        #     because a key absent from `en` is absent from all 9 targets, which is perfect
+        #     parity. i18next returns a missing key as its own fallback, so the failure is a
+        #     raw dotted key rendered into the UI. This gate's first run found one already
+        #     shipping (`components.linkedSurfacesSection.released`), fixed here. Two
+        #     dispositions in one script: dangling references are a HARD ZERO (each is a
+        #     user-visible bug, so there is no acceptable count), while call sites whose key
+        #     cannot be resolved statically are a per-file bidirectional ratchet — that
+        #     number is the gate's coverage statement, 1 site of ~5500 today. WHOLE-REPO,
+        #     not diff-scoped, and necessarily so: a reference and its catalog entry are
+        #     edited independently, so a catalog-only rename dangles references in files the
+        #     PR never opens. It needs no base ref, so unlike `check-source-strings.mjs` it
+        #     cannot silently skip itself.
         #   `gen-pseudolocale.mjs --check` — drift only, not coverage.
         # Extracting a string therefore moves both counts; regenerate the per-file
         # baseline with `node scripts/check-i18n-strings.mjs --update` and lower the

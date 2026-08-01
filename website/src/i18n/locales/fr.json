@@ -1696,6 +1696,7 @@
       "origin": "Origine",
       "post_reminder": "Publier un rappel dans {{label}}",
       "release": "Dissocier de {{label}}",
+      "released": "Dissociée de {{label}}",
       "reminder_failed": "Impossible de publier le rappel : {{reason}}",
       "reminder_sent": "Rappel publié dans {{label}}",
       "stop_failed": "Impossible d'arrêter la mise en miroir : {{reason}}",
