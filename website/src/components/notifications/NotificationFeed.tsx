@@ -8,6 +8,8 @@ import { api } from '../../api/client'
 import { EmptyState, SearchInput } from '../ui'
 import Clickable from '../Clickable'
 import { disintegrate } from '../../lib/disintegrate'
+// Aliased: this file defines its own minute-granularity `fmtRelative` wrapper.
+import { fmtRelative as fmtRelativeLocalized } from '../../i18n/format'
 import type { Notification } from '../../types'
 import {
   type Kind, type Category, KIND_KEYS, CATEGORIES, KINDS_STORAGE_KEY, loadActiveKinds,
@@ -27,15 +29,21 @@ function loadSeenChannels(): Set<string> {
   return new Set()
 }
 
-/** macOS Notification Center-style relative timestamp ("now", "35m ago", "2h ago"). */
+/** macOS Notification Center-style relative timestamp ("now", "35m ago", "2h ago").
+ *
+ * Delegated to the locale-aware seam: the hand-rolled ladder this replaces
+ * rendered English in every language and encoded its own "yesterday" special
+ * case, which CLDR already knows for all 10 locales. English output is
+ * unchanged.
+ *
+ * Minute granularity is preserved deliberately — a notification feed that
+ * counted seconds would rewrite every row on every tick. Anything under a
+ * minute is collapsed to the locale's "now" rather than "45s ago". */
 function fmtRelative(ts: string): string {
-  const mins = Math.floor((Date.now() - parseTs(ts).getTime()) / 60_000)
-  if (mins < 1) return 'now'
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  return days === 1 ? 'yesterday' : `${days}d ago`
+  const at = parseTs(ts)
+  const now = Date.now()
+  if (now - at.getTime() < 60_000) return fmtRelativeLocalized(now, { now })
+  return fmtRelativeLocalized(at, { now })
 }
 
 /**

@@ -1,8 +1,15 @@
 import { useMemo, useEffect, useState } from 'react'
 import type { CronJob } from '../types'
 import { convertCronTime, hourFractionInTz, todayCronDowInTz } from '../utils/tz'
+import { fmtDateFields, fmtWeekday } from '../i18n/format'
 
-const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+/** Grid columns, Monday-first. `DAY_COUNT` carries the index contract that
+ *  CRON_TO_GRID maps into; `dayLabel(i)` renders the localized name. Splitting
+ *  them keeps every `DAYS.map((_, i) => …)` slot computation byte-identical
+ *  while the visible header becomes translatable. */
+const DAY_COUNT = 7
+const DAY_INDEXES = Array.from({ length: DAY_COUNT }, (_, i) => i)
+const dayLabel = (gridIndex: number) => fmtWeekday(gridIndex + 1)
 // Cron DOW: 0=Sun,1=Mon..6=Sat → our grid: 0=Mon..6=Sun
 const CRON_TO_GRID: Record<number, number> = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 0: 6 }
 
@@ -35,7 +42,7 @@ export function parseCronSlots(job: CronJob, renderTz: string): Slot[] {
       const hf = hourFractionInTz(renderTz, ref)
       const h = Math.floor(hf)
       const m = Math.round((hf - h) * 60)
-      return DAYS.map((_, i) => ({ job, day: i, hour: h, minute: m }))
+      return DAY_INDEXES.map((i) => ({ job, day: i, hour: h, minute: m }))
     }
 
     let anchorSec = 0
@@ -191,10 +198,12 @@ export default function WeekGrid({ jobs, selectedId, onSelect, renderTz }: Props
     const d = parseInt(parts.find(p => p.type === 'day')?.value || '1')
     const monday = new Date(Date.UTC(y, m - 1, d))
     monday.setUTCDate(monday.getUTCDate() + mondayOffset)
-    return DAYS.map((_, i) => {
+    return DAY_INDEXES.map((i) => {
       const dt = new Date(monday)
       dt.setUTCDate(monday.getUTCDate() + i)
-      return `${(dt.getUTCMonth() + 1).toString().padStart(2, '0')}/${dt.getUTCDate().toString().padStart(2, '0')}`
+      // Localized day/month: a hardcoded MM/DD under a now-translated weekday
+      // read as "Mo. 07/30" in de, where the locale writes 30.07.
+      return fmtDateFields(dt, { month: '2-digit', day: '2-digit', timeZone: 'UTC' })
     })
   }, [tz])
 
@@ -217,9 +226,9 @@ export default function WeekGrid({ jobs, selectedId, onSelect, renderTz }: Props
       <div className="grid min-w-[600px]" style={{ gridTemplateColumns: '50px repeat(7, 1fr)' }}>
         {/* Header row */}
         <div className="py-2" />
-        {DAYS.map((d, i) => (
-          <div key={d} className={`py-2 text-center border-l border-l-border/20 ${i === todayGrid ? 'text-accent' : 'text-muted'}`}>
-            <div className="text-[11px] font-medium">{d}</div>
+        {DAY_INDEXES.map((i) => (
+          <div key={i} className={`py-2 text-center border-l border-l-border/20 ${i === todayGrid ? 'text-accent' : 'text-muted'}`}>
+            <div className="text-[11px] font-medium">{dayLabel(i)}</div>
             <div className="text-[10px]">{weekDates[i]}</div>
           </div>
         ))}
@@ -230,7 +239,7 @@ export default function WeekGrid({ jobs, selectedId, onSelect, renderTz }: Props
             <div className="text-[11px] text-muted pr-2 text-right py-1 border-t border-border/30 relative overflow-visible">
               {h.toString().padStart(2, '0')}:00
             </div>
-            {DAYS.map((_, dayIdx) => {
+            {DAY_INDEXES.map((dayIdx) => {
               const cellSlots = grid.get(`${dayIdx}-${h}`) || []
               const isNowRow = nowInRange && hi === nowRowIdx
               return (

@@ -1,6 +1,7 @@
 // Pure, side-effect-free helpers + localStorage accessors + constants for
 // Issue Radar. No React, no component imports — safe to pull into any module.
 import { Clock, Hash, type LucideIcon } from 'lucide-react'
+import { fmtRelative, toDate } from '../../../i18n/format'
 import { DASHBOARD_TABS, SORT_KEYS } from './types'
 import type { ActiveRepo, DashboardTab, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter } from './types'
 
@@ -72,52 +73,58 @@ export function detailPollMs(open: boolean): number {
  */
 export const LIST_POLL_MS = 60_000
 
-/** Compact "just now / 5m ago / 3h ago / 2d ago" from an epoch-ms timestamp.
+/** Compact "now / 5m ago / 3h ago / 2d ago" from an epoch-ms timestamp.
  * Used for the issue-list "Updated …" footer; returns '' for a falsy input
- * (e.g. before the first fetch). */
+ * (e.g. before the first fetch).
+ *
+ * Formatting is delegated to the locale-aware seam (`src/i18n/format.ts`): the
+ * previous ladder of template literals rendered English in every language, and
+ * carried its own `month`/`months` plural morphology, which is unexpressible
+ * outside English. */
 export function relativeTime(ms: number): string {
   if (!ms) return ''
-  const secs = Math.max(0, Math.floor((Date.now() - ms) / 1000))
-  if (secs < 45) return 'just now'
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  const days = Math.floor(hrs / 24)
-  return `${days}d ago`
+  return fmtRelative(ms)
 }
 
 /** Timeline-friendly label: within the last 24h it reads as a compact elapsed
- * time ("just now / 12m ago / 3h ago"); anything older falls back to the
- * calendar-based relativeDate ("Yesterday / 5 days ago / 2 months ago").
+ * time ("now / 12m ago / 3h ago"); anything older falls back to the
+ * calendar-based relativeDate ("yesterday / 5 days ago / 2 months ago").
  * Future timestamps (clock skew) defer to relativeDate. */
 export function relativeTimeOrDate(iso: string): string {
-  const then = new Date(iso)
-  if (isNaN(then.getTime())) return ''
+  const then = toDate(iso)
+  if (!then) return ''
   const secs = Math.floor((Date.now() - then.getTime()) / 1000)
-  if (secs >= 0 && secs < 86400) {
-    if (secs < 45) return 'just now'
-    const mins = Math.floor(secs / 60)
-    if (mins < 60) return `${mins}m ago`
-    return `${Math.floor(mins / 60)}h ago`
-  }
+  // Inside a day, show elapsed time compactly; the calendar wording below is
+  // only meaningful once a date boundary has been crossed.
+  if (secs >= 0 && secs < 86400) return fmtRelative(then)
   return relativeDate(iso)
 }
 
-/** Human "Today / Yesterday / N days ago" from an ISO timestamp. */
+/** Human "today / yesterday / N days ago" from an ISO timestamp.
+ *
+ * Counts whole CALENDAR days rather than elapsed seconds — 23:59 to 00:01 is
+ * "yesterday", not "now" — then lets CLDR word the result. `numeric: 'auto'`
+ * inside `fmtRelative` is what produces "yesterday"/"昨天"/"gestern" instead of
+ * a mechanical "1 day ago", and it removes the hand-rolled English plural
+ * suffixes this function used to carry for months and years.
+ *
+ * The `style: 'long'` override is deliberate: this label sits in a timeline
+ * where "5 days ago" reads better than the compact "5d ago". */
 export function relativeDate(iso: string): string {
-  const then = new Date(iso)
-  if (isNaN(then.getTime())) return ''
+  const then = toDate(iso)
+  if (!then) return ''
   const now = new Date()
   const d0 = new Date(then.getFullYear(), then.getMonth(), then.getDate())
   const n0 = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const days = Math.round((n0.getTime() - d0.getTime()) / 86400000)
-  if (days <= 0) return 'Today'
-  if (days === 1) return 'Yesterday'
-  if (days < 30) return `${days} days ago`
-  if (days < 365) { const m = Math.floor(days / 30); return `${m} month${m > 1 ? 's' : ''} ago` }
-  const y = Math.floor(days / 365)
-  return `${y} year${y > 1 ? 's' : ''} ago`
+  // Re-anchor onto whole days so the relative formatter picks the day/month/year
+  // unit from a calendar difference rather than from a partial-day remainder.
+  const anchored = new Date(n0.getTime() - days * 86400000)
+  // `unit: 'day'` is required: this function has already reduced its input to
+  // whole calendar days, and with an auto-picked unit a zero delta would mean
+  // "under one second" and render "now" for something that happened earlier
+  // today. Pinning the day unit renders "today" / "今天".
+  return fmtRelative(anchored, { style: 'long', now: n0.getTime(), unit: 'day' })
 }
 
 /** Read a persisted column width, falling back to `fallback` when the stored

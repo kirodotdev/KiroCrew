@@ -9,8 +9,12 @@ import type { CronPrefill } from '../utils/schedulePresets'
 import { SaveCreateLabel, CRON_SEL, expandDow } from '../utils/cronUtils'
 
 import { i18nT } from '../i18n/t'
+import { fmtWeekday } from '../i18n/format'
 export const TIMEZONES = ['America/Los_Angeles','America/Phoenix','America/Denver','America/Chicago','America/New_York','America/Sao_Paulo','Europe/London','Europe/Berlin','Europe/Paris','Asia/Kolkata','Asia/Shanghai','Asia/Tokyo','Australia/Sydney','Pacific/Auckland','UTC']
-const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+/** Monday-first weekday labels. A function, not a module-level array: a const
+ *  array of translated strings would freeze at the boot language. The index
+ *  contract is unchanged — grid index `i` still maps through GRID_TO_CRON_DOW. */
+const dayNames = () => [1, 2, 3, 4, 5, 6, 7].map((iso) => fmtWeekday(iso))
 const GRID_TO_CRON_DOW = [0, 1, 2, 3, 4, 5, 6, 0] // grid 1-7 → cron dow
 const CRON_DOW_TO_GRID: Record<number, number> = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 0: 7, 7: 7 }
 
@@ -237,7 +241,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
             <option value="minutes">{i18nT('components.jobForm.minutes')}</option><option value="hours">{i18nT('components.jobForm.hours')}</option><option value="days">{i18nT('components.jobForm.days')}</option>
           </select>
         </>) : schedMode === 'weekly' ? (<>
-          <div className="flex gap-1 flex-wrap">{DAY_NAMES.map((d, i) => (
+          <div className="flex gap-1 flex-wrap">{dayNames().map((d, i) => (
             <button key={d} type="button" onClick={() => toggleDay(i + 1)} className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${weekDays.includes(i + 1) ? 'bg-accent text-accent-fg border-accent' : 'bg-bg-elevated text-muted border-border hover:border-border-strong'}`}>{d}</button>
           ))}</div>
           <span className="text-muted text-[13px]">{i18nT('components.jobForm.at')}</span>

@@ -13,7 +13,7 @@ import { useProvider } from '../../providers'
 import type { CronJob } from '../../types'
 import { useAgents } from '../../hooks/useAgents'
 import { timeAgo } from '../../utils/timeAgo'
-import { PY_TO_CRON, CRON_SEL, DAY_LABELS } from '../../utils/cronUtils'
+import { PY_TO_CRON, CRON_SEL, dayLabels } from '../../utils/cronUtils'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
 import { useCronActions } from '../../hooks/useCronActions'
@@ -138,7 +138,7 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
               <option value="minutes">{i18nT('pages.overview.cronTab.min')}</option><option value="hours">{i18nT('pages.overview.cronTab.hr')}</option><option value="days">{i18nT('pages.overview.cronTab.day')}</option>
             </select>
           </>) : (<>
-            <div className="flex gap-1">{DAY_LABELS.map((d, i) => (
+            <div className="flex gap-1">{dayLabels().map((d, i) => (
               <button key={d} onClick={() => toggleDay(i + 1)} className={`px-2.5 py-1.5 rounded-md text-[13px] font-medium border cursor-pointer transition-all ${days.includes(i + 1) ? 'bg-accent text-accent-fg border-accent' : 'bg-bg-elevated text-muted border-border hover:border-border-strong'}`}>{d}</button>
             ))}</div>
             <span className="text-muted text-[13px]">{i18nT('pages.overview.cronTab.at')}</span>

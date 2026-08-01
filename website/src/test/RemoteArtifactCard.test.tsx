@@ -6,7 +6,7 @@
  *     hijacked by the row's Enter/Space handler (which now navigates to the
  *     in-app remote-detail viewer).
  *  2. A millisecond-epoch updated_at string must render a sane relative age,
- *     not "just now" forever (ms value misread as a far-future seconds epoch).
+ *     not "now" forever (ms value misread as a far-future seconds epoch).
  *
  * The row's primary action now NAVIGATES to the in-app read-only remote-detail
  * viewer (/artifacts/remote/:provider/:externalId) instead of opening the
@@ -102,19 +102,19 @@ describe('RemoteArtifactCard actionsDisabled', () => {
 })
 
 describe('RemoteArtifactCard updated_at rendering', () => {
-  it('renders a millisecond-epoch updated_at as a real age, not "just now"', () => {
+  it('renders a millisecond-epoch updated_at as a real age, not "now"', () => {
     // 2020-01-01T00:00:00Z in MILLISECONDS — years in the past.
     renderCard({ artifact: mkRemote({ updated_at: '1577836800000' }), provider: 'companion' })
-    // Should read as days/years ago, never "just now" (which is the bug: a ms
+    // Should read as days/years ago, never "now" (which is the bug: a ms
     // value misread as seconds lands in the far future → negative age).
-    expect(screen.queryByText('just now')).not.toBeInTheDocument()
-    expect(screen.getByText(/\d+d ago/)).toBeInTheDocument()
+    expect(screen.queryByText('now')).not.toBeInTheDocument()
+    expect(screen.getByText(/\d+(s|m|h|d|mo|y) ago/)).toBeInTheDocument()
   })
 
   it('still renders a seconds-epoch updated_at correctly', () => {
     // 2020-01-01T00:00:00Z in SECONDS.
     renderCard({ artifact: mkRemote({ updated_at: '1577836800' }), provider: 'companion' })
-    expect(screen.queryByText('just now')).not.toBeInTheDocument()
-    expect(screen.getByText(/\d+d ago/)).toBeInTheDocument()
+    expect(screen.queryByText('now')).not.toBeInTheDocument()
+    expect(screen.getByText(/\d+(s|m|h|d|mo|y) ago/)).toBeInTheDocument()
   })
 })

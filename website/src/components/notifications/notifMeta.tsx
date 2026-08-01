@@ -2,6 +2,9 @@ import { ClipboardList, Anchor, Heart, Bot, Lock, GitBranch, Bell, Clock } from 
 import type { ReactNode } from 'react'
 
 import { i18nT } from '../../i18n/t'
+// Aliased: this module exports its own `fmtTime`/`fmtFull` wrappers that add the
+// unknown-date fallback on top of these.
+import { fmtTime as fmtClockTime, fmtDateTime } from '../../i18n/format'
 
 /**
  * Shared notification metadata + helpers. Extracted verbatim from the former
@@ -119,12 +122,12 @@ export function safeInternalUrl(url: string | undefined): string | null {
 
 export function fmtTime(ts: string | number): string {
   const d = parseTs(ts)
-  return isNaN(d.getTime()) ? i18nT('components.notifications.notifMeta.unknown_date') : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return isNaN(d.getTime()) ? i18nT('components.notifications.notifMeta.unknown_date') : fmtClockTime(d)
 }
 
 export function fmtFull(ts: string | number): string {
   const d = parseTs(ts)
-  return isNaN(d.getTime()) ? i18nT('components.notifications.notifMeta.unknown_date') : d.toLocaleString()
+  return isNaN(d.getTime()) ? i18nT('components.notifications.notifMeta.unknown_date') : fmtDateTime(d)
 }
 
 export function stripMd(text: string): string {

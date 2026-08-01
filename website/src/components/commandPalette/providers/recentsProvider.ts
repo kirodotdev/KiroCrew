@@ -10,6 +10,7 @@ import type { ChatSlot, ChatFolder, CronJob } from '../../../types'
 import type { Result, ResourceProvider } from '../types'
 
 import { i18nT } from '../../../i18n/t'
+import { fmtDateFields, fmtRelative, toDate } from '../../../i18n/format'
 
 /**
  * Recents / quick-switcher — the unscoped empty-query default view (blended
@@ -111,23 +112,37 @@ function normalizeKey(key: string): string {
   return key.startsWith('dashboard_') ? key.slice('dashboard_'.length) : key
 }
 
-/** Telegram-style relative time (matches the sidebar's fmtRelativeTime):
- * today → "09:46", "Yesterday 21:12", weekday this week, short/full date. */
+/** Telegram-style relative time: today → "09:46", "yesterday 21:12", weekday
+ * this week, short/full date.
+ *
+ * ChatSidebar.tsx has a parallel implementation that is NOT yet migrated, so
+ * until that batch lands a non-English user sees this localized and the
+ * sidebar's host-locale. Tracked by the ratchet in localeFormatting.test.ts.
+ *
+ * Every branch previously read the BROWSER's locale (`toLocaleTimeString([])`,
+ * `toLocaleDateString([])`), so a Chinese dashboard on an en-US browser showed
+ * "3:04 PM" and "Jul 30". They now resolve against the app language, and the
+ * "Yesterday" literal comes from CLDR instead of being hardcoded English. */
 function fmtRelativeTime(ts: string | number | undefined): string | undefined {
   if (ts == null) return undefined
-  const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
-  if (isNaN(d.getTime())) return undefined
+  const d = toDate(ts)
+  if (!d) return undefined
   const now = new Date()
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
   const startOf6DaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  // `fmtDateFields`, not `fmtTime`: a style preset cannot be combined with
+  // explicit hour/minute components (ECMA-402 CreateDateTimeFormat step 37).
+  const time = fmtDateFields(d, { hour: '2-digit', minute: '2-digit' })
   if (d >= startOfToday) return time
-  if (d >= startOfYesterday) return `Yesterday ${time}`
-  if (d >= startOf6DaysAgo) return d.toLocaleDateString([], { weekday: 'short' })
+  // `fmtRelative` with a whole-day delta yields the locale's own "yesterday".
+  if (d >= startOfYesterday) {
+    return `${fmtRelative(startOfYesterday, { style: 'long', now: startOfToday.getTime() })} ${time}`
+  }
+  if (d >= startOf6DaysAgo) return fmtDateFields(d, { weekday: 'short' })
   if (d.getFullYear() === now.getFullYear())
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-  return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })
+    return fmtDateFields(d, { month: 'short', day: 'numeric' })
+  return fmtDateFields(d, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 /** Recency epoch (ms) for sorting live slots — last activity, else last msg, else created. */
