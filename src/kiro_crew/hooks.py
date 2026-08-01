@@ -7,9 +7,12 @@ Supports declarative rules and executable script hooks with timeout/sandboxing.
 from __future__ import annotations
 
 import asyncio
+import errno
 import fnmatch
 import json
 import logging
+import os
+import stat as _stat
 import time
 import uuid
 from collections.abc import Iterable
@@ -1349,6 +1352,7 @@ def safe_read_file_bytes_nolink(
     within_root: str | None = None,
     *,
     max_bytes: int | None = None,
+    allow_truncate: bool = False,
 ) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
@@ -1410,6 +1414,12 @@ def safe_read_file_bytes_nolink(
             data = fh.read(read_limit + 1)
         fd = -1  # consumed by fdopen
         if len(data) > read_limit:
+            # ``allow_truncate`` is for callers whose contract is "show as much
+            # as fits" rather than "refuse oversize" -- the artifact store
+            # displays a truncated view of a large linked file. The memory bound
+            # is unaffected: at most ``read_limit + 1`` bytes were ever read.
+            if allow_truncate:
+                return data[:read_limit]
             raise FileTooLargeError(f"File exceeds {read_limit // (1024 * 1024)} MB safety cap")
         return data
     except OSError:
@@ -1418,6 +1428,375 @@ def safe_read_file_bytes_nolink(
         if fd >= 0:
             try:
                 os.close(fd)
+            except OSError:
+                pass
+
+
+# errnos meaning "this filesystem has no extended attributes", as opposed to "the
+# lookup failed". Only the former is safe to treat as "nothing to carry".
+_XATTR_UNSUPPORTED_ERRNOS = frozenset(
+    e for e in (getattr(errno, n, None) for n in ("ENOTSUP", "EOPNOTSUPP", "ENOSYS"))
+    if e is not None
+)
+
+_ACCESS_CONTROL_XATTR_PREFIXES = (
+    "system.posix_acl_",  # POSIX ACLs: the actual permission set
+    "security.",          # SELinux/SMACK/capabilities labels
+)
+
+
+def _is_access_control_xattr(attr: str) -> bool:
+    """True when losing *attr* would leave the file less protected.
+
+    Only these justify refusing a write. `user.*` is application metadata: worth
+    carrying, not worth failing a save over on a filesystem that cannot store it.
+    """
+    return attr.startswith(_ACCESS_CONTROL_XATTR_PREFIXES)
+
+
+def safe_write_file_nolink(
+    raw: str,
+    content: str,
+    within_root: str | None = None,
+) -> bool:
+    """Overwrite an EXISTING regular file, pinned to the descriptor opened.
+
+    The write twin of :func:`safe_read_file_bytes_nolink`, and it exists for the
+    same reason: validating a path by name and then opening it by name leaves a
+    check-to-use window in which the final component -- or an ancestor
+    directory -- can be swapped for a symlink, so the write lands on a file the
+    caller never authorized. Here the open happens FIRST (``O_NOFOLLOW``), then
+    every check runs against that descriptor: ``fstat`` rejects hardlinks and
+    non-regular files, and when ``within_root`` is given the OPENED inode's real
+    path must resolve inside it and must not be sensitive. Failing to determine
+    the fd's real path fails closed.
+
+    The target is opened WITHOUT ``O_CREAT``: a caller mirroring content back to
+    a file it previously read has no business creating one, and refusing turns
+    "the file moved" into a no-op rather than a surprise new file. The bytes then
+    land via an atomic replace (staged sibling + directory-fd-relative rename),
+    so a write that fails partway leaves the original untouched instead of a
+    truncated file.
+
+    Returns True when the bytes were written, False on any rejection.
+    """
+    path = validate_file_path(raw)
+    if path is None:
+        return False
+    encoded = content.encode("utf-8")
+    try:
+        # O_RDWR, not O_WRONLY: the no-dir-fd path below needs to READ the
+        # original bytes before truncating so it can put them back if the write
+        # fails. Same inode checks either way.
+        fd = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return False
+    # The descriptor must survive validation (the no-dir-fd path below writes
+    # THROUGH it), so it cannot be closed in a blanket `finally`. Validation
+    # therefore runs in a nested function: every rejection is a single return
+    # here, and the one caller closes the fd on any of them. Returning False
+    # directly from inside the checks is what leaked descriptors -- one per
+    # rejected update, until the gateway ran out.
+
+    def _validate() -> tuple[int, tuple[int, int]] | None:
+        st = os.fstat(fd)
+        if st.st_nlink > 1 or not _stat.S_ISREG(st.st_mode):
+            return None
+        # Carried to the staged file below: a replace that dropped the original's
+        # permissions would silently turn a 0644 shared doc or an 0755 script
+        # into 0600 and break every other reader (or the execute bit).
+        mode = _stat.S_IMODE(st.st_mode)
+        if within_root is not None:
+            fd_real = _fd_real_path(fd)
+            if fd_real is None:
+                return None  # cannot verify containment -> fail closed
+            root_real = os.path.realpath(within_root)
+            try:
+                contained = os.path.commonpath([fd_real, root_real]) == root_real
+            except ValueError:
+                contained = False
+            if not contained:
+                return None  # opened inode escapes the approved tree
+            if is_sensitive_path(fd_real):
+                return None
+
+        # (st_dev, st_ino): the staged rename re-resolves `base` against a
+        # directory fd, and only this pair proves it lands on the checked file.
+        # st_uid vs geteuid: a rename installs a NEW inode owned by THIS
+        # process's user, so replacing a file owned by someone else (a
+        # group-writable file in a shared project) would silently transfer
+        # ownership away from its owner, and only root could chown it back. The
+        # caller uses this to pick the write mechanism.
+        # getattr, not os.geteuid() directly: it does not exist on Windows, and
+        # AttributeError is NOT an OSError -- it would escape this function's
+        # `except OSError`, escape the caller, and surface as a 500 with the
+        # descriptor leaked and current.html already written. Same reason
+        # O_DIRECTORY and fchmod are guarded below; this is the third
+        # POSIX-only attribute in this one function.
+        return mode, (st.st_dev, st.st_ino)
+
+    try:
+        validated = _validate()
+    except OSError:
+        validated = None
+    if validated is None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return False
+    src_mode, src_ident = validated
+
+    # From here on the descriptor stays OPEN. It is the only handle proven to
+    # point at the validated inode, and the no-dir-fd path below writes through
+    # it rather than re-resolving the name.
+
+    # ATOMIC REPLACE, never truncate-then-write. Truncating first means a write
+    # that fails partway (ENOSPC, EIO, EDQUOT) leaves the user's file empty or
+    # half-written with no way back. Stage the complete payload beside the target
+    # and rename over it: the rename is atomic, so the file is either the old
+    # bytes or all of the new ones.
+    #
+    # The staging + rename are DIRECTORY-FD RELATIVE. Doing them by name would
+    # hand back the check-to-use window the O_NOFOLLOW open just closed -- the
+    # parent could be swapped for a symlink between the checks above and the
+    # rename. The directory fd is opened O_NOFOLLOW and re-verified, and both
+    # halves of the rename resolve against it.
+    parent, base = os.path.split(path)
+    # A UNIQUE staging name, created with O_EXCL. A predictable sibling could
+    # already exist as real user data, and O_CREAT|O_TRUNC would have destroyed
+    # it and then renamed it away. O_EXCL also means we only ever clean up a file
+    # this call created.
+    tmp_name = f".{base}.kirocrew-{os.getpid()}-{uuid.uuid4().hex}.tmp"
+    # Directory-fd pinning is an ENHANCEMENT, not a precondition. Where the POSIX
+    # APIs exist (Linux) the staging and rename resolve against an open handle on
+    # the parent, so an ancestor swapped mid-save cannot redirect the write. Where
+    # they do not (Windows), the same staged payload is renamed BY NAME instead --
+    # which is exactly what every editor's atomic save does, and is what actually
+    # protects the user's data: the file is either the old bytes or all of the new
+    # ones, never a shredded half-write.
+    #
+    # This used to fail closed without the pinned variant. That made the whole
+    # mirror-back feature Linux-only in order to defend against someone renaming
+    # directories inside your project during the milliseconds of a save, on your
+    # own machine, to a file you explicitly asked us to link. Losing the feature
+    # on two platforms was the larger harm.
+    #
+    # Use getattr for O_DIRECTORY: a bare os.O_DIRECTORY raises AttributeError,
+    # which `except OSError` would NOT catch, surfacing as a 500.
+    # NOTE: the capability probe names os.rename, not os.replace. CPython lists
+    # only os.rename in supports_dir_fd even though os.replace accepts the same
+    # arguments -- probing os.replace silently disables pinning on Linux.
+    o_directory = getattr(os, "O_DIRECTORY", 0)
+    use_dir_fd = bool(
+        o_directory
+        and os.open in getattr(os, "supports_dir_fd", set())
+        and os.rename in getattr(os, "supports_dir_fd", set())
+    )
+
+    # Extended attributes are read from the DESCRIPTOR, not the pathname, and read
+    # HERE while it is still open. A by-name `listxattr(path)` re-resolves the
+    # whole path, so an ancestor renamed mid-save makes the lookup fail while the
+    # pinned rename below still succeeds -- installing a replacement stripped of
+    # the owner's ACL. Everything else in this function is descriptor-pinned; this
+    # was the one read that was not.
+    #
+    # A filesystem that does not support xattrs at all is NOT an error: there is
+    # nothing on the source to lose. Any OTHER failure means we cannot know what
+    # we would be dropping, so it refuses.
+    src_xattrs: list[tuple[str, bytes]] = []
+    if all(hasattr(os, a) for a in ("listxattr", "getxattr", "setxattr")):
+        try:
+            for _attr in os.listxattr(fd):
+                src_xattrs.append((_attr, os.getxattr(fd, _attr)))
+        except OSError as exc:
+            if exc.errno not in _XATTR_UNSUPPORTED_ERRNOS:
+                logger.warning(
+                    "refusing source write to %r: could not read its extended attributes "
+                    "(%s), so a replacement could silently drop access controls",
+                    path,
+                    exc,
+                )
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                return False
+            src_xattrs = []
+
+    # POSIX: the descriptor's job is done -- the staged rename below is pinned by
+    # the directory fd instead, and holding a second handle buys nothing.
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+    dfd = -1
+    created = False
+    try:
+        if use_dir_fd:
+            try:
+                dfd = os.open(parent, os.O_RDONLY | o_directory | getattr(os, "O_NOFOLLOW", 0))
+            except OSError:
+                return False
+        if use_dir_fd and within_root is not None:
+            dir_real = _fd_real_path(dfd)
+            if dir_real is None:
+                return False  # cannot verify containment -> fail closed
+            root_real = os.path.realpath(within_root)
+            try:
+                contained = os.path.commonpath([dir_real, root_real]) == root_real
+            except ValueError:
+                contained = False
+            if not contained or is_sensitive_path(dir_real):
+                return False
+        elif within_root is not None:
+            # No directory handle to interrogate, so the parent is verified by
+            # its resolved path. Weaker than the pinned check (a swap between
+            # this and the rename is not detectable) but it still refuses a
+            # parent outside the authorised root or inside a sensitive location.
+            dir_real = os.path.realpath(parent)
+            root_real = os.path.realpath(within_root)
+            try:
+                contained = os.path.commonpath([dir_real, root_real]) == root_real
+            except ValueError:
+                contained = False
+            if not contained or is_sensitive_path(dir_real):
+                return False
+        # O_NOFOLLOW guards only the FINAL component, so opening the parent by
+        # name leaves an INTERMEDIATE ancestor swappable between the file's
+        # validation and this open: /project/a/c/doc with `a` replaced by a
+        # symlink to /project/b yields a directory fd for a different `c`, and
+        # the rename would overwrite /project/b/c/doc instead. Re-resolving
+        # `base` through the pinned fd and requiring the SAME (dev, ino) closes
+        # that: if any ancestor changed, this resolves to a different inode or
+        # not at all.
+        if use_dir_fd:
+            try:
+                dst = os.stat(base, dir_fd=dfd, follow_symlinks=False)
+            except OSError:
+                return False
+            if (dst.st_dev, dst.st_ino) != src_ident:
+                logger.warning(
+                    "refusing source write to %r: the pinned parent no longer resolves to "
+                    "the validated file",
+                    path,
+                )
+                return False
+            tfd = os.open(
+                tmp_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=dfd,
+            )
+        else:
+            tfd = os.open(
+                os.path.join(parent, tmp_name),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+        created = True
+        try:
+            written = 0
+            while written < len(encoded):
+                written += os.write(tfd, encoded[written:])
+            # Restore the target's permissions on the descriptor BEFORE the
+            # rename, so the replacement is never briefly visible as 0600.
+            # Via platform_compat: os.fchmod does not exist on Windows, and a
+            # bare call would raise AttributeError -- which `except OSError`
+            # would NOT catch, surfacing as a 500 mid-update.
+            platform_compat.fchmod_safe(tfd, src_mode)
+            # Carry extended attributes across the replace. The in-place write
+            # this replaced preserved them for free by never changing the inode;
+            # a fresh inode starts with none, which silently drops POSIX ACLs
+            # (stored as system.posix_acl_access) and any user.* metadata.
+            #
+            # Split by what the attribute DOES, rather than one policy for all:
+            #
+            #  * an ACCESS-CONTROL attribute that fails to copy is a security
+            #    regression -- the rename would install an inode the owner has
+            #    protected less than the one it replaced -- so the write is
+            #    REFUSED and the original is left untouched;
+            #  * an informational `user.*` attribute is best effort, because
+            #    failing closed there would make every linked write fail on a
+            #    filesystem that simply does not support xattrs (tmpfs, several
+            #    network mounts), which is worse than losing a tag.
+            #
+            # A source with NO xattrs needs nothing carried, so an unsupported
+            # filesystem is not an error -- there is nothing to lose.
+            #
+            # Values were captured from the validated DESCRIPTOR above, so this
+            # loop cannot be affected by a path that moved since.
+            for attr, value in src_xattrs:
+                try:
+                    os.setxattr(tfd, attr, value)
+                except OSError:
+                    if _is_access_control_xattr(attr):
+                        logger.warning(
+                            "refusing source write to %r: could not carry access-control "
+                            "attribute %r onto the replacement",
+                            path,
+                            attr,
+                        )
+                        return False
+                    continue  # informational attribute -- keep going
+            os.fsync(tfd)
+        finally:
+            os.close(tfd)
+        # LAST-MOMENT re-check, immediately before the rename.
+        #
+        # rename() replaces whatever the name points at RIGHT NOW, and the
+        # earlier identity check ran before the payload was staged -- a write
+        # plus fsync, which on a slow filesystem is a wide window. An editor
+        # doing its own atomic save in that window swaps in a NEW inode, and the
+        # rename would silently overwrite content newer than what the user is
+        # editing here. Re-checking last shrinks the window from "duration of
+        # the staged write" to the few instructions below, and a detected change
+        # REFUSES rather than clobbers.
+        #
+        # This is a narrowing, not a guarantee: a genuine compare-and-swap
+        # rename needs renameat2(RENAME_EXCHANGE), which the stdlib does not
+        # expose (and which is Linux-only). The remaining window cannot be
+        # closed with os.rename, so the caller keeps its own snapshot and the
+        # user's newer file wins -- the safe direction.
+        try:
+            pre = (
+                os.stat(base, dir_fd=dfd, follow_symlinks=False)
+                if use_dir_fd
+                else os.stat(path, follow_symlinks=False)
+            )
+        except OSError:
+            return False
+        if (pre.st_dev, pre.st_ino) != src_ident:
+            logger.warning(
+                "refusing source write to %r: the file changed on disk after validation "
+                "(concurrent save); not overwriting the newer content",
+                path,
+            )
+            return False
+        if use_dir_fd:
+            os.rename(tmp_name, base, src_dir_fd=dfd, dst_dir_fd=dfd)
+        else:
+            # os.replace, not os.rename: on Windows rename REFUSES an existing
+            # destination, while replace overwrites it -- and does so atomically,
+            # which is the property that matters here.
+            os.replace(os.path.join(parent, tmp_name), path)
+        created = False  # renamed away; nothing left to clean up
+        return True
+    except OSError:
+        return False
+    finally:
+        if created:
+            try:
+                if dfd >= 0:
+                    os.unlink(tmp_name, dir_fd=dfd)
+                else:
+                    os.unlink(os.path.join(parent, tmp_name))
+            except OSError:
+                pass
+        if dfd >= 0:
+            try:
+                os.close(dfd)
             except OSError:
                 pass
 

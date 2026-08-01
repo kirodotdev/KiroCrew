@@ -29,6 +29,8 @@ vi.mock('../api/client', () => ({
     artifactSessionDocs: vi.fn().mockResolvedValue({ docs: [] }),
     materializeArtifact: vi.fn().mockResolvedValue({}),
     setArtifactPinned: vi.fn().mockResolvedValue({}),
+    // Files tab: add-to-library on a file row.
+    createArtifact: vi.fn().mockResolvedValue({ slug: 'new-slug', version: 1 }),
   },
 }))
 
@@ -526,15 +528,215 @@ describe('ActivityViewer', () => {
       global.fetch = prevFetch
     }
   })
+
+  /* ── Files tab: add a file to the artifact library ─────────────────────────
+   * The Artifacts tab lists artifact records only, so a plain file can no
+   * longer reach the library by extension alone. The explicit way in lives on
+   * the file row itself. */
+  describe('add to artifact library', () => {
+    const filesProps = { ...baseProps, view: 'files' as const, onFileOpen: vi.fn() }
+
+    /** Stub the file-read fetch the promote path uses to load the bytes. */
+    function withFileRead(text: string, ok = true, truncated = false) {
+      const prevFetch = global.fetch
+      global.fetch = vi.fn().mockResolvedValue({
+        ok, status: ok ? 200 : 500, text: async () => text, json: async () => ({ runs: [] }),
+        // /api/file-read signals a truncated read here; promotion must refuse
+        // it rather than persist the prefix as a whole document.
+        headers: { get: (h: string) => (h === 'X-Truncated' && truncated ? 'true' : null) },
+      }) as unknown as typeof fetch
+      return () => { global.fetch = prevFetch }
+    }
+
+    beforeEach(() => {
+      // No clearMocks in the vitest config, so calls accumulate across tests —
+      // the "never pulls the library" assertion below counts calls, so both
+      // spies are cleared here rather than only re-stubbed.
+      vi.mocked(api.artifacts).mockClear()
+      vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] } as never)
+      vi.mocked(api.createArtifact).mockClear()
+      vi.mocked(api.createArtifact).mockResolvedValue({ slug: 'notes-md', version: 1 } as never)
+    })
+
+    it('locks every promote control while one promotion is in flight', async () => {
+      // Dedup is resolved server-side on source_path, so two concurrent POSTs
+      // can both pass the pre-create lookup and mint duplicate records. The
+      // lock therefore has to be global, not scoped to the row being clicked.
+      const restore = withFileRead('# Notes')
+      let release: (v: unknown) => void = () => {}
+      vi.mocked(api.createArtifact).mockImplementation(
+        () => new Promise(res => { release = res }) as never,
+      )
+      try {
+        render(
+          <ActivityViewer
+            {...filesProps}
+            files={[{ path: '/proj/a.md', source: 'tool' }, { path: '/proj/b.md', source: 'tool' }]}
+          />,
+          { wrapper },
+        )
+        fireEvent.click(await screen.findByTestId('file-artifact-/proj/a.md'))
+        await waitFor(() => {
+          expect(screen.getByTestId('file-artifact-/proj/b.md')).toBeDisabled()
+        })
+        // A second click on the OTHER row must not start a second create.
+        fireEvent.click(screen.getByTestId('file-artifact-/proj/b.md'))
+        expect(api.createArtifact).toHaveBeenCalledTimes(1)
+        release({ slug: 'a-md', version: 1 })
+      } finally {
+        restore()
+      }
+    })
+
+    it('refuses to promote a truncated read instead of persisting the prefix', async () => {
+      // A file over the read limit comes back partial. Promoting it would store
+      // the prefix as though it were the whole document -- and a disposable file
+      // is COPIED, so nothing would point at the original and the loss would be
+      // silent and permanent.
+      const restore = withFileRead('# only the first half', true, true)
+      try {
+        render(
+          <ActivityViewer {...filesProps} files={[{ path: '/proj/huge.md', source: 'tool' }]} />,
+          { wrapper },
+        )
+        fireEvent.click(await screen.findByTestId('file-artifact-/proj/huge.md'))
+        await waitFor(() => {
+          expect(api.createArtifact).not.toHaveBeenCalled()
+        })
+      } finally {
+        restore()
+      }
+    })
+
+    it('adds a supported file to the library, sending the path for the server to classify', async () => {
+      const restore = withFileRead('# Notes')
+      try {
+        render(
+          <ActivityViewer {...filesProps} files={[{ path: '/proj/notes.md', source: 'tool' }]} />,
+          { wrapper },
+        )
+        const btn = await screen.findByTestId('file-artifact-/proj/notes.md')
+        // Revealed on row hover AND on keyboard focus — never hover-only.
+        expect(btn.className).toContain('group-hover:opacity-100')
+        expect(btn.className).toContain('group-focus-within:opacity-100')
+        fireEvent.click(btn)
+        await waitFor(() => {
+          // source_path travels; copy-vs-link is the SERVER's call, so the
+          // frontend sends the path and does not decide.
+          // The REAL session key is passed as the second argument so the
+          // server's restricted-session gate applies. With the transport's
+          // shared `dashboard:ui` placeholder an incognito session could
+          // persist a promoted file its restriction was meant to refuse.
+          expect(api.createArtifact).toHaveBeenCalledWith(
+            {
+              name: 'notes.md',
+              content: '# Notes',
+              kind: 'markdown',
+              source_path: '/proj/notes.md',
+              origin_session_key: 'test-slot',
+            },
+            'dashboard:test-slot',
+          )
+        })
+      } finally {
+        restore()
+      }
+    })
+
+    it('offers nothing on a file type the artifact store cannot render', async () => {
+      const restore = withFileRead('print(1)')
+      try {
+        render(
+          <ActivityViewer
+            {...filesProps}
+            files={[{ path: '/proj/main.py', source: 'tool' }, { path: '/proj/ok.md', source: 'tool' }]}
+          />,
+          { wrapper },
+        )
+        // The supported sibling proves the control renders at all here, so the
+        // .py row's absence is the extension gate and not a mount failure.
+        expect(await screen.findByTestId('file-artifact-/proj/ok.md')).toBeInTheDocument()
+        expect(screen.queryByTestId('file-artifact-/proj/main.py')).not.toBeInTheDocument()
+      } finally {
+        restore()
+      }
+    })
+
+    it('opens the existing artifact instead of saving a second one', async () => {
+      const restore = withFileRead('# Notes')
+      const onArtifactOpen = vi.fn()
+      try {
+        // A LINKED artifact carries source_path, which is the join this uses.
+        vi.mocked(api.artifacts).mockResolvedValue({
+          artifacts: [{ slug: 'notes-md', name: 'notes.md', kind: 'markdown', source_path: '/proj/notes.md' }],
+        } as never)
+        render(
+          <ActivityViewer
+            {...filesProps}
+            files={[{ path: '/proj/notes.md', source: 'tool' }]}
+            onArtifactOpen={onArtifactOpen}
+          />,
+          { wrapper },
+        )
+        const btn = await screen.findByTestId('file-artifact-/proj/notes.md')
+        // Accent, and NOT hover-gated — an already-added file says so at a glance.
+        await waitFor(() => { expect(btn.className).toContain('text-accent') })
+        expect(btn.className).not.toContain('opacity-0')
+        fireEvent.click(btn)
+        expect(onArtifactOpen).toHaveBeenCalledWith('notes-md')
+        // The whole point: no duplicate save.
+        expect(api.createArtifact).not.toHaveBeenCalled()
+      } finally {
+        restore()
+      }
+    })
+
+    it('never pulls the artifact library for a session that touched no addable file', async () => {
+      const restore = withFileRead('x')
+      try {
+        render(
+          <ActivityViewer {...filesProps} files={[{ path: '/proj/main.py', source: 'tool' }]} />,
+          { wrapper },
+        )
+        expect(await screen.findByText('Changed files')).toBeInTheDocument()
+        expect(api.artifacts).not.toHaveBeenCalled()
+      } finally {
+        restore()
+      }
+    })
+
+    it('marks the row when the add fails, leaving it retryable', async () => {
+      const restore = withFileRead('unreadable', false)
+      try {
+        render(
+          <ActivityViewer {...filesProps} files={[{ path: '/proj/notes.md', source: 'tool' }]} />,
+          { wrapper },
+        )
+        const btn = await screen.findByTestId('file-artifact-/proj/notes.md')
+        fireEvent.click(btn)
+        await waitFor(() => {
+          expect(screen.getByTestId('file-artifact-/proj/notes.md').className).toContain('text-danger')
+        })
+        expect(api.createArtifact).not.toHaveBeenCalled()
+        // Still a live control, not a dead-end.
+        expect(screen.getByTestId('file-artifact-/proj/notes.md')).toBeEnabled()
+      } finally {
+        restore()
+      }
+    })
+  })
 })
 
-// ── Artifacts tab: the widget-as-artifact merge ─────────────────────────────
+// ── Artifacts tab: artifact records only ────────────────────────────────────
 //
-// SessionArtifactsTab merges TWO inputs: real session-scoped artifacts (which is
-// how auto-registered widgets surface — their HTML is inline in the message and
-// never hits disk, so the file-backed scan below cannot see them) and the
-// virtual session documents. These tests pin the merge, the dedup, and the star
-// routing. SessionArtifactsTab uses useNavigate, so it needs a Router.
+// SessionArtifactsTab lists real artifact RECORDS from two queries over the same
+// store: the session's involvement scope (`?touched_by=`) and the whole library.
+// Auto-registered widgets surface through the first — their HTML is inline in the
+// message and never hits disk. It used to run a THIRD query for "session
+// documents" (plain files admitted by extension), which put scratch notes in the
+// library; these tests pin that those are gone, plus the de-dup and the
+// save-permanently routing. SessionArtifactsTab uses useNavigate, so it needs a
+// Router.
 describe('ActivityViewer — Artifacts tab', () => {
   const artifactProps = {
     subagents: {},
@@ -580,86 +782,60 @@ describe('ActivityViewer — Artifacts tab', () => {
 
   it('lists an auto-registered widget artifact (no filesystem path)', async () => {
     vi.mocked(api.artifacts).mockResolvedValue({
-      artifacts: [{ slug: 'abc123', name: 'Sales Chart', kind: 'widget', pinned: false }],
+      artifacts: [{ slug: 'abc123', name: 'Sales Chart', kind: 'widget', pinned: false, auto_registered: true }],
     } as never)
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
     expect(await screen.findByText('Sales Chart')).toBeInTheDocument()
-    // Offers to star (hollow), since auto-registration leaves it unpinned.
-    expect(screen.getByLabelText('Star Sales Chart')).toBeInTheDocument()
+    // Auto-registered + unpinned is the sweepable state, so this row is the one
+    // that offers to save it permanently.
+    expect(screen.getByTestId('artifact-save-abc123')).toBeInTheDocument()
   })
 
-  it('shows a pinned artifact as starred', async () => {
+  it('offers no save action once an auto-registered widget is pinned', async () => {
+    // Pinning is one-way in this panel: un-pinning only buys eligibility for
+    // the sweep, so a pinned row must NOT render a toggle back.
     vi.mocked(api.artifacts).mockResolvedValue({
-      artifacts: [{ slug: 'abc123', name: 'Kept', kind: 'widget', pinned: true }],
+      artifacts: [{ slug: 'abc123', name: 'Kept', kind: 'widget', pinned: true, auto_registered: true }],
     } as never)
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    expect(await screen.findByLabelText('Unstar Kept')).toBeInTheDocument()
+    expect(await screen.findByText('Kept')).toBeInTheDocument()
+    expect(screen.queryByTestId('artifact-save-abc123')).not.toBeInTheDocument()
   })
 
-  it('merges artifacts and session documents into one list', async () => {
+  it('offers no save action on an explicitly created artifact', async () => {
+    // Nothing sweeps a non-auto-registered record, so the control would promise
+    // a safety it is not providing.
     vi.mocked(api.artifacts).mockResolvedValue({
-      artifacts: [{ slug: 'w1', name: 'Widget One', kind: 'widget', pinned: false }],
-    } as never)
-    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
-      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: '', saved: false, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
+      artifacts: [{ slug: 'plan-md', name: 'Launch plan', kind: 'markdown', pinned: false, auto_registered: false }],
     } as never)
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    expect(await screen.findByText('Widget One')).toBeInTheDocument()
-    expect(screen.getByText('notes.md')).toBeInTheDocument()
+    expect(await screen.findByText('Launch plan')).toBeInTheDocument()
+    expect(screen.queryByTestId('artifact-save-plan-md')).not.toBeInTheDocument()
   })
 
-  it('does not double-list a materialized doc that is also an artifact', async () => {
-    // A materialized document is BOTH inputs. The path-aware doc row wins, so
-    // clicking it can still open the file.
-    vi.mocked(api.artifacts).mockResolvedValue({
-      artifacts: [{ slug: 'notes-md', name: 'notes.md', kind: 'markdown', pinned: true }],
-    } as never)
-    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
-      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: 'notes-md', saved: true, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
-    } as never)
+  it('lists only artifact records — a scratch file this session wrote is not one', async () => {
+    // The tab used to run a second query (GET /api/artifacts/session-docs) that
+    // admitted any path by extension (.md/.txt/.rst/…), so a scratch note the
+    // agent wrote appeared here as if it were an artifact. Files belong to the
+    // Files tab; getting into the library is an explicit act.
+    mockArtifactQueries([], [])
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    await waitFor(() => { expect(screen.getAllByText('notes.md')).toHaveLength(1) })
-    // The surviving row is the doc row — it shows the path as its subtitle.
-    expect(screen.getByText('/p/notes.md')).toBeInTheDocument()
+    expect(await screen.findByText(/No artifacts in this chat yet/)).toBeInTheDocument()
+    expect(screen.queryByText('notes.md')).not.toBeInTheDocument()
+    expect(api.artifactSessionDocs).not.toHaveBeenCalled()
   })
 
-  it('starring an artifact row pins it (no materialize call)', async () => {
+  it('saving a sweepable widget pins it', async () => {
     vi.mocked(api.artifacts).mockResolvedValue({
-      artifacts: [{ slug: 'w1', name: 'Widget One', kind: 'widget', pinned: false }],
+      artifacts: [{ slug: 'w1', name: 'Widget One', kind: 'widget', pinned: false, auto_registered: true }],
     } as never)
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    fireEvent.click(await screen.findByLabelText('Star Widget One'))
+    fireEvent.click(await screen.findByTestId('artifact-save-w1'))
     await waitFor(() => {
-      expect(api.setArtifactPinned).toHaveBeenCalledWith('w1', true)
+      // The REAL session key travels so a restricted slot is gated on the pin too.
+      expect(api.setArtifactPinned).toHaveBeenCalledWith('w1', true, 'dashboard:test-slot')
     })
     expect(api.materializeArtifact).not.toHaveBeenCalled()
-  })
-
-  it('starring an unsaved document materializes it instead of pinning', async () => {
-    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
-      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: '', saved: false, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
-    } as never)
-    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    fireEvent.click(await screen.findByLabelText('Star notes.md'))
-    await waitFor(() => {
-      expect(api.materializeArtifact).toHaveBeenCalledWith('/p/notes.md', 'test-slot')
-    })
-  })
-
-  it('does not double-list a materialized doc that was later UNSTARRED', async () => {
-    // The session-docs backend maps path->slug from PINNED artifacts only, so an
-    // unstarred materialized doc reports slug:'' — matching on slug alone would
-    // let its artifact twin through as a second row with its own star.
-    vi.mocked(api.artifacts).mockResolvedValue({
-      artifacts: [{ slug: 'notes-md', name: 'notes.md', kind: 'markdown', pinned: false, source_path: '/p/notes.md' }],
-    } as never)
-    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
-      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: '', saved: false, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
-    } as never)
-    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    await waitFor(() => { expect(screen.getAllByText('notes.md')).toHaveLength(1) })
-    // The surviving row is the path-aware doc row.
-    expect(screen.getByText('/p/notes.md')).toBeInTheDocument()
   })
 
   it('shows the empty state when the session produced nothing and the library is empty', async () => {
@@ -668,16 +844,11 @@ describe('ActivityViewer — Artifacts tab', () => {
   })
 
   it('keeps a file-backed artifact this session only READ in the session section', async () => {
-    // The doc-twin exclusion must join on the session's own doc paths, not on
-    // "has a source_path at all". A file-backed artifact the agent merely read
-    // is not one of this session's documents, so a blanket exclusion would
-    // banish it to "Artifact library" — dropping the consumed-artifact case the
+    // A file-backed artifact the agent merely read is still a real artifact
+    // record and belongs under "This session" — the consumed-artifact case the
     // touched_by scan exists to surface.
     vi.mocked(api.artifacts).mockResolvedValue({
       artifacts: [{ slug: 'spec-md', name: 'spec.md', kind: 'markdown', pinned: false, source_path: '/p/spec.md' }],
-    } as never)
-    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
-      docs: [{ path: '/p/other.md', name: 'other.md', slug: '', saved: false, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
     } as never)
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
     // Renders once, under the session header — not duplicated into the library.
@@ -719,22 +890,6 @@ describe('ActivityViewer — Artifacts tab', () => {
     // 'Made Here' stays once (session only) — the session item is excluded from
     // library search results.
     expect(screen.getAllByText('Made Here')).toHaveLength(1)
-  })
-
-  it('does not list a library twin of an unstarred materialized doc', async () => {
-    // Same slug:'' state the section-A test covers, but from the library side:
-    // the doc row claims no slug, so only a source_path join keeps its library
-    // twin from rendering as a second copy of the same document.
-    mockArtifactQueries(
-      [],
-      [{ slug: 'notes-md', name: 'notes.md', kind: 'markdown', pinned: false, source_path: '/p/notes.md' }],
-    )
-    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
-      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: '', saved: false, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
-    } as never)
-    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    await waitFor(() => { expect(screen.getAllByText('notes.md')).toHaveLength(1) })
-    expect(screen.getByText('/p/notes.md')).toBeInTheDocument()
   })
 
   it('shows the empty hero and the library bridge when the session touched nothing', async () => {
@@ -852,21 +1007,21 @@ describe('ActivityViewer — Artifacts tab', () => {
     expect(onArtifactOpen).toHaveBeenCalledWith('old-doc')
   })
 
-  it('still opens a DOC row as a file, not an artifact tab', async () => {
-    // A doc row addresses a path on disk; only the file tab can edit/save it,
-    // so it must keep routing to onFileOpen even though it has an artifact twin.
+  it('never routes an Artifacts-tab row to the file opener', async () => {
+    // The tab no longer holds anything path-addressable, so nothing here can
+    // reach onFileOpen — that is the Files tab's job.
     const onArtifactOpen = vi.fn()
     const onFileOpen = vi.fn()
-    vi.mocked(api.artifactSessionDocs).mockResolvedValue({
-      docs: [{ path: '/p/notes.md', name: 'notes.md', slug: 'notes-md', saved: true, session_key: 'test-slot', session_title: '', updated_at: '', message_ts: '' }],
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{ slug: 'notes-md', name: 'notes.md', kind: 'markdown', pinned: true, source_path: '/p/notes.md' }],
     } as never)
     render(
       <ActivityViewer {...artifactProps} onFileOpen={onFileOpen} onArtifactOpen={onArtifactOpen} />,
       { wrapper: routerWrapper },
     )
     fireEvent.click(await screen.findByText('notes.md'))
-    expect(onFileOpen).toHaveBeenCalledWith('/p/notes.md')
-    expect(onArtifactOpen).not.toHaveBeenCalled()
+    expect(onArtifactOpen).toHaveBeenCalledWith('notes-md')
+    expect(onFileOpen).not.toHaveBeenCalled()
   })
 
   it('falls back to the detail page when no panel host is supplied', async () => {

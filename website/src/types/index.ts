@@ -749,6 +749,17 @@ export interface Artifact {
   /** User pin/favorite mark. Metadata-only (no version bump). Drives the
    * All | Pinned filter on the Artifacts page. */
   pinned?: boolean
+  /** True when the store created this record itself from a chat-emitted
+   * `<mcwidget>` rather than from an explicit save. Serialized straight off the
+   * backend dataclass field of the same name (`Artifact.to_dict` is an
+   * `asdict`, so every list/detail response already carried it — only this type
+   * was missing it). Load-bearing for the chat Artifacts panel: the store
+   * sweeps auto-registered records oldest-first past
+   * `MAX_AUTO_WIDGET_ARTIFACTS` (200) unless `pinned`, so an
+   * auto-registered-and-unpinned artifact is the ONLY one whose survival a
+   * "save permanently" action changes. Absent on older payloads — treat
+   * undefined as false. */
+  auto_registered?: boolean
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
 }

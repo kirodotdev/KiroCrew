@@ -297,6 +297,13 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
     group is already gone) fall back to the single-process kill. Both the
     dashboard tunnel (``connect``) and the login callback tunnel (``login``) go
     through this so neither leaves an orphaned plugin/port behind.
+
+    WINDOWS has no ``os.killpg``/``os.getpgid``, so the group signal is not merely
+    unavailable there -- it can never succeed, and the fallback
+    ``proc.terminate()`` kills ONLY the wrapper, leaving the plugin holding the
+    forwarded port exactly as this function exists to prevent. Windows therefore
+    gets its own tree kill via ``taskkill /T``, which walks the child chain the
+    way a process group does on POSIX.
     """
     if proc is None or proc.poll() is not None:
         return
@@ -307,6 +314,44 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
             return True
         except (ProcessLookupError, PermissionError, OSError, AttributeError):
             return False
+
+    def _kill_tree_windows() -> bool:
+        """``taskkill /T /F`` the wrapper and every process below it.
+
+        /T includes the child tree, /F is forceful (the plugin does not handle a
+        graceful console event). Returns False so the caller can still fall back
+        if taskkill is missing or refuses.
+        """
+        # getattr, not proc.pid: this helper accepts any Popen-LIKE object, and the
+        # POSIX branch already tolerates one without a pid (its `_signal_group`
+        # catches AttributeError and falls back to terminate()). Without the same
+        # tolerance here, a caller passing a lightweight stand-in works on Linux
+        # and raises on Windows.
+        pid = getattr(proc, "pid", None)
+        if pid is None:
+            return False
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        # taskkill returns non-zero when the pid already exited, which is the
+        # desired end state, so success is judged by the process being gone.
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
+    if os.name == "nt":
+        if _kill_tree_windows():
+            return
+        # Fall through: better a parent-only kill than nothing.
 
     try:
         if not _signal_group(signal.SIGTERM):

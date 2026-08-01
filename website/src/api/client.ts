@@ -682,14 +682,30 @@ function trackArtifactWrite(url: string, res: Promise<Response>): Promise<Respon
 }
 
 const get = (url: string) => fetch(url, { headers: { ..._sk } })
-const post = (url: string, body?: object) =>
-  trackArtifactWrite(url, fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: body ? JSON.stringify(body) : undefined }))
+const post = (url: string, body?: object, sessionKey?: string) =>
+  trackArtifactWrite(url, fetch(url, {
+    method: 'POST',
+    // sessionKey overrides the shared `dashboard:ui` placeholder with the REAL
+    // slot. The placeholder satisfies the server's `if sk:` gate but names no
+    // actual session, so a restricted (incognito) slot was never recognised as
+    // restricted and its writes were allowed through. Callers acting on behalf
+    // of a specific chat slot must pass it.
+    headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) },
+    body: body ? JSON.stringify(body) : undefined,
+  }))
 const put = (url: string, body: object) =>
   trackArtifactWrite(url, fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) }))
 const del = (url: string, body?: object) =>
   trackArtifactWrite(url, fetch(url, { method: 'DELETE', headers: body ? { 'Content-Type': 'application/json', ..._sk } : _sk, body: body ? JSON.stringify(body) : undefined }))
-const patch = (url: string, body: object) =>
-  trackArtifactWrite(url, fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) }))
+const patch = (url: string, body: object, sessionKey?: string) =>
+  trackArtifactWrite(url, fetch(url, {
+    method: 'PATCH',
+    // Same override as post(): replace the shared `dashboard:ui` placeholder with
+    // the REAL slot when the write belongs to a chat session, so the server's
+    // restricted-session gate applies to it.
+    headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) },
+    body: JSON.stringify(body),
+  }))
 
 // Publish the blessed transport so a downstream edition can build its OWN typed
 // API module on the SAME session-key-authenticated helpers as core methods
@@ -1581,8 +1597,26 @@ export const api = {
       headers: { 'Content-Type': 'application/json', 'X-Session-Key': `dashboard:${slot}` },
       body: JSON.stringify({ type: 'referenced', ...(metadata ? { metadata } : {}) }),
     }).then(j),
-  createArtifact: (body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string; folder?: string }) =>
-    post('/api/artifacts', body).then(j),
+  createArtifact: (
+    body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string; folder?: string },
+    // Pass the owning slot (as `dashboard:<slot>`) when the save is made on
+    // behalf of a chat session, so the server's restricted-session gate sees the
+    // real session instead of the shared placeholder.
+    sessionKey?: string,
+  ) =>
+    // DEFAULTED from origin_session_key rather than left to each caller. Every
+    // save that belongs to a chat session already names it in the body for
+    // attribution, so deriving the header from that makes the gate apply by
+    // construction -- an opt-in argument meant a caller that only set
+    // origin_session_key (WidgetFrame's save-as-artifact) still sent the shared
+    // `dashboard:ui` placeholder and an incognito session's write was allowed
+    // through. An explicit sessionKey still wins for callers that need to differ.
+    post(
+      '/api/artifacts',
+      body,
+      sessionKey
+        ?? (body.origin_session_key ? `dashboard:${body.origin_session_key}` : undefined),
+    ).then(j),
   /** Atomically resolve a just-created blank document being left: keep it, save
    *  the draft still in the editor, or delete the abandoned shell. The store
    *  decides under its own lock -- deciding here would race a concurrent save. */
@@ -1607,8 +1641,12 @@ export const api = {
   setArtifactFolder: (slug: string, folderId: string) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/folder`, { folder_id: folderId }).then(j),
   /** Pin/unpin (favorite) an artifact. Metadata-only — no version bump. */
-  setArtifactPinned: (slug: string, pinned: boolean) =>
-    patch(`/api/artifacts/${encodeURIComponent(slug)}/pin`, { pinned }).then(j),
+  // sessionKey: pass `dashboard:<slot>` when the pin is made on behalf of a chat
+  // session, so the server's restricted-session gate sees the real session rather
+  // than the transport's shared `dashboard:ui` placeholder (which satisfies the
+  // `if sk:` check but names no session, so a restricted slot was never gated).
+  setArtifactPinned: (slug: string, pinned: boolean, sessionKey?: string) =>
+    patch(`/api/artifacts/${encodeURIComponent(slug)}/pin`, { pinned }, sessionKey).then(j),
   /** Virtual list of non-code documents from chat sessions. Pass `session`
    * (a slot key) to scope to a single session. */
   artifactSessionDocs: (session?: string) =>

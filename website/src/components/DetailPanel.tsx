@@ -8,6 +8,10 @@ import { usePointerDrag } from '../hooks/usePointerDrag'
 import { i18nT } from '../i18n/t'
 interface DetailPanelProps {
   title: React.ReactNode
+  /** Optional glyph rendered immediately left of the title, identifying what
+   * kind of thing the panel holds (e.g. the artifact `Component` icon). Kept
+   * optional so callers that bake identity into `title` are unaffected. */
+  icon?: React.ReactNode
   onClose: () => void
   footer?: React.ReactNode
   headerActions?: React.ReactNode
@@ -78,7 +82,7 @@ const maxPanelWidth = (rowWidth: number, reserveWidth?: number) => {
 const clampPanelWidth = (w: number, minWidth: number, rowWidth: number, reserveWidth?: number) =>
   Math.max(minWidth, Math.min(w, maxPanelWidth(rowWidth, reserveWidth)))
 
-export default function DetailPanel({ title, onClose, footer, headerActions, secondaryHeaderActions, initialWidth = 380, minWidth = 300, reserveWidth, storageKey, children, noPadding = false, headerClassName, embedded = false, customHeader }: DetailPanelProps) {
+export default function DetailPanel({ title, icon, onClose, footer, headerActions, secondaryHeaderActions, initialWidth = 380, minWidth = 300, reserveWidth, storageKey, children, noPadding = false, headerClassName, embedded = false, customHeader }: DetailPanelProps) {
   // Outer wrapper ref, used to measure the panel's flex row (its parent) so the
   // width cap tracks the actual available room rather than the whole viewport.
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -185,6 +189,7 @@ export default function DetailPanel({ title, onClose, footer, headerActions, sec
       <div className={`flex items-center justify-between px-3 h-12 shrink-0 border-b ${headerClassName ?? 'border-border'}`}>
         <div className="flex items-center gap-2 min-w-0">
           <Btn className="p-1.5 shrink-0" onClick={onClose} aria-label={i18nT('components.detailPanel.close_panel')} title={i18nT('components.detailPanel.close_panel')}><X size={16} /></Btn>
+          {icon}
           <span className="text-base font-semibold text-text-strong truncate">{title}</span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
