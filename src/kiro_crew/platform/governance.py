@@ -955,6 +955,18 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "channels": ScopeSpec(SCOPEDMAP),
     "approval_mode": ScopeSpec(ORDINAL, ordinal_scale="approval"),
     "sandbox.min_level": ScopeSpec(ORDINAL, ordinal_scale="sandbox"),
+    # Admin control over the auto-approve (YOLO) durations a user may select.
+    # Members are duration selections. Two are security-relevant: "permanent"
+    # (the never-expiring grant an operator DECLARES via
+    # ``agent.dangerouslySkipPermissions``, re-established every startup) and
+    # "until_shutdown" (an ad-hoc grant with no timed expiry, cleared on restart).
+    # Deny-by-default is open (standalone permits it), and an enterprise POLICY
+    # can remove it, e.g.
+    #   {"yolo_duration": {"mode": "deny", "deny": ["permanent", "until_shutdown"]}}
+    # which forces a declared grant back onto the ordinary ad-hoc TTL. Consulted
+    # by kiro_crew.safety_override at the activation seam, against the HOST
+    # profile and fail-closed.
+    "yolo_duration": ScopeSpec(RULESET, matcher="identifier"),
     # Capabilities (Validation rule 8 registered defaults):
     "capabilities.spawn": ScopeSpec(
         CAPABILITY, capability_default=True, scope_matchers={"agents": "identifier"}

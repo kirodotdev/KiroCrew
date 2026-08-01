@@ -2426,11 +2426,11 @@ class TestConfigCache:
         ):
             self._write(cfg_file, {"agent": {"yolo": False}})
             cfg = KiroCrewConfig.load()
-            assert cfg.agent.yolo is False
-            cfg.agent.yolo = True
+            assert cfg.agent.dangerously_skip_permissions is False
+            cfg.agent.dangerously_skip_permissions = True
             cfg.save()
             reloaded = KiroCrewConfig.load()
-        assert reloaded.agent.yolo is True
+        assert reloaded.agent.dangerously_skip_permissions is True
 
     def test_returned_config_is_independent(self, tmp_path: Path) -> None:
         """Mutating a loaded config must not corrupt the cached data for the next

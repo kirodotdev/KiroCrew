@@ -25,7 +25,8 @@
         "sandbox_allow_unsandboxed_exec": false,
         "apps_allow_third_party": false,
         "jail": "auto",
-        "yolo": false,
+        "dangerously_skip_permissions": false,
+        "yolo_duration": "6h",
         "notify_override_expiry": true,
         "bot_name": "",
         "conductor_skill": false,
@@ -234,18 +235,39 @@
       "defaultValue": "auto"
     },
     {
-      "path": "agent.yolo",
+      "path": "agent.dangerously_skip_permissions",
       "kind": "core",
       "type": "boolean",
       "required": false,
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "YOLO Mode",
-      "help": "Skip tool approval confirmations.",
+      "label": "Dangerously Skip Permissions",
+      "help": "Skip EVERY tool approval confirmation, permanently. Declaring it here is a standing instruction: the grant does not expire and is re-established on every startup. This is the advanced, config-file-only escape hatch — there is deliberately no dashboard toggle for it. An enterprise policy can forbid it, which falls back to the ad-hoc duration below.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "agent.yolo_duration",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Ad-hoc Auto-approve Duration",
+      "help": "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from the dashboard picker, Slack, or the API. Every one of those surfaces uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or until_shutdown to keep it on with no timed expiry until KiroCrew restarts. Timed values are capped at 24h. Does NOT apply to a grant declared via 'dangerously_skip_permissions' above, which persists.",
+      "hasChildren": false,
+      "enumValues": [
+        "30m",
+        "1h",
+        "6h",
+        "12h",
+        "24h",
+        "until_shutdown"
+      ],
+      "defaultValue": "6h"
     },
     {
       "path": "agent.notify_override_expiry",
@@ -256,7 +278,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Notify on Override Expiry",
-      "help": "DM the Slack owner when the time-limited safety override (YOLO) expires. Disable to silence the recurring expiry DM; the dashboard banner still shows.",
+      "help": "DM the Slack owner when a time-limited safety override (YOLO) expires. Disable to silence the recurring expiry DM; the dashboard banner still shows.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

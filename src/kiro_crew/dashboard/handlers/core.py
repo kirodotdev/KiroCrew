@@ -1216,6 +1216,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.model": {"type": "str", "max_len": 64, "pattern": r"^[A-Za-z0-9._\-\[\]]*$"},
     "agent.reasoning_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.approval_mode": {"type": "enum", "values": ["auto", "interactive"]},
+    # How long an AD-HOC auto-approve grant lasts. Editable from Settings because
+    # every value here still ends: the timed ones are capped at the SafetyOverride
+    # 24h ceiling and "until_shutdown" dies with the process. The never-expiring
+    # DECLARED grant (agent.dangerously_skip_permissions) is deliberately NOT
+    # here — it stays config-file-only so it cannot be switched on from the UI.
+    "agent.yolo_duration": {
+        "type": "enum",
+        "values": ["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
+    },
     "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
     "agent.apps_allow_third_party": {"type": "bool"},

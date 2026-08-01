@@ -13,6 +13,16 @@ export interface StatusData {
   commit?: string
   platform?: string
   yolo?: boolean
+  /** ISO timestamp when the current timed auto-approve grant expires ("" when none). */
+  yolo_expires_at?: string
+  /** Seconds left on the grant; -1 when it has no timed expiry. */
+  yolo_remaining_secs?: number
+  /** True when the active grant has no timed expiry (declared in config, or until_shutdown). */
+  yolo_until_shutdown?: boolean
+  /** Configured ad-hoc duration: a timed label, or 'until_shutdown'. */
+  yolo_duration?: '30m' | '1h' | '6h' | '12h' | '24h' | 'until_shutdown'
+  /** Whether enterprise governance currently allows the until_shutdown option. */
+  yolo_until_shutdown_permitted?: boolean
   no_crons?: boolean
   /** True when the gateway has a live Slack (Socket Mode) connection. */
   slack_connected?: boolean

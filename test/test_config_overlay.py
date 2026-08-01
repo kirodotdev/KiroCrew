@@ -86,7 +86,7 @@ class TestConfigOverlayLoad:
         with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
             cfg = KiroCrewConfig.load()
 
-        assert cfg.agent.yolo is True
+        assert cfg.agent.dangerously_skip_permissions is True
         assert cfg.agent.model == "auto"
         assert cfg.agent.provider == "acp"
 
@@ -99,7 +99,7 @@ class TestConfigOverlayLoad:
         with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
             cfg = KiroCrewConfig.load()
 
-        assert cfg.agent.yolo is False
+        assert cfg.agent.dangerously_skip_permissions is False
 
     def test_invalid_local_json_ignored(self, tmp_path: Path) -> None:
         config_dir = tmp_path / ".kirocrew"
@@ -111,7 +111,7 @@ class TestConfigOverlayLoad:
         with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
             cfg = KiroCrewConfig.load()
 
-        assert cfg.agent.yolo is False
+        assert cfg.agent.dangerously_skip_permissions is False
 
     def test_non_dict_local_json_ignored(self, tmp_path: Path) -> None:
         config_dir = tmp_path / ".kirocrew"
@@ -123,7 +123,7 @@ class TestConfigOverlayLoad:
         with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
             cfg = KiroCrewConfig.load()
 
-        assert cfg.agent.yolo is False
+        assert cfg.agent.dangerously_skip_permissions is False
 
     def test_local_overlay_adds_new_section(self, tmp_path: Path) -> None:
         config_dir = tmp_path / ".kirocrew"
@@ -147,7 +147,7 @@ class TestConfigOverlayLoad:
         with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
             cfg = KiroCrewConfig.load()
 
-        assert cfg.agent.yolo is True
+        assert cfg.agent.dangerously_skip_permissions is True
         assert cfg.agent.provider == "acp"
 
     def test_overlay_applies_when_config_json_invalid(self, tmp_path: Path) -> None:
@@ -160,7 +160,7 @@ class TestConfigOverlayLoad:
         with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
             cfg = KiroCrewConfig.load()
 
-        assert cfg.agent.yolo is True
+        assert cfg.agent.dangerously_skip_permissions is True
 
     def test_save_does_not_leak_overlay_into_config_json(self, tmp_path: Path) -> None:
         config_dir = tmp_path / ".kirocrew"
@@ -172,7 +172,7 @@ class TestConfigOverlayLoad:
 
         with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
             cfg = KiroCrewConfig.load()
-            assert cfg.agent.yolo is True
+            assert cfg.agent.dangerously_skip_permissions is True
             assert cfg.agent.model == "auto"
             cfg.save()
             saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
@@ -188,7 +188,7 @@ class TestConfigOverlayLoad:
         with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
             cfg = KiroCrewConfig.load()
 
-        assert cfg.agent.yolo is False
+        assert cfg.agent.dangerously_skip_permissions is False
 
     def test_world_writable_warning_fires(self, tmp_path: Path, caplog) -> None:
         import logging
@@ -208,7 +208,7 @@ class TestConfigOverlayLoad:
         ):
             cfg = KiroCrewConfig.load()
 
-        assert cfg.agent.yolo is True
+        assert cfg.agent.dangerously_skip_permissions is True
         assert "world-writable" in caplog.text
 
 
@@ -336,13 +336,19 @@ class TestCliConfigSetLocal:
 
         config_dir = tmp_path / ".kirocrew"
         config_dir.mkdir()
-        base = {"agent": {"yolo": False, "streaming": True, "provider": "acp"}}
+        base = {
+            "agent": {"dangerouslySkipPermissions": False, "streaming": True, "provider": "acp"}
+        }
         (config_dir / "config.json").write_text(json.dumps(base))
         local = {"agent": {"streaming": True}}
         (config_dir / "config.local.json").write_text(json.dumps(local))
 
         args = argparse.Namespace(
-            config_action="set", key="agent.yolo", value="true", file=None, local=False
+            config_action="set",
+            key="agent.dangerously_skip_permissions",
+            value="true",
+            file=None,
+            local=False,
         )
 
         with (
@@ -354,7 +360,7 @@ class TestCliConfigSetLocal:
             _config_cmd(args)
 
         saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
-        assert saved["agent"]["yolo"] is True
+        assert saved["agent"]["dangerously_skip_permissions"] is True
         assert "streaming" not in saved.get("agent", {})
 
     def test_local_set_handles_corrupt_existing_file(self, tmp_path: Path) -> None:
@@ -404,12 +410,16 @@ class TestCliConfigSetLocal:
 
         config_dir = tmp_path / ".kirocrew"
         config_dir.mkdir()
-        base = {"agent": {"yolo": False, "provider": "acp"}}
+        base = {"agent": {"dangerouslySkipPermissions": False, "provider": "acp"}}
         (config_dir / "config.json").write_text(json.dumps(base))
         (config_dir / "config.local.json").write_text("broken {{{")
 
         args = argparse.Namespace(
-            config_action="set", key="agent.yolo", value="true", file=None, local=False
+            config_action="set",
+            key="agent.dangerously_skip_permissions",
+            value="true",
+            file=None,
+            local=False,
         )
 
         with (
@@ -421,4 +431,4 @@ class TestCliConfigSetLocal:
             _config_cmd(args)
 
         saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
-        assert saved["agent"]["yolo"] is True
+        assert saved["agent"]["dangerously_skip_permissions"] is True

@@ -805,15 +805,36 @@ class AgentConfig:
             enum=list(_VALID_JAIL_MODES),
         ),
     )
-    yolo: bool = field(
+    dangerously_skip_permissions: bool = field(
         default=False,
-        metadata=_meta("YOLO Mode", "Skip tool approval confirmations."),
+        metadata=_meta(
+            "Dangerously Skip Permissions",
+            "Skip EVERY tool approval confirmation, permanently. Declaring it here "
+            "is a standing instruction: the grant does not expire and is "
+            "re-established on every startup. This is the advanced, "
+            "config-file-only escape hatch — there is deliberately no dashboard "
+            "toggle for it. An enterprise policy can forbid it, which falls back "
+            "to the ad-hoc duration below.",
+        ),
+    )
+    yolo_duration: str = field(
+        default="6h",
+        metadata=_meta(
+            "Ad-hoc Auto-approve Duration",
+            "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from "
+            "the dashboard picker, Slack, or the API. Every one of those surfaces "
+            "uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or "
+            "until_shutdown to keep it on with no timed expiry until KiroCrew "
+            "restarts. Timed values are capped at 24h. Does NOT apply to a grant "
+            "declared via 'dangerously_skip_permissions' above, which persists.",
+            enum=["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
+        ),
     )
     notify_override_expiry: bool = field(
         default=True,
         metadata=_meta(
             "Notify on Override Expiry",
-            "DM the Slack owner when the time-limited safety override (YOLO) expires. "
+            "DM the Slack owner when a time-limited safety override (YOLO) expires. "
             "Disable to silence the recurring expiry DM; the dashboard banner still shows.",
         ),
     )
@@ -2590,6 +2611,60 @@ def _validated_completion_keep(value: object) -> str:
     )
 
 
+_YOLO_DURATION_SECS: dict[str, int] = {
+    "30m": 1800,
+    "1h": 3600,
+    "6h": 21600,
+    "12h": 43200,
+    "24h": 86400,
+}
+_YOLO_DURATION_DEFAULT = "6h"
+# Not a timed value: an ad-hoc grant that stays on with no expiry until the
+# gateway process stops. In-memory only, so it cannot survive a restart.
+YOLO_UNTIL_SHUTDOWN = "until_shutdown"
+
+
+def _read_skip_permissions(agent_data: dict) -> bool:
+    """Read the standing auto-approve declaration, honouring older spellings.
+
+    The key was renamed from ``yolo`` so the config itself warns about what it
+    does. Canonical spelling is ``dangerously_skip_permissions`` — snake_case
+    like every other key in this file, which is also what ``save()`` writes, so
+    a save/load round-trip preserves it.
+
+    Two other spellings are accepted on read, most-specific first:
+    ``dangerouslySkipPermissions`` (the camelCase form used by other agent tools,
+    so a config copied from one still works) and the legacy ``yolo`` (so no
+    existing config silently loses auto-approve on upgrade).
+    """
+    for key in ("dangerously_skip_permissions", "dangerouslySkipPermissions", "yolo"):
+        if key in agent_data:
+            return bool(agent_data.get(key))
+    return False
+
+
+def _normalize_yolo_duration(value: object) -> str:
+    """Coerce ``agent.yolo_duration`` to a supported ad-hoc duration label.
+
+    Anything unrecognised (typo, removed value, wrong type) falls back to the
+    default rather than failing the whole config load — the value only widens or
+    narrows an already-bounded ad-hoc grant, and the 24h ceiling on timed values
+    is enforced independently in ``SafetyOverride``.
+    """
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in _YOLO_DURATION_SECS or v == YOLO_UNTIL_SHUTDOWN:
+            return v
+    return _YOLO_DURATION_DEFAULT
+
+
+def yolo_duration_to_secs(label: str) -> int:
+    """Seconds for a ``yolo_duration`` label; 0 means "no timed expiry"."""
+    if label == YOLO_UNTIL_SHUTDOWN:
+        return 0
+    return _YOLO_DURATION_SECS.get(label, _YOLO_DURATION_SECS[_YOLO_DURATION_DEFAULT])
+
+
 def _normalize_jail(value: object) -> str:
     """Coerce a persisted ``agent.jail`` value to a valid mode, deny-by-default.
 
@@ -4199,7 +4274,8 @@ class KiroCrewConfig:
                     agent_data.get("apps_allow_third_party", False), False
                 ),
                 jail=_normalize_jail(agent_data.get("jail", "auto")),
-                yolo=agent_data.get("yolo", False),
+                dangerously_skip_permissions=_read_skip_permissions(agent_data),
+                yolo_duration=_normalize_yolo_duration(agent_data.get("yolo_duration")),
                 notify_override_expiry=agent_data.get("notify_override_expiry", True),
                 conductor_skill=agent_data.get("conductor_skill", False),
                 tool_search=bool(agent_data.get("tool_search", True)),

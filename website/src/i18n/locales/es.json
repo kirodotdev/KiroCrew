@@ -1932,7 +1932,10 @@
       "cancel": "Cancelar",
       "don_t_show_again": "No volver a mostrar",
       "enable": "Activar",
-      "yolo_mode_is_an_app_wide_setting": "El modo YOLO es un ajuste de toda la app"
+      "yolo_mode_is_an_app_wide_setting": "El modo YOLO es un ajuste de toda la app",
+      "configure_duration": "Configure duration",
+      "yolo_expiration_until_shutdown": "Stays on until KiroCrew restarts — no timed expiry.",
+      "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again."
     },
     "appstore": {
       "appListRow": {
@@ -7174,7 +7177,20 @@
         "gov_scope_tools": "Herramientas",
         "layer_auth": "Autenticación",
         "layer_n": "Capa {{n}}",
-        "pinned_by_policy": "Aplicado por la política de seguridad de tu organización"
+        "pinned_by_policy": "Aplicado por la política de seguridad de tu organización",
+        "yolo_duration_title": "How long auto-approve stays on",
+        "yolo_duration_desc": "Applies whenever you turn auto-approve on from the dashboard, Slack, or the API — all of them use this one duration.",
+        "yolo_duration_30m": "30 minutes",
+        "yolo_duration_1h": "1 hour",
+        "yolo_duration_6h": "6 hours",
+        "yolo_duration_12h": "12 hours",
+        "yolo_duration_24h": "24 hours",
+        "yolo_duration_until_shutdown": "Until KiroCrew restarts",
+        "yolo_duration_locked": "Disabled by your organization's policy",
+        "yolo_duration_next_activation_note": "Applies the next time you turn auto-approve on.",
+        "failed_to_save_yolo_duration": "Could not save the duration.",
+        "yolo_active_until_restart": "Auto-approve is on and stays on until KiroCrew restarts.",
+        "yolo_active_expires_at": "Auto-approve is on until {{time}}."
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Cancelar",

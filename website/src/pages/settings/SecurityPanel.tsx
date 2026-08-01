@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
 import { SettingsSection, SettingsCard } from '../../components/settings'
@@ -10,6 +10,7 @@ import { api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRu
 import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureDisclosure'
 
 import { i18nT } from '../../i18n/t'
+import { fmtTimeNumeric } from '../../i18n/format'
 /* ── Security feature registry ──
  *
  * Qualitative layer descriptions ONLY. Every control whose posture is a COUNT
@@ -550,6 +551,103 @@ function GovernanceRow({ row }: { row: GovernanceScope }) {
 }
 
 /** Read-only viewer: the effective governance ceiling across every scope. */
+/* ── Ad-hoc auto-approve duration ── */
+
+interface KirocrewCfgShape { agent?: { yolo_duration?: string } }
+
+const YOLO_DURATION_KEYS = ['30m', '1h', '6h', '12h', '24h', 'until_shutdown'] as const
+type YoloDurationKey = (typeof YOLO_DURATION_KEYS)[number]
+
+/** How long auto-approve lasts when it is turned on AD HOC — from the dashboard
+ *  picker, Slack, or the API. All of those share this one value; the separate
+ *  per-surface timers are gone. `until_shutdown` is disabled + lock-badged when
+ *  an enterprise policy forbids it (status.yolo_until_shutdown_permitted ===
+ *  false), the same ceiling the backend clamps at the source.
+ *
+ *  Deliberately does NOT expose the never-expiring DECLARED grant
+ *  (agent.dangerouslySkipPermissions) — that stays config-file-only. */
+function YoloDurationCard() {
+  const qc = useQueryClient()
+  const status = useAppSelector(s => s.dashboard.status)
+  const untilShutdownPermitted = status?.yolo_until_shutdown_permitted ?? true
+  const { data } = useQuery<KirocrewCfgShape>({ queryKey: ['kirocrewConfig'], queryFn: api.kirocrewConfig })
+  const configured = data?.agent?.yolo_duration
+  const current: YoloDurationKey =
+    YOLO_DURATION_KEYS.find(k => k === configured) ?? '6h'
+  const save = useMutation({
+    mutationFn: (v: string) => api.patchConfig('agent.yolo_duration', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+  })
+
+  // Live "when does this end" line, so a no-expiry grant is never mistaken for
+  // a bounded one.
+  let activeNote: string | null = null
+  if (status?.yolo) {
+    if (status.yolo_until_shutdown) {
+      activeNote = i18nT('pages.settings.securityPanel.yolo_active_until_restart')
+    } else if (status.yolo_expires_at) {
+      activeNote = i18nT('pages.settings.securityPanel.yolo_active_expires_at', {
+        time: fmtTimeNumeric(status.yolo_expires_at),
+      })
+    }
+  }
+
+  function optionLabel(k: YoloDurationKey): string {
+    switch (k) {
+      case '30m': return i18nT('pages.settings.securityPanel.yolo_duration_30m')
+      case '1h': return i18nT('pages.settings.securityPanel.yolo_duration_1h')
+      case '6h': return i18nT('pages.settings.securityPanel.yolo_duration_6h')
+      case '12h': return i18nT('pages.settings.securityPanel.yolo_duration_12h')
+      case '24h': return i18nT('pages.settings.securityPanel.yolo_duration_24h')
+      default: return i18nT('pages.settings.securityPanel.yolo_duration_until_shutdown')
+    }
+  }
+
+  return (
+    <SettingsCard>
+      <div className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.yolo_duration_title')}</div>
+      <div className="text-[12px] text-muted mt-0.5 mb-2 leading-relaxed">{i18nT('pages.settings.securityPanel.yolo_duration_desc')}</div>
+      {activeNote && (
+        <div className="text-[12px] text-accent mb-2 flex items-center gap-1">
+          <Clock size={12} className="shrink-0" />{activeNote}
+        </div>
+      )}
+      <div className="flex flex-col gap-1.5" role="radiogroup" aria-label={i18nT('pages.settings.securityPanel.yolo_duration_title')}>
+        {YOLO_DURATION_KEYS.map(k => {
+          const selected = current === k
+          const disabled = k === 'until_shutdown' && !untilShutdownPermitted
+          return (
+            <button
+              key={k}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={disabled || save.isPending}
+              onClick={() => { if (!disabled && !selected) save.mutate(k) }}
+              className={`flex items-center gap-2.5 text-left rounded-md border px-3 py-2 transition-colors bg-transparent cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selected ? 'border-accent bg-accent-subtle' : 'border-border hover:bg-bg-hover'}`}
+            >
+              <span className="shrink-0">
+                {selected ? <CheckCircle2 size={14} className="text-accent" /> : <Circle size={14} className="text-muted" />}
+              </span>
+              <span className="text-[12px] text-text flex-1">{optionLabel(k)}</span>
+              {disabled && (
+                <span className="text-[11px] text-muted flex items-center gap-1">
+                  <Lock size={11} className="shrink-0" />
+                  {i18nT('pages.settings.securityPanel.yolo_duration_locked')}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+      <div className="text-[11px] text-muted mt-2">{i18nT('pages.settings.securityPanel.yolo_duration_next_activation_note')}</div>
+      {save.isError && (
+        <div className="text-[12px] text-danger mt-1.5">{i18nT('pages.settings.securityPanel.failed_to_save_yolo_duration')}</div>
+      )}
+    </SettingsCard>
+  )
+}
+
 function GovernancePolicyViewer() {
   const { data, isLoading, isError } = useQuery<GovernancePolicyData>({
     queryKey: ['governance-policy'],
@@ -841,6 +939,10 @@ export function SecurityPanel() {
       </SettingsSection>
 
       {/* ── Governance Policy (read-only effective ceiling) ── */}
+      <SettingsSection title={i18nT('pages.settings.securityPanel.yolo_auto_approve')}>
+        <YoloDurationCard />
+      </SettingsSection>
+
       <GovernancePolicyViewer />
 
       {/* ── Denied Commands ── */}

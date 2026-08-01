@@ -172,7 +172,11 @@ from kiro_crew.platform import (
     current_context,
     safe_context_call,
 )
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import (
+    apply_config_duration,
+    grant_declared_yolo,
+    safety_override,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader, set_pending_staged_hook
@@ -1137,14 +1141,33 @@ def _write_secret_file(secret_path: Path, secret: str) -> None:
 
 
 def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
-    """Enable safety override at startup if ``agent.yolo=true`` in config.
+    """Enable the safety override at startup if the operator declared it.
 
-    Activates with 24h TTL (no longer permanent). Re-auth required after expiry.
+    ``agent.dangerouslySkipPermissions`` is a STANDING operator instruction, so the grant it creates
+    does not expire — it used to lapse after 24h and silently drop the user back
+    to prompt-for-everything, which breaks flows driven from Slack/Discord and
+    from cron where nobody is watching the dashboard to re-enable it.
+
+    State is in-memory, so the grant is re-established and re-audited on every
+    startup rather than persisted. An enterprise policy can forbid a
+    never-expiring grant (the ``yolo_duration`` governance scope), in which case
+    it falls back to the ad-hoc duration. Picking another approval mode still
+    clears it immediately.
+
+    Ad-hoc grants are untouched: Slack, the dashboard picker and the API all
+    expire on the single ``agent.yolo_duration`` value (default 6h).
     """
-    if not cfg.agent.yolo:
+    # Seed the ad-hoc TTL even when yolo is off, so a later dashboard/Slack
+    # activation uses the configured duration rather than the built-in default.
+    try:
+        apply_config_duration()
+    except Exception:
+        logger.warning("Could not apply the configured YOLO duration", exc_info=True)
+
+    if not cfg.agent.dangerously_skip_permissions:
         return
     try:
-        result = safety_override().activate("config")
+        result = grant_declared_yolo()
     except Exception:
         logger.error("Failed to activate safety override from config", exc_info=True)
         return
@@ -1152,8 +1175,8 @@ def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
         logger.error("Safety override activation refused (SEL audit failure?)")
         return
     logger.info(
-        "Safety override enabled at startup (agent.yolo=true, expires in %ds)",
-        result.ttl,
+        "Safety override enabled at startup (dangerouslySkipPermissions=true, %s)",
+        "no expiry" if result.ttl == 0 else f"expires in {result.ttl}s per policy",
     )
 
 
