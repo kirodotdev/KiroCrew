@@ -977,6 +977,81 @@
         "run_detail": "Dettaglio dell'esecuzione",
         "select_a_run_to_see_its_phases_agents_and_result": "Seleziona un'esecuzione per vederne le fasi, gli agenti e il risultato."
       }
+    },
+    "crewCompanion": {
+      "header": {
+        "title": "Crew Companion",
+        "subtitle": "Un compagno che vive sul tuo desktop, ti invita a fare pause, custodisce i promemoria che imposti in linguaggio naturale e respira con te."
+      },
+      "settings": {
+        "title": "Impostazioni",
+        "break_nudges": "Promemoria per le pause",
+        "break_nudges_hint": "Acqua, stretching, guarda lontano — più o meno ogni {{mins}} minuti.",
+        "how_often": "Ogni quanto",
+        "custom_minutes": "Intervallo personalizzato in minuti",
+        "custom_placeholder": "min",
+        "preset_aria": "Ricordamelo ogni {{mins}} minuti",
+        "session_done": "Avvisami quando le sessioni sono finite",
+        "session_done_hint": "Un breve avviso quando un'attività finisce.",
+        "always_notify_note": "Gli errori e tutto ciò che ti aspetta ti avvisano sempre, comunque siano impostate queste opzioni.",
+        "offline_hint": "Apri l'app desktop per modificare queste opzioni."
+      },
+      "reminders": {
+        "title": "Promemoria",
+        "add_placeholder": "Dimmi cosa ricordare…",
+        "add_aria": "Di cosa vuoi che ti ricordi?",
+        "add_button": "Aggiungi",
+        "needs_time": "Dimmi anche quando — prova «bere acqua tra 20 minuti» o «alzarti ogni ora».",
+        "default_text": "Promemoria",
+        "empty": "Ancora niente in programma.",
+        "loading": "Carico i tuoi promemoria…",
+        "offline": "Apri l'app desktop per vedere e aggiungere promemoria.",
+        "scheduled_count_one": "{{count}} in programma",
+        "scheduled_count_many": "{{count}} in programma",
+        "scheduled_count_other": "{{count}} in programma",
+        "tag_done": "Fatto",
+        "skip": "Salta",
+        "skip_title": "Salta solo il prossimo",
+        "skip_aria": "Salta il prossimo «{{text}}»",
+        "remove_title": "Rimuovi",
+        "remove_aria": "Rimuovi «{{text}}»",
+        "couldnt_add": "Impossibile aggiungere quel promemoria — {{error}}",
+        "couldnt_skip": "Impossibile saltare quello — {{error}}",
+        "couldnt_remove": "Impossibile rimuovere quel promemoria — {{error}}",
+        "couldnt_save": "Impossibile salvare quell'impostazione — {{error}}"
+      },
+      "memories": {
+        "title": "Ricordi",
+        "loading": "Uno sguardo al passato…",
+        "empty": "Ancora niente da ricordare.",
+        "offline": "Apri l'app desktop per vedere i tuoi ricordi.",
+        "days_together": "{{days}} giorni insieme",
+        "row_time": "Ti ha tenuto compagnia per {{time}}",
+        "row_streak": "Serie di {{streak}} giorni",
+        "row_breathing_one": "Ha respirato {{count}} volta con {{name}}",
+        "row_breathing_many": "Ha respirato {{count}} volte con {{name}}",
+        "row_breathing_other": "Ha respirato {{count}} volte con {{name}}",
+        "row_reminders_one": "{{count}} promemoria impostato",
+        "row_reminders_many": "{{count}} promemoria impostati",
+        "row_reminders_other": "{{count}} promemoria impostati",
+        "row_latest": "Il più tardi che siete stati svegli insieme: {{time}}",
+        "row_earliest": "Inizio più presto: {{time}}",
+        "dur_min": "{{n}} min",
+        "dur_hours": "{{h}} h",
+        "dur_hm": "{{h}} h {{m}} min"
+      },
+      "time": {
+        "now": "adesso",
+        "tomorrow": "domani",
+        "in_min": "tra {{n}} min",
+        "in_h": "tra {{h}} h",
+        "in_hm": "tra {{h}} h {{m}} min",
+        "in_days": "tra {{n}} giorni",
+        "repeat_minutes": "ogni {{n}} min",
+        "repeat_hours": "ogni {{n}} h",
+        "repeat_days": "ogni {{n}} giorni",
+        "repeat_daily": "ogni giorno"
+      }
     }
   },
   "components": {

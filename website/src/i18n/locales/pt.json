@@ -977,6 +977,81 @@
         "run_detail": "Detalhes da execução",
         "select_a_run_to_see_its_phases_agents_and_result": "Selecione uma execução para ver suas fases, agentes e resultado."
       }
+    },
+    "crewCompanion": {
+      "header": {
+        "title": "Crew Companion",
+        "subtitle": "Um mascote que vive na sua área de trabalho, incentiva você a fazer pausas, guarda os lembretes que você anota em linguagem simples e respira com você."
+      },
+      "settings": {
+        "title": "Configurações",
+        "break_nudges": "Lembretes de pausa",
+        "break_nudges_hint": "Água, alongamento, olhar para longe — mais ou menos a cada {{mins}} minutos.",
+        "how_often": "Com que frequência",
+        "custom_minutes": "Intervalo personalizado em minutos",
+        "custom_placeholder": "min",
+        "preset_aria": "Me lembre a cada {{mins}} minutos",
+        "session_done": "Me avise quando as sessões terminarem",
+        "session_done_hint": "Um aviso rápido quando uma tarefa termina.",
+        "always_notify_note": "Erros e qualquer coisa que espera por você sempre avisam, não importa como isto esteja configurado.",
+        "offline_hint": "Abra o aplicativo de desktop para alterar isto."
+      },
+      "reminders": {
+        "title": "Lembretes",
+        "add_placeholder": "Me diga o que lembrar…",
+        "add_aria": "Do que você quer que eu lembre?",
+        "add_button": "Adicionar",
+        "needs_time": "Me diga também quando — tente \"beber água em 20 minutos\" ou \"levantar a cada hora\".",
+        "default_text": "Lembrete",
+        "empty": "Nada agendado ainda.",
+        "loading": "Carregando seus lembretes…",
+        "offline": "Abra o aplicativo de desktop para ver e adicionar lembretes.",
+        "scheduled_count_one": "{{count}} agendado",
+        "scheduled_count_many": "{{count}} agendados",
+        "scheduled_count_other": "{{count}} agendados",
+        "tag_done": "Pronto",
+        "skip": "Pular",
+        "skip_title": "Pular só o próximo",
+        "skip_aria": "Pular o próximo \"{{text}}\"",
+        "remove_title": "Remover",
+        "remove_aria": "Remover \"{{text}}\"",
+        "couldnt_add": "Não foi possível adicionar esse lembrete — {{error}}",
+        "couldnt_skip": "Não foi possível pular esse — {{error}}",
+        "couldnt_remove": "Não foi possível remover esse lembrete — {{error}}",
+        "couldnt_save": "Não foi possível salvar essa configuração — {{error}}"
+      },
+      "memories": {
+        "title": "Lembranças",
+        "loading": "Relembrando…",
+        "empty": "Nada para relembrar ainda.",
+        "offline": "Abra o aplicativo de desktop para ver suas lembranças.",
+        "days_together": "{{days}} dias juntos",
+        "row_time": "Fez companhia a você por {{time}}",
+        "row_streak": "Sequência de {{streak}} dias",
+        "row_breathing_one": "Respirou {{count}} vez com {{name}}",
+        "row_breathing_many": "Respirou {{count}} vezes com {{name}}",
+        "row_breathing_other": "Respirou {{count}} vezes com {{name}}",
+        "row_reminders_one": "{{count}} lembrete definido",
+        "row_reminders_many": "{{count}} lembretes definidos",
+        "row_reminders_other": "{{count}} lembretes definidos",
+        "row_latest": "O mais tarde que vocês dois ficaram acordados: {{time}}",
+        "row_earliest": "Início mais cedo: {{time}}",
+        "dur_min": "{{n}} min",
+        "dur_hours": "{{h}} h",
+        "dur_hm": "{{h}} h {{m}} min"
+      },
+      "time": {
+        "now": "agora",
+        "tomorrow": "amanhã",
+        "in_min": "em {{n}} min",
+        "in_h": "em {{h}} h",
+        "in_hm": "em {{h}} h {{m}} min",
+        "in_days": "em {{n}} dias",
+        "repeat_minutes": "a cada {{n}} min",
+        "repeat_hours": "a cada {{n}} h",
+        "repeat_days": "a cada {{n}} dias",
+        "repeat_daily": "todo dia"
+      }
     }
   },
   "components": {

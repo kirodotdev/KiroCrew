@@ -972,6 +972,78 @@
         "cancel_this_run": "यह रन रद्द करें",
         "stop_this_run_and_discard_it": "यह रन रोकें और हटा दें"
       }
+    },
+    "crewCompanion": {
+      "header": {
+        "title": "Crew Companion",
+        "subtitle": "एक साथी जो तुम्हारे डेस्कटॉप पर रहता है, ब्रेक लेने के लिए तुम्हें धीरे से याद दिलाता है, आम शब्दों में सेट किए तुम्हारे रिमाइंडर सँभालता है, और तुम्हारे साथ साँस लेता है।"
+      },
+      "settings": {
+        "title": "सेटिंग्स",
+        "break_nudges": "ब्रेक याद दिलाना",
+        "break_nudges_hint": "पानी, स्ट्रेच, नज़र हटाना — करीब हर {{mins}} मिनट में।",
+        "how_often": "कितनी बार",
+        "custom_minutes": "मिनटों में अपना अंतराल",
+        "custom_placeholder": "मिनट",
+        "preset_aria": "मुझे हर {{mins}} मिनट में याद दिलाओ",
+        "session_done": "सेशन पूरे हों तो मुझे बताओ",
+        "session_done_hint": "कोई काम पूरा होने पर एक छोटा-सा इशारा।",
+        "always_notify_note": "गड़बड़ियाँ और जो कुछ तुम्हारे इंतज़ार में है, उसकी सूचना हमेशा मिलेगी — ये सेटिंग्स चाहे कुछ भी हों।",
+        "offline_hint": "इन्हें बदलने के लिए डेस्कटॉप ऐप खोलो।"
+      },
+      "reminders": {
+        "title": "रिमाइंडर",
+        "add_placeholder": "बताओ, क्या याद रखना है…",
+        "add_aria": "मैं तुम्हें किस बारे में याद दिलाऊँ?",
+        "add_button": "जोड़ो",
+        "needs_time": "यह भी बताओ कि कब — जैसे \"20 मिनट में पानी पीना\" या \"हर घंटे उठना\"।",
+        "default_text": "रिमाइंडर",
+        "empty": "अभी कुछ भी शेड्यूल नहीं है।",
+        "loading": "तुम्हारे रिमाइंडर लोड हो रहे हैं…",
+        "offline": "रिमाइंडर देखने और जोड़ने के लिए डेस्कटॉप ऐप खोलो।",
+        "scheduled_count_one": "{{count}} शेड्यूल किया",
+        "scheduled_count_other": "{{count}} शेड्यूल किए",
+        "tag_done": "पूरा",
+        "skip": "छोड़ो",
+        "skip_title": "बस अगला वाला छोड़ो",
+        "skip_aria": "अगला \"{{text}}\" छोड़ो",
+        "remove_title": "हटाओ",
+        "remove_aria": "\"{{text}}\" हटाओ",
+        "couldnt_add": "वह रिमाइंडर जोड़ नहीं सका — {{error}}",
+        "couldnt_skip": "उसे छोड़ नहीं सका — {{error}}",
+        "couldnt_remove": "वह रिमाइंडर हटा नहीं सका — {{error}}",
+        "couldnt_save": "वह सेटिंग सहेज नहीं सका — {{error}}"
+      },
+      "memories": {
+        "title": "यादें",
+        "loading": "पीछे मुड़कर देख रहा हूँ…",
+        "empty": "अभी पीछे मुड़कर देखने को कुछ नहीं है।",
+        "offline": "अपनी यादें देखने के लिए डेस्कटॉप ऐप खोलो।",
+        "days_together": "{{days}} दिन साथ",
+        "row_time": "{{time}} तक तुम्हारे साथ रहा",
+        "row_streak": "{{streak}} दिन का सिलसिला",
+        "row_breathing_one": "{{name}} के साथ {{count}} बार साँस ली",
+        "row_breathing_other": "{{name}} के साथ {{count}} बार साँस ली",
+        "row_reminders_one": "{{count}} रिमाइंडर सेट किया",
+        "row_reminders_other": "{{count}} रिमाइंडर सेट किए",
+        "row_latest": "सबसे देर तक तुम दोनों जागे: {{time}}",
+        "row_earliest": "सबसे जल्दी शुरुआत: {{time}}",
+        "dur_min": "{{n}} मिनट",
+        "dur_hours": "{{h}} घं",
+        "dur_hm": "{{h}} घं {{m}} मिनट"
+      },
+      "time": {
+        "now": "अभी",
+        "tomorrow": "कल",
+        "in_min": "{{n}} मिनट में",
+        "in_h": "{{h}} घंटे में",
+        "in_hm": "{{h}} घं {{m}} मिनट में",
+        "in_days": "{{n}} दिन में",
+        "repeat_minutes": "हर {{n}} मिनट",
+        "repeat_hours": "हर {{n}} घंटे",
+        "repeat_days": "हर {{n}} दिन",
+        "repeat_daily": "हर दिन"
+      }
     }
   },
   "components": {

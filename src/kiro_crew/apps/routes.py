@@ -56,8 +56,10 @@ from kiro_crew.apps.manager import (
     get_app,
     get_app_manifest,
     install_app,
+    is_app_enabled,
     list_apps,
     register_external_app,
+    resolve_mcp_backend_url,
     uninstall_app,
     update_app,
 )
@@ -1937,39 +1939,16 @@ def _resolve_app_backend_url(name: str) -> str | None:
         except ValueError:
             pass
 
-    # 3. Fallback: derive from MCP server URL (common for self-managed apps)
-    # e.g. mochi-pet declares mcpServers.mochi-pet.url = "http://localhost:7778/mcp"
-    # → backend is at http://127.0.0.1:7778
-    for _server_name, server_cfg in manifest.mcpServers.items():
-        if isinstance(server_cfg, dict):
-            url = server_cfg.get("url", "")
-            if url.startswith("http"):
-                # Strip the path (e.g. /mcp) to get the base URL
-                from urllib.parse import urlparse
-                parsed = urlparse(url)
-                # Normalize localhost → 127.0.0.1 to avoid IPv6 resolution
-                # issues with aiohttp on macOS (::1 may not be bound).
-                host = parsed.hostname or "127.0.0.1"
-                if host == "localhost":
-                    host = "127.0.0.1"
-                # Validate loopback to prevent SSRF via manifest-declared URLs
-                import ipaddress
-                try:
-                    if not ipaddress.ip_address(host).is_loopback:
-                        logger.warning("Refusing non-loopback backend URL %s for app %s", url, name)
-                        continue
-                except ValueError:
-                    logger.warning("Refusing non-IP backend host %r for app %s", host, name)
-                    continue
-                port_num = parsed.port or (443 if parsed.scheme == "https" else 80)
-                # Reject self-referential URLs (gateway's own port) to prevent SSRF
-                gateway_port = int(os.environ.get("KIROCREW_PORT", "5476"))
-                if port_num == gateway_port:
-                    logger.warning("Refusing self-referential backend URL for app %s", name)
-                    continue
-                return f"{parsed.scheme}://{host}:{port_num}"
-
-    return None
+    # 3. Fallback: derive from the MCP server URL (common for self-managed apps)
+    # e.g. crew-companion declares mcpServers."crew-companion".url =
+    # "http://127.0.0.1:7778/mcp" -> the backend is at http://127.0.0.1:7778
+    #
+    # Shared with register_builtin_apps(), which uses the SAME function to decide
+    # whether to issue the .app_secret this proxy signs with. Keeping one
+    # definition is load-bearing: if resolution and secret issuance disagree, an
+    # app resolves a backend here and is then refused below with 502 "has no
+    # secret", which is not detectable at registration time.
+    return resolve_mcp_backend_url(manifest.mcpServers)
 
 
 async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
@@ -2009,6 +1988,41 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
         )
         return web.json_response(
             {"error": "app token cannot access another app's backend"}, status=403
+        )
+
+    # Enablement gate. The checks above prove WHO is calling; this proves the app
+    # is allowed to run at all. Without it, an app the user never turned on -- every
+    # builtin ships `defaultEnabled: false` -- still had an authenticated, secret-signed
+    # proxy to its backend, so a mutation could reach a local app that was never
+    # activated. Governance denial is covered transitively: a denied app cannot be
+    # activated, so it is never enabled.
+    #
+    # Deliberately NOT folded into _resolve_app_backend_url: that resolver is shared
+    # with register_builtin_apps(), where an app is legitimately not yet enabled, and
+    # returning None here would surface refusal as the same misleading 502 "no
+    # reachable backend" that sharing the resolver was meant to eliminate. This is an
+    # authorization decision, so it sits with the other authorization checks and says
+    # so with 403.
+    if not await asyncio.to_thread(is_app_enabled, name):
+        # SEL audit for the permission decision, matching the sibling deny path
+        # above. An authorization denial that leaves no trail is invisible to the
+        # audit log, so a repeated probe against a disabled app's backend would be
+        # unobservable — which is most of the value of having the gate.
+        sel().log_api_access(
+            caller=request.get("app", "") or "dashboard",
+            operation="app_proxy_disabled_app",
+            outcome="denied",
+            source="app_routes",
+            resources=f"/apps/{name}/{path}",
+            error="app is not enabled",
+        )
+        # `code` is required by test_error_code_contract.py, and is the right shape
+        # here regardless: the dashboard renders `error` prose verbatim into a
+        # localized page, so the machine-readable identifier is what a client can
+        # switch on (and translate) while the sentence stays advisory.
+        return web.json_response(
+            {"code": "app_not_enabled", "error": f"app {name!r} is not enabled"},
+            status=403,
         )
 
     # Resolve backend URL

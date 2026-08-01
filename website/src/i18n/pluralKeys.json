@@ -1,6 +1,9 @@
 [
   "apps.codeReviewSage.codeReviewSagePage.open_pr",
   "apps.codeReviewSage.codeReviewSagePage.pattern",
+  "apps.crewCompanion.memories.row_breathing",
+  "apps.crewCompanion.memories.row_reminders",
+  "apps.crewCompanion.reminders.scheduled_count",
   "apps.issueRadar.components.issueList.issue",
   "apps.issueRadar.components.prList.pr",
   "apps.workflows.workflowRunTree.agent",

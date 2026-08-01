@@ -967,6 +967,75 @@
         "run_detail": "运行详情",
         "select_a_run_to_see_its_phases_agents_and_result": "选择一次运行以查看其阶段、代理和结果。"
       }
+    },
+    "crewCompanion": {
+      "header": {
+        "title": "Crew Companion",
+        "subtitle": "一只住在你桌面上的小宠物，它会提醒你休息、记住你用大白话设定的提醒事项，还会陪你一起呼吸。"
+      },
+      "settings": {
+        "title": "设置",
+        "break_nudges": "休息提醒",
+        "break_nudges_hint": "喝水、伸展、看看远处 — 大约每 {{mins}} 分钟一次。",
+        "how_often": "频率",
+        "custom_minutes": "自定义间隔（分钟）",
+        "custom_placeholder": "分钟",
+        "preset_aria": "每 {{mins}} 分钟提醒我一次",
+        "session_done": "会话完成时告诉我",
+        "session_done_hint": "任务完成时给你一个小提醒。",
+        "always_notify_note": "无论这些怎么设置，出错以及任何等你处理的事都会通知你。",
+        "offline_hint": "打开桌面应用来修改这些设置。"
+      },
+      "reminders": {
+        "title": "提醒事项",
+        "add_placeholder": "告诉我要记住什么…",
+        "add_aria": "要我提醒你什么？",
+        "add_button": "添加",
+        "needs_time": "也告诉我什么时候 — 试试“20 分钟后喝水”或“每小时站起来一次”。",
+        "default_text": "提醒事项",
+        "empty": "还没有安排任何提醒。",
+        "loading": "正在加载你的提醒事项…",
+        "offline": "打开桌面应用来查看和添加提醒事项。",
+        "scheduled_count_other": "已安排 {{count}} 个",
+        "tag_done": "已完成",
+        "skip": "跳过",
+        "skip_title": "只跳过下一次",
+        "skip_aria": "跳过下一次“{{text}}”",
+        "remove_title": "移除",
+        "remove_aria": "移除“{{text}}”",
+        "couldnt_add": "无法添加这条提醒 — {{error}}",
+        "couldnt_skip": "无法跳过这一条 — {{error}}",
+        "couldnt_remove": "无法移除这条提醒 — {{error}}",
+        "couldnt_save": "无法保存这项设置 — {{error}}"
+      },
+      "memories": {
+        "title": "回忆",
+        "loading": "正在回顾…",
+        "empty": "还没有什么可以回顾的。",
+        "offline": "打开桌面应用来查看你的回忆。",
+        "days_together": "一起度过了 {{days}} 天",
+        "row_time": "陪伴了你 {{time}}",
+        "row_streak": "连续 {{streak}} 天",
+        "row_breathing_other": "和 {{name}} 一起呼吸了 {{count}} 次",
+        "row_reminders_other": "设定了 {{count}} 个提醒",
+        "row_latest": "你俩最晚的一次：{{time}}",
+        "row_earliest": "最早的开始：{{time}}",
+        "dur_min": "{{n}} 分钟",
+        "dur_hours": "{{h}} 小时",
+        "dur_hm": "{{h}} 小时 {{m}} 分钟"
+      },
+      "time": {
+        "now": "现在",
+        "tomorrow": "明天",
+        "in_min": "{{n}} 分钟后",
+        "in_h": "{{h}} 小时后",
+        "in_hm": "{{h}} 小时 {{m}} 分钟后",
+        "in_days": "{{n}} 天后",
+        "repeat_minutes": "每 {{n}} 分钟",
+        "repeat_hours": "每 {{n}} 小时",
+        "repeat_days": "每 {{n}} 天",
+        "repeat_daily": "每天"
+      }
     }
   },
   "components": {

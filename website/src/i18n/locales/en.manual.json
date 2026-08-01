@@ -231,6 +231,78 @@
         "cancelling": "Cancelling…",
         "run_detail": "Run detail"
       }
+    },
+    "crewCompanion": {
+      "header": {
+        "title": "Crew Companion",
+        "subtitle": "A pet that lives on your desktop and nudges you to take breaks, holds the reminders you set in plain language, and breathes with you."
+      },
+      "settings": {
+        "title": "Settings",
+        "break_nudges": "Break nudges",
+        "break_nudges_hint": "Water, stretch, look away — about every {{mins}} minutes.",
+        "how_often": "How often",
+        "custom_minutes": "Custom interval in minutes",
+        "custom_placeholder": "min",
+        "preset_aria": "Nudge me every {{mins}} minutes",
+        "session_done": "Tell me when sessions are done",
+        "session_done_hint": "A short nudge when a task finishes.",
+        "always_notify_note": "Failures and anything waiting on you always notify, whatever these are set to.",
+        "offline_hint": "Open the desktop app to change these."
+      },
+      "reminders": {
+        "title": "Reminders",
+        "add_placeholder": "Tell me what to remember…",
+        "add_aria": "What should I remind you about?",
+        "add_button": "Add",
+        "needs_time": "Tell me when, too — try “drink water in 20 minutes” or “stand up every hour”.",
+        "default_text": "Reminder",
+        "empty": "Nothing scheduled yet.",
+        "loading": "Loading your reminders…",
+        "offline": "Open the desktop app to see and add reminders.",
+        "scheduled_count_one": "{{count}} scheduled",
+        "scheduled_count_other": "{{count}} scheduled",
+        "tag_done": "Done",
+        "skip": "Skip",
+        "skip_title": "Skip just the next one",
+        "skip_aria": "Skip the next “{{text}}”",
+        "remove_title": "Remove",
+        "remove_aria": "Remove “{{text}}”",
+        "couldnt_add": "Couldn’t add that reminder — {{error}}",
+        "couldnt_skip": "Couldn’t skip that one — {{error}}",
+        "couldnt_remove": "Couldn’t remove that reminder — {{error}}",
+        "couldnt_save": "Couldn’t save that setting — {{error}}"
+      },
+      "memories": {
+        "title": "Memories",
+        "loading": "Looking back…",
+        "empty": "Nothing to look back on yet.",
+        "offline": "Open the desktop app to see your memories.",
+        "days_together": "{{days}} days together",
+        "row_time": "Kept you company for {{time}}",
+        "row_streak": "{{streak}}-day streak",
+        "row_breathing_one": "Breathed with {{name}} {{count}} time",
+        "row_breathing_other": "Breathed with {{name}} {{count}} times",
+        "row_reminders_one": "Set {{count}} reminder",
+        "row_reminders_other": "Set {{count}} reminders",
+        "row_latest": "Latest you two were up: {{time}}",
+        "row_earliest": "Earliest start: {{time}}",
+        "dur_min": "{{n}} min",
+        "dur_hours": "{{h}} h",
+        "dur_hm": "{{h}} h {{m}} min"
+      },
+      "time": {
+        "now": "now",
+        "tomorrow": "tomorrow",
+        "in_min": "{{n}} min from now",
+        "in_h": "{{h}} h from now",
+        "in_hm": "{{h}} h {{m}} min from now",
+        "in_days": "{{n}} days from now",
+        "repeat_minutes": "every {{n}} min",
+        "repeat_hours": "every {{n}} h",
+        "repeat_days": "every {{n}} days",
+        "repeat_daily": "every day"
+      }
     }
   },
   "components": {

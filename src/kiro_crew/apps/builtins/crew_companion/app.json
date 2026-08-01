@@ -1,0 +1,82 @@
+{
+  "name": "crew-companion",
+  "version": "1.0.0",
+  "displayName": "Crew Companion",
+  "description": "A Kiro 👻 desktop companion for KiroCrew. A ghost floats on your screen with no Dock icon, tells you the moment a session finishes, fails, or needs your OK, and lets you swap its avatar. This dashboard page manages the companion — see what every session is working on, review reminders and break nudges, and configure notifications — while the companion app itself runs on your Mac.",
+  "author": "xuejint",
+  "license": "MIT",
+  "repo": "crew-companion",
+  "openCommand": "open \"$HOME/Applications/Crew Companion.app\"",
+  "highlights": [
+    "Floating desktop ghost — a macOS accessory app with no Dock icon",
+    "Notifies you the moment a session finishes, fails, or needs your OK",
+    "Live view of what every KiroCrew session is working on",
+    "Reminders and gentle break nudges you set in plain language",
+    "Switchable avatar, including your own imported packs"
+  ],
+  "defaultEnabled": false,
+  "mcpServers": {
+    "crew-companion": {
+      "url": "http://127.0.0.1:7778/mcp",
+      "autoApprove": [
+        "notify_user",
+        "move_ghost",
+        "get_daily_briefing"
+      ]
+    }
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/crew-companion",
+        "label": "Crew Companion",
+        "icon": "Ghost"
+      }
+    ]
+  },
+  "setup": {
+    "onEnable": "open \"$HOME/Applications/Crew Companion.app\""
+  },
+  "platform": {
+    "os": [
+      "macos"
+    ],
+    "installMode": "client",
+    "clientInstall": {
+      "postInstall": "open \"$HOME/Applications/Crew Companion.app\""
+    }
+  },
+  "permissions": {
+    "api": [
+      "/apps/crew-companion/api",
+      "/api/notifications",
+      "/api/status",
+      "/api/apps/crew-companion/open",
+      "/api/apps/crew-companion/update",
+      "/api/apps/crew-companion/disable",
+      "/api/apps/crew-companion/uninstall"
+    ],
+    "events": [
+      "notification"
+    ],
+    "mcpTools": [
+      "notify_user",
+      "move_ghost",
+      "get_daily_briefing"
+    ],
+    "storage": true,
+    "cron": false,
+    "network": false
+  },
+  "tags": [
+    "desktop-pet",
+    "companion",
+    "ghost",
+    "pomodoro",
+    "notifications",
+    "macos"
+  ],
+  "iconUrl": "/app-assets/crew-companion/icon.svg",
+  "heroImage": "/app-assets/crew-companion/hero-light.svg",
+  "heroImageDark": "/app-assets/crew-companion/hero-dark.svg"
+}

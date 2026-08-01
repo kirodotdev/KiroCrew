@@ -977,6 +977,81 @@
         "run_detail": "Detalle de la ejecución",
         "select_a_run_to_see_its_phases_agents_and_result": "Selecciona una ejecución para ver sus fases, agentes y resultado."
       }
+    },
+    "crewCompanion": {
+      "header": {
+        "title": "Crew Companion",
+        "subtitle": "Una mascota que vive en tu escritorio y te anima a tomar descansos, guarda los recordatorios que anotas en lenguaje natural y respira contigo."
+      },
+      "settings": {
+        "title": "Configuración",
+        "break_nudges": "Recordatorios de descanso",
+        "break_nudges_hint": "Agua, estiramientos, mirar a lo lejos — cada {{mins}} minutos, más o menos.",
+        "how_often": "Con qué frecuencia",
+        "custom_minutes": "Intervalo personalizado en minutos",
+        "custom_placeholder": "min",
+        "preset_aria": "Recuérdamelo cada {{mins}} minutos",
+        "session_done": "Avísame cuando las sesiones terminen",
+        "session_done_hint": "Un aviso breve cuando una tarea termina.",
+        "always_notify_note": "Los errores y todo lo que te espera siempre te avisan, sin importar cómo esté esto configurado.",
+        "offline_hint": "Abre la aplicación de escritorio para cambiar esto."
+      },
+      "reminders": {
+        "title": "Recordatorios",
+        "add_placeholder": "Dime qué quieres recordar…",
+        "add_aria": "¿De qué quieres que te recuerde?",
+        "add_button": "Agregar",
+        "needs_time": "Dime también cuándo — prueba \"beber agua en 20 minutos\" o \"levantarte cada hora\".",
+        "default_text": "Recordatorio",
+        "empty": "Nada programado todavía.",
+        "loading": "Cargando tus recordatorios…",
+        "offline": "Abre la aplicación de escritorio para ver y agregar recordatorios.",
+        "scheduled_count_one": "{{count}} programado",
+        "scheduled_count_many": "{{count}} programados",
+        "scheduled_count_other": "{{count}} programados",
+        "tag_done": "Listo",
+        "skip": "Omitir",
+        "skip_title": "Omitir solo el próximo",
+        "skip_aria": "Omitir el próximo \"{{text}}\"",
+        "remove_title": "Eliminar",
+        "remove_aria": "Eliminar \"{{text}}\"",
+        "couldnt_add": "No se pudo agregar ese recordatorio — {{error}}",
+        "couldnt_skip": "No se pudo omitir ese — {{error}}",
+        "couldnt_remove": "No se pudo eliminar ese recordatorio — {{error}}",
+        "couldnt_save": "No se pudo guardar ese ajuste — {{error}}"
+      },
+      "memories": {
+        "title": "Recuerdos",
+        "loading": "Mirando atrás…",
+        "empty": "Aún no hay nada que recordar.",
+        "offline": "Abre la aplicación de escritorio para ver tus recuerdos.",
+        "days_together": "{{days}} días juntos",
+        "row_time": "Te acompañó durante {{time}}",
+        "row_streak": "Racha de {{streak}} días",
+        "row_breathing_one": "Respiró {{count}} vez con {{name}}",
+        "row_breathing_many": "Respiró {{count}} veces con {{name}}",
+        "row_breathing_other": "Respiró {{count}} veces con {{name}}",
+        "row_reminders_one": "{{count}} recordatorio configurado",
+        "row_reminders_many": "{{count}} recordatorios configurados",
+        "row_reminders_other": "{{count}} recordatorios configurados",
+        "row_latest": "Lo más tarde que estuvieron despiertos: {{time}}",
+        "row_earliest": "Inicio más temprano: {{time}}",
+        "dur_min": "{{n}} min",
+        "dur_hours": "{{h}} h",
+        "dur_hm": "{{h}} h {{m}} min"
+      },
+      "time": {
+        "now": "ahora",
+        "tomorrow": "mañana",
+        "in_min": "en {{n}} min",
+        "in_h": "en {{h}} h",
+        "in_hm": "en {{h}} h {{m}} min",
+        "in_days": "en {{n}} días",
+        "repeat_minutes": "cada {{n}} min",
+        "repeat_hours": "cada {{n}} h",
+        "repeat_days": "cada {{n}} días",
+        "repeat_daily": "cada día"
+      }
     }
   },
   "components": {

@@ -103,6 +103,81 @@
     }
   },
   "apps": {
+    "crewCompanion": {
+      "header": {
+        "title": "Crew Companion",
+        "subtitle": "Un compagnon qui vit sur ton bureau, t’encourage à faire des pauses, retient les rappels que tu définis en langage courant, et respire avec toi."
+      },
+      "settings": {
+        "title": "Paramètres",
+        "break_nudges": "Rappels de pause",
+        "break_nudges_hint": "Bois, étire-toi, regarde au loin — environ toutes les {{mins}} minutes.",
+        "how_often": "À quelle fréquence",
+        "custom_minutes": "Intervalle personnalisé en minutes",
+        "custom_placeholder": "min",
+        "preset_aria": "Rappelle-moi toutes les {{mins}} minutes",
+        "session_done": "Préviens-moi quand les sessions sont terminées",
+        "session_done_hint": "Un petit rappel quand une tâche se termine.",
+        "always_notify_note": "Les échecs et tout ce qui t’attend te préviennent toujours, quels que soient ces réglages.",
+        "offline_hint": "Ouvre l’application de bureau pour modifier ces réglages."
+      },
+      "reminders": {
+        "title": "Rappels",
+        "add_placeholder": "Dis-moi quoi retenir…",
+        "add_aria": "De quoi dois-je te rappeler ?",
+        "add_button": "Ajouter",
+        "needs_time": "Dis-moi quand aussi — essaie « boire de l’eau dans 20 minutes » ou « te lever chaque heure ».",
+        "default_text": "Rappel",
+        "empty": "Rien de prévu pour l’instant.",
+        "loading": "Chargement de tes rappels…",
+        "offline": "Ouvre l’application de bureau pour voir et ajouter des rappels.",
+        "scheduled_count_one": "{{count}} prévu",
+        "scheduled_count_many": "{{count}} prévus",
+        "scheduled_count_other": "{{count}} prévus",
+        "tag_done": "Terminé",
+        "skip": "Passer",
+        "skip_title": "Passer seulement le prochain",
+        "skip_aria": "Passer le prochain « {{text}} »",
+        "remove_title": "Supprimer",
+        "remove_aria": "Supprimer « {{text}} »",
+        "couldnt_add": "Impossible d’ajouter ce rappel — {{error}}",
+        "couldnt_skip": "Impossible de passer celui-ci — {{error}}",
+        "couldnt_remove": "Impossible de supprimer ce rappel — {{error}}",
+        "couldnt_save": "Impossible d’enregistrer ce réglage — {{error}}"
+      },
+      "memories": {
+        "title": "Souvenirs",
+        "loading": "Retour en arrière…",
+        "empty": "Rien à se remémorer pour l’instant.",
+        "offline": "Ouvre l’application de bureau pour voir tes souvenirs.",
+        "days_together": "{{days}} jours ensemble",
+        "row_time": "T’a tenu compagnie pendant {{time}}",
+        "row_streak": "{{streak}} jours d’affilée",
+        "row_breathing_one": "A respiré {{count}} fois avec {{name}}",
+        "row_breathing_many": "A respiré {{count}} fois avec {{name}}",
+        "row_breathing_other": "A respiré {{count}} fois avec {{name}}",
+        "row_reminders_one": "{{count}} rappel défini",
+        "row_reminders_many": "{{count}} rappels définis",
+        "row_reminders_other": "{{count}} rappels définis",
+        "row_latest": "Le plus tard éveillés ensemble : {{time}}",
+        "row_earliest": "Départ le plus tôt : {{time}}",
+        "dur_min": "{{n}} min",
+        "dur_hours": "{{h}} h",
+        "dur_hm": "{{h}} h {{m}} min"
+      },
+      "time": {
+        "now": "maintenant",
+        "tomorrow": "demain",
+        "in_min": "dans {{n}} min",
+        "in_h": "dans {{h}} h",
+        "in_hm": "dans {{h}} h {{m}} min",
+        "in_days": "dans {{n}} jours",
+        "repeat_minutes": "toutes les {{n}} min",
+        "repeat_hours": "toutes les {{n}} h",
+        "repeat_days": "tous les {{n}} jours",
+        "repeat_daily": "tous les jours"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "accept": "accepter",

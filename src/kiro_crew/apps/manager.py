@@ -10,6 +10,7 @@ registration (agents, skills, crons) to bridge functions.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -20,6 +21,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.discovery import discover_builtin_apps
@@ -1424,6 +1426,92 @@ def _dirfd_ops_supported() -> bool:
     )
 
 
+def resolve_mcp_backend_url(mcp_servers: Any) -> str | None:
+    """Derive an app backend's base URL from its ``mcpServers`` declaration.
+
+    This is the single definition of that rule.  Self-managed apps -- ones the
+    gateway does not spawn, like the Crew Companion desktop app on :7778 --
+    declare no ``backend.entryPoint``, so their backend is discovered from the
+    MCP URL instead, with the path stripped.
+
+    TWO callers depend on agreeing exactly, which is why this is one function
+    and not two copies: ``handle_app_api_proxy`` resolves the URL to forward to,
+    and ``register_builtin_apps`` decides whether to write the ``.app_secret``
+    the proxy signs with.  If they ever disagree, an app resolves a backend and
+    is then refused a secret, and every proxied request fails with 502 "has no
+    secret" -- silently, since nothing checks at registration time.
+
+    Returns None when no usable URL is declared.  Refused, matching the proxy's
+    own guards: a non-loopback host (SSRF via a manifest-declared URL), a
+    non-literal host (parsed with ``ip_address``, so a DNS name never resolves
+    here), and the gateway's own port (self-referential, not a real backend).
+    """
+    if not isinstance(mcp_servers, dict):
+        return None
+    gateway_port = int(os.environ.get("KIROCREW_PORT", "5476"))
+    for server_cfg in mcp_servers.values():
+        if not isinstance(server_cfg, dict):
+            continue
+        url = server_cfg.get("url", "")
+        if not isinstance(url, str) or not url.startswith("http"):
+            continue
+        # ONE guard around the whole parse. urlparse's accessors are lazy and
+        # several raise ValueError on malformed input -- `parsed.port` does it for
+        # "…:notaport". An escape from here propagates through
+        # _app_declares_backend into register_builtin_apps() and the gateway fails
+        # to START, so a single bad manifest would take down registration for every
+        # builtin. A manifest is user-supplied data; it must only be skippable.
+        try:
+            parsed = urlparse(url)
+            # Normalize localhost -> 127.0.0.1: aiohttp on macOS may fail on ::1.
+            host = parsed.hostname or "127.0.0.1"
+            if host == "localhost":
+                host = "127.0.0.1"
+            if not ipaddress.ip_address(host).is_loopback:
+                logger.warning("Refusing non-loopback backend URL %s", url)
+                continue
+            port_num = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError as exc:
+            # Non-IP host, unparsable port, or any other malformed component.
+            logger.warning("Refusing unusable backend URL %s: %s", url, exc)
+            continue
+        if port_num == gateway_port:
+            logger.warning("Refusing self-referential backend URL %s", url)
+            continue
+        return f"{parsed.scheme}://{host}:{port_num}"
+    return None
+
+
+def _builtin_owns_install(existing: InstalledApp) -> bool:
+    """Whether an existing app entry was written by ``register_builtin_apps()``.
+
+    False means a USER installed an app under this name, and the builtin must not
+    touch it. That distinction cannot be recovered once lost: registration would
+    overwrite ``origin`` and set ``lifecycle="locked"``, so afterwards nothing on
+    disk shows the install was ever user-owned, and the user can no longer
+    uninstall it.
+
+    ``source`` is the discriminator: this function is the only writer of
+    ``source="builtin"``, while ``install_app()`` records the install path or
+    registry ref. ``origin`` is accepted as a secondary signal so entries written
+    by older gateway versions are still recognised as ours.
+    """
+    return existing.source == "builtin" or existing.origin == "builtin"
+
+
+def _app_declares_backend(app_data: dict[str, Any]) -> bool:
+    """Whether a manifest declares a backend the gateway proxy can reach.
+
+    Either shape counts: a gateway-spawned ``backend.entryPoint``, or a
+    resolvable loopback ``mcpServers`` URL.  Both are proxied, and the proxy
+    refuses a request outright when the app has no ``.app_secret``, so both must
+    earn one.  An app with neither declares no backend and gets no secret.
+    """
+    if app_data.get("backend", {}).get("entryPoint"):
+        return True
+    return resolve_mcp_backend_url(app_data.get("mcpServers")) is not None
+
+
 def register_builtin_apps() -> int:
     """Register built-in dashboard features as app entries.
 
@@ -1658,6 +1746,19 @@ def register_builtin_apps() -> int:
         dest = app_dir(name)
         dest.mkdir(parents=True, exist_ok=True)
 
+        # A pre-existing entry this function did not write belongs to the USER:
+        # they installed an app that happens to share this builtin's name. Taking
+        # it over is unrecoverable -- see _builtin_owns_install() -- so stand down
+        # entirely and leave their install exactly as it is.
+        if existing and not _builtin_owns_install(existing):
+            logger.warning(
+                "Not registering builtin %r: a user-installed app already occupies "
+                "%s (source=%r, origin=%r). Leaving its manifest and metadata "
+                "untouched; the builtin is not registered on this host.",
+                name, app_dir(name), existing.source, existing.origin,
+            )
+            continue
+
         if existing:
             # Only update version + displayName, preserve user state
             existing.version = app_data["version"]
@@ -1703,8 +1804,11 @@ def register_builtin_apps() -> int:
 
         # Built-in apps with a backend need an app secret so the gateway
         # proxy can authenticate requests to them.  Generate once; preserve
-        # existing secret across restarts to keep live backends valid.
-        if app_data.get("backend", {}).get("entryPoint"):
+        # existing secret across restarts to keep live backends valid.  A
+        # backend is either a gateway-spawned entryPoint OR a resolvable
+        # loopback mcpServers URL (self-managed apps) — both go through the
+        # proxy, which 502s without a secret, so both must get one.
+        if _app_declares_backend(app_data):
             secret_path = dest / ".app_secret"
             if not secret_path.is_file():
                 # circular import: token_auth → app_secret_store → manager

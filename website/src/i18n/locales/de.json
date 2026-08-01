@@ -103,6 +103,78 @@
     }
   },
   "apps": {
+    "crewCompanion": {
+      "header": {
+        "title": "Crew Companion",
+        "subtitle": "Ein kleiner Begleiter, der auf deinem Desktop lebt, dich an Pausen erinnert, die Erinnerungen behält, die du in einfacher Sprache festlegst, und mit dir atmet."
+      },
+      "settings": {
+        "title": "Einstellungen",
+        "break_nudges": "Pausenerinnerungen",
+        "break_nudges_hint": "Trinken, dehnen, in die Ferne schauen — etwa alle {{mins}} Minuten.",
+        "how_often": "Wie oft",
+        "custom_minutes": "Eigenes Intervall in Minuten",
+        "custom_placeholder": "Min",
+        "preset_aria": "Erinnere mich alle {{mins}} Minuten",
+        "session_done": "Sag mir Bescheid, wenn Sitzungen fertig sind",
+        "session_done_hint": "Ein kurzer Hinweis, wenn eine Aufgabe fertig ist.",
+        "always_notify_note": "Fehler und alles, was auf dich wartet, melden sich immer, egal wie das hier eingestellt ist.",
+        "offline_hint": "Öffne die Desktop-App, um das zu ändern."
+      },
+      "reminders": {
+        "title": "Erinnerungen",
+        "add_placeholder": "Sag mir, woran ich dich erinnern soll…",
+        "add_aria": "Woran soll ich dich erinnern?",
+        "add_button": "Hinzufügen",
+        "needs_time": "Sag mir auch wann — versuch „in 20 Minuten Wasser trinken“ oder „jede Stunde aufstehen“.",
+        "default_text": "Erinnerung",
+        "empty": "Noch nichts geplant.",
+        "loading": "Deine Erinnerungen werden geladen…",
+        "offline": "Öffne die Desktop-App, um Erinnerungen zu sehen und hinzuzufügen.",
+        "scheduled_count_one": "{{count}} geplant",
+        "scheduled_count_other": "{{count}} geplant",
+        "tag_done": "Fertig",
+        "skip": "Überspringen",
+        "skip_title": "Nur die nächste überspringen",
+        "skip_aria": "Die nächste „{{text}}“ überspringen",
+        "remove_title": "Entfernen",
+        "remove_aria": "„{{text}}“ entfernen",
+        "couldnt_add": "Diese Erinnerung konnte nicht hinzugefügt werden — {{error}}",
+        "couldnt_skip": "Diese konnte nicht übersprungen werden — {{error}}",
+        "couldnt_remove": "Diese Erinnerung konnte nicht entfernt werden — {{error}}",
+        "couldnt_save": "Diese Einstellung konnte nicht gespeichert werden — {{error}}"
+      },
+      "memories": {
+        "title": "Momente",
+        "loading": "Schaue zurück…",
+        "empty": "Noch nichts zum Zurückblicken.",
+        "offline": "Öffne die Desktop-App, um deine Momente zu sehen.",
+        "days_together": "{{days}} Tage zusammen",
+        "row_time": "Dir {{time}} Gesellschaft geleistet",
+        "row_streak": "{{streak}} Tage in Folge",
+        "row_breathing_one": "{{count}}-mal mit {{name}} geatmet",
+        "row_breathing_other": "{{count}}-mal mit {{name}} geatmet",
+        "row_reminders_one": "{{count}} Erinnerung festgelegt",
+        "row_reminders_other": "{{count}} Erinnerungen festgelegt",
+        "row_latest": "Am spätesten wart ihr beide wach: {{time}}",
+        "row_earliest": "Frühester Start: {{time}}",
+        "dur_min": "{{n}} Min",
+        "dur_hours": "{{h}} Std",
+        "dur_hm": "{{h}} Std {{m}} Min"
+      },
+      "time": {
+        "now": "jetzt",
+        "tomorrow": "morgen",
+        "in_min": "in {{n}} Min",
+        "in_h": "in {{h}} Std",
+        "in_hm": "in {{h}} Std {{m}} Min",
+        "in_days": "in {{n}} Tagen",
+        "repeat_minutes": "alle {{n}} Min",
+        "repeat_hours": "alle {{n}} Std",
+        "repeat_days": "alle {{n}} Tage",
+        "repeat_daily": "täglich"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "accept": "annehmen",

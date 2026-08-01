@@ -102,6 +102,9 @@
     "pages.systemPage.cwd": "Abbreviation for \"current working directory\", labelling a filesystem path in the System diagnostics card. Practitioners in most languages keep the Latin acronym.",
     "pages.systemPage.os": "Abbreviation for \"operating system\", labelling the host OS name in the System diagnostics card. Keep whichever acronym practitioners in the target language use.",
     "pages.systemPage.pid": "Abbreviation for \"process ID\", labelling a numeric process identifier in the System diagnostics card. Keep the Latin acronym unless the target language has an established equivalent.",
-    "pages.telemetryPanel.ok": "Status value in a telemetry row, meaning healthy. A state, not the confirmation button."
+    "pages.telemetryPanel.ok": "Status value in a telemetry row, meaning healthy. A state, not the confirmation button.",
+    "apps.crewCompanion.reminders.add_button": "Button that saves the reminder typed in the box beside it. The verb \"add\", not the arithmetic sense.",
+    "apps.crewCompanion.settings.custom_placeholder": "Placeholder in a small number field for a custom break interval. Short for \"minutes\" (the unit), not \"minimum\".",
+    "apps.crewCompanion.time.now": "Relative time label on a reminder that is due at this moment, shown where others read \"20 min from now\"."
   }
 }
