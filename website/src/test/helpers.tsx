@@ -29,14 +29,32 @@ type TestStore = ReturnType<typeof createTestStore>
 interface WrapperOptions extends Omit<RenderOptions, 'wrapper'> {
   store?: TestStore
   route?: string
+  /**
+   * Extra query defaults, merged over this helper's own.
+   *
+   * The default client here uses React Query's `staleTime: 0`, while the shipped
+   * client (`api/queryClient.ts`) sets `staleTime: 30_000`. A cache-freshness bug
+   * is therefore INVISIBLE by default: a `fetchQuery` that wrongly serves a cached
+   * entry in production re-fetches happily under the test client. Pass
+   * `queryDefaults: { staleTime: 30_000 }` when the behaviour under test depends
+   * on an entry being considered fresh.
+   */
+  queryDefaults?: Record<string, unknown>
 }
 
 /** Render with Redux Provider + MemoryRouter + ThemeProvider. */
 export function renderWithProviders(
   ui: React.ReactElement,
-  { store = createTestStore(), route = '/', ...renderOptions }: WrapperOptions = {},
+  {
+    store = createTestStore(),
+    route = '/',
+    queryDefaults,
+    ...renderOptions
+  }: WrapperOptions = {},
 ) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, ...queryDefaults } },
+  })
   function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>

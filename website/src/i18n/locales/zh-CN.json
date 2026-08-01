@@ -1004,6 +1004,100 @@
         "these_settings_changed_elsewhere": "这些设置已在别处更改。"
       }
     },
+    "papyrus": {
+      "coAuthor": {
+        "close_co_author_panel": "关闭合著者面板",
+        "close_panel": "关闭面板——会话仍保持打开",
+        "co_author": "合著者",
+        "co_author_chat": "合著者对话",
+        "no_co_author_session_for_this_paper_yet": "这篇论文还没有合著者会话。",
+        "open_in_chat_page": "在对话页面中打开",
+        "start_a_session": "开始会话",
+        "starting_session": "正在启动会话……"
+      },
+      "diagnostics": {
+        "jump_to_line": "跳转到第 {{line}} 行",
+        "line_short": "第 {{line}} 行",
+        "no_messages": "编译器没有输出任何信息。",
+        "typesetting_hints_other": "{{count}} 条排版提示"
+      },
+      "editor": {
+        "loading_editor": "正在加载编辑器……"
+      },
+      "fileTree": {
+        "delete_file": "删除 {{file}}",
+        "files": "文件",
+        "main": "主文件",
+        "new_file": "新建文件",
+        "no_source_files": "没有源文件。"
+      },
+      "page": {
+        "actions": "操作",
+        "clone": "克隆",
+        "clone_url": "仓库地址",
+        "clone_url_placeholder": "从 git 地址克隆……",
+        "cloning": "正在克隆……",
+        "compiled_count_label": "已编译",
+        "compiler": "编译器",
+        "compiler_tip": "在运行 KiroCrew 的这台机器上找到的 LaTeX 编译器。Papyrus 优先使用 pdflatex，其次使用 tectonic。",
+        "create": "创建",
+        "create_one_above_or_clone_an_existing_repository": "在上方新建一篇，或克隆一个已有的仓库。",
+        "delete_paper_confirm": "删除 {{name}} 及其所有文件？此操作无法撤销。",
+        "delete_paper": "删除 {{name}}",
+        "dismiss_error": "忽略",
+        "install_compiler": "安装编译器",
+        "installing_compiler": "正在安装……",
+        "last_edited": "最后编辑",
+        "latex_papers_with_a_live_pdf_preview": "带实时 PDF 预览的 LaTeX 论文",
+        "new_paper_name": "新论文名称",
+        "new_paper_name_placeholder": "为论文命名……",
+        "no_compiler_found_install_texlive_or_tectonic": "在这台机器上没有找到 LaTeX 编译器。请安装 TeX Live（pdflatex）或 tectonic 后再编译。",
+        "no_compiler_install_bundled_prompt": "在这台机器上没有找到 LaTeX 编译器。请安装随附 Tectonic 编译器——只需一次经过校验的下载，文件仅保存在 Papyrus 专属文件夹内。",
+        "no_papers_yet": "还没有论文",
+        "none_found": "无",
+        "paper": "论文",
+        "papers": "论文",
+        "papyrus": "Papyrus",
+        "pdf": "PDF",
+        "pdf_missing_status": "未编译",
+        "pdf_ready_status": "已就绪",
+        "start_a_paper": "开始一篇论文",
+        "start_a_paper_tip": "用标准 article 模板新建一篇空白论文，或从 git 远端克隆一篇——只要含有 .tex 文件即可。",
+        "your_papers": "你的论文"
+      },
+      "preview": {
+        "compile_to_see_the_pdf": "编译后即可查看 PDF。",
+        "download_pdf": "下载 PDF",
+        "pdf_preview": "PDF 预览",
+        "this_browser_cannot_display_a_pdf_inline": "此浏览器无法内嵌显示 PDF。"
+      },
+      "workspace": {
+        "co_author": "合著者",
+        "co_author_conflict": "协作者已修改此文件",
+        "co_author_conflict_reload": "重新加载",
+        "compile": "编译",
+        "compile_duration": "{{ms}} 毫秒",
+        "compiling": "正在编译……",
+        "cursor_position": "第 {{line}} 行，第 {{column}} 列",
+        "default_commit_message": "来自 Papyrus 的更新",
+        "delete_file_confirm": "确定删除 {{file}} 吗？",
+        "editing": "正在编辑 {{file}}",
+        "editing_unsaved": "正在编辑 {{file}}——未保存",
+        "error_count_other": "{{count}} 个错误",
+        "git_branch": "当前分支",
+        "log": "日志",
+        "main_document": "主文档",
+        "new_file_prompt": "为新文件命名，例如 methods.tex",
+        "papers": "论文",
+        "pdf": "PDF",
+        "pull": "拉取",
+        "push": "推送",
+        "save_and_compile_hint": "按 Cmd+S（Windows 和 Linux 上为 Ctrl+S）保存并编译。",
+        "session_title": "Papyrus：{{name}}",
+        "warning_count_other": "{{count}} 个警告",
+        "word_count_other": "{{count}} 个词"
+      }
+    },
     "workflows": {
       "workflowRunTree": {
         "agent_other": "{{count}} 个代理",

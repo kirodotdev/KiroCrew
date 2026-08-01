@@ -1085,6 +1085,104 @@
         "these_settings_changed_elsewhere": "Diese Einstellungen wurden an anderer Stelle geändert."
       }
     },
+    "papyrus": {
+      "coAuthor": {
+        "close_co_author_panel": "Koautor-Bereich schließen",
+        "close_panel": "Bereich schließen — die Sitzung bleibt offen",
+        "co_author": "Koautor",
+        "co_author_chat": "Koautor-Chat",
+        "no_co_author_session_for_this_paper_yet": "Für dieses Paper gibt es noch keine Koautor-Sitzung.",
+        "open_in_chat_page": "Auf der Chat-Seite öffnen",
+        "start_a_session": "Sitzung starten",
+        "starting_session": "Sitzung wird gestartet…"
+      },
+      "diagnostics": {
+        "jump_to_line": "Zu Zeile {{line}} springen",
+        "line_short": "Z{{line}}",
+        "no_messages": "Der Compiler hat nichts gemeldet.",
+        "typesetting_hints_one": "{{count}} Satzhinweis",
+        "typesetting_hints_other": "{{count}} Satzhinweise"
+      },
+      "editor": {
+        "loading_editor": "Editor wird geladen…"
+      },
+      "fileTree": {
+        "delete_file": "{{file}} löschen",
+        "files": "Dateien",
+        "main": "Haupt",
+        "new_file": "Neue Datei",
+        "no_source_files": "Keine Quelldateien."
+      },
+      "page": {
+        "actions": "Aktionen",
+        "clone": "Klonen",
+        "clone_url": "Repository-URL",
+        "clone_url_placeholder": "Von einer git-URL klonen…",
+        "cloning": "Wird geklont…",
+        "compiled_count_label": "Kompiliert",
+        "compiler": "Compiler",
+        "compiler_tip": "Der LaTeX-Compiler auf dem Rechner, der KiroCrew ausführt. Papyrus bevorzugt pdflatex und greift sonst auf tectonic zurück.",
+        "create": "Erstellen",
+        "create_one_above_or_clone_an_existing_repository": "Erstellen Sie oben eines, oder klonen Sie ein bestehendes Repository.",
+        "delete_paper_confirm": "{{name}} und alle zugehörigen Dateien löschen? Dies kann nicht rückgängig gemacht werden.",
+        "delete_paper": "{{name}} löschen",
+        "dismiss_error": "Verwerfen",
+        "install_compiler": "Compiler installieren",
+        "installing_compiler": "Installation läuft…",
+        "last_edited": "Zuletzt bearbeitet",
+        "latex_papers_with_a_live_pdf_preview": "LaTeX-Papers mit laufender PDF-Vorschau",
+        "new_paper_name": "Name des neuen Papers",
+        "new_paper_name_placeholder": "Benennen Sie Ihr Paper…",
+        "no_compiler_found_install_texlive_or_tectonic": "Auf diesem Rechner wurde kein LaTeX-Compiler gefunden. Installieren Sie TeX Live (pdflatex) oder tectonic, um zu kompilieren.",
+        "no_compiler_install_bundled_prompt": "Auf diesem Rechner wurde kein LaTeX-Compiler gefunden. Installieren Sie den mitgelieferten Tectonic-Compiler — ein einzelner geprüfter Download, der im eigenen Ordner von Papyrus bleibt.",
+        "no_papers_yet": "Noch keine Papers",
+        "none_found": "Keiner",
+        "paper": "Paper",
+        "papers": "Papers",
+        "papyrus": "Papyrus",
+        "pdf": "PDF",
+        "pdf_missing_status": "Nicht kompiliert",
+        "pdf_ready_status": "Fertig",
+        "start_a_paper": "Ein Paper beginnen",
+        "start_a_paper_tip": "Erstellen Sie ein leeres Paper aus der Standardvorlage „article“, oder klonen Sie eines von einem git-Remote — alles mit einer .tex-Datei funktioniert.",
+        "your_papers": "Ihre Papers"
+      },
+      "preview": {
+        "compile_to_see_the_pdf": "Kompilieren, um das PDF zu sehen.",
+        "download_pdf": "PDF herunterladen",
+        "pdf_preview": "PDF-Vorschau",
+        "this_browser_cannot_display_a_pdf_inline": "Dieser Browser kann ein PDF nicht eingebettet anzeigen."
+      },
+      "workspace": {
+        "co_author": "Koautor",
+        "co_author_conflict": "Co-Autor hat diese Datei geändert",
+        "co_author_conflict_reload": "Neu laden",
+        "compile": "Kompilieren",
+        "compile_duration": "{{ms}} ms",
+        "compiling": "Wird kompiliert…",
+        "cursor_position": "Z. {{line}}, Sp. {{column}}",
+        "default_commit_message": "Aktualisierung aus Papyrus",
+        "delete_file_confirm": "{{file}} löschen?",
+        "editing": "{{file}} wird bearbeitet",
+        "editing_unsaved": "{{file}} wird bearbeitet — nicht gespeichert",
+        "error_count_one": "{{count}} Fehler",
+        "error_count_other": "{{count}} Fehler",
+        "git_branch": "Aktueller Branch",
+        "log": "Protokoll",
+        "main_document": "Hauptdokument",
+        "new_file_prompt": "Benennen Sie die neue Datei, zum Beispiel methods.tex",
+        "papers": "Papers",
+        "pdf": "PDF",
+        "pull": "Holen",
+        "push": "Senden",
+        "save_and_compile_hint": "Drücken Sie Cmd+S (Ctrl+S unter Windows und Linux), um zu speichern und zu kompilieren.",
+        "session_title": "Papyrus: {{name}}",
+        "warning_count_one": "{{count}} Warnung",
+        "warning_count_other": "{{count}} Warnungen",
+        "word_count_one": "{{count}} Wort",
+        "word_count_other": "{{count}} Wörter"
+      }
+    },
     "workflows": {
       "workflowRunTree": {
         "agent_one": "{{count}} Agent",

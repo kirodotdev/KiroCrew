@@ -836,6 +836,104 @@
         "to_see_its_details": "to see its details."
       }
     },
+    "papyrus": {
+      "coAuthor": {
+        "close_co_author_panel": "Close co-author panel",
+        "close_panel": "Close the panel — the session stays open",
+        "co_author": "Co-author",
+        "co_author_chat": "Co-author chat",
+        "no_co_author_session_for_this_paper_yet": "No co-author session for this paper yet.",
+        "open_in_chat_page": "Open in the chat page",
+        "start_a_session": "Start a session",
+        "starting_session": "Starting session…"
+      },
+      "diagnostics": {
+        "jump_to_line": "Go to line {{line}}",
+        "line_short": "L{{line}}",
+        "no_messages": "The compiler reported nothing.",
+        "typesetting_hints_one": "{{count}} typesetting hint",
+        "typesetting_hints_other": "{{count}} typesetting hints"
+      },
+      "editor": {
+        "loading_editor": "Loading editor…"
+      },
+      "fileTree": {
+        "delete_file": "Delete {{file}}",
+        "files": "Files",
+        "main": "Main",
+        "new_file": "New file",
+        "no_source_files": "No source files."
+      },
+      "page": {
+        "actions": "Actions",
+        "clone": "Clone",
+        "clone_url": "Repository URL",
+        "clone_url_placeholder": "Clone from a git URL…",
+        "cloning": "Cloning…",
+        "compiled_count_label": "Compiled",
+        "compiler": "Compiler",
+        "compiler_tip": "The LaTeX compiler found on the machine running KiroCrew. Papyrus prefers pdflatex and falls back to tectonic.",
+        "create": "Create",
+        "create_one_above_or_clone_an_existing_repository": "Create one above, or clone an existing repository.",
+        "delete_paper_confirm": "Delete {{name}} and all of its files? This cannot be undone.",
+        "delete_paper": "Delete {{name}}",
+        "dismiss_error": "Dismiss",
+        "install_compiler": "Install compiler",
+        "installing_compiler": "Installing…",
+        "last_edited": "Last edited",
+        "latex_papers_with_a_live_pdf_preview": "LaTeX papers with a live PDF preview",
+        "new_paper_name": "New paper name",
+        "new_paper_name_placeholder": "Name your paper…",
+        "no_compiler_found_install_texlive_or_tectonic": "No LaTeX compiler was found on this machine. Install TeX Live (pdflatex) or tectonic to compile.",
+        "no_compiler_install_bundled_prompt": "No LaTeX compiler was found on this machine. Install the bundled Tectonic compiler — a single verified download, kept inside Papyrus's own folder.",
+        "no_papers_yet": "No papers yet",
+        "none_found": "None",
+        "paper": "Paper",
+        "papers": "Papers",
+        "papyrus": "Papyrus",
+        "pdf": "PDF",
+        "pdf_missing_status": "Not compiled",
+        "pdf_ready_status": "Ready",
+        "start_a_paper": "Start a paper",
+        "start_a_paper_tip": "Create an empty paper from a standard article template, or clone one from a git remote — anything with a .tex file works.",
+        "your_papers": "Your papers"
+      },
+      "preview": {
+        "compile_to_see_the_pdf": "Compile to see the PDF.",
+        "download_pdf": "Download the PDF",
+        "pdf_preview": "PDF preview",
+        "this_browser_cannot_display_a_pdf_inline": "This browser cannot display a PDF inline."
+      },
+      "workspace": {
+        "co_author": "Co-author",
+        "co_author_conflict": "Co-author changed this file",
+        "co_author_conflict_reload": "Reload",
+        "compile": "Compile",
+        "compile_duration": "{{ms}} ms",
+        "compiling": "Compiling…",
+        "cursor_position": "Ln {{line}}, Col {{column}}",
+        "default_commit_message": "Update from Papyrus",
+        "delete_file_confirm": "Delete {{file}}?",
+        "editing": "Editing {{file}}",
+        "editing_unsaved": "Editing {{file}} — unsaved",
+        "error_count_one": "{{count}} error",
+        "error_count_other": "{{count}} errors",
+        "git_branch": "Current branch",
+        "log": "Log",
+        "main_document": "Main document",
+        "new_file_prompt": "Name the new file, for example methods.tex",
+        "papers": "Papers",
+        "pdf": "PDF",
+        "pull": "Pull",
+        "push": "Push",
+        "save_and_compile_hint": "Press Cmd+S (Ctrl+S on Windows and Linux) to save and compile.",
+        "session_title": "Papyrus: {{name}}",
+        "warning_count_one": "{{count}} warning",
+        "warning_count_other": "{{count}} warnings",
+        "word_count_one": "{{count}} word",
+        "word_count_other": "{{count}} words"
+      }
+    },
     "workflows": {
       "workflowRunTree": {
         "agent_one": "{{count}} agent",

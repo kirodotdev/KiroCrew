@@ -943,6 +943,104 @@
         "these_settings_changed_elsewhere": "এই সেটিংস অন্য কোথাও বদলে গেছে।"
       }
     },
+    "papyrus": {
+      "coAuthor": {
+        "close_co_author_panel": "সহ-লেখক প্যানেল বন্ধ করুন",
+        "close_panel": "প্যানেল বন্ধ করুন — সেশন খোলা থাকবে",
+        "co_author": "সহ-লেখক",
+        "co_author_chat": "সহ-লেখক চ্যাট",
+        "no_co_author_session_for_this_paper_yet": "এই পেপারের জন্য এখনও কোনও সহ-লেখক সেশন নেই।",
+        "open_in_chat_page": "চ্যাট পৃষ্ঠায় খুলুন",
+        "start_a_session": "একটি সেশন শুরু করুন",
+        "starting_session": "সেশন শুরু হচ্ছে…"
+      },
+      "diagnostics": {
+        "jump_to_line": "{{line}} নম্বর লাইনে যান",
+        "line_short": "লা{{line}}",
+        "no_messages": "কম্পাইলার কিছুই জানায়নি।",
+        "typesetting_hints_one": "{{count}}টি টাইপসেটিং পরামর্শ",
+        "typesetting_hints_other": "{{count}}টি টাইপসেটিং পরামর্শ"
+      },
+      "editor": {
+        "loading_editor": "এডিটর লোড হচ্ছে…"
+      },
+      "fileTree": {
+        "delete_file": "{{file}} মুছুন",
+        "files": "ফাইল",
+        "main": "মূল",
+        "new_file": "নতুন ফাইল",
+        "no_source_files": "কোনও সোর্স ফাইল নেই।"
+      },
+      "page": {
+        "actions": "কাজ",
+        "clone": "ক্লোন করুন",
+        "clone_url": "রিপোজিটরি URL",
+        "clone_url_placeholder": "একটি git URL থেকে ক্লোন করুন…",
+        "cloning": "ক্লোন হচ্ছে…",
+        "compiled_count_label": "কম্পাইল হয়েছে",
+        "compiler": "কম্পাইলার",
+        "compiler_tip": "KiroCrew চালানো মেশিনে পাওয়া LaTeX কম্পাইলার। Papyrus আগে pdflatex বেছে নেয়, না পেলে tectonic।",
+        "create": "তৈরি করুন",
+        "create_one_above_or_clone_an_existing_repository": "উপরে একটি তৈরি করুন, বা বিদ্যমান কোনও রিপোজিটরি ক্লোন করুন।",
+        "delete_paper_confirm": "{{name}} এবং এর সব ফাইল মুছে ফেলবেন? এটি আর ফেরানো যাবে না।",
+        "delete_paper": "{{name}} মুছুন",
+        "dismiss_error": "বাতিল করুন",
+        "install_compiler": "কম্পাইলার ইনস্টল করুন",
+        "installing_compiler": "ইনস্টল করা হচ্ছে…",
+        "last_edited": "সর্বশেষ সম্পাদনা",
+        "latex_papers_with_a_live_pdf_preview": "লাইভ PDF প্রিভিউ সহ LaTeX পেপার",
+        "new_paper_name": "নতুন পেপারের নাম",
+        "new_paper_name_placeholder": "আপনার পেপারের নাম দিন…",
+        "no_compiler_found_install_texlive_or_tectonic": "এই মেশিনে কোনও LaTeX কম্পাইলার পাওয়া যায়নি। কম্পাইল করতে TeX Live (pdflatex) বা tectonic ইনস্টল করুন।",
+        "no_compiler_install_bundled_prompt": "এই মেশিনে কোনও LaTeX কম্পাইলার পাওয়া যায়নি। সঙ্গে দেওয়া Tectonic কম্পাইলার ইনস্টল করুন — একটিই যাচাই করা ডাউনলোড, যা Papyrus-এর নিজের ফোল্ডারেই থাকে।",
+        "no_papers_yet": "এখনও কোনও পেপার নেই",
+        "none_found": "কিছুই নেই",
+        "paper": "পেপার",
+        "papers": "পেপার",
+        "papyrus": "Papyrus",
+        "pdf": "PDF",
+        "pdf_missing_status": "কম্পাইল হয়নি",
+        "pdf_ready_status": "প্রস্তুত",
+        "start_a_paper": "একটি পেপার শুরু করুন",
+        "start_a_paper_tip": "প্রমিত article টেমপ্লেট থেকে একটি খালি পেপার তৈরি করুন, বা কোনও git রিমোট থেকে ক্লোন করুন — .tex ফাইল আছে এমন যে কোনওটিই চলবে।",
+        "your_papers": "আপনার পেপার"
+      },
+      "preview": {
+        "compile_to_see_the_pdf": "PDF দেখতে কম্পাইল করুন।",
+        "download_pdf": "PDF ডাউনলোড করুন",
+        "pdf_preview": "PDF প্রিভিউ",
+        "this_browser_cannot_display_a_pdf_inline": "এই ব্রাউজার ইনলাইনে PDF দেখাতে পারে না।"
+      },
+      "workspace": {
+        "co_author": "সহ-লেখক",
+        "co_author_conflict": "সহ-লেখক এই ফাইলটি পরিবর্তন করেছেন",
+        "co_author_conflict_reload": "পুনরায় লোড করুন",
+        "compile": "কম্পাইল করুন",
+        "compile_duration": "{{ms}} মি.সে.",
+        "compiling": "কম্পাইল হচ্ছে…",
+        "cursor_position": "লা. {{line}}, কল. {{column}}",
+        "default_commit_message": "Papyrus থেকে হালনাগাদ",
+        "delete_file_confirm": "{{file}} মুছে ফেলবেন?",
+        "editing": "{{file}} সম্পাদনা করছেন",
+        "editing_unsaved": "{{file}} সম্পাদনা করছেন — সংরক্ষিত হয়নি",
+        "error_count_one": "{{count}}টি ত্রুটি",
+        "error_count_other": "{{count}}টি ত্রুটি",
+        "git_branch": "বর্তমান ব্রাঞ্চ",
+        "log": "লগ",
+        "main_document": "মূল নথি",
+        "new_file_prompt": "নতুন ফাইলের নাম দিন, যেমন methods.tex",
+        "papers": "পেপার",
+        "pdf": "PDF",
+        "pull": "পুল করুন",
+        "push": "পুশ করুন",
+        "save_and_compile_hint": "সংরক্ষণ করে কম্পাইল করতে Cmd+S (Windows ও Linux-এ Ctrl+S) চাপুন।",
+        "session_title": "Papyrus: {{name}}",
+        "warning_count_one": "{{count}}টি সতর্কতা",
+        "warning_count_other": "{{count}}টি সতর্কতা",
+        "word_count_one": "{{count}}টি শব্দ",
+        "word_count_other": "{{count}}টি শব্দ"
+      }
+    },
     "workflows": {
       "workflowRunTree": {
         "agent_one": "{{count}}টি এজেন্ট",

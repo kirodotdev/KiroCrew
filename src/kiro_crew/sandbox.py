@@ -848,8 +848,32 @@ def _build_launcher_script(
         for path in hidden_dirs
         if not _hidden_path_contains_visible_path(path, extra_visible_dirs)
     ]
+    # A caller-supplied hidden path may be a FILE, and the two launcher loops hide
+    # each kind differently: a directory gets an empty dir bind-mounted over it, a file
+    # gets an empty temp file. The dir loop is guarded by `if os.path.isdir(target)`, so
+    # a file entry matched neither it nor the file loop and was SILENTLY SKIPPED — the
+    # caller asked for it to be hidden, got no error, and it stayed readable.
+    #
+    # That is not hypothetical: `security.sensitive_home_dirs()` is not all directories
+    # (`sel_hmac.key`, `token_signing.key`, `.kiro/crew/.env` are files), and Papyrus
+    # passes that whole list as `extra_hidden_dirs` so a `.tex` cannot `\input` the
+    # gateway's own secrets into a rendered PDF.
+    #
+    # Every path goes in BOTH lists, and the CHILD classifies it. The child already
+    # re-checks with its own `isdir`/`isfile` per loop, so whichever branch matches does
+    # the work and the other skips — no double-mount, no wrong-kind mount. Classifying
+    # here instead would mean an `os.path.isfile()` per entry (52 of them) inside
+    # `_build_launcher_script`, which runs on the event loop for every async spawn: on a
+    # stalled NFS home those stats block the gateway and the liveness heartbeat. Letting
+    # the child decide keeps the syscalls in the child, where they are already happening
+    # and where blocking costs nothing but that one spawn.
+    #
+    # macOS is unaffected either way: its rule is `(deny file-read* (subpath …))`, and a
+    # subpath rule covers a plain file.
     dirs_json = json.dumps(list(dict.fromkeys(hidden_dirs)))
-    files_json = json.dumps([os.path.join(home, f) for f in files])
+    files_json = json.dumps(
+        list(dict.fromkeys([os.path.join(home, f) for f in files] + hidden_dirs))
+    )
     expose_json = json.dumps([(os.path.join(home, f), f.split("/")[-1]) for f in expose_files])
     env_prefixes_json = json.dumps(env_prefixes)
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))

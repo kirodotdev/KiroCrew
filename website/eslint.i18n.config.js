@@ -56,6 +56,14 @@ export default [
       'src/**/*.prompt.ts',
       // Generated and data-only.
       'src/i18n/locales/**',
+      // Agent-prompt modules: text handed to a MODEL, never rendered to the user.
+      // The skill names, file paths and role framing they carry are English
+      // identifiers the agent matches on, so translating them would degrade
+      // instruction-following while changing nothing anyone sees. Scoped to the
+      // `*Prompt.ts` filename convention so the exemption is declared by where a
+      // string lives, not hidden in a content regex — a file named this way holds
+      // ONLY prompt text, and its user-visible siblings stay fully gated.
+      'src/apps/*/companionPrompt.ts',
     ],
     linterOptions: {
       // Every `eslint-disable` comment in this codebase targets the MAIN config's
@@ -212,6 +220,34 @@ export default [
               'id', 'key', 'navId', 'slug', 'type', 'kind', 'code', 'name',
               'className', 'icon', 'path', 'route', 'href', 'url', 'method',
               'event', 'variant', 'color', 'align', 'position', 'placement',
+              // Monaco tokenizer state transitions: `next: '@displayMath'`, `'@pop'`.
+              // A grammar directive naming another rule in the same state machine,
+              // never copy.
+              //
+              // Still deliberately NARROW. The wider set that would also fit the
+              // rationale (`token`, `keywords`, `defaultToken`, …) was measured and
+              // rejected: it retroactively drops AppIcon.tsx 4 -> 2, ChatPage.tsx
+              // 25 -> 23, fileTokens.ts 5 -> 4 and NotificationDetailPanel.tsx 1 -> 0.
+              // A ratchet that silently hands back unrelated files' debt is worse than
+              // the false positive it fixes, so each of those needs its own decision,
+              // not this one's coattails.
+              'next',
+              // `aliases: ['LaTeX', 'latex', 'BibTeX']` — the display names Monaco's
+              // language REGISTRY matches against when resolving a language by name.
+              // Not copy: they are looked up by value, and translating "LaTeX" into
+              // nine languages would break the lookup while naming a format whose
+              // wordmark is the same in every locale.
+              //
+              // An earlier revision of this comment recorded `aliases` as tried and
+              // rejected alongside the wider set. That measurement was taken when
+              // `latexLanguage.ts` was already in the baseline, where the two strings
+              // cost one frozen ledger entry and exempting them was not worth a config
+              // change. It no longer applies: the file is NEW, so the zero-tolerance
+              // [added-lines] check governs instead and there is no baseline to carry
+              // them. Re-measured under the same standard the wider set was rejected
+              // for — `aliases` moves _total 1842 -> 1840 and changes no other file's
+              // entry, so it hands nothing back.
+              'aliases',
             ],
           },
 
