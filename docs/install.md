@@ -182,6 +182,35 @@ of `kirocrew`.
 > also pass `--port` on the CLI to override it. The `dashboard.url` config key is
 > only for advertising a remote URL.
 
+## Uninstall and data retention
+
+Uninstalling KiroCrew preserves `$KIROCREW_HOME` (`~/.kiro/crew` by default).
+That directory contains configuration, credentials, memory, sessions, apps, and
+the audit chain; none of the repository-controlled uninstall paths remove it:
+
+- `kirocrew service uninstall` removes only the systemd unit or launchd plist.
+- Python/npm package removal has no `preuninstall` or `postuninstall` cleanup hook.
+- The macOS DMG/zip and Linux AppImage have no repository cleanup hook. Removing
+  the application bundle/image therefore leaves the data home intact.
+- App Kit uninstall preserves `apps/<name>/data/` by default. Deleting that app
+  data is a separate, explicit action: `kirocrew app uninstall NAME --purge-data`
+  or uncheck **Keep app data** in the confirmation dialog.
+
+There is intentionally no implicit whole-home purge. Back up with `kirocrew
+snapshot` before manually removing a data home you no longer need.
+
+**External certification dependency.** Windows desktop releases use
+Squirrel.Windows, whose generated uninstaller is external to this repository.
+The repository's `--squirrel-uninstall` handler removes only the application
+shortcut and exits; it never resolves or removes the KiroCrew home, which is
+outside Squirrel's application install directory. Each signed Windows installer
+must nevertheless pass an install → create sentinel under
+`~/.kiro/crew` → uninstall → verify sentinel smoke test before release. A
+separate Kiro-family uninstaller could remove the parent `~/.kiro/` directory;
+it must exclude `~/.kiro/crew` or prompt explicitly. That release-blocking
+cross-product sign-off is tracked in
+[issue #355](https://github.com/kirodotdev/KiroCrew/issues/355).
+
 ## Troubleshooting
 
 For runtime issues (ACP handshake timeouts, embedding/memory search, Slack,

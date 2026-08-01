@@ -134,7 +134,18 @@ leaves) on every default-path resolution. It never follows a symlink at either
 root, is best-effort (a removal failure is logged and retried on the next
 start, never blocks startup), and is a quiet no-op once both are gone.
 
-**Uninstaller consideration (Zezhen's open question).** Because the data home now
+**Repository-controlled uninstall contract.** Every uninstall path owned by this
+repository preserves the KiroCrew data home by default. `kirocrew service
+uninstall` removes only its service definition; the Python/npm packages define
+no uninstall lifecycle hook; and the desktop shell's
+`--squirrel-uninstall` handler removes only its application shortcut, without
+resolving or removing the KiroCrew home. App Kit uninstall also preserves the
+app's `data/` subtree unless the dedicated `purge_data=true` API action (CLI
+`--purge-data`, or an explicit dashboard choice) is supplied. The API checks
+for the literal boolean `true`; absent, legacy, or malformed values fail closed
+to preservation. A whole-home purge is never coupled to uninstall.
+
+**Uninstaller consideration (external dependency).** Because the data home now
 lives under `~/.kiro/`, a hypothetical Kiro-family uninstaller that removes
 `~/.kiro/` would also remove `~/.kiro/crew` and take KiroCrew's data — config,
 credentials, memory DB, session history, and the SEL audit chain — with it. This

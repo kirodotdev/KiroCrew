@@ -156,10 +156,26 @@ class TestInstall:
 # ---------------------------------------------------------------------------
 
 class TestUninstall:
-    def test_uninstall(self, tmp_path, app_home):
+    def test_uninstall_preserves_data_by_default(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)
         install_app(src)
+        data_file = app_home / "apps" / "test-app" / "data" / "state.json"
+        data_file.write_text('{"saved": true}')
+
         result = uninstall_app("test-app")
+
+        assert result.ok
+        assert data_file.read_text() == '{"saved": true}'
+        assert not (app_home / "apps" / "test-app" / APP_MANIFEST_FILENAME).exists()
+
+    def test_uninstall_purges_data_only_when_explicit(self, tmp_path, app_home):
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        data_file = app_home / "apps" / "test-app" / "data" / "state.json"
+        data_file.write_text('{"saved": true}')
+
+        result = uninstall_app("test-app", keep_data=False)
+
         assert result.ok
         assert not (app_home / "apps" / "test-app").exists()
 
@@ -183,7 +199,7 @@ class TestUninstall:
         assert not (app_home / "apps" / "test-app" / APP_MANIFEST_FILENAME).exists()
 
     def test_install_preserves_existing_data(self, tmp_path, app_home):
-        """Reinstall after uninstall --keep-data must preserve user data."""
+        """Reinstall after default uninstall must preserve user data."""
         src = _make_app_source(tmp_path)
         install_app(src)
         # Write user data

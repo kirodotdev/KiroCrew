@@ -580,7 +580,7 @@ def _handle_app(args: argparse.Namespace) -> None:
     elif action == "uninstall":
         _cleanup_app_crons_from_scheduler(args.name)
         deregister_app(args.name)
-        keep_data = getattr(args, "keep_data", False)
+        keep_data = not getattr(args, "purge_data", False)
         result = uninstall_app(args.name, keep_data=keep_data)
         if result.ok:
             print(f"✅ {result.message}")

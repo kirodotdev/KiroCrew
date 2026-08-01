@@ -1396,9 +1396,9 @@ export const api = {
   enableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/enable').then(j),
   disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
   openApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/open').then(j),
-  uninstallApp: (name: string, keepData?: boolean, keepDependencies?: boolean, keepSpecific?: string[]) =>
+  uninstallApp: (name: string, keepData = true, keepDependencies?: boolean, keepSpecific?: string[]) =>
     post('/api/apps/' + encodeURIComponent(name) + '/uninstall', {
-      ...(keepData ? { keep_data: true } : {}),
+      ...(keepData === false ? { purge_data: true } : {}),
       ...(keepDependencies ? { keep_dependencies: true } : {}),
       ...(keepSpecific?.length ? { keep_specific: keepSpecific } : {}),
     }).then(j),

@@ -238,8 +238,8 @@ keystone paths are still refused). The CLI is the stricter of the two.
 | `kirocrew app install /path/to/app-dir` | Install app from local directory (needs app.json) |
 | `kirocrew app enable NAME` | Enable an installed app |
 | `kirocrew app disable NAME` | Disable an installed app |
-| `kirocrew app uninstall NAME` | Uninstall an app |
-| `kirocrew app uninstall NAME --keep-data` | Uninstall but preserve data directory |
+| `kirocrew app uninstall NAME` | Uninstall an app and preserve its data directory |
+| `kirocrew app uninstall NAME --purge-data` | Uninstall and explicitly delete the app data directory |
 | `kirocrew app info NAME` | Show app details |
 | `kirocrew app init NAME` | Scaffold a new app (kebab-case name) |
 | `kirocrew app init NAME --backend --ui --cron` | Scaffold with backend, UI, and sample cron |

@@ -458,7 +458,7 @@ def install_app(source: str | Path) -> AppResult:
         )
 
     # Copy app files to install directory
-    # Preserve existing data/ directory (left behind by prior uninstall --keep-data)
+    # Preserve existing data/ directory (left behind by a prior default uninstall)
     existing_data = dest / "data" if dest.exists() else None
     # Use same temp name as uninstall_app/update_app so data stranded by a
     # crashed sibling operation is reclaimable by whichever lifecycle runs next.
@@ -712,11 +712,11 @@ def update_app(source: str | Path, *, expected_name: str | None = None) -> AppRe
 # ---------------------------------------------------------------------------
 
 
-def uninstall_app(name: str, *, keep_data: bool = False) -> AppResult:
-    """Uninstall an app by removing its directory.
+def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
+    """Uninstall an app while preserving its ``data/`` directory by default.
 
-    If *keep_data* is True, the ``data/`` subdirectory is preserved.
-    Resource deregistration should be done before calling this.
+    Passing ``keep_data=False`` is the explicit purge action. Resource
+    deregistration should be done before calling this.
     Built-in apps cannot be uninstalled — only disabled.
     """
     if not _check_path_safety(name):

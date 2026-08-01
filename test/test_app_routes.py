@@ -139,16 +139,58 @@ async def test_enable_disable(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_uninstall(tmp_path, monkeypatch):
-    _setup_env(tmp_path, monkeypatch)
+async def test_uninstall_preserves_data_by_default(tmp_path, monkeypatch):
+    home = _setup_env(tmp_path, monkeypatch)
     src = _make_app_source(tmp_path)
     install_app(src)
+    data_file = home / "apps" / "api-test-app" / "data" / "state.json"
+    data_file.write_text('{"saved": true}')
+
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post("/api/apps/api-test-app/uninstall")
         assert resp.status == 200
 
         resp = await client.get("/api/apps/api-test-app")
         assert resp.status == 404
+
+    assert data_file.read_text() == '{"saved": true}'
+
+
+@pytest.mark.asyncio
+async def test_uninstall_purges_data_only_with_explicit_action(tmp_path, monkeypatch):
+    home = _setup_env(tmp_path, monkeypatch)
+    src = _make_app_source(tmp_path)
+    install_app(src)
+    app_dir = home / "apps" / "api-test-app"
+    (app_dir / "data" / "state.json").write_text('{"saved": true}')
+
+    async with TestClient(TestServer(_make_app())) as client:
+        # The legacy destructive field is ignored and fails closed.
+        resp = await client.post(
+            "/api/apps/api-test-app/uninstall", json={"keep_data": False}
+        )
+        assert resp.status == 200
+    assert (app_dir / "data" / "state.json").is_file()
+
+    # Reinstall over the preserved data, then prove malformed purge intent also
+    # fails closed.
+    install_app(src)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post(
+            "/api/apps/api-test-app/uninstall", json={"purge_data": "true"}
+        )
+        assert resp.status == 200
+    assert (app_dir / "data" / "state.json").is_file()
+
+    # Reinstall again, then invoke the dedicated literal-boolean purge action.
+    install_app(src)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post(
+            "/api/apps/api-test-app/uninstall", json={"purge_data": True}
+        )
+        assert resp.status == 200
+
+    assert not app_dir.exists()
 
 
 @pytest.mark.asyncio

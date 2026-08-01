@@ -1691,10 +1691,14 @@ Examples:
     app_enable.add_argument("name", help="App name to enable")
     app_disable = app_sub.add_parser("disable", help="Disable an installed app")
     app_disable.add_argument("name", help="App name to disable")
-    app_uninstall = app_sub.add_parser("uninstall", help="Uninstall an app")
+    app_uninstall = app_sub.add_parser(
+        "uninstall", help="Uninstall an app (preserves app data by default)"
+    )
     app_uninstall.add_argument("name", help="App name to uninstall")
     app_uninstall.add_argument(
-        "--keep-data", action="store_true", help="Preserve app data directory"
+        "--purge-data",
+        action="store_true",
+        help="Permanently delete the app data directory",
     )
     app_info = app_sub.add_parser("info", help="Show app details")
     app_info.add_argument("name", help="App name")

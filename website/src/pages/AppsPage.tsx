@@ -93,7 +93,7 @@ export default function AppsPage() {
 
   // Uninstall confirmation state (Library)
   const [uninstallTarget, setUninstallTarget] = useState<InstalledApp | null>(null)
-  const [keepData, setKeepData] = useState(false)
+  const [keepData, setKeepData] = useState(true)
   const [uninstallPreview, setUninstallPreview] = useState<UninstallPreview | null>(null)
   const [keepSpecific, setKeepSpecific] = useState<Set<string>>(new Set())
 
@@ -271,7 +271,7 @@ export default function AppsPage() {
       const app = apps.find(a => a.name === name)
       if (app) {
         setUninstallTarget(app)
-        setKeepData(false)
+        setKeepData(true)
         setKeepSpecific(new Set())
         // Fetch uninstall preview (best-effort — dialog works without it)
         try {

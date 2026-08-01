@@ -50,3 +50,39 @@ describe("macOS bundle naming", () => {
     assert.doesNotMatch(buildScript, /-c\.mac\.extendInfo\.CFBundleName=/);
   });
 });
+
+
+describe("uninstall data preservation contract", () => {
+  const electronPkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const websitePkg = JSON.parse(
+    fs.readFileSync(path.resolve(ROOT, "..", "package.json"), "utf8")
+  );
+  const main = fs.readFileSync(path.join(ROOT, "main.js"), "utf8");
+
+  it("defines no package-manager uninstall hooks", () => {
+    for (const [name, scripts] of [
+      ["electron", electronPkg.scripts || {}],
+      ["website", websitePkg.scripts || {}],
+    ]) {
+      assert.equal(Object.hasOwn(scripts, "preuninstall"), false, `${name} preuninstall`);
+      assert.equal(Object.hasOwn(scripts, "postuninstall"), false, `${name} postuninstall`);
+    }
+  });
+
+  it("keeps the Squirrel uninstall handler shortcut-only", () => {
+    const match = main.match(
+      /else if \(cmd === "--squirrel-uninstall"\) \{([\s\S]*?)\n  \} else if/
+    );
+    assert.ok(match, "expected an explicit Squirrel uninstall branch");
+    assert.equal(
+      match[1].trim(),
+      'run(["--removeShortcut=" + target]);',
+      "Squirrel uninstall must remain shortcut-only and never touch the data home"
+    );
+    assert.notEqual(
+      electronPkg.build.nsis?.deleteAppDataOnUninstall,
+      true,
+      "desktop uninstall must not opt into deleting app data"
+    );
+  });
+});

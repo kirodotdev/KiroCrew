@@ -106,18 +106,42 @@ class TestHandleApp:
         assert data["name"] == "cli-test-app"
         assert "manifest" in data
 
-    def test_uninstall(self, tmp_path, app_env):
+    def test_uninstall_preserves_data_by_default(self, tmp_path, app_env):
         import argparse
 
         from kiro_crew.cli import _handle_app
 
         src = _make_app_source(tmp_path)
         install_app(src)
+        data_file = app_env["home"] / "apps" / "cli-test-app" / "data" / "state.json"
+        data_file.write_text('{"saved": true}')
 
-        ns = argparse.Namespace(app_action="uninstall", name="cli-test-app", keep_data=False)
+        ns = argparse.Namespace(
+            app_action="uninstall", name="cli-test-app", purge_data=False
+        )
         _handle_app(ns)
+
         from kiro_crew.apps.manager import get_app
+
         assert get_app("cli-test-app") is None
+        assert data_file.read_text() == '{"saved": true}'
+
+    def test_uninstall_purge_data_requires_explicit_flag(self, tmp_path, app_env):
+        import argparse
+
+        from kiro_crew.cli import _handle_app
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        app_dir = app_env["home"] / "apps" / "cli-test-app"
+        (app_dir / "data" / "state.json").write_text('{"saved": true}')
+
+        ns = argparse.Namespace(
+            app_action="uninstall", name="cli-test-app", purge_data=True
+        )
+        _handle_app(ns)
+
+        assert not app_dir.exists()
 
     def test_install_invalid_source(self, app_env):
         import argparse

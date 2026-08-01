@@ -689,6 +689,11 @@ class TestLinuxControlPaths:
         # would also affect pytest/fixture machinery).
         unit_path = tmp_path / "kirocrew.service"
         unit_path.write_text("")
+        data_home = tmp_path / "crew-home"
+        data_home.mkdir()
+        sentinel = data_home / "memory.db"
+        sentinel.write_text("user data")
+        monkeypatch.setenv("KIROCREW_HOME", str(data_home))
         monkeypatch.setattr(svc_linux, "UNIT_PATH", unit_path)
         ok = MagicMock(returncode=0, stdout="", stderr="")
         with patch(
@@ -703,6 +708,7 @@ class TestLinuxControlPaths:
             c[:3] == ["sudo", "rm", "-f"] for c in called
         ), f"expected sudo rm of unit file; got {called}"
         assert ["sudo", "systemctl", "daemon-reload"] in called
+        assert sentinel.read_text() == "user data"
 
     def test_is_active_returns_true_when_systemctl_says_active(self):
         from kiro_crew.service import linux as svc_linux
@@ -953,6 +959,11 @@ class TestMacOSControlPaths:
         plist_path = plist_dir / f"{LAUNCHD_LABEL}.plist"
         plist_dir.mkdir(parents=True)
         plist_path.write_text("<plist/>")
+        data_home = tmp_path / "crew-home"
+        data_home.mkdir()
+        sentinel = data_home / "memory.db"
+        sentinel.write_text("user data")
+        monkeypatch.setenv("KIROCREW_HOME", str(data_home))
         monkeypatch.setattr(svc_macos, "PLIST_PATH", plist_path)
 
         ok = MagicMock(returncode=0, stdout="", stderr="")
@@ -963,6 +974,7 @@ class TestMacOSControlPaths:
         assert not plist_path.exists()
         called = [c.args[0] for c in run.call_args_list]
         assert ["launchctl", "unload", "-w", str(plist_path)] in called
+        assert sentinel.read_text() == "user data"
 
     def test_uninstall_idempotent_when_plist_missing(self, tmp_path, monkeypatch):
         from kiro_crew.service import macos as svc_macos

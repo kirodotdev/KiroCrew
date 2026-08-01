@@ -692,7 +692,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     3. Run onUninstall script (if declared)
     4. Stop backend + deregister resources (gateway-managed only)
     5. Clean removable dependencies (unless keep_dependencies=true)
-    6. Remove app files (preserve data/ if keep_data=true)
+    6. Remove app files (preserve data/ unless purge_data=true)
 
     Steps 2–6 run inside the per-app lifecycle lock so the whole teardown is
     atomic and the cron precondition can abort before any irreversible action.
@@ -714,12 +714,15 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     uninstall_log: list[str] = []
 
     # Parse body
-    keep_data = False
+    # Preserve app data unless the caller supplies the dedicated destructive
+    # action. Legacy ``keep_data: false`` payloads are intentionally ignored:
+    # absence or malformed values must never become an implicit purge.
+    keep_data = True
     keep_dependencies = False
     keep_specific: list[str] = []
     try:
         body = await request.json()
-        keep_data = body.get("keep_data", False)
+        keep_data = body.get("purge_data") is not True
         keep_dependencies = body.get("keep_dependencies", False)
         # Sanitize here, at the parse boundary: this is unvalidated client JSON,
         # and the dependency step that consumes it runs AFTER the onUninstall
@@ -826,7 +829,10 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         if on_uninstall:
             script_output = await _run_lifecycle_script(
                 name, on_uninstall, timeout=120,
-                extra_env={"KEEP_DATA": "1" if keep_data else "0"},
+                extra_env={
+                    "KEEP_DATA": "1" if keep_data else "0",
+                    "PURGE_DATA": "0" if keep_data else "1",
+                },
             )
             if script_output.get("output"):
                 from kiro_crew.security import redact_credentials, redact_exfiltration_urls

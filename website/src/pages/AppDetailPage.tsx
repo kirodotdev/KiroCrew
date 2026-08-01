@@ -194,7 +194,7 @@ export default function AppDetailPage() {
   const [copied, setCopied] = useState(false)
   const [serverHostname, setServerHostname] = useState('')
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false)
-  const [keepData, setKeepData] = useState(false)
+  const [keepData, setKeepData] = useState(true)
 
   // Helper: open chat with a pre-filled message (same mechanism as useChatLauncher from app-sdk)
   const openChatWithMessage = useCallback((message: string) => {
@@ -362,7 +362,7 @@ export default function AppDetailPage() {
     // Intercept uninstall to show confirmation modal
     if (action === 'uninstall') {
       setShowUninstallConfirm(true)
-      setKeepData(false)
+      setKeepData(true)
       return
     }
     setActionLoading(action)

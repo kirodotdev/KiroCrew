@@ -518,12 +518,13 @@ Returns an impact analysis classifying each dependency:
 
 ```jsonc
 {
-  "keep_data": false,
+  "purge_data": true,
   "keep_dependencies": false,
   "keep_specific": ["aws-documentation-mcp-server"]
 }
 ```
 
+- `purge_data: true` → explicitly delete the app's `data/` subtree; omission preserves it
 - `keep_dependencies: true` → skip all dependency cleanup
 - `keep_dependencies: false` → remove `removable` deps not in `keep_specific`
 - `shared` and `userInstalled` are never removed regardless of flags
@@ -713,10 +714,12 @@ register_app(app_name)
 ### 9.1 Uninstall API
 
 The uninstall endpoint (`POST /api/apps/{name}/uninstall`) remains
-backward-compatible. Existing clients that send `{ "keep_data": true }`
-continue to work — the new `keep_dependencies` and `keep_specific`
-fields default to `false` and `[]` respectively, which means "clean up
-removable dependencies" (the safe default).
+backward-compatible for non-destructive requests. Existing clients that send
+`{ "keep_data": true }` continue to preserve data. Legacy `keep_data: false`
+is intentionally ignored because deletion now requires the dedicated literal
+`{ "purge_data": true }` action. The new `keep_dependencies` and
+`keep_specific` fields default to `false` and `[]` respectively, which means
+"clean up removable dependencies" (the safe default).
 
 The new preview endpoint (`GET /api/apps/{name}/uninstall/preview`) is
 additive — existing clients that don't call it simply skip the preview
