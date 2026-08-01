@@ -52,11 +52,6 @@ import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, findUnreferencedAttachments } from '../utils/fileTokens'
 import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
-// Roles that fold into a collapsible group in the turn view. Thinking is NOT
-// here: it carries real content and renders as its own standalone block (a
-// content-bearing reasoning trace), so grouping it into the "N tool calls"
-// collapsible would bury and mislabel it.
-const GROUPABLE = new Set(['permission'])
 /** Delay (ms) before scrolling to bottom after a state update, giving React time to commit. */
 const SCROLL_AFTER_RENDER_MS = 100
 // Canonical home is utils/navIntent (shared with the popout nav-intent
@@ -110,6 +105,7 @@ import { useChatNavigation } from '../hooks/useChatNavigation'
 import SubagentProgressBar from './chat/SubagentProgressBar'
 import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
+import { groupDisplayItems, applyRunningState } from './chat/groupDisplayItems'
 import { setSessionPreviewPending, normalizeUrl, PREVIEW_FOCUS_EVENT, PREVIEW_SNIP_EVENT, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
 import { fileLandingSlot } from '../utils/uploadRouting'
@@ -696,8 +692,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const slotState = useAppSelector(s => s.chat.slotState)
   const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''] ?? 0)
   const contextTokens = useAppSelector(s => s.chat.slotContextTokens?.[s.chat.activeSlot ?? ''])
-  const subagents = useAppSelector(s => s.chat.subagents)
-  const toolLog = useAppSelector(s => s.chat.toolLog)
+  // Length only. The two arrays themselves are mutated per streamed sub-agent /
+  // tool chunk, and their only consumer is the Activity panel (SidePanel), which
+  // is closed by default and now subscribes to them itself. Subscribing to the
+  // arrays here re-rendered this whole component per chunk for data it never
+  // read. The touched-file scan below needs the entries, but only when the log
+  // GREW, so it reads them from the store at effect time instead.
+  const toolLogLen = useAppSelector(s => s.chat.toolLog.length)
   const activityOpen = useAppSelector(s => s.chat.activityOpen)
   const slotHasMore = useAppSelector(s => s.chat.slotHasMore)
   const history = useAppSelector(s => s.chat.history)
@@ -852,7 +853,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const setPendingModel = useCallback((v: string) => { pendingModelRef.current = v; _setPendingModel(v) }, [])
   const pendingProjectRef = useRef('')
   const setPendingProject = useCallback((v: string) => { pendingProjectRef.current = v }, [])
-  const [resolvedModel, setResolvedModel] = useState('')  // resolved model for slots without model
+
   // Sync pendingModel with default agent's model on initial load
   const _initAgent = pendingAgent || defaultAgent || 'default'
   const _initMc = installedAgents.find(a => a.name === _initAgent)
@@ -1437,6 +1438,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Auto-track files touched by tool calls (read, write, grep, glob)
   const lastToolLen = useRef(0)
   useEffect(() => {
+    // Read the log at effect time rather than subscribing to it: this effect only
+    // runs when the length changed, and the append-only log's tail is what it wants.
+    const toolLog = store.getState().chat.toolLog
     if (toolLog.length <= lastToolLen.current) { lastToolLen.current = toolLog.length; return }
     const newEntries = toolLog.slice(lastToolLen.current)
     lastToolLen.current = toolLog.length
@@ -1468,7 +1472,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // on the whole `toolLog`/`touchedFiles` objects would reprocess on unrelated
     // identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toolLog.length, touchedFiles.addFile, touchedFiles.shouldScanAdd])
+  }, [toolLogLen, touchedFiles.addFile, touchedFiles.shouldScanAdd])
 
   const { colorTheme } = useTheme()
   // Mirror colorTheme into a ref so the `send` callback (which does not depend
@@ -1535,12 +1539,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       dispatch(openActivityPanel())
       search.close()
     }
-    // Depend on the stable `search.close` (useCallback([]) in useMessageSearch),
-    // not the whole `search` object — the latter changes identity on every
-    // search-state change (isOpen/term/matches) and would needlessly recreate
-    // this callback and re-render its consumers.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryClient, tabsCtl, dispatch, search.close, touchedFiles])
+    // Depend on the stable members, not the whole hook objects:
+    //   search.close      — useCallback([]) in useMessageSearch; the `search`
+    //                       object changes identity on every search-state change
+    //                       (isOpen/term/matches).
+    //   touchedFiles.addFile — useTouchedFiles memoizes on `files`, so its object
+    //                       changes identity every time a file lands, including
+    //                       mid-run when the tool-log scan above calls addFile.
+    // Either whole-object dep churned this callback and the onFileOpen prop on
+    // every row. (tabsCtl still churns on tab changes, but those are user actions,
+    // not per-chunk.)
+  }, [queryClient, tabsCtl, dispatch, search.close, touchedFiles.addFile])
 
   // Open an artifact as a side-panel tab — the artifact twin of
   // handleFileOpen, and the single entry point every in-chat artifact
@@ -3039,7 +3048,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     queryFn: () => provider.resolveModel(_slotTemplateName),
     enabled: !!_slotTemplateName,
   })
-  useEffect(() => { setResolvedModel(_slotResolvedModel || '') }, [_slotResolvedModel])
+  // Derived, not mirrored into state via an effect: the effect form cost an extra
+  // render pass every time the query settled, for a value that is a pure function
+  // of the query result.
+  const resolvedModel = _slotResolvedModel || ''
   // The configured default effort for new sessions. A slot that has never
   // touched the effort control carries '' (no override) but still RUNS at this
   // default — the backend applies `slot.reasoning_effort or agent.reasoning_effort`
@@ -3308,54 +3320,41 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (activityOpen) tabsCtl.openView(activityTab === ('nav' as string) ? 'files' : activityTab)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activityTab])
-  const displayItems = useMemo<DisplayItem[]>(() => {
-    // Phase 1: build raw items (singles + groups)
-    const raw: TurnItem[] = []
-    let group: ChatMessage[] = [], groupStart = 0
-    for (let i = 0; i < messages.length; i++) {
-      // Permission messages handled by pinned ApprovalBar — skip entirely
-      if (messages[i].role === 'permission') continue
-      // Subagent completions are internal — LLM sees them but user doesn't need to
-      if (messages[i].role === 'subagent') continue
-      if (GROUPABLE.has(messages[i].role)) {
-        if (!group.length) groupStart = i
-        group.push(messages[i])
-      } else {
-        if (group.length) { raw.push({ kind: 'group', msgs: group, startIdx: groupStart }); group = [] }
-        raw.push({ kind: 'single', msg: messages[i], idx: i })
-      }
+  // Stable row callbacks. These used to be inline lambdas in the row renderer, so
+  // every render handed AssistantMessage a fresh function identity and its memo()
+  // could never bail out — the boundary was broken at the call site, not by the
+  // renderer. Both read live state from a ref / the store rather than closing over
+  // it, so neither needs a dependency that churns while a turn streams.
+  const handleSpeak = useCallback((content: string) => {
+    if (store.getState().chat.voicePlaying) {
+      window.dispatchEvent(new Event('voice-stop'))
+      dispatch(setVoiceAudio(null))
+      return
     }
-    if (group.length) raw.push({ kind: 'group', msgs: group, startIdx: groupStart })
+    dispatch(setVoiceAudio(null))
+    api.voiceSynthesize(activeSlotRef.current || '', content).catch(() => {})
+  }, [dispatch])
 
-    // Phase 2: group into turns (user message → next user message)
-    const turns: DisplayItem[] = []
-    let turnItems: TurnItem[] = []
-    const hasWorkingSteps = (items: TurnItem[]) =>
-      items.some(t =>
-        (t.kind === 'single' && (t.msg.role === 'tool' || t.msg.role === 'assistant' || t.msg.role === 'streaming')) ||
-        t.kind === 'group'
-      )
-    const flushTurn = (items: TurnItem[], complete: boolean) => {
-      if (hasWorkingSteps(items) && items.length > 2) {
-        turns.push({ kind: 'turn', items, complete })
-      } else {
-        turns.push(...items)
-      }
-    }
-    for (const item of raw) {
-      // A nudge opens a new turn exactly like a user message does — it IS the
-      // turn's prompt. Without this it gets swallowed into the previous turn's
-      // collapsed step group and the cycle chip disappears.
-      if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'nudge')) {
-        if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
-        turns.push(item)
-      } else {
-        turnItems.push(item)
-      }
-    }
-    if (turnItems.length > 0) flushTurn(turnItems, !slotRunning)
-    return turns
-  }, [messages, slotRunning])
+  const handleApplyPlan = useCallback(async (steps: PlanStepInput[]) => {
+    try {
+      const r = await api.planFromChat(steps, planTaskId)
+      if (r.ok) { navigate('/projects?applied=' + (r.task_id || planTaskId)); return true }
+    } catch { /* API error */ }
+    alert(i18nT('pages.chatPage.failed_to_apply_plan'))
+    return false
+  }, [planTaskId, navigate])
+
+  // Grouping depends ONLY on `messages`; `slotRunning` decides one boolean on the
+  // trailing turn. Bundling both in one memo re-ran the whole O(N) grouping pass on
+  // every turn start/stop just to flip that flag, and the new identity cascaded into
+  // messageToDisplayIdx / visibleIndexMap / the virtualizer. Split: group once, then
+  // apply the flag in O(1).
+  const groupedTurns = useMemo(() => groupDisplayItems(messages), [messages])
+
+  const displayItems = useMemo<DisplayItem[]>(
+    () => applyRunningState(groupedTurns, slotRunning),
+    [groupedTurns, slotRunning],
+  )
 
   // Keep the ref in sync so handleRangeChanged / updatePinnedPrompt
   // read the latest displayItems. useEffect rather than render-body
@@ -3820,17 +3819,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 }
                 // End of messages — show footer only if agent is done
                 return !slotRunning
-              })()} onSpeak={() => { const playing = store.getState().chat.voicePlaying; if (playing) { window.dispatchEvent(new Event('voice-stop')); dispatch(setVoiceAudio(null)); return }; dispatch(setVoiceAudio(null)); api.voiceSynthesize(activeSlot || '', m.content).catch(() => {}) }} onRegenerate={i === lastTextIdx && !slotRunning && !regenerating && activeSlot ? handleRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdx && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
+              })()} onSpeak={handleSpeak} onRegenerate={i === lastTextIdx && !slotRunning && !regenerating && activeSlot ? handleRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdx && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
                 // eslint-disable-next-line no-console -- surface switch-variant failures for debugging
                 console.warn('switch-variant failed', e)
-              }) } : undefined} onFork={handleFork} onPlanFromHere={handlePlanFromHere} forkIndex={forkIndex} onApplyPlan={async (steps: PlanStepInput[]) => {
-                try {
-                  const r = await api.planFromChat(steps, planTaskId)
-                  if (r.ok) { navigate('/projects?applied=' + (r.task_id || planTaskId)); return true }
-                } catch { /* API error */ }
-                alert(i18nT('pages.chatPage.failed_to_apply_plan'))
-                return false
-              }} />
+              }) } : undefined} onFork={handleFork} onPlanFromHere={handlePlanFromHere} forkIndex={forkIndex} onApplyPlan={handleApplyPlan} />
             </div>
           )}
         </div>
@@ -4741,7 +4733,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           >
             <SidePanel
               tabsCtl={tabsCtl}
-              subagents={subagents} toolLog={toolLog} slot={activeSlot || ''}
+              slot={activeSlot || ''}
               files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
               onArtifactOpen={handleArtifactOpen}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
@@ -4776,7 +4768,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             >
               <SidePanel
                 tabsCtl={tabsCtl}
-                subagents={subagents} toolLog={toolLog} slot={activeSlot || ''}
+                slot={activeSlot || ''}
                 files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
                 onArtifactOpen={handleArtifactOpen}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}

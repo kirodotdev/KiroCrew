@@ -18,7 +18,8 @@ import { PINNED_VIEWS } from '../../hooks/usePanelTabs'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useListboxKeyboard } from '../../hooks/useListboxKeyboard'
 import { safeSetItem } from '../../utils/safeStorage'
-import type { SubagentActivity, ToolActivity } from '../../types'
+import { useAppSelector } from '../../store'
+import { selectSlotSubagents, selectSlotToolLog } from '../../store/chatSlice'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
@@ -48,8 +49,6 @@ const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 
 
 interface SidePanelProps {
   tabsCtl: ReturnType<typeof usePanelTabs>
-  subagents: Record<string, SubagentActivity>
-  toolLog: ToolActivity[]
   slot: string
   files?: TouchedFile[]
   onFileOpen?: (path: string, opts?: { replaceId?: string }) => void
@@ -182,13 +181,20 @@ export function measureSidePanelReservedW(): number {
 }
 
 export default function SidePanel({
-  tabsCtl, subagents, toolLog, slot, files, onFileOpen, onArtifactOpen, onFileRemove, onFilesClear,
+  tabsCtl, slot, files, onFileOpen, onArtifactOpen, onFileRemove, onFilesClear,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource,
   issues, selectedIssueUrl, onSelectIssue,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
   inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth,
 }: SidePanelProps) {
   const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
+  // Subscribed HERE rather than passed down from ChatPage. Both maps are
+  // mutated per streamed sub-agent / tool chunk, and this panel is closed by
+  // default — holding the subscription in ChatPage re-rendered the whole page
+  // for data nothing was displaying. This component only mounts while the
+  // panel is open, so the subscription now costs nothing when it is closed.
+  const subagents = useAppSelector(s => selectSlotSubagents(s, slot))
+  const toolLog = useAppSelector(s => selectSlotToolLog(s, slot))
   const terminalEnabled = useTerminalEnabled()
   // The + menu / empty-state launcher hide Terminal when the feature is
   // disabled server-side, and never list the auto-managed pinned views

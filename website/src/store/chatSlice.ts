@@ -483,6 +483,16 @@ const EMPTY_TOOLLOG: ToolActivity[] = []
 /** Per-slot tool log, falling back to the global active mirror. */
 export const selectSlotToolLog = (state: RootState, slot: string | null): ToolActivity[] =>
   slot && slot !== state.chat.activeSlot ? (state.chat.slotActivity[slot]?.toolLog ?? EMPTY_TOOLLOG) : state.chat.toolLog
+const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
+/** Per-slot subagent map, falling back to the global active mirror — the
+ *  read-only selector twin of the internal `getSlotSubs`. Exists so the
+ *  Activity panel can subscribe to this itself instead of having ChatPage hold
+ *  the subscription and pass it down: ChatPage renders on every streamed token,
+ *  and `sseSubagentChunk` bumps this reference per sub-agent chunk, so a
+ *  ChatPage-level subscription re-rendered the whole page for a panel that is
+ *  closed by default. */
+export const selectSlotSubagents = (state: RootState, slot: string | null): Record<string, SubagentActivity> =>
+  slot && slot !== state.chat.activeSlot ? (state.chat.slotActivity[slot]?.subagents ?? EMPTY_SUBAGENTS) : state.chat.subagents
 /** Per-slot pending tool-approval (unresolved permission after the slot's last
  *  user message) — slot-aware version of ChatInput's old selectPendingApproval,
  *  so each grid pane's approval bar reflects ITS slot, not the global active one. */
