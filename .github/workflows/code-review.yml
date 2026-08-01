@@ -210,44 +210,12 @@ jobs:
             exit 1
           fi
 
-  # ── Dependency Audit ─────────────────────────────────────────────────
-  # Blocks PRs that introduce new vulnerable dependencies.
+  # ── Production Dependency Vulnerability Gate ─────────────────────────
+  # The reusable gate audits every lockfile-backed Node project and fails
+  # closed on high/critical production vulnerabilities or audit failures.
   dep-audit:
     name: Dependency Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: website/package-lock.json
-
-      - name: Python audit (pip-audit)
-        # Pre-existing advisories on main should not block unrelated PRs.
-        # Remove continue-on-error once baseline is clean.
-        continue-on-error: true
-        run: |
-          pip install pip-audit
-          pip install -e ".[voice]" --quiet
-          pip-audit --progress-spinner off
-
-      - name: Node audit (npm)
-        working-directory: website
-        # npm audit exits non-zero on ANY vuln at the threshold level.
-        # Main already has 12 known vulns (ws, vitest transitive deps).
-        # This surfaces them as warnings without blocking the PR.
-        # Once main is clean, remove continue-on-error to make it blocking.
-        continue-on-error: true
-        run: |
-          npm ci --no-audit --no-fund
-          npm audit --audit-level=high
+    uses: ./.github/workflows/dependency-vulnerability.yml
 
   # ── Coverage Gate ────────────────────────────────────────────────────
   # MOVED to ci.yml. It now consumes the coverage-backend / coverage-frontend

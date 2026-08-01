@@ -177,6 +177,66 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 - **Cross-chunk streaming redaction** (`StreamRedactor`): per-chunk redaction misses a credential split across a token/streaming/Slack chunk boundary (a chunk ending `...AKIA` and the next starting `IOSFODNN7...` each individually escape `redact_credentials()`, so raw fragments reach WebSocket/SSE/Slack consumers). `StreamRedactor` is a rolling-buffer redactor: it withholds the trailing run of credential-class characters (`_CRED_CLASS` — letters/digits + URL/base64/connection-string punctuation, the possible start of a not-yet-complete credential) until a non-credential-class terminator arrives or the stream ends, then rejoins and redacts before emitting on the wire. Holdback is bounded by `_STREAM_HOLDBACK_MAX = 512` (larger than the longest fixed-format credential) so a split token is always rejoined; `flush()` redacts the buffered remainder at segment/stream end. Adds at most one chunk of latency. **Streaming JWT/JWE ceiling** (round-2 + round-3): JWTs (esp. RS256/ES256 with embedded claims) routinely exceed 512 chars, so a terminal token longer than the DoS floor would otherwise be bisected — the first `len-512` chars emitted raw before `flush()` redacts only the held tail. When the withheld tail matches `_PARTIAL_JWT_TAIL_RE` (`eyJ…` optionally followed by up to FOUR `.`-separated base64url segments — `{0,4}`, so a 5-segment compact JWE escalates too, matching the batch JWE ceiling — anchored to buffer end) the cap is raised to `_STREAM_HOLDBACK_JWT_MAX = 4096` so the whole token is rejoined before emission; the 512-char floor still applies to every non-credential run. **Split-Bearer holdback** (a8e5fe6a): an `Authorization: Bearer <token>` header spans whitespace (not in `_CRED_CLASS`), so the cred-class run alone would commit the `Authorization: Bearer ` prefix and leak the token on the next chunk. `_BEARER_ANCHOR_PARTIAL_RE` (case-insensitive, JSON-aware, `\Z`-anchored, matching any prefix of an in-progress `Authorization: Bearer <token>`) makes `feed` pull the commit index back to the anchor start (`i = min(i, anchor.start())`), holding header + token together, and escalates the cap so an opaque OAuth/refresh/SSO Bearer token >512 chars (no `eyJ`) is not bisected either. **Fail-closed ceiling** (round-3): when a credential-anchored tail (JWT/JWE/Bearer) exceeds the 4096 ceiling, `feed` FAILS CLOSED — it redacts+emits the confirmed-safe prefix, appends `_REDACTED_CREDENTIAL_TAG` (`[REDACTED: credential]`, shared with the batch redactor), and DROPS the oversized tail rather than bisecting it; a plain cred-class run with NO credential anchor is still committed verbatim (bisected — no data loss, DoS bound intact)
 - Defense against write-then-execute attacks: even if the LLM tricks kiro-cli into running a credential-extracting script, the output is scrubbed before the LLM can use it in follow-up messages
 
+### Production npm Vulnerability Gate (`scripts/check_npm_audit.py`)
+
+Pull requests, tagged releases, and nightly releases share one blocking production-dependency
+control in `.github/workflows/dependency-vulnerability.yml`. The PR caller remains a job in
+`code-review.yml`, so a failure contributes to the existing `Code Review` conclusion consumed by
+`PR Readiness`. Release and nightly wheel and desktop builds both depend directly on the gate;
+all publish, sign, and GitHub Release jobs are therefore transitively unreachable when it fails.
+
+The gate audits all lockfile-backed Node applications independently:
+
+- `website/package-lock.json`
+- `website/electron/package-lock.json`
+- `site/package-lock.json`
+
+CI pins Node `20.19.4`, then invokes the exact npm package `npm@10.8.2` through `npx` with
+`audit --omit=dev --package-lock-only --ignore-scripts --audit-level=high --json`. It neither
+installs project packages nor runs project lifecycle scripts. High and critical production
+findings block; information, low, moderate, and development-only findings do not.
+
+**Fail-closed contract.** A missing `npx`, missing manifest or lockfile, timeout, subprocess error,
+exit status other than npm's documented audit-result statuses 0/1, empty or malformed JSON, npm
+`error` response, unsupported audit report version, inconsistent counts/status, broken advisory
+reference, or high/critical record without a stable advisory identity fails the job. Exit 1 is
+accepted only with a structurally valid report that contains high/critical findings. String `via`
+references are recursively resolved to leaf advisories, cycles and missing references are errors,
+and findings are deduplicated by lockfile, affected package, and advisory. npm registry/advisory
+availability is consequently an explicit release dependency: an outage blocks rather than skips
+the control.
+
+**Exception contract.** `.vulnerability-exceptions.json` is validated before any audit against the
+contract represented by `.vulnerability-exceptions.schema.json` and the stricter date checks in
+the gate. The root has exactly `version: 1` and `exceptions`; each exception has exactly:
+
+| Field | Contract |
+|-------|----------|
+| `package` | Exact npm package name; wildcards are forbidden. |
+| `advisory` | Exact canonical `GHSA-xxxx-xxxx-xxxx` or fallback `npm:<numeric source>` identity. |
+| `paths` | One or more exact audited lockfile paths from the list above; no duplicates. |
+| `reason` | Trimmed 20–500 character risk justification and mitigation. |
+| `owner` | Accountable GitHub `@user` or `@org/team`. |
+| `expires` | Real ISO `YYYY-MM-DD` date, no more than 30 days ahead at validation time. |
+
+An exception matches only the package + advisory + lockfile tuple; it cannot suppress another
+package, advisory, or project. Duplicate scopes, unknown fields, unsupported paths, malformed
+identifiers, or an expiry more than 30 days ahead invalidate the complete file. An expiry date is
+valid through that UTC date; beginning the next UTC day, the stale entry fails the entire gate even
+if its advisory is no longer reported. Renewal requires a reviewed edit that moves the date back
+within the 30-day window and confirms the owner, reason, and mitigation remain current. Remove an
+entry as soon as the dependency is fixed; Git history is the approval record.
+
+Run the same control from the repository root with:
+
+```bash
+python scripts/check_npm_audit.py
+```
+
+The command contacts npm's registry/advisory service. Unit tests mock the subprocess boundary and
+cover malformed output, operational failures, report resolution, schema constraints, expiry, and
+exact-match exception behavior without network access.
+
 ### GitHub AI Review Human Overrides (`.github/workflows/`)
 
 Human judgment is the final authority over the Fable 5, GPT 5.6, and Arbiter

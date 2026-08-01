@@ -105,16 +105,20 @@ jobs:
           echo "Nightly (semver): ${BASE}-nightly.${STAMP_DATE}t${STAMP_TIME}"
           echo "Wheel (PEP 440):  ${BASE}.dev${STAMP}"
 
+  dependency-vulnerability-gate:
+    name: Production Dependency Vulnerability Gate
+    uses: ./.github/workflows/dependency-vulnerability.yml
+
   build-wheel:
     name: Build Wheel
-    needs: version
+    needs: [version, dependency-vulnerability-gate]
     uses: ./.github/workflows/build-wheel.yml
     with:
       wheel_version: ${{ needs.version.outputs.wheel_version }}
 
   build-desktop:
     name: Build Desktop
-    needs: version
+    needs: [version, dependency-vulnerability-gate]
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}

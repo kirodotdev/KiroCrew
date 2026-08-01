@@ -65,16 +65,20 @@ jobs:
           echo "wheel_version=$WHEEL_VERSION" >> "$GITHUB_OUTPUT"
           echo "Releasing $VERSION on channel $CHANNEL (wheel: $WHEEL_VERSION)"
 
+  dependency-vulnerability-gate:
+    name: Production Dependency Vulnerability Gate
+    uses: ./.github/workflows/dependency-vulnerability.yml
+
   build-wheel:
     name: Build Wheel
-    needs: version
+    needs: [version, dependency-vulnerability-gate]
     uses: ./.github/workflows/build-wheel.yml
     with:
       wheel_version: ${{ needs.version.outputs.wheel_version }}
 
   build-desktop:
     name: Build Desktop
-    needs: version
+    needs: [version, dependency-vulnerability-gate]
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.version }}
