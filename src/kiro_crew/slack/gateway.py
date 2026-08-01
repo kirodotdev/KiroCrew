@@ -137,8 +137,8 @@ from kiro_crew.mcp_gateway.manager import (
     GatewaySpec,
 )
 from kiro_crew.mcp_gateway.rewriter import (
-    default_overlay_dir,
     default_socket_path,
+    resolve_overlay_dir,
     rewrite_agents,
 )
 from kiro_crew.memory import MemoryStore
@@ -4875,7 +4875,7 @@ class GatewayOrchestrator:
         if not is_gateway_supported():
             return
 
-        overlay_dir = Path(cfg_gw.overlay_dir) if cfg_gw.overlay_dir else default_overlay_dir()
+        overlay_dir = resolve_overlay_dir(cfg_gw.overlay_dir)
         socket_path = Path(cfg_gw.socket_path) if cfg_gw.socket_path else default_socket_path()
         agents_source_dir = kiro_agents_dir()
         workspace_default = _session_work_dir(None)

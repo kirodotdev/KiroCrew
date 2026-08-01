@@ -13,6 +13,7 @@ to ``KIROCREW_SESSION_KEY`` and cannot be safely shared across sessions.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -26,7 +27,7 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
-from kiro_crew.mcp_gateway.hashing import hash_command
+from kiro_crew.mcp_gateway.hashing import hash_command, is_secret_env_key
 from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,20 @@ def _build_stub_entry(
     """
     target_command = original.get("command", "")
     target_args: list[str] = [str(a) for a in original.get("args", []) or []]
-    env_pairs: dict[str, Any] = original.get("env", {}) or {}
+    # ``~/.kiro/agents/*.json`` is hand-editable, so ``env`` can legally parse as
+    # a non-dict (e.g. ``"env": [{}]``). Normalize to {} rather than trusting the
+    # annotation: the secret-key scan below calls ``str.startswith`` on every
+    # key, so a list of dicts would raise AttributeError out of
+    # ``_build_stub_entry`` and abort the ENTIRE rewrite pass — disabling pooling
+    # for every agent because one spec was malformed.
+    _declared_env = original.get("env", {}) or {}
+    env_pairs: dict[str, Any] = _declared_env if isinstance(_declared_env, dict) else {}
+    if _declared_env and not isinstance(_declared_env, dict):
+        logger.warning(
+            "rewriter: server %r for agent %r has a non-object 'env' (%s); "
+            "ignoring it",
+            server_name, agent_name, type(_declared_env).__name__,
+        )
     auto_approve: list[str] = list(original.get("autoApprove", []) or [])
 
     # Resolve bare command names to absolute paths. gatewayd spawns the backend
@@ -116,20 +130,41 @@ def _build_stub_entry(
         "--socket", str(socket_path),
     ]
     if env_pairs:
-        # Operational hazard signal: the declared env is folded into the
-        # PoolKey hash (so differing-env sessions never share a backend) but is
-        # NOT applied to the pooled backend — gatewayd spawns it with the
-        # daemon's own scrubbed environment (env_target_resolver never reads
-        # the sidecar). A server that genuinely depends on its declared env
-        # (e.g. a credential) will misbehave when pooled; keep it non-poolable
-        # until per-server env forwarding lands. Warn so the operator sees it.
-        logger.warning(
-            "rewriter: pooled server %r for agent %r declares a non-empty env "
-            "(%d keys); the declared env is NOT applied to the shared pooled "
-            "backend (spawned with the daemon's scrubbed env). Set poolable:false "
-            "if this server depends on that env.",
-            server_name, agent_name, len(env_pairs),
-        )
+        secret_key_count = sum(1 for k in env_pairs if is_secret_env_key(k))
+        if forward_declared_env_enabled():
+            # Forwarding is ON: the non-secret keys ARE applied to the pooled
+            # backend (gatewayd merges them at spawn). Only the rotating-secret
+            # keys remain unappliable, because they are excluded from
+            # ``effective_env_hash`` — co-tenants of one backend can disagree on
+            # their values, so there is no single correct value to apply.
+            if secret_key_count:
+                # Log NO value derived from the env block — not the key names,
+                # not the matched prefixes, and not the count. CodeQL taints any
+                # expression computed by iterating a secret-bearing env block
+                # (clear-text logging of sensitive information), and the server
+                # + agent names are enough for the operator to find the spec.
+                logger.warning(
+                    "rewriter: pooled server %r for agent %r declares "
+                    "rotating-secret env key(s) that are NOT applied to the "
+                    "shared pooled backend — they are excluded from the PoolKey, "
+                    "so co-tenant sessions may disagree on the value. The backend "
+                    "must read them from disk, or set poolable:false.",
+                    server_name, agent_name,
+                )
+        else:
+            # Forwarding is OFF (the default): the declared env is folded into
+            # the PoolKey hash (so differing-env sessions never share a backend)
+            # but is NOT applied to the pooled backend — gatewayd spawns it with
+            # the daemon's own scrubbed environment. A server that genuinely
+            # depends on its declared env will misbehave when pooled.
+            logger.warning(
+                "rewriter: pooled server %r for agent %r declares a non-empty env "
+                "(%d keys); the declared env is NOT applied to the shared pooled "
+                "backend (spawned with the daemon's scrubbed env). Enable "
+                "mcp_gateway.forward_declared_env to apply the non-secret keys, "
+                "or set poolable:false if this server depends on that env.",
+                server_name, agent_name, len(env_pairs),
+            )
         # JSON-encode env so values containing ',' or '=' round-trip
         # intact. A prior CSV serialisation ``K=V,K2=V2`` silently
         # truncated any value with a ',' in it — e.g. JAVA_OPTS='-Xmx1g,-Xms512m'
@@ -137,29 +172,26 @@ def _build_stub_entry(
         # user-editable. Stub's parser mirrors this (see ``_parse_env_json``).
         # Write env to a 0600 sidecar rather than onto argv: env blocks in
         # ~/.kiro/agents/*.json routinely hold tokens/API keys, and argv is
-        # world-readable via /proc/<pid>/cmdline. The stub reads --env-file
-        # ONLY to fold the declared env into the PoolKey hash, so two agents
-        # that differ solely by a server's env get separate backends.
-        # NOTE: these declared pairs are NOT applied to the pooled backend —
-        # gatewayd spawns it with the daemon's own (scrubbed) environment
-        # (see env_target_resolver). A server that depends on a distinct
-        # declared env block should stay non-poolable until per-server env
-        # forwarding lands (documented as a known limitation in the PR).
-        env_dir = stubs_dir / "env"
+        # world-readable via /proc/<pid>/cmdline. The stub reads --env-file to
+        # fold the declared env into the PoolKey hash, so two agents that differ
+        # solely by a server's env get separate backends; when
+        # ``mcp_gateway.forward_declared_env`` is enabled gatewayd ALSO reads
+        # this sidecar at spawn and applies its non-secret keys to the backend.
+        env_dir = env_sidecar_dir_for_stubs(stubs_dir)
         # make_owner_only_dir, not mkdir + chmod(0o700): the mode argument is
         # inert on Windows, where the DACL is the only carrier of access, so a
         # bare chmod left the directory holding credential sidecars readable by
         # every local principal. Also tightens a directory created before this
         # guarantee existed.
         platform_compat.make_owner_only_dir(env_dir)
-        # Sanitize each component separately (dropping any '.') and join with a
-        # single '.', so agent-a + server-b.c and agent-a.b + server-c cannot
-        # collide onto the same a.b.c.json sidecar.
-
-        def _san(s: str) -> str:
-            return "".join(c if (c.isalnum() or c in "_-") else "_" for c in s)
-        safe = f"{_san(agent_name)}.{_san(server_name)}"
-        env_file = env_dir / f"{safe}.json"
+        # env_sidecar_name() and not a sanitize-each-component-then-join rule:
+        # joining sanitized components with a single '.' does fix the
+        # ('agent-a', 'server-b.c') vs ('agent-a.b', 'server-c') ambiguity, but
+        # sanitization is itself lossy, so an agent declaring both 'foo.bar' and
+        # 'foo_bar' still collides. The shared helper appends a digest of the RAW
+        # components, which is injective, and gatewayd's reader recomputes that
+        # same helper — so writer and reader can never disagree on the name.
+        env_file = env_dir / env_sidecar_name(agent_name, server_name)
         if sidecars_written is not None:
             sidecars_written.add(env_file.name)
         wrote_sidecar = False
@@ -174,7 +206,7 @@ def _build_stub_entry(
             # byte is written. os.replace preserves an explicit
             # (non-inherited) descriptor across the rename.
             fd, tmp = tempfile.mkstemp(
-                prefix=f".{safe}-", suffix=".json", dir=str(env_dir)
+                prefix=f".{env_file.stem}-", suffix=".json", dir=str(env_dir)
             )
             fd_owned = True
             try:
@@ -622,7 +654,7 @@ def rewrite_agents(
 
     # Prune stale env sidecars (server removed / renamed / flipped
     # non-poolable) so old credential files don't accumulate on disk.
-    env_dir = stubs_dir / "env"
+    env_dir = env_sidecar_dir_for_stubs(stubs_dir)
     if env_dir.is_dir():
         for stale in env_dir.glob("*.json"):
             if stale.name not in written_sidecars:
@@ -806,6 +838,82 @@ def default_overlay_dir() -> Path:
     home = os.environ.get("KIROCREW_HOME")
     base = Path(home) if home else config_dir()
     return base / "mcp-gateway" / "agents"
+
+
+def resolve_overlay_dir(configured: str = "") -> Path:
+    """Return the EFFECTIVE overlay dir: the configured value, else the default.
+
+    Single source of truth for the ``mcp_gateway.overlay_dir`` fallback, shared
+    by the gateway boot path and by ``gatewayd`` (which must resolve the same
+    directory to find declared-env sidecars).
+    """
+    return Path(configured) if configured else default_overlay_dir()
+
+
+def env_sidecar_dir_for_stubs(stubs_dir: Path) -> Path:
+    """Return the declared-env sidecar directory inside a stub overlay tree."""
+    return stubs_dir / "env"
+
+
+def env_sidecar_dir(overlay_dir: Path) -> Path:
+    """Return the declared-env sidecar directory for ``overlay_dir``.
+
+    The stub overlay tree is a SIBLING of the agents overlay dir
+    (``<base>/mcp-gateway/{agents,stubs}``), so the sidecars live at
+    ``<base>/mcp-gateway/stubs/env``. Shared with ``gatewayd`` so the writer and
+    the reader can never disagree about where sidecars live.
+    """
+    return env_sidecar_dir_for_stubs(overlay_dir.parent / "stubs")
+
+
+def env_sidecar_name(agent_name: str, server_name: str) -> str:
+    """Return the declared-env sidecar FILE NAME for ``(agent, server)``.
+
+    Shape: ``<sanitized-agent>.<sanitized-server>.<digest>.json``.
+
+    The sanitized components stay in the name so an operator can identify the
+    file, but they are NOT what makes it unique — sanitization is lossy (every
+    non-``[A-Za-z0-9_-]`` char, including ``.``, becomes ``_``), so servers
+    ``foo.bar`` and ``foo_bar`` declared by the same agent would otherwise BOTH
+    map to ``agent.foo_bar.json``: the second write clobbers the first and one
+    server is handed the other's environment. The trailing 12-hex SHA-256 of the
+    NUL-delimited RAW components restores injectivity, so distinct
+    ``(agent, server)`` pairs can never share a file.
+
+    Single source of truth for the naming rule: the rewriter writes the sidecar
+    and ``gatewayd`` reads it back by recomputing this name from the PoolKey's
+    ``agent_name``/``server_name``, so a change here moves both ends at once.
+    Sidecars written under an older naming scheme are pruned as stale by
+    ``rewrite_agents`` (it deletes any ``env/*.json`` it did not just write).
+    """
+
+    def _san(s: str) -> str:
+        return "".join(c if (c.isalnum() or c in "_-") else "_" for c in s)
+
+    digest = hashlib.sha256(
+        f"{agent_name}\0{server_name}".encode("utf-8")
+    ).hexdigest()[:12]
+    return f"{_san(agent_name)}.{_san(server_name)}.{digest}.json"
+
+
+def forward_declared_env_enabled() -> bool:
+    """Return ``mcp_gateway.forward_declared_env`` (default ``False``).
+
+    Function-local config import: ``config.loader`` imports THIS module at its
+    own module top level, so a top-level import here would be circular. Mirrors
+    ``backend._mcp_apps_enabled``. Fails CLOSED — an unreadable config means the
+    declared env is not forwarded.
+    """
+    try:
+        # circular import: config.loader imports THIS module at its own top level
+        # (for default_overlay_dir / default_socket_path), so a module-scope
+        # import here would be a cycle. Mirrors backend._mcp_apps_enabled.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return bool(KiroCrewConfig.load().mcp_gateway.forward_declared_env)
+    except Exception:
+        logger.debug("rewriter: config unreadable; declared-env forwarding off", exc_info=True)
+        return False
 
 
 def default_socket_path() -> Path:

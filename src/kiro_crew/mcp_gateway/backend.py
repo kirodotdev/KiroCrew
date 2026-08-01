@@ -502,6 +502,40 @@ class Backend:
     def dead_reason(self) -> Optional[str]:
         return self._dead_reason
 
+    @property
+    def outstanding_work(self) -> int:
+        """Count of client responses this backend still OWES a stub.
+
+        Three sources, because a response can be owed at three different stages
+        and each one alone is an incomplete signal:
+
+        1. ``_pending_requests`` — forwarded requests awaiting a backend reply.
+           Every entry is keyed by a gateway-minted ``_next_forward_id()`` frame
+           id. The gateway's own heartbeat ping is written straight to the
+           backend's stdin under the reserved :data:`HEARTBEAT_PING_ID` and is
+           deliberately NOT registered here, so an idle backend cannot look busy.
+        2. Unfinished ``_apps_tasks`` — MCP Apps interception
+           (:meth:`_fetch_and_deliver_ui`) consumes the pending entry and then
+           does the out-of-band ``resources/read`` + spool write + delivery in a
+           background task.
+        3. Queued ``_stub_inboxes`` frames — the stdout pump pops the pending
+           entry and ENQUEUES serialised bytes; the connection handler's writer
+           task drains that queue onto the stub socket. Between those two steps
+           the reply exists but has not reached the stub.
+
+        Counting only (1) would let a shutdown cancel the connection while a
+        completed reply sat in a queue or a delivery task, silently losing it.
+
+        Used as the shutdown drain predicate (see
+        ``gatewayd._has_outstanding_work``) — "is a response still owed?" —
+        which is a different question from ``refcount`` ("is a stub attached?").
+        A pooled stub stays attached for the life of its session, so refcount
+        never falls to zero on its own and is useless as a drain signal.
+        """
+        queued = sum(inbox.qsize() for inbox in list(self._stub_inboxes.values()))
+        unfinished_apps = sum(1 for task in self._apps_tasks if not task.done())
+        return len(self._pending_requests) + unfinished_apps + queued
+
     @staticmethod
     def _now() -> float:
         return time.monotonic()

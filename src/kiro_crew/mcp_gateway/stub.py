@@ -36,7 +36,7 @@ from kiro_crew import platform_compat
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_caller import CallerContext, _parent_pid
 from kiro_crew.mcp_gateway import transport
-from kiro_crew.mcp_gateway.hashing import hash_command
+from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
 
 logger = logging.getLogger(__name__)
@@ -47,9 +47,6 @@ _HANDSHAKE_TIMEOUT_SECS = 3.0
 # direct per-session exec, so an over-generous value only costs a slower
 # recovery when the gateway is genuinely wedged.
 _ENSURE_BACKEND_TIMEOUT_SECS = 25.0
-# Scrub-prefixed env keys (rotating secrets) are dropped before hashing
-# so otherwise-identical stubs pool together across credential rotations.
-_ENV_SCRUB_PREFIXES = ("AWS_SECRET", "AWS_SESSION", "OAUTH")
 # Content-hash cap for ``binary_version``. Every shipped MCP is <1 MiB, so
 # 4 MiB covers them with margin. Larger binaries
 # (npm/Node/Java runtimes) are NOT hashed synchronously on the cold-start
@@ -189,19 +186,6 @@ def _parse_auto_approve(raw: str) -> list[str]:
         pass
     # Back-compat: legacy CSV form.
     return [s for s in raw.split(",") if s]
-
-
-def _hash_effective_env(env_pairs: dict[str, str]) -> str:
-    """Sorted ``K=V\\0``-delimited SHA-256, skipping scrub-prefixed keys."""
-    h = hashlib.sha256()
-    for k in sorted(env_pairs):
-        if any(k.startswith(p) for p in _ENV_SCRUB_PREFIXES):
-            continue
-        h.update(k.encode("utf-8"))
-        h.update(b"=")
-        h.update(env_pairs[k].encode("utf-8"))
-        h.update(b"\0")
-    return h.hexdigest()
 
 
 def _hash_permission_profile(
@@ -351,7 +335,7 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "server_name": args.server,
         "agent_name": args.agent,
         "command_args_hash": hash_command(args.target_command, target_args),
-        "effective_env_hash": _hash_effective_env(env_pairs),
+        "effective_env_hash": hash_effective_env(env_pairs),
         "work_dir": work_dir,
         "binary_version": _binary_version(args.target_command),
         # Not os.getuid(): that attribute does not exist on Windows, where an

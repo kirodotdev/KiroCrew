@@ -39,8 +39,9 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.loader import config_dir as _config_dir
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_caller import CallerContext
@@ -49,7 +50,8 @@ from kiro_crew.mcp_gateway import credwatch, socketsec, transport
 from kiro_crew.mcp_gateway.apps import sweep_spool as apps_sweep_spool
 from kiro_crew.mcp_gateway.backend import Backend, BackendGone, spawn_backend
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
-from kiro_crew.mcp_gateway.manager import _scrub_sensitive_env
+from kiro_crew.mcp_gateway.hashing import hash_effective_env, non_secret_env
+from kiro_crew.mcp_gateway.manager import _scrub_sensitive_env, is_credential_env_key
 from kiro_crew.mcp_gateway.pool import (
     DRAIN_DEADLINE_SECS,
     READ_BUFFER_LIMIT_BYTES,
@@ -63,6 +65,13 @@ from kiro_crew.mcp_gateway.prewarm import (
     default_hot_keys_path,
     prewarm_from_payloads,
 )
+from kiro_crew.mcp_gateway.rewriter import (
+    env_sidecar_dir,
+    env_sidecar_name,
+    forward_declared_env_enabled,
+    resolve_overlay_dir,
+)
+from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.sandbox import prewarm_backend
@@ -128,10 +137,11 @@ _REGISTER_TIMEOUT_SECS = 5.0
 # lifetime. Generous — a peer that cannot accept a small reply in 30s is dead.
 _WRITE_REPLY_TIMEOUT_SECS = 30.0
 
-# Graceful-shutdown grace: in-flight connection handlers get this long to
-# finish their current JSON-RPC round-trip before gatewayd cancels them
-# and tears down the pool.
-_SHUTDOWN_DRAIN_SECS = 10.0
+# Graceful-shutdown drain window: how long in-flight tool calls get to finish
+# their current JSON-RPC round-trip before gatewayd cancels them and tears down
+# the pool. Sourced from the shared budget module so the supervisor's
+# SIGTERM→SIGKILL grace is always derived from (and therefore covers) it.
+_SHUTDOWN_DRAIN_SECS = DRAIN_SECS
 
 # Interval between per-backend heartbeat sweeps. A backend
 # that is gone, or wedged with an in-flight request outstanding past
@@ -592,12 +602,20 @@ async def run_gatewayd(
         if server is not None:
             server.close()
 
-        # Phase 1: let in-flight handlers drain cleanly. ``return_exceptions``
-        # because a handler that was already errored will raise from the
-        # gather; that's not a shutdown failure.
+        # Phase 1: let outstanding CLIENT WORK finish. The wait condition is
+        # deliberately "some backend still owes a response", NOT "the connection
+        # set is empty". A pooled stub's bridge connection is long-lived and
+        # never self-closes, so the old ``while connections`` form burned the
+        # entire window on every restart that had attached stubs — and because
+        # the supervisor's grace period was shorter than this window, gatewayd
+        # was SIGKILLed mid-drain and never reached ``pool.shutdown_all()``.
+        # ``outstanding_work`` covers all three stages a response can sit in
+        # (awaiting the backend, mid-MCP-Apps delivery, queued for the stub
+        # writer), so a completed-but-undelivered reply still holds the drain
+        # open. An idle bridge owes nothing and is cancelled in Phase 2 below.
         if connections:
             drain_deadline = time.monotonic() + _SHUTDOWN_DRAIN_SECS
-            while connections and time.monotonic() < drain_deadline:
+            while time.monotonic() < drain_deadline and _has_outstanding_work(pool):
                 await asyncio.sleep(0.05)
 
         # Phase 2: cancel whatever is still in-flight.
@@ -659,7 +677,7 @@ async def run_gatewayd(
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(hot_keys.flush)
 
-        await pool.shutdown_all()
+        await pool.shutdown_all(timeout=POOL_SHUTDOWN_SECS)
         # Clean shutdown drained every backend; drop the out-of-band reap list
         # so a supervising manager never killpg's now-dead pids.
         with contextlib.suppress(OSError):
@@ -877,6 +895,141 @@ async def _heartbeat_sweeper(
                 logger.exception("heartbeat sweep failed; continuing")
     except asyncio.CancelledError:
         pass
+
+
+#: Number of stub writers currently inside their write+drain critical section
+#: (see :func:`_drain_inbox_to_stub`). A frame there has been dequeued but not
+#: yet flushed, so it is invisible to BOTH the inbox depth and the pending map.
+#: Process-global by design: the shutdown drain asks a process-global question
+#: ("is any reply mid-flight?"), and the writer coroutine holds no backend
+#: reference to hang per-backend state on.
+_active_stub_writes = 0
+
+
+@contextlib.contextmanager
+def _counted_stub_write() -> Iterator[None]:
+    """Mark a stub write+drain as in progress for the shutdown drain predicate.
+
+    Sync context manager wrapped around an ``async with`` block: the increment
+    lands before the awaits and the ``finally`` decrement runs on completion,
+    error, AND cancellation, so a cancelled writer cannot leak the counter and
+    wedge every future shutdown into the full drain window.
+    """
+    global _active_stub_writes
+    _active_stub_writes += 1
+    try:
+        yield
+    finally:
+        _active_stub_writes -= 1
+
+
+def _has_outstanding_work(pool: BackendPool) -> bool:
+    """Return ``True`` if any client response is still undelivered.
+
+    This is the shutdown drain predicate, and it covers every stage a reply can
+    occupy between the backend and the stub socket:
+
+    1-3. :attr:`Backend.outstanding_work` — awaiting the backend reply, mid
+         MCP-Apps delivery, or queued for the stub writer.
+    4.   :data:`_active_stub_writes` — dequeued and inside the write+drain
+         critical section, so invisible to both the pending map and the queue
+         depth.
+
+    Stage 4 is the LAST application-level stage: once ``drain()`` returns the
+    bytes are in the kernel socket buffer and delivery is no longer ours to
+    guarantee. So this predicate is complete, not merely one stage deeper.
+
+    ``all_backends()`` deliberately includes DRAINING backends (a blue-green
+    credential cutover may be mid-flight), so a restart cannot cut a call a
+    draining backend still serves.
+    """
+    if _active_stub_writes:
+        return True
+    return any(backend.outstanding_work for backend in pool.all_backends())
+
+
+def _declared_non_secret_env(pool_key: PoolKey) -> dict[str, str]:
+    """Return the FORWARDABLE declared env for ``pool_key``, or ``{}``.
+
+    Reads the ``0600`` sidecar the rewriter wrote for this ``(agent, server)``
+    and applies two independent filters:
+
+    1. :func:`hashing.non_secret_env` — drops rotating-secret keys. Those are
+       excluded from ``effective_env_hash``, so co-tenants of one backend can
+       disagree on their values and no single value is correct to apply.
+    2. :func:`manager.is_credential_env_key` — drops every key the daemon's own
+       credential scrub removes (``AWS_ACCESS``, ``SSH_AUTH_SOCK``,
+       ``GNUPGHOME``, ``GIT_ASKPASS``). This list is broader than (1), so
+       forwarding never re-introduces a credential that ``_scrub_sensitive_env``
+       deliberately stripped.
+
+    What survives is operator-declared, non-secret, and part of the PoolKey —
+    every session sharing this backend agrees on it by construction.
+
+    BLOCKING: reads a file. Callers must run it off the event loop.
+    """
+    try:
+        overlay_dir = resolve_overlay_dir(KiroCrewConfig.load().mcp_gateway.overlay_dir)
+    except Exception:
+        logger.debug("declared-env: config unreadable; using default overlay dir", exc_info=True)
+        overlay_dir = resolve_overlay_dir()
+    path = env_sidecar_dir(overlay_dir) / env_sidecar_name(
+        pool_key.agent_name, pool_key.server_name
+    )
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        # No sidecar for this key: the server declared no env. Not an error.
+        return {}
+    try:
+        decoded = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning("declared-env: sidecar %s is not valid JSON; ignoring", path)
+        return {}
+    if not isinstance(decoded, dict):
+        logger.warning("declared-env: sidecar %s is not a JSON object; ignoring", path)
+        return {}
+    pairs = {str(k): str(v) for k, v in decoded.items() if k}
+    # COHERENCE GATE — the invariant that makes forwarding safe must be
+    # ENFORCED, not assumed. The stub hashed the sidecar as it read it at ITS
+    # start; this read happens later, at cold spawn. An operator editing
+    # ``mcpServers.<name>.env`` makes ``rewrite_agents`` rewrite the sidecar
+    # while already-running stubs keep their old PoolKey (an adopted daemon can
+    # hold such a stub across a gateway restart). A crash/idle-reap respawn
+    # would then apply the NEW values to a backend keyed by the OLD hash — so
+    # co-tenants would run under configuration they never declared, exactly what
+    # the PoolKey partition exists to prevent.
+    #
+    # Recomputing the hash here and requiring equality closes that window. The
+    # construction mirrors the stub's ``_parse_env_json`` (str-coerced keys and
+    # values, empty keys dropped) so a coherent sidecar always matches.
+    if hash_effective_env(pairs) != pool_key.effective_env_hash:
+        logger.warning(
+            "declared-env: sidecar for %r no longer matches the PoolKey it was "
+            "hashed under (the spec was edited after this session started); "
+            "skipping forwarding for this backend",
+            pool_key.server_name,
+        )
+        return {}
+    return {
+        k: v for k, v in non_secret_env(pairs).items() if not is_credential_env_key(k)
+    }
+
+
+def _declared_env_to_forward(pool_key: PoolKey) -> dict[str, str]:
+    """Return the declared env to apply to a cold-spawned backend, or ``{}``.
+
+    Combines the opt-in flag check with the sidecar read so the whole thing is
+    ONE blocking unit the caller can hand to a single ``asyncio.to_thread`` —
+    both halves read config / touch the filesystem and must stay off the event
+    loop. Fails closed: flag off, unreadable config, or unreadable sidecar all
+    yield ``{}``.
+
+    BLOCKING: never call this on the event loop.
+    """
+    if not forward_declared_env_enabled():
+        return {}
+    return _declared_non_secret_env(pool_key)
 
 
 def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dict[str, str], str]]:
@@ -2088,11 +2241,29 @@ async def _acquire_backend(
         # per-key create lock), so this flag reports a real spawn 1:1.
         nonlocal was_spawned
         was_spawned = True
+        spawn_env = dict(env)
+        # Cold-spawn only (never per request), and entirely off the event loop:
+        # the flag check reads config and the sidecar read touches the
+        # filesystem, either of which would stall gateway traffic and heartbeat
+        # processing if done inline after a config invalidation.
+        declared = await asyncio.to_thread(_declared_env_to_forward, pool_key)
+        if declared:
+            # Declared env wins over the daemon's inherited value: the
+            # operator wrote it in the agent spec for this server. Safe to
+            # let it win because every key here is in the PoolKey, so no
+            # co-tenant of this backend declared a different value.
+            spawn_env.update(declared)
+            logger.info(
+                "forwarding %d declared env key(s) to backend %s: %s",
+                len(declared),
+                pool_key.server_name,
+                ", ".join(sorted(declared)),
+            )
         backend = await spawn_backend(
             pool_key=pool_key,
             command=command,
             args=list(args),
-            env=dict(env),
+            env=spawn_env,
             work_dir=work_dir,
         )
         # Start the stdout pump immediately so replies to the first
@@ -2237,9 +2408,12 @@ async def _drain_inbox_to_stub(
             payload = await inbox.get()
             guard: Any = lock if lock is not None else contextlib.nullcontext()
             try:
-                async with guard:
-                    writer.write(payload)
-                    await asyncio.wait_for(writer.drain(), timeout=_WRITE_REPLY_TIMEOUT_SECS)
+                with _counted_stub_write():
+                    async with guard:
+                        writer.write(payload)
+                        await asyncio.wait_for(
+                            writer.drain(), timeout=_WRITE_REPLY_TIMEOUT_SECS
+                        )
             except (ConnectionError, BrokenPipeError):
                 # Scope E: log late responses dropped after stub detach
                 # instead of letting BrokenPipeError propagate unlogged.

@@ -2125,6 +2125,7 @@
       "enumValues": null,
       "defaultValue": {
         "enabled": false,
+        "forward_declared_env": false,
         "socket_path": "",
         "overlay_dir": "",
         "idle_timeout_secs": 300,
@@ -2145,6 +2146,20 @@
       "tags": [],
       "label": "Enabled",
       "help": "Route MCP traffic through the shared sidecar broker. Default False — opt-in.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "mcp_gateway.forward_declared_env",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Forward Declared Env",
+      "help": "Apply a pooled server's declared env (mcpServers.<name>.env) to the shared backend. Only non-secret keys are forwarded — rotating-secret and credential-prefixed keys are never applied to a shared backend. Default False — opt-in.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

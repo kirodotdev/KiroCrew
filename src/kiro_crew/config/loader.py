@@ -2746,6 +2746,16 @@ class McpGatewayConfig:
             "Route MCP traffic through the shared sidecar broker. Default False — opt-in.",
         ),
     )
+    forward_declared_env: bool = field(
+        default=False,
+        metadata=_meta(
+            "Forward Declared Env",
+            "Apply a pooled server's declared env (mcpServers.<name>.env) to the "
+            "shared backend. Only non-secret keys are forwarded — rotating-secret "
+            "and credential-prefixed keys are never applied to a shared backend. "
+            "Default False — opt-in.",
+        ),
+    )
     socket_path: str = field(
         default="",
         metadata=_meta(
@@ -4545,6 +4555,13 @@ class KiroCrewConfig:
             ],
             mcp_gateway=McpGatewayConfig(
                 enabled=bool(mcp_gateway_data.get("enabled", False)),
+                # Default False AND type-checked: ``bool("false")`` is True, so a
+                # hand-edited string would silently ENABLE forwarding. A
+                # malformed value must mean "do not apply declared env to a
+                # shared backend", never the reverse.
+                forward_declared_env=_safe_bool(
+                    mcp_gateway_data.get("forward_declared_env", False), False
+                ),
                 socket_path=str(mcp_gateway_data.get("socket_path", "")),
                 overlay_dir=str(mcp_gateway_data.get("overlay_dir", "")),
                 idle_timeout_secs=max(

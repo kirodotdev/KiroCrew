@@ -33,6 +33,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.env import resolve_krb5_ccname
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
+from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.sandbox import _SENSITIVE_ENV_PREFIXES as _SANDBOX_SENSITIVE_ENV_PREFIXES
 
 logger = logging.getLogger(__name__)
@@ -59,8 +60,12 @@ _LIVENESS_PING_INTERVAL_SECS = 30.0
 # threshold raced with run_chaos.py and produced spurious
 # "gatewayd_pid_changed_unexpectedly" during legitimate chaos tests.
 _LIVENESS_MAX_CONSECUTIVE_FAILURES = 3
-# SIGTERM → SIGKILL grace period on shutdown.
-_SHUTDOWN_GRACE_SECS = 5.0
+# SIGTERM → SIGKILL grace period on shutdown. DERIVED, never a literal: a
+# hand-written 5.0 here was shorter than gatewayd's own 10s drain window, so the
+# supervisor SIGKILLed every restart that had attached stubs before the daemon
+# could reach ``pool.shutdown_all()``. Sourcing it from the daemon's published
+# budget makes that inversion unrepresentable.
+_SHUTDOWN_GRACE_SECS = TOTAL_SHUTDOWN_BUDGET_SECS
 # Respawn backoff: start here, double up to max.
 _RESPAWN_BACKOFF_START_SECS = 1.0
 _RESPAWN_BACKOFF_MAX_SECS = 60.0
@@ -91,6 +96,19 @@ _SENSITIVE_ENV_PREFIXES: tuple[str, ...] = (
 )
 
 
+def is_credential_env_key(key: str) -> bool:
+    """Return ``True`` if ``key`` matches :data:`_SENSITIVE_ENV_PREFIXES`.
+
+    The single matching rule behind :func:`_scrub_sensitive_env`, exposed so the
+    declared-env forwarding path can refuse to re-introduce a credential key
+    that the daemon scrub deliberately removed. Note this list is BROADER than
+    ``hashing.ENV_SCRUB_PREFIXES`` (it also covers ``AWS_ACCESS``,
+    ``SSH_AUTH_SOCK``, ``GNUPGHOME``, ``GIT_ASKPASS``), so forwarding must
+    honour both.
+    """
+    return any(key.startswith(prefix) for prefix in _SENSITIVE_ENV_PREFIXES)
+
+
 def _scrub_sensitive_env(env: dict[str, str]) -> dict[str, str]:
     """Return a copy of ``env`` with ``_SENSITIVE_ENV_PREFIXES`` keys removed.
 
@@ -101,11 +119,7 @@ def _scrub_sensitive_env(env: dict[str, str]) -> dict[str, str]:
     ``is_sensitive_path()`` check; the gateway daemon does not defeat
     either of those. See ``security.md``.
     """
-    return {
-        k: v
-        for k, v in env.items()
-        if not any(k.startswith(prefix) for prefix in _SENSITIVE_ENV_PREFIXES)
-    }
+    return {k: v for k, v in env.items() if not is_credential_env_key(k)}
 
 
 @dataclass(frozen=True)
