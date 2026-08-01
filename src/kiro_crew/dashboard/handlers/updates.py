@@ -256,16 +256,39 @@ def _changelog_path() -> Path | None:
     return None
 
 
+#: Cached CHANGELOG.md body, keyed on ``(path, st_mtime_ns, st_size)``.
+#: ``GET /api/changelog`` read and decoded the whole file on the event loop on
+#: every request (the About panel re-fetches on each open, and the file grows
+#: with every release). The stat signature keeps a dev-install edit visible
+#: immediately, so the endpoint stays as live as it was.
+_changelog_cache: tuple[tuple[str, int, int], str] | None = None
+
+
+def _read_changelog() -> str:
+    """Return CHANGELOG.md's contents, re-reading only when the file changes."""
+    global _changelog_cache
+    path = _changelog_path()
+    if path is None:
+        return ""
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return ""
+    cached = _changelog_cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    try:
+        content = path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    _changelog_cache = (key, content)
+    return content
+
+
 async def api_changelog(request: web.Request) -> web.Response:
     """GET /api/changelog — read full CHANGELOG.md from project or bundle."""
-    path = _changelog_path()
-    content = ""
-    if path is not None:
-        try:
-            content = path.read_text(encoding="utf-8")
-        except Exception:
-            content = ""
-    return web.json_response({"content": content})
+    return web.json_response({"content": _read_changelog()})
 
 
 async def _build_frontend(proj: str, state: DashboardState) -> None:

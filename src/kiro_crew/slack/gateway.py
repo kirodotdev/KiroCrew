@@ -866,6 +866,10 @@ class GatewayOrchestrator:
         self._wecom_client: "WeComClient | None" = None  # set by maybe_start_wecom
         self._model_download_task: "asyncio.Task[bool] | None" = None
         self._auto_migrate_task: "asyncio.Task[None] | None" = None
+        # Boot-time update check, started fire-and-forget after the signal
+        # handlers are installed (see start()). Cancelled on shutdown so a
+        # stalled git fetch cannot hold the process open.
+        self._update_check_task: "asyncio.Task[None] | None" = None
         self._mcp_gateway_manager: GatewayManager | None = None
 
     def _count_in_flight_work(self) -> int:
@@ -4975,6 +4979,10 @@ class GatewayOrchestrator:
         # Cancel background auto-migration if still in flight
         if self._auto_migrate_task is not None and not self._auto_migrate_task.done():
             self._auto_migrate_task.cancel()
+        # Cancel the boot update check if still in flight — its git subprocesses
+        # can take ~70s to time out and nothing downstream needs the result.
+        if self._update_check_task is not None and not self._update_check_task.done():
+            self._update_check_task.cancel()
 
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
@@ -5448,11 +5456,13 @@ class GatewayOrchestrator:
 
         await self._start_channel_transports()
 
-        # Check for updates before printing URLs
-        print("👻 Checking for updates…")
-        await self._check_for_updates()
-
         # ── Signal handlers ──
+        # Installed BEFORE the update check (below) is started. The check runs
+        # five sequential git subprocesses whose timeouts sum to ~70s, so while
+        # it was inline-awaited here a stalled network left the gateway with no
+        # SIGINT/SIGTERM handler for over a minute: Ctrl-C did nothing and the
+        # process looked wedged. Handlers first means the boot is interruptible
+        # from this point on regardless of what the check does.
         loop = asyncio.get_running_loop()
         _shutting_down = False
 
@@ -5487,6 +5497,20 @@ class GatewayOrchestrator:
                         signal.signal(sig, _sigint_fallback)
                     except (ValueError, OSError):
                         pass  # not in main thread
+
+        # Update check — fire-and-forget, NOT awaited. It runs five sequential
+        # git subprocesses (fetch/rev-parse/...) whose timeouts sum to ~70s, and
+        # nothing later in boot depends on its result: it only flips
+        # _update_info / pushes a dashboard refresh, or applies an auto-update
+        # that restarts the process. Awaiting it delayed the dashboard URL by up
+        # to ~70s on a stalled network. handlers_system.api_status treats the
+        # same check as fire-and-forget for the same reason. Registered in
+        # _background_tasks so the task is not GC'd mid-flight and is reaped on
+        # shutdown with the rest.
+        print("👻 Checking for updates…")
+        self._update_check_task = asyncio.create_task(self._check_for_updates())
+        self._background_tasks.add(self._update_check_task)
+        self._update_check_task.add_done_callback(self._background_tasks.discard)
 
         # Wait for MCP probe to finish before warming sessions —
         # kiro-cli reads MCP config at spawn time, so sessions must

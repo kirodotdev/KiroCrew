@@ -92,22 +92,49 @@ async def _get_channel_body(request: web.Request):
 # ── List / Get ──
 
 
-async def api_channel_presets(request: web.Request) -> web.Response:
-    """Return channel presets from config.json, falling back to built-in defaults.
+#: Cached ``channel_presets`` value, keyed on config.json's
+#: ``(path, st_mtime_ns, st_size)``. The handler used to read, decode and
+#: JSON-parse the whole config file on the event loop on every call so that an
+#: edit lands without a gateway restart. The stat signature preserves that
+#: contract exactly while making the repeat calls (the channel UI refetches on
+#: every panel open) free.
+_presets_cache: tuple[tuple[str, int, int], object] | None = None
 
-    Reads ``~/.kiro/crew/config.json`` fresh on each call so users can edit the
-    ``channel_presets`` key without restarting the gateway.
-    """
+
+def _load_presets() -> object:
+    """Return ``channel_presets`` from config.json, re-reading only on change."""
+    global _presets_cache
+    path = config_path()
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        # Missing config — built-in defaults, nothing to cache against.
+        return _DEFAULT_PRESETS
+    cached = _presets_cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
     config: dict = {}
     try:
-        parsed = json.loads(config_path().read_text(encoding="utf-8"))
+        parsed = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(parsed, dict):
             config = parsed
     except (OSError, json.JSONDecodeError):
-        # Missing or malformed config — fall through to defaults
+        # Malformed config — fall through to defaults
         pass
     presets = config.get("channel_presets", _DEFAULT_PRESETS)
-    return web.json_response({"presets": presets})
+    _presets_cache = (key, presets)
+    return presets
+
+
+async def api_channel_presets(request: web.Request) -> web.Response:
+    """Return channel presets from config.json, falling back to built-in defaults.
+
+    Picks up an edit to the ``channel_presets`` key without a gateway restart:
+    the read is cached on config.json's stat signature, so a changed file is
+    re-read on the next call.
+    """
+    return web.json_response({"presets": _load_presets()})
 
 
 async def api_channels_list(request: web.Request) -> web.Response:

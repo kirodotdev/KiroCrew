@@ -26,7 +26,6 @@ from kiro_crew.embeddings import (
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.vector_memory import SemanticRejectCode
 
 from ._shared import _get_memory, _is_restricted_session
 
@@ -213,6 +212,16 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
     err = await asyncio.to_thread(store.set_semantic, key, value, confidence, source)
     if err is not None:
         code, message = err
+        # Imported here, not at module scope: ``vector_memory`` pulls
+        # snowballstemmer plus the optional numpy/faiss imports (measured 175ms
+        # and ~200 modules) and this enum is the module's ONLY use of it, on one
+        # error branch. The enum itself belongs in ``vector_memory_constants``
+        # (the dependency-free split-out this module's other constants already
+        # live in), but relocating it edits ``vector_memory.py``, which is owned
+        # by another change in flight — deferring the import keeps the cost off
+        # the import path without touching that file.
+        from kiro_crew.vector_memory import SemanticRejectCode
+
         sk = request.headers.get("X-Session-Key", "")
         _sel().log_api_access(
             caller=sk, operation="semantic.write", outcome="rejected",
