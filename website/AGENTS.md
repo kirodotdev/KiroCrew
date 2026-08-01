@@ -218,6 +218,59 @@ parity), `englishIdentity.test.ts` (catalog holds real prose — no encoded HTML
 entities, raw keys, or JSX fragments), `detect.test.ts` (resolution precedence),
 `LanguageProvider.test.tsx` (persistence + cross-tab sync).
 
+### A ratchet may only be upward-only if a DIFF-SCOPED gate covers the same defect
+
+That is the rule. A frozen count says "this much debt is tolerated"; it cannot tell "one
+fixed" from "one fixed and one broken". So a count is allowed to stop failing on
+improvement **only** when something else fails on the regression regardless of the
+count — and that something has to be anchored to the diff, because a gate anchored to a
+committed number can always be re-snapshotted past.
+
+**Relaxed, because a diff-scoped gate replaces the floor:**
+
+| Ratchet | Where the number lives | What now catches the regression |
+|---|---|---|
+| untranslated strings, per file | `src/i18n/untranslated-baseline.json` | `check-i18n-strings.mjs` **[added-lines]** — a literal on a line you wrote |
+| catalog QA violations, per check | `CEILINGS` in `src/i18n/qa.test.ts` | `check-source-strings.mjs` **[changed-values]** — QA on any value you added or changed |
+| unextracted JSX strings | `--baseline=N` in `package.json` | **[added-lines]** — same population, no ledger |
+
+For these three, a decrease is reported and tolerated: you do not re-snapshot anything,
+and a change that improves one of these numbers without editing it will pass.
+
+**Still exact in both directions, because nothing diff-scoped covers them:**
+`deadKeys.test.ts`, `glossary.test.ts` (DNT), `localeFormatting.test.ts` (host-locale
+calls), and `check-i18n-keys.mjs`'s dynamic-site counts. Improving one of these *does*
+require lowering its number in the same change. They are single literals touched by
+roughly one PR at a time, so they were never the contention problem, and relaxing them
+would have bought nothing at the cost of real slack. If you add a diff-scoped gate for
+one of them, it may move to the table above.
+
+**The ultimate goal is zero for every number on either list.** That is what makes an
+upward-only ceiling a convergence rather than a loosening: at 0 there is nothing left to
+decrease, so "only an increase fails" *is* the strict gate. Each phase drives some to
+zero and deletes its ceiling.
+
+Why the relaxed three changed at all: each number lives in a single generated ledger, so
+demanding that every improving branch re-snapshot it made the ledger conflict between
+branches whose source edits were disjoint, and made every merge to `main` invalidate the
+number in every other open branch. It also did not achieve what it looked like — the
+bypass is one `--update`, and commit `195904c` shipped a new app with 113 untranslated
+strings while moving `_total` from 1747 to 1860, green, under the fully bidirectional
+gate. Moving enforcement to the diff is a net tightening: that commit fails
+**[added-lines]** today.
+
+The QA predicates live in `scripts/lib/qa-checks.mjs` and nowhere else, shared by
+`qa.test.ts` and the diff-scoped gate, so the counted set and the strict set cannot
+drift.
+
+Also untouched, and still zero-tolerance: `catalogParity`, `dynamicKeys`, `moduleLevel`,
+`gen-pseudolocale --check`, `check-i18n-keys.mjs`'s dangling-reference check, and the
+settings registry. None of them carries a number to argue about, which is exactly why
+none of them caused this.
+
+To see the QA worklist the deleted allowlist used to hold:
+`I18N_QA_REPORT=1 npx vitest run src/i18n/qa.test.ts`.
+
 **Gotcha — the settings-search extractor.** `scripts/settingsExtract.ts` parses
 Settings panels to generate `settingsRegistry.gen.ts` (which powers
 command-palette settings search). It resolves BOTH `i18nT('k')` and `t('k')`

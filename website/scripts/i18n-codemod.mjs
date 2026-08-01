@@ -92,7 +92,10 @@ const MERGE = process.argv.includes('--merge')
 /**
  * Ratchet, mirroring `npx eslint --max-warnings 1116` in `ci.yml`: 76 user-visible
  * strings are unextracted today, so a hard `--check` would fail on arrival and get
- * disabled. `--baseline=N` fails only ABOVE N. Ratchet it down, never up.
+ * disabled. `--baseline=N` fails only ABOVE N. Lower it when convenient, never
+ * raise it — but a count below N is tolerated rather than failed, because the
+ * literal lives in `package.json` and forcing every improving branch to edit that
+ * one line makes it a conflict between all of them. Temporary; see issue #1004.
  */
 const BASELINE_ARG = process.argv.find((a) => a.startsWith('--baseline='))
 const BASELINE = BASELINE_ARG ? Number.parseInt(BASELINE_ARG.slice('--baseline='.length), 10) : 0
@@ -582,11 +585,16 @@ if (CHECK) {
     process.exit(1)
   }
   if (total < BASELINE) {
-    console.error(
-      `\n${total} unextracted string(s) — BELOW the baseline of ${BASELINE}. Ratchet it down:\n`
-      + `set --baseline=${total} so the gain cannot be given back.`,
+    // Deliberately NOT a failure. Requiring `--baseline=N` to be lowered in
+    // `package.json` on every improvement makes that one line a merge conflict
+    // between every parallel i18n branch, and each merge to `main` invalidates it
+    // in all the others. Lower it when the tree is quiet. Temporary — see
+    // `check-i18n-strings.mjs`'s header and issue #1004.
+    console.log(
+      `\n${total} unextracted string(s) — below the baseline of ${BASELINE}. `
+      + `Optional: set --baseline=${total} in package.json to tighten the gate.`,
     )
-    process.exit(1)
+  } else {
+    console.log(`\nOK: ${total} unextracted string(s), at the baseline of ${BASELINE}.`)
   }
-  console.log(`\nOK: ${total} unextracted string(s), at the baseline of ${BASELINE}.`)
 }

@@ -426,16 +426,20 @@ jobs:
       - name: Check i18n extraction, key references and plurals
         working-directory: website
         env:
-          # `check-source-strings.mjs` compares en.json against the merge base to find
-          # NEWLY ADDED keys, so it needs a ref to diff against. On a PR that is the
-          # base branch; on a push to main there is no new-key set to check and the
-          # script skips itself. Note `frontend-lint`'s checkout is shallow, so the ref
-          # has to be fetched — see the step below.
+          # Two gates need a ref to diff against: `check-source-strings.mjs` compares the
+          # catalogs against it to find NEWLY ADDED keys and CHANGED values, and
+          # `check-i18n-strings.mjs` uses it to find literals on lines this branch wrote.
+          # On a PR that ref is the base branch; on a push to main there is no branch to
+          # diff, and both scopes skip while the ceilings still run. Note
+          # `frontend-lint`'s checkout is shallow, so the ref has to be fetched — see the
+          # step below. `check-i18n-strings.mjs` falls back from the merge base to the
+          # base tip for exactly that reason, and EXITS NON-ZERO if a configured ref
+          # cannot be resolved rather than skipping itself green.
           I18N_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
         # Two codemods with different jobs to do. `i18n-plural-codemod.mjs --check` is a
         # hard gate: it passes today and any reintroduced `{n} {t('item')}s`
         # concatenation fails it. `i18n-codemod.mjs --check --baseline=N` is a
-        # ratchet, mirroring the `--max-warnings` idiom above: 76 user-visible
+        # ratchet, mirroring the `--max-warnings` idiom above: a number of user-visible
         # strings are unextracted today, so a hard check would fail on arrival.
         # Ratchet the baseline DOWN as they are converted; never raise it.
         #
@@ -446,16 +450,25 @@ jobs:
         #
         # The same script also runs `lint:i18n`, which drives a SECOND eslint
         # invocation with its own config. `no-literal-string` at `mode: 'all'` reports
-        # 2886 findings across 308 files, and folding those into the 1116 budget above
-        # would make an i18n regression indistinguishable from a new `no-explicit-any`.
+        # thousands of findings, and folding those into the 1116 budget above would make
+        # an i18n regression indistinguishable from a new `no-explicit-any`.
         #
-        # Which gate trips for which defect, since two ratchets overlap here:
-        #   `i18n-codemod.mjs --check --baseline=76` — one AGGREGATE count of strings the
-        #     codemod could mechanically extract (JSX text and attributes). Trips on a new
-        #     literal in markup.
-        #   `lint:i18n` / `untranslated-baseline.json` — a PER-FILE count over every
-        #     string position eslint can see, including the ternary and expression-container
-        #     literals the codemod cannot rewrite. Trips on a new literal anywhere.
+        # Which gate trips for which defect, since several overlap here:
+        #   `check-i18n-strings.mjs` [added-lines] — ZERO tolerance on a user-visible
+        #     literal sitting on a line THIS BRANCH WROTE. No baseline, nothing to
+        #     regenerate, so it cannot be bought past. This is the real coverage gate.
+        #   `check-i18n-strings.mjs` / `untranslated-baseline.json` — a PER-FILE CEILING
+        #     over the frozen debt on lines nobody touched. UPWARD-ONLY: going over
+        #     fails, going under does not. The ultimate goal is zero for every file, at
+        #     which point the ceiling is deleted and the gate is unconditional.
+        #   `i18n-codemod.mjs --check --baseline=N` — one AGGREGATE count of strings the
+        #     codemod could mechanically extract (JSX text and attributes). Also
+        #     upward-only.
+        #   `check-source-strings.mjs` [source-strings] — new ENGLISH keys must be
+        #     well-shaped copy, not sentence fragments.
+        #   `check-source-strings.mjs` [changed-values] — catalog QA at ZERO tolerance
+        #     over every catalog value the branch added or changed, in all languages.
+        #     This is what replaced `qa-allowlist.json`'s per-site frozen set.
         #   `check-i18n-keys.mjs` / `dynamic-keys-baseline.json` — asks the one question none
         #     of the others do: does the key a call site names actually EXIST. Every gate
         #     above starts from the catalogs and works outward, so a reference to a key that
@@ -467,23 +480,28 @@ jobs:
         #     dispositions in one script: dangling references are a HARD ZERO (each is a
         #     user-visible bug, so there is no acceptable count), while call sites whose key
         #     cannot be resolved statically are a per-file bidirectional ratchet — that
-        #     number is the gate's coverage statement, 1 site of ~5500 today. WHOLE-REPO,
-        #     not diff-scoped, and necessarily so: a reference and its catalog entry are
+        #     number is the gate's coverage statement, 1 site of ~5500 today. It stays
+        #     bidirectional because nothing diff-scoped covers the same defect, which is
+        #     the rule stated below. WHOLE-REPO, not diff-scoped, and necessarily so: a reference and its catalog entry are
         #     edited independently, so a catalog-only rename dangles references in files the
         #     PR never opens. It needs no base ref, so unlike `check-source-strings.mjs` it
         #     cannot silently skip itself.
-        #   `gen-pseudolocale.mjs --check` — drift only, not coverage.
-        # Extracting a string therefore moves both counts; regenerate the per-file
-        # baseline with `node scripts/check-i18n-strings.mjs --update` and lower the
-        # codemod's `--baseline=` literal. Folding the two into one artifact is deferred:
-        # they measure different populations, and collapsing them would lose the
-        # per-file property below.
+        #   `gen-pseudolocale.mjs --check` — `en-XA` drift only, not coverage.
         #
-        # That gate is a PER-FILE, BIDIRECTIONAL ratchet rather than
-        # `--max-warnings N`. Per file, so three strings fixed in one file cannot pay
-        # for three added in another. Bidirectional, so fixing a string forces the
-        # baseline down and the gain cannot be given back — a one-way budget has no
-        # downward pressure, which is how the budget above went 1066 -> 1116.
+        # Why some per-file baselines stopped being bidirectional and others did not.
+        # The rule: a count may stop failing on IMPROVEMENT only when a DIFF-SCOPED gate
+        # fails on the regression regardless of the count. `untranslated-baseline.json`,
+        # the qa ceilings and the codemod baseline qualify — [added-lines] and
+        # [changed-values] cover them. `deadKeys`, `glossary`, `localeFormatting` and this
+        # script's dynamic-site counts do not, so they stay exact in both directions.
+        #
+        # The three that changed did so because each is one generated ledger, which made it
+        # a merge conflict between every parallel i18n branch, and every merge to main
+        # invalidated the number in all the others. The guard also did not do what it
+        # looked like it did: the bypass is one `--update`, and `195904c` shipped a new app
+        # with 113 untranslated strings while moving `_total` 1747 -> 1860, green, under the
+        # fully bidirectional gate. Moving enforcement to the diff is a net tightening —
+        # that commit fails [added-lines] today.
         run: |
           # `actions/checkout` fetches depth 1, so the base branch is not present and
           # `git show origin/main:…` would fail. Fetch just that one ref.

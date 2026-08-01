@@ -1,22 +1,31 @@
 #!/usr/bin/env node
 /**
- * Source-string quality gate, scoped to keys this branch ADDS.
+ * Diff-scoped catalog quality gate. Two passes, both zero-tolerance, neither backed by
+ * a stored ledger — so neither can ever conflict between branches.
  *
- * The catalog QA suite (`src/i18n/qa.test.ts`) checks every value in every language
- * against a frozen allowlist. This checks something different and narrower: the
- * quality of *new English source strings*, before they are ever translated.
+ * **Pass 1 — new English source strings.** The quality of *new English copy*, before it
+ * is ever translated. That is the cheapest possible fix point. A fragment like
+ * `'Findings ('` costs one edit if it is caught when it is written, and ten translations
+ * plus a re-review if it is caught after the catalogs are generated. Mozilla — the
+ * closest analogue, with catalogs in git and no TMS — runs a whole quarantine branch for
+ * this; a diff-scoped check gets the mechanical half of it for free.
  *
- * That is the cheapest possible fix point. A fragment like `'Findings ('` costs one
- * edit if it is caught when it is written, and ten translations plus a re-review if
- * it is caught after the catalogs are generated. Mozilla — the closest analogue, with
- * catalogs in git and no TMS — runs a whole quarantine branch for this; a diff-scoped
- * check gets the mechanical half of it for free.
+ * **Pass 2 — every catalog value this branch added or changed, in every language.** This
+ * is the guard `qa-allowlist.json` used to provide. `src/i18n/qa.test.ts` holds the
+ * frozen debt as a per-check COUNT ceiling rather than a frozen set of 948 sites,
+ * because regenerating that set on every fix made it conflict between all parallel
+ * branches. A count cannot distinguish "one fixed" from "one fixed and one broken", so
+ * the ceiling alone would let a cleanup pay for a regression. Restricting the strict
+ * check to changed values closes that at zero storage cost. The check predicates are
+ * shared with `qa.test.ts` via `lib/qa-checks.mjs`, so the two cannot disagree.
  *
  * ## Scoping
  *
- * Only keys absent from `en.json` at the merge base are checked, so the 963 frozen
- * pre-existing violations are irrelevant here and there is nothing to allowlist.
- * Base ref comes from `I18N_BASE_REF`, else `origin/main`.
+ * Pass 1 checks only keys absent from `en.json` at the merge base, so the frozen
+ * pre-existing violations are irrelevant here and there is nothing to allowlist. Pass 2
+ * checks only values that differ from the merge base, and exempts a translation whose
+ * English source trips the same check — an unbalanced source cannot have a balanced
+ * translation. Base ref comes from `I18N_BASE_REF`, else `origin/main`.
  *
  * ## What is deliberately NOT carved out
  *
@@ -44,6 +53,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { changedValueFindings, flatten as qaFlatten } from './lib/qa-checks.mjs'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 const REPO = path.resolve(ROOT, '..')
@@ -58,20 +69,9 @@ const CATALOGS = [
 ]
 const BASE_REF = process.env.I18N_BASE_REF || 'origin/main'
 
-function flatten(obj, prefix = '') {
-  const out = {}
-  if (obj === null || typeof obj !== 'object') return out
-  for (const [k, v] of Object.entries(obj)) {
-    const p = prefix ? `${prefix}.${k}` : k
-    if (v !== null && typeof v === 'object') Object.assign(out, flatten(v, p))
-    else out[p] = String(v)
-  }
-  return out
-}
-
 const head = Object.assign(
   {},
-  ...CATALOGS.map((c) => flatten(JSON.parse(fs.readFileSync(path.join(REPO, c), 'utf-8')))),
+  ...CATALOGS.map((c) => qaFlatten(JSON.parse(fs.readFileSync(path.join(REPO, c), 'utf-8')))),
 )
 
 let base
@@ -92,7 +92,7 @@ try {
       execFileSync('git', ['rev-parse', '--verify', `${BASE_REF}^{commit}`], { cwd: REPO })
       continue
     }
-    Object.assign(base, flatten(JSON.parse(raw)))
+    Object.assign(base, qaFlatten(JSON.parse(raw)))
   }
 } catch {
   // No base to compare against — a shallow clone, or the ref is missing. Skip rather
@@ -185,8 +185,102 @@ console.log(
   + `${findings.length} finding(s).`,
 )
 
-if (findings.length === 0) {
+// ---------------------------------------------------------------------------
+// Second pass: catalog QA over every value this branch ADDED OR CHANGED, in
+// every shipped language, at zero tolerance.
+//
+// This is the guard that used to be `qa-allowlist.json`'s per-site frozen set.
+// That allowlist was replaced by a per-check COUNT ceiling, because a frozen set
+// of 948 sites has to be regenerated whenever a string is fixed, which made the
+// file conflict between every parallel branch. A count cannot tell "one fixed"
+// from "one fixed and one broken", so the ceiling alone would let a cleanup pay
+// for a regression.
+//
+// Scoping the strict check to the diff closes that without storing anything: a
+// value that is new or edited on this branch must be clean, whatever the frozen
+// counts are. Nothing here can conflict, because there is no ledger.
+// ---------------------------------------------------------------------------
+
+/** Shipped catalogs, keyed by language. `en` is the two-file merge the runtime does. */
+function catalogFiles() {
+  const dir = path.join(ROOT, 'src/i18n/locales')
+  const byLang = {}
+  for (const file of fs.readdirSync(dir).sort()) {
+    if (!file.endsWith('.json')) continue
+    // `en-XA` is generated from `en` by `gen-pseudolocale.mjs`, so every defect it
+    // has is inherited and `--check` already guards its content byte-for-byte.
+    if (file === 'en-XA.json') continue
+    const lang = file === 'en.manual.json' ? 'en' : file.slice(0, -'.json'.length)
+    ;(byLang[lang] = byLang[lang] || []).push(`website/src/i18n/locales/${file}`)
+  }
+  return byLang
+}
+
+function readFlat(paths, ref) {
+  const out = {}
+  for (const rel of paths) {
+    let raw
+    if (ref === null) {
+      raw = fs.readFileSync(path.join(REPO, rel), 'utf-8')
+    } else {
+      try {
+        raw = execFileSync('git', ['show', `${ref}:${rel}`], {
+          cwd: REPO,
+          encoding: 'utf-8',
+          maxBuffer: 32 * 1024 * 1024,
+        })
+      } catch {
+        // Absent at the base ref means the whole catalog is new on this branch.
+        continue
+      }
+    }
+    Object.assign(out, qaFlatten(JSON.parse(raw)))
+  }
+  return out
+}
+
+const byLang = catalogFiles()
+const enHead = readFlat(byLang.en ?? [], null)
+const qaFindings = []
+for (const [lang, paths] of Object.entries(byLang)) {
+  qaFindings.push(
+    ...changedValueFindings({
+      lang,
+      base: readFlat(paths, BASE_REF),
+      head: readFlat(paths, null),
+      enHead,
+    }),
+  )
+}
+
+console.log(
+  `[changed-values] ${qaFindings.length} catalog QA finding(s) among values changed vs ${BASE_REF}.`,
+)
+
+if (qaFindings.length > 0) {
+  const byCheckId = {}
+  for (const f of qaFindings) (byCheckId[f.check.id] = byCheckId[f.check.id] || []).push(f)
+  console.error('')
+  for (const [id, list] of Object.entries(byCheckId)) {
+    console.error(`${id} — ${list[0].check.describe}`)
+    for (const f of list) console.error(`    ${f.lang}:${f.key}\n      ${JSON.stringify(f.value)}`)
+    console.error('')
+  }
+  console.error(
+    'These values are NEW or EDITED on this branch, so they are not frozen debt and there\n'
+    + 'is no ceiling to raise. Fix the copy.\n\n'
+    + 'A translation is exempt when the ENGLISH source trips the same check — an unbalanced\n'
+    + 'source cannot have a balanced translation. If that is your case and this still fires,\n'
+    + 'the English is now clean and the translation needs the same fix.',
+  )
+}
+
+if (findings.length === 0 && qaFindings.length === 0) {
   process.exit(0)
+}
+
+if (findings.length === 0) {
+  process.exit(1)
 }
 
 const byCheck = {}

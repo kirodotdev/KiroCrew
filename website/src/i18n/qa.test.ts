@@ -15,32 +15,63 @@
  * machine-generated and then edited piecemeal by contributors who cannot read the
  * other nine languages, so CI is the only reviewer these strings get.
  *
- * ## Why an allowlist rather than a threshold
+ * ## Why a per-check CEILING, and why that is TEMPORARY
  *
  * The existing violations are a codemod artifact, not a translation problem — the
  * extractor split sentences at JSX boundaries, so `'Skills ('` and `')'` became
  * separate keys. Fixing those is a large, separate piece of work. Until then this
- * suite is a **ratchet**: it fails on anything new and ignores the frozen set. The
- * allowlist is also the worklist for that later cleanup.
+ * suite is a **ratchet**: it fails when a check gets worse and tolerates the frozen
+ * debt.
  *
- * The allowlist carries a **staleness guard** — an entry that no longer matches a
- * real violation fails the suite. Without it the file silently accumulates dead
- * exemptions and stops meaning anything.
+ * This gate shipped as a frozen set of `lang:key` sites in `qa-allowlist.json`,
+ * guarded in both directions: a new site failed, and so did an entry that no longer
+ * matched a real violation. That is the strictest useful shape and it is the shape
+ * to come back to. It is also unworkable while the backfill is in flight, for two
+ * reasons that together serialised every open i18n pull request:
  *
- * ## Regenerating
+ * 1. **The staleness guard failed on improvement.** Fixing a string invalidated its
+ *    entry, so the change had to regenerate the whole 948-line sorted list. Two
+ *    branches that fixed *disjoint* strings still collided textually in that one
+ *    file, and each merge invalidated every other open branch.
+ * 2. **A key rename read as a brand-new violation.** Phase 3 collapses fragment
+ *    keys, so a still-unbalanced string arrives under a new key and trips the
+ *    "no NEW violations" assertion even though nothing got worse.
  *
- *     I18N_QA_UPDATE_ALLOWLIST=1 npx vitest run src/i18n/qa.test.ts
+ * So the enforced unit is a **count per check**, and only an INCREASE fails. A
+ * decrease needs no edit anywhere — that is what removes the contention.
  *
- * The check logic lives here and nowhere else, so the generator cannot drift from
- * the assertions the way a separate script would.
+ * **The ultimate goal is zero for every one of these numbers.** That is what makes the
+ * relaxation converge instead of rot: a ceiling of 0 has nothing left to decrease, so
+ * "only an increase fails" IS the strict gate — identical to `expect(...).toEqual([])`.
+ * Every backfill that lowers a ceiling moves it toward being unremovable, and the last
+ * one deletes the ceiling entirely. Restoring per-site identity is tracked in issue
+ * #1004; reaching zero makes restoring it unnecessary.
+ *
+ * **The blind spot in the meantime, stated plainly:** a count cannot tell "one fixed"
+ * from "one fixed and one broken". That hole is closed from the other side rather than
+ * left open — `scripts/check-source-strings.mjs` runs these same predicates at ZERO
+ * tolerance over every catalog value this branch adds or changes, using the shared
+ * definitions in `scripts/lib/qa-checks.mjs`. Frozen debt is what the ceiling covers;
+ * anything you touch has no ceiling at all.
+ *
+ * ## Reproducing the worklist
+ *
+ *     I18N_QA_REPORT=1 npx vitest run src/i18n/qa.test.ts
+ *
+ * prints every live violation site per check. The allowlist was also the worklist
+ * for the cleanup, so that view has to stay available without a committed file to
+ * go stale. The check predicates live in `scripts/lib/qa-checks.mjs` and nowhere
+ * else, so this report and the diff-scoped gate cannot drift apart.
  */
 
 import { describe, it, expect } from 'vitest'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 
 import { CATALOGS as RUNTIME_CATALOGS } from './index'
 import { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES } from './languages'
+// One definition of the checks, shared with `check-source-strings.mjs`, which runs the
+// same predicates at ZERO tolerance over the values a branch changed. Two copies would
+// let the ceiling here and the diff gate there disagree about what a violation is.
+import { CHECKS, flatten, site } from '../../scripts/lib/qa-checks.mjs'
 
 /**
  * Generated catalogs are excluded. The pseudolocale is a mechanical transform of
@@ -49,8 +80,25 @@ import { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES } from './languages'
  */
 const GENERATED = new Set(SUPPORTED_LANGUAGES.filter(l => l.devOnly).map(l => l.code))
 
-const ALLOWLIST_PATH = join(__dirname, 'qa-allowlist.json')
-const UPDATING = process.env.I18N_QA_UPDATE_ALLOWLIST === '1'
+/**
+ * Frozen debt per check, measured on `main` at the commit that replaced the per-site
+ * allowlist. Lower a number when a backfill lands if you want the tighter gate
+ * immediately — but you are never *obliged* to, and that is the whole point: a
+ * decrease is silent, so two branches fixing disjoint strings do not collide here.
+ *
+ * Raising a number is the reviewable act. It means new malformed copy shipped.
+ */
+const CEILINGS: Record<string, number> = {
+  'unbalanced-delimiter': 640,
+  'odd-quote-count': 217,
+  'edge-whitespace': 15,
+  'doubled-space': 10,
+  'bare-connector': 66,
+  'fullwidth-alphanumeric': 0,
+}
+
+/** `I18N_QA_REPORT=1` prints the live sites — the worklist the allowlist used to be. */
+const REPORT = process.env.I18N_QA_REPORT === '1'
 
 /** Catalogs exactly as the runtime composes them, including English's two-file merge. */
 const CATALOGS: Record<string, Record<string, string>> = Object.fromEntries(
@@ -59,128 +107,8 @@ const CATALOGS: Record<string, Record<string, string>> = Object.fromEntries(
     .map(([code, bundle]) => [code, flatten((bundle as { translation: unknown }).translation)]),
 )
 
-function flatten(obj: unknown, prefix = ''): Record<string, string> {
-  const out: Record<string, string> = {}
-  if (obj === null || typeof obj !== 'object') return out
-  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-    const path = prefix ? `${prefix}.${key}` : key
-    if (value !== null && typeof value === 'object') Object.assign(out, flatten(value, path))
-    else out[path] = String(value)
-  }
-  return out
-}
 
-/**
- * Interpolation placeholders are removed before any punctuation check. `{{count}}`
- * contains braces that would otherwise register as an unbalanced pair.
- */
-const stripInterpolation = (v: string) => v.replace(/\{\{[^}]*\}\}/g, '')
-
-const DELIMITER_PAIRS: ReadonlyArray<readonly [string, string]> = [
-  ['(', ')'],
-  ['[', ']'],
-  ['（', '）'],
-  ['【', '】'],
-  ['「', '」'],
-]
-
-/**
- * Values that are a single connector or morpheme. These cannot be translated in
- * isolation — `'s'` is an English plural suffix and `'repl'` is the stem of
- * "replies", so every language ships them verbatim and the UI renders English.
- */
-const CONNECTORS = new Set([
-  'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'by', 'at', 'from',
-  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be',
-  's', 'es', 'y', 'ies', 'repl',
-])
-
-/** Fullwidth digits and Latin letters. Fullwidth *punctuation* is correct in CJK; these are not. */
-const FULLWIDTH_ALPHANUMERIC = /[\uFF10-\uFF19\uFF21-\uFF3A\uFF41-\uFF5A]/
-
-/**
- * The curly double-quote pair a locale actually uses, keyed by language.
- *
- * Pairing curly quotes is locale-specific, and getting it wrong in either direction is a
- * bug. Most locales open with U+201C `“` and close with U+201D `”`. The low-high locales
- * — German here, plus Polish, Czech, Croatian, Hungarian and others if they are ever
- * shipped — open with U+201E `„` and close with U+201C `“`. So German's correct
- * `„Weiter“` has one `“` and no `”`, which an English-shaped rule reports as unbalanced.
- *
- * Guillemets (`«` `»`, used by French and Russian) are deliberately NOT checked: they
- * are a separate pair with their own spacing rules, and no shipped catalog has shown a
- * defect in them. That is a stated false-negative class, not an oversight.
- */
-const QUOTE_PAIRS: Record<string, readonly [string, string]> = {
-  de: ['\u201E', '\u201C'],
-}
-const DEFAULT_QUOTE_PAIR: readonly [string, string] = ['\u201C', '\u201D']
-
-type Check = {
-  id: string
-  describe: string
-  violates: (value: string, lang: string) => boolean
-}
-
-const CHECKS: Check[] = [
-  {
-    id: 'unbalanced-delimiter',
-    describe: 'brackets and parentheses must be balanced within a single value',
-    violates: (v) => {
-      const t = stripInterpolation(v)
-      return DELIMITER_PAIRS.some(([open, close]) => count(t, open) !== count(t, close))
-    },
-  },
-  {
-    id: 'odd-quote-count',
-    describe: 'quotation marks must pair within a single value',
-    violates: (v, lang) => {
-      const t = stripInterpolation(v)
-      // Curly quotes are DIRECTIONAL, so parity over their sum is the wrong test: the
-      // previous `(count(“) + count(”)) % 2` passed on any even total, so `“click “here`
-      // — two openers, no closer — was reported as balanced. Compare the locale's opener
-      // against its closer instead, which catches an odd total AND an even-but-mismatched
-      // one. Straight `"` is non-directional, so parity is all that can be checked there.
-      const [open, close] = QUOTE_PAIRS[lang] ?? DEFAULT_QUOTE_PAIR
-      return count(t, open) !== count(t, close) || count(t, '"') % 2 === 1
-    },
-  },
-  {
-    id: 'edge-whitespace',
-    describe: 'no leading or trailing space or tab',
-    // U+00A0 is excluded deliberately: a non-breaking space is a glyph the copy
-    // asked for, not accidental padding.
-    violates: (v) => v !== v.replace(/^[ \t\n\r]+/, '').replace(/[ \t\n\r]+$/, ''),
-  },
-  {
-    id: 'doubled-space',
-    describe: 'no run of two or more spaces',
-    // A whitespace run containing a newline is indentation carried over from a
-    // multi-line JSX literal; it collapses to one space when rendered and is not
-    // a defect. Only newline-free runs are accidental.
-    violates: (v) =>
-      [...v.matchAll(/[ \t\n\r]{2,}/g)].some((m) => !m[0].includes('\n') && !m[0].includes('\r')),
-  },
-  {
-    id: 'bare-connector',
-    describe: 'a value must not be a lone connector word or morpheme',
-    violates: (v) => CONNECTORS.has(v.trim().toLowerCase().replace(/[.,;:!?]+$/, '')),
-  },
-  {
-    id: 'fullwidth-alphanumeric',
-    describe: 'CJK catalogs must not store fullwidth Latin letters or digits',
-    // W3C CLReq: "when storing text, avoid the fullwidth alphabetic and numeric
-    // characters of that block; leave it to the layout engine."
-    violates: (v) => FULLWIDTH_ALPHANUMERIC.test(v),
-  },
-]
-
-const count = (haystack: string, needle: string) => haystack.split(needle).length - 1
-
-/** `lang:key` — the unit an allowlist entry addresses. */
-const site = (lang: string, key: string) => `${lang}:${key}`
-
-function findViolations(check: Check): string[] {
+function findViolations(check: (typeof CHECKS)[number]): string[] {
   const out: string[] = []
   for (const [lang, catalog] of Object.entries(CATALOGS)) {
     for (const [key, value] of Object.entries(catalog)) {
@@ -194,41 +122,39 @@ const live: Record<string, string[]> = Object.fromEntries(
   CHECKS.map((c) => [c.id, findViolations(c)]),
 )
 
-if (UPDATING) {
-  writeFileSync(
-    ALLOWLIST_PATH,
-    `${JSON.stringify({ _generated: 'I18N_QA_UPDATE_ALLOWLIST=1 npx vitest run src/i18n/qa.test.ts', ...live }, null, 2)}\n`,
-  )
+if (REPORT) {
+  for (const check of CHECKS) {
+    console.log(`\n# ${check.id} — ${live[check.id].length} site(s)`)
+    for (const s of live[check.id]) console.log(`  ${s}`)
+  }
 }
 
-const allowlist: Record<string, string[]> = JSON.parse(readFileSync(ALLOWLIST_PATH, 'utf-8'))
-
 describe('catalog QA', () => {
-  it.each(CHECKS.map((c) => [c.id, c] as const))('%s — no NEW violations', (id, check) => {
-    const allowed = new Set(allowlist[id] ?? [])
-    const added = live[id].filter((s) => !allowed.has(s))
+  it.each(CHECKS.map((c) => [c.id, c] as const))('%s — does not get worse', (id, check) => {
+    const ceiling = CEILINGS[id] ?? 0
     expect(
-      added,
-      `${check.describe}\n\n${added.length} new violation(s). Fix them, or if they are ` +
-        `deliberate, regenerate the allowlist with I18N_QA_UPDATE_ALLOWLIST=1.`,
-    ).toEqual([])
+      live[id].length,
+      `${check.describe}\n\n${live[id].length} violation(s), above the ceiling of ${ceiling}. ` +
+        `Fix the copy. Raise the ceiling in this file only if the new violations are ` +
+        `deliberate, and say why in the pull request.\n\n` +
+        `${live[id].slice(0, 12).map((s) => `  ${s}`).join('\n')}\n\n` +
+        `Full list: I18N_QA_REPORT=1 npx vitest run src/i18n/qa.test.ts`,
+    ).toBeLessThanOrEqual(ceiling)
   })
 
-  it.each(CHECKS.map((c) => [c.id, c] as const))('%s — allowlist has no stale entries', (id) => {
-    const found = new Set(live[id])
-    const stale = (allowlist[id] ?? []).filter((s) => !found.has(s))
-    expect(
-      stale,
-      `These allowlist entries no longer match a real violation — the strings were ` +
-        `fixed or the keys renamed. Regenerate the allowlist so it keeps meaning something.`,
-    ).toEqual([])
-  })
-
-  it('every check is represented in the allowlist file', () => {
+  it('every check has a ceiling', () => {
     // Guards against a check being added here and silently never gated because
-    // the allowlist file has no key for it.
-    const missing = CHECKS.map((c) => c.id).filter((id) => !(id in allowlist))
-    expect(missing, 'regenerate the allowlist after adding a check').toEqual([])
+    // `CEILINGS` has no entry for it — the `?? 0` above would then gate it at zero
+    // and fail confusingly rather than telling you the entry is missing.
+    const missing = CHECKS.map((c) => c.id).filter((id) => !(id in CEILINGS))
+    expect(missing, 'add a ceiling for the new check').toEqual([])
+  })
+
+  it('no ceiling outlives its check', () => {
+    // The counterpart: a renamed or deleted check leaves a number that gates nothing.
+    const ids = new Set(CHECKS.map((c) => c.id))
+    const orphaned = Object.keys(CEILINGS).filter((id) => !ids.has(id))
+    expect(orphaned, 'remove the ceiling for a check that no longer exists').toEqual([])
   })
 
   it('English is the reference catalog and is present', () => {
