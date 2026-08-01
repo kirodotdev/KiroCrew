@@ -1538,6 +1538,8 @@
       "split_view": "স্প্লিট ভিউ",
       "switch_to_split_view": "স্প্লিট ভিউতে যাও",
       "switch_to_unified_view": "ইউনিফায়েড ভিউতে যাও",
+      "unchanged_lines_one": "{{count}}টি অপরিবর্তিত লাইন",
+      "unchanged_lines_other": "{{count}}টি অপরিবর্তিত লাইন",
       "unified_view": "ইউনিফায়েড ভিউ"
     },
     "diffPanel": {

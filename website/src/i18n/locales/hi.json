@@ -1538,6 +1538,8 @@
       "split_view": "स्प्लिट व्यू",
       "switch_to_split_view": "स्प्लिट व्यू पर जाएँ",
       "switch_to_unified_view": "यूनिफ़ाइड व्यू पर जाएँ",
+      "unchanged_lines_one": "{{count}} अपरिवर्तित पंक्ति",
+      "unchanged_lines_other": "{{count}} अपरिवर्तित पंक्तियाँ",
       "unified_view": "यूनिफ़ाइड व्यू"
     },
     "diffPanel": {

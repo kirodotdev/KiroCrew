@@ -21,16 +21,115 @@ describe('DiffBlock', () => {
     expect(screen.getByText(/diff/)).toBeInTheDocument()
   })
 
-  it('shows added lines with + prefix', () => {
+  it('shows added lines with tinted background', () => {
     const { container } = render(<DiffBlock code={simpleDiff} complete={true} />)
     const addLines = container.querySelectorAll('.bg-diff-add')
     expect(addLines.length).toBeGreaterThan(0)
   })
 
-  it('shows deleted lines with - prefix', () => {
+  it('shows deleted lines with tinted background', () => {
     const { container } = render(<DiffBlock code={simpleDiff} complete={true} />)
     const delLines = container.querySelectorAll('.bg-diff-del')
     expect(delLines.length).toBeGreaterThan(0)
+  })
+
+  describe('C1 gutter (single colored line number, no sign column)', () => {
+    it('renders exactly one line-number gutter per row', () => {
+      const { container } = render(<DiffBlock code={simpleDiff} complete={true} />)
+      const addRow = container.querySelector('.bg-diff-add')!
+      const gutters = Array.from(addRow.querySelectorAll('span'))
+        .filter(s => (s as HTMLElement).style.width.endsWith('ch'))
+      expect(gutters).toHaveLength(1)
+    })
+
+    it('does not render a +/- sign column — row text is number + content only', () => {
+      const { container } = render(<DiffBlock code={simpleDiff} complete={true} />)
+      const delRow = container.querySelector('.bg-diff-del')!
+      // Old line number (2) followed directly by content, no "-" marker.
+      expect(delRow.textContent).toBe('2const b = 2')
+    })
+
+    it('colors the gutter number by change type', () => {
+      const { container } = render(<DiffBlock code={simpleDiff} complete={true} />)
+      const addGutter = container.querySelector('.bg-diff-add span')!
+      const delGutter = container.querySelector('.bg-diff-del span')!
+      expect(addGutter.className).toContain('text-diff-add-text')
+      expect(delGutter.className).toContain('text-diff-del-text')
+    })
+
+    it('shows the new line number on add rows and the old on del rows', () => {
+      const { container } = render(<DiffBlock code={simpleDiff} complete={true} />)
+      // del "const b = 2" is old line 2; the first add "const b = 3" is new line 2,
+      // the second add "const c = 4" is new line 3.
+      const adds = container.querySelectorAll('.bg-diff-add')
+      expect(adds[0].textContent).toBe('2const b = 3')
+      expect(adds[1].textContent).toBe('3const c = 4')
+    })
+
+    it('marks changed rows with the inset edge bar', () => {
+      const { container } = render(<DiffBlock code={simpleDiff} complete={true} />)
+      const addRow = container.querySelector('.bg-diff-add')!
+      const contextRow = Array.from(container.querySelectorAll('.ft-drow'))
+        .find(r => r.textContent?.includes('const a = 1'))!
+      expect(addRow.className).toContain('shadow-[inset_2px_0_0_var(--diff-add-text)]')
+      expect(contextRow.className).not.toContain('shadow-[inset_2px_0_0')
+    })
+
+    it('force-wraps long lines instead of horizontal scrolling', () => {
+      const { container } = render(<DiffBlock code={simpleDiff} complete={true} />)
+      // No scroll container…
+      expect(container.querySelector('.overflow-x-auto')).toBeNull()
+      // …and every content cell wraps (unified view).
+      const content = container.querySelector('.bg-diff-add span:last-child')!
+      expect(content.className).toContain('whitespace-pre-wrap')
+      expect(content.className).toContain('break-words')
+      // Split view wraps too.
+      fireEvent.click(screen.getByTitle('Split view'))
+      expect(container.querySelector('.overflow-x-auto')).toBeNull()
+      const splitContent = container.querySelector('.bg-diff-add span:last-child')!
+      expect(splitContent.className).toContain('whitespace-pre-wrap')
+    })
+  })
+
+  describe('hunk header separator', () => {
+    it('does not render the raw @@ header row', () => {
+      render(<DiffBlock code={simpleDiff} complete={true} />)
+      expect(screen.queryByText(/@@ -1,3 \+1,4 @@/)).not.toBeInTheDocument()
+    })
+
+    it('renders no separator for the first hunk', () => {
+      render(<DiffBlock code={simpleDiff} complete={true} />)
+      expect(screen.queryByText(/unchanged line/)).not.toBeInTheDocument()
+    })
+
+    it('renders an unchanged-lines separator between hunks', () => {
+      const twoHunks = `--- a/f.ts\n+++ b/f.ts\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -150,3 +150,3 @@\n d\n-e\n+E\n f`
+      const { container } = render(<DiffBlock code={twoHunks} complete={true} />)
+      const label = screen.getByText('146 unchanged lines')
+      // Pill bubble around the label, tinted with the theme's hunk colors
+      // (the same tokens the old raw @@ header row used)…
+      expect(label.className).toContain('rounded-full')
+      expect(label.className).toContain('bg-diff-hunk')
+      expect(label.className).toContain('text-diff-hunk-text')
+      // …flanked by the zigzag mask rules (CSS mask over currentColor —
+      // no SVG element in TSX per AUTOSDE use-lucide-icons).
+      const row = label.closest('div')!
+      expect(row.querySelectorAll('.zigzag-rule')).toHaveLength(2)
+    })
+
+    it('uses the singular form for a one-line gap', () => {
+      const twoHunks = `@@ -1,2 +1,2 @@\n a\n-b\n+B\n@@ -4,2 +4,2 @@\n c\n-d\n+D`
+      render(<DiffBlock code={twoHunks} complete={true} />)
+      expect(screen.getByText('1 unchanged line')).toBeInTheDocument()
+    })
+
+    it('replaces the @@ row with the separator in split view too', () => {
+      const twoHunks = `@@ -1,2 +1,2 @@\n a\n-b\n+B\n@@ -10,2 +10,2 @@\n c\n-d\n+D`
+      render(<DiffBlock code={twoHunks} complete={true} />)
+      fireEvent.click(screen.getByTitle('Split view'))
+      expect(screen.queryByText(/@@ -10,2/)).not.toBeInTheDocument()
+      expect(screen.getByText('7 unchanged lines')).toBeInTheDocument()
+    })
   })
 
   it('shows generating indicator when not complete', () => {

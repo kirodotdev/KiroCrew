@@ -1313,6 +1313,20 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 .scroll-fade{scrollbar-width:thin;scrollbar-color:transparent transparent}
 .scroll-fade:hover{scrollbar-color:var(--border) transparent}
 
+/* ── Zigzag rule (diff "unchanged lines" separator) ──
+ * A tiling chevron painted as a CSS mask over currentColor (the BrandGlyph
+ * pattern from components/BrandIcon.tsx), so it follows the theme's hunk tint
+ * and no SVG element lives in TSX (AUTOSDE use-lucide-icons). The data URI is
+ * quoted — commas break an unquoted url() token and the mask silently fails. */
+.zigzag-rule{
+  flex:1 1 0%;min-width:0;height:7px;background-color:currentColor;
+  -webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='7'%3E%3Cpath d='M0 5.5 L4 1.5 L8 5.5' fill='none' stroke='black' stroke-width='1.2'/%3E%3C/svg%3E");
+  mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='7'%3E%3Cpath d='M0 5.5 L4 1.5 L8 5.5' fill='none' stroke='black' stroke-width='1.2'/%3E%3C/svg%3E");
+  -webkit-mask-repeat:repeat-x;mask-repeat:repeat-x;
+  -webkit-mask-position:left center;mask-position:left center;
+  -webkit-mask-size:8px 7px;mask-size:8px 7px;
+}
+
 /* ── Overlay auto-hiding vertical scrollbar ──
  * Reveals the thumb only on hover and overlays the content so it never
  * consumes horizontal layout width (no reflow when scrollable vs not).

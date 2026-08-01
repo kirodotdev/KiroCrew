@@ -16,6 +16,7 @@
   "components.artifactPanel.comment",
   "components.commentOverlay.comment",
   "components.commentThreadPopover.comment",
+  "components.diffBlock.unchanged_lines",
   "components.discoverySearchBar.result",
   "components.fileChangeChips.file",
   "components.followUpCard.suggested_follow_up",

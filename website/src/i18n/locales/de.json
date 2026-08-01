@@ -1538,6 +1538,8 @@
       "split_view": "Geteilte Ansicht",
       "switch_to_split_view": "Zur geteilten Ansicht wechseln",
       "switch_to_unified_view": "Zur einheitlichen Ansicht wechseln",
+      "unchanged_lines_one": "{{count}} unveränderte Zeile",
+      "unchanged_lines_other": "{{count}} unveränderte Zeilen",
       "unified_view": "Einheitliche Ansicht"
     },
     "diffPanel": {

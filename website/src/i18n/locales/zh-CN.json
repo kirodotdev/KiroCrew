@@ -1521,6 +1521,7 @@
       "split_view": "分屏视图",
       "switch_to_split_view": "切换到分屏视图",
       "switch_to_unified_view": "切换到统一视图",
+      "unchanged_lines_other": "{{count}} 行未更改",
       "unified_view": "统一视图"
     },
     "diffPanel": {

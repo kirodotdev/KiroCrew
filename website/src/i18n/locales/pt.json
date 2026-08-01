@@ -1555,6 +1555,9 @@
       "split_view": "Visualização dividida",
       "switch_to_split_view": "Alternar para visualização dividida",
       "switch_to_unified_view": "Alternar para visualização unificada",
+      "unchanged_lines_many": "{{count}} linhas inalteradas",
+      "unchanged_lines_one": "{{count}} linha inalterada",
+      "unchanged_lines_other": "{{count}} linhas inalteradas",
       "unified_view": "Visualização unificada"
     },
     "diffPanel": {

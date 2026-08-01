@@ -3,10 +3,10 @@ import { Copy, Check, Columns2, Rows2 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { fileReadUrl } from '../utils/fileReadUrl'
 import { isSafePath } from '../utils/safePath'
-import { parseDiffLines, DIFF_BG, DIFF_FG, type DiffLine } from '../utils/diffUtils'
+import { parseDiffLines, DIFF_BG, DIFF_FG, DIFF_NUM, DIFF_EDGE, type DiffLine } from '../utils/diffUtils'
+import UnchangedSeparator from './UnchangedSeparator'
 
 import { i18nT } from '../i18n/t'
-const SIGN: Record<string, string> = { add: '+', del: '-', hunk: '', meta: '', context: ' ' }
 
 type DiffSegment = { kind: 'context'; lines: DiffLine[] } | { kind: 'line'; line: DiffLine }
 
@@ -156,14 +156,22 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   const copy = () => { copyToClipboard(code); setCopied(true); setTimeout(() => setCopied(false), 1500) }
   const toggleCtx = (idx: number) => setExpandedCtx(prev => { const n = new Set(prev); if (n.has(idx)) n.delete(idx); else n.add(idx); return n })
 
+  // Slim separator replacing the raw `@@` hunk header: the gutter line
+  // numbers carry the position, so the header only needs to say how many
+  // unchanged lines were skipped. First hunk (hidden === undefined) and
+  // zero-gap hunks render nothing.
+  const renderHunkSeparator = (line: DiffLine, key: number) => {
+    if (line.hidden === undefined || line.hidden <= 0) return null
+    return <UnchangedSeparator key={key} count={line.hidden} />
+  }
+
   const renderUnifiedLine = (line: DiffLine, key: number) => {
     if (line.type === 'meta') return null
+    if (line.type === 'hunk') return renderHunkSeparator(line, key)
     return (
-    <div key={key} className={`ft-drow flex text-[13px] font-mono leading-relaxed min-w-fit ${DIFF_BG[line.type]}`}>
-      {hasLineNums && <span style={gutterStyle} className="select-none text-muted/50 text-right shrink-0 pr-1 border-r border-border/30">{line.type === 'add' ? '' : (line.oldNum ?? '')}</span>}
-      {hasLineNums && <span style={gutterStyle} className="select-none text-muted/50 text-right shrink-0 pr-1 border-r border-border/30">{line.type === 'del' ? '' : (line.newNum ?? '')}</span>}
-      <span className={`select-none w-[2ch] text-center shrink-0 ${DIFF_FG[line.type]}`}>{SIGN[line.type]}</span>
-      <span className={`px-2 flex-1 ${DIFF_FG[line.type]}`}>{line.type === 'hunk' ? line.content : (line.content || ' ')}</span>
+    <div key={key} className={`ft-drow flex text-[13px] font-mono leading-relaxed ${DIFF_BG[line.type]}${line.type === 'add' || line.type === 'del' ? ` ${DIFF_EDGE[line.type]}` : ''}`}>
+      {hasLineNums && <span style={gutterStyle} className={`select-none text-right shrink-0 pr-1 border-r border-border ${DIFF_NUM[line.type]}`}>{(line.type === 'del' ? line.oldNum : line.newNum) ?? ''}</span>}
+      <span className={`px-2 flex-1 min-w-0 whitespace-pre-wrap break-words ${DIFF_FG[line.type]}`}>{line.content || ' '}</span>
     </div>
   )
   }
@@ -191,8 +199,11 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
           <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? i18nT('components.diffBlock.copied') : i18nT('components.diffBlock.copy_patch')} aria-label={copied ? i18nT('components.diffBlock.copied') : i18nT('components.diffBlock.copy_patch')}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
         </div>
       </div>
-      <pre className="p-0 overflow-x-auto scroll-fade min-w-full">
-        <div className={`w-fit min-w-full${streaming ? ' ft-stream-block' : ''}`}>
+      {/* Forced line wrap: these diffs render in width-constrained surfaces
+          (chat column, side panels), so long lines wrap instead of introducing
+          a horizontal scrollbar — the editor diff is the full-width surface. */}
+      <pre className="p-0">
+        <div className={streaming ? 'ft-stream-block' : undefined}>
         {sideBySide ? (
           /* Side-by-side view */
           sbsPairs.map((pair, i) => {
@@ -200,24 +211,18 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
             const right = pair.right
             const lType = left?.type || 'context'
             const rType = right?.type || 'context'
-            // Meta and hunk lines span full width
+            // Meta lines are dropped; hunk headers become the slim separator.
             if (lType === 'meta') return null
-            if (lType === 'hunk') {
-              return (
-                <div key={i} className={`text-[13px] font-mono leading-relaxed px-3 ${DIFF_BG[lType]} ${DIFF_FG[lType]}`}>{left?.content}</div>
-              )
-            }
+            if (lType === 'hunk') return left ? renderHunkSeparator(left, i) : null
             return (
               <div key={i} className="flex text-[13px] font-mono leading-relaxed">
-                <div className={`w-1/2 flex overflow-hidden border-r border-border/30 ${left ? DIFF_BG[lType] : ''}`}>
-                  {hasLineNums && <span style={gutterStyle} className="select-none text-muted/50 text-right shrink-0 pr-1 border-r border-border/30">{left?.oldNum ?? ''}</span>}
-                  <span className={`select-none w-[2ch] text-center shrink-0 ${left ? DIFF_FG[lType] : 'text-muted'}`}>{left ? (SIGN[lType] || ' ') : ' '}</span>
-                  <span className={`px-2 flex-1 whitespace-pre ${left ? DIFF_FG[lType] : 'text-muted'}`}>{left?.content || ' '}</span>
+                <div className={`w-1/2 flex overflow-hidden border-r border-border ${left ? `${DIFF_BG[lType]}${lType === 'del' ? ` ${DIFF_EDGE.del}` : ''}` : ''}`}>
+                  {hasLineNums && <span style={gutterStyle} className={`select-none text-right shrink-0 pr-1 border-r border-border ${left ? DIFF_NUM[lType] : ''}`}>{left?.oldNum ?? ''}</span>}
+                  <span className={`px-2 flex-1 min-w-0 whitespace-pre-wrap break-words ${left ? DIFF_FG[lType] : 'text-muted'}`}>{left?.content || ' '}</span>
                 </div>
-                <div className={`w-1/2 flex overflow-hidden ${right ? DIFF_BG[rType] : ''}`}>
-                  {hasLineNums && <span style={gutterStyle} className="select-none text-muted/50 text-right shrink-0 pr-1 border-r border-border/30">{right?.newNum ?? ''}</span>}
-                  <span className={`select-none w-[2ch] text-center shrink-0 ${right ? DIFF_FG[rType] : 'text-muted'}`}>{right ? (SIGN[rType] || ' ') : ' '}</span>
-                  <span className={`px-2 flex-1 whitespace-pre ${right ? DIFF_FG[rType] : 'text-muted'}`}>{right?.content || ' '}</span>
+                <div className={`w-1/2 flex overflow-hidden ${right ? `${DIFF_BG[rType]}${rType === 'add' ? ` ${DIFF_EDGE.add}` : ''}` : ''}`}>
+                  {hasLineNums && <span style={gutterStyle} className={`select-none text-right shrink-0 pr-1 border-r border-border ${right ? DIFF_NUM[rType] : ''}`}>{right?.newNum ?? ''}</span>}
+                  <span className={`px-2 flex-1 min-w-0 whitespace-pre-wrap break-words ${right ? DIFF_FG[rType] : 'text-muted'}`}>{right?.content || ' '}</span>
                 </div>
               </div>
             )

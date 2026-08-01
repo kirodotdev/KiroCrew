@@ -483,6 +483,8 @@
       "split_view": "Split view",
       "switch_to_split_view": "Switch to split view",
       "switch_to_unified_view": "Switch to unified view",
+      "unchanged_lines_one": "{{count}} unchanged line",
+      "unchanged_lines_other": "{{count}} unchanged lines",
       "unified_view": "Unified view"
     },
     "discoverySearchBar": {

@@ -36,7 +36,8 @@ import { parseUnifiedDiff } from '../utils/parseUnifiedDiff'
 import CopyBranchButton from './CopyBranchButton'
 import hljs from '../utils/hljs'
 import DOMPurify from 'dompurify'
-import { DIFF_BG, DIFF_FG } from '../utils/diffUtils'
+import { DIFF_BG, DIFF_NUM, DIFF_EDGE } from '../utils/diffUtils'
+import UnchangedSeparator from './UnchangedSeparator'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
 import { timeAgo } from '../utils/timeAgo'
@@ -341,28 +342,25 @@ function DiffView({ patch, path }: { patch: string; path: string }) {
   }, [rows, language, ready])
   if (!ready) return <div className="px-3 py-3 text-[11px] text-muted">{i18nT('components.pullRequestPanel.loading_diff')}</div>
   return (
-    <div className="min-w-max text-[11px] leading-5 font-mono">
+    <div className="text-[11px] leading-5 font-mono">
       {rows.map((row, index) => {
         if (row.kind === 'hunk-gap') {
-          return (
-            <div key={index} className="flex items-center gap-2 px-3 py-1 bg-bg-elevated/60 text-muted select-none">
-              {row.hiddenCount > 0 ? `${row.hiddenCount} unmodified ${row.hiddenCount === 1 ? 'line' : 'lines'}` : <span className="w-full border-t border-border" />}
-            </div>
-          )
+          // Leading gap (diff starts mid-file): the gutter numbers already
+          // carry the position — render nothing.
+          if (index === 0) return null
+          if (row.hiddenCount <= 0) return <div key={index} className="border-t border-border/60" />
+          return <UnchangedSeparator key={index} count={row.hiddenCount} />
         }
         const tone = row.kind === 'add' ? DIFF_BG.add : row.kind === 'del' ? DIFF_BG.del : ''
-        const marker = row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '
-        const markerTone = row.kind === 'add' ? DIFF_FG.add : row.kind === 'del' ? DIFF_FG.del : 'text-muted/40'
+        const edge = row.kind === 'add' || row.kind === 'del' ? ` ${DIFF_EDGE[row.kind]}` : ''
         const html = highlighted?.[index]
         return (
-          <div key={index} className={`flex min-w-fit ${tone}`}>
-            <span className="w-10 shrink-0 px-1 text-right text-muted/50 select-none border-r border-border/30">{row.oldLine ?? ''}</span>
-            <span className="w-10 shrink-0 px-1 text-right text-muted/50 select-none border-r border-border/30">{row.newLine ?? ''}</span>
-            <span className={`w-4 shrink-0 text-center select-none ${markerTone}`}>{marker}</span>
+          <div key={index} className={`flex ${tone}${edge}`}>
+            <span className={`w-10 shrink-0 px-1 text-right select-none border-r border-border ${DIFF_NUM[row.kind]}`}>{(row.kind === 'del' ? row.oldLine : row.newLine) ?? ''}</span>
             {html !== undefined && html !== '' ? (
-              <span className="hljs flex-1 whitespace-pre px-2 !bg-transparent" dangerouslySetInnerHTML={{ __html: html }} />
+              <span className="hljs flex-1 min-w-0 whitespace-pre-wrap break-words px-2 !bg-transparent" dangerouslySetInnerHTML={{ __html: html }} />
             ) : (
-              <span className="flex-1 whitespace-pre px-2 text-text">{row.text}</span>
+              <span className="flex-1 min-w-0 whitespace-pre-wrap break-words px-2 text-text">{row.text}</span>
             )}
           </div>
         )
@@ -387,7 +385,7 @@ function ChangeRow({ file }: { file: PullRequestFile }) {
         <span className="text-[11px] shrink-0"><span className="text-ok">+{file.additions}</span> <span className="text-danger">-{file.deletions}</span></span>
       </Btn>
       {open && (
-        <div className="border-t border-border overflow-x-auto">
+        <div className="border-t border-border">
           {file.patch ? (
             <DiffView patch={file.patch} path={file.path} />
           ) : (
