@@ -378,16 +378,19 @@ class TestSubagentManagerCleanupIntegration:
             assert info is not None
             await manager._tasks[info.id]
 
-        # Verify release was called with cleanup=True
+        # Retain-by-default: release is called WITHOUT cleanup — session
+        # files are spawn_continue's resume material; the tombstone pruner
+        # owns their deletion.
         sessions.release.assert_called()
         call_kwargs = sessions.release.call_args
-        assert call_kwargs[1].get("cleanup") is True
+        assert call_kwargs[1].get("cleanup") is False
 
     @pytest.mark.asyncio
     async def test_error_completion_calls_release_with_cleanup(self, agent_root):
-        """Error completion still passes cleanup=True to release().
+        """Error completion also retains session files (release cleanup=False).
 
-        Validates: Requirements 2.2
+        Validates: Requirements 2.2 (amended by retain-by-default: deletion
+        moved from teardown-time to tombstone-prune-time)
         """
         from kiro_crew.subagent import SubagentManager
 
@@ -423,10 +426,10 @@ class TestSubagentManagerCleanupIntegration:
             assert info is not None
             await manager._tasks[info.id]
 
-        # Even on error, release should be called with cleanup=True
+        # Even on error, release retains session files (retain-by-default).
         sessions.release.assert_called()
         call_kwargs = sessions.release.call_args
-        assert call_kwargs[1].get("cleanup") is True
+        assert call_kwargs[1].get("cleanup") is False
 
     @pytest.mark.asyncio
     async def test_cleanup_failure_does_not_disrupt_completion(self, agent_root):
@@ -617,10 +620,12 @@ class TestStartupSweep:
         )
     )
     async def test_startup_sweep_processes_all_entries(self, tmp_path, agent_root, session_ids):
-        """**Validates: Requirements 5.2, 5.4**
+        """**Validates: Requirements 5.2, 5.4 (amended by retain-by-default)**
 
-        For any set of orphaned subagent folders with recorded session IDs,
-        the startup sweep attempts cleanup for each entry.
+        Orphan reconcile no longer deletes session files — an orphaned run's
+        transcript is spawn_continue resume material after a restart. The
+        sweep must still tombstone every orphan; file deletion is owned by
+        the tombstone pruner.
         """
         import shutil
 
@@ -646,18 +651,26 @@ class TestStartupSweep:
         ):
             await manager._reconcile_orphans()
 
-        # Verify cleanup was called for each session_id
-        called_sids = [call[0][0] for call in mock_cleanup.call_args_list]
-        for sid in session_ids:
-            assert sid in called_sids, f"Session {sid} not cleaned up"
+        # Retain-by-default: session files are NOT deleted at reconcile time.
+        mock_cleanup.assert_not_called()
+        # Every orphan is still tombstoned (reconcile happened).
+        from kiro_crew.subagent_persistence import _agent_dir as _adir
+
+        for i in range(len(session_ids)):
+            assert (_adir(f"orphan-{i}") / "tombstone.json").exists(), (
+                f"orphan-{i} was not tombstoned"
+            )
 
     @pytest.mark.asyncio
     async def test_sweep_continues_on_individual_failure(self, agent_root):
-        """Individual cleanup failures don't stop processing remaining entries.
+        """Reconcile processes every orphan; session files are retained.
 
-        Validates: Requirements 5.4
+        Validates: Requirements 5.4 (amended by retain-by-default: reconcile
+        no longer deletes session files, so per-entry cleanup failures can't
+        occur here — the invariant is that every orphan is still tombstoned).
         """
         from kiro_crew.subagent import SubagentManager
+        from kiro_crew.subagent_persistence import _agent_dir as _adir
 
         # Create two orphans
         create_agent_folder("fail-orphan", task="t1")
@@ -668,25 +681,15 @@ class TestStartupSweep:
         sessions = MagicMock()
         manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
 
-        call_count = 0
-
-        def _failing_cleanup(sid, provider="acp", *, cwd=""):
-            nonlocal call_count
-            call_count += 1
-            if sid == "fail-sid":
-                raise OSError("disk error")
-
         with (
             patch.object(manager, "_is_pid_alive", return_value=False),
-            patch(
-                "kiro_crew.subagent._cleanup_session_files_sync",
-                side_effect=_failing_cleanup,
-            ),
+            patch("kiro_crew.subagent._cleanup_session_files_sync") as mock_cleanup,
         ):
             await manager._reconcile_orphans()
 
-        # Both should have been attempted despite the first one failing
-        assert call_count == 2
+        mock_cleanup.assert_not_called()
+        assert (_adir("fail-orphan") / "tombstone.json").exists()
+        assert (_adir("ok-orphan") / "tombstone.json").exists()
 
 
 class TestStartingPidGuard:

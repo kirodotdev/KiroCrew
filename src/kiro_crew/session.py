@@ -621,6 +621,14 @@ class SessionManager:
         self._on_recycled: _RecycleCallback | None = None
         self._pool_started = False
         self._session_map = SessionMap()
+        # Continuable subagent conversations: session keys registered here
+        # opt OUT of the ``_STATELESS_PREFIXES`` treatment even though they
+        # carry the ``subagent:`` prefix — their sid persists to the session
+        # map, ``session/load`` is armed on the next get_or_create, and
+        # ``release(cleanup=True)`` skips session-file deletion. Registered by
+        # SubagentManager for ``keep=True`` spawns; unregistered on explicit
+        # conversation release.
+        self._continuable_keys: set[str] = set()
         self._active_dashboard_slots: set[str] | None = (
             None  # None = uninitialized; empty set = all tabs closed
         )
@@ -2070,7 +2078,9 @@ class SessionManager:
 
         # Check session map for resume — only for long-lived sessions
         resume_sid: str | None = None
-        is_stateless = key == BACKGROUND_KEY or any(key.startswith(p) for p in _STATELESS_PREFIXES)
+        is_stateless = (
+            key == BACKGROUND_KEY or any(key.startswith(p) for p in _STATELESS_PREFIXES)
+        ) and key not in self._continuable_keys
         if not is_stateless:
             resume_sid = self._session_map.get(key)
 
@@ -3006,7 +3016,10 @@ class SessionManager:
                     if (
                         sid
                         and key != BACKGROUND_KEY
-                        and not any(key.startswith(p) for p in _STATELESS_PREFIXES)
+                        and (
+                            not any(key.startswith(p) for p in _STATELESS_PREFIXES)
+                            or key in self._continuable_keys
+                        )
                     ):
                         # Persist the provider label so detect_provider_switch
                         # on next startup doesn't see a missing entry, default
@@ -3021,7 +3034,10 @@ class SessionManager:
                     if (
                         sid
                         and key != BACKGROUND_KEY
-                        and not any(key.startswith(p) for p in _STATELESS_PREFIXES)
+                        and (
+                            not any(key.startswith(p) for p in _STATELESS_PREFIXES)
+                            or key in self._continuable_keys
+                        )
                     ):
                         self._session_map.set(key, sid, provider="claude_code", cwd=_cwd_str)
 
@@ -3128,16 +3144,81 @@ class SessionManager:
 
     # ── Per-session semaphore ──
 
+    def mark_continuable(self, key: str) -> None:
+        """Register *key* as a continuable subagent conversation.
+
+        The key keeps its ``subagent:`` prefix (so audit/identity behavior is
+        unchanged) but opts out of the stateless treatment: its sid persists
+        to the session map, ``session/load`` is armed on the next
+        ``get_or_create``, and ``release(cleanup=True)`` keeps its session
+        files on disk.
+        """
+        self._continuable_keys.add(self._fold_key(key))
+
+    def unmark_continuable(self, key: str) -> None:
+        """Remove *key* from the continuable set (conversation released)."""
+        self._continuable_keys.discard(self._fold_key(key))
+
+    def is_continuable(self, key: str) -> bool:
+        """True iff *key* is registered as a continuable conversation."""
+        return self._fold_key(key) in self._continuable_keys
+
+    def resumable_sid(self, key: str) -> str | None:
+        """Return the persisted sid for *key*, or None.
+
+        Used by SubagentManager to decide whether a conversation can be
+        continued (``session/load``-able files still on disk — the session
+        map self-prunes entries whose files are gone).
+        """
+        return self._session_map.get(self._fold_key(key))
+
+    def seed_conversation(self, key: str, sid: str, *, provider: str = "", cwd: str = "") -> None:
+        """Write a session-map entry for *key* on demand (spawn_continue).
+
+        Retain-by-default: default subagent runs never write a map entry at
+        spawn (a per-spawn ``SessionMap.set`` is a full-file rewrite — O(n)
+        churn at wave scale). Their sid/provider/cwd live in the run's
+        ``state.json``; this seeds the map only when a continue actually
+        happens. ``SessionMap.get`` self-prunes entries whose session files
+        are missing, so a post-seed ``resumable_sid`` doubles as the
+        files-still-on-disk check.
+        """
+        if not sid:
+            return
+        self._session_map.set(self._fold_key(key), sid, provider=provider, cwd=cwd)
+
+    def forget_conversation(self, key: str) -> str | None:
+        """Drop *key*'s session-map entry and continuable mark.
+
+        Returns the sid that was mapped (for caller-side file cleanup), or
+        None if no mapping existed.
+        """
+        folded = self._fold_key(key)
+        sid = self._session_map.get(folded)
+        self._session_map.delete(folded)
+        self._continuable_keys.discard(folded)
+        return sid
+
+    def conversation_provider(self, key: str) -> str:
+        """Provider label persisted for *key* ("acp"/"claude_code" or "")."""
+        return self._session_map.get_provider(self._fold_key(key))
+
     def release(self, key: str, *, cleanup: bool = False) -> None:
         """Release the per-session semaphore acquired by ``get_or_create``.
 
         If *cleanup* is True and the key is a subagent session, schedule
         best-effort deletion of the provider's on-disk session files.
+        Continuable conversations are exempt: their session files ARE the
+        resume material for a later ``spawn_continue``.
         """
         key = self._fold_key(key)
         session = self._sessions.get(key)
         if session:
-            if cleanup and key.startswith(_SUBAGENT_PREFIX):
+            if (
+                cleanup
+                and key.startswith(_SUBAGENT_PREFIX)
+                and key not in self._continuable_keys
+            ):
                 try:
                     session_id = session.provider.session_id
                     if session_id:

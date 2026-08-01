@@ -276,7 +276,11 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
                     session_id = ts.get("session_id") or (state.get("session_id", "") if state else "")
                     provider = ts.get("provider") or (state.get("provider", "acp") if state else "acp")
                     cwd = ts.get("cwd") or (state.get("cwd", "") if state else "")
-                    if session_id:
+                    # keep=True conversations retain their session files as
+                    # resume material for spawn_continue; the conversation
+                    # TTL sweep (SubagentManager reaper) owns their deletion.
+                    _keep = bool(state.get("keep")) if state else False
+                    if session_id and not _keep:
                         _cleanup_session_files_sync(session_id, provider, cwd=cwd)
                 except Exception:
                     logger.debug("prune: session cleanup failed for %s", d.name, exc_info=True)

@@ -140,6 +140,17 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("new_conversation: old session destroy failed", exc_info=True)
 
+    def set_keep_transcript(self, value: bool) -> None:
+        """Mark the underlying session handle to keep (or delete) its
+        transcript files at destroy(). Set True by SubagentManager before
+        teardown so the transcript survives as spawn_continue's resume
+        material; the tombstone pruner / conversation TTL sweep owns its
+        eventual deletion."""
+        try:
+            self._handle.keep_transcript = value
+        except Exception:  # pragma: no cover - handle types without the attr
+            logger.debug("set_keep_transcript: handle rejected attribute", exc_info=True)
+
     async def shutdown(self) -> None:
         """Destroy the session and optionally kill the runtime.
 
