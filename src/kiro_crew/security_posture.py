@@ -107,6 +107,14 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Profile artifact",
+        "perf_sampler.py",
+        "Folded-stack profiles written by `kirocrew perf sample`. Frame labels are "
+        "code identifiers and shortened paths, but the artifact exists to be sent "
+        "to a maintainer, and py-spy's raw output embeds absolute paths from the "
+        "target process — so it is an egress boundary, redacted on the way out.",
+    ),
+    (
         "Side-chat parent snapshot",
         "dashboard/side_context.py",
         "Parent user/assistant turns embedded in the side-chat prompt. The prompt "

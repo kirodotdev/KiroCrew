@@ -256,6 +256,22 @@ keystone paths are still refused). The CLI is the stricter of the two.
 | `kirocrew config set --file config.json` | Load full config from JSON file |
 | `kirocrew config edit` | Open config in $EDITOR |
 
+## Profiling (debug-only)
+
+Off unless `KIROCREW_DEBUG=1` is set; the CLI is the only entry point. Emits folded
+stacks (open in speedscope / flamegraph.pl). See `docs/profiling.md`.
+
+| Command | Description |
+|---------|-------------|
+| `KIROCREW_DEBUG=1 kirocrew perf sample --call mod:fn` | Profile that callable in-process (no extra dependency) |
+| `KIROCREW_DEBUG=1 kirocrew perf sample` | Attach to the running gateway (needs `pip install "kirocrew[perf]"`) |
+| `KIROCREW_DEBUG=1 kirocrew perf sample --pid 1234 --seconds 30` | Attach to a specific PID for N seconds (1-300) |
+| `... --interval 0.002` | Seconds between samples (0.001-1.0, default 0.005) |
+| `... --output /tmp/p.folded` | Where to write the profile (default `./kirocrew-profile.folded`) |
+
+On macOS the attach path additionally needs elevated privileges (the OS denies
+`task_for_pid`), so it may require sudo; `--call` needs neither py-spy nor sudo.
+
 ## Security & Eval
 
 | Command | Description |

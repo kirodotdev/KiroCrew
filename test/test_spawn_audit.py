@@ -141,6 +141,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/backend.py::_proc_start_time",
         "apps/backend.py::_resolve_nvm_path",
         "apps/backend.py::stop_app_backend",
+        # py-spy attach for `kirocrew perf sample --pid`: fixed list-argv (no
+        # shell=True), binary resolved via shutil.which rather than from input,
+        # and every value is either a range-validated int (pid/seconds/rate) or a
+        # path passed as a flag VALUE. NOT sandboxed because py-spy's whole job is
+        # reading another process's memory (ptrace / task_for_pid) — a sandbox that
+        # scrubbed that capability would break the feature it is guarding. Gated
+        # behind KIROCREW_DEBUG and reachable only from the CLI.
+        "cli_perf.py::_sample_out_of_process",
         # gh-CLI open-PR enumeration: fixed `gh api` list-argv (no shell=True);
         # owner/repo are validated to ^[A-Za-z0-9._-]+$ by adapters.parse_repo_url
         # and only fill the API path (bounded to api.github.com). NOT sandboxed

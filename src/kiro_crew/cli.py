@@ -1169,6 +1169,8 @@ Examples:
     profile_show = policy_sub.add_parser("profile", help="Show a profile by name")
     profile_show.add_argument("name", help="Profile file stem (without .json)")
 
+    register_perf_parser(sub)
+
     kn_parser = sub.add_parser("knowledge", help="Knowledge Base maintenance")
     kn_sub = kn_parser.add_subparsers(dest="knowledge_action")
     kn_dedup = kn_sub.add_parser(
@@ -2057,6 +2059,10 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _consolidate_cmd(args)
     elif args.command == "config":
         _config_cmd(args)
+    elif args.command == "perf":
+        rc = perf_cmd(args)
+        if rc:
+            raise SystemExit(rc)
     elif args.command == "snapshot":
         from kiro_crew.snapshot import snapshot_main
 
@@ -2102,6 +2108,7 @@ from kiro_crew.cli_commands import (  # noqa: E402
 )
 from kiro_crew.cli_config import _config_cmd  # noqa: E402
 from kiro_crew.cli_doctor import _doctor  # noqa: E402
+from kiro_crew.cli_perf import perf_cmd, register_perf_parser  # noqa: E402
 from kiro_crew.cli_server import (  # noqa: E402
     _gateway,
     _logout,
