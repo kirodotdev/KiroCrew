@@ -64,6 +64,7 @@ import {
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
+import { compareText, fmtDateFields } from '../i18n/format'
 
 /** Translate a slot's running-status line. The status `text` is stored as a raw
  *  English literal by the websocket layer (a plain `.ts` module the i18n codemod
@@ -90,12 +91,18 @@ function fmtRelativeTime(ts: string | number | undefined): string {
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
   const startOf6DaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  // Every branch read the BROWSER's locale before this, so a zh dashboard on an
+  // en-US browser showed "3:04 PM" and "Jul 30". This is the twin of
+  // `commandPalette/providers/recentsProvider.ts`; the two are now consistent.
+  const time = fmtDateFields(d, { hour: '2-digit', minute: '2-digit' })
   if (d >= startOfToday) return time
-  if (d >= startOfYesterday) return `Yesterday ${time}`
-  if (d >= startOf6DaysAgo) return `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`
-  if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-  return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })
+  // The existing catalog key, NOT `fmtRelative`: CLDR returns a lowercase
+  // "yesterday", which clashed with the capitalized group header two functions
+  // below that already uses this same key. One key, one casing.
+  if (d >= startOfYesterday) return `${i18nT('pages.chatSidebar.yesterday')} ${time}`
+  if (d >= startOf6DaysAgo) return `${fmtDateFields(d, { weekday: 'short' })} ${time}`
+  if (d.getFullYear() === now.getFullYear()) return fmtDateFields(d, { month: 'short', day: 'numeric' })
+  return fmtDateFields(d, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 /** Sortable wrapper for a folder block — enables drag-to-reorder */
@@ -440,8 +447,8 @@ function dateSegment(ts: number | string | undefined): string {
   if (d >= startOfYesterday) return i18nT('pages.chatSidebar.yesterday')
   if (d >= daysAgo7) return i18nT('pages.chatSidebar.last_7_days')
   if (d >= daysAgo30) return i18nT('pages.chatSidebar.last_30_days')
-  if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString([], { month: 'long' })
-  return d.toLocaleDateString([], { year: 'numeric', month: 'long' })
+  if (d.getFullYear() === now.getFullYear()) return fmtDateFields(d, { month: 'long' })
+  return fmtDateFields(d, { year: 'numeric', month: 'long' })
 }
 
 // Folder icons are a deliberate emoji surface (see website/AGENTS.md exceptions
@@ -556,14 +563,22 @@ function compareSlots(a: Slot, b: Slot, key: SortKey): number {
 /** Shared comparator for both active sessions and history items. */
 function compareBySort(a: { title?: string; key: string; created?: string; last_ts?: string; modified?: number }, b: typeof a, key: SortKey): number {
   if (key === 'name-asc' || key === 'name-desc') {
-    const na = (a.title || a.key).toLowerCase()
-    const nb = (b.title || b.key).toLowerCase()
-    return key === 'name-asc' ? na.localeCompare(nb) : nb.localeCompare(na)
+    // Session titles are free text, so ordering follows the app language:
+    // `compareText` is case- and accent-insensitive with numeric collation, so
+    // "reviewer-2" precedes "reviewer-10" instead of following it.
+    const na = a.title || a.key
+    const nb = b.title || b.key
+    return key === 'name-asc' ? compareText(na, nb) : compareText(nb, na)
   }
   if (key === 'created-desc' || key === 'created-asc') {
     const ca = a.created || ''
     const cb = b.created || ''
-    return key === 'created-desc' ? cb.localeCompare(ca) : ca.localeCompare(cb)
+    // BYTE order, deliberately not a Collator: `created` is an ISO-8601 string,
+    // where lexicographic order IS chronological order. Collation weights `-`,
+    // `:` and `T` at a lower level, which would make "newest first" depend on
+    // the active language.
+    const cmp = ca < cb ? -1 : ca > cb ? 1 : 0
+    return key === 'created-desc' ? -cmp : cmp
   }
   // date-desc / date-asc: use last activity (modified epoch, last_ts ISO, or created ISO)
   const toEpoch = (item: typeof a) => item.modified ?? (item.last_ts ? new Date(item.last_ts).getTime() / 1000 : item.created ? new Date(item.created).getTime() / 1000 : 0)

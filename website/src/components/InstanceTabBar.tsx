@@ -25,6 +25,7 @@ import { isEmbeddedPane } from '../lib/embedded'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 
 import { i18nT } from '../i18n/t'
+import { fmtDuration as fmtDurationParts, fmtUnit } from '../i18n/format'
 /**
  * Instances that get a tab: sticky connect intent (`was_connected`, cleared
  * only on explicit disconnect) OR currently connected OR warm. Exported as the
@@ -57,10 +58,13 @@ function ttlToSeconds(ttl: string): number {
 
 /** Compact human duration: "4h 12m", "12m", or "<1m". */
 function fmtDuration(secs: number): string {
-  if (secs < 60) return i18nT('components.instanceTabBar.1m')
+  // `<1m` keeps its literal shape: it is a threshold statement, not a duration,
+  // and the sub-minute case has no unit value to format.
+  if (secs < 60) return `<${fmtUnit(1, 'minute', { maximumFractionDigits: 0 })}`
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
-  return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`
+  // `dropZero` reproduces the original branching: no leading `0h`, no `0m` tail.
+  return fmtDurationParts([[h, 'hour'], [m, 'minute']], { dropZero: true })
 }
 
 // Shared tab pill styling. Selected state uses a tinted background ONLY — no

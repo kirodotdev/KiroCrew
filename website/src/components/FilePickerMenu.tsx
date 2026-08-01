@@ -7,6 +7,7 @@ import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 
 import { i18nT } from '../i18n/t'
+import { fmtBytes, fmtDateFields, fmtRelative } from '../i18n/format'
 interface FileResult {
   path: string
   name: string
@@ -29,18 +30,14 @@ interface Props {
   project?: string
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return bytes + 'B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + 'KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + 'MB'
-}
+const formatSize = (bytes: number): string => fmtBytes(bytes)
 
 function formatAge(mtime: number): string {
   const diff = Date.now() / 1000 - mtime
-  if (diff < 3600) return i18nT('components.filePickerMenu.n_m_ago', { n: Math.floor(diff / 60) })
-  if (diff < 86400) return i18nT('components.filePickerMenu.n_h_ago', { n: Math.floor(diff / 3600) })
-  if (diff < 86400 * 30) return i18nT('components.filePickerMenu.n_d_ago', { n: Math.floor(diff / 86400) })
-  return new Date(mtime * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })
+  // Under 30 days this is an elapsed age; beyond that a calendar date reads
+  // better. Both halves now follow the app language instead of the browser's.
+  if (diff < 86400 * 30) return fmtRelative(mtime)
+  return fmtDateFields(mtime, { month: 'short', day: 'numeric' })
 }
 
 function makeRelative(path: string, root: string): string {

@@ -96,7 +96,9 @@
     "gateway_offline_reconnecting": "Gateway offline — wird neu verbunden",
     "gateway_offline_session_expired_see_banner_above": "Gateway offline — Sitzung abgelaufen, siehe Banner oben",
     "signed_in_with": "Angemeldet mit {{provider}}",
-    "updates": "Aktualisierungen"
+    "updates": "Aktualisierungen",
+    "kiro_credits_title": "Kiro-Credits: {{used}} / {{limit}} ({{pct}}) — für Details klicken",
+    "kiro_credits_title_with_bonus": "Kiro-Credits: {{used}} / {{limit}} verbraucht — Plan {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — für Details klicken"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1717,10 +1719,7 @@
       "no_matches": "Keine Treffer",
       "open_in_viewer": "Im Betrachter öffnen",
       "searching": "Wird gesucht…",
-      "type_2_chars_to_search_files": "Geben Sie 2+ Zeichen ein, um Dateien zu suchen…",
-      "n_d_ago": "vor {{n}} T.",
-      "n_h_ago": "vor {{n}} Std.",
-      "n_m_ago": "vor {{n}} Min."
+      "type_2_chars_to_search_files": "Geben Sie 2+ Zeichen ein, um Dateien zu suchen…"
     },
     "fileRenderers": {
       "empty_file": "Leere Datei",
@@ -1790,8 +1789,7 @@
       "local_dashboard": "Lokales Dashboard",
       "tunnel_connected": "Tunnel verbunden.",
       "tunnel_connecting": "Tunnel wird verbunden…",
-      "tunnel_error": "Tunnel-Fehler",
-      "1m": "<1 Min."
+      "tunnel_error": "Tunnel-Fehler"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",
@@ -3633,7 +3631,11 @@
         "steered": "Gesteuert",
         "switch_to_raw_markdown_view": "Zur Roh-Markdown-Ansicht wechseln",
         "switch_to_rendered_view": "Zur gerenderten Ansicht wechseln",
-        "use_as_plan_count": "Als Plan verwenden ({{count}} Schritte)"
+        "use_as_plan_count": "Als Plan verwenden ({{count}} Schritte)",
+        "turn_took": "Zug dauerte {{elapsed}}",
+        "turn_took_cost": "Zug dauerte {{elapsed}} ({{cost}} API-Kosten)",
+        "turn_took_credits": "Zug dauerte {{elapsed}} und verbrauchte {{credits}} Credits",
+        "turn_took_credits_cost": "Zug dauerte {{elapsed}} und verbrauchte {{credits}} Credits ({{cost}} API-Kosten)"
       },
       "chatFooter": {
         "compacting": "Wird verdichtet…",
@@ -4583,7 +4585,6 @@
       }
     },
     "localStorageDebug": {
-      "5_mb": "/ ~5 MB",
       "all_keys": "Alle Schlüssel",
       "by_category": "Nach Kategorie",
       "clear": "Leeren",

@@ -96,7 +96,9 @@
     "gateway_offline_reconnecting": "Шлюз офлайн — переподключение",
     "gateway_offline_session_expired_see_banner_above": "Шлюз офлайн — срок сессии истёк, см. баннер выше",
     "signed_in_with": "Вход выполнен через {{provider}}",
-    "updates": "обновления"
+    "updates": "обновления",
+    "kiro_credits_title": "Кредиты Kiro: {{used}} / {{limit}} ({{pct}}) — нажми, чтобы увидеть подробности",
+    "kiro_credits_title_with_bonus": "Кредиты Kiro: {{used}} / {{limit}} израсходовано — тариф {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — нажми, чтобы увидеть подробности"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1771,10 +1773,7 @@
       "no_matches": "Совпадений нет",
       "open_in_viewer": "Открыть в просмотрщике",
       "searching": "Поиск…",
-      "type_2_chars_to_search_files": "Введите 2+ символа для поиска файлов…",
-      "n_d_ago": "{{n}} д назад",
-      "n_h_ago": "{{n}} ч назад",
-      "n_m_ago": "{{n}} мин назад"
+      "type_2_chars_to_search_files": "Введите 2+ символа для поиска файлов…"
     },
     "fileRenderers": {
       "empty_file": "Пустой файл",
@@ -1850,8 +1849,7 @@
       "local_dashboard": "Локальная панель",
       "tunnel_connected": "Туннель подключён.",
       "tunnel_connecting": "Туннель подключается…",
-      "tunnel_error": "ошибка туннеля",
-      "1m": "<1 мин"
+      "tunnel_error": "ошибка туннеля"
     },
     "instancesViewport": {
       "connecting": "Подключение…",
@@ -3729,7 +3727,11 @@
         "steered": "Скорректировано",
         "switch_to_raw_markdown_view": "Переключиться на исходный markdown",
         "switch_to_rendered_view": "Переключиться на отрисованный вид",
-        "use_as_plan_count": "Использовать как план (шагов: {{count}})"
+        "use_as_plan_count": "Использовать как план (шагов: {{count}})",
+        "turn_took": "Ход занял {{elapsed}}",
+        "turn_took_cost": "Ход занял {{elapsed}} (стоимость API: {{cost}})",
+        "turn_took_credits": "Ход занял {{elapsed}} и израсходовал {{credits}} кредитов",
+        "turn_took_credits_cost": "Ход занял {{elapsed}} и израсходовал {{credits}} кредитов (стоимость API: {{cost}})"
       },
       "chatFooter": {
         "compacting": "Сжатие контекста…",
@@ -4699,7 +4701,6 @@
       }
     },
     "localStorageDebug": {
-      "5_mb": "/ ~5 MB",
       "all_keys": "Все ключи",
       "by_category": "По категориям",
       "clear": "Очистить",

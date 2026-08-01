@@ -57,7 +57,9 @@
     "updating_kirocrew": "Updating KiroCrew…",
     "v": "v",
     "what_s_new": "What's new",
-    "you_re_on_the_latest_version": "You're on the latest version"
+    "you_re_on_the_latest_version": "You're on the latest version",
+    "kiro_credits_title": "Kiro credits: {{used}} / {{limit}} ({{pct}}) — click for details",
+    "kiro_credits_title_with_bonus": "Kiro credits: {{used}} / {{limit}} used — plan {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — click for details"
   },
   "appSdk": {
     "chatEmbed": {
@@ -2660,7 +2662,11 @@
         "regenerate_response": "Regenerate response",
         "speak": "Speak",
         "speak_message": "Speak message",
-        "steered": "Steered"
+        "steered": "Steered",
+        "turn_took": "Turn took {{elapsed}}",
+        "turn_took_cost": "Turn took {{elapsed}} ({{cost}} API cost)",
+        "turn_took_credits": "Turn took {{elapsed}} and used {{credits}} credits",
+        "turn_took_credits_cost": "Turn took {{elapsed}} and used {{credits}} credits ({{cost}} API cost)"
       },
       "chatFooter": {
         "compacting": "Compacting…",
@@ -3327,7 +3333,6 @@
       }
     },
     "localStorageDebug": {
-      "5_mb": "/ ~5 MB",
       "all_keys": "All Keys",
       "by_category": "By Category",
       "clear": "Clear",

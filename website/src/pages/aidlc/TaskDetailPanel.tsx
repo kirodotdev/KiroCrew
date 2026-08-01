@@ -5,7 +5,7 @@ import DetailPanel from '../../components/DetailPanel';
 import type { TaskDetail } from '../../types';
 
 import { i18nT } from '../../i18n/t'
-import { fmtDateFields } from '../../i18n/format'
+import { fmtDateFields, fmtDuration as fmtDurationParts, fmtUnit } from '../../i18n/format'
 interface Props {
   task: TaskDetail;
   allTasks?: TaskDetail[];
@@ -25,12 +25,14 @@ function fmtTime(ts?: number) {
   return fmtDateFields(d, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-function fmtDuration(start?: number, end?: number) {
+function fmtDuration(start?: number, end?: number): string {
   if (!start) return '—';
   const secs = Math.floor(((end || Date.now() / 1000) - start));
-  if (secs < 60) return `${secs}s`;
+  if (secs < 60) return fmtUnit(secs, 'second', { maximumFractionDigits: 0 });
   const m = Math.floor(secs / 60), s = secs % 60;
-  return m < 60 ? `${m}m ${s}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+  return m < 60
+    ? fmtDurationParts([[m, 'minute'], [s, 'second']])
+    : fmtDurationParts([[Math.floor(m / 60), 'hour'], [m % 60, 'minute']]);
 }
 
 export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry, onApprove, onToggleApproval, editable, onSave, pendingEdits = {}, onEdit }: Props) {

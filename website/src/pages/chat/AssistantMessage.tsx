@@ -16,6 +16,7 @@ import { useSmoothStream } from '../../hooks/useSmoothStream'
 import type { PlanStepInput } from '../../api/client'
 import { OPTION_MARKER_RE } from '../../utils/optionsMarker'
 import { i18nT } from '../../i18n/t'
+import { fmtCurrency, fmtDuration, fmtNumber, fmtUnit } from '../../i18n/format'
 const PLAN_HEADER_RE = /📋\s*Plan for:/i
 const STAGE_RE = /^Stage\s+\d+\s*:/m
 
@@ -28,18 +29,21 @@ export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: nu
 /** "8.4s" under 10s, "42s" under a minute, "2m 34s" beyond. */
 export function fmtTurnElapsed(ms: number): string {
   const s = ms / 1000
-  if (s < 10) return `${s.toFixed(1)}s`
-  if (s < 60) return `${Math.round(s)}s`
+  if (s < 10) return fmtUnit(s, 'second', { maximumFractionDigits: 1, minimumFractionDigits: 1 })
+  if (s < 60) return fmtUnit(Math.round(s), 'second', { maximumFractionDigits: 0 })
   // Round to whole seconds FIRST, then split into minutes + remainder so a value
   // like 119.6s renders "2m 0s", never the invalid "1m 60s" (flooring minutes
   // before rounding seconds can push the remainder to 60).
   const total = Math.round(s)
-  return `${Math.floor(total / 60)}m ${total % 60}s`
+  return fmtDuration([[Math.floor(total / 60), 'minute'], [total % 60, 'second']])
 }
 
 /** Trim credit noise: 2 decimals under 10, 1 decimal beyond ("0.25", "12.5"). */
 export function fmtCredits(c: number): string {
-  return c >= 10 ? c.toFixed(1) : c.toFixed(2)
+  // Precision rule unchanged; only the decimal separator becomes locale-aware
+  // (de/fr/ru want `0,25`). Both bounds are pinned so trailing zeros survive.
+  const digits = c >= 10 ? 1 : 2
+  return fmtNumber(c, { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
 
 export function parseOptions(content: string): { text: string; options: string[]; multi: boolean; isPlan: boolean } {
@@ -199,6 +203,27 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     return () => { disposed = true; observer.disconnect(); cancelScroll?.() }
   }, [term, caseSensitive, currentOcc, effectiveContent, rawMode])
 
+  // Four whole-sentence keys, one per combination of the two optional clauses,
+  // rather than a base sentence with ` and used …` / ` (… API cost)` appended.
+  // A translator handed those two fragments cannot place them: the credit clause
+  // and the cost parenthetical bind to different parts of the sentence in other
+  // languages, and several put the duration last. Interpolated values are
+  // already locale-formatted by the `format.ts` seam.
+  const turnStatsTitle = (() => {
+    if (!turnStats) return undefined
+    const elapsed = fmtTurnElapsed(turnStats.elapsed_ms)
+    const hasCredits = (turnStats.credits ?? 0) > 0
+    const hasCost = (turnStats.cost_usd ?? 0) > 0
+    const credits = hasCredits ? fmtCredits(turnStats.credits!) : ''
+    const cost = hasCost
+      ? fmtCurrency(turnStats.cost_usd!, 'USD', { maximumFractionDigits: 4, minimumFractionDigits: 4 })
+      : ''
+    if (hasCredits && hasCost) return i18nT('pages.chat.assistantMessage.turn_took_credits_cost', { elapsed, credits, cost })
+    if (hasCredits) return i18nT('pages.chat.assistantMessage.turn_took_credits', { elapsed, credits })
+    if (hasCost) return i18nT('pages.chat.assistantMessage.turn_took_cost', { elapsed, cost })
+    return i18nT('pages.chat.assistantMessage.turn_took', { elapsed })
+  })()
+
   return <div data-role="assistant" className="group/msg">
     {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
     <div ref={contentRef} className="message-bubble msg-content group/bubble relative text-sm leading-relaxed text-text overflow-hidden" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
@@ -219,7 +244,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
       <FileChangeChips fileChanges={fileChanges} onOpenDiff={onOpenDiff} style={fileChipStyle} artifactPaths={artifactPaths} disclosureKey={messageTs ? `fcc-${messageTs}` : undefined} />
     )}
     {!isStreaming && showFooter && turnStats && turnStats.elapsed_ms > 0 && (
-      <div className="flex items-center gap-1 mt-1 text-[11px] text-muted/60 font-mono tabular-nums" data-testid="turn-stats" title={`Turn took ${fmtTurnElapsed(turnStats.elapsed_ms)}${(turnStats.credits ?? 0) > 0 ? ` and used ${fmtCredits(turnStats.credits!)} credits` : ''}${(turnStats.cost_usd ?? 0) > 0 ? ` ($${turnStats.cost_usd!.toFixed(4)} API cost)` : ''}`}>
+      <div className="flex items-center gap-1 mt-1 text-[11px] text-muted/60 font-mono tabular-nums" data-testid="turn-stats" title={turnStatsTitle}>
         {/* Cost leads, elapsed trails: credits are the scarce resource users
             actually budget, so they read first. The clock icon travels WITH the
             elapsed value (never leads the line) so it never appears to label

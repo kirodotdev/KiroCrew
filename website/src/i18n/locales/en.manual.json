@@ -568,8 +568,7 @@
       "connecting": "connecting…",
       "tunnel_connected": "Tunnel connected.",
       "tunnel_connecting": "Tunnel connecting…",
-      "tunnel_error": "tunnel error",
-      "1m": "<1m"
+      "tunnel_error": "tunnel error"
     },
     "instancesViewport": {
       "connecting": "Connecting…",
@@ -948,11 +947,7 @@
       "subfolder_one": "{{count}} subfolder",
       "subfolder_other": "{{count}} subfolders"
     },
-    "filePickerMenu": {
-      "n_d_ago": "{{n}}d ago",
-      "n_h_ago": "{{n}}h ago",
-      "n_m_ago": "{{n}}m ago"
-    },
+    "filePickerMenu": {},
     "inlineCommentOverlay": {
       "comment_one": "{{count}} comment",
       "comment_other": "{{count}} comments",

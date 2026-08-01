@@ -96,7 +96,9 @@
     "gateway_offline_reconnecting": "Gateway offline — reconectando",
     "gateway_offline_session_expired_see_banner_above": "Gateway offline — sessão expirada, veja o banner acima",
     "signed_in_with": "Conectado com {{provider}}",
-    "updates": "atualizações"
+    "updates": "atualizações",
+    "kiro_credits_title": "Créditos Kiro: {{used}} / {{limit}} ({{pct}}) — clique para ver os detalhes",
+    "kiro_credits_title_with_bonus": "Créditos Kiro: {{used}} / {{limit}} usados — plano {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — clique para ver os detalhes"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1744,10 +1746,7 @@
       "no_matches": "Nenhuma correspondência",
       "open_in_viewer": "Abrir no visualizador",
       "searching": "Pesquisando…",
-      "type_2_chars_to_search_files": "Digite 2+ caracteres para pesquisar arquivos…",
-      "n_d_ago": "{{n}}d atrás",
-      "n_h_ago": "{{n}}h atrás",
-      "n_m_ago": "{{n}}m atrás"
+      "type_2_chars_to_search_files": "Digite 2+ caracteres para pesquisar arquivos…"
     },
     "fileRenderers": {
       "empty_file": "Arquivo vazio",
@@ -1820,8 +1819,7 @@
       "local_dashboard": "Painel local",
       "tunnel_connected": "Túnel conectado.",
       "tunnel_connecting": "Conectando o túnel…",
-      "tunnel_error": "erro no túnel",
-      "1m": "<1m"
+      "tunnel_error": "erro no túnel"
     },
     "instancesViewport": {
       "connecting": "Conectando…",
@@ -3681,7 +3679,11 @@
         "steered": "Direcionado",
         "switch_to_raw_markdown_view": "Alternar para a visualização em Markdown bruto",
         "switch_to_rendered_view": "Alternar para a visualização renderizada",
-        "use_as_plan_count": "Usar como plano ({{count}} etapas)"
+        "use_as_plan_count": "Usar como plano ({{count}} etapas)",
+        "turn_took": "O turno levou {{elapsed}}",
+        "turn_took_cost": "O turno levou {{elapsed}} ({{cost}} de custo de API)",
+        "turn_took_credits": "O turno levou {{elapsed}} e consumiu {{credits}} créditos",
+        "turn_took_credits_cost": "O turno levou {{elapsed}} e consumiu {{credits}} créditos ({{cost}} de custo de API)"
       },
       "chatFooter": {
         "compacting": "Compactando…",
@@ -4641,7 +4643,6 @@
       }
     },
     "localStorageDebug": {
-      "5_mb": "/ ~5 MB",
       "all_keys": "Todas as chaves",
       "by_category": "Por categoria",
       "clear": "Limpar",

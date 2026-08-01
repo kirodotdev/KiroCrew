@@ -96,7 +96,9 @@
     "gateway_offline_reconnecting": "गेटवे ऑफ़लाइन — फिर से कनेक्ट हो रहा है",
     "gateway_offline_session_expired_see_banner_above": "गेटवे ऑफ़लाइन — सत्र समाप्त हो गया, ऊपर दिया बैनर देखें",
     "signed_in_with": "{{provider}} से साइन इन हो गए",
-    "updates": "अपडेट"
+    "updates": "अपडेट",
+    "kiro_credits_title": "Kiro क्रेडिट: {{used}} / {{limit}} ({{pct}}) — विवरण के लिए क्लिक करो",
+    "kiro_credits_title_with_bonus": "Kiro क्रेडिट: {{used}} / {{limit}} खर्च — प्लान {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — विवरण के लिए क्लिक करो"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1717,10 +1719,7 @@
       "no_matches": "कोई मिलान नहीं",
       "open_in_viewer": "व्यूअर में खोलें",
       "searching": "खोज रहे हैं…",
-      "type_2_chars_to_search_files": "फ़ाइलें खोजने के लिए 2+ अक्षर टाइप करें…",
-      "n_d_ago": "{{n}}d पहले",
-      "n_h_ago": "{{n}}h पहले",
-      "n_m_ago": "{{n}}m पहले"
+      "type_2_chars_to_search_files": "फ़ाइलें खोजने के लिए 2+ अक्षर टाइप करें…"
     },
     "fileRenderers": {
       "empty_file": "खाली फ़ाइल",
@@ -1790,8 +1789,7 @@
       "local_dashboard": "स्थानीय डैशबोर्ड",
       "tunnel_connected": "टनल कनेक्ट हो गया।",
       "tunnel_connecting": "टनल कनेक्ट हो रहा है…",
-      "tunnel_error": "टनल त्रुटि",
-      "1m": "<1m"
+      "tunnel_error": "टनल त्रुटि"
     },
     "instancesViewport": {
       "connecting": "कनेक्ट हो रहा है…",
@@ -3633,7 +3631,11 @@
         "steered": "निर्देशित",
         "switch_to_raw_markdown_view": "रॉ markdown व्यू पर स्विच करें",
         "switch_to_rendered_view": "रेंडर किए गए व्यू पर स्विच करें",
-        "use_as_plan_count": "योजना के रूप में उपयोग करें ({{count}} चरण)"
+        "use_as_plan_count": "योजना के रूप में उपयोग करें ({{count}} चरण)",
+        "turn_took": "टर्न में {{elapsed}} लगे",
+        "turn_took_cost": "टर्न में {{elapsed}} लगे ({{cost}} API लागत)",
+        "turn_took_credits": "टर्न में {{elapsed}} लगे और {{credits}} क्रेडिट खर्च हुए",
+        "turn_took_credits_cost": "टर्न में {{elapsed}} लगे और {{credits}} क्रेडिट खर्च हुए ({{cost}} API लागत)"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
@@ -4583,7 +4585,6 @@
       }
     },
     "localStorageDebug": {
-      "5_mb": "/ ~5 MB",
       "all_keys": "सभी कुंजियां",
       "by_category": "श्रेणी के अनुसार",
       "clear": "साफ़ करें",

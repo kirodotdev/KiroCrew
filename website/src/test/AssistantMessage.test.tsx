@@ -391,6 +391,24 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(stats).not.toHaveTextContent('$')
   })
 
+  // The tooltip is four whole-sentence catalog keys, one per combination of the
+  // two optional clauses. Nothing else asserts the `title`, so without these a
+  // wrong key or a dropped clause would render silently and every visible-text
+  // assertion above would still pass.
+  it('spells the whole sentence in the tooltip for each billing combination', () => {
+    const title = (stats: { elapsed_ms: number; credits?: number; cost_usd?: number }) => {
+      const { unmount } = render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={stats} />)
+      const value = screen.getByTestId('turn-stats').getAttribute('title')
+      unmount()
+      return value
+    }
+    expect(title({ elapsed_ms: 42_000 })).toBe('Turn took 42s')
+    expect(title({ elapsed_ms: 84_000, credits: 2.5 })).toBe('Turn took 1m 24s and used 2.50 credits')
+    expect(title({ elapsed_ms: 8_400, cost_usd: 0.0231 })).toBe('Turn took 8.4s ($0.0231 API cost)')
+    expect(title({ elapsed_ms: 84_000, credits: 2.5, cost_usd: 0.0231 }))
+      .toBe('Turn took 1m 24s and used 2.50 credits ($0.0231 API cost)')
+  })
+
   it('hidden while streaming', () => {
     render(<AssistantMessage content="typing…" isStreaming={true} slotRunning={true} turnStats={{ elapsed_ms: 5_000, credits: 1 }} />)
     expect(screen.queryByTestId('turn-stats')).not.toBeInTheDocument()

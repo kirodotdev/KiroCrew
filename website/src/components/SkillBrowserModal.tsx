@@ -20,16 +20,16 @@ import { parseFrontmatter } from './SkillForm'
 import type { DiscoveredSkill } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { fmtCompact } from '../i18n/format'
 interface Props {
   open: boolean
   onClose: () => void
 }
 
-/** Compact human format for install counts: 557834 -> "557.8k". */
+/** Compact human format for install counts: 557834 -> "557.8K" in en, "55.8万"
+ *  in zh — the threshold and suffix are the locale's, via `fmtCompact`. */
 export function formatInstalls(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}k`
-  return String(n)
+  return fmtCompact(n)
 }
 
 /** Per-skill install lifecycle for UI feedback. */

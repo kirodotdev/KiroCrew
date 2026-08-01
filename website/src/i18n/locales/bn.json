@@ -96,7 +96,9 @@
     "gateway_offline_reconnecting": "গেটওয়ে অফলাইন — আবার কানেক্ট হচ্ছে",
     "gateway_offline_session_expired_see_banner_above": "গেটওয়ে অফলাইন — সেশনের মেয়াদ শেষ, উপরের ব্যানার দেখো",
     "signed_in_with": "{{provider}} দিয়ে সাইন ইন করা হয়েছে",
-    "updates": "আপডেট"
+    "updates": "আপডেট",
+    "kiro_credits_title": "Kiro ক্রেডিট: {{used}} / {{limit}} ({{pct}}) — বিশদ দেখতে ক্লিক করো",
+    "kiro_credits_title_with_bonus": "Kiro ক্রেডিট: {{used}} / {{limit}} ব্যবহৃত — প্ল্যান {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — বিশদ দেখতে ক্লিক করো"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1717,10 +1719,7 @@
       "no_matches": "কোনো মিল নেই",
       "open_in_viewer": "ভিউয়ারে খুলুন",
       "searching": "খোঁজা হচ্ছে…",
-      "type_2_chars_to_search_files": "ফাইল খুঁজতে 2+ অক্ষর টাইপ করুন…",
-      "n_d_ago": "{{n}} দিন আগে",
-      "n_h_ago": "{{n}} ঘ আগে",
-      "n_m_ago": "{{n}} মি আগে"
+      "type_2_chars_to_search_files": "ফাইল খুঁজতে 2+ অক্ষর টাইপ করুন…"
     },
     "fileRenderers": {
       "empty_file": "খালি ফাইল",
@@ -1790,8 +1789,7 @@
       "local_dashboard": "লোকাল ড্যাশবোর্ড",
       "tunnel_connected": "টানেল সংযুক্ত।",
       "tunnel_connecting": "টানেল কানেক্ট হচ্ছে…",
-      "tunnel_error": "টানেল ত্রুটি",
-      "1m": "<1মি"
+      "tunnel_error": "টানেল ত্রুটি"
     },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",
@@ -3633,7 +3631,11 @@
         "steered": "স্টিয়ার করা হয়েছে",
         "switch_to_raw_markdown_view": "মূল markdown ভিউতে যাও",
         "switch_to_rendered_view": "রেন্ডার করা ভিউতে যাও",
-        "use_as_plan_count": "প্ল্যান হিসেবে ব্যবহার করুন ({{count}}টি ধাপ)"
+        "use_as_plan_count": "প্ল্যান হিসেবে ব্যবহার করুন ({{count}}টি ধাপ)",
+        "turn_took": "টার্নে সময় লেগেছে {{elapsed}}",
+        "turn_took_cost": "টার্নে সময় লেগেছে {{elapsed}} ({{cost}} API ব্যয়)",
+        "turn_took_credits": "টার্নে সময় লেগেছে {{elapsed}} এবং খরচ হয়েছে {{credits}} ক্রেডিট",
+        "turn_took_credits_cost": "টার্নে সময় লেগেছে {{elapsed}} এবং খরচ হয়েছে {{credits}} ক্রেডিট ({{cost}} API ব্যয়)"
       },
       "chatFooter": {
         "compacting": "কম্প্যাক্ট করা হচ্ছে…",
@@ -4583,7 +4585,6 @@
       }
     },
     "localStorageDebug": {
-      "5_mb": "/ ~5 MB",
       "all_keys": "সব কী",
       "by_category": "বিভাগ অনুযায়ী",
       "clear": "সাফ করুন",

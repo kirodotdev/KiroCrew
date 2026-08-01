@@ -62,14 +62,18 @@ describe('file-explorer/utils', () => {
   })
 
   describe('formatBytes', () => {
+    // Now delegates to the shared `fmtBytes`. Two deliberate deltas: the unit is
+    // CLDR-narrow (no space, and `kB` is the SI spelling), and the divisor is
+    // 1000 rather than 1024 so the SI label is honest — 2048 bytes really is
+    // 2.0 kB, where the old helper called it "2.0 KB" while meaning 2048.
     it('formats bytes', () => {
-      expect(utils.formatBytes(500)).toBe('500 B')
+      expect(utils.formatBytes(500)).toBe('500B')
     })
     it('formats KB', () => {
-      expect(utils.formatBytes(2048)).toBe('2.0 KB')
+      expect(utils.formatBytes(2048)).toBe('2kB')
     })
     it('formats MB', () => {
-      expect(utils.formatBytes(5 * 1024 * 1024)).toBe('5.0 MB')
+      expect(utils.formatBytes(5 * 1024 * 1024)).toBe('5.2MB')
     })
     it('returns empty for null', () => {
       expect(utils.formatBytes(null)).toBe('')

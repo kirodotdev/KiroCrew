@@ -106,7 +106,7 @@ const PREFIX = 'website/src/'
  * deleted and the assertion becomes `[]`, which is the phase's stated acceptance
  * gate ("zero bare `toLocale*`/`localeCompare` outside `format.ts`").
  */
-const BASELINE = 62
+const BASELINE = 37
 
 /** The seam itself. It is where a locale is legitimately resolved. */
 const SEAM = new Set(['i18n/format.ts'])

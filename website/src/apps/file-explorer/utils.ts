@@ -1,6 +1,6 @@
 import { safeSetItem } from '../../utils/safeStorage'
 import { STORAGE_KEY } from './constants'
-import { fmtDateTimeNumeric } from '../../i18n/format'
+import { fmtBytes, fmtDateTimeNumeric } from '../../i18n/format'
 
 export const extOf = (p: string) => {
   const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
@@ -37,10 +37,9 @@ export const parentChain = (p: string) => {
 
 export const formatBytes = (n: number | null | undefined) => {
   if (n == null) return ''
-  if (n < 1024) return `${n} B`
-  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`
-  if (n < 1024 ** 3) return `${(n / 1024 / 1024).toFixed(1)} MB`
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+  // Was the fifth independent byte formatter in this repo, found by
+  // `unitLiterals.test.ts` on its first run.
+  return fmtBytes(n)
 }
 
 export const formatTime = (sec: number | null | undefined) => {

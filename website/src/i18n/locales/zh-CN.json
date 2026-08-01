@@ -96,7 +96,9 @@
     "gateway_offline_reconnecting": "网关离线 — 正在重连",
     "gateway_offline_session_expired_see_banner_above": "网关离线 — 会话已过期，见上方横幅",
     "signed_in_with": "已通过 {{provider}} 登录",
-    "updates": "项更新"
+    "updates": "项更新",
+    "kiro_credits_title": "Kiro 额度：{{used}} / {{limit}}（{{pct}}）— 点击查看详情",
+    "kiro_credits_title_with_bonus": "Kiro 额度：已用 {{used}} / {{limit}} — 套餐 {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — 点击查看详情"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1690,10 +1692,7 @@
       "no_matches": "无匹配项",
       "open_in_viewer": "在查看器中打开",
       "searching": "搜索中…",
-      "type_2_chars_to_search_files": "输入 2 个以上字符搜索文件…",
-      "n_d_ago": "{{n}} 天前",
-      "n_h_ago": "{{n}} 小时前",
-      "n_m_ago": "{{n}} 分钟前"
+      "type_2_chars_to_search_files": "输入 2 个以上字符搜索文件…"
     },
     "fileRenderers": {
       "empty_file": "空文件",
@@ -1760,8 +1759,7 @@
       "local_dashboard": "本地仪表板",
       "tunnel_connected": "隧道已连接。",
       "tunnel_connecting": "隧道连接中…",
-      "tunnel_error": "隧道错误",
-      "1m": "<1 分钟"
+      "tunnel_error": "隧道错误"
     },
     "instancesViewport": {
       "connecting": "正在连接…",
@@ -3585,7 +3583,11 @@
         "steered": "已引导",
         "switch_to_raw_markdown_view": "切换到原始 Markdown 视图",
         "switch_to_rendered_view": "切换到渲染视图",
-        "use_as_plan_count": "用作计划（{{count}} 个步骤）"
+        "use_as_plan_count": "用作计划（{{count}} 个步骤）",
+        "turn_took": "本轮次耗时 {{elapsed}}",
+        "turn_took_cost": "本轮次耗时 {{elapsed}}（API 成本 {{cost}}）",
+        "turn_took_credits": "本轮次耗时 {{elapsed}}，消耗 {{credits}} 额度",
+        "turn_took_credits_cost": "本轮次耗时 {{elapsed}}，消耗 {{credits}} 额度（API 成本 {{cost}}）"
       },
       "chatFooter": {
         "compacting": "压缩中…",
@@ -4525,7 +4527,6 @@
       }
     },
     "localStorageDebug": {
-      "5_mb": "/ ~5 MB",
       "all_keys": "所有键",
       "by_category": "按类别",
       "clear": "清除",
