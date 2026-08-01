@@ -186,7 +186,7 @@ export default function SkillsTab() {
       <SkillForm data={formData} onChange={setFormData} />
     </Modal>
 
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills_2')}{skills.length}) <InfoTip text="On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from KiroCrew, kiro-cli (~/.kiro/skills), and AIM packages." /> <span className="ml-auto flex items-center gap-2"><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
+    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="ml-auto flex items-center gap-2"><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
     <Card>
       <div className="flex items-center gap-2 mb-3">
         <div className="relative max-w-[480px] flex-1">
@@ -215,7 +215,7 @@ export default function SkillsTab() {
                 {packageSkills.map(renderRow)}
               </div>
             )}
-            {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.skillsTab.no_skills_match')}{skillFilter}”.</div>}
+            {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.skillsTab.no_skills_match_query', { query: skillFilter })}</div>}
           </div>
 
           {/* Panes 2+3 — directory browser, or the edit form */}
@@ -421,7 +421,7 @@ function PendingSkillsPanel() {
   return (
     <div className="mt-4 mb-2">
       <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
-        {i18nT('pages.overview.skillsTab.pending_review')}{pending.length})
+        {i18nT('pages.overview.skillsTab.pending_review_count', { count: pending.length })}
         <InfoTip text="Auto-generated skill candidates awaiting your approval. Click Review to inspect the SKILL.md and any bundled script before approving. Approve makes the skill live (and marks scripts executable); dismiss discards it. Nothing goes live until you approve it." />
       </h4>
       <Card>

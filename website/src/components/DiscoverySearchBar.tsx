@@ -102,7 +102,7 @@ export function DiscoveryStates({ debouncedQuery, isLoading, resultCount, noun }
     )
   }
   if (resultCount === 0) {
-    return <DiscoveryPlaceholder>{i18nT('components.discoverySearchBar.no')} {noun} {i18nT('components.discoverySearchBar.found_for')}{debouncedQuery}{"\u201d"}</DiscoveryPlaceholder>
+    return <DiscoveryPlaceholder>{i18nT('components.discoverySearchBar.no')} {noun} {i18nT('components.discoverySearchBar.found_for_query', { query: debouncedQuery })}</DiscoveryPlaceholder>
   }
   return null
 }

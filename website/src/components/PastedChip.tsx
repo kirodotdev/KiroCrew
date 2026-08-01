@@ -30,7 +30,7 @@ function PastedChip({ block }: { block: PasteBlock }) {
           aria-hidden
           className={`shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
         />
-        {i18nT('components.pastedChip.paste')}{block.seq} · {block.lines} {block.lines === 1 ? 'line' : 'lines'} ]
+        {i18nT('components.pastedChip.paste_lines', { seq: block.seq, count: block.lines })}
       </button>
       <AnimatePresence initial={false}>
         {expanded && (

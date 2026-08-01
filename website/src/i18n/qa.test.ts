@@ -89,8 +89,8 @@ const GENERATED = new Set(SUPPORTED_LANGUAGES.filter(l => l.devOnly).map(l => l.
  * Raising a number is the reviewable act. It means new malformed copy shipped.
  */
 const CEILINGS: Record<string, number> = {
-  'unbalanced-delimiter': 640,
-  'odd-quote-count': 217,
+  'unbalanced-delimiter': 160,
+  'odd-quote-count': 27,
   'edge-whitespace': 15,
   'doubled-space': 10,
   'bare-connector': 66,

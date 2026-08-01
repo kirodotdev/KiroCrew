@@ -120,7 +120,7 @@ export const JsonViewer = memo(function JsonViewer({ content }: { content: strin
     return (
       <div className="h-full overflow-auto p-3 bg-bg-elevated border border-border rounded-md text-sm">
         <div className="text-danger font-semibold font-mono mb-2">{i18nT('components.fileRenderers.invalid_json')} {parsed.error}</div>
-        <div className="text-[11px] text-muted mb-1 font-mono">{i18nT('components.fileRenderers.showing_raw_content')}{content.length} {i18nT('components.fileRenderers.chars')}{content.length > preview.length ? `, first ${preview.length} shown` : ''}):</div>
+        <div className="text-[11px] text-muted mb-1 font-mono">{content.length > preview.length ? i18nT('components.fileRenderers.showing_raw_content_truncated_count', { count: content.length, shown: preview.length }) : i18nT('components.fileRenderers.showing_raw_content_count', { count: content.length })}</div>
         <pre className="text-[13px] font-mono whitespace-pre-wrap break-all text-text">{preview}{content.length > preview.length ? '\n…' : ''}</pre>
       </div>
     )
@@ -190,7 +190,7 @@ export const JsonlViewer = memo(function JsonlViewer({ content }: { content: str
         </div>
       ))}
       {visible < lines.length && (
-        <div className="text-muted text-xs text-center py-2">{i18nT('components.fileRenderers.scroll_for_more')}{lines.length - visible} {i18nT('components.fileRenderers.remaining')}</div>
+        <div className="text-muted text-xs text-center py-2">{i18nT('components.fileRenderers.scroll_for_more_count', { count: lines.length - visible })}</div>
       )}
     </div>
   )

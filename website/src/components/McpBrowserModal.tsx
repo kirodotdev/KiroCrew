@@ -486,7 +486,7 @@ function ServerDetailPanel({
       )}
       {phase?.step === 'conflict' && (
         <div className="mb-3 p-2 rounded bg-warn-subtle border border-[var(--warn)]/30 text-xs text-[var(--warn)]">
-          {i18nT('components.mcpBrowserModal.a_server_named')}{server.name}{i18nT('components.mcpBrowserModal.already_exists_with_a_different_configuration_ma')}
+          {i18nT('components.mcpBrowserModal.a_server_named_already_exists', { name: server.name })}
         </div>
       )}
 

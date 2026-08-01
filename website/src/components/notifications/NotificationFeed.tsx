@@ -233,7 +233,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           className={`px-2 py-1 rounded-md text-[12px] font-medium cursor-pointer border border-dashed transition-all font-body ${showMuted ? 'bg-bg-hover text-text border-border-strong' : 'bg-transparent text-muted border-border hover:text-text hover:border-border-strong'}`}
           onClick={() => setShowMuted(v => !v)}
         >
-          <BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted')}{silencedCount})
+          <BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_count', { count: silencedCount })}
         </button>
       )}
     </div>

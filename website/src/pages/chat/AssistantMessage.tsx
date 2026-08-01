@@ -257,7 +257,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     )}
     {planSteps && onApplyPlan && !applied && !isRegenerating && (
       <button className="mt-1 px-3 py-1.5 rounded-md text-[13px] font-medium border border-accent text-accent bg-transparent cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => { const ok = await onApplyPlan(planSteps); if (ok) setApplied(true) }}>
-        <ClipboardList className="lucide-inline" /> {i18nT('pages.chat.assistantMessage.use_as_plan')}{planSteps.length} {i18nT('pages.chat.assistantMessage.steps')}
+        <ClipboardList className="lucide-inline" /> {i18nT('pages.chat.assistantMessage.use_as_plan_count', { count: planSteps.length })}
       </button>
     )}
     {applied && <div className="mt-1 text-[13px] text-ok"><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.assistantMessage.applied_to_tasks')}</div>}

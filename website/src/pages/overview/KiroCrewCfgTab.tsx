@@ -231,7 +231,7 @@ export default function KiroCrewCfgTab() {
                       {name} {name === cfg.default_memory_store && <Badge variant="ok">{i18nT('pages.overview.kiroCrewCfgTab.default')}</Badge>}
                     </td>
                     <td className="px-2.5 py-2 text-[13px] text-muted">{ms.description || '—'}</td>
-                    <td className="px-2.5 py-2 text-[13px] font-mono text-muted">{ms.embedding_provider || <span className="italic">{i18nT('pages.overview.kiroCrewCfgTab.inherited')}{cfg.memory.embedding_provider})</span>}</td>
+                    <td className="px-2.5 py-2 text-[13px] font-mono text-muted">{ms.embedding_provider || <span className="italic">{i18nT('pages.overview.kiroCrewCfgTab.inherited_provider', { provider: cfg.memory.embedding_provider })}</span>}</td>
                     <td className="px-2.5 py-2"><UsedByTags names={usedBy} /></td>
                   </tr>
                 )

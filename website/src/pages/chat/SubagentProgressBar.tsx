@@ -143,7 +143,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 disabled={retrying}
                 aria-label={`Retry ${failedIds.length} failed subagent${failedIds.length > 1 ? 's' : ''}`}
               >
-                <RotateCcw size={11} className={retrying ? 'animate-spin' : ''} /> {i18nT('pages.chat.subagentProgressBar.retry_failed')}{failedIds.length})
+                <RotateCcw size={11} className={retrying ? 'animate-spin' : ''} /> {i18nT('pages.chat.subagentProgressBar.retry_failed_count', { count: failedIds.length })}
               </button>
             )}
             {stoppableCount > 0 && (

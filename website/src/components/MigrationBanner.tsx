@@ -27,7 +27,7 @@ export default function MigrationBanner({ appName, migratedTo }: MigrationBanner
           {i18nT('components.migrationBanner.this_feature_is_moving_to_a_standalone_app')}
         </div>
         <div className="text-[13px] text-muted mt-1">
-          {i18nT('components.migrationBanner.install')}{appName}{i18nT('components.migrationBanner.from_apps_before_the_next_kirocrew_update_to_kee')}
+          {i18nT('components.migrationBanner.install_app_from_apps', { app: appName })}
         </div>
       </div>
       <Btn

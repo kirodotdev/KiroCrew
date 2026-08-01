@@ -260,7 +260,7 @@ export default function CodeReviewSagePage() {
                 <button onClick={() => reviewRepo(true)} disabled={running || repoPrs.count === 0}
                   title={i18nT('apps.codeReviewSage.codeReviewSagePage.re_review_every_open_pr_ignoring_the_reviewed_hi')}
                   className="text-xs px-2.5 py-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-30 cursor-pointer bg-transparent">
-                  {i18nT('apps.codeReviewSage.codeReviewSagePage.force_review_all')}{repoPrs.count})
+                  {i18nT('apps.codeReviewSage.codeReviewSagePage.force_review_all_count', { count: repoPrs.count })}
                 </button>
               </div>
             </div>

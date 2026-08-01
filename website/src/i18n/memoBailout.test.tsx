@@ -15,7 +15,7 @@
  *
  * 40 files in `website/src` combine `memo()` with `i18nT()`. `components/PastedChip.tsx`
  * is the clean case: `export default memo(PastedChip)`, it calls
- * `i18nT('components.pastedChip.paste')`, and `pages/ChatPage.tsx` renders it as
+ * `i18nT('components.pastedChip.paste_lines')`, and `pages/ChatPage.tsx` renders it as
  * `<PastedChip block={r.block} />` — a prop that does not change when the language does.
  *
  * This file reproduces that shape in isolation. It is a diagnostic, not a guard:

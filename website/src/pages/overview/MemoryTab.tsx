@@ -63,7 +63,7 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
     const results = await Promise.allSettled(keys.map((k: string) => api.consolidateMemory(k, true)))
     const succeeded = results.filter(r => r.status === 'fulfilled').length
     const failed = results.filter(r => r.status === 'rejected').length
-    if (failed > 0) setConsolidateMsg(<><AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated')} {succeeded}/{keys.length} {i18nT('pages.overview.memoryTab.sessions')}{failed} {i18nT('pages.overview.memoryTab.failed')}</>)
+    if (failed > 0) setConsolidateMsg(<><AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated_sessions_failed', { succeeded, total: keys.length, failed })}</>)
     else { setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated')} {i18nT('pages.overview.memoryTab.session', { count: succeeded })}</>); setConsolidateOk(true) }
     setConsolidating(false)
     scheduleClear(() => setConsolidateMsg(''), 4000)
