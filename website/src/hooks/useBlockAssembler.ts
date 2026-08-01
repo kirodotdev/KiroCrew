@@ -165,6 +165,9 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
     const lang = fenceLang || undefined
     let type: ContentBlock['type'] = 'code'
     if (lang === 'mermaid') type = 'mermaid'
+    // Checked before the diff heuristic: scene JSON is not diff-shaped today,
+    // but an explicit language must never lose to content sniffing.
+    else if (lang === 'excalidraw') type = 'excalidraw'
     else if (lang === 'diff' || isDiffContent(code, lang)) type = 'diff'
     blocks.push({ type, content: code, language: lang, complete, startLine: codeStart })
     codeBuf = []

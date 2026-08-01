@@ -499,7 +499,7 @@ export interface ToolActivity {
 }
 
 /** Parsed content block produced by the block assembler. */
-export type BlockType = 'markdown' | 'code' | 'diff' | 'mermaid' | 'widget'
+export type BlockType = 'markdown' | 'code' | 'diff' | 'mermaid' | 'excalidraw' | 'widget'
 export interface ContentBlock {
   type: BlockType
   content: string

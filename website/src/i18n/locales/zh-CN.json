@@ -1481,6 +1481,9 @@
       "something_went_wrong": "出现问题",
       "try_again": "重试"
     },
+    "excalidrawBlock": {
+      "render_failed": "无法渲染此图 — 显示源码"
+    },
     "executionsView": {
       "cancelled": "已取消",
       "deleted": "（已删除）",

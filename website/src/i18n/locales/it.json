@@ -1511,6 +1511,9 @@
       "something_went_wrong": "Si è verificato un problema",
       "try_again": "Riprova"
     },
+    "excalidrawBlock": {
+      "render_failed": "Impossibile visualizzare il diagramma — sorgente mostrata"
+    },
     "executionsView": {
       "cancelled": "Annullato",
       "deleted": "(eliminato)",

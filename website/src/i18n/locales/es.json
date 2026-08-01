@@ -1511,6 +1511,9 @@
       "something_went_wrong": "Algo ha ido mal",
       "try_again": "Reintentar"
     },
+    "excalidrawBlock": {
+      "render_failed": "No se pudo representar el diagrama: se muestra el código fuente"
+    },
     "executionsView": {
       "cancelled": "Cancelado",
       "deleted": "(eliminado)",

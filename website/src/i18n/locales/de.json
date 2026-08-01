@@ -1496,6 +1496,9 @@
       "something_went_wrong": "Etwas ist schiefgelaufen",
       "try_again": "Erneut versuchen"
     },
+    "excalidrawBlock": {
+      "render_failed": "Diagramm konnte nicht gerendert werden – Quelltext wird angezeigt"
+    },
     "executionsView": {
       "cancelled": "Abgebrochen",
       "deleted": "(gelöscht)",

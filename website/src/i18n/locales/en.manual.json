@@ -403,6 +403,9 @@
     "embedTabStrip": {
       "sessions": "Sessions"
     },
+    "excalidrawBlock": {
+      "render_failed": "Couldn't render diagram — showing source"
+    },
     "executionsView": {
       "failed_to_load": "Failed to load"
     },

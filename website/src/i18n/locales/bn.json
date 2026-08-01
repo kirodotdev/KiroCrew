@@ -1496,6 +1496,9 @@
       "something_went_wrong": "কিছু ভুল হয়েছে",
       "try_again": "আবার চেষ্টা করুন"
     },
+    "excalidrawBlock": {
+      "render_failed": "ডায়াগ্রাম রেন্ডার করা যায়নি — সোর্স দেখানো হচ্ছে"
+    },
     "executionsView": {
       "cancelled": "বাতিল করা হয়েছে",
       "deleted": "(মুছে ফেলা হয়েছে)",

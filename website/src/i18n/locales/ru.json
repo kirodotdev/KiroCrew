@@ -1526,6 +1526,9 @@
       "something_went_wrong": "Что-то пошло не так",
       "try_again": "Повторить"
     },
+    "excalidrawBlock": {
+      "render_failed": "Не удалось отобразить диаграмму — показан исходный код"
+    },
     "executionsView": {
       "cancelled": "Отменено",
       "deleted": "(удалено)",

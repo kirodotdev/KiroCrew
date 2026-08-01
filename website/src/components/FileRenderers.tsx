@@ -2,6 +2,7 @@ import { memo, useState, useMemo, useCallback, useRef } from 'react'
 import DOMPurify from 'dompurify'
 
 import { i18nT } from '../i18n/t'
+import { ExcalidrawBlock } from './ExcalidrawBlock'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
@@ -9,8 +10,11 @@ const JSON_EXTS = new Set(['.json'])
 const JSONL_EXTS = new Set(['.jsonl'])
 const HTML_EXTS = new Set(['.html', '.htm'])
 const PDF_EXTS = new Set(['.pdf'])
+// Excalidraw scene JSON. Without this the extension falls through to `code` and
+// the user gets a wall of raw element JSON in Monaco instead of the diagram.
+const EXCALIDRAW_EXTS = new Set(['.excalidraw'])
 
-export type FileType = 'image' | 'svg' | 'csv' | 'json' | 'jsonl' | 'html' | 'pdf' | 'code' | 'markdown'
+export type FileType = 'image' | 'svg' | 'csv' | 'json' | 'jsonl' | 'html' | 'pdf' | 'excalidraw' | 'code' | 'markdown'
 
 /**
  * Map a filesystem path to a FileType. Note: SVG files (path-backed) are
@@ -26,6 +30,7 @@ export function detectFileType(filePath: string): FileType {
   if (JSONL_EXTS.has(ext)) return 'jsonl'
   if (HTML_EXTS.has(ext)) return 'html'
   if (PDF_EXTS.has(ext)) return 'pdf'
+  if (EXCALIDRAW_EXTS.has(ext)) return 'excalidraw'
   if (['.md', '.markdown', '.mdx', '.txt', ''].includes(ext)) return 'markdown'
   return 'code'
 }
@@ -60,6 +65,18 @@ export const SvgViewer = memo(function SvgViewer({ content }: { content: string 
       className="flex items-center justify-center h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border"
       dangerouslySetInnerHTML={{ __html: safe }}
     />
+  )
+})
+
+/* ── Excalidraw scene viewer (content-string-based) ───────────────────────
+ * Reuses the same ExcalidrawBlock the chat fence renders through, so both
+ * surfaces share one renderer and stay in sync. Read-only: opening a scene
+ * never mutates the file on disk. */
+export const ExcalidrawViewer = memo(function ExcalidrawViewer({ content }: { content: string }) {
+  return (
+    <div className="h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border">
+      <ExcalidrawBlock code={content} className="flex justify-center min-h-[60px]" />
+    </div>
   )
 })
 
