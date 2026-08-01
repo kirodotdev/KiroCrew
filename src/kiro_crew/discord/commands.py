@@ -44,6 +44,12 @@ _SESSIONS_ALIASES = frozenset(("!sessions", "/sessions", "!session", "/session")
 _PREFIXES = ("!", "/")
 
 
+def parse_command_argument(text: str) -> str:
+    """Return the optional text following a Discord command token."""
+    parts = text.strip().split(None, 1)
+    return parts[1].strip() if len(parts) == 2 else ""
+
+
 def parse_command(text: str) -> str | None:
     """Return 'new', 'compact', 'link', 'unlink', 'help', 'stop', 'sessions', or None."""
     stripped = text.strip()

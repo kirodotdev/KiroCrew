@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PICKER_LIMIT = 10
+#: Rows pulled from history before incognito/keying filters. Larger than
+#: _PICKER_LIMIT so filtered-out rows cannot starve the 10 button slots.
+_SEARCH_FETCH_LIMIT = 50
 _PICKER_TTL_SECS = 300
 _PICKER_REGISTRY_MAX = 100
 _REPLAY_MESSAGES = 5
@@ -153,6 +156,7 @@ class DiscordSessionResume:
         client: "DiscordClient",
         user_id: str,
         channel_id: str,
+        query: str = "",
     ) -> None:
         if not self.is_owner(user_id):
             sel().log_api_access(
@@ -172,8 +176,45 @@ class DiscordSessionResume:
             await client.send_message(channel_id, "⚠️ Recent sessions are unavailable.")
             return
 
+        normalized_query = " ".join(query.casefold().split())
+
         try:
-            rows = await asyncio.to_thread(self.conv_log.list_sessions)
+            if normalized_query:
+                # Reuse the SAME search the dashboard uses
+                # (KiroCrewHistory.search_sessions): it matches message CONTENT
+                # with a title boost and length-normalised ranking, so a phrase
+                # the user remembers from the CONVERSATION finds the session.
+                # A title-only filter here would miss exactly that case -- the
+                # original bug report was a natural-language phrase, not a title
+                # -- and would be a second search implementation free to drift
+                # from the dashboard's ranking. Fetch more than the picker shows
+                # so incognito filtering cannot starve the button slots.
+                rows = await asyncio.to_thread(
+                    self.conv_log.search_sessions, query, _SEARCH_FETCH_LIMIT
+                )
+                if not rows and len(normalized_query.split()) > 1:
+                    # search_sessions matches the query as ONE phrase
+                    # (``needle = query.casefold()``), so out-of-order words miss:
+                    # "specific link" does not match "Link to a Specific Session".
+                    # Fall back to an all-words TITLE match so a remembered-but-
+                    # reordered title still resolves. Deliberately last-resort and
+                    # only on zero hits, so the shared search stays authoritative
+                    # and we are not running two rankers in parallel. The proper
+                    # home for multi-word support is search_sessions itself, which
+                    # would fix the dashboard too -- tracked as a follow-up.
+                    listed = await asyncio.to_thread(self.conv_log.list_sessions)
+                    words = normalized_query.split()
+                    rows = [
+                        row
+                        for row in listed
+                        if isinstance(row, dict)
+                        and all(
+                            word in " ".join(str(row.get("title") or "").casefold().split())
+                            for word in words
+                        )
+                    ]
+            else:
+                rows = await asyncio.to_thread(self.conv_log.list_sessions)
         except Exception as exc:
             safe_error = _safe_discord_text(str(exc), 200)
             sel().log_api_access(
@@ -188,7 +229,7 @@ class DiscordSessionResume:
             await client.send_message(channel_id, "⚠️ Recent sessions are unavailable.")
             return
 
-        choices: list[_SessionChoice] = []
+        eligible: list[_SessionChoice] = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -199,9 +240,12 @@ class DiscordSessionResume:
                 continue
             raw_title = str(row.get("title") or key.removeprefix("dashboard:"))
             title = _safe_discord_text(" ".join(raw_title.split()), 76) or "Untitled session"
-            choices.append(_SessionChoice(key=key, title=title))
-            if len(choices) == _PICKER_LIMIT:
-                break
+            eligible.append(_SessionChoice(key=key, title=title))
+
+        # Order is already meaningful: search_sessions returns best-scored first,
+        # list_sessions returns newest first. Do not re-sort.
+        total_choices = len(eligible)
+        choices = eligible[:_PICKER_LIMIT]
 
         sel().log_api_access(
             caller=user_id,
@@ -211,7 +255,15 @@ class DiscordSessionResume:
             resources=f"{len(choices)} sessions read",
         )
         if not choices:
-            await client.send_message(channel_id, "No recent dashboard sessions.")
+            if normalized_query:
+                query_label = _safe_discord_text(" ".join(query.split()), 100).replace("`", "ˋ")
+                await client.send_message(
+                    channel_id,
+                    f"No dashboard sessions matched `{query_label}`. Try fewer words, "
+                    f"or run `!sessions` to see up to {_PICKER_LIMIT} recent sessions.",
+                )
+            else:
+                await client.send_message(channel_id, "No recent dashboard sessions.")
             return
 
         self._purge_pickers()
@@ -221,9 +273,31 @@ class DiscordSessionResume:
 
         nonce = secrets.token_hex(8)
         frozen = tuple(choices)
+        if normalized_query:
+            query_label = _safe_discord_text(" ".join(query.split()), 100).replace("`", "ˋ")
+            if total_choices > _PICKER_LIMIT:
+                summary = f"Showing {_PICKER_LIMIT} of {total_choices} matching sessions"
+            else:
+                summary = (
+                    f"Showing {total_choices} matching session"
+                    f"{'s' if total_choices != 1 else ''} (maximum {_PICKER_LIMIT})"
+                )
+            heading = (
+                "🔎 **Dashboard session search**\n"
+                f"{summary} for `{query_label}`, ranked over titles and message content."
+            )
+        else:
+            if total_choices > _PICKER_LIMIT:
+                summary = f"Showing {_PICKER_LIMIT} of {total_choices} most recent dashboard sessions."
+            else:
+                summary = (
+                    f"Showing {total_choices} most recent dashboard session"
+                    f"{'s' if total_choices != 1 else ''} (maximum {_PICKER_LIMIT})."
+                )
+            heading = f"🧵 **Recent dashboard sessions**\n{summary}"
         message_id = await client.send_message(
             channel_id,
-            "🧵 **Recent dashboard sessions**\n"
+            f"{heading}\n"
             "Choose one to continue here. Use `!unlink` to return to your "
             "Discord conversation.",
             components=_picker_components(nonce, frozen),

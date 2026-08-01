@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.discord.commands import (
     ConversationState,
     parse_command,
+    parse_command_argument,
     parse_mid_turn_override,
 )
 from kiro_crew.discord.renderer import DiscordApprovalDecider, DiscordRenderer
@@ -78,7 +79,7 @@ _HELP_TEXT = """\
 Commands:
 `!new` — Start a fresh conversation
 `!compact` — Compress context (when it gets long)
-`!sessions` — Continue a recent dashboard session here (owner only)
+`!sessions [query]` — Continue a recent or matching dashboard session here (owner only)
 `!link` — Mirror this conversation's dashboard tab here
 `!unlink` — Stop mirroring
 `!stop` — Stop the current reply and clear the queue
@@ -236,7 +237,12 @@ class DiscordDispatcher:
                     "them into a shared thread. DM me instead.",
                 )
                 return
-            await self._session_resume.show_picker(self.client, user_id, channel_id)
+            await self._session_resume.show_picker(
+                self.client,
+                user_id,
+                channel_id,
+                query=parse_command_argument(text),
+            )
             return
         if cmd == "link":
             await self._handle_link(user_id, channel_id, thread_id)

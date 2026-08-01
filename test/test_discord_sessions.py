@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.discord.client import DiscordInteraction
-from kiro_crew.discord.commands import parse_command
+from kiro_crew.discord.commands import parse_command, parse_command_argument
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.messaging.transport import InboundMessage
@@ -170,6 +170,7 @@ class _ConversationLog:
         self.messages = messages
         self.metadata: dict[str, dict] = {}
         self.list_calls = 0
+        self.search_calls: list[tuple[str, int]] = []
 
     def get_metadata(self, key: str) -> dict:
         return self.metadata.get(key, {})
@@ -177,6 +178,37 @@ class _ConversationLog:
     def list_sessions(self) -> list[dict]:
         self.list_calls += 1
         return list(self.rows)
+
+    def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
+        """Mirror KiroCrewHistory.search_sessions' FIELD COVERAGE and phrase
+        semantics: one casefolded phrase matched against title OR message
+        content, title hits ranked first. Deliberately not a reimplementation of
+        the real scorer -- the ranking formula is tested in the history tests;
+        what matters here is that the picker DELEGATES and renders the result."""
+        self.search_calls.append((query, limit))
+        needle = " ".join(query.casefold().split())
+        title_hits: list[dict] = []
+        content_hits: list[dict] = []
+        for row in self.rows:
+            title = " ".join(str(row.get("title") or "").casefold().split())
+            # Rows carry the JSONL stem ("dashboard_chat-0") while the message
+            # store is keyed canonically ("dashboard:chat-0"); the real history
+            # reads both from one store, so canonicalise here or content is
+            # always empty and the test silently passes for the wrong reason.
+            raw_key = str(row.get("key") or "")
+            canonical = raw_key
+            while canonical.startswith("dashboard_"):
+                canonical = canonical[len("dashboard_"):]
+            canonical = f"dashboard:{canonical}" if canonical else raw_key
+            body = " ".join(
+                str(msg.get("content") or "")
+                for msg in self.messages.get(canonical, self.messages.get(raw_key, []))
+            ).casefold()
+            if needle in title:
+                title_hits.append(row)
+            elif needle in body:
+                content_hits.append(row)
+        return (title_hits + content_hits)[:limit]
 
     def has_log(self, key: str) -> bool:
         return key in self.messages
@@ -274,6 +306,11 @@ def _picker_button(client: _Client) -> tuple[str, str]:
     return button["custom_id"], str(client._mid)
 
 
+def _picker_labels(client: _Client) -> list[str]:
+    _, components = client.sent[-1]
+    return [button["label"] for row in components for button in row["components"]]
+
+
 def _log(title: str = "Launch plan") -> _ConversationLog:
     return _ConversationLog(
         [{"key": "dashboard_chat-1", "title": title, "memory_mode": "persistent"}],
@@ -281,9 +318,151 @@ def _log(title: str = "Launch plan") -> _ConversationLog:
     )
 
 
+def _log_with_titles(*titles: str) -> _ConversationLog:
+    return _ConversationLog(
+        [
+            {
+                "key": f"dashboard_chat-{index}",
+                "title": title,
+                "memory_mode": "persistent",
+            }
+            for index, title in enumerate(titles)
+        ],
+        {f"dashboard:chat-{index}": [] for index in range(len(titles))},
+    )
+
+
+@pytest.mark.asyncio
+async def test_sessions_finds_a_session_by_conversation_content() -> None:
+    """The original bug: searching a phrase from the CONVERSATION, not the title.
+
+    The picker used to call ``list_sessions`` and filter on titles only, so a
+    query the user remembered from the discussion could never match. Routing
+    through the shared ``search_sessions`` -- the same one the dashboard uses --
+    makes message content searchable.
+    """
+    log = _ConversationLog(
+        [
+            {"key": "dashboard_chat-0", "title": "Untitled", "memory_mode": "persistent"},
+            {"key": "dashboard_chat-1", "title": "Also untitled", "memory_mode": "persistent"},
+        ],
+        {
+            "dashboard:chat-0": [{"role": "user", "content": "unrelated chatter"}],
+            "dashboard:chat-1": [
+                {"role": "user", "content": "how do I link to a specific session?"}
+            ],
+        },
+    )
+    dispatcher, client, _ = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!session link to a specific session"))
+
+    # Matched on content despite neither title containing the phrase.
+    assert _picker_labels(client) == ["1. Also untitled"]
+
+
+@pytest.mark.asyncio
+async def test_sessions_delegates_to_the_shared_search() -> None:
+    """Assert DELEGATION, not re-implemented ranking.
+
+    The scoring formula belongs to KiroCrewHistory.search_sessions and is tested
+    there; what this surface must guarantee is that it calls that search rather
+    than growing a second one that drifts from the dashboard.
+    """
+    log = _log_with_titles("Codex compaction investigation")
+    dispatcher, client, _ = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!sessions codex"))
+
+    assert log.search_calls, "picker did not call search_sessions"
+    query, limit = log.search_calls[0]
+    assert query == "codex"
+    assert limit > 1, "must fetch more rows than one so filtering cannot starve the picker"
+
+
+@pytest.mark.asyncio
+async def test_sessions_empty_query_does_not_search() -> None:
+    """A bare `!sessions` is a listing, not a search -- no query, no search call."""
+    log = _log_with_titles("One", "Two")
+    dispatcher, client, _ = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!sessions"))
+
+    assert log.search_calls == []
+    assert log.list_calls >= 1
+    assert len(_picker_labels(client)) == 2
+
+
 def test_sessions_command_aliases() -> None:
     assert parse_command("!sessions") == "sessions"
     assert parse_command("/sessions") == "sessions"
+    assert parse_command("!session Link to a specific session") == "sessions"
+    assert parse_command_argument("!session Link to a specific session") == (
+        "Link to a specific session"
+    )
+    assert parse_command_argument("!sessions") == ""
+
+
+@pytest.mark.asyncio
+async def test_sessions_keyword_filters_beyond_recent_limit() -> None:
+    log = _log_with_titles(
+        *(f"Routine session {index}" for index in range(12)),
+        "Codex compaction investigation",
+    )
+    dispatcher, client, _ = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!session codex"))
+
+    text, _ = client.sent[-1]
+    assert _picker_labels(client) == ["1. Codex compaction investigation"]
+    assert "Dashboard session search" in text
+    assert "for `codex`" in text
+
+
+@pytest.mark.asyncio
+async def test_sessions_multi_word_query_matches_case_insensitively() -> None:
+    log = _log_with_titles("Other work", "Link to a Specific Session")
+    dispatcher, client, _ = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!sessions specific link"))
+
+    assert _picker_labels(client) == ["1. Link to a Specific Session"]
+
+
+@pytest.mark.asyncio
+async def test_sessions_no_match_is_explicit() -> None:
+    dispatcher, client, _ = _dispatcher({"u1"}, _log())
+
+    await dispatcher.handle_message(_message("!sessions missing topic"))
+
+    text, components = client.sent[-1]
+    assert components is None
+    assert "No dashboard sessions matched `missing topic`" in text
+    assert "Try fewer words" in text
+    assert "`!sessions`" in text
+    assert dispatcher._session_pickers == {}
+
+
+@pytest.mark.asyncio
+async def test_empty_sessions_query_keeps_recent_order_and_discloses_cap() -> None:
+    log = _log_with_titles(*(f"Recent session {index}" for index in range(12)))
+    dispatcher, client, _ = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!sessions   "))
+
+    assert _picker_labels(client) == [f"{index + 1}. Recent session {index}" for index in range(10)]
+    assert "Showing 10 of 12 most recent dashboard sessions" in client.sent[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_sessions_search_cap_is_enforced_and_disclosed() -> None:
+    log = _log_with_titles(*(f"Codex session {index}" for index in range(12)))
+    dispatcher, client, _ = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!sessions codex"))
+
+    assert len(_picker_labels(client)) == 10
+    assert "Showing 10 of 12 matching sessions" in client.sent[-1][0]
 
 
 @pytest.mark.asyncio
@@ -291,7 +470,7 @@ async def test_sessions_requires_exactly_one_allowed_user() -> None:
     log = _log()
     dispatcher, client, _ = _dispatcher({"u1", "u2"}, log)
 
-    await dispatcher.handle_message(_message("!sessions"))
+    await dispatcher.handle_message(_message("!sessions private"))
 
     assert log.list_calls == 0
     assert "exactly one" in client.sent[-1][0]
@@ -702,6 +881,18 @@ async def test_stale_picker_fails_closed() -> None:
         picker.created_at -= 301
 
     await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    assert sessions.mirror_links == {}
+    assert any("expired" in text for _, text, _ in client.edits)
+
+
+@pytest.mark.asyncio
+async def test_picker_nonce_is_bound_to_its_registered_choices() -> None:
+    dispatcher, client, sessions = _dispatcher({"u1"}, _log())
+    await dispatcher.handle_message(_message("!sessions"))
+    _, message_id = _picker_button(client)
+
+    await dispatcher.on_interaction(_interaction("s:not-the-picker:0", message_id))
 
     assert sessions.mirror_links == {}
     assert any("expired" in text for _, text, _ in client.edits)

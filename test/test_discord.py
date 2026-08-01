@@ -867,6 +867,7 @@ class TestDispatcher:
         d, cli, _ = _dispatcher({"u1"})
         await d.handle_message(self._msg("!help"))
         assert "KiroCrew" in cli.sent[-1][0]
+        assert "!sessions [query]" in cli.sent[-1][0]
 
     @pytest.mark.asyncio
     async def test_normal_turn_streams_and_releases(self) -> None:
