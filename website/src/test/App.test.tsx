@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import App, { calculateTopbarSearchLayout } from '../App'
@@ -580,6 +580,14 @@ describe('App routing', () => {
 })
 
 describe('TopbarMetrics widget', () => {
+  beforeEach(() => {
+    localStorage.setItem('mc-privacy-notice-v1', '1')
+  })
+
+  afterEach(() => {
+    localStorage.removeItem('mc-privacy-notice-v1')
+  })
+
   it('shows only the Activity toggle button when metricsOpen is not set', () => {
     localStorage.removeItem('mc-topbar-metrics')
     renderWithProviders(<App />, { route: '/chat' })

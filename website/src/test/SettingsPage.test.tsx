@@ -31,6 +31,7 @@ vi.mock('../pages/settings/BrowserPanel', () => ({ BrowserPanel: () => <div data
 vi.mock('../pages/settings/ComputerUsePanel', () => ({ ComputerUsePanel: () => <div data-testid="computer-use-panel" /> }))
 vi.mock('../pages/settings/InstancesPanel', () => ({ InstancesPanel: () => <div data-testid="instances-panel" /> }))
 vi.mock('../pages/settings/SecurityPanel', () => ({ SecurityPanel: () => <div data-testid="security-panel" /> }))
+vi.mock('../pages/settings/PrivacyPanel', () => ({ PrivacyPanel: () => <div data-testid="privacy-panel" /> }))
 vi.mock('../pages/settings/NotificationsPanel', () => ({ NotificationsPanel: () => <div data-testid="notifications-panel" /> }))
 vi.mock('../pages/settings/SlackPanel', () => ({ SlackPanel: () => <div data-testid="slack-panel" /> }))
 vi.mock('../pages/settings/DiscordPanel', () => ({ DiscordPanel: () => <div data-testid="discord-panel" /> }))
@@ -111,6 +112,12 @@ describe('SettingsPage tabs', () => {
   it('renders the ComputerUsePanel when the computer-use tab is active', () => {
     renderAt('/settings?tab=computer-use')
     expect(screen.getByTestId('computer-use-panel')).toBeInTheDocument()
+  })
+
+  it('lists the Privacy tab and renders its durable disclosure surface', () => {
+    renderAt('/settings?tab=privacy')
+    expect(screen.getByRole('button', { name: 'Privacy' })).toBeInTheDocument()
+    expect(screen.getByTestId('privacy-panel')).toBeInTheDocument()
   })
 
   it('lists a single Channels tab instead of per-channel tabs', () => {

@@ -5694,6 +5694,24 @@
       "show_controls": "Mostra i controlli"
     }
   },
+  "privacyDisclosure": {
+    "anonymousHeartbeatBody": "Per impostazione predefinita, KiroCrew invia al massimo un segnale al giorno. Il payload fisso contiene un ID di installazione casuale, la versione dell’app, il canale di rilascio, il sistema operativo, l’architettura della CPU, la versione secondaria di Python, il canale di installazione, lo stato di governance e un indicatore di prima esecuzione. L’ID identifica una copia installata, non una persona.",
+    "anonymousHeartbeatTitle": "Segnale anonimo giornaliero",
+    "controlsBody": "Usa i comandi seguenti per controllare cosa verrebbe inviato o disattivare il segnale. Questa informativa non sospende né blocca mai l’applicazione.",
+    "controlsTitle": "Disattiva la telemetria dalla riga di comando",
+    "dataNeverSentBody": "Il segnale non include mai prompt, risposte del modello, contenuti o percorsi di file, nomi di repository o rami, credenziali, variabili di ambiente, nomi host o nomi utente. Il servizio ricevente non conserva gli indirizzi IP dei client.",
+    "dataNeverSentTitle": "Cosa non include mai la telemetria",
+    "details": "Dettagli sulla privacy",
+    "localDataBody": "I dati di utilizzo e di contesto restano sul tuo dispositivo. Le metriche facoltative sulle prestazioni sono disattivate per impostazione predefinita; se attivate, restano locali a meno che tu non configuri esplicitamente un endpoint OTLP.",
+    "localDataTitle": "Dati che restano locali",
+    "noticeBody": "Per impostazione predefinita, KiroCrew può inviare al massimo un segnale anonimo di utilizzo al giorno. Il payload fisso contiene un ID di installazione casuale, la versione dell’app, il canale di rilascio, il sistema operativo, l’architettura della CPU, la versione secondaria di Python, il canale di installazione, lo stato di governance e un indicatore di prima esecuzione; non include mai prompt, risposte, file, percorsi, credenziali, nomi host o nomi utente.",
+    "noticeTitle": "Privacy in breve",
+    "settingsDescription": "Telemetria, dati locali e controlli della privacy",
+    "settingsLabel": "Privacy",
+    "shellMacOSLinuxLabel": "macOS / Linux",
+    "shellPowerShellLabel": "Windows PowerShell",
+    "shellWindowsCmdLabel": "Prompt dei comandi di Windows"
+  },
   "settings": {
     "display": {
       "language": {

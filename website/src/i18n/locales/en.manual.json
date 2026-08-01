@@ -1404,6 +1404,24 @@
       "show_controls": "Show controls"
     }
   },
+  "privacyDisclosure": {
+    "anonymousHeartbeatBody": "By default, KiroCrew sends at most one heartbeat per day. Its fixed payload contains a random installation ID, app version, release channel, operating system, CPU architecture, Python minor version, installation channel, governance posture, and a first-run flag. The ID identifies an installed copy, not a person.",
+    "anonymousHeartbeatTitle": "Anonymous daily heartbeat",
+    "controlsBody": "Use the commands below to inspect what would be sent or disable the heartbeat. This disclosure never pauses or blocks the application.",
+    "controlsTitle": "Disable telemetry from the command line",
+    "dataNeverSentBody": "The heartbeat never includes prompts, model responses, file contents or paths, repository or branch names, credentials, environment variables, hostnames, or usernames. The receiving service does not retain client IP addresses.",
+    "dataNeverSentTitle": "What telemetry never includes",
+    "details": "Privacy details",
+    "localDataBody": "Usage and context records stay on your device. Optional performance metrics are off by default; when enabled, they remain local unless you explicitly configure an OTLP endpoint.",
+    "localDataTitle": "Data that stays local",
+    "noticeBody": "By default, KiroCrew may send at most one anonymous usage heartbeat per day. Its fixed payload contains a random installation ID, app version, release channel, operating system, CPU architecture, Python minor version, installation channel, governance posture, and a first-run flag; it never includes prompts, responses, files, paths, credentials, hostnames, or usernames.",
+    "noticeTitle": "Privacy at a glance",
+    "settingsDescription": "Telemetry, local data, and privacy controls",
+    "settingsLabel": "Privacy",
+    "shellMacOSLinuxLabel": "macOS / Linux",
+    "shellPowerShellLabel": "Windows PowerShell",
+    "shellWindowsCmdLabel": "Windows Command Prompt"
+  },
   "settings": {
     "display": {
       "language": {

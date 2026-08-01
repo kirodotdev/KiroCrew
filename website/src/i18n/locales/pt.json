@@ -5694,6 +5694,24 @@
       "show_controls": "Mostrar controles"
     }
   },
+  "privacyDisclosure": {
+    "anonymousHeartbeatBody": "Por padrão, o KiroCrew envia no máximo um sinal por dia. A carga fixa contém um ID de instalação aleatório, a versão do aplicativo, o canal de lançamento, o sistema operacional, a arquitetura da CPU, a versão secundária do Python, o canal de instalação, o estado de governança e um indicador de primeira execução. O ID identifica uma cópia instalada, não uma pessoa.",
+    "anonymousHeartbeatTitle": "Sinal diário anônimo",
+    "controlsBody": "Use os comandos abaixo para verificar o que seria enviado ou desativar o sinal. Esta divulgação nunca pausa nem bloqueia o aplicativo.",
+    "controlsTitle": "Desativar a telemetria pela linha de comando",
+    "dataNeverSentBody": "O sinal nunca inclui prompts, respostas do modelo, conteúdo ou caminhos de arquivos, nomes de repositórios ou branches, credenciais, variáveis de ambiente, nomes de host ou nomes de usuário. O serviço receptor não retém endereços IP dos clientes.",
+    "dataNeverSentTitle": "O que a telemetria nunca inclui",
+    "details": "Detalhes de privacidade",
+    "localDataBody": "Os registros de uso e contexto permanecem no seu dispositivo. As métricas opcionais de desempenho ficam desativadas por padrão; quando ativadas, permanecem locais, a menos que você configure explicitamente um endpoint OTLP.",
+    "localDataTitle": "Dados que permanecem locais",
+    "noticeBody": "Por padrão, o KiroCrew pode enviar no máximo um sinal anônimo de uso por dia. A carga fixa contém um ID de instalação aleatório, a versão do aplicativo, o canal de lançamento, o sistema operacional, a arquitetura da CPU, a versão secundária do Python, o canal de instalação, o estado de governança e um indicador de primeira execução; nunca inclui prompts, respostas, arquivos, caminhos, credenciais, nomes de host ou nomes de usuário.",
+    "noticeTitle": "Privacidade em resumo",
+    "settingsDescription": "Telemetria, dados locais e controles de privacidade",
+    "settingsLabel": "Privacidade",
+    "shellMacOSLinuxLabel": "macOS / Linux",
+    "shellPowerShellLabel": "Windows PowerShell",
+    "shellWindowsCmdLabel": "Prompt de Comando do Windows"
+  },
   "settings": {
     "display": {
       "language": {

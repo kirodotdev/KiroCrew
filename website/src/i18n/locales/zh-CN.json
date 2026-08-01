@@ -5604,6 +5604,24 @@
       "show_controls": "展开控制项"
     }
   },
+  "privacyDisclosure": {
+    "anonymousHeartbeatBody": "默认情况下，KiroCrew 每天最多发送一次心跳。固定载荷包含随机安装 ID、应用版本、发布渠道、操作系统、CPU 架构、Python 次版本、安装渠道、治理状态和首次运行标志。该 ID 标识的是一个已安装副本，而不是个人。",
+    "anonymousHeartbeatTitle": "匿名每日心跳",
+    "controlsBody": "使用以下命令可查看将要发送的内容或禁用心跳。此披露绝不会暂停或阻止应用程序。",
+    "controlsTitle": "从命令行禁用遥测",
+    "dataNeverSentBody": "心跳绝不包含提示词、模型响应、文件内容或路径、仓库或分支名称、凭证、环境变量、主机名或用户名。接收服务不会保留客户端 IP 地址。",
+    "dataNeverSentTitle": "遥测绝不包含的内容",
+    "details": "隐私详情",
+    "localDataBody": "使用和上下文记录会保留在设备上。可选性能指标默认关闭；启用后仍保留在本地，除非明确配置 OTLP 端点。",
+    "localDataTitle": "保留在本地的数据",
+    "noticeBody": "默认情况下，KiroCrew 每天最多可能发送一次匿名使用心跳。固定载荷包含随机安装 ID、应用版本、发布渠道、操作系统、CPU 架构、Python 次版本、安装渠道、治理状态和首次运行标志；绝不包含提示词、响应、文件、路径、凭证、主机名或用户名。",
+    "noticeTitle": "隐私概览",
+    "settingsDescription": "遥测、本地数据和隐私控制",
+    "settingsLabel": "隐私",
+    "shellMacOSLinuxLabel": "macOS / Linux",
+    "shellPowerShellLabel": "Windows PowerShell",
+    "shellWindowsCmdLabel": "Windows 命令提示符"
+  },
   "settings": {
     "display": {
       "language": {

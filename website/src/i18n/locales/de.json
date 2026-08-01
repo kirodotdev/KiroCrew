@@ -5649,6 +5649,24 @@
       "show_controls": "Steuerung anzeigen"
     }
   },
+  "privacyDisclosure": {
+    "anonymousHeartbeatBody": "Standardmäßig sendet KiroCrew höchstens ein Lebenszeichen pro Tag. Die feste Nutzlast enthält eine zufällige Installations-ID, App-Version, Release-Kanal, Betriebssystem, CPU-Architektur, Python-Nebenversion, Installationskanal, Governance-Status und ein Erstausführungskennzeichen. Die ID bezeichnet eine installierte Kopie, keine Person.",
+    "anonymousHeartbeatTitle": "Anonymes tägliches Lebenszeichen",
+    "controlsBody": "Mit den folgenden Befehlen können Sie prüfen, was gesendet würde, oder das Lebenszeichen deaktivieren. Dieser Hinweis hält die Anwendung niemals an und blockiert sie nicht.",
+    "controlsTitle": "Telemetrie über die Befehlszeile deaktivieren",
+    "dataNeverSentBody": "Das Lebenszeichen enthält niemals Prompts, Modellantworten, Dateiinhalte oder -pfade, Repository- oder Branchnamen, Anmeldedaten, Umgebungsvariablen, Hostnamen oder Benutzernamen. Der empfangende Dienst speichert keine Client-IP-Adressen.",
+    "dataNeverSentTitle": "Was Telemetrie niemals enthält",
+    "details": "Datenschutzdetails",
+    "localDataBody": "Nutzungs- und Kontextdaten bleiben auf Ihrem Gerät. Optionale Leistungsmetriken sind standardmäßig deaktiviert; wenn sie aktiviert werden, bleiben sie lokal, sofern Sie nicht ausdrücklich einen OTLP-Endpunkt konfigurieren.",
+    "localDataTitle": "Lokal gespeicherte Daten",
+    "noticeBody": "Standardmäßig kann KiroCrew höchstens ein anonymes Nutzungs-Lebenszeichen pro Tag senden. Die feste Nutzlast enthält eine zufällige Installations-ID, App-Version, Release-Kanal, Betriebssystem, CPU-Architektur, Python-Nebenversion, Installationskanal, Governance-Status und ein Erstausführungskennzeichen; Prompts, Antworten, Dateien, Pfade, Anmeldedaten, Hostnamen oder Benutzernamen sind niemals enthalten.",
+    "noticeTitle": "Datenschutz auf einen Blick",
+    "settingsDescription": "Telemetrie, lokale Daten und Datenschutzeinstellungen",
+    "settingsLabel": "Datenschutz",
+    "shellMacOSLinuxLabel": "macOS / Linux",
+    "shellPowerShellLabel": "Windows PowerShell",
+    "shellWindowsCmdLabel": "Windows-Eingabeaufforderung"
+  },
   "settings": {
     "display": {
       "language": {
