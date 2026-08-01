@@ -759,6 +759,29 @@ class TestRenderer:
         all_text = " ".join(t for t, _ in cli.sent) + " ".join(t for _, t, _ in cli.edits)
         assert "[OPTIONS" not in all_text
 
+    def test_long_options_before_streamed_steer_ack_become_keyboard(self) -> None:
+        cli = self._drive(
+            [
+                OutputEvent(
+                    kind=TEXT_CHUNK,
+                    text=("x" * 7680)
+                    + "\n\n[OPTIONS: Alpha | Bravo | Charlie]"
+                    + "\n\n[STEERING steer-7e6a4a0d",
+                ),
+                OutputEvent(kind=TEXT_CHUNK, text="94314d2db: acknowledged]"),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+
+        markups = [m for _, m in cli.sent if m] + [m for _, _, m in cli.edits if m]
+        labels = [b["text"] for row in markups[0]["inline_keyboard"] for b in row]
+        assert labels == ["Alpha", "Bravo", "Charlie"]
+        visible = "\n".join([t for t, _ in cli.sent] + [t for _, t, _ in cli.edits])
+        assert "[OPTIONS" not in visible
+        assert "[STEERING" not in visible
+        assert "steer-7e6a4a0d" not in visible
+        assert "94314d2db" not in visible
+
     def test_tool_only_message_not_orphaned_at_steer_boundary(self) -> None:
         # Codex finding: a tool call BEFORE any assistant text creates a live
         # "🔧 tool…" message. If a steer marker then arrives with no pre-marker

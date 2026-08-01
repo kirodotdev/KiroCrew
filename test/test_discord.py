@@ -732,6 +732,30 @@ class TestRenderer:
         assert "[OPTIONS" not in cli.final_text()
 
     @pytest.mark.asyncio
+    async def test_long_options_before_streamed_steer_ack_become_buttons(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        # The assistant's final line is a valid OPTIONS trailer. The provider's
+        # internal steer acknowledgment follows it and arrives across chunks,
+        # with the combined buffer well past Discord's message cap.
+        await r.on_text_chunk(
+            ("x" * 3800)
+            + "\n\n[OPTIONS: Alpha | Bravo | Charlie]"
+            + "\n\n[STEERING steer-7e6a4a0d"
+        )
+        await r.on_text_chunk("94314d2db: acknowledged]")
+        await r.on_done()
+
+        components = [c for _, c in cli.sent if c] + [c for _, _, c in cli.edits if c]
+        labels = [b["label"] for row in components[0] for b in row["components"]]
+        assert labels == ["Alpha", "Bravo", "Charlie"]
+        visible = "\n".join([t for t, _ in cli.sent] + [t for _, t, _ in cli.edits])
+        assert "[OPTIONS" not in visible
+        assert "[STEERING" not in visible
+        assert "steer-7e6a4a0d" not in visible
+        assert "94314d2db" not in visible
+
+    @pytest.mark.asyncio
     async def test_long_output_rotates_messages(self) -> None:
         r, cli = self._renderer()
         await r.on_turn_start()

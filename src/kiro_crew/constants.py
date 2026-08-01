@@ -84,6 +84,30 @@ OPTIONS_RE_LINE = re.compile(r"\[OPTIONS:((?:[^[\n]|\[(?!OPTIONS:))*)\][ \t]*$",
 OPTIONS_RE_TRAILER = re.compile(r"\[OPTIONS:((?:[^[]|\[(?!OPTIONS:))*)\]\s*\Z", re.DOTALL)
 
 
+def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
+    """Detach protocol trailers before a renderer length-splits ``text``.
+
+    A still-streaming ``[STEERING`` or ``[OPTIONS`` fragment normally breaks
+    :data:`OPTIONS_RE_TRAILER`'s end-of-buffer anchor. If a complete OPTIONS
+    block immediately precedes that fragment, detaching only the unfinished
+    marker leaves the complete block eligible for a mid-token chunk split.
+    Return the visible prefix plus the entire protocol suffix so renderers can
+    keep both markers together on the surviving tail.
+    """
+    suffix_start = len(text)
+    idx = max(text.rfind("[STEERING"), text.rfind("[OPTIONS"))
+    if idx != -1 and "]" not in text[idx:]:
+        suffix_start = idx
+
+    options = OPTIONS_RE_TRAILER.search(text[:suffix_start])
+    if options:
+        suffix_start = options.start()
+
+    if suffix_start == len(text):
+        return text, ""
+    return text[:suffix_start], text[suffix_start:]
+
+
 # The product wordmark, figlet `small`. ONE definition on purpose: it used to be
 # copy-pasted into cli.py and cli_chat.py, and a rename left both spelling a
 # stale product name in the two most-seen surfaces (bare `kirocrew`, the chat

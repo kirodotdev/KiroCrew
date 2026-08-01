@@ -30,7 +30,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER
+from kiro_crew.constants import OPTIONS_RE_TRAILER, split_trailing_protocol_suffix
 from kiro_crew.messaging.renderer import Renderer
 from kiro_crew.messaging.transport import TransportCapabilities
 
@@ -424,8 +424,16 @@ class TelegramRenderer(Renderer):
         """Seal the pre-steer segment at the driver's structured boundary."""
         self._materialize_chip()
         await self._rotate_on_length()
-        sealed = bool(self._segment_text().strip())
-        await self._seal_current()
+        # A trailing [OPTIONS:] block belongs to the visible PRE-STEER answer,
+        # but the steering marker sits after it in the raw buffer, so the
+        # end-of-buffer anchor no longer sees it. Extract it here -- BEFORE the
+        # seal -- so the choices ship as a keyboard on the sealed message instead of
+        # being frozen as literal protocol text the user cannot act on.
+        body_raw, opts = _extract_options("".join(self._buf))
+        self._buf = [body_raw]
+        keyboard = build_inline_keyboard(opts) if opts else None
+        sealed = bool(self._segment_text().strip()) or keyboard is not None
+        await self._seal_current(keyboard=keyboard)
         clean_summary = _neutralize_md(summary)
         if clean_summary:
             chip: str | None = f"> ↪️ {clean_summary}"
@@ -465,23 +473,13 @@ class TelegramRenderer(Renderer):
         raw = "".join(self._buf)
         if len(raw) <= limit:
             return
-        partial = ""
-        cm = _OPTIONS_RE.search(raw)
-        if cm:
-            # Complete trailing [OPTIONS: …] — keep it intact on the tail so
-            # finalization can extract the inline keyboard (a bare split would
-            # leak "NS: A | B]" as raw text and lose the keyboard).
-            raw, partial = raw[: cm.start()], raw[cm.start():]
-        else:
-            idx = max(raw.rfind("[STEERING"), raw.rfind("[OPTIONS"))
-            if idx != -1 and "]" not in raw[idx:]:
-                raw, partial = raw[:idx], raw[idx:]
+        raw, protocol_suffix = split_trailing_protocol_suffix(raw)
         chunks = _split_markdown(raw, limit)
         for ch in chunks[:-1]:
             self._buf = [ch]
             await self._seal_current()
             self._open_new_message()
-        self._buf = [(chunks[-1] if chunks else "") + partial]
+        self._buf = [(chunks[-1] if chunks else "") + protocol_suffix]
 
     def _open_new_message(self) -> None:
         """Next render creates a fresh message instead of editing the old one."""
@@ -534,7 +532,9 @@ class TelegramRenderer(Renderer):
         Empty segments are skipped so a bare steer doesn't post a blank bubble."""
         text = self._segment_text().strip()
         if not text:
-            return
+            if keyboard is None:
+                return
+            text = "…"
         html_text = _md_to_telegram_html(text)
         if self._stream_mid is not None:
             ok = await self._client.edit_message(
