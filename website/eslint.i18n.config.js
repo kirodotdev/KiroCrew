@@ -136,6 +136,9 @@ export default [
               '^(css|cx|clsx|twMerge|cva)$',
               // Storage, telemetry and routing take machine keys.
               '(local|session)Storage\\.\\w+', 'navigate', 'track', 'emit',
+              // Config PATCH takes a dotted config path (`telemetry.beacon_enabled`),
+              // a machine key that must never be translated.
+              'patchConfig',
               'querySelector(All)?', 'getElementById', 'createElement',
               'addEventListener', 'removeEventListener', 'matchMedia',
               // WebGL/DOM capability lookups take registry identifiers

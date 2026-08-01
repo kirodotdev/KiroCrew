@@ -35,6 +35,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers.usage import context_occupancy
@@ -520,5 +521,83 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
             "turn": data.get("turn"),
             "context": context,
             "other": data.get("other", []),
+        }
+    )
+
+
+def _beacon_overlay_pins_value() -> bool:
+    """Return whether ``config.local.json`` sets ``telemetry.beacon_enabled``.
+
+    That overlay deep-merges OVER ``config.json`` at load, and the Settings
+    toggle writes the BASE file — so an entry here makes the switch snap back to
+    the overlay's value after a successful write. Reporting it lets the panel say
+    why instead of looking broken. Best-effort: an unreadable or malformed
+    overlay is reported as "not pinned" rather than raising, since this is a
+    diagnostic (the effective value in ``enabled`` is still authoritative).
+    """
+    from kiro_crew.config.loader import config_local_path
+
+    try:
+        path = config_local_path()
+        if not path.exists():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    section = data.get("telemetry") if isinstance(data, dict) else None
+    return isinstance(section, dict) and "beacon_enabled" in section
+
+
+async def api_beacon_status(request: web.Request) -> web.Response:
+    """GET /api/telemetry/beacon — anonymous-heartbeat state for Settings → Privacy.
+
+    Powers the in-product opt-out toggle. ``enabled`` is the stored
+    ``telemetry.beacon_enabled`` (what the toggle writes); ``would_send`` /
+    ``reason`` are the EFFECTIVE verdict, which can differ because
+    ``KIROCREW_TELEMETRY_DISABLED``, a CI host, a non-default data home, or a
+    ``config.local.json`` overlay all suppress sending regardless of this flag.
+    Surfacing both is the point: a toggle that reads back "on" while an env var
+    silences the beacon (or vice versa) would be a false promise on a privacy
+    control, so the UI can say which one is actually in force.
+
+    ``env_override`` reports specifically whether the env var is what pins the
+    state, so the panel can disable the toggle instead of offering a write that
+    cannot take effect. ``overlay_override`` does the same for a
+    ``config.local.json`` entry, which deep-merges OVER ``config.json`` at load —
+    the toggle writes the base file, so an overlay entry would otherwise let the
+    switch snap back with no explanation (the CLI reports this same case; see
+    ``cli_commands._telemetry``). Read-only, and never materializes an install id
+    (``beacon.status`` uses ``create=False``).
+    """
+    overlay_override = False
+    try:
+        # to_thread, not a bare load(): KiroCrewConfig.load() stats and reads
+        # config.json (+ any config.local.json overlay), and this handler runs on
+        # the aiohttp event loop — a synchronous read here stalls every other
+        # request behind it. The rest of this module already routes its file work
+        # through to_thread for the same reason.
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        enabled = cfg.telemetry.beacon_enabled
+        endpoint = cfg.telemetry.beacon_endpoint
+        overlay_override = await asyncio.to_thread(_beacon_overlay_pins_value)
+    except Exception:
+        # A diagnostic must never 500: an unreadable config is exactly when the
+        # user wants to see this panel. Fail toward "off" so the UI never claims
+        # telemetry is on when we cannot prove it.
+        logger.debug("beacon config load failed; reporting disabled", exc_info=True)
+        enabled, endpoint = False, ""
+
+    info = await asyncio.to_thread(
+        beacon.status, endpoint, enabled=enabled, app_version=__version__
+    )
+    return web.json_response(
+        {
+            "enabled": bool(info.get("beacon_enabled", enabled)),
+            "would_send": bool(info.get("would_send", False)),
+            "reason": str(info.get("reason", "")),
+            "endpoint_configured": bool(info.get("endpoint_configured", False)),
+            "env_override": beacon.is_env_opted_out(),
+            "env_var": beacon.DISABLE_ENV,
+            "overlay_override": overlay_override,
         }
     )

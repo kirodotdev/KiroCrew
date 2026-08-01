@@ -7,11 +7,16 @@ import { useTheme, type ModePreference, type ColorTheme } from '../hooks/useThem
 import { GhostVar2 } from '../assets/onboarding/GhostIcons'
 import { Btn, SendBtn } from './ui'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
+import {
+  PrivacyCommandList,
+  PrivacyDisclosureSections,
+  TelemetryToggle,
+} from './PrivacyDisclosure'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
 /**
- * First-run onboarding flow (5 steps):
+ * First-run onboarding flow (6 steps):
  *   1. Pick your look   — centered modal, reuses the real theme picker.
  *   2. About you        — centered modal: role + technical comfort. Persisted
  *                         to dashboard.user_role / dashboard.user_technical_level
@@ -21,6 +26,10 @@ import { i18nT } from '../i18n/t'
  *   3. Schedule intro   — popover anchored to the Schedule nav item.
  *   4. Apps intro       — popover anchored to the App Store nav item.
  *   5. Sessions intro   — popover anchored to the Chat nav item.
+ *   6. Privacy          — centered modal: the same telemetry disclosure and
+ *                         opt-out toggle as Settings > Privacy, rendered in the
+ *                         onboarding shell. Passive: it discloses and offers the
+ *                         control, and never blocks finishing onboarding.
  *
  * Triggers:
  *   - First launch: App passes `initialOpen` (from the un-onboarded state).
@@ -67,7 +76,10 @@ const POPS: Record<number, PopStep> = {
   },
 }
 
-const LAST_STEP = 5
+// Step 6 (privacy) is the last step and uses the chapter-shell layout, so the
+// tour popovers (3-5) all show "Next" and only the privacy step shows "Done".
+const LAST_STEP = 6
+const LAST_POP_STEP = 5
 
 // Step-2 profile options. Values are the slugs accepted by the
 // dashboard.user_role / dashboard.user_technical_level enums in the config
@@ -297,10 +309,10 @@ export default function OnboardingFlow({
   }, [open, step, positionFor])
 
   // Modal-step a11y (website/AGENTS.md): move focus into the dialog, trap Tab,
-  // and dismiss on Escape. Applies to the centered modals (steps 1-2); the
-  // anchored popovers (steps 3-5) are non-modal and exempt.
+  // and dismiss on Escape. Applies to the centered modals (steps 1-2 and the
+  // privacy step 6); the anchored popovers (steps 3-5) are non-modal and exempt.
   useEffect(() => {
-    if (!open || step > 2) return
+    if (!open || (step > 2 && step !== LAST_STEP)) return
     const node = dialogRef.current
     if (!node) return
     const getFocusable = () =>
@@ -533,6 +545,59 @@ export default function OnboardingFlow({
     )
   }
 
+  // ── Step 6: Privacy (final step — chapter-shell layout) ──────────────────
+  // Renders the SAME disclosure + opt-out toggle as Settings → Privacy, so the
+  // first-run explanation and the durable panel can never drift. Passive by
+  // design: no consent gate, no required choice — "Done" always finishes.
+  if (step === LAST_STEP) {
+    return (
+      <OnboardingChapterShell
+        eyebrow={i18nT('components.onboardingFlow.privacy_eyebrow')}
+        ariaLabel={i18nT('privacyDisclosure.settingsLabel')}
+        panelHeadline={i18nT('components.onboardingFlow.privacy_panel_headline')}
+        panelBody={i18nT('components.onboardingFlow.privacy_panel_body')}
+        panelFootnote={i18nT('components.onboardingFlow.change_anything_later_in_settings')}
+        header={
+          <div className="mt-6">
+            <h1 tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
+              {i18nT('components.onboardingFlow.privacy_title')}
+            </h1>
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              {i18nT('components.onboardingFlow.privacy_subtitle')}
+            </p>
+          </div>
+        }
+        onSkipAll={finish}
+        dialogRef={dialogRef}
+        footer={
+          <>
+            <Btn type="button" className="h-9 rounded-lg px-4" onClick={() => setStep(LAST_POP_STEP)}>
+              {i18nT('components.onboardingFlow.back')}
+            </Btn>
+            <SendBtn type="button" onClick={next}>
+              {i18nT('components.onboardingFlow.done')}
+            </SendBtn>
+          </>
+        }
+      >
+        {/* Control FIRST, detail below. In the onboarding shell the body
+            scrolls, and burying the opt-out under three paragraphs of
+            disclosure puts the only actionable thing on the step below the
+            fold — a control the user must scroll to find is a worse offer than
+            one they can see. Settings → Privacy keeps the reverse order, where
+            the durable explanation is what the reader came for. */}
+        <TelemetryToggle />
+        <div className="mt-6 border-t border-border pt-5">
+          <PrivacyDisclosureSections />
+          <p className="mt-5 mb-3 text-sm leading-relaxed text-muted">
+            {i18nT('privacyDisclosure.controlsBody')}
+          </p>
+          <PrivacyCommandList />
+        </div>
+      </OnboardingChapterShell>
+    )
+  }
+
   // ── Steps 3-5: anchored feature popovers ─────────────────────────────────
   const pop = POPS[step]
   if (!pop || !coords) return null
@@ -560,21 +625,19 @@ export default function OnboardingFlow({
             ))}
           </div>
           <div className="ml-auto flex items-center gap-4">
-            {step !== LAST_STEP && (
-              <button
-                onClick={finish}
-                className="text-[13px] text-muted hover:text-text-strong cursor-pointer bg-transparent border-none"
-              >
-                {i18nT('components.onboardingFlow.skip')}
-              </button>
-            )}
+            <button
+              onClick={finish}
+              className="text-[13px] text-muted hover:text-text-strong cursor-pointer bg-transparent border-none"
+            >
+              {i18nT('components.onboardingFlow.skip')}
+            </button>
             <button
               onClick={next}
-              aria-label={step === LAST_STEP ? i18nT('components.onboardingFlow.finish_onboarding') : i18nT('components.onboardingFlow.next')}
+              aria-label={i18nT('components.onboardingFlow.next')}
               className="flex items-center gap-1.5 rounded-[10px] bg-accent text-accent-fg text-[13px] font-semibold px-3 py-2 cursor-pointer border-none hover:opacity-90 transition-opacity"
             >
-              {step === LAST_STEP ? i18nT('components.onboardingFlow.done') : i18nT('components.onboardingFlow.next')}
-              {step === LAST_STEP ? <Check size={15} /> : <ArrowRight size={15} />}
+              {i18nT('components.onboardingFlow.next')}
+              <ArrowRight size={15} />
             </button>
           </div>
         </div>

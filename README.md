@@ -113,13 +113,21 @@ Credentials: `~/.kiro/crew/.env` — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIRO
 
 KiroCrew sends **one anonymous heartbeat per day** so maintainers can see how
 many copies are actively running, which versions are in use, and which
-platforms and install channels to support. This is on by default. To turn it off:
+platforms and install channels to support. This is on by default.
+
+To turn it off, flip **Settings → Privacy → Send anonymous usage heartbeat** in
+the dashboard (the same switch appears on the last step of first-run
+onboarding). Or from a terminal:
 
 ```bash
 kirocrew telemetry disable        # persists to config.json
 export KIROCREW_TELEMETRY_DISABLED=1   # or per-shell / per-container
 kirocrew telemetry status         # print exactly what would be sent
 ```
+
+The toggle and `kirocrew telemetry disable` write the same setting, so either
+one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` overrides
+both — when it is set, the dashboard toggle is disabled and says so.
 
 **Exactly these nine fields are sent, at most once per day, and nothing else:**
 

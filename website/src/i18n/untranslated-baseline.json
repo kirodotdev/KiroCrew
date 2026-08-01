@@ -1,6 +1,6 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — re-snapshot with `node scripts/check-i18n-strings.mjs --update`. These are CEILINGS, not current counts: the gate fails only when a file gains strings, so a number here may sit above reality until someone re-snapshots. Also the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 1854,
+  "_total": 1840,
   "files": {
     "api/client.ts": {
       "total": 35,
@@ -398,9 +398,8 @@
       "prose": 3
     },
     "components/FileRenderers.tsx": {
-      "total": 2,
-      "prose": 1,
-      "template": 1
+      "total": 1,
+      "prose": 1
     },
     "components/FollowUpBar.tsx": {
       "total": 1,
@@ -474,8 +473,8 @@
       "template": 6
     },
     "components/OnboardingFlow.tsx": {
-      "total": 5,
-      "prose": 3,
+      "total": 3,
+      "prose": 1,
       "template": 2
     },
     "components/PastedChip.tsx": {
@@ -748,10 +747,10 @@
       "template": 9
     },
     "pages/ArtifactDeployPage.tsx": {
-      "total": 53,
+      "total": 50,
       "array": 15,
       "expression": 6,
-      "prose": 12,
+      "prose": 9,
       "template": 20
     },
     "pages/ArtifactDetailPage.tsx": {
@@ -918,9 +917,8 @@
       "template": 1
     },
     "pages/overview/AgentCfgTab.tsx": {
-      "total": 2,
-      "expression": 1,
-      "template": 1
+      "total": 1,
+      "expression": 1
     },
     "pages/overview/CronTab.tsx": {
       "total": 17,
@@ -968,9 +966,9 @@
       "template": 1
     },
     "pages/overview/SkillsTab.tsx": {
-      "total": 18,
+      "total": 17,
       "expression": 2,
-      "prose": 8,
+      "prose": 7,
       "template": 8
     },
     "pages/overview/SteeringTab.tsx": {
@@ -1095,11 +1093,11 @@
       "prose": 5
     },
     "pages/settings/ChatPanel.tsx": {
-      "total": 46,
+      "total": 41,
       "array": 4,
       "expression": 9,
       "object-prop": 8,
-      "prose": 14,
+      "prose": 9,
       "template": 11
     },
     "pages/settings/ComputerUsePanel.tsx": {
@@ -1108,10 +1106,10 @@
       "template": 2
     },
     "pages/settings/DisplayPanel.tsx": {
-      "total": 23,
+      "total": 22,
       "expression": 9,
       "object-prop": 9,
-      "prose": 2,
+      "prose": 1,
       "template": 3
     },
     "pages/settings/InstancesPanel.tsx": {

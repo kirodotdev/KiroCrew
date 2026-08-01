@@ -4,17 +4,13 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import PrivacyNotice, { PRIVACY_NOTICE_STORAGE_KEY } from '../components/PrivacyNotice'
 
-const HEARTBEAT_FIELDS = [
-  'random installation ID',
-  'app version',
-  'release channel',
-  'operating system',
-  'CPU architecture',
-  'Python minor version',
-  'installation channel',
-  'governance posture',
-  'first-run flag',
-] as const
+// The first-run banner is a GLANCE-level notice: it states the one-a-day
+// cadence and the never-sent categories, and links to Settings → Privacy, where
+// the full nine-field payload is enumerated (asserted in PrivacyPanel.test.tsx).
+// It deliberately does NOT restate all nine fields — a 371-character paragraph
+// above the dashboard is a wall of text a normal user skips, which defeats the
+// disclosure. The link is what carries the reader to the detail.
+const GLANCE_CLAIMS = ['one anonymous ping a day', 'prompts', 'files', 'credentials'] as const
 
 function renderNotice() {
   return render(
@@ -46,15 +42,16 @@ describe('PrivacyNotice', () => {
     expect(screen.getByRole('button', { name: 'Dismiss' })).not.toHaveFocus()
   })
 
-  it('names every field in the fixed nine-field heartbeat payload', () => {
+  it('states the cadence and the never-sent categories at a glance', () => {
     renderNotice()
 
     const description = document.getElementById('privacy-notice-description')
     expect(description).not.toBeNull()
-    expect(HEARTBEAT_FIELDS).toHaveLength(9)
-    for (const field of HEARTBEAT_FIELDS) {
-      expect(description).toHaveTextContent(field)
+    for (const claim of GLANCE_CLAIMS) {
+      expect(description).toHaveTextContent(claim)
     }
+    // Stays short enough to actually be read above the dashboard.
+    expect(description!.textContent!.length).toBeLessThan(160)
   })
 
   it('dismisses from the keyboard and persists the first-run marker', async () => {

@@ -344,7 +344,13 @@ category ids outside the fixed catalogs are rejected rather than interpreted.
 ### UI ordering and replay
 
 For a new workspace, the full-screen import gate runs before the existing
-theme/feature onboarding. Completing the merge or explicitly skipping it sets
+theme/feature onboarding. That onboarding is **six steps**: theme → about-you →
+Schedule → Apps → Sessions → **privacy** (the final step; the same telemetry
+disclosure and opt-out toggle as Settings → Privacy, rendered in the onboarding
+shell — passive, never a consent gate; see
+`docs/system-specs/modules/metrics.md` → "In-product opt-out"). Because privacy
+is last, the three tour popovers all advance with "Next" and only the privacy
+step offers "Done". Completing the merge or explicitly skipping it sets
 `dashboard.import_onboarded`; the existing `dashboard.onboarded` flow then
 continues independently. When `import_onboarded` is missing, it migrates from
 `dashboard.onboarded`, so existing onboarded users retain legacy status and do not

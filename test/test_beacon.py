@@ -343,6 +343,34 @@ class TestSuppression:
         assert not ok and "KIROCREW_HOME" in reason
 
 
+class TestEnvOptOutProbe:
+    """``is_env_opted_out`` backs the dashboard toggle's disabled state.
+
+    The privacy panel must distinguish "off because the stored flag is false"
+    (a toggle can flip it) from "off because the environment pins it" (a config
+    write would be accepted and then have no effect).
+    """
+
+    def test_false_when_unset(self, _isolated_home):
+        assert beacon.is_env_opted_out() is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+    def test_true_for_each_truthy_spelling(self, _isolated_home, monkeypatch, value):
+        monkeypatch.setenv(beacon.DISABLE_ENV, value)
+        assert beacon.is_env_opted_out() is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
+    def test_false_for_non_truthy(self, _isolated_home, monkeypatch, value):
+        monkeypatch.setenv(beacon.DISABLE_ENV, value)
+        assert beacon.is_env_opted_out() is False
+
+    def test_agrees_with_should_send(self, _isolated_home, monkeypatch):
+        """The probe and the real suppression rule must never disagree."""
+        monkeypatch.setenv(beacon.DISABLE_ENV, "1")
+        ok, _reason = beacon.should_send(enabled=True)
+        assert beacon.is_env_opted_out() is True and not ok
+
+
 class TestDefaultHomeDetection:
     """Exercises the REAL is_default_home (the suppression fixture stubs it)."""
 

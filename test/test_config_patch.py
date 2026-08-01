@@ -208,6 +208,39 @@ class TestBoolValidator:
         written = json.loads(tmp_config.read_text(encoding="utf-8"))
         assert written["instances"]["enabled"] is True
 
+    @pytest.mark.asyncio
+    async def test_beacon_enabled_opt_out(self, tmp_config) -> None:
+        """Settings → Privacy flips the beacon through this endpoint.
+
+        This is the GUI twin of ``kirocrew telemetry disable`` and must persist
+        to the SAME key, so the choice survives restarts and the CLI reports it.
+        """
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "telemetry.beacon_enabled", False)).status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert written["telemetry"]["beacon_enabled"] is False
+
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "telemetry.beacon_enabled", True)).status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert written["telemetry"]["beacon_enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_beacon_enabled_rejects_non_bool(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "telemetry.beacon_enabled", "off")).status == 400
+
+    @pytest.mark.asyncio
+    async def test_beacon_endpoint_is_not_editable(self, tmp_config) -> None:
+        """Only the boolean opt-out is reachable from the dashboard.
+
+        Exposing ``beacon_endpoint`` would let a dashboard caller redirect the
+        heartbeat to an arbitrary host, so it stays CLI/config-file-only.
+        """
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "telemetry.beacon_endpoint", "https://evil.example")
+            assert resp.status == 400
+
 
 # ── Str validator (pool_agent) ───────────────────────────────────────────
 

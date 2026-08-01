@@ -1203,6 +1203,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "enum",
         "values": ["", "codes", "somewhat-technical", "non-technical"],
     },
+    # Anonymous usage beacon — the in-product opt-out (Settings → Privacy
+    # toggle), the GUI twin of `kirocrew telemetry disable`. Only the boolean
+    # enable is editable here: beacon_endpoint stays CLI/config-file-only so a
+    # dashboard caller cannot redirect the heartbeat to an arbitrary host.
+    # Nothing about this key is sensitive to read back, so the masked GET
+    # already surfaces it for the toggle's initial state.
+    "telemetry.beacon_enabled": {"type": "bool"},
     # SSO login flags for an edition that supplies a real sso_login_handler.
     # Bounded to a short string here; the companion login handler re-validates
     # each token against its own flag allowlist before spawning the login PTY

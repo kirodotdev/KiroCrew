@@ -190,6 +190,17 @@ def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in _ENV_TRUTHY
 
 
+def is_env_opted_out() -> bool:
+    """Return whether ``KIROCREW_TELEMETRY_DISABLED`` pins the beacon off.
+
+    Public because the dashboard's privacy panel must distinguish "off because
+    the stored flag is false" (a toggle can flip it) from "off because the
+    environment says so" (a config write would be accepted and then have no
+    effect — so the UI disables the control and says why instead).
+    """
+    return _env_truthy(DISABLE_ENV)
+
+
 def is_ci() -> bool:
     """Return whether this looks like an automated/CI environment."""
     return any(os.environ.get(v) for v in _CI_ENV_VARS)

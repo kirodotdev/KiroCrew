@@ -1,6 +1,6 @@
 # Metrics Telemetry Module
 
-Last Updated: 2026-07-30 (anonymous usage beacon — a THIRD, separate telemetry path)
+Last Updated: 2026-08-01 (in-product beacon opt-out toggle + onboarding privacy step)
 
 ## Overview
 
@@ -532,6 +532,46 @@ always matches and the suppression would never fire (a real bug caught by
 payload and never materializes an id (`install_id(create=False)`); `disable`
 persists to `config.json` so the choice survives a new shell.
 
+`beacon.is_env_opted_out()` is the public probe for "the env var pins this off".
+It exists so the dashboard can distinguish *off because the stored flag is false*
+(a toggle can flip it) from *off because the environment says so* (a config write
+would be accepted and then have no effect).
+
+### In-product opt-out (Settings → Privacy toggle)
+
+The GUI twin of `kirocrew telemetry disable`. It writes the **same** key —
+`telemetry.beacon_enabled` via `PATCH /api/config/kirocrew` — so the two controls
+cannot disagree and the choice survives restarts and upgrades.
+
+- Only the **boolean** is dashboard-editable. `telemetry.beacon_endpoint` is
+  deliberately absent from `_EDITABLE_CONFIG`: exposing it would let a dashboard
+  caller redirect the heartbeat to an arbitrary host.
+- `GET /api/telemetry/beacon` (`handlers/telemetry.py::api_beacon_status`) feeds
+  the control. It returns the **stored** flag (`enabled`) *and* the **effective**
+  verdict (`would_send` + `reason`), because the env var, a CI host, a
+  non-default data home, or a `config.local.json` overlay each suppress sending
+  independently of the flag. A privacy control that reads "on" while something
+  else silences the beacon — or "off" while it still sends — is a false promise,
+  so the panel states which one is in force.
+- `env_override` reports specifically whether `KIROCREW_TELEMETRY_DISABLED` pins
+  the state; when it does, the toggle is **disabled** rather than offering a
+  write that cannot take effect.
+- `overlay_override` does the same for a `config.local.json` entry.
+  `config.local.json` deep-merges **over** `config.json` — the file the toggle
+  writes — so an entry there would let the switch snap back to the overlay's
+  value after a successful save. The endpoint reports it and the panel disables
+  the toggle and names the file (the same case `kirocrew telemetry disable`
+  detects and reports; see `cli_commands._telemetry`). The probe is best-effort:
+  a missing, unreadable, or malformed overlay reports "not pinned", since
+  `enabled` already carries the authoritative effective value.
+- The handler routes `KiroCrewConfig.load()` and the overlay probe through
+  `asyncio.to_thread` — both stat/read files, and this runs on the aiohttp event
+  loop, where a synchronous read stalls every other request behind it.
+- The endpoint is read-only, never materializes an install id
+  (`status(create=False)`), does not return the id itself, and fails **toward
+  off** on an unreadable config — a diagnostic must not 500, and must never claim
+  telemetry is on when that cannot be proven.
+
 ### In-product privacy disclosure
 
 The dashboard discloses the default-on beacon without turning disclosure into a
@@ -550,7 +590,18 @@ consent flow:
   installation id, app version, release channel, operating system, CPU
   architecture, Python minor version, installation channel, governance posture,
   and first-run flag.
-  It also states the excluded data and exposes the status and disable commands.
+  It also states the excluded data, carries the **opt-out toggle** (above), and
+  keeps the status/disable commands beneath it — the CLI remains documented
+  because it is the only way to override a `config.local.json` overlay and the
+  only control on a headless host.
+- **Onboarding step 6 (final)** shows the same disclosure and the same toggle in
+  the `OnboardingChapterShell` layout, so a new user sees what is sent and can
+  opt out before finishing setup. It is **passive**: no consent gate and no
+  required choice — Done always completes onboarding, and Skip/Escape still work.
+- The disclosure copy and the control are single-sourced in
+  `components/PrivacyDisclosure.tsx` (`PrivacyDisclosureSections`,
+  `TelemetryToggle`, `PrivacyCommandList`) and consumed by both surfaces, so the
+  first-run explanation and the durable panel cannot drift.
 - The durable surface distinguishes local usage/context records from optional
   performance metrics. Performance metrics are off by default and remain local
   when enabled, with one explicit exception: they egress only when the operator
