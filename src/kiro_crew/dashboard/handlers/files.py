@@ -1908,16 +1908,23 @@ async def api_file_search(request: web.Request) -> web.Response:
     scoped = bool(search_roots)
 
     if not search_roots:
-        # Fallback: project dir, kirocrew workspace, home
+        # Fallback: project dir, then the kirocrew workspace.
+        #
+        # Bare $HOME is deliberately NOT a fallback root. Walking it reaches
+        # every TCC-gated folder macOS knows about, and each one costs a
+        # separate consent dialog -- paid on an unscoped keystroke the user
+        # never pointed anywhere. The results did not justify it either: the
+        # walk stops at max_scan entries in os.walk order, so an unscoped home
+        # search returned whichever files happened to be reached first rather
+        # than the best matches. Callers that genuinely want home can still
+        # ask for it explicitly with ?project=$HOME, which is scoped and
+        # searched in full.
         proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
         if proj and os.path.isdir(proj):
             search_roots.append(proj)
         mc_workspace = str(config_dir() / "workspace")
         if os.path.isdir(mc_workspace):
             search_roots.append(mc_workspace)
-        home = os.path.expanduser("~")
-        if home not in search_roots:
-            search_roots.append(home)
 
     # Filter out sensitive roots
     safe_roots: list[str] = []
@@ -1954,22 +1961,18 @@ async def api_file_search(request: web.Request) -> web.Response:
         for root_dir in safe_roots:
             if walked >= max_scan or len(results) >= max_collect:
                 break
-            # macOS: when this root is the bare $HOME fallback, prune the
-            # TCC-gated folders. Reaching into them would pop one consent
-            # modal PER folder for a search the user scoped to nothing.
-            # ``scoped`` means the user NAMED this root (?project= / ?workspace=),
-            # so even ``project=$HOME`` is deliberate and is searched in full.
-            tcc_skip = (
-                frozenset() if scoped
-                else platform_compat.tcc_protected_dirs_for_walk(root_dir)
-            )
+            # macOS: prune the TCC-gated folders. Reaching into them would pop
+            # one consent modal PER folder. ``scoped`` means the user NAMED
+            # this root (?project= / ?workspace=), so even ``project=$HOME``
+            # is deliberate and is searched in full.
             for dirpath, dirnames, filenames in os.walk(root_dir):
-                dirnames[:] = [
+                pruned = [
                     d for d in dirnames
-                    if not d.startswith(".")
-                    and d not in skip_dirs
-                    and not (dirpath == root_dir and d in tcc_skip)
+                    if not d.startswith(".") and d not in skip_dirs
                 ]
+                dirnames[:] = pruned if scoped else platform_compat.tcc_prune_walk_dirs(
+                    root_dir, dirpath, pruned
+                )
                 for fname in filenames:
                     if walked >= max_scan or len(results) >= max_collect:
                         break

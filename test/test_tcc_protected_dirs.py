@@ -89,13 +89,102 @@ class TestTccHelper:
         with patch.object(platform_compat, "IS_MACOS", True):
             assert platform_compat.tcc_protected_dirs_for_walk("/tmp/a\x00b") == frozenset()
 
-    def test_library_is_not_pruned(self):
-        """``~/Library`` is not TCC-gated, and holds CloudStorage project mounts.
+    def test_library_is_descended_but_gated_children_are_pruned(self):
+        """``~/Library`` must be reachable yet mostly pruned.
 
-        Pruning it would remove zero prompts while hiding OneDrive / Google
-        Drive / iCloud project trees from search.
+        It is NOT a plain member of the top-level set, because the walk has to
+        descend into it to reach the cloud-drive mounts. What it gets instead is
+        an allowlist: only CloudStorage / Mobile Documents survive.
+
+        The earlier premise here was that ``~/Library`` is not TCC-gated and so
+        pruning it would remove zero prompts. That is wrong -- ``Library/Mail``,
+        ``Library/Messages``, ``Library/Safari``, ``Library/Calendars``,
+        ``Library/Cookies``, ``Library/Containers/com.apple.*`` and several
+        ``Application Support`` leaves are all Full-Disk-Access gated.
         """
         assert "Library" not in platform_compat.TCC_PROTECTED_HOME_DIRS
+        assert platform_compat.TCC_LIBRARY_WALKABLE_CHILDREN == frozenset(
+            {"CloudStorage", "Mobile Documents"}
+        )
+
+
+class TestLibraryPruning:
+    """``~/Library`` is walked only as far as the cloud-drive mounts."""
+
+    @staticmethod
+    def _prune(root, dirpath, dirnames, tmp_path):
+        with (
+            patch.object(platform_compat, "IS_MACOS", True),
+            patch.dict(os.environ, _home_env(tmp_path), clear=False),
+        ):
+            return platform_compat.tcc_prune_walk_dirs(root, dirpath, dirnames)
+
+    def test_library_survives_the_root_prune(self, tmp_path):
+        """Pruning Library at the root would make the cloud mounts unreachable."""
+        got = self._prune(
+            str(tmp_path), str(tmp_path), ["Library", "Downloads", "code"], tmp_path
+        )
+        assert got == ["Library", "code"]
+
+    def test_gated_library_children_are_pruned(self, tmp_path):
+        lib = str(tmp_path / "Library")
+        got = self._prune(
+            str(tmp_path),
+            lib,
+            ["Mail", "Messages", "Safari", "Cookies", "Containers", "CloudStorage"],
+            tmp_path,
+        )
+        assert got == ["CloudStorage"]
+
+    def test_cloud_mounts_are_kept(self, tmp_path):
+        lib = str(tmp_path / "Library")
+        got = self._prune(
+            str(tmp_path), lib, ["CloudStorage", "Mobile Documents", "Caches"], tmp_path
+        )
+        assert got == ["CloudStorage", "Mobile Documents"]
+
+    def test_unknown_library_child_is_pruned(self, tmp_path):
+        """An allowlist, not a denylist: macOS keeps adding gated subpaths, and
+        a name this code has never heard of must default to pruned."""
+        lib = str(tmp_path / "Library")
+        assert self._prune(str(tmp_path), lib, ["SomeFutureGatedThing"], tmp_path) == []
+
+    def test_nested_library_is_untouched(self, tmp_path):
+        """Only ``<root>/Library`` is special. A project's own nested
+        ``Library/`` is not gated and keeps every child."""
+        deep = str(tmp_path / "code" / "Library")
+        got = self._prune(str(tmp_path), deep, ["Mail", "Safari"], tmp_path)
+        assert got == ["Mail", "Safari"]
+
+    def test_library_of_a_scoped_root_is_untouched(self, tmp_path):
+        """Root is not $HOME, so nothing prunes -- the user named this tree."""
+        proj = tmp_path / "code"
+        got = self._prune(str(proj), str(proj / "Library"), ["Mail"], tmp_path)
+        assert got == ["Mail"]
+
+    def test_off_macos_prunes_nothing(self, tmp_path):
+        with patch.object(platform_compat, "IS_MACOS", False):
+            got = platform_compat.tcc_prune_walk_dirs(
+                str(tmp_path), str(tmp_path / "Library"), ["Mail"]
+            )
+        assert got == ["Mail"]
+
+    @pytest.mark.asyncio
+    async def test_index_at_home_skips_gated_library(self, tmp_path):
+        """End-to-end through the walk that re-runs every 30s."""
+        for rel in ("Library/Mail", "Library/CloudStorage/Work"):
+            d = tmp_path / rel
+            d.mkdir(parents=True)
+            (d / "target.txt").write_text("x")
+        with (
+            patch.object(platform_compat, "IS_MACOS", True),
+            patch.dict(os.environ, _home_env(tmp_path), clear=False),
+        ):
+            idx = FileIndex(str(tmp_path))
+            entries, _ = await __import__("asyncio").to_thread(idx._walk)
+        rels = {os.path.relpath(e[0], tmp_path) for e in entries}
+        assert os.path.join("Library", "CloudStorage", "Work", "target.txt") in rels
+        assert not any(r.startswith(os.path.join("Library", "Mail")) for r in rels)
 
 
 class TestFileIndexPruning:
@@ -168,7 +257,15 @@ def mock_sel():
 
 class TestFileSearchPruning:
     @pytest.mark.asyncio
-    async def test_home_fallback_skips_tcc_dirs(self, tmp_path, mock_sel):
+    async def test_home_is_not_an_implicit_search_root(self, tmp_path, mock_sel):
+        """An unscoped search must not walk $HOME at all.
+
+        This supersedes an earlier contract where bare $HOME was a fallback
+        root that merely pruned its gated top-level folders. Pruning still left
+        the walk descending ``~/Library`` (Full-Disk-Access gated) and paid a
+        whole-home walk per keystroke for results taken in os.walk order rather
+        than by match quality. Nothing incidental walks home now.
+        """
         _make_home(tmp_path)
         with (
             patch.object(platform_compat, "IS_MACOS", True),
@@ -179,11 +276,26 @@ class TestFileSearchPruning:
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get("/api/file-search?q=target")
                 paths = [r["path"] for r in (await resp.json())["results"]]
-        for name in _TCC_DIRS:
-            assert not any(
-                f"{os.sep}{name}{os.sep}" in p for p in paths
-            ), f"{name} must not be searched from the bare $HOME fallback"
-        assert any(f"{os.sep}code{os.sep}" in p for p in paths)
+        assert not any(str(tmp_path) in p for p in paths), (
+            "no result may come from $HOME when the caller scoped nothing"
+        )
+
+    @pytest.mark.asyncio
+    async def test_named_project_root_is_still_searched(self, tmp_path, mock_sel):
+        """Dropping the home fallback must not break the real fallback root."""
+        proj = _make_home(tmp_path)
+        with (
+            patch.object(platform_compat, "IS_MACOS", True),
+            patch.dict(
+                os.environ,
+                {**_home_env(tmp_path), "KIROCREW_PROJECT_DIR": str(proj)},
+                clear=False,
+            ),
+        ):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/file-search?q=target")
+                names = {r["name"] for r in (await resp.json())["results"]}
+        assert "target.txt" in names
 
     @pytest.mark.asyncio
     async def test_explicit_project_under_tcc_dir_still_searchable(self, tmp_path, mock_sel):
