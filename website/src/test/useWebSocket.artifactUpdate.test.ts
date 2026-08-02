@@ -152,4 +152,12 @@ describe('useWebSocket artifact_update frame', () => {
     expect(keys).not.toContain(JSON.stringify(['artifacts']))
     expect(onDeleted).not.toHaveBeenCalled()
   })
+
+  it('invalidates session-scoped artifact queries so the Artifacts tab refreshes', () => {
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    send({ slug: 'widget-abc', version: 1, deleted: false })
+    const keys = spy.mock.calls.map(c => JSON.stringify(c[0]?.queryKey))
+    expect(keys).toContain(JSON.stringify(['session-artifact-records']))
+    expect(keys).toContain(JSON.stringify(['session-artifacts']))
+  })
 })

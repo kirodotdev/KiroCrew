@@ -1638,7 +1638,19 @@ def _schedule_widget_registration(
     # unlike ``_collect_session_docs``). WidgetFrame's fallback create also sends
     # the bare key, so this keeps auto-registered and star-created artifacts in
     # the same bucket — the one the tab can actually see.
-    task = asyncio.create_task(register_widgets_off_loop(text, message_ts, slot.key))
+
+    async def _register_and_notify() -> list[str]:
+        slugs = await register_widgets_off_loop(text, message_ts, slot.key)
+        # Broadcast artifact_update for each newly registered widget so the
+        # frontend's in-session Artifacts tab refreshes immediately rather than
+        # waiting for the react-query staleness window. Without this, the tab
+        # has no signal that a widget was just auto-registered (registration
+        # bypasses the HTTP handler that normally broadcasts).
+        for s in slugs:
+            state.push_artifact_update(s, 1)
+        return slugs
+
+    task = asyncio.create_task(_register_and_notify())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 
