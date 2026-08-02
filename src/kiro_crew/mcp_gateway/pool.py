@@ -4,13 +4,34 @@ Two sessions sharing a single backend MUST produce the same answers as if
 each had its own backend. Every attribute that changes backend behavior
 MUST be in :class:`PoolKey`, or two sessions can see cross-tenant state.
 
-The 14 dimensions captured below are the union of every spawn-time input
+The 13 dimensions captured below are the union of every spawn-time input
 that influences a Kiro MCP subprocess: identity (``server_name``,
 ``agent_name``), execution (``command_args_hash``, ``effective_env_hash``,
 ``work_dir``, ``binary_version``), security (``os_uid``, ``sandbox_mode``,
 ``autoapprove_set_hash``, ``approval_mode``, ``trust_all_tools``,
-``user_identity``), tenancy (``channel_id``), and config drift
-(``config_snapshot_hash``).
+``user_identity``), and config drift (``config_snapshot_hash``).
+
+There is deliberately NO channel dimension. A channel is not a trust
+boundary and never was a usable proxy for one:
+
+* It is not a consistent unit. On Slack a channel is a ROOM shared by many
+  people, so two different humans in one channel landed on the same backend
+  anyway — the isolation it advertised was never delivered. On Telegram the
+  same field held a per-user id. A dimension whose meaning changes per
+  transport cannot carry a security invariant.
+* It over-partitions the common case. One person reaching the same agent
+  from the dashboard and from a chat transport would burn a separate backend
+  per surface, which is exactly the memory pooling exists to reclaim.
+* It is redundant with a mechanism that already works. ``gatewayd`` stamps
+  ``_meta.kirocrew.caller`` (session key, session type, principal, channel)
+  onto every forwarded ``tools/call``, so a channel-aware backend learns the
+  channel PER CALL and does not need a process to itself.
+
+The axis that genuinely expresses "a different person must not share a
+backend" is ``user_identity``. It is present above, and today it degrades to
+the OS user because nothing populates ``KIROCREW_PRINCIPAL`` — making that
+real is the prerequisite for a shared multi-principal gateway, and is
+tracked separately. Re-adding a channel dimension is not that fix.
 
 Stable hashing uses SHA-256 over a JSON-serialized tuple with sorted keys.
 Python's built-in ``hash()`` is intentionally non-deterministic across
@@ -220,8 +241,7 @@ class PoolKey:
     trust_all_tools: bool
     user_identity: str
 
-    # Tenancy + config drift
-    channel_id: Optional[str]
+    # Config drift
     config_snapshot_hash: str
 
     # --- Constructors ------------------------------------------------------
@@ -241,21 +261,20 @@ class PoolKey:
         missing = [
             f.name
             for f in cls.__dataclass_fields__.values()  # type: ignore[attr-defined]
-            if f.name != "channel_id" and f.name not in register
+            if f.name not in register
         ]
         if missing:
             raise ValueError(f"Register payload missing required fields: {missing}")
 
-        channel_id = register.get("channel_id")
-        if channel_id is not None and not isinstance(channel_id, str):
-            raise ValueError(f"channel_id must be str or None, got {type(channel_id).__name__}")
-        if isinstance(channel_id, str) and not channel_id:
-            channel_id = None  # empty string ⇒ no channel
-
+        # A ``channel_id`` on the payload is IGNORED here, not rejected: the
+        # stub still reports it because gatewayd threads it into the per-call
+        # caller identity (see ``_build_caller_block``), and an older stub
+        # against a newer daemon must keep registering cleanly. It is simply
+        # not a pool dimension — see the module docstring.
         # Security-boundary dims: type-check rather than coerce. bool("false")
         # is True and int() on a bool silently passes, so a stub sending a JSON
         # string/number for these could land in the wrong trust/uid partition.
-        # Reject a non-matching type (mirrors the channel_id check above).
+        # Reject a non-matching type rather than coercing it.
         os_uid = register["os_uid"]
         if isinstance(os_uid, bool) or not isinstance(os_uid, int):
             raise ValueError(f"os_uid must be int, got {type(os_uid).__name__}")
@@ -277,7 +296,6 @@ class PoolKey:
                 approval_mode=str(register["approval_mode"]),
                 trust_all_tools=trust_all_tools,
                 user_identity=str(register["user_identity"]),
-                channel_id=channel_id,
                 config_snapshot_hash=str(register["config_snapshot_hash"]),
             )
         except (TypeError, ValueError) as exc:
@@ -310,11 +328,10 @@ class PoolKey:
             if len(self.effective_env_hash) > 8
             else self.effective_env_hash
         )
-        chan = f" chan={self.channel_id}" if self.channel_id else ""
         return (
             f"{self.agent_name}:{self.server_name} "
             f"uid={self.os_uid} sbx={self.sandbox_mode} "
-            f"cmd={cmd_short} env={env_short} ws={self.work_dir}{chan}"
+            f"cmd={cmd_short} env={env_short} ws={self.work_dir}"
         )
 
 

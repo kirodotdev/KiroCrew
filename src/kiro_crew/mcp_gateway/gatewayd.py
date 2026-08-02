@@ -912,8 +912,13 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     # environment doesn't leak into Python-based MCP backends (import conflicts).
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
-    if pool_key.channel_id:
-        env["KIROCREW_CHANNEL_ID"] = pool_key.channel_id
+    # No KIROCREW_CHANNEL_ID is exported into the backend env. It used to be
+    # copied from PoolKey.channel_id, which only made sense while a backend was
+    # owned by one channel. A pooled backend serves several channels, so a
+    # single channel baked into its environment at spawn would be actively
+    # wrong — it would tell the server it belongs to whichever channel happened
+    # to spawn it first. The channel is delivered PER CALL instead, in
+    # _meta.kirocrew.caller (see _inject_caller_meta).
     return command, args, env, pool_key.work_dir
 
 

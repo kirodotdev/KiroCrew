@@ -105,12 +105,14 @@ def pooled_session_servers(
     gateway is disabled, which is the natural off switch — this returns ``[]``
     and the session runs entirely on the agent's own servers.
 
-    ``channel_id`` scopes the pool key so sessions in different channels do not
-    share a backend. It is passed here rather than baked into the overlay
-    because the overlay is written once at gateway startup and is
-    session-agnostic, while this function runs per session. ``None`` (the
-    default, and what a runtime with no channel concept supplies) leaves the
-    flag off and the stub collapses to the channel-less pool key.
+    ``channel_id`` reaches the stub so it can report the channel in its caller
+    identity, which ``gatewayd`` stamps onto every forwarded ``tools/call`` as
+    ``_meta.kirocrew.caller``. It is deliberately NOT a pool dimension (see
+    :mod:`kiro_crew.mcp_gateway.pool`), so passing it does not split backends —
+    two channels reaching the same agent still share one. It is passed here
+    rather than baked into the overlay because the overlay is written once at
+    gateway startup and is session-agnostic, while this function runs per
+    session. ``None`` simply leaves the flag off and the channel unreported.
 
     Fail-soft by design: any unreadable or malformed overlay yields ``[]``, so a
     bad rewrite degrades to unpooled operation rather than breaking the spawn.

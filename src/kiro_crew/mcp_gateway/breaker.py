@@ -41,9 +41,9 @@ FAST_DEATH_LIMIT = 5
 WINDOW_SECS = 60.0
 
 # Upper bound on distinct keys tracked in ``_states``. The gateway keys the
-# breaker by ``PoolKey.stable_hash()`` (agent x server x channel x config), an
-# open-ended space, so a long-lived daemon must prune fully-inactive keys to
-# avoid unbounded growth (mirrors HotKeyStore's cap).
+# breaker by ``PoolKey.stable_hash()`` (agent x server x execution x security x
+# config), an open-ended space, so a long-lived daemon must prune fully-inactive
+# keys to avoid unbounded growth (mirrors HotKeyStore's cap).
 MAX_TRACKED_KEYS = 512
 
 # Time the breaker stays OPEN once tripped. ``allow()`` returns False

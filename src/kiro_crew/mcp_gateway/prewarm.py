@@ -24,10 +24,12 @@ Two halves, both deliberately cheap on the event loop:
   ``acquire`` callable the live path uses, so a prewarmed backend is
   byte-identical to a lazily-spawned one.
 
-The PoolKey's ``channel_id`` dimension is the stable Slack channel/DM id
-(not a per-session uuid), so a backend prewarmed for a channel is hit by
-every later new-chat in that channel — prewarming by observed hot key is
-sound without any shared-fallback path.
+A PoolKey carries no channel dimension (see :mod:`kiro_crew.mcp_gateway.pool`),
+so a hot key is not tied to one conversation surface: a backend prewarmed from
+an observed key is hit by every later session that matches on agent, server and
+the execution/security dimensions, whichever channel it arrives from.
+Prewarming by observed hot key is therefore sound without any shared-fallback
+path.
 """
 
 from __future__ import annotations

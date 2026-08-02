@@ -65,7 +65,6 @@ def _pool_key(server: str = "fake-mcp-app") -> PoolKey:
         approval_mode="reads",
         trust_all_tools=False,
         user_identity="testuser",
-        channel_id=None,
         config_snapshot_hash="jkl012",
     )
 
