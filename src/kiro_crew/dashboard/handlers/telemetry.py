@@ -258,6 +258,18 @@ class _Hist:
         return max(0, len(self._groups) - 1)
 
     @property
+    def total_count(self) -> int:
+        """Samples across EVERY generation, not just the reported one.
+
+        ``count`` is deliberately scoped to one boundary generation, so on a
+        mixed window it under-reports. Pairing the two lets a caller say
+        "showing 141 of 1970" instead of publishing 141 as if it were the whole
+        population — which is what made a histogram card contradict a counter
+        for the same event with nothing explaining the gap.
+        """
+        return sum(int(g["count"]) for g in self._groups.values())
+
+    @property
     def outcomes(self) -> dict[str, int]:
         """Outcome tallies for the reported generation only.
 
@@ -269,11 +281,23 @@ class _Hist:
         return dict(g["outcomes"]) if g else {}
 
     def stats(self) -> dict[str, Any]:
+        """Reported-generation stats, WITH the mixed-window disclosure.
+
+        ``other_generations`` / ``total_count`` are part of this payload on
+        purpose rather than something each caller adds by hand: they were added
+        by the ``turn`` and ``startup`` blocks but forgotten by the generic
+        ``other`` surface, so every histogram there published a
+        one-generation subset as if it were the whole population (measured:
+        58-93% of samples dropped on three metrics, and a card contradicting the
+        counter for the same event). Emitting them here makes that omission
+        impossible for any future surface.
+        """
         g = self._dominant()
         if g is None:
             return {
                 "count": 0, "mean_ms": 0.0, "p50_ms": 0.0,
                 "p90_ms": 0.0, "min_ms": 0.0, "max_ms": 0.0,
+                "other_generations": 0, "total_count": 0,
             }
         cnt = int(g["count"])
         return {
@@ -283,6 +307,10 @@ class _Hist:
             "p90_ms": round(_pct_from_buckets(g["buckets"], g["bounds"], 0.90), 1),
             "min_ms": round(g["min"], 1) if g["min"] is not None else 0.0,
             "max_ms": round(g["max"], 1) if g["max"] is not None else 0.0,
+            # >0 means the window straddles a bucket-boundary change and only the
+            # dominant generation is reported; total_count is the full population.
+            "other_generations": self.other_generations,
+            "total_count": self.total_count,
         }
 
 
@@ -420,9 +448,6 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
         **turn.stats(),
         "outcome": turn_outcome,
         "fault_rate": round(turn_faults / turn_total, 4) if turn_total else 0.0,
-        # >0 means the window straddles a bucket-boundary change and only the
-        # dominant generation is reported (see _Hist).
-        "other_generations": turn.other_generations,
     }
 
     return {
@@ -431,7 +456,6 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
             "cold": cold.stats(),
             "warm": warm.stats(),
             "outcome": overall.outcomes,
-            "other_generations": overall.other_generations,
             "daily": daily_out,
             "distribution": {"buckets": overall.buckets, "bounds": overall.bounds},
             # Internal phase split (kiro backend): spawn_init, session_new,
