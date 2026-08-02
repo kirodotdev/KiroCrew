@@ -80,6 +80,78 @@ def _called_names(node: ast.AST) -> set[str]:
     return out
 
 
+def _path_returning_functions() -> dict[str, set[str]]:
+    """Map every ``Path``-returning function in ``src/kiro_crew`` to the names it calls.
+
+    Keyed by the BARE function name to match the detector, which flags a bare
+    call (``foo()``) or an attribute call of the same name (``mod.foo()``). When
+    two modules define a same-named function their called-name sets are merged --
+    a conservative over-approximation consistent with that name-based matching.
+
+    Only ``Path``-returning functions are graphed, because only they can be the
+    intermediate accessors that reintroduce the freeze: a helper returning
+    ``str``/``bool``/``list[str]`` cannot itself be bound as a frozen data-home
+    ``Path`` constant, and admitting them would drag the same generically-named
+    non-path helpers back into the set that ``test_factory_set_excludes_non_path_helpers``
+    exists to keep out.
+    """
+    graph: dict[str, set[str]] = {}
+    for py in sorted(SRC.rglob("*.py")):
+        if "__pycache__" in py.parts:
+            continue
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+        except SyntaxError:  # pragma: no cover - syntax is enforced elsewhere
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name.startswith("__") or node.returns is None:
+                continue
+            if "Path" not in ast.unparse(node.returns):
+                continue
+            graph.setdefault(node.name, set()).update(_called_names(node))
+    return graph
+
+
+def _transitive_path_factories() -> set[str]:
+    """The forbidden-call set, closed transitively over factory-reaching accessors.
+
+    Issue #1059. The seed (:func:`_path_factories`) is only the ``Path``-returning
+    helpers declared in ``config/paths.py``. That misses the accessors those
+    helpers front elsewhere in the tree -- e.g. ``agent.kiro_agents_dir_path()``
+    (calls ``kiro_agents_dir``) and ``subagent_persistence._subagents_dir()``
+    (calls ``data_home``). Each is itself ``Path``-returning and itself resolves
+    the data home, so binding one at module level freezes the path exactly as an
+    original constant did, and a seed-only detector never sees it.
+
+    So grow the set to its FIXPOINT: any ``Path``-returning function that
+    (directly or transitively) calls a name already in the set joins it. This is
+    computed FROM the source, never hand-listed -- a hand-maintained list is what
+    drifted and let this recur (#874 has now recurred three times), and the
+    original #874 sweep under-counted 16 sites as 6 for the same reason.
+
+    Precision is preserved by construction. A ``Path``-returning helper that
+    merely PASSES THROUGH a caller-supplied path -- ``isolated_agents_dir(home)``,
+    which just returns ``home / "kiro" / "agents"`` -- calls no factory and so
+    never enters, which is the false-positive the split-out from #1049 warned
+    about. And because only ``Path``-returning functions are ever considered, the
+    non-``Path`` helpers ``paths.py`` also exports (``preserved_entries() ->
+    list[str]``, ``_safe_dir_name() -> str``, ``_is_unsafe_home() -> bool``) can
+    never join, keeping ``test_factory_set_excludes_non_path_helpers`` green.
+    """
+    closure = _path_factories()
+    graph = _path_returning_functions()
+    changed = True
+    while changed:
+        changed = False
+        for fn, called in graph.items():
+            if fn not in closure and (called & closure):
+                closure.add(fn)
+                changed = True
+    return closure
+
+
 def _frozen_path_constants() -> list[str]:
     """Every import-time evaluation of a path factory.
 
@@ -94,7 +166,7 @@ def _frozen_path_constants() -> list[str]:
     Walking only ``tree.body`` would miss the last two, which is how a guard can
     document a stronger invariant than it enforces.
     """
-    factories = _path_factories()
+    factories = _transitive_path_factories()
     offenders: list[str] = []
     for py in sorted(SRC.rglob("*.py")):
         if "__pycache__" in py.parts:
@@ -219,6 +291,95 @@ class TestNoImportTimePathResolution:
         kinds = {f.split("[")[1].split("]")[0] for f in found if "[" in f}
         assert "class-body" in kinds, found
         assert "def-default" in kinds, found
+
+    def test_transitive_accessor_capture_is_caught_but_seed_misses_it(self, tmp_path, monkeypatch):
+        """Issue #1059: a module-level capture of a factory-fronting accessor.
+
+        Plant a tiny tree: ``paths.py`` declares the factory ``config_dir``;
+        ``accessor.py`` fronts it with ``acc_dir() -> Path`` (itself
+        ``Path``-returning, itself resolving the home); ``consumer.py`` freezes
+        it with ``FROZEN = acc_dir()``. That capture freezes the data home
+        exactly as an original constant did, but the SEED set (``paths.py`` only)
+        cannot see ``acc_dir`` -- proving the gap this issue closes. The
+        transitive closure adds ``acc_dir`` and the detector flags the freeze.
+        """
+        import sys
+
+        mod = sys.modules[__name__]
+        fake_src = tmp_path / "kiro_crew"
+        (fake_src / "config").mkdir(parents=True)
+        (fake_src / "config" / "paths.py").write_text(
+            "from pathlib import Path\n\n\ndef config_dir() -> Path:\n    return Path('.')\n",
+            encoding="utf-8",
+        )
+        (fake_src / "accessor.py").write_text(
+            "from pathlib import Path\n\n\n"
+            "def acc_dir() -> Path:\n    return config_dir() / 'x'\n",
+            encoding="utf-8",
+        )
+        (fake_src / "consumer.py").write_text(
+            "from pathlib import Path\n\nFROZEN = acc_dir()\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(mod, "SRC", fake_src)
+        monkeypatch.setattr(mod, "PATHS_MODULE", fake_src / "config" / "paths.py")
+
+        # SEED misses it; the transitive closure catches it.
+        assert "acc_dir" not in _path_factories()
+        assert "acc_dir" in _transitive_path_factories()
+
+        offenders = _frozen_path_constants()
+        assert any("consumer.py" in o and "acc_dir" in o for o in offenders), offenders
+
+    def test_transitive_closure_excludes_a_caller_supplied_pass_through(
+        self, tmp_path, monkeypatch
+    ):
+        """Precision (#1049 split-out): a pass-through must NOT enter the set.
+
+        A ``Path``-returning helper that derives from a caller-supplied path and
+        calls no factory (``passthru(base) -> base / 'y'``) does not resolve the
+        data home, so binding its result does not freeze the home. It must stay
+        out of the set, and its module-level capture must NOT be flagged --
+        otherwise the widened closure reintroduces the over-broad-factory-set
+        failure mode the precision test exists to catch.
+        """
+        import sys
+
+        mod = sys.modules[__name__]
+        fake_src = tmp_path / "kiro_crew"
+        (fake_src / "config").mkdir(parents=True)
+        (fake_src / "config" / "paths.py").write_text(
+            "from pathlib import Path\n\n\ndef config_dir() -> Path:\n    return Path('.')\n",
+            encoding="utf-8",
+        )
+        (fake_src / "passthru.py").write_text(
+            "from pathlib import Path\n\n\n"
+            "def passthru(base: Path) -> Path:\n    return base / 'y'\n",
+            encoding="utf-8",
+        )
+        (fake_src / "consumer.py").write_text(
+            "from pathlib import Path\n\nSAFE = passthru(Path('/tmp'))\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(mod, "SRC", fake_src)
+        monkeypatch.setattr(mod, "PATHS_MODULE", fake_src / "config" / "paths.py")
+
+        assert "passthru" not in _transitive_path_factories()
+        offenders = _frozen_path_constants()
+        assert not any("passthru" in o for o in offenders), offenders
+
+    def test_real_tree_accessors_are_in_the_transitive_set(self):
+        """The concrete accessors named in #1059 must now be covered.
+
+        ``agent.kiro_agents_dir_path`` (calls ``kiro_agents_dir``) and
+        ``subagent_persistence._subagents_dir`` (calls ``data_home``) are the
+        exact factory-fronting accessors the seed missed. Assert they are in the
+        closure computed over the real source tree, so a future module-level
+        capture of either is flagged.
+        """
+        transitive = _transitive_path_factories()
+        for name in ("kiro_agents_dir_path", "_subagents_dir"):
+            assert name in transitive, name
+            assert name not in _path_factories(), name
 
 
 # (module import path, override constant, accessor) for every accessor that

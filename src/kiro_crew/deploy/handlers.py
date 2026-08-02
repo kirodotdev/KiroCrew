@@ -167,8 +167,6 @@ def _data_dir() -> Path:
     return config_dir() / "deploy"
 
 
-DATA_DIR = _data_dir()
-CONFIG_PATH = DATA_DIR / "config.json"
 DEFAULT_REGION = engine.DEFAULT_REGION
 _SITE_ID_MAX = 64
 

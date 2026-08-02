@@ -215,9 +215,21 @@ Annotating the override as `Path | None` is load-bearing: any consumer that
 still reads the constant directly becomes a **mypy error** rather than a silent
 `None` at runtime. This is enforced repo-wide by
 `test/test_lazy_data_home_paths.py`, which walks the AST of `src/kiro_crew` for
-module-level assignments calling any factory declared in `config/paths.py` and
-fails on every hit. The factory list is derived from `paths.py` itself, so a
-newly added factory is covered without editing the test. Issue #874.
+module-level (and class-body / default-argument) assignments calling any factory
+and fails on every hit. The factory set is derived FROM the source, never
+hand-listed: it starts from the `Path`-returning helpers declared in
+`config/paths.py` and is then closed TRANSITIVELY -- any `Path`-returning
+function anywhere in `src/kiro_crew` that directly or transitively calls one of
+those helpers joins the set (issue #1059). This catches the accessors those
+helpers front -- e.g. `agent.kiro_agents_dir_path()` and
+`subagent_persistence._subagents_dir()` -- which are themselves `Path`-returning
+and themselves resolve the home, so binding one at import freezes the path
+exactly as an original constant did. A helper that merely passes through a
+caller-supplied path calls no factory and stays out, and only `Path`-returning
+functions are ever considered, so the non-`Path` helpers `paths.py` also exports
+(`preserved_entries()`, `_safe_dir_name()`, `_is_unsafe_home()`) never widen it.
+Because the set is source-derived, a newly added factory or accessor is covered
+without editing the test. Issues #874, #1059.
 
 **`config_dir()` maintains; `data_home()` only resolves.** `config_dir()` is
 *resolve + maintain*: besides resolving the home it `mkdir`s it, refreshes the
