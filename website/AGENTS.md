@@ -77,11 +77,11 @@ Do NOT use emojis, `size={N}` props, `inline-flex` wrappers, inline SVG icon com
 - `src/components/EmojiPicker.tsx` — emoji catalog component
 - `src/pages/scenes/` — decorative scene elements
 - `src/hooks/useTheme.ts` and `src/components/themeEditor.tsx` — theme display names
-- `src/pages/ChatSidebar.tsx` folder icons — a folder's icon is a single emoji
-  the backend auto-generates (and the user may override via `FolderIconPicker`).
-  It is folder *data* rendered by `FolderGlyph`, not a status/UI icon, so
-  `FOLDER_EMOJIS` (the curated picker grid) and the free-emoji input are
-  intentional.
+- `src/components/folderEmoji.ts` and `src/components/FolderConfigModal.tsx`
+  folder icons — a folder's icon is a single emoji the backend auto-generates
+  (and the user may override in the folder create/settings modal). It is folder
+  *data* rendered by `FolderGlyph`, not a status/UI icon, so `FOLDER_EMOJIS`
+  (the curated picker grid) and the free-emoji input are intentional.
 
 See `AUTOSDE.yaml` rules `use-lucide-icons` and `no-emoji-as-icons` for enforcement.
 

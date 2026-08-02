@@ -675,9 +675,12 @@ test.describe('E2E: sidebar tag columns', () => {
     await page.goto('/chat')
     await page.waitForSelector(`[data-testid="column-${col.id}"]`)
     await page.locator(`[data-testid="column-new-folder-${col.id}"]`).click()
-    const input = page.locator('input[placeholder="Folder name…"]').first()
+    // The per-column inline input was replaced by the shared folder modal, which
+    // also collects project directory / default agent / icon.
+    const input = page.locator('[data-testid="folder-config-name"]')
+    await expect(input).toBeVisible()
     await input.fill('E2E-28 NewFolder')
-    await input.press('Enter')
+    await page.locator('[data-testid="folder-config-submit"]').click()
     await expect.poll(async () => {
       const list = await (await request.get('/api/chat/folders')).json()
       return list.find((f: { name: string }) => f.name === 'E2E-28 NewFolder')

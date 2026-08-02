@@ -437,10 +437,13 @@ describe('ChatSidebar tag/column UI', () => {
     renderBoard()
     await waitFor(() => expect(screen.getByTestId('column-c1')).toBeInTheDocument())
     fireEvent.click(screen.getByTestId('column-new-folder-c1'))
-    // An inline input appears scoped to this column; set value and submit with Enter
-    const input = screen.getByPlaceholderText(/folder name/i)
+    // The per-column inline input was replaced by the shared folder modal.
+    // Board columns are a VIEW of the folder tree, not a container, so a folder
+    // created from a column header is a top-level folder — the modal needs no
+    // column scope, unlike the input it replaced.
+    const input = await screen.findByTestId('folder-config-name')
     fireEvent.change(input, { target: { value: 'Backlog' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.click(screen.getByTestId('folder-config-submit'))
     await waitFor(() => expect(backend.state.folders.length).toBe(1))
     expect(backend.state.folders[0].name).toBe('Backlog')
   })

@@ -1184,7 +1184,11 @@ export const api = {
   slackChannels: () => fetch('/api/slack/channels').then(j),
   // Folders
   chatFolders: () => fetch('/api/chat/folders', { headers: { ..._sk } }).then(j),
-  createChatFolder: (name: string, parentId?: string) => post('/api/chat/folders', { name, parent_id: parentId || '' }).then(j),
+  /** `config` carries the folder settings the create modal collects. Each is
+   *  omitted when empty so the backend applies its own default — notably an
+   *  absent `icon` leaves the LLM emoji auto-generation in place. */
+  createChatFolder: (name: string, parentId?: string, config?: { project_dir?: string; default_agent?: string; icon?: string }) =>
+    post('/api/chat/folders', { name, parent_id: parentId || '', ...(config ?? {}) }).then(j),
   updateChatFolder: (id: string, body: object) => patch('/api/chat/folders/' + encodeURIComponent(id), body).then(j),
   deleteChatFolder: (id: string) => del('/api/chat/folders/' + encodeURIComponent(id)).then(j),
   setSlotFolder: (slot: string, folderId: string | null) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/folder', { folder_id: folderId || '' }).then(j),

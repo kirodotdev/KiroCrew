@@ -21,26 +21,37 @@ interface ModalProps {
   /** Framer Motion layoutId for card-to-modal expand animation. When set, the modal
    *  morphs from a matching layoutId element instead of using scale+opacity. */
   layoutId?: string
+  /** When true, the ACCIDENTAL dismissal paths (backdrop click, Escape) are
+   *  ignored; the explicit ones (X button, and any footer Cancel the caller
+   *  renders) still close. Set it while a modal holds unsaved user input, so
+   *  grazing the backdrop cannot silently destroy a part-filled form. */
+  guardAccidentalDismiss?: boolean
   /** Modal content */
   children: React.ReactNode
 }
 
 const SPRING = { type: 'spring' as const, stiffness: 500, damping: 35 }
 
-export default function Modal({ open, onClose, title, footer, headerActions, maxWidth = 640, height, layoutId, children }: ModalProps) {
+export default function Modal({ open, onClose, title, footer, headerActions, maxWidth = 640, height, layoutId, guardAccidentalDismiss = false, children }: ModalProps) {
   const dismiss = useCallback(() => onClose(), [onClose])
+  /** Backdrop + Escape only. Suppressed while the caller guards unsaved input. */
+  const softDismiss = useCallback(() => { if (!guardAccidentalDismiss) onClose() }, [guardAccidentalDismiss, onClose])
 
   useEffect(() => {
     if (!open) return
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') dismiss() }
+    // Skip an Escape a nested layer already consumed. Overlays that render ABOVE
+    // this modal (ProjectPicker portals at z-[9999]) call preventDefault on their
+    // own Escape handling; without this check the same keydown bubbles to window
+    // and tears down the modal underneath too, destroying an in-progress draft.
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented) softDismiss() }
     window.addEventListener('keydown', handler)
     return () => {
       document.body.style.overflow = prevOverflow
       window.removeEventListener('keydown', handler)
     }
-  }, [open, dismiss])
+  }, [open, softDismiss])
 
   // When layoutId is provided, use layout animation (card morph) — no initial/animate/exit needed.
   // Otherwise, use scale+opacity entrance.
@@ -63,7 +74,7 @@ export default function Modal({ open, onClose, title, footer, headerActions, max
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            onClick={dismiss}
+            onClick={softDismiss}
           />
           <div className="fixed inset-0 z-[101] flex items-center justify-center p-8 pointer-events-none">
             <motion.div

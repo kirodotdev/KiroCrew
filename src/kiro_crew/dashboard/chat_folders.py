@@ -225,6 +225,20 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     project_dir, err = _validate_project_dir(project_dir)
     if err:
         return web.json_response({"error": err}, status=400)
+    # `icon` and `default_agent` were previously PATCH-only, so the create modal
+    # had to follow every creation with an update. Accepting them here makes a
+    # fully-configured folder one request, and — for `icon` — avoids a visible
+    # flash of the auto-generated emoji before the user's choice lands.
+    default_agent = str(body.get("default_agent") or "").strip()
+    icon = str(body.get("icon") or "").strip()
+    if icon and not _is_single_emoji(icon):
+        # `code` is the contract, `error` is advisory prose (RFC 9457 3.1.3) —
+        # the dashboard renders `error` verbatim into a localized UI, so a new
+        # error response without an id is untranslatable by construction.
+        return web.json_response(
+            {"error": "icon must be a single emoji", "code": "icon_not_single_emoji"},
+            status=400,
+        )
     folder = {
         "id": uuid.uuid4().hex[:12],
         "name": name,
@@ -233,14 +247,21 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         "hidden": False,
         "parent_id": parent_id,
         "project_dir": project_dir,
+        "default_agent": default_agent,
     }
+    if icon:
+        folder["icon"] = icon[:16]
     state._folders.append(folder)
     state.save_folders()
     state.push_slots_update()
-    # Generate icon in background — don't block the response
-    task = asyncio.ensure_future(_generate_folder_icon(state, folder))
-    state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
+    # Generate icon in background — don't block the response. Skipped when the
+    # caller chose an icon: _generate_folder_icon writes unconditionally on
+    # success, so running it anyway would silently clobber that choice a few
+    # seconds after creation (the same conflict PATCH rejects outright).
+    if not icon:
+        task = asyncio.ensure_future(_generate_folder_icon(state, folder))
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
     sel().log_api_access(
         caller="dashboard", operation="chat.folder_create",
         outcome="allowed", source="dashboard", resources=str(folder["id"]),

@@ -74,10 +74,11 @@ test.describe('Folders inside columns (deep)', () => {
     expect(((await (await request.get('/api/chat/folders')).json()) as unknown[]).length).toBe(0)
     // Click "New folder" on the column header
     await page.locator(`[data-testid="column-new-folder-${col.id}"]`).click()
-    const input = page.locator('input[placeholder="Folder name…"]').first()
+    // Inline input -> shared folder modal (see FolderConfigModal).
+    const input = page.locator('[data-testid="folder-config-name"]')
     await expect(input).toBeVisible()
     await input.fill('F2-ui-created')
-    await input.press('Enter')
+    await page.locator('[data-testid="folder-config-submit"]').click()
     // After: folder exists + renders in column
     await expect.poll(async () => {
       const list = await (await request.get('/api/chat/folders')).json()
@@ -341,15 +342,18 @@ test.describe('Folders inside columns (deep)', () => {
     const col = await (await request.post('/api/chat/tag-columns', { data: { tag_ids: [], mode: 'any' } })).json()
     await page.goto('/chat')
     await page.waitForSelector(`[data-testid="col-${col.id}-folder-${parent.id}"]`)
-    // "New subfolder" moved into the folder More-menu (reveals the inline input).
+    // "New subfolder" lives in the folder More-menu and now opens the shared
+    // folder modal (the per-column inline input is gone).
     await page.locator(`[data-testid="col-${col.id}-folder-${parent.id}"]`).hover()
     await page.locator(`[data-testid="col-${col.id}-folder-${parent.id}-menu"]`).click({ force: true })
     await page.getByRole('menuitem', { name: /new subfolder/i }).click()
-    // Inline subfolder input appears
-    const input = page.locator(`input[placeholder="Subfolder name…"]`).first()
+    const input = page.locator('[data-testid="folder-config-name"]')
     await expect(input).toBeVisible()
+    // The destination is fixed by the entry point and restated read-only, so the
+    // modal shows the parent rather than asking for it.
+    await expect(page.locator('[data-testid="folder-config-destination"]')).toContainText('F11-parent')
     await input.fill('F11-child')
-    await input.press('Enter')
+    await page.locator('[data-testid="folder-config-submit"]').click()
     // Subfolder persisted with parent_id
     await expect.poll(async () => {
       const list = await (await request.get('/api/chat/folders')).json()

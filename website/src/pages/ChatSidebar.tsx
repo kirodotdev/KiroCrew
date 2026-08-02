@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Smile, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
@@ -24,6 +24,7 @@ import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
+import FolderConfigModal from '../components/FolderConfigModal'
 import { useProvider } from '../providers'
 import ModelDropdownList from '../components/ModelDropdownList'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
@@ -37,7 +38,6 @@ import { usePointerDrag } from '../hooks/usePointerDrag'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { safeSetItem } from '../utils/safeStorage'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
-import ProjectPicker from '../components/ProjectPicker'
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBrandIcon'
@@ -438,25 +438,6 @@ function dateSegment(ts: number | string | undefined): string {
   return d.toLocaleDateString([], { year: 'numeric', month: 'long' })
 }
 
-// Folder icons are a deliberate emoji surface (see website/AGENTS.md exceptions
-// + `no-emoji-as-icons` lint rule): the backend auto-generates a single-emoji folder
-// icon and FolderGlyph renders it, so this curated grid + free-input picker lets
-// the user pick one. Not a status/UI icon — the emoji IS the folder's data.
-/** Curated emoji set for the folder icon picker (folder / work / project themed). */
-const FOLDER_EMOJIS = ['📁', '📂', '🗂️', '📋', '📝', '💼', '🚀', '⭐', '🔥', '💡', '🎯', '✅', '🐛', '🔧', '🧪', '📦', '🎨', '🔬', '🌟', '🧠', '⚙️', '🛠️', '📊', '🔒', '🌈', '🎉', '🤖', '☁️', '🧩', '📌'] as const
-
-/** True if `s` is exactly one emoji grapheme — no letters, digits, or multiple emoji. */
-function isSingleEmoji(s: string): boolean {
-  if (!s) return false
-  if (/[\p{L}\p{N}]/u.test(s)) return false // reject any letter/digit (i.e. text)
-  const hasEmoji = /\p{Extended_Pictographic}/u.test(s) || /[\u{1F1E6}-\u{1F1FF}]/u.test(s)
-  if (!hasEmoji) return false
-  const Seg = (Intl as unknown as { Segmenter?: new (l?: string, o?: { granularity: string }) => { segment: (x: string) => Iterable<unknown> } }).Segmenter
-  if (Seg) return [...new Seg(undefined, { granularity: 'grapheme' }).segment(s)].length === 1
-  return true // older engines: backend remains authoritative
-}
-
-
 /** A folder's icon AND its collapse affordance: a Lucide folder glyph that is
  *  the sole open/closed state carrier (the separate chevron was retired — the
  *  open-vs-closed shape now stands alone). When collapsed (resting) it shows the
@@ -628,15 +609,13 @@ function ChatSidebar({
       document.removeEventListener('keydown', onKey, true)
     }
   }, [])
-  // Folder → project-directory linking: which folder's ProjectPicker is open,
-  // scoped like editScope/createScope ('list' or a columnId) so a folder
-  // rendered in several board columns mounts exactly one picker anchored to
-  // the row that initiated the link (reviewers: duplicate-portal fix).
-  const [linking, setLinking] = useState<{ folderId: string; scope: string } | null>(null)
-  const linkAnchorRef = useRef<HTMLDivElement | null>(null)
-  // Inline emoji input validation error for the folder ⋯ menu's Icon section.
-  // Shared across menus (only one is open at a time); reset on menu open.
-  const [iconErr, setIconErr] = useState(false)
+  // Folder create / settings modal target. One modal instance is rendered at the
+  // sidebar root, so — unlike the inline inputs it replaced — it needs no column
+  // scope: a folder rendered in several board columns can only have one modal.
+  // `parentId` is the fixed destination for 'create' ('' = top level).
+  const [folderModal, setFolderModal] = useState<
+    { mode: 'create'; parentId: string } | { mode: 'edit'; folderId: string } | null
+  >(null)
   // The rename menus are Radix (ContextMenu/DropdownMenu). On close, Radix's
   // FocusScope restores focus to its trigger (the card) AFTER the input mounts.
   // That restore blurs the freshly-mounted input, firing its onBlur, which
@@ -658,11 +637,10 @@ function ChatSidebar({
     })
     return () => cancelAnimationFrame(raf)
   }, [renamingSlot, renameScope])
-  // Folder rename + folder create refs; the focus effects live after the
-  // editingId/creatingIn useState declarations below (they can't be referenced
-  // here — TDZ). See those effects for why the rAF re-grab is needed.
+  // Folder rename ref; the focus effect lives after the editingId useState
+  // declarations below (it can't be referenced here — TDZ). See that effect for
+  // why the rAF re-grab is needed.
   const folderEditInputRef = useRef<HTMLInputElement | null>(null)
-  const folderCreateInputRef = useRef<HTMLInputElement | null>(null)
   // Shared onCloseAutoFocus for every rename-hosting menu (session row context +
   // ⋯ dropdowns, and both folder-header ⋯ dropdowns). When Rename was the chosen
   // item it armed suppressMenuRestoreRef, so we preventDefault to stop Radix from
@@ -1093,32 +1071,27 @@ function ChatSidebar({
   const recentRank = useMemo(() => computeRecentRank(slots, recentTintCount), [slots, recentTintCount])
 
   // Folder editing state
-  const [creatingIn, setCreatingIn] = useState<string | null>(null)
-  const [newName, setNewName] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   // Board view renders a folder once per column, so `editingId === folder.id`
-  // (and the `creatingIn` gate) is true in every column at once — the input
-  // would mount in all of them and the shared ref would bind to the last. These
-  // scopes pin the folder rename / subfolder-create to the clicked column's
-  // render instance (the columnId, or 'list' in list view) so exactly one input
-  // mounts. renderFolderHeader passes 'list'; renderColumnFolder passes columnId.
+  // is true in every column at once — the input would mount in all of them and
+  // the shared ref would bind to the last. This scope pins the folder rename to
+  // the clicked column's render instance (the columnId, or 'list' in list view)
+  // so exactly one input mounts. renderFolderHeader passes 'list';
+  // renderColumnFolder passes columnId. Folder CREATION needs no such scope —
+  // it is a single root-level modal, not a per-column inline input.
   const [editScope, setEditScope] = useState<string | null>(null)
-  const [createScope, setCreateScope] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
-  const cancelledRef = useRef(false)
-  // Folder rename (renderFolderHeader + board renderColumnFolder) and folder
-  // creation (New folder / New subfolder) mount their inputs from a Radix menu,
-  // so plain autoFocus loses the same race as the session rename: focus lands on
-  // the trigger/body after the menu tears down (caret never in the box) and the
-  // default scroll-into-view yanks the horizontally-scrolling board sideways.
-  // Re-grab focus on the next frame with preventScroll so the board doesn't jump;
-  // rename selects the text for overtype, create leaves the empty field as-is.
-  // Each effect keys on both its id AND companion scope: a same-id, scope-only
-  // change (retarget to a different column before the first column's commit
-  // fires) must re-run so focus lands in the newly-mounted column's input. The
-  // re-focus is idempotent so re-running is harmless. When the id clears
-  // (commit/cancel/escape/blur), clear the scope so no stale column identity
-  // lingers.
+  // Folder rename (renderFolderHeader + board renderColumnFolder) mounts its
+  // input from a Radix menu, so plain autoFocus loses the same race as the
+  // session rename: focus lands on the trigger/body after the menu tears down
+  // (caret never in the box) and the default scroll-into-view yanks the
+  // horizontally-scrolling board sideways. Re-grab focus on the next frame with
+  // preventScroll so the board doesn't jump, selecting the text for overtype.
+  // Keyed on both the id AND editScope: a same-id, scope-only change (retarget
+  // to a different column before the first column's commit fires) must re-run so
+  // focus lands in the newly-mounted column's input. The re-focus is idempotent
+  // so re-running is harmless. When the id clears (commit/cancel/escape/blur),
+  // clear the scope so no stale column identity lingers.
   useEffect(() => {
     if (!editingId) { setEditScope(null); return }
     const raf = requestAnimationFrame(() => {
@@ -1127,13 +1100,6 @@ function ChatSidebar({
     })
     return () => cancelAnimationFrame(raf)
   }, [editingId, editScope])
-  useEffect(() => {
-    if (!creatingIn) { setCreateScope(null); return }
-    const raf = requestAnimationFrame(() => {
-      folderCreateInputRef.current?.focus({ preventScroll: true })
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [creatingIn, createScope])
   // Belt-and-suspenders disarm of the one-shot suppress ref. It's normally
   // consumed by the very next onCloseAutoFocus, but if a menu is ever dismissed
   // without firing that (an outside-dismiss race), the ref would stay armed and
@@ -1142,8 +1108,8 @@ function ChatSidebar({
   // Safe against the normal flow — during a live edit an id is non-null, so this
   // hasn't run yet; by the time all ids clear the real close already consumed it.
   useEffect(() => {
-    if (!renamingSlot && !editingId && !creatingIn) suppressMenuRestoreRef.current = false
-  }, [renamingSlot, editingId, creatingIn])
+    if (!renamingSlot && !editingId) suppressMenuRestoreRef.current = false
+  }, [renamingSlot, editingId])
 
   // Resize logic — Pointer Events (mouse + touch + pen) via usePointerDrag, so
   // the handle works on touch devices too, e.g. a tablet at desktop width where
@@ -1540,14 +1506,14 @@ function ChatSidebar({
 
   // Folder mutations
   const createFolderMutation = useMutation({
-    mutationFn: ({ name, parentId }: { name: string; parentId?: string }) => api.createChatFolder(name.trim(), parentId),
+    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; icon?: string }) =>
+      api.createChatFolder(v.name.trim(), v.parentId, {
+        project_dir: v.projectDir || undefined,
+        default_agent: v.defaultAgent || undefined,
+        icon: v.icon || undefined,
+      }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
   })
-  const createFolder = useCallback((name: string, parentId?: string) => {
-    if (!name.trim()) return
-    createFolderMutation.mutate({ name, parentId })
-    setCreatingIn(null); setNewName('')
-  }, [createFolderMutation])
   const deleteFolderMutation = useMutation({
     mutationFn: (id: string) => api.deleteChatFolder(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
@@ -1816,59 +1782,6 @@ function ChatSidebar({
 
   // Render a folder block scoped to a single column: only slots matching the column predicate.
   // Always render the folder header (even with 0 matches) so users can see + drop into it.
-  // Shared ⋯-menu sections: Default agent + Icon picker. Rendered inside both
-  // the list-view and board-view folder menus so board view keeps full folder
-  // management (reviewer finding: the board menu had dropped these controls).
-  // The emoji input stops keystroke propagation so Radix menu typeahead /
-  // arrow navigation can't steal typing from the field (see the Radix
-  // keyboard-widget lesson; the removed FolderIconPicker did the same).
-  const renderFolderMenuConfigSections = (folder: ChatFolder) => (
-    <>
-      <div className="px-3 py-1.5 flex items-center gap-2 text-muted" onPointerDown={e => e.stopPropagation()}>
-        <Zap size={13} className="shrink-0" />
-        <span className="shrink-0">{i18nT('pages.chatSidebar.default_agent')}</span>
-        <select className="ml-auto text-[12px] text-text bg-bg-elevated border border-border rounded px-1 py-0.5 cursor-pointer outline-none max-w-[90px]"
-          title={i18nT('pages.chatSidebar.default_agent_for_new_chats_in_this_folder')}
-          value={folders.find(f => f.id === folder.id)?.default_agent || ''}
-          onClick={e => e.stopPropagation()}
-          onKeyDown={e => e.stopPropagation()}
-          onChange={e => { updateFolderMutation.mutate({ id: folder.id, body: { default_agent: e.target.value } }) }}>
-          <option value="">{i18nT('pages.chatSidebar.none')}</option>
-          {installedAgents.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}
-        </select>
-      </div>
-      <div className="px-3 py-1.5" onPointerDown={e => e.stopPropagation()}>
-        <div className="flex items-center gap-2 text-muted mb-1.5">
-          <Smile size={13} className="shrink-0" />
-          <span className="shrink-0">{i18nT('pages.chatSidebar.icon')}</span>
-          <button type="button" title={i18nT('pages.chatSidebar.reset_to_an_auto_generated_emoji')}
-            className="ml-auto flex items-center gap-1 text-[11px] text-muted hover:text-accent bg-transparent border-none cursor-pointer p-0"
-            onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { regenerate_icon: true } }) }}>
-            <RotateCcw size={11} /> {i18nT('pages.chatSidebar.reset')}
-          </button>
-        </div>
-        <div className="grid grid-cols-6 gap-0.5">
-          {FOLDER_EMOJIS.map(em => {
-            const selected = folders.find(f => f.id === folder.id)?.icon === em
-            return (
-              <button key={em} type="button" aria-label={`Set folder icon to ${em}`}
-                className={`h-7 flex items-center justify-center rounded cursor-pointer bg-transparent border-none text-[15px] leading-none hover:bg-bg-hover ${selected ? 'bg-accent-subtle ring-1 ring-accent' : ''}`}
-                onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { icon: em } }) }}>
-                {em}
-              </button>
-            )
-          })}
-        </div>
-        <input type="text" maxLength={16} placeholder={i18nT('pages.chatSidebar.or_type_paste_an_emoji')} aria-label={i18nT('pages.chatSidebar.custom_folder_emoji')}
-          className={`mt-1.5 w-full text-[12px] text-text bg-bg border rounded px-2 py-1 outline-none ${iconErr ? 'border-danger focus:border-danger' : 'border-border focus:border-accent'}`}
-          onClick={e => e.stopPropagation()}
-          onChange={() => { if (iconErr) setIconErr(false) }}
-          onKeyDown={e => { e.stopPropagation(); if (e.key !== 'Enter') return; const v = (e.target as HTMLInputElement).value.trim(); if (!v) return; if (!isSingleEmoji(v)) { setIconErr(true); return } updateFolderMutation.mutate({ id: folder.id, body: { icon: v } }) }} />
-        {iconErr && <div className="mt-1 text-[11px] text-danger">{i18nT('pages.chatSidebar.enter_a_single_emoji_no_text')}</div>}
-      </div>
-    </>
-  )
-
   const renderColumnFolder = (folder: ChatFolder, columnId: string, colSlotKeys: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean): React.ReactNode => {
     const childFolders = folders.filter(f => f.parent_id === folder.id)
     const childSlots = filteredSlots.filter(s => colSlotKeys.has(s.key) && slotFolders[s.key] === folder.id)
@@ -1904,11 +1817,6 @@ function ChatSidebar({
         }}
       >
         <div
-          // Anchors the ProjectPicker popover when linking a project from the
-          // ⋯ menu (board view has no list-view header row to anchor to).
-          // Scope check keeps the anchor + picker on the initiating column even
-          // when other columns render the same folder.
-          ref={linking?.folderId === folder.id && linking.scope === columnId ? linkAnchorRef : undefined}
           className={`group relative flex items-center gap-2 pr-2 py-1 rounded-md ${draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-all`}
           style={{ paddingLeft: '6px' }}
           role="button"
@@ -1948,14 +1856,13 @@ function ChatSidebar({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
                 <DropdownMenuItem onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
-                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} onClick={() => { suppressMenuRestoreRef.current = true; setCreatingIn(folder.id); setCreateScope(columnId); setNewName('') }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
+                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
                 {/* Re-parent: board-view parity with the list-view folder menu. */}
                 <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')}
                   folders={reparentTargets}
                   currentFolderId={folder.parent_id || null}
                   onPick={pid => moveFolderTo(folder.id, pid)} />
-                <DropdownMenuItem onClick={() => { setLinking({ folderId: folder.id, scope: columnId }) }}><Link2 size={13} /> {folders.find(f => f.id === folder.id)?.project_dir ? i18nT('pages.chatSidebar.change_project_directory') : i18nT('pages.chatSidebar.link_project_directory')}</DropdownMenuItem>
-                {renderFolderMenuConfigSections(folder)}
+                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-settings`} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-danger focus:text-danger" onClick={() => { if (confirm(`Delete "${folder.name}"? Sessions will be ungrouped.`)) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
               </DropdownMenuContent>
@@ -1966,7 +1873,6 @@ function ChatSidebar({
           </span>
           )}
         </div>
-        {linking?.folderId === folder.id && linking.scope === columnId && <ProjectPicker open={true} onOpenChange={open => { if (!open) setLinking(null) }} anchorRef={linkAnchorRef} onSelect={path => { updateFolderMutation.mutate({ id: folder.id, body: { project_dir: path } }); setLinking(null) }} />}
         <FolderBody open={!folder.collapsed && !forceCollapsed}>
           <div className="border-l border-border ml-2 pl-1">
             {/* Inline "New chat" affordance at the top of the column folder's
@@ -1983,18 +1889,6 @@ function ChatSidebar({
               <div className="mx-3 border-b border-border" />
             )}
             {deepChildren.map(cf => renderColumnFolder(cf, columnId, colSlotKeys))}
-            {creatingIn === folder.id && createScope === columnId && (
-              <div className="px-2 py-1">
-                <Input ref={folderCreateInputRef} className="w-full py-1 text-[12px]" placeholder={i18nT('pages.chatSidebar.subfolder_name')}
-                  value={newName}
-                  onChange={e => setNewName(e.target.value)}
-                  {...ime.bindEnter<HTMLInputElement>({
-                    onEnter: () => createFolder(newName, folder.id),
-                    onEscape: () => { cancelledRef.current = true; setCreatingIn(null); setNewName('') },
-                    onBlur: () => { if (cancelledRef.current) { cancelledRef.current = false; return } if (newName.trim()) createFolder(newName, folder.id); else setCreatingIn(null) },
-                  })} />
-              </div>
-            )}
             {childSlots.map((s, i) => {
               const isActive = activeSlot === s.key
               const nextIsActive = i < childSlots.length - 1 && activeSlot === childSlots[i + 1].key
@@ -2454,9 +2348,6 @@ function ChatSidebar({
         // toggle button + action buttons, so it must NOT itself be a button —
         // an interactive element can't legally contain other interactive
         // elements (invalid ARIA), and a folder row is a grouping, not an action.
-        // The row also anchors the ProjectPicker popover when linking a project,
-        // since the link action now lives in the ⋯ menu rather than a hover button.
-        ref={linking?.folderId === folder.id && linking.scope === 'list' ? linkAnchorRef : undefined}
         role="group"
         aria-label={`Folder ${folder.name}`}
         // The whole header is the drag-to-reorder handle (pointer listeners only,
@@ -2504,21 +2395,20 @@ function ChatSidebar({
         <div className="absolute top-1/2 -translate-y-1/2 right-1.5 transition-all flex items-center gap-0.5 rounded-md p-1 bg-card border border-border shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 has-[[data-state=open]]:opacity-100">
           {/* ⋯ menu first, then the primary "new chat" action.  Sibling
            *  <button>s of the collapse toggle (valid ARIA — no nesting). */}
-          <DropdownMenu onOpenChange={open => { if (open) setIconErr(false) }}>
+          <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-text hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.more')} aria-label={`Folder options for ${folder.name}`} aria-haspopup="menu" data-testid={`folder-menu-${folder.id}`} onMouseDown={e => { e.stopPropagation() }}><MoreVertical size={12} /></button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
               <DropdownMenuItem data-testid={`folder-rename-${folder.id}`} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => { suppressMenuRestoreRef.current = true; setCreatingIn(folder.id); setCreateScope('list'); setNewName('') }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
               {/* Re-parent: move this folder under another folder or back to the
                *  top level. Self + descendants are excluded (cycle guard). */}
               <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')}
                 folders={reparentTargets}
                 currentFolderId={folder.parent_id || null}
                 onPick={pid => moveFolderTo(folder.id, pid)} />
-              <DropdownMenuItem onClick={() => { setLinking({ folderId: folder.id, scope: 'list' }) }}><Link2 size={13} /> {folders.find(f => f.id === folder.id)?.project_dir ? i18nT('pages.chatSidebar.change_project_directory') : i18nT('pages.chatSidebar.link_project_directory')}</DropdownMenuItem>
-              {renderFolderMenuConfigSections(folder)}
+              <DropdownMenuItem data-testid={`folder-settings-${folder.id}`} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
               {/* Hide this folder from the session lists (flat lane + tree).
                *  Same state the filter menu's checkboxes drive, reached from the
                *  folder itself — which is where the user is looking when they
@@ -2539,7 +2429,6 @@ function ChatSidebar({
           <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.new_chat_in_folder')} aria-label={i18nT('pages.chatSidebar.new_chat_in_folder')} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id) }}><MessageSquarePlus size={12} /></button>
         </div>
         )}
-        {linking?.folderId === folder.id && linking.scope === 'list' && <ProjectPicker open={true} onOpenChange={open => { if (!open) setLinking(null) }} anchorRef={linkAnchorRef} onSelect={path => { updateFolderMutation.mutate({ id: folder.id, body: { project_dir: path } }); setLinking(null) }} />}
       </div>
     )
   }
@@ -2613,16 +2502,6 @@ function ChatSidebar({
     // new-subfolder input, so it reads as part of the folder list.
     const hiddenHere = hiddenByContainer.get(folder.id)
     if (hiddenHere?.length) childNodes.push(renderHiddenReveal(folder.id, hiddenHere, depth + 1))
-    // New-subfolder name input sits after the existing subfolders, just above the
-    // sessions — a new folder is appended (order = folder count), so it lands at the
-    // bottom of the sibling folders, above the chats. The placeholder matches that.
-    if (creatingIn === folder.id && createScope === 'list') {
-      childNodes.push(
-        <div key={`new-sub-${folder.id}`} className="py-1 pr-2" style={{ paddingLeft: '8px' }}>
-          <Input ref={folderCreateInputRef} className="w-full py-1 text-[13px]" placeholder={i18nT('pages.chatSidebar.folder_name')} value={newName} onChange={e => setNewName(e.target.value)} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => createFolder(newName, folder.id), onEscape: () => { cancelledRef.current = true; setCreatingIn(null); setNewName('') }, onBlur: () => { if (cancelledRef.current) { cancelledRef.current = false; return } if (newName.trim()) createFolder(newName, folder.id); else setCreatingIn(null) } })} />
-        </div>
-      )
-    }
     childSlots.forEach((s, i) => {
       const isActive = activeSlot === s.key
       const nextIsActive = i < childSlots.length - 1 && activeSlot === childSlots[i + 1].key
@@ -2779,7 +2658,7 @@ function ChatSidebar({
                   <Zap size={14} className="text-accent" /> {i18nT('pages.chatSidebar.new_autopilot_chat')}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => { suppressMenuRestoreRef.current = true; setCreatingIn('__root__'); setNewName('') }}>
+                <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }}>
                   <FolderPlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_folder')}
                 </DropdownMenuItem>
                 {folders.length > 0 && (
@@ -3272,11 +3151,6 @@ function ChatSidebar({
                      *  is the sidebar's own bottom, which is exactly the "single
                      *  footer row" shape — the nested case is what needs depth. */}
                     {renderHiddenReveal('root', hiddenByContainer.get('root') ?? [], 0)}
-                    {creatingIn === '__root__' && (
-                      <div className="px-2 py-1">
-                        <Input ref={folderCreateInputRef} className="w-full py-1 text-[13px]" placeholder={i18nT('pages.chatSidebar.folder_name')} value={newName} onChange={e => setNewName(e.target.value)} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => createFolder(newName), onEscape: () => { cancelledRef.current = true; setCreatingIn(null); setNewName('') }, onBlur: () => { if (cancelledRef.current) { cancelledRef.current = false; return } if (newName.trim()) createFolder(newName); else setCreatingIn(null) } })} />
-                      </div>
-                    )}
                     {/* Ungrouped sessions live in a headerless droppable bucket
                      *  (folderId: null) that fills the remaining height below the
                      *  folders, so the whole empty lower area is a drop target —
@@ -3394,7 +3268,7 @@ function ChatSidebar({
                       {col.name && colTags.length > 0 && <span className="text-[11px] text-muted ml-1">· {col.name}</span>}
                     </div>
                     <span className="text-[11px] text-muted shrink-0">{colSlots.length}</span>
-                    <button type="button" data-testid={`column-new-folder-${col.id}`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer shrink-0 p-[2px]" title={i18nT('pages.chatSidebar.new_folder')} aria-label={i18nT('pages.chatSidebar.new_folder')} onClick={() => { setCreatingIn(`__col_${col.id}__`); setNewName('') }}><FolderPlus size={12} /></button>
+                    <button type="button" data-testid={`column-new-folder-${col.id}`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer shrink-0 p-[2px]" title={i18nT('pages.chatSidebar.new_folder')} aria-label={i18nT('pages.chatSidebar.new_folder')} onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }}><FolderPlus size={12} /></button>
                     <button type="button" data-testid={`column-edit-${col.id}`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer shrink-0 p-[2px]" title={i18nT('pages.chatSidebar.filter_manage_tags')} aria-label={i18nT('pages.chatSidebar.filter_manage_tags')} onClick={() => setColumnEditId(columnEditId === col.id ? null : col.id)}><TagIcon size={12} /></button>
                     <button
                       type="button"
@@ -3510,18 +3384,6 @@ function ChatSidebar({
                               {activeDrag?.type === 'folder' ? <FolderDragGhost folder={folders.find(x => x.id === activeDrag.id)} /> : null}
                             </DragOverlay>
                           </DndContext>
-                          {(creatingIn === `__col_${col.id}__` || (creatingIn === '__root__' && colIdx === 0)) && (
-                            <div className="px-2 py-1">
-                              <Input ref={folderCreateInputRef} className="w-full py-1 text-[12px]" placeholder={i18nT('pages.chatSidebar.folder_name')}
-                                value={newName}
-                                onChange={e => setNewName(e.target.value)}
-                                {...ime.bindEnter<HTMLInputElement>({
-                                  onEnter: () => createFolder(newName),
-                                  onEscape: () => { cancelledRef.current = true; setCreatingIn(null); setNewName('') },
-                                  onBlur: () => { if (cancelledRef.current) { cancelledRef.current = false; return } if (newName.trim()) createFolder(newName); else setCreatingIn(null) },
-                                })} />
-                            </div>
-                          )}
                           {ungrouped.map((s, i) => {
                             const isActive = activeSlot === s.key
                             const nextIsActive = i < ungrouped.length - 1 && activeSlot === ungrouped[i + 1].key
@@ -3747,6 +3609,60 @@ function ChatSidebar({
         )}
       </AnimatePresence>
 
+      {/* One folder create/settings modal for the whole sidebar. Rendered here
+       *  rather than per-row so a folder shown in several board columns can only
+       *  ever open one, and so the ProjectPicker it hosts has a single owner. */}
+      {folderModal && (
+        <FolderConfigModal
+          open={true}
+          mode={folderModal.mode}
+          parentId={folderModal.mode === 'create' ? folderModal.parentId : undefined}
+          folder={folderModal.mode === 'edit' ? folders.find(f => f.id === folderModal.folderId) : undefined}
+          folders={folders}
+          installedAgents={installedAgents}
+          globalDefaultAgent={defaultAgent}
+          onClose={() => setFolderModal(null)}
+          onSubmit={async draft => {
+            // AWAIT the mutation and only close on success. The backend rejects a
+            // free-typed project_dir (not absolute / not an existing directory /
+            // sensitive) and a multi-emoji icon with a 400; closing optimistically
+            // discarded the whole draft with no feedback. Rethrowing lets the modal
+            // stay open and render the reason.
+            if (folderModal.mode === 'create') {
+              await createFolderMutation.mutateAsync({
+                name: draft.name,
+                parentId: folderModal.parentId || undefined,
+                projectDir: draft.projectDir,
+                defaultAgent: draft.defaultAgent,
+                icon: draft.icon,
+              })
+            } else {
+              // Build the PATCH from what the USER edited (draft.touched, measured
+              // against what the modal opened with) — NOT from a diff against live
+              // cache. Folder icons are generated asynchronously after creation, so
+              // a settings modal opened before the icon lands holds icon:'' while
+              // the cache gains the generated one; diffing against cache then made
+              // a name-only save PATCH icon:'' and delete it. The same shape would
+              // revert any field another client changed mid-edit.
+              const touched = new Set(draft.touched)
+              const body: Record<string, unknown> = {}
+              if (touched.has('name')) body.name = draft.name
+              if (touched.has('projectDir')) body.project_dir = draft.projectDir
+              if (touched.has('defaultAgent')) body.default_agent = draft.defaultAgent
+              // `icon` and `regenerate_icon` are mutually exclusive server-side, so
+              // send at most one. Clearing an icon is expressed ONLY via
+              // regenerate_icon (Reset to auto); an empty `icon` is never a
+              // legitimate instruction, so refuse to send one even if asked.
+              if (draft.regenerateIcon) body.regenerate_icon = true
+              else if (touched.has('icon') && draft.icon) body.icon = draft.icon
+              if (Object.keys(body).length > 0) {
+                await updateFolderMutation.mutateAsync({ id: folderModal.folderId, body })
+              }
+            }
+            setFolderModal(null)
+          }}
+        />
+      )}
     </div>
   )
 }

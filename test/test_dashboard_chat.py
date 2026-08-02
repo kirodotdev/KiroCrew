@@ -6185,6 +6185,63 @@ class TestFolderCRUD:
             assert child["parent_id"] == parent["id"]
 
     @pytest.mark.asyncio
+    async def test_create_folder_accepts_icon_and_default_agent(self, tmp_path, monkeypatch):
+        """The create modal collects the full folder config, so POST must take it.
+
+        Both fields used to be PATCH-only, forcing create-then-update.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders",
+                json={"name": "Payments", "icon": "🚀", "default_agent": "kirocrew-dev"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["icon"] == "🚀"
+            assert data["default_agent"] == "kirocrew-dev"
+
+    @pytest.mark.asyncio
+    async def test_create_folder_rejects_multi_emoji_icon(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders", json={"name": "Bad", "icon": "🚀🔥"}
+            )
+            assert resp.status == 400
+            assert "single emoji" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    async def test_create_folder_with_icon_skips_auto_generation(self, tmp_path, monkeypatch):
+        """An explicit icon must not be clobbered by the background LLM generator.
+
+        _generate_folder_icon writes unconditionally on success, so the task has
+        to be skipped rather than merely raced.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        calls: list[str] = []
+
+        async def _spy(_state, folder):
+            calls.append(folder["id"])
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_folders._generate_folder_icon", _spy)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/folders", json={"name": "Chosen", "icon": "🎯"})
+            assert resp.status == 201
+            assert calls == []
+            # ...but a folder with no icon still gets one generated.
+            resp = await client.post("/api/chat/folders", json={"name": "Auto"})
+            assert resp.status == 201
+            await asyncio.sleep(0)
+            assert len(calls) == 1
+
+    @pytest.mark.asyncio
     async def test_create_folder_invalid_parent_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

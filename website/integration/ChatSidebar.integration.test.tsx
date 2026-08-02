@@ -144,14 +144,15 @@ describe('ChatSidebar Folder Grouping', () => {
     await waitFor(() => expect(screen.getByText('New folder')).toBeInTheDocument())
   })
 
-  it('creates a folder via inline input and API', async () => {
+  it('creates a folder via the config modal and API', async () => {
     const user = userEvent.setup()
     let folders: any[] = []
+    let posted: any = null
     server.use(
       http.get('/api/chat/folders', () => HttpResponse.json(folders)),
       http.post('/api/chat/folders', async ({ request }) => {
-        const body = await request.json() as { name: string }
-        const created = { id: 'f-new', name: body.name, order: 0, collapsed: false }
+        posted = await request.json()
+        const created = { id: 'f-new', name: posted.name, order: 0, collapsed: false }
         folders = [created]
         return HttpResponse.json(created, { status: 201 })
       }),
@@ -160,29 +161,34 @@ describe('ChatSidebar Folder Grouping', () => {
 
     await user.click(await screen.findByLabelText('More create options'))
     await user.click(await screen.findByText('New folder'))
-    const input = await screen.findByPlaceholderText('Folder name…')
+    // The name-only inline input was replaced by a modal that also collects the
+    // folder's project directory, default agent and icon.
+    const input = await screen.findByTestId('folder-config-name')
     await user.type(input, 'Oncall Work')
-    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', keyCode: 13 })
+    await user.click(screen.getByTestId('folder-config-submit'))
 
     await waitFor(() => expect(screen.getByText('Oncall Work')).toBeInTheDocument(), { timeout: 3000 })
+    // Top-level creation posts an empty parent, not a stale folder id.
+    expect(posted.parent_id).toBe('')
   })
 
-  it('cancels folder creation on Escape', async () => {
+  it('closes the folder modal on Escape without creating', async () => {
     const user = userEvent.setup()
+    const postSpy = vi.fn()
+    server.use(
+      http.post('/api/chat/folders', () => { postSpy(); return HttpResponse.json({}, { status: 201 }) }),
+    )
     renderWithProviders(<ChatSidebar {...defaultProps} />)
 
     await user.click(await screen.findByLabelText('More create options'))
     await user.click(await screen.findByText('New folder'))
-    const input = screen.getByPlaceholderText('Folder name…')
-    // Escape is bound via onKeyDown on the input itself (useImeGuard.bindEnter).
-    // Dispatch the key straight at the node instead of user.keyboard, which
-    // routes through document.activeElement: the input focuses on a rAF effect,
-    // so under load activeElement could still be <body> and Escape
-    // would miss the cancel handler (a flake). Targeting the node is
-    // focus-timing-independent.
-    fireEvent.keyDown(input, { key: 'Escape', code: 'Escape' })
+    expect(await screen.findByTestId('folder-config-name')).toBeInTheDocument()
+    // Modal binds Escape at the window, so dispatch there rather than at the
+    // input — this is focus-timing-independent (the input focuses on a rAF).
+    fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' })
 
-    await waitFor(() => expect(screen.queryByPlaceholderText('Folder name…')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByTestId('folder-config-name')).not.toBeInTheDocument())
+    expect(postSpy).not.toHaveBeenCalled()
   })
 
   it('does not submit folder create on Enter while IME is composing', async () => {
@@ -199,14 +205,14 @@ describe('ChatSidebar Folder Grouping', () => {
 
     await user.click(await screen.findByLabelText('More create options'))
     await user.click(await screen.findByText('New folder'))
-    const input = screen.getByPlaceholderText('Folder name…') as HTMLInputElement
+    const input = await screen.findByTestId('folder-config-name') as HTMLInputElement
     fireEvent.compositionStart(input)
     fireEvent.change(input, { target: { value: '测试' } })
-    // Enter pressed mid-composition: should commit composition, NOT submit
+    // Enter pressed mid-composition commits the composition, it does NOT submit.
     fireEvent.keyDown(input, { key: 'Enter', keyCode: 13, isComposing: true })
     expect(postSpy).not.toHaveBeenCalled()
-    // Input still open so user can keep composing
-    expect(screen.getByPlaceholderText('Folder name…')).toBeInTheDocument()
+    // Modal stays open so the user can keep composing.
+    expect(screen.getByTestId('folder-config-name')).toBeInTheDocument()
   })
 
   it('fetches folders from API on mount', async () => {
@@ -366,7 +372,7 @@ describe('ChatSidebar Folder Grouping', () => {
   // way rename does, so it hit the same focus race — the caret didn't land in the
   // box (found in manual smoke). Asserts the input mounts + survives the menu
   // close (jsdom-reliable); caret placement is browser-smoke verified.
-  it('keeps the New folder input open through the create-menu close', async () => {
+  it('keeps the New folder modal open through the create-menu close', async () => {
     renderWithProviders(<ChatSidebar {...defaultProps} />)
     fireEvent.click(await screen.findByLabelText('More create options'))
     fireEvent.click(await screen.findByText('New folder'))
@@ -374,11 +380,12 @@ describe('ChatSidebar Folder Grouping', () => {
     for (let i = 0; i < 3; i++) {
       await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
     }
-    // The input is still present after the restore (not blurred → cancelled).
-    const input = screen.getByPlaceholderText('Folder name…')
-    expect(input).toBeInTheDocument()
-    // Dismiss it so the open create input doesn't bleed into the next test.
-    fireEvent.keyDown(input, { key: 'Escape', code: 'Escape' })
+    // The modal survives the restore. A modal is structurally immune to the
+    // blur-cancels-the-edit race the inline input had, but the assertion is kept
+    // so a future regression to an auto-dismissing surface is caught here.
+    expect(screen.getByTestId('folder-config-name')).toBeInTheDocument()
+    // Dismiss so the open modal doesn't bleed into the next test.
+    fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' })
   })
 
   it('pinned sessions appear above folders', async () => {
