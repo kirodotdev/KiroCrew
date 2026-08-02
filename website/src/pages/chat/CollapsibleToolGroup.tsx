@@ -5,6 +5,7 @@ import { ToolInputText } from '../../components/ToolInputText'
 import { useRowDisclosure } from './rowDisclosure'
 
 import { i18nT } from '../../i18n/t'
+import { useI18nRevision } from '../../i18n/useI18nRevision'
 interface CollapsibleToolGroupProps {
   count: number
   autoExpand?: boolean
@@ -52,6 +53,7 @@ function extractPreview(meta?: Record<string, unknown>): string {
 
 /** Collapsible row that wraps tool/thinking/permission messages — always collapsed unless autoExpand. */
 const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, pendingPermCount, onApprove, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
+  useI18nRevision()
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, !!autoExpand)
   const userToggled = useRef(false)
   const [submitting, setSubmitting] = useState(false)

@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
 import { LanguageProvider, useLanguage } from './LanguageProvider'
 import { LANG_STORAGE_KEY } from './detect'
+import { i18nT } from './t'
 import { api } from '../api/client'
 
 /** Fresh QueryClient per test so the ['theme-boot'] cache never leaks across cases. */
@@ -240,5 +241,150 @@ describe('LanguageProvider — an empty server value must not erase a local choi
     wrap(<Probe />, { language: '' })
     await waitFor(() => expect(screen.getByTestId('resolved')).toHaveTextContent('en'))
     expect(screen.getByTestId('choice')).toHaveTextContent('(auto)')
+  })
+})
+
+describe('LanguageProvider — cross-tab switch survives a delayed boot response', () => {
+  /**
+   * Regression: the `onStorage` handler (cross-tab sync) set `language` without
+   * setting `userChose`, so a slow `/api/theme/boot` response arriving after a
+   * cross-tab switch could overwrite it. The fix sets `userChose.current = true`
+   * in the storage handler, blocking boot adoption the same way a local pick does.
+   */
+  it('a cross-tab switch is not reverted by a delayed boot response', async () => {
+    // Simulate: tab A set localStorage to zh-CN (cross-tab switch), then boot
+    // responds with language: 'en'.
+    //
+    // We control the boot response timing by making themeBoot a deferred promise.
+    let resolveBoot!: (value: unknown) => void
+    const bootPromise = new Promise(resolve => { resolveBoot = resolve })
+    vi.spyOn(api, 'themeBoot').mockReturnValue(bootPromise as never)
+    vi.spyOn(api, 'updateThemeConfig').mockResolvedValue({} as never)
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <LanguageProvider><Probe /></LanguageProvider>
+      </QueryClientProvider>,
+    )
+
+    // Before boot resolves, simulate a cross-tab language change via StorageEvent
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: LANG_STORAGE_KEY,
+        newValue: 'zh-CN',
+        storageArea: localStorage,
+      }))
+    })
+
+    await waitFor(() => expect(screen.getByTestId('choice')).toHaveTextContent('zh-CN'))
+
+    // NOW let boot resolve with a DIFFERENT language. Wait until the boot query
+    // has actually COMMITTED its data: waitFor wraps each poll in act(), so once
+    // the cache holds the response the adopt effect it schedules has run to
+    // completion (including any cascading setState). Only then is the final
+    // assertion race-free - a plain expect right after resolveBoot would observe
+    // the still-true initial value before adoption had a chance to revert it.
+    resolveBoot({ language: 'en' })
+    await waitFor(() => expect(qc.getQueryData(['theme-boot'])).toEqual({ language: 'en' }))
+
+    // The adopt effect has now run. With the fix it was blocked by `userChose`;
+    // without it, the delayed boot reverts the cross-tab choice to 'en'.
+    expect(screen.getByTestId('choice')).toHaveTextContent('zh-CN')
+  })
+
+  it('a delayed boot IS adopted when no cross-tab switch preceded it', async () => {
+    // Control proving the deferred-boot adoption path is live and observable:
+    // with no prior explicit choice, the same delayed 'en' boot response IS
+    // adopted. This is the exact code path the test above must suppress, so if
+    // adoption silently stopped working this control fails instead.
+    let resolveBoot!: (value: unknown) => void
+    const bootPromise = new Promise(resolve => { resolveBoot = resolve })
+    vi.spyOn(api, 'themeBoot').mockReturnValue(bootPromise as never)
+    vi.spyOn(api, 'updateThemeConfig').mockResolvedValue({} as never)
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <LanguageProvider><Probe /></LanguageProvider>
+      </QueryClientProvider>,
+    )
+
+    await act(async () => {
+      resolveBoot({ language: 'en' })
+      await bootPromise
+    })
+    await waitFor(() => expect(screen.getByTestId('choice')).toHaveTextContent('en'))
+  })
+})
+
+describe('LanguageProvider — memoized components repaint on language switch', () => {
+  /**
+   * Guards that the `useI18nRevision()` hook correctly threads the language
+   * through memo boundaries. A memo'd component using i18nT should display
+   * translated text after a language switch, not stale English.
+   */
+  it('a memo-wrapped component repaints when language changes', async () => {
+    const { memo: reactMemo } = await import('react')
+    const { useI18nRevision: rev } = await import('./useI18nRevision')
+
+    const MemoChild = reactMemo(function MemoChild({ id }: { id: number }) {
+      rev()
+      return <span data-testid="memo-text">{i18nT('pages.settings.displayPanel.view')}{id}</span>
+    })
+
+    function Parent() {
+      const { setLanguage } = useLanguage()
+      return (
+        <div>
+          <MemoChild id={1} />
+          <button onClick={() => setLanguage('zh-CN')}>switch</button>
+        </div>
+      )
+    }
+
+    vi.spyOn(api, 'themeBoot').mockResolvedValue({} as never)
+    vi.spyOn(api, 'updateThemeConfig').mockResolvedValue({} as never)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <LanguageProvider><Parent /></LanguageProvider>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('memo-text')).toHaveTextContent('View'))
+    await userEvent.click(screen.getByText('switch'))
+    await waitFor(() => {
+      expect(screen.getByTestId('memo-text').textContent).not.toContain('View')
+    })
+  })
+
+  it('a pre-set locale in storage renders translated on first paint', async () => {
+    localStorage.setItem(LANG_STORAGE_KEY, 'zh-CN')
+
+    const { memo: reactMemo } = await import('react')
+    const { useI18nRevision: rev } = await import('./useI18nRevision')
+
+    const MemoChild = reactMemo(function MemoChild({ id }: { id: number }) {
+      rev()
+      return <span data-testid="memo-text">{i18nT('pages.settings.displayPanel.view')}{id}</span>
+    })
+
+    function Parent() {
+      return <MemoChild id={1} />
+    }
+
+    vi.spyOn(api, 'themeBoot').mockResolvedValue({ language: 'zh-CN' } as never)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <LanguageProvider><Parent /></LanguageProvider>
+      </QueryClientProvider>,
+    )
+
+    // Should render Chinese on first paint, no English flash
+    await waitFor(() => {
+      expect(screen.getByTestId('memo-text').textContent).toMatch(/[一-鿿]/)
+    })
   })
 })

@@ -9,6 +9,7 @@ import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
 
 import { i18nT } from '../../i18n/t'
+import { useI18nRevision } from '../../i18n/useI18nRevision'
 // Steer bubbles play a one-shot entrance (slide-in + ring pulse) when they land.
 // The chat transcript is virtualized, so a row can remount when scrolled away and
 // back; without this guard the entrance would replay every time. Module-level set
@@ -30,6 +31,7 @@ interface UserMessageProps {
 }
 
 const UserMessage = memo(function UserMessage({ content, meta, timestamp, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode }: UserMessageProps) {
+  useI18nRevision()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(content)
   const [copied, setCopied] = useState(false)

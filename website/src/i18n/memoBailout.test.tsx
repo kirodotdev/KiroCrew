@@ -31,6 +31,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { LanguageProvider, useLanguage } from './LanguageProvider'
 import { i18nT } from './t'
+import { useI18nRevision } from './useI18nRevision'
 import { api } from '../api/client'
 
 const KEY = 'pages.settings.displayPanel.view'
@@ -46,6 +47,7 @@ function Leaf({ testid }: { testid: string }) {
  * `<PastedChip block={r.block} />`.
  */
 const MemoLeaf = memo(function MemoLeaf({ block }: { block: { id: number } }) {
+  useI18nRevision()
   return <span data-testid="memoized">{i18nT(KEY)}{block.id}</span>
 })
 
@@ -98,18 +100,12 @@ describe('D11 — memo() boundary under a language change', () => {
   })
 
   /**
-   * `it.fails` because this is a KNOWN DEFECT, not an aspiration.
-   *
-   * The suite stays green while the bug exists, and turns red the moment someone
-   * fixes it — at which point flip this to `it()` and delete this comment. That is
-   * the opposite of `skip`, which would let the fix land unnoticed and let the
-   * defect silently return later.
-   *
-   * The fix is not in this file: make the language a tracked input, either by
-   * having `i18nT` subscribe (`useSyncExternalStore` over i18next's
-   * `languageChanged` event) or by routing call sites through `useTranslation`.
+   * Fixed: `useI18nRevision()` subscribes the memo'd component to language
+   * changes via LanguageContext. When `active` changes, the context value
+   * changes, React re-renders the consumer even through a memo boundary, and
+   * `i18nT()` re-evaluates against the new catalog.
    */
-  it.fails('the memoized leaf does NOT switch — D11, known defect', async () => {
+  it('the memoized leaf switches on language change', async () => {
     mount()
     await waitFor(() => expect(screen.getByTestId('memoized')).toHaveTextContent('View'))
     await userEvent.click(screen.getByText('zh'))

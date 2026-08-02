@@ -6,6 +6,7 @@ import type { TodoList } from '../../types'
 import { useRowDisclosure } from './rowDisclosure'
 
 import { i18nT } from '../../i18n/t'
+import { useI18nRevision } from '../../i18n/useI18nRevision'
 /** Rows rendered before the list scrolls internally — bounds DOM on long plans. */
 const MAX_VISIBLE_ROWS = 12
 
@@ -21,6 +22,7 @@ const MAX_VISIBLE_ROWS = 12
  * absent at the data layer.
  */
 const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: { slot: string | null; disclosureKey?: string }) {
+  useI18nRevision()
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   // Select the primitive-bearing todo object for this slot only, so unrelated
   // slot churn in the slots array doesn't re-render the pill.

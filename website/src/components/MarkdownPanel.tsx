@@ -174,6 +174,7 @@ import { monacoLang, useIsDark } from './MonacoCodeBlock'
 import { kirocrewDark, kirocrewLight } from './monacoTheme'
 import type { IDisposable } from 'monaco-editor'
 import { i18nT } from '../i18n/t'
+import { useI18nRevision } from '../i18n/useI18nRevision'
 const MonacoDiffEditor = lazy(async () => {
   const { ensureMonacoLocal } = await import('../utils/monacoLocal')
   await ensureMonacoLocal()
@@ -610,6 +611,7 @@ const CommentOverlayBlock = memo(function CommentOverlayBlock({ popover, addComm
   popover: { x: number; y: number } | null; addComment: (text: string) => void; setPopover: (v: null) => void
   onSubmitComments?: (message: string) => void; comments: InlineComment[]; editComment: (id: string, text: string) => void; removeComment: (id: string) => void; submitAllComments: (extraPrompt?: string) => void; containerRef?: React.RefObject<HTMLElement | null>; scrollRef?: React.RefObject<HTMLElement | null>
 }) {
+  useI18nRevision()
   return (
     <>
       {popover && (

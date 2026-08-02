@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { Music, Video, Image, Paperclip, ArrowDown } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
+import { useI18nRevision } from '../i18n/useI18nRevision'
 export interface FileData {
   filename: string
   description?: string
@@ -11,6 +12,7 @@ export interface FileData {
 
 /** Renders a file embed card — inline audio/video player or download link. */
 export const FileCard = memo(function FileCard({ file }: { file: FileData }) {
+  useI18nRevision()
   const url = `/api/outbox/${encodeURIComponent(file.filename)}`
   const mime = (file.content_type || '') as string
 

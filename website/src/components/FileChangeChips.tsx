@@ -5,6 +5,7 @@ import { useRowDisclosure } from '../pages/chat/rowDisclosure'
 import { colorForExt, fileIcon } from '../utils/fileIcons'
 
 import { i18nT } from '../i18n/t'
+import { useI18nRevision } from '../i18n/useI18nRevision'
 export interface FileChangeEntry {
   path: string
   before: string
@@ -214,6 +215,7 @@ const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff,
   artifactPaths?: Set<string>
   disclosureKey?: string
 }) {
+  useI18nRevision()
   if (!fileChanges?.length) return null
   // Minimal keeps the wrapping pill row; anything else uses the grouped card.
   if (style === 'minimal') {

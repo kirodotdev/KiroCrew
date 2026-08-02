@@ -16,6 +16,7 @@ import WorkflowSourcePanel from '../../apps/workflows/WorkflowSourcePanel'
 import { useRunSnapshot } from '../../apps/workflows/useRunSnapshot'
 
 import { i18nT } from '../../i18n/t'
+import { useI18nRevision } from '../../i18n/useI18nRevision'
 export interface WfRunRow {
   run_id: string
   name?: string
@@ -29,6 +30,7 @@ export interface WfRunRow {
 }
 
 const WorkflowSidebarRow = memo(function WorkflowSidebarRow({ row }: { row: WfRunRow }) {
+  useI18nRevision()
   const [expanded, setExpanded] = useState(false)
   const { snapshot, error: snapshotError } = useRunSnapshot(row.run_id, {
     enabled: expanded,

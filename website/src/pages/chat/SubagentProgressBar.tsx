@@ -7,6 +7,7 @@ import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { SubagentActivity } from '../../types'
 
 import { i18nT } from '../../i18n/t'
+import { useI18nRevision } from '../../i18n/useI18nRevision'
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
 
 /** Max agent rows rendered in the chip — exceptions (stalled/retrying) sort
@@ -26,6 +27,7 @@ interface SpawnListResponse {
 
 /** Active subagent summary above the chat input. */
 const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: string | null }) {
+  useI18nRevision()
   // Use chatSlice.subagents — populated by subagent_spawn/tool/done WS events
   // (dashboardSlice.subagentRunning only updates on subagent_status which fires at completion)
   const dispatch = useAppDispatch()

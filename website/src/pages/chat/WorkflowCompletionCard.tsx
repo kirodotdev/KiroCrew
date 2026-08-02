@@ -22,6 +22,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
+import { useI18nRevision } from '../../i18n/useI18nRevision'
 import { useRowDisclosure } from './rowDisclosure'
 const WF_COMPLETION_PREFIX = '[Workflow completion event]'
 // Name is backtick-delimited; allow any char except a backtick (including
@@ -73,6 +74,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
   onFileOpen?: (path: string) => void
   disclosureKey?: string
 }) {
+  useI18nRevision()
   const dispatch = useAppDispatch()
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const parsed = parseWorkflowCompletion(message.content || '')

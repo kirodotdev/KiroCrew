@@ -11,6 +11,7 @@ import type { FileType } from './FileRenderers'
 import type { Artifact, ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { useI18nRevision } from '../i18n/useI18nRevision'
 // Extracted from ArtifactDetailPage so the full-page route and the chat
 // side-panel Artifacts tab share one renderer (markdown/text/json/svg natively
 // via ContentRenderer; widget/html via the sandboxed iframe).
@@ -93,6 +94,7 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
    *  own unless told to run flush. */
   flush?: boolean
 }) {
+  useI18nRevision()
   const fileType = fileTypeForKind(kind)
   const ext = extForKind(kind)
   const isRichType = fileType === 'json' || fileType === 'svg' || fileType === 'html' || fileType === 'image' || fileType === 'csv' || fileType === 'pdf'
