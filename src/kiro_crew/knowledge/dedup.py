@@ -257,18 +257,38 @@ def _iso_to_epoch(value: str | None) -> float:
 
 
 def _doc_embedding(store, doc: DocRef) -> list[float] | None:
-    """Mean-pool the stored chunk embeddings of a document into one vector."""
+    """Mean-pool the stored chunk embeddings of a document into one vector.
+
+    A single corrupt or legacy-unreadable blob is skipped (and logged with its
+    item id so it can be found) rather than aborting the pooling - and, by
+    extension, the whole dedup sweep this feeds (issue #429).
+    """
     if doc.embedding is not None:
         return doc.embedding
     if not doc.item_ids:
         return None
     placeholders = ",".join("?" * len(doc.item_ids))
     rows = store.db.execute(
-        f"SELECT embedding FROM items WHERE id IN ({placeholders}) "  # noqa: S608
+        f"SELECT id, embedding FROM items WHERE id IN ({placeholders}) "  # noqa: S608
         "AND embedding IS NOT NULL",
-        doc.item_ids).fetchall()
-    vecs = [bytes_to_floats(r["embedding"]) for r in rows if r["embedding"]]
-    vecs = [v for v in vecs if v]
+        doc.item_ids,
+    ).fetchall()
+    vecs: list[list[float]] = []
+    for r in rows:
+        blob = r["embedding"]
+        if not blob:
+            continue
+        vec = bytes_to_floats(blob)
+        if not vec:
+            logger.warning(
+                "Skipping undecodable embedding for item %s (source %s, %d bytes) "
+                "during dedup pooling",
+                r["id"],
+                doc.source_id,
+                len(blob),
+            )
+            continue
+        vecs.append(vec)
     if not vecs:
         return None
     dim = len(vecs[0])

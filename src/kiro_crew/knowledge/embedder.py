@@ -9,6 +9,7 @@ degraded UX. Knowledge and vector memory share one loaded model instance
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import struct
 import time
@@ -155,9 +156,34 @@ def floats_to_bytes(vec: list[float]) -> bytes:
 
 
 def bytes_to_floats(data: bytes) -> list[float]:
-    """Deserialize binary BLOB back to float list."""
-    n = len(data) // 4
-    return list(struct.unpack(f"{n}f", data))
+    """Deserialize an embedding BLOB back to a float list.
+
+    Tolerant of the two shapes that can appear in the ``items.embedding``
+    column: the compact binary struct written by :func:`floats_to_bytes`, and
+    a legacy JSON-encoded list of floats. Returns ``[]`` for anything it cannot
+    decode - empty, a length that is not a positive multiple of 4, or otherwise
+    corrupt - rather than raising, so one bad row is skippable instead of
+    aborting a whole dedup pass (issue #429). Mirrors the guard already carried
+    by the sibling decoder ``knowledge/retrieval.py::_bytes_to_floats``.
+    """
+    if not data:
+        return []
+    # Legacy JSON-encoded list of floats (pre-binary storage format).
+    try:
+        result = json.loads(data)
+        if isinstance(result, list):
+            return result
+    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+        pass
+    # Binary struct-packed floats. Require >= 16 bytes (>= 4 floats) and a
+    # 4-byte-aligned length to avoid misreading a short/garbage blob as floats.
+    if isinstance(data, bytes) and len(data) >= 16 and len(data) % 4 == 0:
+        try:
+            n = len(data) // 4
+            return list(struct.unpack(f"{n}f", data))
+        except struct.error:
+            pass
+    return []
 
 
 def embed_signature(model: str, content_budget: int = _EMBED_CONTENT_BUDGET) -> str:

@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from kiro_crew.knowledge.dedup import (
     DocRef,
+    _doc_embedding,
     dedup_document,
     dedup_sweep,
     filename_near_match,
     normalize_filename,
     pick_winner,
 )
-from kiro_crew.knowledge.embedder import floats_to_bytes
+from kiro_crew.knowledge.embedder import bytes_to_floats, floats_to_bytes
 from kiro_crew.knowledge.store import KnowledgeStore
 
 
@@ -374,4 +376,81 @@ class TestDedupDocument:
         assert _n_uploads(store) == 1, "legitimate upload must survive"
         assert store.db.execute(
             "SELECT COUNT(*) FROM items WHERE source_id = ?", (art_sid,)).fetchone()[0] == 1
+        store.db.close()
+
+
+class TestEmbeddingDecodeGuard:
+    """bytes_to_floats must tolerate corrupt/legacy blobs so a single bad
+    embedding row is skipped and logged instead of aborting the whole dedup
+    pass (issue #429)."""
+
+    def test_roundtrip_happy_path(self):
+        vec = [0.5, -1.25, 3.0, 0.0]
+        assert bytes_to_floats(floats_to_bytes(vec)) == vec
+
+    def test_bad_length_returns_empty_not_raise(self):
+        # 3 bytes: not a multiple of 4 -- struct.unpack raised pre-fix.
+        assert bytes_to_floats(b"\x01\x02\x03") == []
+
+    def test_legacy_json_blob_decoded(self):
+        assert bytes_to_floats(json.dumps([1.0, 2.0, 3.0]).encode()) == [1.0, 2.0, 3.0]
+
+    def test_garbage_bytes_return_empty(self):
+        # Undecodable and short of the binary floor -- must not misdecode.
+        assert bytes_to_floats(b"not a vec") == []
+
+    def test_empty_returns_empty(self):
+        assert bytes_to_floats(b"") == []
+
+    def test_doc_embedding_skips_corrupt_row_and_logs(self, tmp_path, caplog):
+        store = _mk_store(tmp_path)
+        sid = store.add_source(name="U", source_type="local_file", uri="upload://U")
+        good = store.add_item(
+            title="g",
+            content="b",
+            item_type="document",
+            source_id=sid,
+            embedding=floats_to_bytes([1.0, 0.0, 0.0, 0.0]),
+        )
+        bad = store.add_item(
+            title="x",
+            content="b",
+            item_type="document",
+            source_id=sid,
+            embedding=floats_to_bytes([0.0, 1.0, 0.0, 0.0]),
+        )
+        # Corrupt the second row's blob to a non-4-multiple length.
+        store.db.execute("UPDATE items SET embedding = ? WHERE id = ?", (b"\x01\x02\x03", bad))
+        store.db.commit()
+        doc = DocRef(
+            source_id=sid,
+            source_type="local_file",
+            filename="U",
+            item_ids=[good, bad],
+            content_hash=None,
+            embedding_sig="s",
+            recency=0.0,
+            resident_since=0.0,
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.knowledge.dedup"):
+            pooled = _doc_embedding(store, doc)
+        # The good row still pools; the corrupt row is skipped, not fatal.
+        assert pooled == [1.0, 0.0, 0.0, 0.0]
+        # The skipped row is observable -- logged with its item id.
+        assert bad in caplog.text
+        store.db.close()
+
+    def test_dedup_sweep_survives_corrupt_embedding(self, tmp_path):
+        store = _mk_store(tmp_path)
+        # Two fuzzy-matchable docs (same stem + embedding_sig) so the fuzzy tier
+        # decodes embeddings; corrupt the upload's only blob.
+        _add_upload(store, "Report.docx", "H1", [1.0, 0.0, 0.0, 0.0])
+        _add_folder_file(store, "/p/Report.pdf", "H2", [0.98, 0.0, 0.2, 0.0])
+        store.db.execute(
+            "UPDATE items SET embedding = ? WHERE title = ?", (b"\x01\x02\x03", "Report.docx")
+        )
+        store.db.commit()
+        # Pre-fix: bytes_to_floats raised struct.error and aborted the sweep.
+        results = dedup_sweep(store, apply=True)
+        assert isinstance(results, list)
         store.db.close()
