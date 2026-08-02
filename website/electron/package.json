@@ -78,6 +78,7 @@
       "remote-token.js",
       "token-retry.js",
       "display-media.js",
+      "permission-handler.js",
       "external-scheme.js",
       "validation.js",
       "context-menu.js",

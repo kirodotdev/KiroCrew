@@ -46,6 +46,10 @@ const { findConfiguredDashboardPort } = require("./data-home");
 const { createTokenRetryHandler } = require("./token-retry");
 const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
 const { createDisplayMediaHandler } = require("./display-media");
+const {
+  createPermissionRequestHandler,
+  createPermissionCheckHandler,
+} = require("./permission-handler");
 const { createWindowOpenHandler } = require("./external-scheme");
 const { initAutoUpdate } = require("./auto-update");
 const {
@@ -1960,23 +1964,14 @@ app.whenReady().then(async () => {
   // permission *check* can report `media` as denied for the renderer's
   // navigator.mediaDevices.getUserMedia(), so the mic button silently no-ops
   // in the packaged app even though it works in a plain browser (Chromium
-  // prompts there). Scope the grant to the `media` permission type only
-  // (what getUserMedia needs for the mic) and deny every other permission
-  // type (geolocation, clipboard, notifications, MIDI, …) per least
-  // privilege. Screen capture uses its own setDisplayMediaRequestHandler and
-  // is unaffected. On macOS we also proactively trigger the OS microphone
-  // (TCC) permission prompt.
-  const isAppOrigin = (wc) => {
-    try { return new URL(wc?.getURL?.() || "").hostname === "localhost"; } catch { return false; }
-  };
-  session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
-    const isAudioOnly = details?.mediaTypes?.includes("audio") && !details?.mediaTypes?.includes("video");
-    callback(permission === "media" && isAppOrigin(wc) && isAudioOnly);
-  });
-  session.defaultSession.setPermissionCheckHandler((wc, permission, _origin, details) => {
-    if (permission === "media") return isAppOrigin(wc) && details?.mediaType === "audio";
-    return false;
-  });
+  // prompts there). The handlers grant `media` for the app origin and deny
+  // every other permission type (geolocation, clipboard, notifications,
+  // MIDI, …) per least privilege. Screen capture uses its own
+  // setDisplayMediaRequestHandler and is unaffected. See permission-handler.js
+  // for why the audio grant must NOT require a populated details.mediaTypes.
+  // On macOS we also proactively trigger the OS microphone (TCC) prompt.
+  session.defaultSession.setPermissionRequestHandler(createPermissionRequestHandler());
+  session.defaultSession.setPermissionCheckHandler(createPermissionCheckHandler());
   if (process.platform === "darwin") {
     systemPreferences.askForMediaAccess("microphone").catch(() => {
       /* best effort — older macOS or TCC denied */
