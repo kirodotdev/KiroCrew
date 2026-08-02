@@ -15,7 +15,7 @@ import {
 type MockState = {
   dashboard: { slots: ChatSlot[]; unreadSlots: string[] }
   chat: {
-    slotStatusDetail: Record<string, { kind?: string; text?: string; ts?: number }>
+    slotStatusDetail: Record<string, { kind?: string; text?: string; toolName?: string; ts?: number }>
   }
 }
 
@@ -209,10 +209,23 @@ describe('sessionStatus — running detail', () => {
       label: 'Thinking…',
     })
   })
+
+  it('shows the raw tool title when simplifiedToolNames is off', () => {
+    // Same preference the inline tool pill obeys, so the palette row and the
+    // transcript agree instead of the row always showing the purpose.
+    const detail = { kind: 'tool', text: 'Reading the app entrypoint', toolName: 'fs_read /workspace/src/app.ts' }
+    expect(sessionStatus(slot({ running: true }), [], detail, false)).toMatchObject({
+      label: 'fs_read /workspace/src/app.ts',
+    })
+    expect(sessionStatus(slot({ running: true }), [], detail, true)).toMatchObject({
+      label: 'Reading the app entrypoint',
+    })
+  })
 })
 
 describe('useRecentsProvider — live status bridge', () => {
   beforeEach(() => {
+    localStorage.clear()
     vi.clearAllMocks()
     mocks.state.dashboard.slots = []
     mocks.state.dashboard.unreadSlots = []
@@ -239,6 +252,26 @@ describe('useRecentsProvider — live status bridge', () => {
       statusStyle: 'dot',
       statusPulse: true,
       statusLabel: 'Running: read /workspace/src/app.ts',
+    })
+  })
+
+  it('renders the raw tool title when the user turned simplified tool names off', async () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ simplifiedToolNames: false }))
+    mocks.state.dashboard.slots = [slot({ key: 'dashboard_live', running: true })]
+    mocks.state.chat.slotStatusDetail = {
+      dashboard_live: {
+        kind: 'tool',
+        text: 'Reading the app entrypoint',
+        toolName: 'fs_read /workspace/src/app.ts',
+        ts: 123,
+      },
+    }
+
+    const { result } = renderHook(() => useRecentsProvider())
+    const rows = await result.current.search('')
+
+    expect(rows.find((row) => row.id === 'recents:cur:dashboard_live')).toMatchObject({
+      statusLabel: 'fs_read /workspace/src/app.ts',
     })
   })
 })

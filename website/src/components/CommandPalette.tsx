@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { useAppSelector } from '../store'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import type { Result, ResourceProvider } from './commandPalette/types'
 import { registerProvider } from './commandPalette/providers'
 import { usePaletteActions } from './commandPalette/paletteActions'
@@ -342,6 +343,11 @@ export default function CommandPalette({
   const slots = useAppSelector((s) => s.dashboard.slots)
   const unreadSlots = useAppSelector((s) => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector((s) => s.chat.slotStatusDetail ?? {})
+  // Rows render a tool status through toolStatusLabel, so the purpose-vs-raw-title
+  // preference is part of the live state the key has to cover: without it, toggling
+  // the setting between two opens leaves a running row on its pre-toggle label until
+  // the next status tick or staleTime expiry.
+  const simplifiedToolNames = useSimplifiedToolNames()
   const liveFingerprint = useMemo(
     () =>
       activeProvider.id === 'recents'
@@ -354,9 +360,9 @@ export default function CommandPalette({
                   slotStatusDetail[s.key]?.kind ?? ''
                 }:${slotStatusDetail[s.key]?.text ?? ''}:${slotStatusDetail[s.key]?.ts ?? ''}`,
             )
-            .join('|') + `#${unreadSlots.join(',')}`
+            .join('|') + `#${unreadSlots.join(',')}#${simplifiedToolNames ? 1 : 0}`
         : '',
-    [activeProvider.id, slots, unreadSlots, slotStatusDetail],
+    [activeProvider.id, slots, unreadSlots, slotStatusDetail, simplifiedToolNames],
   )
   const { data: results = [], isLoading: loading } = useQuery({
     queryKey: ['palette', 'search', activeProvider.id, debouncedQuery, liveFingerprint],

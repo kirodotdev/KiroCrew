@@ -4,10 +4,12 @@ import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../../../api/client'
+import { useSimplifiedToolNames } from '../../../hooks/useSimplifiedToolNames'
 import { useAppDispatch, useAppSelector } from '../../../store'
 import { createSlot, resumeFromHistory, switchSlot } from '../../../store/chatSlice'
 import type { ChatSlot, ChatFolder, CronJob } from '../../../types'
 import type { Result, ResourceProvider } from '../types'
+import { toolStatusLabel } from '../../../utils/toolStatusLabel'
 
 import { i18nT } from '../../../i18n/t'
 import { fmtDateFields, fmtRelative, toDate } from '../../../i18n/format'
@@ -170,7 +172,10 @@ function shortMsg(slot: ChatSlot): string {
 export function sessionStatus(
   slot: ChatSlot,
   unread: string[],
-  statusDetail?: { text?: string },
+  statusDetail?: { kind?: string; text?: string; toolName?: string },
+  // Defaults to the ChatSettings default (on) so callers that don't care about
+  // the preference keep the purpose-first behavior.
+  simplifiedToolNames = true,
 ): {
   style?: 'pill' | 'dot'
   colorVar?: string
@@ -193,7 +198,9 @@ export function sessionStatus(
       style: 'dot',
       colorVar: '--accent',
       pulse: true,
-      label: statusDetail?.text || i18nT('components.commandPalette.providers.recentsProvider.thinking'),
+      label:
+        toolStatusLabel(statusDetail, simplifiedToolNames) ||
+        i18nT('components.commandPalette.providers.recentsProvider.thinking'),
     }
   }
   if (unread.includes(slot.key) || slot.waiting_for_input) {
@@ -214,6 +221,7 @@ export function useRecentsProvider(): ResourceProvider {
   const slots = useAppSelector((s) => s.dashboard.slots)
   const unread = useAppSelector((s) => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector((s) => s.chat.slotStatusDetail ?? {})
+  const simplifiedToolNames = useSimplifiedToolNames()
 
   return useMemo(() => {
     const { ordered: orderedSlots, hasEmptyNew } = prepareCurrentSlots(slots)
@@ -260,7 +268,7 @@ export function useRecentsProvider(): ResourceProvider {
           // An untitled slot that already has messages is a real conversation
           // and keeps its normal row treatment.
           const isNew = isEmptyNewSlot(s)
-          const st = isNew ? {} : sessionStatus(s, unread, slotStatusDetail[s.key])
+          const st = isNew ? {} : sessionStatus(s, unread, slotStatusDetail[s.key], simplifiedToolNames)
           return {
             id: `recents:cur:${s.key}`,
             providerId: 'recents',
@@ -360,5 +368,5 @@ export function useRecentsProvider(): ResourceProvider {
         return [...current, ...planned, ...older]
       },
     }
-  }, [dispatch, navigate, queryClient, slots, unread, slotStatusDetail])
+  }, [dispatch, navigate, queryClient, slots, unread, slotStatusDetail, simplifiedToolNames])
 }

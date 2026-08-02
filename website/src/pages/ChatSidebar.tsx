@@ -23,12 +23,14 @@ import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/r
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
+import { toolStatusLabel } from '../utils/toolStatusLabel'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
 import { useProvider } from '../providers'
 import ModelDropdownList from '../components/ModelDropdownList'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
+import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -67,11 +69,15 @@ import { i18nT } from '../i18n/t'
  *  English literal by the websocket layer (a plain `.ts` module the i18n codemod
  *  never scans), so it must be localized at render time. The two fixed phases
  *  (`thinking`/`streaming`) map to catalog keys; a `tool` phase or a
- *  server-supplied status carries its own dynamic text and is passed through. */
-function slotStatusText(detail?: { kind?: string; text?: string }): string {
+ *  server-supplied status carries its own dynamic text and is passed through.
+ *
+ *  A `tool` phase honors the user's `simplifiedToolNames` preference (purpose vs
+ *  raw tool title) via toolStatusLabel, so the row agrees with the inline tool
+ *  pill in the transcript rather than always showing the purpose. */
+function slotStatusText(detail: { kind?: string; text?: string; toolName?: string } | undefined, simplifiedToolNames: boolean): string {
   if (detail?.kind === 'streaming') return i18nT('pages.chatSidebar.streaming')
   if (detail?.kind === 'thinking' && detail.text === 'Thinking…') return i18nT('pages.chatSidebar.thinking')
-  return detail?.text || i18nT('pages.chatSidebar.thinking')
+  return toolStatusLabel(detail, simplifiedToolNames) || i18nT('pages.chatSidebar.thinking')
 }
 /** Telegram-style relative time: time today, "Yesterday hh:mm", weekday+time this week,
  *  short date this year, full date otherwise.
@@ -752,6 +758,8 @@ function ChatSidebar({
   // not merely because a reducer produced a new map wrapper. Without it, any
   // write to one slot's detail re-renders the entire sidebar.
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail, shallowEqual)
+  // Purpose-vs-raw-tool-title preference, shared with the inline tool pills.
+  const simplifiedToolNames = useSimplifiedToolNames()
   // Presence in this map means "this session is in an active goal loop".
   const goalLoops = useAppSelector(s => s.chat.goalLoops)
   // Live subagent activity per slot, for the sidebar row's "N agents running"
@@ -2074,7 +2082,7 @@ function ChatSidebar({
       : subagentCount > 0
         ? subagentLabel
         : s.running
-          ? slotStatusText(slotStatusDetail[s.key])
+          ? slotStatusText(slotStatusDetail[s.key], simplifiedToolNames)
           : (s.last_message || '')
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
     const rowColor = ci != null ? paletteColors[ci] : null
@@ -2301,7 +2309,7 @@ function ChatSidebar({
                 <span className="truncate">{subagentLabel}</span>
               </div>
             ) : s.running ? (
-              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusText(slotStatusDetail[s.key])}</div>
+              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusText(slotStatusDetail[s.key], simplifiedToolNames)}</div>
             ) : s.last_message ? (
               <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
             ) : null}

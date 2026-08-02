@@ -202,6 +202,9 @@ afterEach(() => {
   H.storeState.dashboard.slots = []
   H.storeState.dashboard.unreadSlots = []
   H.storeState.chat.slotStatusDetail = {}
+  // localStorage is file-scoped, not per-test: a chat-config write (e.g. the
+  // simplifiedToolNames toggle test) would otherwise persist into siblings.
+  localStorage.removeItem('mc-chat-config')
   queryClient.clear()
 })
 
@@ -327,6 +330,27 @@ describe('CommandPalette — render', () => {
     H.storeState.chat.slotStatusDetail = {
       'chat-1': { kind: 'tool', text: 'Running: read /workspace/src/app.ts', ts: 1 },
     }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
+  })
+
+  it('refreshes recents when the simplified-tool-names preference changes', async () => {
+    // Rows render the tool status through toolStatusLabel, so the preference is
+    // part of the live state the query key covers — otherwise a running row keeps
+    // its pre-toggle label until the next status tick or staleTime expiry.
+    H.storeState.dashboard.slots = [
+      { key: 'chat-1', title: 'Live session', running: true, messages: 2 },
+    ]
+    H.storeState.chat.slotStatusDetail = {
+      'chat-1': { kind: 'tool', text: 'Reading the app entrypoint', ts: 1 },
+    }
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
+
+    localStorage.setItem('mc-chat-config', JSON.stringify({ simplifiedToolNames: false }))
+    window.dispatchEvent(new Event('mc-config-changed'))
     rerender(<CommandPalette open onClose={vi.fn()} />)
 
     await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
