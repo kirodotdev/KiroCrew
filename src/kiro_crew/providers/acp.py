@@ -26,6 +26,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.effort import (
     EFFORT_LEVELS,
@@ -89,7 +90,7 @@ def _write_cli_overlay(work_dir: Path, model: str, effort: str) -> None:
             model_cfg.pop(other_key, None)
     model_defaults[model] = model_cfg
     existing["chat.modelDefaults"] = model_defaults
-    cli_json.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    atomic_write(cli_json, json.dumps(existing, indent=2))
 
 
 def _write_tool_search_overlay(work_dir: Path, enabled: bool) -> None:
@@ -135,7 +136,7 @@ def _write_tool_search_overlay(work_dir: Path, enabled: bool) -> None:
         # later build flips the global default on.
         existing.pop("toolSearch.minPct", None)
         existing.pop("toolSearch.minTokens", None)
-    cli_json.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    atomic_write(cli_json, json.dumps(existing, indent=2))
 
 
 def _clear_cli_overlay_effort(work_dir: Path, model: str) -> None:
@@ -170,7 +171,7 @@ def _clear_cli_overlay_effort(work_dir: Path, model: str) -> None:
         if not model_cfg:
             model_defaults.pop(model, None)
     try:
-        cli_json.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        atomic_write(cli_json, json.dumps(data, indent=2))
     except OSError:
         logger.debug("ACP effort overlay clear failed", exc_info=True)
 

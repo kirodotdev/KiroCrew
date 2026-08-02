@@ -957,3 +957,85 @@ class TestLoadSessionWithRetry:
         assert got is None
         assert rt.load_session.await_count == 1  # bail as soon as the runtime is dead
         assert sleep_mock.await_count == 0
+
+
+class TestCliOverlayAtomicity:
+    """Regression tests for #426: cli.json overlay must be written atomically."""
+
+    def test_write_cli_overlay_uses_atomic_write(self, tmp_path):
+        from kiro_crew.providers.acp import _write_cli_overlay
+
+        with patch("kiro_crew.providers.acp.atomic_write") as aw:
+            _write_cli_overlay(tmp_path, "claude-sonnet-4-20250514", "high")
+
+        aw.assert_called_once()
+        path_arg, content_arg = aw.call_args[0]
+        assert str(path_arg).endswith("cli.json")
+        # Content must be valid JSON with the expected structure
+        import json
+
+        data = json.loads(content_arg)
+        assert "chat.modelDefaults" in data
+        assert "claude-sonnet-4-20250514" in data["chat.modelDefaults"]
+
+    def test_write_tool_search_overlay_uses_atomic_write(self, tmp_path):
+        from kiro_crew.providers.acp import _write_tool_search_overlay
+
+        with patch("kiro_crew.providers.acp.atomic_write") as aw:
+            _write_tool_search_overlay(tmp_path, True)
+
+        aw.assert_called_once()
+        path_arg, content_arg = aw.call_args[0]
+        assert str(path_arg).endswith("cli.json")
+        import json
+
+        data = json.loads(content_arg)
+        assert data["toolSearch.enabled"] is True
+        assert data["toolSearch.minPct"] == 0
+        assert data["toolSearch.minTokens"] == 0
+
+    def test_clear_cli_overlay_effort_uses_atomic_write(self, tmp_path):
+        from kiro_crew.providers.acp import _clear_cli_overlay_effort, _write_cli_overlay
+
+        # First write an overlay so there's something to clear
+        _write_cli_overlay(tmp_path, "claude-sonnet-4-20250514", "high")
+
+        with patch("kiro_crew.providers.acp.atomic_write") as aw:
+            _clear_cli_overlay_effort(tmp_path, "claude-sonnet-4-20250514")
+
+        aw.assert_called_once()
+        path_arg, content_arg = aw.call_args[0]
+        assert str(path_arg).endswith("cli.json")
+        import json
+
+        data = json.loads(content_arg)
+        # Effort should be cleared
+        model_cfg = data.get("chat.modelDefaults", {}).get("claude-sonnet-4-20250514", {})
+        for key in ("output_config", "reasoning"):
+            sub = model_cfg.get(key, {})
+            assert "effort" not in sub
+
+    def test_overlay_never_leaves_partial_content(self, tmp_path):
+        """Verify that a reader never sees truncated/empty JSON.
+
+        atomic_write uses temp-file + os.replace, so the target path
+        transitions from absent/old to complete-new in one rename.  This
+        test confirms the contract by checking that after the real
+        atomic_write, the file is always valid JSON.
+        """
+        from kiro_crew.providers.acp import _write_cli_overlay, _write_tool_search_overlay
+
+        _write_cli_overlay(tmp_path, "claude-sonnet-4-20250514", "high")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        import json
+
+        # Must be valid JSON after each write
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert "chat.modelDefaults" in data
+
+        # Overwrite with tool-search - still valid
+        _write_tool_search_overlay(tmp_path, True)
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data["toolSearch.enabled"] is True
+        # Previous effort key preserved
+        assert "chat.modelDefaults" in data
