@@ -30,6 +30,7 @@ import { useAppDispatch } from '../../store'
 import { removeWarm } from '../../store/instancesSlice'
 
 import { i18nT } from '../../i18n/t'
+import { fmtDuration, fmtUnit } from '../../i18n/format'
 const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
   connected: 'bg-success',
   connecting: 'bg-warning',
@@ -40,12 +41,12 @@ const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
 
 /** Human-friendly duration ("3h 12m", "45m", "30s"). */
 function humanizeSecs(secs: number): string {
-  if (secs <= 0) return '0s'
+  if (secs <= 0) return fmtUnit(0, 'second', { maximumFractionDigits: 0 })
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
-  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`
-  if (m > 0) return `${m}m`
-  return `${secs}s`
+  if (h > 0) return fmtDuration([[h, 'hour'], [m, 'minute']], { dropZero: true })
+  if (m > 0) return fmtUnit(m, 'minute', { maximumFractionDigits: 0 })
+  return fmtUnit(secs, 'second', { maximumFractionDigits: 0 })
 }
 
 function StatusBadge({ status }: { status: InstanceTunnelStatus }) {

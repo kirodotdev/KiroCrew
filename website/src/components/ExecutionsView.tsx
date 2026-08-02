@@ -6,7 +6,7 @@ import { Badge, Btn, Skeleton } from './ui'
 import { useAppSelector } from '../store'
 
 import { i18nT } from '../i18n/t'
-import { fmtDateTimeNumeric } from '../i18n/format'
+import { fmtDateTimeNumeric, fmtDuration as fmtDurationParts, fmtUnit } from '../i18n/format'
 interface HistoryEntry {
   job_id: string
   job_name: string
@@ -21,10 +21,10 @@ interface HistoryEntry {
 const PAGE_SIZE = 20
 
 const fmtDuration = (ms: number) => {
-  if (ms < 1000) return `${ms}ms`
+  if (ms < 1000) return fmtUnit(ms, 'millisecond', { maximumFractionDigits: 0 })
   const s = ms / 1000
-  if (s < 60) return `${s.toFixed(1)}s`
-  return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`
+  if (s < 60) return fmtUnit(s, 'second', { maximumFractionDigits: 1, minimumFractionDigits: 1 })
+  return fmtDurationParts([[Math.floor(s / 60), 'minute'], [Math.floor(s % 60), 'second']])
 }
 
 const fmtTime = (ts: number) => fmtDateTimeNumeric(ts)

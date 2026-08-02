@@ -4389,3 +4389,163 @@ class TestKiroPrerequisiteHandlers:
         )
         async with TestClient(TestServer(app)) as client:
             assert (await client.get("/api/kiro-prerequisite")).status == 200
+
+
+class TestSandboxUnavailableIsNotAMissingBinary:
+    """A sandbox-refused probe must not be reported as "not installed".
+
+    Verification runs the candidate INSIDE the sandbox
+    (``_UNVERIFIED_SANDBOX_MODE``), so on a host where the sandbox cannot be
+    constructed — Ubuntu >= 23.10 with
+    ``kernel.apparmor_restrict_unprivileged_userns=1`` is the common case — a
+    present, executable, already-authenticated CLI fails verification. The old
+    code degraded that to ``installed=False``, telling the user to install a CLI
+    that was already there.
+
+    Every case here drives the decision through ``ProcessResult.sandbox_failure``
+    — the typed signal the spawn itself produced — so the outcome does not depend
+    on whether the machine running the tests happens to have a working sandbox.
+    """
+
+    @staticmethod
+    def _service(tmp_path: Path, run: Any) -> KiroPrerequisiteService:
+        return KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            process_runner=run,
+            audit_writer=_no_audit,
+        )
+
+    @staticmethod
+    def _sandbox_refused(kind: str, detail: str) -> Any:
+        """A runner standing in for wrap_argv fail-closing on this spawn."""
+
+        async def run(_command: str, _args: list[str], **_kwargs: Any) -> ProcessResult:
+            return ProcessResult(
+                ok=False,
+                error=f"Sandbox backend unavailable ... Probe detail: {detail}.",
+                sandbox_failure=(kind, detail),
+            )
+
+        return run
+
+    @staticmethod
+    async def _plain_failure(
+        _command: str,
+        _args: list[str],
+        **_kwargs: Any,
+    ) -> ProcessResult:
+        """A probe that failed for a reason unrelated to the sandbox."""
+        return ProcessResult(ok=False, error="exited with code 1")
+
+    @pytest.mark.asyncio
+    async def test_present_binary_reports_sandbox_unavailable_not_missing(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
+        detail = "unshare(CLONE_NEWNS) failed with errno 1 (EPERM)"
+
+        status = await self._service(
+            tmp_path, self._sandbox_refused("no_backend", detail)
+        ).snapshot(force=True)
+
+        assert status["sandbox_unavailable"] is True
+        assert status["sandbox_failure_kind"] == "no_backend"
+        assert status["sandbox_detail"] == detail
+        # The whole point: the binary is on disk and executable, so claiming it
+        # is not installed is the bug being fixed.
+        assert status["installed"] is True
+        assert status["ready"] is False
+        # Neither reinstalling nor signing in can fix a missing sandbox backend,
+        # so no action that cannot help is offered.
+        assert status["can_auto_install"] is False
+        assert status["can_login"] is False
+        assert status["repair_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_missing_binary_still_reports_not_installed(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The genuine missing-binary path must be untouched by this change."""
+        status = await self._service(tmp_path, self._plain_failure).snapshot(force=True)
+
+        assert status["installed"] is False
+        assert status["sandbox_unavailable"] is False
+        assert status["sandbox_failure_kind"] == ""
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_unrelated_to_the_sandbox_is_not_misattributed(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A present binary that simply fails --version is NOT a sandbox problem.
+
+        This is the over-claim guard, and it is what keeps the fix honest on
+        platforms where verification is not sandboxed at all: ``_run_process``
+        skips the wrap on Windows, and ``sandbox_allow_unsandboxed_exec``
+        bypasses it, so a broken CLI there must keep its repair path instead of
+        being blamed on the sandbox.
+        """
+        _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
+
+        status = await self._service(tmp_path, self._plain_failure).snapshot(force=True)
+
+        assert status["sandbox_unavailable"] is False
+        assert status["sandbox_failure_kind"] == ""
+        assert status["installed"] is False
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_is_reported_as_transient(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A transient refusal must be distinguishable from a host verdict.
+
+        The remedy differs sharply: retry, versus change the host. Reporting a
+        momentary EAGAIN as "this host has no sandbox" is what would push a user
+        into needlessly disabling their own isolation.
+        """
+        _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
+
+        status = await self._service(
+            tmp_path, self._sandbox_refused("transient", "fork failed with errno 11 (EAGAIN)")
+        ).snapshot(force=True)
+
+        assert status["sandbox_unavailable"] is True
+        assert status["sandbox_failure_kind"] == "transient"
+        assert status["installed"] is True
+
+    @pytest.mark.asyncio
+    async def test_working_host_sets_no_sandbox_fields(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The healthy path must leave every new field at its default."""
+        _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            return ProcessResult(ok=args == ["--version"])
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert status["installed"] is True
+        assert status["sandbox_unavailable"] is False
+        assert status["sandbox_failure_kind"] == ""
+        assert status["sandbox_detail"] == ""
+
+
+class TestSandboxUnavailableErrorIsTyped:
+    """The sandbox refusal must be catchable structurally, not by prose match."""
+
+    def test_error_carries_kind_and_detail_and_is_a_runtime_error(self) -> None:
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        exc = SandboxUnavailableError("refused", kind="no_backend", detail="EPERM at NEWNS")
+
+        # RuntimeError subclass so existing ``except RuntimeError`` sites are unaffected.
+        assert isinstance(exc, RuntimeError)
+        assert exc.kind == "no_backend"
+        assert exc.detail == "EPERM at NEWNS"

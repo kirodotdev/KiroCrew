@@ -50,7 +50,6 @@ import MarkdownRenderer, { Lightbox } from './components/MarkdownRenderer'
 import NotificationsPage from './pages/NotificationsPage'
 import NotificationDetailPanel from './components/notifications/NotificationDetailPanel'
 import NotificationFeed from './components/notifications/NotificationFeed'
-import ProjectsPage from './pages/ProjectsPage'
 import LogsPage from './pages/LogsPage'
 import HooksPage from './pages/HooksPage'
 import CapabilitiesPage from './pages/CapabilitiesPage'
@@ -97,6 +96,7 @@ import CommandPalette from './components/CommandPalette'
 import Modal from './components/Modal'
 
 import { i18nT } from './i18n/t'
+import { fmtCompact, fmtNumber, fmtPercent } from './i18n/format'
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
 
 /** Minimal shape of an entry from `GET /api/apps`, limited to the fields the
@@ -1616,14 +1616,35 @@ export default function App() {
                 const totalUsed = kiroUsage.used + (kiroUsage.bonus ? kiroUsage.bonus.used : 0)
                 const totalLimit = kiroUsage.limit + (kiroUsage.bonus ? kiroUsage.bonus.limit : 0)
                 const pct = totalLimit > 0 ? (totalUsed / totalLimit) * 100 : 0
-                const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K` : `${n}`
+                // `fmtCompact`, not a `/1000 + 'K'` ladder: de has no short form at
+                // these magnitudes and renders `447.500`, zh abbreviates on 万 as
+                // `44.8万`. English is unchanged (`447.5K`). German is therefore
+                // WIDER than before — that is CLDR's answer for the language, not a
+                // bug, so the pill is kept nowrap so it can never break mid-number.
+                const fmtK = (n: number) => fmtCompact(n)
                 const usedStr = fmtK(totalUsed)
                 const limitStr = fmtK(totalLimit)
+                // Two whole-sentence keys rather than a base string plus an
+                // appended bonus clause: the bonus phrase carries its own
+                // grammar and word order, so concatenating it would strand the
+                // translator with a fragment.
                 const title = kiroUsage.bonus
-                  ? `Kiro credits: ${totalUsed.toLocaleString()} / ${totalLimit.toLocaleString()} used — plan ${kiroUsage.used.toLocaleString()}/${kiroUsage.limit.toLocaleString()} + ${kiroUsage.bonus.label} ${kiroUsage.bonus.used.toLocaleString()}/${kiroUsage.bonus.limit.toLocaleString()} — click for details`
-                  : `Kiro credits: ${totalUsed.toLocaleString()} / ${totalLimit.toLocaleString()} (${pct.toFixed(0)}%) — click for details`
+                  ? i18nT('app.kiro_credits_title_with_bonus', {
+                    used: fmtNumber(totalUsed),
+                    limit: fmtNumber(totalLimit),
+                    planUsed: fmtNumber(kiroUsage.used),
+                    planLimit: fmtNumber(kiroUsage.limit),
+                    bonusLabel: kiroUsage.bonus.label,
+                    bonusUsed: fmtNumber(kiroUsage.bonus.used),
+                    bonusLimit: fmtNumber(kiroUsage.bonus.limit),
+                  })
+                  : i18nT('app.kiro_credits_title', {
+                    used: fmtNumber(totalUsed),
+                    limit: fmtNumber(totalLimit),
+                    pct: fmtPercent(pct / 100),
+                  })
                 segments.push(<button key="usage" className={kiroUsage.stale ? `${seg} opacity-60` : seg} onClick={() => setKiroUsageOpen(true)} title={title} aria-label={title}>
-                  <Coins size={12} /> {!isMobile && <span className="font-mono text-[11px]">{usedStr}<span className="text-muted">/{limitStr}</span></span>}
+                  <Coins size={12} /> {!isMobile && <span className="font-mono text-[11px] whitespace-nowrap tabular-nums">{usedStr}<span className="text-muted">/{limitStr}</span></span>}
                 </button>)
               }
             }
@@ -2131,7 +2152,6 @@ export default function App() {
             <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/tasks" element={<TasksRedirect />} />
-            <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/hooks" element={<HooksPage />} />
             <Route path="/capabilities" element={<CapabilitiesPage />} />
@@ -2204,7 +2224,7 @@ export default function App() {
               <span className="flex items-center gap-1.5 text-[13px] font-medium text-text">
                 <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />{name}
               </span>
-              <span className="ml-auto font-mono text-[12px] text-text">{used.toLocaleString()}<span className="text-muted">/{limit.toLocaleString()}</span></span>
+              <span className="ml-auto font-mono text-[12px] text-text">{fmtNumber(used)}<span className="text-muted">/{fmtNumber(limit)}</span></span>
             </div>
             <div className="w-full h-1.5 rounded-full overflow-hidden mt-2" style={{ background: 'var(--border)' }}>
               <div className="h-full rounded-full" style={{ width: `${Math.min(poolPct, 100)}%`, background: color }} />
@@ -2247,9 +2267,9 @@ export default function App() {
               </div>
             )}
             <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-text">{totalUsed.toLocaleString()}</span>
-              <span className="text-sm text-muted">/ {totalLimit.toLocaleString()} {bonus ? i18nT('app.credits_total') : i18nT('app.credits')}</span>
-              <span className="ml-auto text-[12px] font-medium px-2 py-0.5 rounded-md" style={{ background: barColor, color: '#fff' }}>{pct.toFixed(0)}%</span>
+              <span className="text-2xl font-bold text-text">{fmtNumber(totalUsed)}</span>
+              <span className="text-sm text-muted">/ {fmtNumber(totalLimit)} {bonus ? i18nT('app.credits_total') : i18nT('app.credits')}</span>
+              <span className="ml-auto text-[12px] font-medium px-2 py-0.5 rounded-md" style={{ background: barColor, color: '#fff' }}>{fmtPercent(pct / 100)}</span>
             </div>
             <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
               <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%`, background: barColor }} />
@@ -2264,7 +2284,7 @@ export default function App() {
             <div className="mt-1">
               {!bonus && kiroUsage.plan && <Row label={i18nT('app.plan')} value={kiroUsage.plan} />}
               {!bonus && kiroUsage.resets && <Row label={i18nT('app.resets')} value={kiroUsage.resets} />}
-              <Row label={i18nT('app.overage_used')} value={`${kiroUsage.overage.toLocaleString()} credits`} />
+              <Row label={i18nT('app.overage_used')} value={`${fmtNumber(kiroUsage.overage)} credits`} />
               {kiroUsage.overageRate && <Row label={i18nT('app.overage_rate')} value={`$${kiroUsage.overageRate} / credit`} />}
               {kiroUsage.costUsd != null && <Row label={i18nT('app.est_overage_cost')} value={`$${kiroUsage.costUsd.toFixed(2)} USD`} />}
             </div>

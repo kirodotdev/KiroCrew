@@ -5,7 +5,7 @@ import { Badge } from './ui'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
-import { fmtDateTimeNumeric } from '../i18n/format'
+import { fmtDateTimeNumeric, fmtDuration as fmtDurationParts, fmtUnit } from '../i18n/format'
 export interface LogEntryData {
   run_id: string
   status: 'success' | 'failure' | 'timeout' | 'cancelled'
@@ -17,10 +17,10 @@ export interface LogEntryData {
 
 function fmtDuration(ms?: number | null) {
   if (ms == null) return '—'
-  if (ms < 1000) return `${ms}ms`
+  if (ms < 1000) return fmtUnit(ms, 'millisecond', { maximumFractionDigits: 0 })
   const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  return `${Math.floor(s / 60)}m ${s % 60}s`
+  if (s < 60) return fmtUnit(s, 'second', { maximumFractionDigits: 0 })
+  return fmtDurationParts([[Math.floor(s / 60), 'minute'], [s % 60, 'second']])
 }
 
 export default function LogEntry({ entry, jobId }: { entry: LogEntryData; jobId: string }) {

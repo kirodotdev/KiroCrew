@@ -22,16 +22,18 @@ type AppEntry = {
     description?: string
     author?: string
     tags?: string[]
+    hidden?: boolean
     ui?: { pages?: { route: string; label: string; icon: string }[] }
   }
 }
 
 /**
- * Browse tab filter: returns disabled builtin apps for discovery.
- * This mirrors the logic in AppsPage.tsx Browse tab.
+ * Browse tab filter: returns all non-hidden builtin apps for discovery.
+ * Discover now shows enabled builtins too, each carrying its Enabled/Disabled
+ * state. This mirrors the logic in AppsPage.tsx Browse tab.
  */
-function filterDisabledBuiltins(apps: AppEntry[]): AppEntry[] {
-  return apps.filter(a => a.origin === 'builtin' && !a.enabled)
+function filterBrowsableBuiltins(apps: AppEntry[]): AppEntry[] {
+  return apps.filter(a => a.origin === 'builtin' && !a.manifest?.hidden)
 }
 
 /**
@@ -46,50 +48,59 @@ function filterSidebarApps(apps: AppEntry[]): AppEntry[] {
 // Property 4: Browse filter shows exactly disabled builtins
 // ---------------------------------------------------------------------------
 
-describe('Property 4: Browse filter shows exactly disabled builtins', () => {
-  it('includes disabled builtin apps', () => {
+describe('Property 4: Browse filter shows all non-hidden builtins', () => {
+  it('includes builtin apps regardless of enabled state', () => {
     const apps: AppEntry[] = [
       { name: 'disabled-builtin', displayName: 'DB', enabled: false, origin: 'builtin' },
       { name: 'enabled-builtin', displayName: 'EB', enabled: true, origin: 'builtin' },
       { name: 'registry-app', displayName: 'RA', enabled: true, origin: 'registry' },
     ]
-    const result = filterDisabledBuiltins(apps)
-    expect(result.map(a => a.name)).toEqual(['disabled-builtin'])
+    const result = filterBrowsableBuiltins(apps)
+    expect(result.map(a => a.name)).toEqual(['disabled-builtin', 'enabled-builtin'])
   })
 
-  it('excludes enabled builtins', () => {
+  it('includes enabled builtins', () => {
     const apps: AppEntry[] = [
       { name: 'enabled-builtin', displayName: 'EB', enabled: true, origin: 'builtin' },
     ]
-    const result = filterDisabledBuiltins(apps)
-    expect(result).toHaveLength(0)
+    const result = filterBrowsableBuiltins(apps)
+    expect(result.map(a => a.name)).toEqual(['enabled-builtin'])
   })
 
-  it('excludes non-builtin disabled apps', () => {
+  it('excludes hidden builtins', () => {
+    const apps: AppEntry[] = [
+      { name: 'hidden-builtin', displayName: 'HB', enabled: false, origin: 'builtin', manifest: { hidden: true } },
+      { name: 'shown-builtin', displayName: 'SB', enabled: true, origin: 'builtin' },
+    ]
+    const result = filterBrowsableBuiltins(apps)
+    expect(result.map(a => a.name)).toEqual(['shown-builtin'])
+  })
+
+  it('excludes non-builtin apps', () => {
     const apps: AppEntry[] = [
       { name: 'disabled-registry', displayName: 'DR', enabled: false, origin: 'registry' },
       { name: 'disabled-local', displayName: 'DL', enabled: false, origin: 'local' },
       { name: 'disabled-external', displayName: 'DE', enabled: false, origin: 'external' },
     ]
-    const result = filterDisabledBuiltins(apps)
+    const result = filterBrowsableBuiltins(apps)
     expect(result).toHaveLength(0)
   })
 
   it('returns empty for empty list', () => {
-    expect(filterDisabledBuiltins([])).toHaveLength(0)
+    expect(filterBrowsableBuiltins([])).toHaveLength(0)
   })
 
-  it('handles multiple disabled builtins', () => {
+  it('handles multiple builtins', () => {
     const apps: AppEntry[] = [
       { name: 'a', displayName: 'A', enabled: false, origin: 'builtin' },
       { name: 'b', displayName: 'B', enabled: false, origin: 'builtin' },
       { name: 'c', displayName: 'C', enabled: true, origin: 'builtin' },
     ]
-    const result = filterDisabledBuiltins(apps)
-    expect(result.map(a => a.name)).toEqual(['a', 'b'])
+    const result = filterBrowsableBuiltins(apps)
+    expect(result.map(a => a.name)).toEqual(['a', 'b', 'c'])
   })
 
-  it('property: result contains app iff origin=builtin AND enabled=false', () => {
+  it('property: result contains app iff origin=builtin AND not hidden', () => {
     // Exhaustive check over all combinations
     const origins = ['builtin', 'registry', 'local', 'external'] as const
     const enabledStates = [true, false]
@@ -97,8 +108,8 @@ describe('Property 4: Browse filter shows exactly disabled builtins', () => {
     for (const origin of origins) {
       for (const enabled of enabledStates) {
         const apps: AppEntry[] = [{ name: `${origin}-${enabled}`, displayName: 'X', enabled, origin }]
-        const result = filterDisabledBuiltins(apps)
-        const shouldInclude = origin === 'builtin' && !enabled
+        const result = filterBrowsableBuiltins(apps)
+        const shouldInclude = origin === 'builtin'
         expect(result.length === 1).toBe(shouldInclude)
       }
     }

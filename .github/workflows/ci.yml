@@ -644,6 +644,41 @@ jobs:
         working-directory: website
         run: npx playwright install --with-deps chromium
 
+      - name: i18n render-time gate (en-XA + shipped locales)
+        # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG
+        # JSON, so three defect classes are invisible to all of them: a string that
+        # was never extracted (ordinary TypeScript to a scanner), a sentence
+        # assembled from several keys (several correct lookups), and English in a
+        # title/aria-label (never in the text flow). This renders the real SPA under
+        # the en-XA pseudolocale and reads them off the DOM.
+        #
+        # It lives in this job to reuse the Chromium install on the step above --
+        # its own job would re-download the browser for a ~5min script. It needs no
+        # gateway, no token and no backend: the script serves the build over
+        # loopback and answers every /api/** call from fixtures, like the
+        # capture-*.mjs harnesses. It builds its OWN bundle rather than reusing
+        # `npm run build` above, because en-XA is DEV-only and a production build
+        # tree-shakes the catalog out entirely.
+        #
+        # Two runs, one per tree: [vs-base] renders the BASE commit with the same
+        # scanner and fails on any per-surface increase, reading no committed number.
+        # That is what makes the ledger's upward-only ceilings legitimate under
+        # website/AGENTS.md's rule -- there is nothing to re-snapshot a regression
+        # into. The base ref must be fetched first because this checkout is shallow;
+        # the script EXITS NON-ZERO if a configured ref cannot be resolved rather
+        # than skipping itself green, for the reason the frontend-lint job documents.
+        working-directory: website
+        env:
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: |
+          if [ -n "$I18N_BASE_REF" ]; then
+            git fetch --depth=1 origin "${I18N_BASE_REF#origin/}" \
+              || { echo "::error::could not fetch base ref ${I18N_BASE_REF#origin/}; the diff-scoped render gate cannot run"; exit 1; }
+            git update-ref "refs/remotes/$I18N_BASE_REF" FETCH_HEAD \
+              || { echo "::error::could not update $I18N_BASE_REF; the diff-scoped render gate cannot run"; exit 1; }
+          fi
+          npm run i18n:render
+
       - name: Run E2E (smoke + Playwright)
         # KIROCREW_E2E=1 is set by `setup.py test_e2e` itself. KIROCREW_E2E_REQUIRE=1
         # turns environment-resolution misses (missing website dir, Playwright CLI,

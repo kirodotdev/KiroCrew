@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -296,6 +298,91 @@ class TestBuildLauncherScript:
         assert str(staging) not in auth_profile
         assert str(data_home) in auth_script
         assert str(data_home) in auth_profile
+
+    def test_a_file_valued_hidden_path_reaches_the_file_loop(self, tmp_path):
+        """A hidden path that is a FILE must reach ``SENSITIVE_FILES``.
+
+        The two launcher loops hide each kind differently — a directory gets an empty
+        dir bind-mounted over it, a file gets an empty temp file — and the dir loop is
+        guarded by ``if os.path.isdir(target)``. So a file entry matched neither it nor
+        the file loop and was SILENTLY SKIPPED: the caller asked for it to be hidden,
+        got no error, and the file stayed readable.
+
+        Not hypothetical: ``security.sensitive_home_dirs()`` is not all directories
+        (``sel_hmac.key``, ``token_signing.key``, ``.kiro/crew/.env`` are files), and
+        Papyrus passes that whole list as ``extra_hidden_dirs`` so a ``.tex`` cannot
+        ``\\input`` the gateway's own secrets into a rendered PDF.
+
+        Every path goes in BOTH lists and the CHILD classifies it — see the next test
+        for why that, rather than deciding here.
+        """
+        secret = tmp_path / "token_signing.key"
+        secret.write_text("s3cret", encoding="utf-8")
+        real_dir = tmp_path / "creds"
+        real_dir.mkdir()
+
+        script = _build_launcher_script(
+            "strict", extra_hidden_dirs=(str(secret), str(real_dir))
+        )
+        dirs = json.loads(re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S).group(1))
+        files = json.loads(re.search(r"SENSITIVE_FILES = (\[.*?\])\n", script, re.S).group(1))
+
+        # The file reaches the loop that can actually hide it.
+        assert str(secret) in files, "a file-valued hidden path cannot be hidden"
+        # And the directory still reaches its own loop.
+        assert str(real_dir) in dirs
+
+    def test_the_builder_does_not_stat_the_hidden_paths(self):
+        """No filesystem probe in ``_build_launcher_script`` — it runs ON THE LOOP.
+
+        An earlier version of this fix classified each path here with
+        ``os.path.isfile()``. That is 52 stats per async spawn on the gateway's single
+        loop, and on a stalled NFS home each one blocks — freezing every session, cron
+        and the liveness heartbeat. The child already re-checks with its own
+        ``isdir``/``isfile`` per loop, so whichever branch matches does the work and the
+        other skips; letting it decide keeps the syscalls where they were already
+        happening and where blocking costs only that one spawn.
+
+        An AST check rather than a mock, because the point is that no such call exists
+        at all.
+        """
+        import ast
+        import inspect
+
+        from kiro_crew import sandbox
+
+        tree = ast.parse(inspect.getsource(sandbox._build_launcher_script))
+        probes = [
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"isfile", "isdir", "exists", "stat", "lstat"}
+        ]
+        assert probes == [], (
+            f"_build_launcher_script stats the filesystem on the event loop: {probes}"
+        )
+
+    def test_every_sensitive_path_reaches_a_loop_that_can_hide_it(self):
+        """Whole-list check against the real sensitive-path list.
+
+        Both loops self-guard, so a path present in both is hidden by whichever branch
+        matches its actual type — and a future entry that happens to be a file cannot
+        silently stop being hidden.
+        """
+        import os
+
+        from kiro_crew import security
+
+        home = os.path.expanduser("~")
+        extra = tuple(os.path.join(home, rel) for rel in security.sensitive_home_dirs())
+        script = _build_launcher_script("strict", extra_hidden_dirs=extra)
+        dirs = json.loads(re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S).group(1))
+        files = json.loads(re.search(r"SENSITIVE_FILES = (\[.*?\])\n", script, re.S).group(1))
+
+        for path in extra:
+            assert path in dirs, f"{path} never reaches the directory loop"
+            assert path in files, f"{path} never reaches the file loop"
 
     def test_cc_script_exposes_aws_config(self):
         script = _build_launcher_script("cc")

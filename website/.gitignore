@@ -5,6 +5,12 @@ coverage
 *.tsbuildinfo
 .vite
 
+# The DEV-mode bundle the i18n render gate builds (scripts/check-i18n-render.mjs).
+# A separate output dir on purpose: it is NOT shippable — `import.meta.env.DEV` is
+# true, so it carries the en-XA pseudolocale catalog and dev-only tooling. The bare
+# `dist` rule above does not cover it.
+dist-dev
+
 # Electron
 electron/dist
 electron/node_modules

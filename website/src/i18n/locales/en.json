@@ -57,7 +57,9 @@
     "updating_kirocrew": "Updating KiroCrew…",
     "v": "v",
     "what_s_new": "What's new",
-    "you_re_on_the_latest_version": "You're on the latest version"
+    "you_re_on_the_latest_version": "You're on the latest version",
+    "kiro_credits_title": "Kiro credits: {{used}} / {{limit}} ({{pct}}) — click for details",
+    "kiro_credits_title_with_bonus": "Kiro credits: {{used}} / {{limit}} used — plan {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — click for details"
   },
   "appSdk": {
     "chatEmbed": {
@@ -590,9 +592,6 @@
         "repoSwitcher": {
           "repositories": "Repositories"
         },
-        "resizeHandle": {
-          "drag_to_resize": "Drag to resize"
-        },
         "reviewButton": {
           "review": "Review"
         },
@@ -834,6 +833,104 @@
         "select_a": "Select a",
         "select_an_issue_to_see_its_details": "Select an issue to see its details.",
         "to_see_its_details": "to see its details."
+      }
+    },
+    "papyrus": {
+      "coAuthor": {
+        "close_co_author_panel": "Close co-author panel",
+        "close_panel": "Close the panel — the session stays open",
+        "co_author": "Co-author",
+        "co_author_chat": "Co-author chat",
+        "no_co_author_session_for_this_paper_yet": "No co-author session for this paper yet.",
+        "open_in_chat_page": "Open in the chat page",
+        "start_a_session": "Start a session",
+        "starting_session": "Starting session…"
+      },
+      "diagnostics": {
+        "jump_to_line": "Go to line {{line}}",
+        "line_short": "L{{line}}",
+        "no_messages": "The compiler reported nothing.",
+        "typesetting_hints_one": "{{count}} typesetting hint",
+        "typesetting_hints_other": "{{count}} typesetting hints"
+      },
+      "editor": {
+        "loading_editor": "Loading editor…"
+      },
+      "fileTree": {
+        "delete_file": "Delete {{file}}",
+        "files": "Files",
+        "main": "Main",
+        "new_file": "New file",
+        "no_source_files": "No source files."
+      },
+      "page": {
+        "actions": "Actions",
+        "clone": "Clone",
+        "clone_url": "Repository URL",
+        "clone_url_placeholder": "Clone from a git URL…",
+        "cloning": "Cloning…",
+        "compiled_count_label": "Compiled",
+        "compiler": "Compiler",
+        "compiler_tip": "The LaTeX compiler found on the machine running KiroCrew. Papyrus prefers pdflatex and falls back to tectonic.",
+        "create": "Create",
+        "create_one_above_or_clone_an_existing_repository": "Create one above, or clone an existing repository.",
+        "delete_paper_confirm": "Delete {{name}} and all of its files? This cannot be undone.",
+        "delete_paper": "Delete {{name}}",
+        "dismiss_error": "Dismiss",
+        "install_compiler": "Install compiler",
+        "installing_compiler": "Installing…",
+        "last_edited": "Last edited",
+        "latex_papers_with_a_live_pdf_preview": "LaTeX papers with a live PDF preview",
+        "new_paper_name": "New paper name",
+        "new_paper_name_placeholder": "Name your paper…",
+        "no_compiler_found_install_texlive_or_tectonic": "No LaTeX compiler was found on this machine. Install TeX Live (pdflatex) or tectonic to compile.",
+        "no_compiler_install_bundled_prompt": "No LaTeX compiler was found on this machine. Install the bundled Tectonic compiler — a single verified download, kept inside Papyrus's own folder.",
+        "no_papers_yet": "No papers yet",
+        "none_found": "None",
+        "paper": "Paper",
+        "papers": "Papers",
+        "papyrus": "Papyrus",
+        "pdf": "PDF",
+        "pdf_missing_status": "Not compiled",
+        "pdf_ready_status": "Ready",
+        "start_a_paper": "Start a paper",
+        "start_a_paper_tip": "Create an empty paper from a standard article template, or clone one from a git remote — anything with a .tex file works.",
+        "your_papers": "Your papers"
+      },
+      "preview": {
+        "compile_to_see_the_pdf": "Compile to see the PDF.",
+        "download_pdf": "Download the PDF",
+        "pdf_preview": "PDF preview",
+        "this_browser_cannot_display_a_pdf_inline": "This browser cannot display a PDF inline."
+      },
+      "workspace": {
+        "co_author": "Co-author",
+        "co_author_conflict": "Co-author changed this file",
+        "co_author_conflict_reload": "Reload",
+        "compile": "Compile",
+        "compile_duration": "{{ms}} ms",
+        "compiling": "Compiling…",
+        "cursor_position": "Ln {{line}}, Col {{column}}",
+        "default_commit_message": "Update from Papyrus",
+        "delete_file_confirm": "Delete {{file}}?",
+        "editing": "Editing {{file}}",
+        "editing_unsaved": "Editing {{file}} — unsaved",
+        "error_count_one": "{{count}} error",
+        "error_count_other": "{{count}} errors",
+        "git_branch": "Current branch",
+        "log": "Log",
+        "main_document": "Main document",
+        "new_file_prompt": "Name the new file, for example methods.tex",
+        "papers": "Papers",
+        "pdf": "PDF",
+        "pull": "Pull",
+        "push": "Push",
+        "save_and_compile_hint": "Press Cmd+S (Ctrl+S on Windows and Linux) to save and compile.",
+        "session_title": "Papyrus: {{name}}",
+        "warning_count_one": "{{count}} warning",
+        "warning_count_other": "{{count}} warnings",
+        "word_count_one": "{{count}} word",
+        "word_count_other": "{{count}} words"
       }
     },
     "workflows": {
@@ -1628,16 +1725,6 @@
       "tell_kiro_about_you": "Tell Kiro about you",
       "your_role": "Your role"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "Agent activity animation"
-    },
-    "pixelCanvasWidget": {
-      "agent_one": "{{count}} agent",
-      "agent_other": "{{count}} agents",
-      "close": "Close",
-      "open_workspace_animation": "Open workspace animation",
-      "workspace": "— Workspace"
-    },
     "projectPicker": {
       "back": "Back",
       "browse": "Browse",
@@ -1752,6 +1839,9 @@
       "fork": "Fork",
       "fork_into_your_local_artifacts_your_own_divergen": "Fork into your local artifacts — your own divergent copy",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "Drag to resize"
     },
     "restartButton": {
       "apply_restart": "Apply & Restart",
@@ -2225,7 +2315,6 @@
       "enable": "Enable",
       "features": "Features",
       "fix_with_ai": "Fix with AI",
-      "hide": "Hide",
       "install": "Install",
       "install_on_your_mac": "Install on your Mac",
       "installed": "Installed:",
@@ -2252,7 +2341,6 @@
       "resources_2": "| Resources:",
       "screenshots": "Screenshots",
       "self_managed": "Self-managed",
-      "show": "Show",
       "storage_yes": "Storage: yes",
       "sync": "Sync",
       "sync_app_from_its_source_directory": "Sync app from its source directory",
@@ -2660,7 +2748,11 @@
         "regenerate_response": "Regenerate response",
         "speak": "Speak",
         "speak_message": "Speak message",
-        "steered": "Steered"
+        "steered": "Steered",
+        "turn_took": "Turn took {{elapsed}}",
+        "turn_took_cost": "Turn took {{elapsed}} ({{cost}} API cost)",
+        "turn_took_credits": "Turn took {{elapsed}} and used {{credits}} credits",
+        "turn_took_credits_cost": "Turn took {{elapsed}} and used {{credits}} credits ({{cost}} API cost)"
       },
       "chatFooter": {
         "compacting": "Compacting…",
@@ -3327,7 +3419,6 @@
       }
     },
     "localStorageDebug": {
-      "5_mb": "/ ~5 MB",
       "all_keys": "All Keys",
       "by_category": "By Category",
       "clear": "Clear",
@@ -3810,7 +3901,6 @@
       "agent": "Agent:",
       "analyzing_task_and_building_step_by_step_plan": "Analyzing task and building step-by-step plan",
       "auto_approve_tool_calls": "Auto-approve tool calls",
-      "autonomous_multi_step_task_execution": "Autonomous multi-step task execution",
       "cancel": "Cancel",
       "chat": "Chat",
       "compose": "Compose",
@@ -3820,11 +3910,13 @@
       "discard": "Discard",
       "error": "Error:",
       "execute": "Execute",
+      "expand_sidebar": "Expand sidebar",
       "from_spec": "From Spec",
       "from_yaml": "From YAML",
       "generating_execution_plan": "Generating execution plan",
       "is_enforced_as_a_hard_dag_constraint": "is enforced as a hard DAG constraint.",
       "new_task": "New Task",
+      "no_runs_yet": "No runs yet",
       "no_spec_idea_to_schedule": "No spec/idea to schedule",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "Only .yaml/.yml files are accepted here. Use the \"From Spec\" tab for other formats.",
       "paste_spec_content_or_upload_a_file": "Paste spec content or upload a file...",
@@ -3838,6 +3930,7 @@
       "refined_spec": "Refined spec",
       "refining": "Refining…",
       "rename_project": "Rename project",
+      "resize_sidebar": "Resize sidebar",
       "restart": "Restart",
       "resume": "Resume",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "Root folder for a NEW plan. Leave blank to use the default per-run workspace; type a path to target a specific folder. Fixed at plan time — resuming an existing run keeps its original folder.",

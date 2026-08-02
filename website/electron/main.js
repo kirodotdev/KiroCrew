@@ -64,6 +64,7 @@ const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { createLivenessMonitor } = require("./gateway-liveness");
 const { chooseRecoveryStrategy } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
+const { createMetricsRecorder } = require("./perf-metrics");
 const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
 const { buildMenuTemplate } = require("./app-menu");
@@ -215,6 +216,8 @@ let livenessMonitor = null;
 // path). Consulted only during the primary boot wait (see showLoadingThenConnect).
 let gatewayStartFailure = null;
 let isQuitting = false;
+// Debug-only metrics recorder handle; null unless KIROCREW_DEBUG enabled it.
+let desktopMetricsRecorder = null;
 // True from the moment an update install is dispatched. The updater stops the
 // gateway ON PURPOSE before the bundle swap; without this flag the liveness
 // watchdog reads that intentional stop as a wedge and resurrects the gateway
@@ -1814,6 +1817,21 @@ process.on("unhandledRejection", (reason) => {
 });
 
 app.whenReady().then(async () => {
+  // Debug-only per-process metrics recorder. No-ops unless KIROCREW_DEBUG is set,
+  // so a normal install pays nothing; when on, it writes a bounded rolling
+  // artifact next to the gateway log for `kirocrew desktop metrics` to read.
+  try {
+    desktopMetricsRecorder = createMetricsRecorder({
+      dir: path.dirname(gatewayLogPath()),
+      getAppMetrics: () => app.getAppMetrics(),
+      log: (m) => glog(`perf: ${m}`),
+      meta: { electron: process.versions && process.versions.electron },
+    });
+    desktopMetricsRecorder.start();
+  } catch (e) {
+    // A diagnostic aid must never take the app down at boot.
+    try { glog(`perf: metrics recorder failed to start: ${e && e.message}`); } catch { /* ignore */ }
+  }
   // Running from a mounted DMG or a Gatekeeper App Translocation copy looks
   // fine at launch but can NEVER install an update (the macOS install path
   // replaces the running .app in place). Say so once, up front, and offer the
@@ -2117,6 +2135,8 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  // Flush the final metrics window before the gateway teardown begins.
+  try { if (desktopMetricsRecorder) desktopMetricsRecorder.stop(); } catch { /* best effort */ }
   stopGateway();
 });
 

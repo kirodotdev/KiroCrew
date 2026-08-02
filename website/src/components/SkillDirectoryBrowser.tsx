@@ -8,6 +8,7 @@ import { parseFrontmatter } from './SkillForm'
 import type { Skill, SkillTreeEntry } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { fmtBytes } from '../i18n/format'
 interface TreeNode {
   name: string                   // basename
   path: string                   // relative path from skill root
@@ -25,7 +26,12 @@ function buildTree(entries: SkillTreeEntry[]): TreeNode {
 
   // Process in order — directories declared before files within them.
   // The backend already returns dirs first via os.walk's pre-order.
-  const sorted = [...entries].sort((a, b) => a.path.localeCompare(b.path))
+  // BYTE order, deliberately not a Collator: this sort exists so a parent
+  // directory is always seen before its children (`dirs.get(parentPath)` below
+  // silently `continue`s on a miss, dropping files from the tree). Collation
+  // reorders `/` against `.` and `-`, so a locale-aware sort could break that
+  // invariant in some languages and not others.
+  const sorted = [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
   for (const e of sorted) {
     const parts = e.path.split('/')
     const name = parts[parts.length - 1]
@@ -57,11 +63,9 @@ function langForFile(path: string): string {
   return 'plaintext'
 }
 
-function humanSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
+/** Delegates to the shared `fmtBytes`; this file previously carried one of four
+ *  byte formatters that disagreed on spacing, precision and capitalisation. */
+const humanSize = (bytes: number): string => fmtBytes(bytes)
 
 /** Labeled frontmatter strip — the skill's contract (description, triggers,
  *  tags, loaded-by-agents). Shared between the installed-skill viewer and

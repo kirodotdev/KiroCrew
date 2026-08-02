@@ -27,6 +27,14 @@ const mockRun = (overrides: Partial<ProjectRun> = {}): ProjectRun => ({
 })
 
 describe('ProjectDetailPage', () => {
+  it('renders the planning overlay without a rotating spinner', () => {
+    // Loading states use a static glyph plus a shimmer placeholder; nothing spins.
+    const { container } = renderWithProviders(<ProjectDetailPage run={mockRun({ status: 'planning' })} />)
+    expect(screen.getByText(/Generating execution plan/)).toBeInTheDocument()
+    expect(container.querySelector('.animate-spin')).toBeNull()
+    expect(container.querySelector('.skeleton')).not.toBeNull()
+  })
+
   it('renders Idea and Tasks tabs', () => {
     renderWithProviders(<ProjectDetailPage run={mockRun()} />)
     expect(screen.getByText('Idea')).toBeInTheDocument()

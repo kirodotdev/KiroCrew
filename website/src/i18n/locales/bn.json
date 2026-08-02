@@ -96,7 +96,9 @@
     "gateway_offline_reconnecting": "গেটওয়ে অফলাইন — আবার কানেক্ট হচ্ছে",
     "gateway_offline_session_expired_see_banner_above": "গেটওয়ে অফলাইন — সেশনের মেয়াদ শেষ, উপরের ব্যানার দেখো",
     "signed_in_with": "{{provider}} দিয়ে সাইন ইন করা হয়েছে",
-    "updates": "আপডেট"
+    "updates": "আপডেট",
+    "kiro_credits_title": "Kiro ক্রেডিট: {{used}} / {{limit}} ({{pct}}) — বিশদ দেখতে ক্লিক করো",
+    "kiro_credits_title_with_bonus": "Kiro ক্রেডিট: {{used}} / {{limit}} ব্যবহৃত — প্ল্যান {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — বিশদ দেখতে ক্লিক করো"
   },
   "appSdk": {
     "chatEmbed": {
@@ -643,9 +645,6 @@
         "repoSwitcher": {
           "repositories": "রিপোজিটরি"
         },
-        "resizeHandle": {
-          "drag_to_resize": "আকার বদলাতে টানুন"
-        },
         "reviewButton": {
           "review": "পর্যালোচনা করুন"
         },
@@ -943,6 +942,104 @@
         "these_settings_changed_elsewhere": "এই সেটিংস অন্য কোথাও বদলে গেছে।"
       }
     },
+    "papyrus": {
+      "coAuthor": {
+        "close_co_author_panel": "সহ-লেখক প্যানেল বন্ধ করুন",
+        "close_panel": "প্যানেল বন্ধ করুন — সেশন খোলা থাকবে",
+        "co_author": "সহ-লেখক",
+        "co_author_chat": "সহ-লেখক চ্যাট",
+        "no_co_author_session_for_this_paper_yet": "এই পেপারের জন্য এখনও কোনও সহ-লেখক সেশন নেই।",
+        "open_in_chat_page": "চ্যাট পৃষ্ঠায় খুলুন",
+        "start_a_session": "একটি সেশন শুরু করুন",
+        "starting_session": "সেশন শুরু হচ্ছে…"
+      },
+      "diagnostics": {
+        "jump_to_line": "{{line}} নম্বর লাইনে যান",
+        "line_short": "লা{{line}}",
+        "no_messages": "কম্পাইলার কিছুই জানায়নি।",
+        "typesetting_hints_one": "{{count}}টি টাইপসেটিং পরামর্শ",
+        "typesetting_hints_other": "{{count}}টি টাইপসেটিং পরামর্শ"
+      },
+      "editor": {
+        "loading_editor": "এডিটর লোড হচ্ছে…"
+      },
+      "fileTree": {
+        "delete_file": "{{file}} মুছুন",
+        "files": "ফাইল",
+        "main": "মূল",
+        "new_file": "নতুন ফাইল",
+        "no_source_files": "কোনও সোর্স ফাইল নেই।"
+      },
+      "page": {
+        "actions": "কাজ",
+        "clone": "ক্লোন করুন",
+        "clone_url": "রিপোজিটরি URL",
+        "clone_url_placeholder": "একটি git URL থেকে ক্লোন করুন…",
+        "cloning": "ক্লোন হচ্ছে…",
+        "compiled_count_label": "কম্পাইল হয়েছে",
+        "compiler": "কম্পাইলার",
+        "compiler_tip": "KiroCrew চালানো মেশিনে পাওয়া LaTeX কম্পাইলার। Papyrus আগে pdflatex বেছে নেয়, না পেলে tectonic।",
+        "create": "তৈরি করুন",
+        "create_one_above_or_clone_an_existing_repository": "উপরে একটি তৈরি করুন, বা বিদ্যমান কোনও রিপোজিটরি ক্লোন করুন।",
+        "delete_paper_confirm": "{{name}} এবং এর সব ফাইল মুছে ফেলবেন? এটি আর ফেরানো যাবে না।",
+        "delete_paper": "{{name}} মুছুন",
+        "dismiss_error": "বাতিল করুন",
+        "install_compiler": "কম্পাইলার ইনস্টল করুন",
+        "installing_compiler": "ইনস্টল করা হচ্ছে…",
+        "last_edited": "সর্বশেষ সম্পাদনা",
+        "latex_papers_with_a_live_pdf_preview": "লাইভ PDF প্রিভিউ সহ LaTeX পেপার",
+        "new_paper_name": "নতুন পেপারের নাম",
+        "new_paper_name_placeholder": "আপনার পেপারের নাম দিন…",
+        "no_compiler_found_install_texlive_or_tectonic": "এই মেশিনে কোনও LaTeX কম্পাইলার পাওয়া যায়নি। কম্পাইল করতে TeX Live (pdflatex) বা tectonic ইনস্টল করুন।",
+        "no_compiler_install_bundled_prompt": "এই মেশিনে কোনও LaTeX কম্পাইলার পাওয়া যায়নি। সঙ্গে দেওয়া Tectonic কম্পাইলার ইনস্টল করুন — একটিই যাচাই করা ডাউনলোড, যা Papyrus-এর নিজের ফোল্ডারেই থাকে।",
+        "no_papers_yet": "এখনও কোনও পেপার নেই",
+        "none_found": "কিছুই নেই",
+        "paper": "পেপার",
+        "papers": "পেপার",
+        "papyrus": "Papyrus",
+        "pdf": "PDF",
+        "pdf_missing_status": "কম্পাইল হয়নি",
+        "pdf_ready_status": "প্রস্তুত",
+        "start_a_paper": "একটি পেপার শুরু করুন",
+        "start_a_paper_tip": "প্রমিত article টেমপ্লেট থেকে একটি খালি পেপার তৈরি করুন, বা কোনও git রিমোট থেকে ক্লোন করুন — .tex ফাইল আছে এমন যে কোনওটিই চলবে।",
+        "your_papers": "আপনার পেপার"
+      },
+      "preview": {
+        "compile_to_see_the_pdf": "PDF দেখতে কম্পাইল করুন।",
+        "download_pdf": "PDF ডাউনলোড করুন",
+        "pdf_preview": "PDF প্রিভিউ",
+        "this_browser_cannot_display_a_pdf_inline": "এই ব্রাউজার ইনলাইনে PDF দেখাতে পারে না।"
+      },
+      "workspace": {
+        "co_author": "সহ-লেখক",
+        "co_author_conflict": "সহ-লেখক এই ফাইলটি পরিবর্তন করেছেন",
+        "co_author_conflict_reload": "পুনরায় লোড করুন",
+        "compile": "কম্পাইল করুন",
+        "compile_duration": "{{ms}} মি.সে.",
+        "compiling": "কম্পাইল হচ্ছে…",
+        "cursor_position": "লা. {{line}}, কল. {{column}}",
+        "default_commit_message": "Papyrus থেকে হালনাগাদ",
+        "delete_file_confirm": "{{file}} মুছে ফেলবেন?",
+        "editing": "{{file}} সম্পাদনা করছেন",
+        "editing_unsaved": "{{file}} সম্পাদনা করছেন — সংরক্ষিত হয়নি",
+        "error_count_one": "{{count}}টি ত্রুটি",
+        "error_count_other": "{{count}}টি ত্রুটি",
+        "git_branch": "বর্তমান ব্রাঞ্চ",
+        "log": "লগ",
+        "main_document": "মূল নথি",
+        "new_file_prompt": "নতুন ফাইলের নাম দিন, যেমন methods.tex",
+        "papers": "পেপার",
+        "pdf": "PDF",
+        "pull": "পুল করুন",
+        "push": "পুশ করুন",
+        "save_and_compile_hint": "সংরক্ষণ করে কম্পাইল করতে Cmd+S (Windows ও Linux-এ Ctrl+S) চাপুন।",
+        "session_title": "Papyrus: {{name}}",
+        "warning_count_one": "{{count}}টি সতর্কতা",
+        "warning_count_other": "{{count}}টি সতর্কতা",
+        "word_count_one": "{{count}}টি শব্দ",
+        "word_count_other": "{{count}}টি শব্দ"
+      }
+    },
     "workflows": {
       "workflowRunTree": {
         "agent_one": "{{count}}টি এজেন্ট",
@@ -1067,7 +1164,13 @@
     "crewCompanion": {
       "header": {
         "title": "Crew Companion",
-        "subtitle": "একটা সঙ্গী যে তোমার ডেস্কটপে থাকে, বিরতি নিতে আলতো করে মনে করিয়ে দেয়, সাধারণ ভাষায় সেট করা তোমার রিমাইন্ডারগুলো রাখে, আর তোমার সাথে শ্বাস নেয়।"
+        "subtitle": "তোমার বিরতির ছন্দ ঠিক করো, রিমাইন্ডার যোগ করো, তোমার সঙ্গী কী নিয়ে তোমাকে জানাবে তা বেছে নাও, আর তোমাদের একসাথে কাটানো সময়ের দিকে ফিরে তাকাও।"
+      },
+      "offline": {
+        "title": "Crew Companion চলছে না",
+        "body": "বিরতির ইশারা বদলাতে আর রিমাইন্ডার সেট করতে এটা খোলো — সেগুলো তোমার Mac-এর সঙ্গীর ভেতরেই থাকে।",
+        "open": "Crew Companion খোলো",
+        "quit_tip": "তোমার ডেস্কটপে সঙ্গীটাতে ক্লিক করো তার প্যানেল খুলতে; অ্যাভাটার বদলাতে বা বন্ধ করতে ডান-ক্লিক করো।"
       },
       "settings": {
         "title": "সেটিংস",
@@ -1107,6 +1210,7 @@
       },
       "memories": {
         "title": "স্মৃতি",
+        "from_last_session": "তোমাদের গত বারের একসাথে থাকা থেকে",
         "loading": "পিছনে ফিরে দেখছি…",
         "empty": "এখনো পিছনে ফিরে দেখার মতো কিছু নেই।",
         "offline": "তোমার স্মৃতি দেখতে ডেস্কটপ অ্যাপ খোলো।",
@@ -1139,7 +1243,13 @@
   },
   "components": {
     "agentDropdownList": {
-      "no_matches": "কোনো মিল নেই"
+      "active_in_this_session": "এই সেশনে সক্রিয়",
+      "could_not_change_the_default_agent": "ডিফল্ট এজেন্ট বদলানো গেল না",
+      "default": "ডিফল্ট",
+      "manage_agents": "এজেন্ট পরিচালনা করুন…",
+      "new_sessions_start_with_this_agent": "নতুন সেশন এই এজেন্ট দিয়ে শুরু হয়",
+      "no_matches": "কোনো মিল নেই",
+      "start_new_sessions_with_this_agent": "নতুন সেশন এই এজেন্ট দিয়ে শুরু করো"
     },
     "agentImportFlow": {
       "back": "পিছনে",
@@ -1300,7 +1410,6 @@
         "enabled": "সক্রিয়",
         "expand_details": "বিস্তারিত প্রসারিত করো",
         "external": "বাহ্যিক",
-        "hide": "লুকাও",
         "installed": "ইনস্টল করা হয়েছে:",
         "lifecycle": "| লাইফসাইকেল:",
         "local": "Local",
@@ -1317,7 +1426,6 @@
         "resources": "| রিসোর্স:",
         "run_this_on_your_local_machine": "আপনার লোকাল মেশিনে এটি চালান:",
         "self_managed": "স্ব-পরিচালিত",
-        "show": "দেখাও",
         "skill_one": "{{count}}টি স্কিল",
         "skill_other": "{{count}}টি স্কিল",
         "sops": "SOP:",
@@ -1717,10 +1825,7 @@
       "no_matches": "কোনো মিল নেই",
       "open_in_viewer": "ভিউয়ারে খুলুন",
       "searching": "খোঁজা হচ্ছে…",
-      "type_2_chars_to_search_files": "ফাইল খুঁজতে 2+ অক্ষর টাইপ করুন…",
-      "n_d_ago": "{{n}} দিন আগে",
-      "n_h_ago": "{{n}} ঘ আগে",
-      "n_m_ago": "{{n}} মি আগে"
+      "type_2_chars_to_search_files": "ফাইল খুঁজতে 2+ অক্ষর টাইপ করুন…"
     },
     "fileRenderers": {
       "empty_file": "খালি ফাইল",
@@ -1790,8 +1895,7 @@
       "local_dashboard": "লোকাল ড্যাশবোর্ড",
       "tunnel_connected": "টানেল সংযুক্ত।",
       "tunnel_connecting": "টানেল কানেক্ট হচ্ছে…",
-      "tunnel_error": "টানেল ত্রুটি",
-      "1m": "<1মি"
+      "tunnel_error": "টানেল ত্রুটি"
     },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",
@@ -1897,6 +2001,7 @@
       "s_elapsed": "s অতিবাহিত"
     },
     "kiroPrerequisiteGate": {
+      "another_sandbox_already_confines_kiro_crew_so_it": "Kiro Crew ইতিমধ্যেই অন্য একটি স্যান্ডবক্সে সীমাবদ্ধ, তাই তার নিজের স্যান্ডবক্স এর ভিতরে নেস্ট করা যায় না। এই হোস্টের স্যান্ডবক্স নষ্ট নয়।",
       "ask_the_kiro_crew_owner_to_install_kiro_cli_and": "Kiro Crew-এর মালিককে এই গেটওয়েতে Kiro CLI ইনস্টল করে সাইন ইন করতে বলুন। গেটওয়ে প্রস্তুত হওয়ার সাথে সাথেই এই ড্যাশবোর্ড\n          আপনার জন্য খুলে যাবে।",
       "automatic_installation_is_unavailable_here_insta": "এখানে স্বয়ংক্রিয় ইনস্টলেশন উপলব্ধ নয়। গেটওয়ে হোস্টে অফিশিয়াল\n                গাইড অনুসরণ করে Kiro CLI ইনস্টল করুন, তারপর ‘আবার পরীক্ষা করুন’ বেছে নিন।",
       "check_again": "আবার পরীক্ষা করুন",
@@ -1911,8 +2016,10 @@
       "installation_guide": "ইনস্টলেশন গাইড",
       "installed": "ইনস্টল করা হয়েছে",
       "installing": "ইনস্টল হচ্ছে…",
+      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI ইনস্টল করা আছে, কিন্তু এটি যাচাই করা যায়নি",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI ইনস্টল করা আছে। চালিয়ে যেতে সাইন-ইন শেষ করো।",
       "kiro_crew_downloads_the_official_kiro_installer": "Kiro Crew HTTPS-এর মাধ্যমে অফিশিয়াল Kiro ইনস্টলার ডাউনলোড করে। আপনি নিচের বাটনটি বেছে নিলেই\n                  ইনস্টলেশন শুরু হবে।",
+      "kiro_crew_isolates_the_agent_in_an_os_level_sand": "কিছু চালানোর আগে Kiro Crew এজেন্টকে অপারেটিং সিস্টেম স্তরের স্যান্ডবক্সে বিচ্ছিন্ন রাখে।",
       "kiro_crew_uses_kiro_cli_as_its_agent_engine_comp": "Kiro Crew তার এজেন্ট ইঞ্জিন হিসেবে Kiro CLI ব্যবহার করে। এই দুটি ধাপ সম্পূর্ণ করুন এখানে:",
       "kiro_setup_could_not_start": "Kiro সেটআপ শুরু করা যায়নি।",
       "open_kiro_sign_in_page": "Kiro সাইন-ইন পেজ খুলুন",
@@ -1920,6 +2027,7 @@
       "refresh": "রিফ্রেশ",
       "required": "আবশ্যক",
       "retry_the_gateway_check_before_starting_a_sessio": "সেশন শুরু করার আগে গেটওয়ে পরীক্ষা আবার চালান।",
+      "sandbox_unavailable": "স্যান্ডবক্স অনুপলভ্য",
       "secure_setup_on_your_gateway_host": "আপনার গেটওয়ে হোস্টে সুরক্ষিত সেটআপ",
       "sessions_are_paused_until_the_gateway_check_succ": "গেটওয়ে পরীক্ষা সফল হওয়া পর্যন্ত সেশনগুলো থামিয়ে রাখা হয়েছে। আপনার আর্টিফ্যাক্ট, সেটিংস এবং\n              ইতিহাস উপলব্ধ থাকবে।",
       "set_up_kiro": "Kiro সেট আপ করুন",
@@ -1928,10 +2036,13 @@
       "sign_in_to_kiro": "Kiro-তে সাইন ইন করুন",
       "signed_in": "সাইন ইন করা হয়েছে",
       "start_kiro_s_device_sign_in_open_the_secure_page": "Kiro-র ডিভাইস সাইন-ইন শুরু করুন, সুরক্ষিত পেজটি খুলুন এবং এখানে দেখানো কোডটি\n                  লিখুন। ক্রেডেনশিয়াল গেটওয়ে হোস্টে Kiro CLI-ই পরিচালনা করতে থাকে।",
+      "technical_detail": "প্রযুক্তিগত বিবরণ",
+      "the_check_hit_a_temporary_limit_and_was_not_cach": "পরীক্ষাটি একটি অস্থায়ী রিসোর্স সীমায় পৌঁছেছে। আবার চেষ্টা করুন — স্যান্ডবক্স নিষ্ক্রিয় করবেন না।",
       "the_gateway_owner_needs_to_finish_setup": "গেটওয়ের মালিককে সেটআপ শেষ করতে হবে।",
       "the_gateway_returned_an_unexpected_error": "গেটওয়ে একটি অপ্রত্যাশিত ত্রুটি ফেরত দিয়েছে।",
       "the_gateway_returned_no_prerequisite_status": "গেটওয়ে কোনো প্রি-রিকুইজিট অবস্থা ফেরত দেয়নি।",
       "then_the_dashboard_will_open_automatically": ", তারপর\n              ড্যাশবোর্ড স্বয়ংক্রিয়ভাবে খুলে যাবে।",
+      "this_host_provides_no_os_level_sandbox_so_kiro_c": "এই হোস্ট অপারেটিং সিস্টেম স্তরের কোনও স্যান্ডবক্স দেয় না, তাই Kiro Crew এজেন্টকে বিচ্ছিন্ন রাখতে পারে না। আপনার ক্রেডেনশিয়াল প্রকাশ করার বদলে এটি স্যান্ডবক্স ছাড়া এজেন্ট চালাতে অস্বীকার করে।",
       "try_again": "আবার চেষ্টা করুন",
       "waiting": "অপেক্ষমাণ",
       "waiting_for_sign_in": "সাইন-ইনের অপেক্ষায়…",
@@ -2236,17 +2347,6 @@
       "paste_lines_one": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "এজেন্ট কার্যকলাপের অ্যানিমেশন"
-    },
-    "pixelCanvasWidget": {
-      "agent_one": "{{count}}টি এজেন্ট",
-      "agent_other": "{{count}}টি এজেন্ট",
-      "close": "বন্ধ করুন",
-      "open_workspace_animation": "ওয়ার্কস্পেস অ্যানিমেশন খুলুন",
-      "project": "প্রজেক্ট",
-      "workspace": "— ওয়ার্কস্পেস"
-    },
     "projectPicker": {
       "back": "পেছনে",
       "browse": "ব্রাউজ করুন",
@@ -2421,6 +2521,9 @@
       "fork_failed": "ফর্ক ব্যর্থ",
       "fork_into_your_local_artifacts_your_own_divergen": "আপনার লোকাল আর্টিফ্যাক্টে ফর্ক করুন — আপনার নিজের আলাদা কপি",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "আকার বদলাতে টানুন"
     },
     "restartButton": {
       "apply_restart": "প্রয়োগ ও রিস্টার্ট",
@@ -2938,6 +3041,8 @@
       "context_window_usage": "কনটেক্সট উইন্ডো ব্যবহার",
       "could_not_load_this_agent_s_configuration_skills": "এই এজেন্টের কনফিগারেশন লোড করা যায়নি — ওভাররাইট হওয়া এড়াতে\n                        স্কিল লুকানো হয়েছে। আবার চেষ্টা করতে এজেন্টটি পুনরায় নির্বাচন করুন।",
       "critical": "গুরুতর",
+      "default": "ডিফল্ট",
+      "default_for_new_sessions": "নতুন সেশনের জন্য ডিফল্ট",
       "denied_commands": "নিষিদ্ধ কমান্ড",
       "describe_when_to_use_this_agent": "এই এজেন্ট কখন ব্যবহার করা হবে তা লিখুন…",
       "done": "সম্পন্ন",
@@ -2970,6 +3075,7 @@
       "saving": "সংরক্ষণ হচ্ছে…",
       "select_an_agent_to_view_details": "বিস্তারিত দেখতে একটি এজেন্ট নির্বাচন করুন",
       "sessions": "সেশন",
+      "set_as_default": "ডিফল্ট হিসেবে সেট করো",
       "set_as_default_agent": "ডিফল্ট এজেন্ট হিসেবে সেট করো",
       "skills": "স্কিল",
       "spawn_tasks_from_chat_or_cli": "চ্যাট বা CLI থেকে টাস্ক চালু করুন",
@@ -3042,7 +3148,6 @@
       "failed_to_uninstall": "আনইনস্টল করা যায়নি",
       "features": "বৈশিষ্ট্য",
       "fix_with_ai": "AI দিয়ে ঠিক করুন",
-      "hide": "লুকান",
       "install": "ইনস্টল করুন",
       "install_complete": "ইনস্টল সম্পূর্ণ",
       "install_failed": "ইনস্টল ব্যর্থ",
@@ -3073,7 +3178,6 @@
       "resources_2": "| রিসোর্স:",
       "screenshots": "স্ক্রিনশট",
       "self_managed": "স্ব-পরিচালিত",
-      "show": "দেখান",
       "starting_install": "ইনস্টল শুরু হচ্ছে…",
       "storage_yes": "স্টোরেজ: হ্যাঁ",
       "sync": "সিঙ্ক",
@@ -3114,7 +3218,7 @@
       "failed_to_load_apps": "অ্যাপগুলো লোড করা যায়নি",
       "failed_to_load_registry": "রেজিস্ট্রি লোড করা যায়নি",
       "find_apps_in_the_discover_tab_or_install_from_a": "আবিষ্কার ট্যাবে অ্যাপ খুঁজে নাও, বা উপরের সোর্স গিয়ার দিয়ে কোনো লোকাল পাথ থেকে ইনস্টল করো।",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "লুকানো আছে। আবিষ্কার ট্যাব থেকে আবার সক্রিয় করতে পারো।",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "নিষ্ক্রিয় করা হয়েছে। আবিষ্কার ট্যাব থেকে আবার সক্রিয় করতে পারো।",
       "keep_app_data": "অ্যাপের ডেটা রেখে দিন",
       "keep_this_dependency": "এই ডিপেনডেন্সিটি রেখে দিন",
       "kept": "রাখা হয়েছে —",
@@ -3633,7 +3737,11 @@
         "steered": "স্টিয়ার করা হয়েছে",
         "switch_to_raw_markdown_view": "মূল markdown ভিউতে যাও",
         "switch_to_rendered_view": "রেন্ডার করা ভিউতে যাও",
-        "use_as_plan_count": "প্ল্যান হিসেবে ব্যবহার করুন ({{count}}টি ধাপ)"
+        "use_as_plan_count": "প্ল্যান হিসেবে ব্যবহার করুন ({{count}}টি ধাপ)",
+        "turn_took": "টার্নে সময় লেগেছে {{elapsed}}",
+        "turn_took_cost": "টার্নে সময় লেগেছে {{elapsed}} ({{cost}} API ব্যয়)",
+        "turn_took_credits": "টার্নে সময় লেগেছে {{elapsed}} এবং খরচ হয়েছে {{credits}} ক্রেডিট",
+        "turn_took_credits_cost": "টার্নে সময় লেগেছে {{elapsed}} এবং খরচ হয়েছে {{credits}} ক্রেডিট ({{cost}} API ব্যয়)"
       },
       "chatFooter": {
         "compacting": "কম্প্যাক্ট করা হচ্ছে…",
@@ -4583,7 +4691,6 @@
       }
     },
     "localStorageDebug": {
-      "5_mb": "/ ~5 MB",
       "all_keys": "সব কী",
       "by_category": "বিভাগ অনুযায়ী",
       "clear": "সাফ করুন",
@@ -5189,7 +5296,6 @@
       "agent": "এজেন্ট:",
       "analyzing_task_and_building_step_by_step_plan": "টাস্ক বিশ্লেষণ করে ধাপে ধাপে পরিকল্পনা তৈরি হচ্ছে",
       "auto_approve_tool_calls": "টুল কল স্বয়ংক্রিয়ভাবে অনুমোদন করুন",
-      "autonomous_multi_step_task_execution": "স্বয়ংক্রিয় বহু-ধাপের টাস্ক এক্সিকিউশন",
       "cancel": "বাতিল",
       "chat": "চ্যাট",
       "compose": "রচনা",
@@ -5201,12 +5307,14 @@
       "discard": "বাদ দিন",
       "error": "ত্রুটি:",
       "execute": "এক্সিকিউট করুন",
+      "expand_sidebar": "সাইডবার প্রসারিত করুন",
       "failed_to_generate_plan": "পরিকল্পনা তৈরি করা যায়নি",
       "from_spec": "স্পেক থেকে",
       "from_yaml": "YAML থেকে",
       "generating_execution_plan": "এক্সিকিউশন পরিকল্পনা তৈরি হচ্ছে",
       "is_enforced_as_a_hard_dag_constraint": "কঠোর DAG শর্ত হিসেবে বলবৎ হয়।",
       "new_task": "নতুন টাস্ক",
+      "no_runs_yet": "এখনও কোনও রান নেই",
       "no_spec_idea_to_schedule": "সময়সূচি করার মতো কোনো স্পেক/আইডিয়া নেই",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "এখানে শুধু .yaml/.yml ফাইল গ্রহণযোগ্য। অন্য ফরম্যাটের জন্য \"স্পেক থেকে\" ট্যাব ব্যবহার করুন।",
       "paste_spec_content_or_upload_a_file": "স্পেক বিষয়বস্তু পেস্ট করুন বা একটি ফাইল আপলোড করুন...",
@@ -5223,6 +5331,7 @@
       "refined_spec": "পরিমার্জিত স্পেক",
       "refining": "পরিমার্জন হচ্ছে…",
       "rename_project": "প্রজেক্টের নাম বদলান",
+      "resize_sidebar": "সাইডবারের আকার পরিবর্তন করুন",
       "restart": "রিস্টার্ট",
       "resume": "পুনরায় শুরু করুন",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "নতুন পরিকল্পনার রুট ফোল্ডার। খালি রাখলে প্রতি রানের ডিফল্ট ওয়ার্কস্পেস ব্যবহার হয়; নির্দিষ্ট ফোল্ডার লক্ষ্য করতে একটি পাথ লিখুন। পরিকল্পনার সময়েই নির্ধারিত হয় — বিদ্যমান রান পুনরায় শুরু করলে তার আসল ফোল্ডারই থাকে।",

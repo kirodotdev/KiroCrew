@@ -6,6 +6,7 @@ import errno
 import os
 import subprocess
 import sys
+import threading
 from unittest.mock import mock_open, patch
 
 import pytest
@@ -376,19 +377,44 @@ class TestProbeScaffolding:
 
     @_linux_only
     def test_fork_failure_reports_transient_and_closes_fds(self, monkeypatch):
+        """A failed fork must still close both handshake pipes.
+
+        Tracks the probe's OWN pipe/close calls rather than counting
+        ``/proc/self/fd``: the background warm thread runs its own probe
+        concurrently, so a global fd count is racy and even a patched ``os.pipe``
+        sees that thread's pipes. Filtering on the calling thread makes the
+        assertion deterministic, and comparing created-vs-closed sets avoids
+        depending on fd state that a freed number could have had reused.
+        """
+        caller_thread = threading.get_ident()
+        created: list[int] = []
+        closed: list[int] = []
+        real_pipe, real_close = os.pipe, os.close
+
+        def tracking_pipe():
+            pair = real_pipe()
+            if threading.get_ident() == caller_thread:
+                created.extend(pair)
+            return pair
+
+        def tracking_close(fd):
+            if threading.get_ident() == caller_thread:
+                closed.append(fd)
+            return real_close(fd)
+
         def boom():
             raise OSError(errno.EAGAIN, "resource temporarily unavailable")
 
+        monkeypatch.setattr(sb.os, "pipe", tracking_pipe)
+        monkeypatch.setattr(sb.os, "close", tracking_close)
         monkeypatch.setattr(sb.os, "fork", boom)
-        fd_dir = "/proc/self/fd"
-        before = len(os.listdir(fd_dir)) if os.path.isdir(fd_dir) else None
 
         ok, transient, reason = sb._probe_unshare_once()
 
         assert (ok, transient) == (False, True)
         assert reason == "fork failed with errno 11 (EAGAIN)"
-        if before is not None:
-            assert len(os.listdir(fd_dir)) == before, "probe leaked a pipe fd"
+        assert created, "probe should create its handshake pipes"
+        assert set(created) <= set(closed), "probe leaked a pipe fd"
 
     @_linux_only
     def test_parent_always_reaps_the_child(self, monkeypatch):

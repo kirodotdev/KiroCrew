@@ -848,8 +848,32 @@ def _build_launcher_script(
         for path in hidden_dirs
         if not _hidden_path_contains_visible_path(path, extra_visible_dirs)
     ]
+    # A caller-supplied hidden path may be a FILE, and the two launcher loops hide
+    # each kind differently: a directory gets an empty dir bind-mounted over it, a file
+    # gets an empty temp file. The dir loop is guarded by `if os.path.isdir(target)`, so
+    # a file entry matched neither it nor the file loop and was SILENTLY SKIPPED — the
+    # caller asked for it to be hidden, got no error, and it stayed readable.
+    #
+    # That is not hypothetical: `security.sensitive_home_dirs()` is not all directories
+    # (`sel_hmac.key`, `token_signing.key`, `.kiro/crew/.env` are files), and Papyrus
+    # passes that whole list as `extra_hidden_dirs` so a `.tex` cannot `\input` the
+    # gateway's own secrets into a rendered PDF.
+    #
+    # Every path goes in BOTH lists, and the CHILD classifies it. The child already
+    # re-checks with its own `isdir`/`isfile` per loop, so whichever branch matches does
+    # the work and the other skips — no double-mount, no wrong-kind mount. Classifying
+    # here instead would mean an `os.path.isfile()` per entry (52 of them) inside
+    # `_build_launcher_script`, which runs on the event loop for every async spawn: on a
+    # stalled NFS home those stats block the gateway and the liveness heartbeat. Letting
+    # the child decide keeps the syscalls in the child, where they are already happening
+    # and where blocking costs nothing but that one spawn.
+    #
+    # macOS is unaffected either way: its rule is `(deny file-read* (subpath …))`, and a
+    # subpath rule covers a plain file.
     dirs_json = json.dumps(list(dict.fromkeys(hidden_dirs)))
-    files_json = json.dumps([os.path.join(home, f) for f in files])
+    files_json = json.dumps(
+        list(dict.fromkeys([os.path.join(home, f) for f in files] + hidden_dirs))
+    )
     expose_json = json.dumps([(os.path.join(home, f), f.split("/")[-1]) for f in expose_files])
     env_prefixes_json = json.dumps(env_prefixes)
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))
@@ -1953,6 +1977,38 @@ def detect_backend(config_mode: str = "auto") -> str:
     return _backend
 
 
+class SandboxUnavailableError(RuntimeError):
+    """``wrap_argv`` fail-closed because this host could not build a sandbox.
+
+    A typed error so a caller can tell "the sandbox refused this spawn" apart
+    from any other spawn failure **structurally**, instead of inferring it from
+    host capability or pattern-matching English prose. That distinction matters:
+    verification is not sandboxed on every platform (``_run_process`` skips the
+    wrap on Windows) and the ``sandbox_allow_unsandboxed_exec`` opt-in bypasses
+    it entirely, so "this host has no backend" does NOT imply "the sandbox is
+    why this particular spawn failed". Reporting it that way would recreate the
+    misdiagnosis class of #613 on a different platform.
+
+    Subclasses ``RuntimeError`` so existing ``except RuntimeError`` handlers keep
+    working unchanged.
+
+    ``kind`` is machine-readable so a presentation layer can select its own
+    translated remedy copy: ``"transient"`` (momentary resource pressure — not
+    cached, retrying works, and callers must NOT advise disabling the sandbox),
+    ``"foreign_sandbox"`` (an outer Seatbelt sandbox KiroCrew did not create
+    already confines this process and Seatbelt cannot nest — this host's sandbox
+    is fine), or ``"no_backend"`` (the host genuinely offers no mechanism).
+
+    ``detail`` is the technical probe reason, which names the failing step (e.g.
+    ``"unshare(CLONE_NEWNS) failed with errno 1 (EPERM)"``).
+    """
+
+    def __init__(self, message: str, kind: str, detail: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.detail = detail
+
+
 def reset_backend() -> None:
     """Reset cached backend (for testing or config change)."""
     global _backend, _last_unshare_failure
@@ -2278,11 +2334,17 @@ def wrap_argv(
                 )
             except Exception:
                 logger.warning("Failed to emit SEL audit event for sandbox denial", exc_info=True)
-            raise RuntimeError(
+            raise SandboxUnavailableError(
                 "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
                 "No OS-level sandbox backend is available on this host, and the "
                 "agent subprocess cannot be safely isolated. "
-                f"Probe detail: {probe_reason}. " + guidance
+                f"Probe detail: {probe_reason}. " + guidance,
+                kind=(
+                    "transient"
+                    if transient
+                    else ("foreign_sandbox" if _inside_macos_sandbox() else "no_backend")
+                ),
+                detail=probe_reason,
             )
         # Opted in: warn (or info) and return unmodified argv
         _warn_no_isolation(mode)

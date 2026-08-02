@@ -270,8 +270,47 @@ function editionExtensionPlugin(): Plugin {
   }
 }
 
+/**
+ * Debug-only plugin: writes `dist/bundle-report.json` describing what the build
+ * emitted and which packages contribute the weight.
+ *
+ * Inert unless the build runs in `analyze` mode (`vite build --mode analyze`,
+ * wired up as `npm run analyze`), so a normal `npm run build` is byte-for-byte
+ * unaffected and never pays the walk. Mode is read here rather than by turning
+ * the whole config into a function, to keep this to one entry in `plugins`.
+ *
+ * Note there is no analyzer dependency: Rollup already reports the rendered size
+ * of every module it emitted, so the numbers are computed from data the bundler
+ * hands us. That keeps a build-time package (and its transitive tree) out of the
+ * repo for something it can already answer.
+ */
+function bundleReportPlugin(): Plugin {
+  const REPORT_MODE = 'analyze'
+  let active = false
+  return {
+    name: 'kirocrew-bundle-report',
+    apply: 'build',
+    configResolved(resolved) {
+      active = resolved.mode === REPORT_MODE
+    },
+    async generateBundle(_options, bundle) {
+      if (!active) return
+      // Imported lazily so a normal build never loads the helper at all.
+      const { summarizeBundle } = await import('./scripts/lib/bundleReport.mjs')
+      const summary = summarizeBundle(bundle)
+      // Emitted through Rollup rather than written directly so it lands in the
+      // configured outDir wherever that points.
+      this.emitFile({
+        type: 'asset',
+        fileName: 'bundle-report.json',
+        source: JSON.stringify(summary, null, 2),
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), tailwindRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin()],
+  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), tailwindRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

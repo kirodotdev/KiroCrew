@@ -1076,6 +1076,7 @@ def _save_slot_to_history(
     messages: list[dict] | None = None,
     *,
     closed: bool = False,
+    closed_at: float | None = None,
     force: bool = False,
     rewrite: bool = False,
 ) -> None:
@@ -1197,6 +1198,22 @@ def _save_slot_to_history(
                     meta_line[_meta_key] = existing_meta[_meta_key]
             if closed:
                 meta_line["closed"] = True
+                # Epoch stamp of WHEN the tab was closed. The channel-slot
+                # reconciler compares channel-side activity against this to
+                # decide whether a close still stands: a Discord/Slack message
+                # arriving after the close re-surfaces the conversation, while
+                # a conversation that stayed idle stays closed.
+                #
+                # Prefer the caller-supplied instant (captured by
+                # note_slot_closed at the moment the user acted): this save
+                # runs only after the close handler's awaits (task
+                # cancellation, patient lock acquire), and stamping save time
+                # here would make channel activity that landed during that
+                # teardown window compare as OLDER than the close — hiding a
+                # conversation the reactivation rule should surface. The
+                # save-time fallback covers callers with no user gesture to
+                # anchor to (and legacy call sites).
+                meta_line["closed_at"] = closed_at if closed_at is not None else time.time()
             meta_line["memory_mode"] = slot.memory_mode
             if slot.title and slot.title != slot.key:
                 meta_line["title"] = slot.title
@@ -1341,6 +1358,7 @@ async def save_slot_off_loop(
     messages: list[dict] | None = None,
     *,
     closed: bool = False,
+    closed_at: float | None = None,
     force: bool = False,
     rewrite: bool = False,
     best_effort: bool = True,
@@ -1374,7 +1392,13 @@ async def save_slot_off_loop(
 
     def _do() -> None:
         _save_slot_to_history(
-            state, slot, messages, closed=closed, force=force, rewrite=rewrite
+            state,
+            slot,
+            messages,
+            closed=closed,
+            closed_at=closed_at,
+            force=force,
+            rewrite=rewrite,
         )
 
     try:

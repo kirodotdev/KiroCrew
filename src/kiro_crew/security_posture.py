@@ -421,6 +421,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cloud/connect.py",
         "cloud/login.py",
         "embeddings.py",
+        # Same shape as embeddings.py above: papyrus's managed-compiler download
+        # redacts the DOWNLOAD URL (userinfo + signed query) before logging it, so a
+        # mirrored/presigned override cannot leak credentials into a log. Nothing
+        # here reaches a user-facing surface — the app's egress paths (compile log,
+        # git stderr) redact separately in papyrus/backend/routes.py.
+        "apps/builtins/papyrus/backend/tectonic.py",
         # Redacts INBOUND attacker-controllable provider metadata before it is
         # stored/displayed — a sanitizer on the way in, not an output boundary.
         "dashboard/handlers/mcp_discover.py",
@@ -451,6 +457,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/code_review_sage/sage_lib/review_driver.py",
         "apps/builtins/dev_fleet/server.py",
         "apps/builtins/issue_radar/backend/routes.py",
+        "apps/builtins/papyrus/backend/routes.py",
         "apps/builtins/workflows/server.py",
         # Bundled dev-skill script: prints CI/review findings to a
         # developer terminal, not an agent-output egress path.

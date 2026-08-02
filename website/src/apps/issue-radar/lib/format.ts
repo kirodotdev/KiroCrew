@@ -2,6 +2,7 @@
 // Issue Radar. No React, no component imports — safe to pull into any module.
 import { Clock, Hash, type LucideIcon } from 'lucide-react'
 import { fmtRelative, toDate } from '../../../i18n/format'
+import { loadColumnCollapsed, loadColumnWidth } from '../../../lib/columnWidth'
 import { DASHBOARD_TABS, SORT_KEYS } from './types'
 import type { ActiveRepo, DashboardTab, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter } from './types'
 
@@ -127,27 +128,19 @@ export function relativeDate(iso: string): string {
   return fmtRelative(anchored, { style: 'long', now: n0.getTime(), unit: 'day' })
 }
 
-/** Read a persisted column width, falling back to `fallback` when the stored
- * value is missing, unparseable, or outside the allowed range (a stale value
- * from an older min/max, or a hand-edited key). */
-function loadWidth(key: string, min: number, max: number, fallback: number): number {
-  const raw = Number(localStorage.getItem(key))
-  if (raw >= min && raw <= max) return raw
-  return fallback
-}
 
 export function loadListWidth(): number {
-  return loadWidth(LIST_WIDTH_KEY, MIN_LIST_WIDTH, MAX_LIST_WIDTH, DEFAULT_LIST_WIDTH)
+  return loadColumnWidth(LIST_WIDTH_KEY, MIN_LIST_WIDTH, MAX_LIST_WIDTH, DEFAULT_LIST_WIDTH)
 }
 
 export function loadRailWidth(): number {
-  return loadWidth(RAIL_WIDTH_KEY, MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, DEFAULT_RAIL_WIDTH)
+  return loadColumnWidth(RAIL_WIDTH_KEY, MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, DEFAULT_RAIL_WIDTH)
 }
 
 /** Collapsed state is stored apart from the width so collapsing and re-expanding
  * the rail returns it to the width the user had chosen, not the default. */
 export function loadRailCollapsed(): boolean {
-  return localStorage.getItem(RAIL_COLLAPSED_KEY) === '1'
+  return loadColumnCollapsed(RAIL_COLLAPSED_KEY)
 }
 
 export function loadActiveRepo(): ActiveRepo | null {

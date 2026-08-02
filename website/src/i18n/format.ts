@@ -187,10 +187,107 @@ export function fmtCurrency(value: number, currency = 'USD', options?: NumberOpt
 export type FormatUnit =
   | 'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'
   | 'byte' | 'kilobyte' | 'megabyte' | 'gigabyte' | 'terabyte'
+  // Rates. ECMA-402 sanctions a fixed set of `-per-` compounds, and these two are
+  // in it — so a download speed renders fully localized (`500 кБ/c` in ru)
+  // instead of a localized size with a Latin `/s` welded on.
+  | 'kilobyte-per-second' | 'megabyte-per-second'
 
 export function fmtUnit(value: number, unit: FormatUnit, options?: NumberOptions): string {
   if (!Number.isFinite(value)) return '—'
   return fmtNumber(value, { style: 'unit', unit, unitDisplay: 'narrow', ...options })
+}
+
+/**
+ * A compound duration — `1h 2m 3s`, `6m 38s`, `2h 15m`.
+ *
+ * Takes the parts ALREADY SPLIT by the caller, deliberately. Every duration
+ * surface in this app has its own granularity rule (a log row drops to `ms`
+ * under a second, a tab pill never shows seconds and floors at `<1m`, a turn
+ * counter shows one decimal under ten seconds), and those rules are product
+ * decisions, not formatting ones. Passing parts in keeps each caller's
+ * thresholds exactly as they were and localizes only the rendering — so English
+ * output is unchanged while zh gets `6分钟38秒` and ru `6 мин 38 с`.
+ *
+ * The join is `ListFormat` with `type: 'unit'`, not a hardcoded space. That
+ * matters: narrow unit lists are space-joined in en/ru/fr but comma-joined in
+ * de (`6 Min., 38 Sek.`) and joined with NOTHING in zh — a literal space would
+ * put a stray gap in `6分钟 38秒`.
+ *
+ * `Intl.DurationFormat` would do all of this in one call and is deliberately
+ * not used: it is `undefined` on the Node 20 / Electron baseline (see
+ * limitation 1 in the file header).
+ *
+ * Every part passed is RENDERED, including zeros. That is deliberate: several
+ * callers depend on a zero surviving — `fmtTurnElapsed` rounds to whole seconds
+ * before splitting specifically so 119.6s reads `2m 0s` and never the invalid
+ * `1m 60s`, and dropping the zero there would silently undo that fix. Pass
+ * `dropZero` for the opposite case, where the caller previously branched to
+ * avoid printing a leading `0h`.
+ */
+export function fmtDuration(
+  parts: Array<[number, FormatUnit]>,
+  options?: NumberOptions & { dropZero?: boolean },
+): string {
+  const { dropZero, ...numberOptions } = options ?? {}
+  const finite = parts.filter(([value]) => Number.isFinite(value))
+  if (finite.length === 0) return '—'
+  let used = finite
+  if (dropZero) {
+    const nonZero = finite.filter(([value]) => value !== 0)
+    // All-zero keeps the last unit so the result reads `0s`, never empty.
+    used = nonZero.length > 0 ? nonZero : finite.slice(-1)
+  }
+  const rendered = used.map(([value, unit]) => fmtUnit(value, unit, numberOptions))
+  if (rendered.length === 1) return rendered[0]
+  const locale = activeLocale()
+  return memo('durationList', locale, null, () =>
+    new Intl.ListFormat(locale, { localeMatcher: 'lookup', type: 'unit', style: 'narrow' }),
+  ).format(rendered)
+}
+
+/**
+ * An abbreviated large number — `1.2K`, `15.3K`, `2.4M`.
+ *
+ * `notation: 'compact'` rather than a hand-rolled `/1000 + 'K'` ladder, because
+ * the threshold and the suffix are both language-specific: zh abbreviates on
+ * 万 (10^4), so `15300` is `1.5万` and `1234` does not abbreviate at all, while
+ * de has no short form at these magnitudes and renders `15.300`. A `K` suffix
+ * is an English fact, not a numeric one.
+ *
+ * Note this changes rendered WIDTH per locale (de gets wider, zh narrower).
+ * Callers in tight chrome should confirm the container tolerates it.
+ */
+export function fmtCompact(value: number, options?: NumberOptions): string {
+  if (!Number.isFinite(value)) return '—'
+  return fmtNumber(value, { notation: 'compact', maximumFractionDigits: 1, ...options })
+}
+
+/**
+ * A byte size — `512kB`, `1.5MB`, `2.3GB`.
+ *
+ * One implementation replacing four that disagreed with each other: the same
+ * file could render `1.5 KB` in the skill browser, `2KB` in the file picker and
+ * `1.50 KB` in the storage debugger, differing in spacing, precision AND
+ * capitalisation.
+ *
+ * **Divides by 1000, not 1024.** The previous helpers all divided by 1024 while
+ * labelling the result `KB`, which is the decimal SI unit — so a "1.0 KB" file
+ * was really 1024 bytes. CLDR's `kilobyte` means 1000 bytes, and `Intl` offers
+ * no binary (`kibibyte`) unit at all, so labelling 1024-based arithmetic with a
+ * CLDR unit would keep that mislabel and make it look sanctioned. Sizes now say
+ * what they mean. At one decimal the visible difference is under a rounding
+ * step for most values.
+ *
+ * English output changes `KB` → `kB`, which is the SI spelling CLDR uses.
+ */
+export function fmtBytes(bytes: number, options?: NumberOptions): string {
+  if (!Number.isFinite(bytes)) return '—'
+  const abs = Math.abs(bytes)
+  if (abs < 1000) return fmtUnit(bytes, 'byte', { maximumFractionDigits: 0, ...options })
+  if (abs < 1000 ** 2) return fmtUnit(bytes / 1000, 'kilobyte', { maximumFractionDigits: 1, ...options })
+  if (abs < 1000 ** 3) return fmtUnit(bytes / 1000 ** 2, 'megabyte', { maximumFractionDigits: 1, ...options })
+  if (abs < 1000 ** 4) return fmtUnit(bytes / 1000 ** 3, 'gigabyte', { maximumFractionDigits: 1, ...options })
+  return fmtUnit(bytes / 1000 ** 4, 'terabyte', { maximumFractionDigits: 1, ...options })
 }
 
 /* -------------------------------------------------------------------- dates */

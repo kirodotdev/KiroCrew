@@ -373,6 +373,7 @@ committed number can always be re-snapshotted past.
 | catalog QA violations, per check | `CEILINGS` in `src/i18n/qa.test.ts` | `check-source-strings.mjs` **[changed-values]** — QA on any value you added or changed |
 | unextracted JSX strings | `--baseline=N` in `package.json` | **[added-lines]** — same population, no ledger |
 | host-locale calls | `BASELINE` in `src/i18n/localeFormatting.test.ts` | that file's own **[added-lines]** / **[vs-base]** — a `toLocale*`/`localeCompare` on a line you wrote, or a touched file whose count grew vs the base ref |
+| render-time defects, per surface | `src/i18n/render-baseline.json` | `check-i18n-render.mjs` **[vs-base]** — renders the base commit and fails on any per-surface increase |
 
 For these four, a decrease is reported and tolerated: you do not re-snapshot anything,
 and a change that improves one of these numbers without editing it will pass.
@@ -417,6 +418,87 @@ none of them caused this.
 To see the QA worklist the deleted allowlist used to hold:
 `I18N_QA_REPORT=1 npx vitest run src/i18n/qa.test.ts`.
 
+### The render-time gate: what a source scan structurally cannot see
+
+Every gate above reads **source** (an eslint pass over `src`) or **catalog JSON**. Three
+defect classes are invisible to all of them, not by oversight but by construction:
+
+| Defect | Why the static gates miss it |
+|---|---|
+| a string that was never extracted | it is ordinary TypeScript — `` `${h}h ${m}m ${s}s` `` in `useUptime.ts` reads as arithmetic, and shipped for months |
+| a sentence assembled from several keys | it is several *correct* `t()` calls; only the rendered line shows the seam |
+| English in `title` / `aria-label` / `placeholder` | attribute text never enters the text flow, so nothing that walks prose sees it |
+
+`npm run i18n:render` (`scripts/check-i18n-render.mjs`) closes them. It renders the real
+built SPA under the **`en-XA` pseudolocale**, where `gen-pseudolocale.mjs` has already
+guaranteed the two properties the whole check rests on: every catalog value is wrapped in
+`[` … `]`, and every ASCII letter outside a preserved region is accented. So inside one
+inline run, a `]…[` seam **is** a surviving concatenation, and plain Latin **is** text
+that never reached a catalog. It needs no gateway, no token and no backend — it serves
+the build over loopback and answers every `/api/**` call from fixtures, exactly like the
+`capture-*.mjs` harnesses.
+
+Four things to know before you touch it:
+
+1. **It builds its own bundle, with `NODE_ENV=development`.** `en-XA` is DEV-only in
+   three independent places (`index.ts` tree-shakes the catalog, `isRestorableLanguage()`
+   refuses the stored code, `DETECTABLE_CODES` hides it), all keyed on
+   `import.meta.env.DEV`. `vite build --mode development` is **not** enough — Vite derives
+   DEV from `NODE_ENV`, not from `--mode`. Get this wrong and the gate does not fail, it
+   renders English and passes; `assertPseudoActive()` exists so that can never be silent.
+2. **A crashed surface is exit 2, not findings.** If a fixture is the wrong shape the
+   error boundary replaces the panel with its own English message, and a naive scan would
+   report *that* as untranslated copy. Any uncaught page error aborts the run instead.
+3. **DNT integrity runs only in real locales.** The pseudolocale accents DNT terms too
+   (`GitHub` → `ĞìţĤùƀ`), so asserting them under `en-XA` would report all 19 as mangled.
+   It is zero-tolerance, and it deliberately accepts an all-lowercase hit as the command
+   (`git push`, `docker run`) rather than a mangled product name.
+4. **Enforcement is `[vs-base]`, not the ledger.** The gate renders the BASE commit
+   with the same scanner and fails on any per-surface increase, reading no committed
+   number — so there is nothing to re-snapshot and nothing to absorb a regression
+   with. `src/i18n/render-baseline.json` (three buckets: `text`, `layout`, `latent`,
+   keyed per surface, upward-only) is a **debt record and the push-to-`main` backstop**,
+   where there is no base to diff against. It is allowed to sit above reality; a
+   decrease is reported, never required. Goal is 0 for every entry.
+
+   Per-surface keys alone would *not* have satisfied the rule at the top of this
+   section. A finer ledger only shrinks the range you can trade within — it is still a
+   committed number, and `--update` still absorbs anything. The measured proof: inflate
+   `settings-about.text` from 28 to 100, add 18 real defects, and the ledger reports an
+   *improvement* while `[vs-base]` fails with `28 -> 46 (+18)`.
+
+`latent` holds `ellipsis-with-flex-parent` on its own — ~544 sites where
+`text-overflow: ellipsis` cannot apply because a flex child's `min-width` is still `auto`,
+so the truncation those sites think they have does nothing. Real, but a uniform `min-w-0`
+cleanup that would otherwise bury the handful of actual overflows in `layout`.
+
+The base tree is exported with `git archive`, never `git worktree add`. A worktree
+registers itself in the repo, so a run killed mid-flight leaves a stale registration that
+breaks every later run — and the obvious recovery, `git worktree prune`, removes the
+registration of any worktree whose path is not visible from where it runs, which in a
+container that mounts the checkout elsewhere means the caller's own. `git archive` touches
+no repo state, needs no cleanup, and works on CI's shallow checkout.
+
+**Regenerate the ledger on Linux + the pinned Chromium, not on your laptop.** `layout` and
+`latent` are pixel measurements, so they depend on the platform's font metrics and on which
+faces are installed. A macOS-regenerated ledger will not match CI, and if it lands *lower*
+than CI measures, `main` goes red on a file nobody edited. `[vs-base]` is immune (both
+sides are measured in the same run on the same box), which is another reason it carries
+enforcement — but `--update` is not. Use the same image CI does:
+
+```sh
+docker run --rm --ipc=host -v "$PWD":/w -w /w/website \
+  mcr.microsoft.com/playwright:v1.58.2-jammy \
+  node scripts/check-i18n-render.mjs --build --update
+```
+
+The analysis is in `scripts/lib/render-scan.mjs`, which runs in **two** runtimes from one
+copy: Node (so `renderScan.test.ts` can unit-test the string logic) and the browser (via
+`browserBundle()`, which strips the `export` keywords and injects it with
+`addScriptTag`). Keep it import-free, or the browser half stops loading. Its tests also
+lock the pseudolocale invariants it borrows, so a change to the generator's delimiters
+fails a test instead of quietly making the gate find nothing.
+
 **Gotcha — the settings-search extractor.** `scripts/settingsExtract.ts` parses
 Settings panels to generate `settingsRegistry.gen.ts` (which powers
 command-palette settings search). It resolves BOTH `i18nT('k')` and `t('k')`
@@ -439,7 +521,9 @@ Tailwind CSS with custom theme in `tailwind.config.js` — `darkMode: ['selector
 
 ## Shared Components
 
-`src/components/ui.tsx`: `Card`, `CardTitle`, `Btn`, `SendBtn`, `Input`, `Badge`, `AimBadge`, `StatCard`, `Skeleton`, `ContentSkeleton`, `EmptyState`, `PageHeader`, `SearchInput`, `Toggle`
+`src/components/ui.tsx`: `Card`, `CardTitle`, `Btn`, `SendBtn`, `Input`, `Badge`, `AimBadge`, `StatCard`, `Skeleton`, `ContentSkeleton`, `EmptyState`, `PageHeader`, `PanelSectionHeader`, `SearchInput`, `Toggle`
+
+`PanelSectionHeader` is the one idiom for a counted list-section header inside a side panel (label + count node + hairline rule). Route a new panel section through it rather than hand-rolling a header — the Files and Artifacts tabs each grew their own and silently diverged on case, size, colour, and whether the count was a node or punctuation baked into the translated label. Hierarchy comes from weight and size, never from an opacity modifier, and the label is not uppercased (`text-transform` is a no-op on CJK).
 
 Other shared: `SegmentedControl.tsx` (iOS-style sliding tab selector with Framer Motion), `DetailPanel.tsx` (resizable side panel with animated open/close), `SidePanelLayout.tsx` (shared side-panel page layout), `AgentSelector.tsx` (portal dropdown with ARIA), `layout.ts` (`LAYOUT` constants), `InfoTip.tsx`, `MarkdownRenderer.tsx` (with highlight.js syntax highlighting), `TypewriterText.tsx`
 

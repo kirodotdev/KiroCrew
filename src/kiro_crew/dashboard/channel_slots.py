@@ -39,9 +39,16 @@ Design notes:
   ``restore_window_minutes`` become slots, so a long DM history does not turn
   into hundreds of tabs. Pinned and foldered sessions are exempt from the
   window, matching :func:`~kiro_crew.dashboard.chat_persistence.restore_recent_sessions`.
-* **Closed is sticky.** A session the user closed on the dashboard
-  (``meta.closed``) is never re-surfaced — otherwise closing the tab would be
-  undone on the next reconcile pass.
+* **Closed is sticky — until the channel moves on.** A session the user closed
+  on the dashboard (``meta.closed``) is not re-surfaced by the next reconcile
+  pass — otherwise closing the tab would be undone 30 seconds later. But a
+  close is a statement about the conversation *as it stood*: channel-side
+  activity strictly newer than the close (the person kept talking on Discord
+  after the tab was dismissed) re-surfaces it, and the stale ``closed`` flags
+  are cleared so every restore path agrees the tab is open again. When the
+  close instant is unknown (legacy flag with no ``closed_at`` stamp and no
+  readable file mtime), the close stands — fail toward the user's explicit
+  dismissal.
 * **Ephemeral stays ephemeral.** ``incognito``/``temporary`` channel threads are
   skipped: the user asked for a conversation that leaves no trace, and a
   durable sidebar tab contradicts that.
@@ -54,6 +61,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import weakref
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -211,11 +219,58 @@ def mirror_new_messages(
     return sorted(out, key=_ts_sort_key)
 
 
+def _close_time(meta: dict[str, Any], file_mtime: float | None) -> float | None:
+    """Best-known epoch instant *meta*'s ``closed`` flag was written.
+
+    Prefers the explicit ``closed_at`` stamp (written alongside ``closed`` by
+    ``_save_slot_to_history``); falls back to the session file's mtime, which
+    the closing save set. ``None`` means the instant is unknowable — the
+    caller must treat the close as standing.
+    """
+    raw = meta.get("closed_at")
+    if raw is not None:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            pass
+    return file_mtime
+
+
+def _close_stands(
+    session: dict[str, Any],
+    meta: dict[str, Any],
+    slot_meta: dict[str, Any],
+    mtimes: dict[str, float],
+) -> bool:
+    """True when the user's dismissal of this conversation is still in force.
+
+    A close is not permanent: channel-side activity strictly newer than the
+    close means the conversation came back to life after the user dismissed
+    it, so it re-qualifies for surfacing. The comparison is against the
+    session listing's ``modified`` (the channel file's last write). Every
+    closed side must be outdated by that activity — an unknown close instant
+    on either side keeps the close standing, failing toward the user's
+    explicit action.
+    """
+    key = session.get("key", "")
+    closes: list[float | None] = []
+    if meta.get("closed"):
+        closes.append(_close_time(meta, mtimes.get(key)))
+    if slot_meta.get("closed"):
+        slot_key = slot_history_key(key)
+        closes.append(_close_time(slot_meta, mtimes.get(slot_key)))
+    if not closes:
+        return False
+    modified = float(session.get("modified", 0) or 0)
+    return any(ct is None or modified <= ct for ct in closes)
+
+
 def eligible_channel_sessions(
     sessions: list[dict[str, Any]],
     *,
     metadata: dict[str, dict[str, Any]],
     cutoff: float | None,
+    mtimes: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Filter a ``list_sessions()`` result down to channel sessions to surface.
 
@@ -223,8 +278,11 @@ def eligible_channel_sessions(
     entry for BOTH the channel key and its ``dashboard:``-prefixed slot key (see
     :func:`slot_history_key`) — closing a tab writes ``closed`` to the slot key,
     so reading only the channel key would let a closed tab reopen on the next
-    pass. *cutoff* is a unix timestamp; sessions older than it are dropped unless
-    pinned or foldered. ``None`` disables the recency filter (mirrors
+    pass. *mtimes* maps the same keys to their session-file mtimes, the fallback
+    close instant for a ``closed`` flag with no ``closed_at`` stamp (see
+    :func:`_close_stands`); with it absent, every close stands. *cutoff* is a
+    unix timestamp; sessions older than it are dropped unless pinned or
+    foldered. ``None`` disables the recency filter (mirrors
     ``restore_window_minutes=0``).
 
     Pure and side-effect free so the eligibility rules are directly testable.
@@ -236,9 +294,10 @@ def eligible_channel_sessions(
             continue
         meta = metadata.get(key) or {}
         slot_meta = metadata.get(slot_history_key(key)) or {}
-        # Either side having been closed means the user dismissed this
-        # conversation; never resurface it.
-        if meta.get("closed") or slot_meta.get("closed"):
+        # A close only stands until the channel outruns it: activity newer
+        # than the close re-qualifies the session (and the reconciler then
+        # clears the stale flags — see reconcile_channel_slots).
+        if _close_stands(s, meta, slot_meta, mtimes or {}):
             continue
         modes = (
             str(meta.get("memory_mode", "")).lower(),
@@ -527,13 +586,102 @@ def _mirror_intact(slot: "_ChatSlot") -> bool:
     )
 
 
+#: Per-state serialization of reconcile passes. The periodic loop and the
+#: dispatcher's immediate `surface_dispatcher_session` can otherwise overlap,
+#: and a pass acting on a pre-overlap metadata snapshot could clear a `closed`
+#: flag the user wrote mid-race. Weak keys so a replaced DashboardState does
+#: not pin its lock.
+_RECONCILE_LOCKS: "weakref.WeakKeyDictionary[Any, asyncio.Lock]" = weakref.WeakKeyDictionary()
+
+#: Per-state in-memory close tombstones: slot name -> epoch of the most recent
+#: tab close. Written synchronously on the event loop by the tab-close paths
+#: (see :func:`note_slot_closed`), read by the surface loop after its last
+#: await. This is what makes a close AROUND a reconcile pass visible to it:
+#: the disk flag alone is not enough, because the close SAVE lands only after
+#: the close handler's awaits (task cancellation, file lock), so a pass can
+#: snapshot still-open metadata after the slot was already popped. A tombstone
+#: suppresses surfacing under the same rule as the disk flag — only channel
+#: activity strictly newer than the close outruns it (see
+#: :func:`_tombstone_blocks`) — so the suppression is independent of how the
+#: pass's snapshot interleaves with the close. In-memory suffices — the
+#: resurrect window only exists in-process (a slot can only be popped by this
+#: process's own handlers), and by the time a tombstone expires the close
+#: save has long since made the disk flag authoritative.
+_RECENT_CLOSES: "weakref.WeakKeyDictionary[Any, dict[str, float]]" = weakref.WeakKeyDictionary()
+
+#: Tombstones older than this are pruned; they only need to outlive a single
+#: reconcile pass, and an hour is orders of magnitude beyond that.
+_CLOSE_TOMBSTONE_TTL_SECS = 3600.0
+
+
+def note_slot_closed(state: "DashboardState", slot_name: str) -> float:
+    """Record that *slot_name*'s tab was just closed; return the close instant.
+
+    Called synchronously on the event loop by every tab-close path, right where
+    the slot is popped from ``state._slots``. A reconcile pass whose metadata
+    snapshot predates this close checks these tombstones after its last await,
+    so it cannot re-surface a conversation the user dismissed while the pass's
+    executor work was in flight.
+
+    The returned epoch is the instant the user acted. Callers persist it as the
+    on-disk ``closed_at`` (via ``save_slot_off_loop(closed_at=...)``) instead of
+    re-stamping at save time: the close save runs only after the handler's
+    awaits (task cancellation, file lock), and channel activity landing in that
+    window would otherwise compare as OLDER than the close and stay hidden.
+    """
+    closes = _RECENT_CLOSES.get(state)
+    if closes is None:
+        closes = {}
+        _RECENT_CLOSES[state] = closes
+    now = time.time()
+    closes[slot_name] = now
+    cutoff = now - _CLOSE_TOMBSTONE_TTL_SECS
+    for stale in [k for k, v in closes.items() if v < cutoff]:
+        del closes[stale]
+    return now
+
+
+def _tombstone_blocks(state: "DashboardState", session: dict[str, Any]) -> bool:
+    """True when an in-memory close tombstone suppresses surfacing *session*.
+
+    Same rule as the disk flag (:func:`_close_stands`): the close stands unless
+    the channel's last activity is strictly newer than the close instant. The
+    comparison is against the session's own ``modified`` — NOT against the
+    pass's snapshot time — so it does not matter whether the close happened
+    before, during, or after the pass's snapshot: a close whose save is still
+    in flight (open metadata on disk, slot already popped) is judged by the
+    tombstone alone, and only genuinely newer channel activity outruns it.
+    """
+    closes = _RECENT_CLOSES.get(state) or {}
+    when = closes.get(channel_slot_name(session.get("key", "")))
+    if when is None:
+        return False
+    modified = float(session.get("modified", 0) or 0)
+    return modified <= when
+
+
+def _reconcile_lock(state: "DashboardState") -> asyncio.Lock:
+    lock = _RECONCILE_LOCKS.get(state)
+    if lock is None:
+        lock = asyncio.Lock()
+        _RECONCILE_LOCKS[state] = lock
+    return lock
+
+
 async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) -> int:
     """One reconcile pass. Returns the number of slots surfaced or re-bound.
 
     Safe to call on the event loop: every filesystem read is offloaded, and only
     the in-memory slot mutations run on the loop (so ``state._slots`` is never
-    touched from a worker thread).
+    touched from a worker thread). Passes are serialized per state so the
+    periodic loop and a dispatcher-triggered immediate pass cannot interleave
+    their snapshot/surface/clear sequences.
     """
+    async with _reconcile_lock(state):
+        return await _reconcile_channel_slots_locked(state, window_minutes)
+
+
+async def _reconcile_channel_slots_locked(state: "DashboardState", window_minutes: int) -> int:
     log = state.conversation_log
     if log is None:
         return 0
@@ -550,10 +698,14 @@ async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) 
     if not candidates:
         return 0
 
-    def _load_meta() -> dict[str, dict[str, Any]]:
+    def _load_meta() -> tuple[dict[str, dict[str, Any]], dict[str, float]]:
         out: dict[str, dict[str, Any]] = {}
+        mt: dict[str, float] = {}
         # Both the channel key and the slot key: the slot key is where a closed
         # tab records `closed`, and skipping it would resurface it every pass.
+        # File mtimes ride along as the fallback close instant for legacy
+        # `closed` flags that predate the `closed_at` stamp.
+        mtime_of = getattr(log, "mtime_of", None)
         for s in candidates:
             for key in (s.get("key", ""), slot_history_key(s.get("key", ""))):
                 if not key or key in out:
@@ -562,10 +714,24 @@ async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) 
                     out[key] = log.get_metadata(key)
                 except Exception:
                     out[key] = {}
-        return out
+                if mtime_of is not None:
+                    try:
+                        stamp = mtime_of(key)
+                    except Exception:
+                        stamp = None
+                    if stamp is not None:
+                        mt[key] = stamp
+        return out, mt
 
-    metadata = await loop.run_in_executor(None, _load_meta)
-    eligible = eligible_channel_sessions(candidates, metadata=metadata, cutoff=cutoff)
+    # Instant the metadata snapshot below is taken. The stale-flag clear later
+    # in this pass is scoped to closes OLDER than this — a `closed` written
+    # after the snapshot (the user dismissing a tab mid-pass, or any writer
+    # this pass cannot see) must survive the clear.
+    snapshot_time = time.time()
+    metadata, mtimes = await loop.run_in_executor(None, _load_meta)
+    eligible = eligible_channel_sessions(
+        candidates, metadata=metadata, cutoff=cutoff, mtimes=mtimes
+    )
     # Skip transcript reads for sessions that already own a slot — the steady state.
     pending = [s for s in eligible if channel_slot_name(s.get("key", "")) not in state._slots]
     # Existing slots that may need a mirror sync. Everything here is a cheap
@@ -651,9 +817,66 @@ async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) 
         await loop.run_in_executor(None, _load_mirror_transcripts) if mirror_pending else {}
     )
 
+    # Clear stale closed flags BEFORE the slots become visible. Running the
+    # clear after surfacing leaves a race: the slot broadcast lands, the user
+    # closes the tab, the close save writes a fresh `closed`, and the deferred
+    # clear then erases it — the next pass would reopen a tab the user just
+    # dismissed. Clearing first is safe: these sessions already passed the
+    # activity-outran-close check, so dropping the stale flags cannot keep
+    # anything closed that should stay closed, and if surfacing subsequently
+    # fails the next pass re-qualifies them from the same (now-unflagged)
+    # state.
+    reactivated = [
+        s.get("key", "")
+        for s in pending
+        if (metadata.get(s.get("key", "")) or {}).get("closed")
+        or (metadata.get(slot_history_key(s.get("key", ""))) or {}).get("closed")
+    ]
+    if reactivated:
+
+        def _clear_stale_closed() -> None:
+            clear = getattr(log, "clear_closed", None)
+            if clear is None:
+                return
+            for k in reactivated:
+                for kk in (k, slot_history_key(k)):
+                    try:
+                        # Compare-and-clear under the store's own lock: only a
+                        # flag whose close instant predates this pass's
+                        # metadata snapshot is dropped. A `closed` written
+                        # after the snapshot — the user dismissing a tab while
+                        # this pass ran, or a writer in another process — is
+                        # left standing, so no stale snapshot can erase a
+                        # fresh dismissal.
+                        clear(kk, only_if_closed_before=snapshot_time)
+                    except Exception:
+                        # Best-effort: the flag staying behind only costs a
+                        # redundant activity comparison on the next pass.
+                        logger.warning(
+                            "channel reconcile: failed to clear closed on %s", kk, exc_info=True
+                        )
+
+        # Off the loop: clear_closed takes the cross-process file lock.
+        await loop.run_in_executor(None, _clear_stale_closed)
+
     surfaced = 0
+    # A tab can be closed around this pass — resumed from History and
+    # dismissed while the executor work was in flight, or dismissed just
+    # before the snapshot with the close SAVE still awaiting (task
+    # cancellation, file lock): either way the slot is gone from
+    # ``state._slots`` while the on-disk metadata this pass read says open,
+    # so the stale ``pending`` verdict would recreate the tab the user just
+    # dismissed. Consult the in-memory tombstones the close paths write
+    # synchronously at the pop, under the disk flag's own rule: the close
+    # stands unless channel activity is strictly newer than it, regardless
+    # of how it interleaved with this pass's snapshot. This runs after the
+    # last await: nothing can close a slot between here and the surface
+    # call below.
     for s in pending:
         key = s.get("key", "")
+        if _tombstone_blocks(state, s):
+            logger.debug("channel reconcile: %s closed by tombstone, skipping", key)
+            continue
         transcript = transcripts.get(key) or _Transcript([], 0, 0)
         try:
             if surface_channel_session(

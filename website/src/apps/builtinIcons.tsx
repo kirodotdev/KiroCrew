@@ -26,6 +26,7 @@ import {
   FolderTree,
   FlaskConical,
   ScanSearch,
+  ScrollText,
   Contact,
 } from 'lucide-react'
 import type { ReactElement } from 'react'
@@ -48,6 +49,7 @@ const BUILTIN_ICON_REGISTRY: Record<string, ReactElement> = {
   FolderTree: <FolderTree size={16} />,
   FlaskConical: <FlaskConical size={16} />,
   ScanSearch: <ScanSearch size={16} />,
+  ScrollText: <ScrollText size={16} />,
   Contact: <Contact size={16} />,
 }
 

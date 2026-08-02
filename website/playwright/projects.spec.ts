@@ -32,15 +32,24 @@ async function deleteRun(request: import('@playwright/test').APIRequestContext, 
 }
 
 test.describe('Projects (Task Runner) Page', () => {
-  test('renders page header with title and subtitle', async ({ page }) => {
+  test('renders the full-bleed workspace shell, not a page header', async ({ page }) => {
+    // The page was brought in line with the other builtin app pages (Issue Radar
+    // as the reference): full-bleed, with the app identity in the run rail rather
+    // than in the dashboard's generic PageHeader. Asserting the absence keeps the
+    // gutters/title from creeping back in.
     await page.goto('/projects', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByText('Task Runner')).toBeVisible({ timeout: 10000 })
-    await expect(page.getByTestId('page-subtitle')).toBeVisible()
+    await expect(page.getByText('Task Runner').first()).toBeVisible({ timeout: 10000 })
+    await expect(page.getByTestId('page-header')).toHaveCount(0)
+    await expect(page.getByTestId('page-subtitle')).toHaveCount(0)
+    // The rail is present before any run exists, so the main column does not
+    // shift sideways the moment the first run lands.
+    await expect(page.getByRole('button', { name: /New Task/i })).toBeVisible()
+    await expect(page.getByRole('separator', { name: 'Resize sidebar' })).toBeAttached()
   })
 
   test('compose panel shows three mode tabs', async ({ page }) => {
     await page.goto('/projects', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByText('Task Runner')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Task Runner').first()).toBeVisible({ timeout: 10000 })
 
     // Three mode tabs are visible as buttons
     await expect(page.getByRole('button', { name: /Compose/i })).toBeVisible()
@@ -50,7 +59,7 @@ test.describe('Projects (Task Runner) Page', () => {
 
   test('compose tab (default) has textarea and action buttons', async ({ page }) => {
     await page.goto('/projects', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByText('Task Runner')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Task Runner').first()).toBeVisible({ timeout: 10000 })
 
     // The Compose tab textarea
     await expect(page.getByLabel('Describe your task')).toBeVisible()
@@ -63,7 +72,7 @@ test.describe('Projects (Task Runner) Page', () => {
 
   test('From Spec tab shows spec textarea and file upload', async ({ page }) => {
     await page.goto('/projects', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByText('Task Runner')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Task Runner').first()).toBeVisible({ timeout: 10000 })
 
     // Switch to From Spec tab
     await page.getByRole('button', { name: /From Spec/i }).click()
@@ -83,7 +92,7 @@ test.describe('Projects (Task Runner) Page', () => {
 
   test('From YAML tab shows yaml textarea and DAG banner', async ({ page }) => {
     await page.goto('/projects', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByText('Task Runner')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Task Runner').first()).toBeVisible({ timeout: 10000 })
 
     // Switch to From YAML tab
     await page.getByRole('button', { name: /From YAML/i }).click()
@@ -98,7 +107,7 @@ test.describe('Projects (Task Runner) Page', () => {
 
   test('agent selector and workspace field are present', async ({ page }) => {
     await page.goto('/projects', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByText('Task Runner')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Task Runner').first()).toBeVisible({ timeout: 10000 })
 
     // Agent label is visible
     await expect(page.getByText('Agent:')).toBeVisible()
@@ -127,7 +136,7 @@ test.describe('Projects (Task Runner) Page', () => {
       const runBtn = page.getByRole('button', { name: `Open project ${taskName}` })
       await expect(runBtn).toBeVisible({ timeout: 10000 })
 
-      // The "New Task" button is visible when sidebar has runs
+      // "New Task" is in the rail in every state, runs or not
       await expect(page.getByRole('button', { name: /New Task/i })).toBeVisible()
     } finally {
       await deleteRun(request, taskId)

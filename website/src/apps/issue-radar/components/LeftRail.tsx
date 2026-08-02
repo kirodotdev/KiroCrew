@@ -136,7 +136,7 @@ function CollapsedRail({
           onClick={onExpand}
           title={`${full} — click to expand the sidebar`}
           aria-label={i18nT('apps.issueRadar.components.leftRail.expand_sidebar')}
-          className="flex-1 min-h-0 w-full flex flex-col items-center gap-3 pt-3.5 pb-2 cursor-pointer outline-none text-muted hover:text-text hover:bg-bg-hover transition-colors"
+          className="flex-1 min-h-0 w-full flex flex-col items-center gap-3 pt-3.5 pb-2 cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors focus-ring"
         >
           <GithubLogo size={18} className="flex-shrink-0 text-text" />
           <div className="min-h-0 flex flex-col items-center gap-2">

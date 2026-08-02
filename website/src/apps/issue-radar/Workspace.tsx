@@ -19,9 +19,9 @@ import {
   loadRailWidth, loadRailCollapsed, RAIL_WIDTH_KEY, RAIL_COLLAPSED_KEY,
   MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, COLLAPSED_RAIL_WIDTH,
 } from './lib/format'
-import { useColumnResize, type CollapseConfig } from './lib/useColumnResize'
+import { useColumnResize, type CollapseConfig } from '../../hooks/useColumnResize'
 import LeftRail from './components/LeftRail'
-import ResizeHandle from './components/ResizeHandle'
+import ResizeHandle from '../../components/ResizeHandle'
 import IssueList from './components/IssueList'
 import IssueDetail from './components/IssueDetail'
 import PrList from './components/PrList'
@@ -52,7 +52,14 @@ export default function Workspace() {
 
       {/* Drag handle — resize the left rail. Present in every main view, since
           the rail itself is. Dragging well past the minimum collapses it. */}
-      <ResizeHandle handleProps={rail.handleProps} label={i18nT('apps.issueRadar.workspace.resize_sidebar')} />
+      <ResizeHandle
+        handleProps={rail.handleProps}
+        label={i18nT('apps.issueRadar.workspace.resize_sidebar')}
+        onNudge={rail.nudge}
+        value={rail.width}
+        min={MIN_RAIL_WIDTH}
+        max={MAX_RAIL_WIDTH}
+      />
 
       {mainView === 'issues' ? (
         <>
@@ -61,7 +68,14 @@ export default function Workspace() {
           </section>
 
           {/* Drag handle — resize the issue-list column. */}
-          <ResizeHandle handleProps={list.handleProps} label={i18nT('apps.issueRadar.workspace.resize_list')} />
+          <ResizeHandle
+            handleProps={list.handleProps}
+            label={i18nT('apps.issueRadar.workspace.resize_list')}
+            onNudge={list.nudge}
+            value={list.width}
+            min={MIN_LIST_WIDTH}
+            max={MAX_LIST_WIDTH}
+          />
 
           <main className="flex-1 min-w-0 min-h-0">
             {activeIssue
@@ -85,7 +99,14 @@ export default function Workspace() {
           </section>
 
           {/* Drag handle — resize the PR-list column. */}
-          <ResizeHandle handleProps={list.handleProps} label={i18nT('apps.issueRadar.workspace.resize_list')} />
+          <ResizeHandle
+            handleProps={list.handleProps}
+            label={i18nT('apps.issueRadar.workspace.resize_list')}
+            onNudge={list.nudge}
+            value={list.width}
+            min={MIN_LIST_WIDTH}
+            max={MAX_LIST_WIDTH}
+          />
 
           <main className="flex-1 min-w-0 min-h-0">
             {activePull

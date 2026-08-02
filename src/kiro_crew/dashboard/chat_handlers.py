@@ -27,6 +27,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.constants import CHAT_TURN_TIMEOUT
+from kiro_crew.dashboard.channel_slots import note_slot_closed
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
@@ -1453,6 +1454,14 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
 
     # Remove from dict before async operations
     state._slots.pop(name, None)
+    # Synchronous tombstone, BEFORE any await: a channel-slot reconcile pass
+    # whose snapshot predates this close reads these after its last await, so
+    # it cannot re-surface the tab this handler is dismissing (see
+    # channel_slots._RECENT_CLOSES). The returned instant is persisted as
+    # closed_at below — the save runs after the cancellation awaits, and
+    # stamping save time would make channel activity landing in that window
+    # compare as older than the close.
+    closed_at = note_slot_closed(state, name)
     # Release any blocking wait before cancelling the task: a pending
     # ask_question holds an MCP worker on a blocked HTTP request, and the slot
     # is going away, so nobody will ever answer its card.
@@ -1464,7 +1473,9 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
             pass
     try:
-        await save_slot_off_loop(state, slot, closed=True, best_effort=False)
+        await save_slot_off_loop(
+            state, slot, closed=True, closed_at=closed_at, best_effort=False
+        )
     except Exception:
         # Save failed — restore slot so data isn't lost
         logger.error("Failed to save slot %s to history, restoring", name, exc_info=True)
@@ -1569,8 +1580,15 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         removed = state._slots.pop(name, None)
         if not removed:
             continue
+        # Same tombstone as the single-tab close: the archive pass must not
+        # race a concurrent channel reconcile into resurrecting the slot. Its
+        # instant is persisted as closed_at for the same teardown-window
+        # reason as the single-tab path.
+        closed_at = note_slot_closed(state, name)
         try:
-            await save_slot_off_loop(state, removed, closed=True, best_effort=False)
+            await save_slot_off_loop(
+                state, removed, closed=True, closed_at=closed_at, best_effort=False
+            )
         except Exception:
             logger.error("Cleanup: failed to archive slot %s", name, exc_info=True)
             state._slots[name] = removed

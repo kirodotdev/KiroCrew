@@ -66,7 +66,7 @@ def test_identity() -> None:
     assert m.name == "crew-companion"
     assert m.version == "1.0.0"
     assert m.displayName == "Crew Companion"
-    assert m.author == "xuejint"
+    assert m.author == "kirocrew"
 
 
 def test_discovered_as_builtin() -> None:
