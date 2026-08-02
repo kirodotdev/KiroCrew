@@ -1080,7 +1080,13 @@
   },
   "components": {
     "agentDropdownList": {
-      "no_matches": "Нет совпадений"
+      "active_in_this_session": "Активен в этой сессии",
+      "could_not_change_the_default_agent": "Не удалось изменить агента по умолчанию",
+      "default": "По умолчанию",
+      "manage_agents": "Управление агентами…",
+      "new_sessions_start_with_this_agent": "Новые сессии начинаются с этим агентом",
+      "no_matches": "Нет совпадений",
+      "start_new_sessions_with_this_agent": "Начинать новые сессии с этим агентом"
     },
     "agentImportFlow": {
       "back": "Назад",
@@ -2925,6 +2931,8 @@
       "context_window_usage": "Использование контекстного окна",
       "could_not_load_this_agent_s_configuration_skills": "Не удалось загрузить конфигурацию этого агента — навыки скрыты, чтобы\n                        не перезаписать их. Выберите агента заново, чтобы повторить попытку.",
       "critical": "Критический",
+      "default": "По умолчанию",
+      "default_for_new_sessions": "По умолчанию для новых сессий",
       "denied_commands": "Запрещённые команды",
       "describe_when_to_use_this_agent": "Опишите, когда использовать этого агента…",
       "done": "Готово",
@@ -2959,6 +2967,7 @@
       "saving": "Сохранение…",
       "select_an_agent_to_view_details": "Выберите агента, чтобы посмотреть подробности",
       "sessions": "Сессии",
+      "set_as_default": "Сделать по умолчанию",
       "set_as_default_agent": "Сделать агентом по умолчанию",
       "skills": "Навыки",
       "spawn_tasks_from_chat_or_cli": "Запускайте задачи из чата или CLI",

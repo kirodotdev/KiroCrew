@@ -1072,7 +1072,13 @@
   },
   "components": {
     "agentDropdownList": {
-      "no_matches": "Nessuna corrispondenza"
+      "active_in_this_session": "Attivo in questa sessione",
+      "could_not_change_the_default_agent": "Non è stato possibile cambiare l’agente predefinito",
+      "default": "Predefinito",
+      "manage_agents": "Gestisci gli agenti…",
+      "new_sessions_start_with_this_agent": "Le nuove sessioni iniziano con questo agente",
+      "no_matches": "Nessuna corrispondenza",
+      "start_new_sessions_with_this_agent": "Avvia le nuove sessioni con questo agente"
     },
     "agentImportFlow": {
       "back": "Indietro",
@@ -2894,6 +2900,8 @@
       "context_window_usage": "Utilizzo della finestra di contesto",
       "could_not_load_this_agent_s_configuration_skills": "Impossibile caricare la configurazione di questo agente — le skill sono nascoste per evitare\n                        di sovrascriverle. Riseleziona l'agente per riprovare.",
       "critical": "Critico",
+      "default": "Predefinito",
+      "default_for_new_sessions": "Predefinito per le nuove sessioni",
       "denied_commands": "Comandi bloccati",
       "describe_when_to_use_this_agent": "Descrivi quando usare questo agente…",
       "done": "Fatto",
@@ -2927,6 +2935,7 @@
       "saving": "Salvataggio…",
       "select_an_agent_to_view_details": "Seleziona un agente per vederne i dettagli",
       "sessions": "Sessioni",
+      "set_as_default": "Imposta come predefinito",
       "set_as_default_agent": "Imposta come agente predefinito",
       "skills": "Skill",
       "spawn_tasks_from_chat_or_cli": "Avvia attività dalla chat o dalla CLI",

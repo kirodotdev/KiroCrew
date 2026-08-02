@@ -1064,7 +1064,13 @@
   },
   "components": {
     "agentDropdownList": {
-      "no_matches": "কোনো মিল নেই"
+      "active_in_this_session": "এই সেশনে সক্রিয়",
+      "could_not_change_the_default_agent": "ডিফল্ট এজেন্ট বদলানো গেল না",
+      "default": "ডিফল্ট",
+      "manage_agents": "এজেন্ট পরিচালনা করুন…",
+      "new_sessions_start_with_this_agent": "নতুন সেশন এই এজেন্ট দিয়ে শুরু হয়",
+      "no_matches": "কোনো মিল নেই",
+      "start_new_sessions_with_this_agent": "নতুন সেশন এই এজেন্ট দিয়ে শুরু করো"
     },
     "agentImportFlow": {
       "back": "পিছনে",
@@ -2863,6 +2869,8 @@
       "context_window_usage": "কনটেক্সট উইন্ডো ব্যবহার",
       "could_not_load_this_agent_s_configuration_skills": "এই এজেন্টের কনফিগারেশন লোড করা যায়নি — ওভাররাইট হওয়া এড়াতে\n                        স্কিল লুকানো হয়েছে। আবার চেষ্টা করতে এজেন্টটি পুনরায় নির্বাচন করুন।",
       "critical": "গুরুতর",
+      "default": "ডিফল্ট",
+      "default_for_new_sessions": "নতুন সেশনের জন্য ডিফল্ট",
       "denied_commands": "নিষিদ্ধ কমান্ড",
       "describe_when_to_use_this_agent": "এই এজেন্ট কখন ব্যবহার করা হবে তা লিখুন…",
       "done": "সম্পন্ন",
@@ -2895,6 +2903,7 @@
       "saving": "সংরক্ষণ হচ্ছে…",
       "select_an_agent_to_view_details": "বিস্তারিত দেখতে একটি এজেন্ট নির্বাচন করুন",
       "sessions": "সেশন",
+      "set_as_default": "ডিফল্ট হিসেবে সেট করো",
       "set_as_default_agent": "ডিফল্ট এজেন্ট হিসেবে সেট করো",
       "skills": "স্কিল",
       "spawn_tasks_from_chat_or_cli": "চ্যাট বা CLI থেকে টাস্ক চালু করুন",

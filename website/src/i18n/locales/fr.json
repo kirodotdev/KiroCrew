@@ -1072,7 +1072,13 @@
   },
   "components": {
     "agentDropdownList": {
-      "no_matches": "Aucun résultat"
+      "active_in_this_session": "Actif dans cette session",
+      "could_not_change_the_default_agent": "Impossible de changer l’agent par défaut",
+      "default": "Par défaut",
+      "manage_agents": "Gérer les agents…",
+      "new_sessions_start_with_this_agent": "Les nouvelles sessions démarrent avec cet agent",
+      "no_matches": "Aucun résultat",
+      "start_new_sessions_with_this_agent": "Démarrer les nouvelles sessions avec cet agent"
     },
     "agentImportFlow": {
       "back": "Retour",
@@ -2894,6 +2900,8 @@
       "context_window_usage": "Utilisation de la fenêtre de contexte",
       "could_not_load_this_agent_s_configuration_skills": "Impossible de charger la configuration de cet agent — les compétences sont masquées pour éviter\n                        de les écraser. Sélectionnez à nouveau l'agent pour réessayer.",
       "critical": "Critique",
+      "default": "Par défaut",
+      "default_for_new_sessions": "Par défaut pour les nouvelles sessions",
       "denied_commands": "Commandes refusées",
       "describe_when_to_use_this_agent": "Décrivez quand utiliser cet agent…",
       "done": "Terminé",
@@ -2927,6 +2935,7 @@
       "saving": "Enregistrement…",
       "select_an_agent_to_view_details": "Sélectionnez un agent pour voir les détails",
       "sessions": "Sessions",
+      "set_as_default": "Définir par défaut",
       "set_as_default_agent": "Définir comme agent par défaut",
       "skills": "Compétences",
       "spawn_tasks_from_chat_or_cli": "Lancez des tâches depuis le chat ou la CLI",

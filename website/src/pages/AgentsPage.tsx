@@ -212,6 +212,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
       {!embedded && <PageHeader title={i18nT('pages.agentsPage.agent_templates')} subtitle={i18nT('pages.agentsPage.active_sessions_and_subagent_tasks')} />}
       <div className={`${embedded ? '' : 'px-6 pb-8'} overflow-y-auto flex-1 min-h-0`}>
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
+          <StatCard label={i18nT('pages.agentsPage.default_for_new_sessions')} value={defaultAgent || '—'} />
           <StatCard label={i18nT('pages.agentsPage.sessions')} value={status?.sessions} />
           <StatCard label={i18nT('pages.agentsPage.subagents')} value={status?.subagents} accent />
         </div>
@@ -234,15 +235,6 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                   }, {})
                   const renderAgent = (a: typeof installed[0], showDelete?: boolean) => (
                     <Clickable key={a.name} className={`flex items-center gap-2 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'list-selected bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:bg-bg-hover hover:border-border-strong'}`} onClick={async () => { try { const d = await api.agentDetail(a.name); setSelectedAgent(d) } catch { /* List rows carry display NAMES; the editor round-trips catalog KEYS, so drop them rather than offer unsavable chips. */ setSelectedAgent({ ...a, skills: undefined }) } }}>
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        aria-label={defaultAgent === a.name ? i18nT('pages.agentsPage.remove_default_agent') : i18nT('pages.agentsPage.set_as_default_agent')}
-                        className={`text-[13px] shrink-0 transition-colors cursor-pointer ${defaultAgent === a.name ? 'text-warn' : 'text-muted hover:text-warn'}`}
-                        title={defaultAgent === a.name ? i18nT('pages.agentsPage.remove_default_agent') : i18nT('pages.agentsPage.set_as_default_agent')}
-                        onClick={e => { e.stopPropagation(); toggleDefault(a.name) }}
-                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleDefault(a.name) } }}
-                      >{defaultAgent === a.name ? <Star className="lucide-inline" /> : <StarOff className="lucide-inline" />}</span>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 mb-0.5">
                           <span className="text-[13px] font-mono font-semibold text-text truncate">{a.name}</span>
@@ -254,6 +246,22 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                           <span className="text-[11px] text-muted font-mono">{a.model}</span>
                         </div>
                       </div>
+                      {/* The word carries the state. This replaced a bare star glyph that
+                          gave a first-time user nothing to read: the feature was reported
+                          as missing while the control was on screen. */}
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label={defaultAgent === a.name ? i18nT('pages.agentsPage.remove_default_agent') : i18nT('pages.agentsPage.set_as_default_agent')}
+                        className={`shrink-0 inline-flex items-center gap-1 px-2 py-[3px] rounded-md border text-[11px] font-medium transition-colors cursor-pointer ${defaultAgent === a.name ? 'text-warn border-warn/45 bg-warn-subtle' : 'text-muted border-border-strong hover:text-warn hover:border-warn hover:bg-warn-subtle'}`}
+                        title={defaultAgent === a.name ? i18nT('pages.agentsPage.remove_default_agent') : i18nT('pages.agentsPage.set_as_default_agent')}
+                        onClick={e => { e.stopPropagation(); toggleDefault(a.name) }}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleDefault(a.name) } }}
+                      >
+                        {defaultAgent === a.name
+                          ? <><Star className="lucide-inline" />{i18nT('pages.agentsPage.default')}</>
+                          : <><StarOff className="lucide-inline" />{i18nT('pages.agentsPage.set_as_default')}</>}
+                      </span>
                       {showDelete && <button className="text-[10px] text-muted hover:text-danger-fg hover:bg-danger px-1 py-0.5 rounded border border-border hover:border-danger/40 transition-all shrink-0" title={`Delete ${a.name}`} aria-label={`Delete ${a.name}`} onClick={e => { e.stopPropagation(); if (confirm(`Delete agent "${a.name}"? This removes the config file.`)) deleteAgentMut.mutate(a.name) }}><X className="lucide-inline" /></button>}
                     </Clickable>
                   )

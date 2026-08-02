@@ -1056,7 +1056,13 @@
   },
   "components": {
     "agentDropdownList": {
-      "no_matches": "无匹配项"
+      "active_in_this_session": "在此会话中使用",
+      "could_not_change_the_default_agent": "无法更改默认代理",
+      "default": "默认",
+      "manage_agents": "管理代理…",
+      "new_sessions_start_with_this_agent": "新会话将使用该代理",
+      "no_matches": "无匹配项",
+      "start_new_sessions_with_this_agent": "用该代理开始新会话"
     },
     "agentImportFlow": {
       "back": "上一步",
@@ -2832,6 +2838,8 @@
       "context_window_usage": "上下文窗口用量",
       "could_not_load_this_agent_s_configuration_skills": "无法加载此代理的配置 — 已隐藏技能以避免\n                        覆盖它们。请重新选择该代理后重试。",
       "critical": "严重",
+      "default": "默认",
+      "default_for_new_sessions": "新会话默认",
       "denied_commands": "拒绝的命令",
       "describe_when_to_use_this_agent": "描述何时使用此代理…",
       "done": "已完成",
@@ -2863,6 +2871,7 @@
       "saving": "正在保存…",
       "select_an_agent_to_view_details": "选择一个代理查看详情",
       "sessions": "会话",
+      "set_as_default": "设为默认",
       "set_as_default_agent": "设为默认代理",
       "skills": "技能",
       "spawn_tasks_from_chat_or_cli": "从聊天或 CLI 派生任务",

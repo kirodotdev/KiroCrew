@@ -1072,7 +1072,13 @@
   },
   "components": {
     "agentDropdownList": {
-      "no_matches": "Nenhum resultado"
+      "active_in_this_session": "Ativo nesta sessão",
+      "could_not_change_the_default_agent": "Não foi possível alterar o agente padrão",
+      "default": "Padrão",
+      "manage_agents": "Gerenciar agentes…",
+      "new_sessions_start_with_this_agent": "As novas sessões começam com este agente",
+      "no_matches": "Nenhum resultado",
+      "start_new_sessions_with_this_agent": "Iniciar novas sessões com este agente"
     },
     "agentImportFlow": {
       "back": "Voltar",
@@ -2894,6 +2900,8 @@
       "context_window_usage": "Uso da janela de contexto",
       "could_not_load_this_agent_s_configuration_skills": "Não foi possível carregar a configuração deste agente — as habilidades estão ocultas para evitar\n                        sobrescrevê-las. Selecione o agente novamente para tentar de novo.",
       "critical": "Crítico",
+      "default": "Padrão",
+      "default_for_new_sessions": "Padrão para novas sessões",
       "denied_commands": "Comandos negados",
       "describe_when_to_use_this_agent": "Descreva quando usar este agente…",
       "done": "Concluído",
@@ -2927,6 +2935,7 @@
       "saving": "Salvando…",
       "select_an_agent_to_view_details": "Selecione um agente para ver os detalhes",
       "sessions": "Sessões",
+      "set_as_default": "Definir como padrão",
       "set_as_default_agent": "Definir como agente padrão",
       "skills": "Habilidades",
       "spawn_tasks_from_chat_or_cli": "Crie tarefas pelo chat ou pela CLI",

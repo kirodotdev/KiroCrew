@@ -64,7 +64,7 @@ import { usePanelTabs, clearInlineDraft, getInlineDraft } from '../hooks/usePane
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
-import AgentDropdownList from '../components/AgentDropdownList'
+import AgentDropdownList, { ManageAgentsFooter } from '../components/AgentDropdownList'
 import ProjectPicker from '../components/ProjectPicker'
 import InboundLinkChip from '../components/InboundLinkChip'
 import SessionActionsMenu from '../components/SessionActionsMenu'
@@ -853,6 +853,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [])
 
   const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger)
+  const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
+  // Promotes an agent to the global default. Set-only: clearing the default lives on
+  // the Agent Templates page, where the control is labelled and the outcome is visible.
+  // Refresh goes through the store's global trigger rather than local state, because
+  // every open picker (this one, each split pane, the Templates page) reads the same
+  // setting — a per-hook refresh would leave sibling pickers showing the old default.
+  // api.setDefaultAgent is called defensively: component tests mock the api module
+  // partially, so the method can be absent under test.
+  const toggleDefaultAgent = useCallback((name: string) => {
+    setDefaultAgentFailed(false)
+    Promise.resolve(api.setDefaultAgent?.(name))
+      .then(() => dispatch(triggerRefresh()))
+      .catch(() => setDefaultAgentFailed(true))
+  }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(installedAgents)
   const filteredAgents = filteredAgentsByName
   const { data: availableModels = [{ name: 'auto', description: 'Default' }] } = useQuery({
@@ -4755,8 +4769,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   <Input ref={agentInputRef} type="text" aria-label={i18nT('pages.chatPage.filter_agents')} placeholder={i18nT('pages.chatPage.type_to_filter')} value={agentFilter} onChange={e => setAgentFilter(e.target.value)} className="w-full px-2 py-1 text-[13px] font-mono" />
                 </div>
                 <div role="listbox" aria-label={i18nT('pages.chatPage.agent_list')} className="overflow-y-auto max-h-[280px]">
-                <AgentDropdownList agents={filteredAgents} activeAgent={currentSlot?.agent || 'default'} defaultAgent={defaultAgent} onSelect={(name) => { switchAgent(name); setAgentDropdown(false) }} filter={agentFilter} />
+                {/* Embedded chat gets neither half of the default-agent affordance: it has
+                    no /capabilities route for the footer, and the footer is what carries the
+                    failed-write alert — offering the write without its error path would make
+                    a rejected request indistinguishable from a successful one. */}
+                <AgentDropdownList agents={filteredAgents} activeAgent={currentSlot?.agent || 'default'} defaultAgent={defaultAgent} onSelect={(name) => { switchAgent(name); setAgentDropdown(false) }} onSetDefault={embedded ? undefined : toggleDefaultAgent} filter={agentFilter} />
                 </div>
+                {!embedded && <ManageAgentsFooter error={defaultAgentFailed} onManage={() => { setAgentDropdown(false); navigate('/capabilities?tab=templates') }} />}
               </div>,
               document.body
             )}

@@ -1064,7 +1064,13 @@
   },
   "components": {
     "agentDropdownList": {
-      "no_matches": "कोई मेल नहीं"
+      "active_in_this_session": "इस सत्र में सक्रिय",
+      "could_not_change_the_default_agent": "डिफ़ॉल्ट एजेंट बदला नहीं जा सका",
+      "default": "डिफ़ॉल्ट",
+      "manage_agents": "एजेंट प्रबंधित करें…",
+      "new_sessions_start_with_this_agent": "नए सत्र इस एजेंट के साथ शुरू होते हैं",
+      "no_matches": "कोई मेल नहीं",
+      "start_new_sessions_with_this_agent": "नए सत्र इस एजेंट के साथ शुरू करें"
     },
     "agentImportFlow": {
       "back": "पीछे",
@@ -2863,6 +2869,8 @@
       "context_window_usage": "कॉन्टेक्स्ट विंडो उपयोग",
       "could_not_load_this_agent_s_configuration_skills": "इस एजेंट का कॉन्फ़िगरेशन लोड नहीं हो सका — उन्हें ओवरराइट होने से बचाने के लिए\n                        कौशल छिपाए गए हैं। दोबारा कोशिश करने के लिए एजेंट को फिर से चुनें।",
       "critical": "गंभीर",
+      "default": "डिफ़ॉल्ट",
+      "default_for_new_sessions": "नए सत्रों के लिए डिफ़ॉल्ट",
       "denied_commands": "अस्वीकृत कमांड",
       "describe_when_to_use_this_agent": "बताएँ कि इस एजेंट का उपयोग कब करना है…",
       "done": "पूर्ण",
@@ -2895,6 +2903,7 @@
       "saving": "सहेजा जा रहा है…",
       "select_an_agent_to_view_details": "विवरण देखने के लिए एजेंट चुनें",
       "sessions": "सत्र",
+      "set_as_default": "डिफ़ॉल्ट बनाएँ",
       "set_as_default_agent": "डिफ़ॉल्ट एजेंट बनाएँ",
       "skills": "स्किल",
       "spawn_tasks_from_chat_or_cli": "चैट या CLI से कार्य स्पॉन करें",
