@@ -77,6 +77,80 @@ tracer, or missing privileges) rather than assuming it is a permissions problem.
 macOS behaves differently — py-spy reads via `task_for_pid` there, where several
 readers can hold a task port — so a refusal on macOS points at privileges.
 
+## Profiling the desktop app (`kirocrew desktop metrics`)
+
+The two commands above sample **Python**. They cannot tell you anything about the
+Electron shell itself -- if the desktop app is burning CPU in its renderer or
+growing a window's working set, a py-spy attach on the gateway shows nothing
+unusual.
+
+`kirocrew desktop metrics` covers that half:
+
+```
+KIROCREW_DEBUG=1 kirocrew desktop metrics
+```
+
+### It reads a recording; it does not query the running app
+
+This is the one structural difference from `perf sample`, and it is worth
+understanding before you trust the numbers.
+
+`app.getAppMetrics()` is an Electron-main API, so it can only be called from
+inside that process. This CLI is a separate Python process, and starting a second
+Electron instance does not let it read the first one's metrics. Getting a live
+sample on demand would therefore require the desktop app to listen for a request
+-- a new local network surface whose only purpose is debugging.
+
+Rather than add one, the app **records**: when it starts with `KIROCREW_DEBUG`
+set, `website/electron/perf-metrics.js` samples its own per-process metrics every
+5 seconds into a bounded artifact next to the gateway log, and this command reads
+that file.
+
+Consequences to keep in mind:
+
+- The app must have been **started** with `KIROCREW_DEBUG` set. Setting the
+  variable in the shell you run the CLI from changes nothing about an app that is
+  already running without it -- restart the app.
+- You see the retained window (the last 120 samples, about ten minutes), not the
+  current instant.
+- Because it is a recording, it survives the app becoming unresponsive, and it
+  keeps the peak. That is usually what you want: the spike you are chasing has
+  normally passed by the time you go looking, so the report names both the latest
+  totals and the worst sample in the window.
+
+The artifact is bounded on purpose -- it is written on an interval into the user's
+log directory, so an unbounded file would be a slow disk leak in a debug aid. It
+is rewritten whole via a temp file and a rename, so a read never catches a
+half-written file.
+
+### Where it looks
+
+Electron's own log directory, per platform:
+
+| Platform | Path |
+|---|---|
+| macOS | `~/Library/Logs/KiroCrew/desktop-metrics.json` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/KiroCrew/logs/desktop-metrics.json` |
+| Windows | `%APPDATA%\KiroCrew\logs\desktop-metrics.json` |
+
+Nightly builds install under their own product name (`KiroCrew Nightly`), so they
+log to a sibling directory -- `~/Library/Logs/KiroCrew Nightly/` and equivalents.
+Both are probed, and if both have recorded, the **newest** artifact wins: with
+release and nightly side by side, the build you just reproduced against is the one
+that wrote last.
+
+Pass `--path` to read an artifact from somewhere else (one attached to a bug
+report, for instance). `--json` emits the raw document; `--top N` changes how many
+processes are listed.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 1 | `KIROCREW_DEBUG` not set |
+| 3 | No artifact found (usually: the app was not started with the flag) |
+| 5 | Artifact unreadable, malformed, or a version this build does not understand |
+
 ## Reading the output
 
 Each line is `outermost;...;innermost <sample-count>`, hottest first:

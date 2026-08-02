@@ -268,9 +268,15 @@ stacks (open in speedscope / flamegraph.pl). See `docs/profiling.md`.
 | `KIROCREW_DEBUG=1 kirocrew perf sample --pid 1234 --seconds 30` | Attach to a specific PID for N seconds (1-300) |
 | `... --interval 0.002` | Seconds between samples (0.001-1.0, default 0.005) |
 | `... --output /tmp/p.folded` | Where to write the profile (default `./kirocrew-profile.folded`) |
+| `KIROCREW_DEBUG=1 kirocrew desktop metrics` | Per-process CPU/memory of the **Electron** app (`--json`, `--top N`, `--path`) |
 
 On macOS the attach path additionally needs elevated privileges (the OS denies
 `task_for_pid`), so it may require sudo; `--call` needs neither py-spy nor sudo.
+
+`desktop metrics` reads a recording rather than querying the app: `getAppMetrics()`
+is Electron-main-only, so the app samples itself into an artifact when **started**
+with `KIROCREW_DEBUG` set. Setting the variable only for the CLI does not make an
+already-running app record -- restart it.
 
 ## Security & Eval
 
