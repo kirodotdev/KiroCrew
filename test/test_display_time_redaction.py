@@ -20,6 +20,7 @@ The `system` role is the crux of the emit-site half: the write path never redact
 it, the old load path did, and the emit paths did not — so `system` content
 reached disk raw and was cleaned only in memory.
 """
+
 from __future__ import annotations
 
 import json
@@ -218,13 +219,19 @@ def test_restore_recent_sessions_does_not_broadcast_either(tmp_path, monkeypatch
 
     monkeypatch.setattr(state2, "get_or_create_slot", _spy)
 
-    from kiro_crew.dashboard.chat_persistence import restore_recent_sessions
+    from kiro_crew.dashboard.chat_persistence import materialize_slot, restore_recent_sessions
 
     restored = restore_recent_sessions(state2, window_minutes=0)
     assert restored == 1, "precondition: the session was restored"
     slot = state2._slots.get("chat-1-nb2")
-    assert slot is not None and slot.messages, "precondition: messages were replayed"
-    assert seen == [], f"restore_recent_sessions broadcast {len(seen)} message(s)"
+    assert slot is not None, "precondition: the stub slot was created"
+    assert (
+        seen == []
+    ), f"restore_recent_sessions broadcast {len(seen)} message(s) during stub creation"
+    # Materialization must also not broadcast.
+    materialize_slot(state2, slot)
+    assert slot.messages, "precondition: messages were loaded by materialize"
+    assert seen == [], f"materialize_slot broadcast {len(seen)} message(s)"
 
 
 def test_rehydrate_does_not_broadcast_replayed_messages(tmp_path, monkeypatch) -> None:
@@ -459,15 +466,11 @@ def test_oauth_url_gate_still_blocks_a_tampered_url() -> None:
     from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
 
     # 1. Non-http(s) scheme: must never reach an <a href>.
-    out = _redact_meta_for_role(
-        "mcp_oauth", {"oauth_url": "javascript:alert(document.cookie)"}
-    )
+    out = _redact_meta_for_role("mcp_oauth", {"oauth_url": "javascript:alert(document.cookie)"})
     assert out["oauth_url"] == "", "javascript: URL survived the scheme gate"
 
     # 2. An embedded real credential still blanks it.
-    out = _redact_meta_for_role(
-        "mcp_oauth", {"oauth_url": f"https://ex.com/cb?tok={SECRET}"}
-    )
+    out = _redact_meta_for_role("mcp_oauth", {"oauth_url": f"https://ex.com/cb?tok={SECRET}"})
     assert out["oauth_url"] == "", "credential-bearing URL survived the cred gate"
 
 

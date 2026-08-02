@@ -81,7 +81,12 @@ class TestRestoreRecentSessions:
                 {"role": "user", "content": "hello", "ts": "2026-03-23T10:00:00"},
                 {"role": "assistant", "content": "hi there", "ts": "2026-03-23T10:00:01"},
             ],
-            meta={"title": "Test Chat", "agent": "kirocrew", "workspace": "myws", "mode": "orchestrator"},
+            meta={
+                "title": "Test Chat",
+                "agent": "kirocrew",
+                "workspace": "myws",
+                "mode": "orchestrator",
+            },
         )
         # Touch the file to make it recent
         path = tmp_path / "dashboard_chat1.jsonl"
@@ -96,10 +101,19 @@ class TestRestoreRecentSessions:
         assert slot.agent == "kirocrew"
         assert slot.workspace == "myws"
         assert slot.mode == "orchestrator"
+        # Restore creates stubs; messages load on demand via materialize_slot.
+        assert slot._stub is True
+        assert len(slot.messages) == 0
+        assert slot._dirty is False
+
+        # Materialize loads the full message window.
+        from kiro_crew.dashboard.chat_persistence import materialize_slot
+
+        materialize_slot(state, slot)
+        assert slot._stub is False
         assert len(slot.messages) == 2
         assert slot.messages[0]["content"] == "hello"
         assert slot.messages[1]["content"] == "hi there"
-        assert slot._dirty is False
         assert slot._resumed_count == 2
 
     def test_restores_mode_empty_by_default(self, tmp_path, monkeypatch):
@@ -187,7 +201,7 @@ class TestRestoreRecentSessions:
         assert state._slots["existing"].messages[0]["content"] == "already here"
 
     def test_limits_to_500_messages(self, tmp_path, monkeypatch):
-        """Only the last 500 messages are loaded from a session."""
+        """Only the last 500 messages are loaded on materialize."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         messages = [
             {"role": "user", "content": f"msg {i}", "ts": f"2026-03-23T10:{i:04d}"}
@@ -201,6 +215,11 @@ class TestRestoreRecentSessions:
         restored = restore_recent_sessions(state, window_minutes=60)
         assert restored == 1
         slot = state._slots["big"]
+        assert slot._stub is True
+
+        from kiro_crew.dashboard.chat_persistence import materialize_slot
+
+        materialize_slot(state, slot)
         assert len(slot.messages) == 500
         assert slot.messages[0]["content"] == "msg 100"
         assert slot._disk_older_count == 100  # 600 total - 500 loaded = 100 older on disk
@@ -237,6 +256,9 @@ class TestRestoreRecentSessions:
         restored = restore_recent_sessions(state, window_minutes=60)
         assert restored == 1
         assert "mychat" in state._slots
+        from kiro_crew.dashboard.chat_persistence import materialize_slot
+
+        materialize_slot(state, state._slots["mychat"])
         assert state._slots["mychat"].messages[0]["content"] == "hi"
 
     def test_dashboard_colon_key_derives_correct_slot_name(self, tmp_path, monkeypatch):
@@ -270,6 +292,9 @@ class TestRestoreRecentSessions:
         restored = restore_recent_sessions(state, window_minutes=60)
         assert restored == 1
         assert "mychat" in state._slots
+        from kiro_crew.dashboard.chat_persistence import materialize_slot
+
+        materialize_slot(state, state._slots["mychat"])
         assert state._slots["mychat"].messages[0]["content"] == "colon test"
 
     def test_redacts_credentials_in_restored_messages(self, tmp_path, monkeypatch):
@@ -300,6 +325,10 @@ class TestRestoreRecentSessions:
         restored = restore_recent_sessions(state, window_minutes=60)
         assert restored == 1
         slot = state._slots["redact"]
+        # Materialize to load messages for the emit-path assertion.
+        from kiro_crew.dashboard.chat_persistence import materialize_slot
+
+        materialize_slot(state, slot)
         # User content is preserved as-is, on load and on emit.
         assert slot.messages[0]["content"] == "show me the key"
 

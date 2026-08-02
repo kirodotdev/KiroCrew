@@ -23,7 +23,7 @@ from kiro_crew.browser.setup import (
 )
 from kiro_crew.constants import CHAT_TURN_TIMEOUT
 from kiro_crew.cron import CronStoreBusy
-from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history, materialize_slot
 from kiro_crew.dashboard.chat_utils import _remove_queued_by_id
 from kiro_crew.dashboard.origin import is_direct_local_request, is_loopback
 from kiro_crew.dashboard.state import (
@@ -179,14 +179,10 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     task = str(body.get("task", "") or "").strip()
     if not task:
-        return web.json_response(
-            {"error": "task is required", "code": "task_required"}, status=400
-        )
+        return web.json_response({"error": "task is required", "code": "task_required"}, status=400)
     parent_session = str(body.get("parent_session", "") or "")
     agent = str(body.get("agent", "") or "")
     model = str(body.get("model", "") or "")
@@ -212,19 +208,11 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         )
     if info.done and info.error:
         if info.error.startswith("conversation_busy"):
-            return web.json_response(
-                {"error": info.error, "code": "conversation_busy"}, status=409
-            )
+            return web.json_response({"error": info.error, "code": "conversation_busy"}, status=409)
         if info.error.startswith("conversation_gone"):
-            return web.json_response(
-                {"error": info.error, "code": "conversation_gone"}, status=404
-            )
-        return web.json_response(
-            {"error": info.error, "code": "spawn_rejected"}, status=400
-        )
-    return web.json_response(
-        {"id": info.id, "conversation": conv_id, "status": "spawned"}
-    )
+            return web.json_response({"error": info.error, "code": "conversation_gone"}, status=404)
+        return web.json_response({"error": info.error, "code": "spawn_rejected"}, status=400)
+    return web.json_response({"id": info.id, "conversation": conv_id, "status": "spawned"})
 
 
 async def api_spawn_steer(request: web.Request) -> web.Response:
@@ -239,9 +227,7 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     message = str(body.get("message", "") or "").strip()
     if not message:
         return web.json_response(
@@ -250,16 +236,10 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
     ok, detail = await state.subagents.steer_run(agent_id, message)
     if not ok:
         if detail == "not_found":
-            return web.json_response(
-                {"error": detail, "code": "not_found"}, status=404
-            )
+            return web.json_response({"error": detail, "code": "not_found"}, status=404)
         if detail.startswith("not_running"):
-            return web.json_response(
-                {"error": detail, "code": "not_running"}, status=409
-            )
-        return web.json_response(
-            {"error": detail, "code": "steer_failed"}, status=502
-        )
+            return web.json_response({"error": detail, "code": "not_running"}, status=409)
+        return web.json_response({"error": detail, "code": "steer_failed"}, status=502)
     return web.json_response({"id": agent_id, "status": "steered"})
 
 
@@ -279,12 +259,8 @@ async def api_spawn_release(request: web.Request) -> web.Response:
     ok, detail = state.subagents.release_conversation(conv_id)
     if not ok:
         if detail.startswith("conversation_busy"):
-            return web.json_response(
-                {"error": detail, "code": "conversation_busy"}, status=409
-            )
-        return web.json_response(
-            {"error": detail, "code": "conversation_gone"}, status=404
-        )
+            return web.json_response({"error": detail, "code": "conversation_busy"}, status=409)
+        return web.json_response({"error": detail, "code": "conversation_gone"}, status=404)
     return web.json_response({"conversation": conv_id, "status": "released"})
 
 
@@ -1171,6 +1147,9 @@ async def api_send_message(request: web.Request) -> web.Response:
                     (slot is not None and not was_loaded),
                 )
                 if slot:
+                    # Materialize stub if needed before injecting messages.
+                    if slot._stub:
+                        materialize_slot(state, slot)
                     label = job_name or "cron"
                     label, _ = redact_exfiltration_urls(label)
                     label, _ = redact_credentials(label)

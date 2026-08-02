@@ -847,6 +847,10 @@ class _ChatSlot:
         "_native_subagent_tracker",
         "_native_subagent_output",
         "_pending_steers",
+        "_stub",
+        "_stub_last_msg",
+        "_stub_last_ts",
+        "_stub_message_count",
     )
 
     def __init__(
@@ -1073,6 +1077,13 @@ class _ChatSlot:
         # STOP, error). Without this, a steer swallowed by a dying turn
         # vanished with no trace (2026-07-17 incident; see the requeue site).
         self._pending_steers: list[str] = []
+        # Stub support: a stub slot holds metadata for sidebar rendering
+        # without materializing the full message list.  Materialized on demand
+        # when the tab is activated (detail endpoint or send).
+        self._stub: bool = False
+        self._stub_last_msg: str = ""
+        self._stub_last_ts: str = ""
+        self._stub_message_count: int = 0
 
     @property
     def _plan_stage_count(self) -> int:
@@ -1422,6 +1433,56 @@ class _ChatSlot:
         return links
 
     def to_dict(self, *, include_check_status: bool = False) -> dict:
+        # Fast path for stub slots: return sidebar-only projection without
+        # scanning messages (which are empty for stubs).
+        if self._stub:
+            return {
+                "key": self.key,
+                "title": _redact(self.display_title),
+                "agent": self.agent,
+                "model": self.model,
+                "reasoning_effort": self.reasoning_effort,
+                "mode": self.mode,
+                "surface": self.mode,
+                "workspace": self.workspace,
+                "project": self.project,
+                "artifact": self._artifact,
+                "messages": self._stub_message_count,
+                "running": False,
+                "queue_depth": 0,
+                "stopping": False,
+                "pending_approval": False,
+                "pending_approval_info": None,
+                "last_activity_ts": self._stub_last_ts,
+                "waiting_for_input": False,
+                "stop_state": "idle",
+                "created": self.created_at,
+                "last_ts": self._stub_last_ts,
+                "last_message": self._stub_last_msg,
+                "source_links": [],
+                "source_links_total": 0,
+                "todo": None,
+                "has_options": False,
+                "options": [],
+                "prompt_preview": "",
+                "trust": False,
+                "trust_reads": False,
+                "trusted_patterns_count": 0,
+                "slack_linked": self._slack_linked,
+                "slack_channel": self._slack_channel,
+                "slack_thread_ts": self._slack_thread_ts,
+                "folder_id": self.folder_id,
+                "pinned": self.pinned,
+                "tags": list(self.tags),
+                "color_index": self.color_index,
+                "color_theme": self.color_theme,
+                "theme_consent": self.theme_consent,
+                "theme_consent_sha": self.theme_consent_sha,
+                "memory_mode": self.memory_mode,
+                "forked_from": self.forked_from,
+                "linked_session_key": self.linked_session_key,
+                "app": self._app,
+            }
         last_ts = self.messages[-1].get("ts", "") if self.messages else ""
         # Single reverse scan for last_msg, options, and last_activity_ts.
         last_msg = ""

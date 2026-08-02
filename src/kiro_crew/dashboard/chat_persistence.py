@@ -197,9 +197,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
         # separators; reject any that do, warn so an attempted breakout is
         # visible, and keep restoring the rest.
         if "/" in raw or "\\" in raw:
-            logger.warning(
-                "restore_open_slots: rejecting key with path separators: %r", raw
-            )
+            logger.warning("restore_open_slots: rejecting key with path separators: %r", raw)
             continue
         # Fold to the canonical (filename-charset) key. Snapshots written
         # before slot-key normalization landed may carry a raw display-style
@@ -210,24 +208,15 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
         if raw in state._slots:
             continue
         try:
-            slot = _rehydrate_slot_from_history(state, raw, kiro_model_map=kiro_model_map)
+            slot = _create_stub_slot(state, raw, kiro_model_map=kiro_model_map)
         except Exception:
-            logger.debug("restore_open_slots: rehydrate failed for %s", raw, exc_info=True)
-            # Roll back any partial slot leaked by _rehydrate_slot_from_history.
-            # It calls state.get_or_create_slot() BEFORE its fallible work
-            # (read_messages, redaction, slot.append), so a failure there
-            # leaves an empty slot registered in state._slots. Without this
-            # pop, restore_recent_sessions runs next, hits its
-            # `if slot_name in state._slots: continue` dedup guard, and skips
-            # the proper restore — the user would see a tab with the right
-            # title/agent but empty or wrong message history.
+            logger.debug("restore_open_slots: stub creation failed for %s", raw, exc_info=True)
+            # Roll back any partial slot leaked by _create_stub_slot.
+            # It calls state.get_or_create_slot() BEFORE its fallible work,
+            # so a failure leaves an empty slot registered in state._slots.
             state._slots.pop(raw, None)
-            # _rehydrate_slot_from_history also adds `dashboard:{slot_name}`
-            # to _restricted_keys before that fallible work for any
-            # non-persistent memory_mode. Roll it back too, else a later
-            # get_or_create_slot(slot_name) (default memory_mode='persistent')
-            # silently inherits restricted status, blocking
-            # consolidation/lessons for what should be a normal session.
+            # _create_stub_slot also adds `dashboard:{slot_name}`
+            # to _restricted_keys for any non-persistent memory_mode.
             state._restricted_keys.discard(f"dashboard:{raw}")
             continue
         if slot is not None:
@@ -313,6 +302,151 @@ def _attach_variants(slot: _ChatSlot, m: dict) -> None:
             if isinstance(v, dict)
         ]
         slot.messages[-1]["variant_idx"] = m.get("variant_idx", 0)
+
+
+def _create_stub_slot(
+    state: DashboardState,
+    slot_name: str,
+    *,
+    kiro_model_map: dict[str, str] | None = None,
+) -> _ChatSlot | None:
+    """Create a lightweight stub slot for sidebar rendering without loading messages.
+
+    Reads only the metadata line and a bounded tail preview - no full transcript
+    read, no per-message redaction pass. The slot's ``_stub`` flag is True;
+    callers that need messages must call :func:`materialize_slot` first.
+
+    Returns None if the session does not exist or is closed (same contract as
+    :func:`_rehydrate_slot_from_history`).
+    """
+    if not state.conversation_log:
+        return None
+    slot_name = _normalize_slot_key(slot_name)
+    if slot_name in state._slots:
+        return state._slots[slot_name]
+    history_key = _history_key_for(slot_name)
+    meta = state.conversation_log.get_metadata(history_key)
+    if not meta:
+        return None
+    if meta.get("closed"):
+        return None
+    try:
+        _restore_cfg = KiroCrewConfig.load()
+    except Exception:
+        _restore_cfg = None
+    if kiro_model_map is None:
+        kiro_model_map = _build_kiro_model_map()
+    slot = state.get_or_create_slot(slot_name, app=meta.get("app", ""))
+    # Populate sidebar-visible metadata from the metadata line.
+    raw_title = meta.get("title") or slot_name
+    raw_title, _ = redact_exfiltration_urls(raw_title)
+    raw_title, _ = redact_credentials(raw_title)
+    slot.title = raw_title
+    slot._titled = bool(meta.get("title"))
+    if meta.get("created_at"):
+        slot.created_at = meta["created_at"]
+    if meta.get("agent"):
+        slot.agent = meta["agent"]
+    if meta.get("model"):
+        _prov = _restore_cfg.agent.provider if _restore_cfg else ""
+        slot.model = model_registry.canonicalize_for_provider(
+            _normalize_model(meta["model"]), _prov
+        )
+    elif slot.agent:
+        try:
+            mc = _restore_cfg.agents.get(slot.agent) if _restore_cfg else None
+            kiro_name = mc.kiro_agent if mc and mc.kiro_agent else slot.agent
+            slot.model = kiro_model_map.get(kiro_name, "")
+        except Exception:
+            logger.debug("Failed to resolve model for stub slot %s", slot_name, exc_info=True)
+    if meta.get("reasoning_effort"):
+        slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+    if meta.get("workspace"):
+        slot.workspace = meta["workspace"]
+    if meta.get("project"):
+        slot.project = meta["project"]
+    if meta.get("mode"):
+        slot.mode = meta["mode"]
+    if meta.get("folder_id"):
+        slot.folder_id = meta["folder_id"]
+    if meta.get("app"):
+        slot._app = meta["app"]
+    _artifact_meta = meta.get("artifact")
+    if isinstance(_artifact_meta, str) and ARTIFACT_SLUG_RE.match(_artifact_meta):
+        slot._artifact = _artifact_meta
+    if meta.get("pinned"):
+        slot.pinned = True
+    if meta.get("color_index") is not None:
+        slot.color_index = meta["color_index"]
+    raw_tags = meta.get("tags")
+    if isinstance(raw_tags, list):
+        slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
+    mm = meta.get("memory_mode", "persistent")
+    slot.memory_mode = mm
+    if mm != "persistent":
+        state._restricted_keys.add(f"dashboard:{slot_name}")
+    if meta.get("forked_from") is not None:
+        slot.forked_from = meta["forked_from"]
+    tab_id = meta.get("tab_id")
+    if not tab_id:
+        tab_id = uuid.uuid4().hex[:12]
+        update_metadata_off_loop(state.conversation_log, history_key, {"tab_id": tab_id})
+    slot._tab_id = tab_id
+    # Cheap tail preview for sidebar last_message (bounded backward seek).
+    preview = state.conversation_log.last_message_preview(history_key)
+    # Redact the preview (it came from raw disk content).
+    if preview:
+        preview, _ = redact_exfiltration_urls(preview)
+        preview, _ = redact_credentials(preview)
+        preview = (preview[:80] + "\u2026") if len(preview) > 80 else preview
+    slot._stub = True
+    slot._stub_last_msg = preview
+    # Use metadata created_at as a fallback timestamp for the sidebar.
+    slot._stub_last_ts = meta.get("created_at", "")
+    slot._stub_message_count = 0
+    slot._dirty = False
+    logger.info("Created stub slot %s (%s)", slot_name, slot.title)
+    return slot
+
+
+def materialize_slot(state: DashboardState, slot: _ChatSlot) -> None:
+    """Materialize a stub slot into a full slot by loading its message history.
+
+    Reads and redacts the transcript, populating ``slot.messages`` and clearing
+    the ``_stub`` flag. Safe to call on an already-materialized slot (no-op).
+    Must be called on the event loop thread (it mutates slot state).
+    """
+    if not slot._stub:
+        return
+    if not state.conversation_log:
+        slot._stub = False
+        return
+    history_key = _history_key_for(slot.key)
+    messages = state.conversation_log.read_messages_chained(history_key)
+    slot._disk_older_count = max(0, len(messages) - 500)
+    for m in messages[-500:]:
+        role = m.get("role", "assistant")
+        cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        content = m.get("content", "")
+        # Content redaction on load - same policy as _rehydrate_slot_from_history.
+        if role != "user":
+            content, _ = redact_exfiltration_urls(content)
+            content, _ = redact_credentials(content)
+        slot.append(
+            role,
+            content,
+            cls,
+            ts=m.get("ts", ""),
+            broadcast=False,
+            meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
+        )
+        _attach_variants(slot, m)
+    slot.drain()
+    slot._resumed_count = len(slot.messages)
+    slot._disk_window_len = len(slot.messages)
+    slot._dirty = False
+    slot._stub = False
+    logger.info("Materialized stub slot %s (%d messages)", slot.key, len(slot.messages))
 
 
 def _rehydrate_slot_from_history(
@@ -455,9 +589,7 @@ def _rehydrate_slot_from_history(
         # resolution in api_send_message). update_metadata enters _locked
         # (flock + os.close), a blocking-on-loop-prohibited op, so backfill the
         # tab_id off the loop rather than on it.
-        update_metadata_off_loop(
-            state.conversation_log, history_key, {"tab_id": tab_id}
-        )
+        update_metadata_off_loop(state.conversation_log, history_key, {"tab_id": tab_id})
     slot._tab_id = tab_id
     # Use read_messages_chained (not read_messages) so the loaded window walks
     # the tab_id ancestry across forks, matching restore_recent_sessions.
@@ -582,7 +714,7 @@ def _restore_recent_sessions_steps(
                 continue
         slot = state.get_or_create_slot(slot_name, app=meta.get("app", ""))
         # Titles can be LLM-generated (auto-title) and are surfaced on the
-        # dashboard — apply the same redaction as assistant content. Matches
+        # dashboard - apply the same redaction as assistant content. Matches
         # the treatment in _rehydrate_slot_from_history above.
         raw_title = s.get("title", slot_name)
         raw_title, _ = redact_exfiltration_urls(raw_title)
@@ -647,42 +779,23 @@ def _restore_recent_sessions_steps(
         if not tab_id:
             tab_id = uuid.uuid4().hex[:12]
             # restore_recent_sessions runs during on_startup (event loop live)
-            # — keep the _locked flock/os.close off the loop via the off-loop
+            # - keep the _locked flock/os.close off the loop via the off-loop
             # backfill helper.
-            update_metadata_off_loop(
-                state.conversation_log, key, {"tab_id": tab_id}
-            )
+            update_metadata_off_loop(state.conversation_log, key, {"tab_id": tab_id})
         slot._tab_id = tab_id
-        messages = state.conversation_log.read_messages_chained(key)
-        slot._disk_older_count = max(0, len(messages) - 500)
-        for m in messages[-500:]:
-            role = m.get("role", "assistant")
-            cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
-            content = m.get("content", "")
-            # CONTENT is redacted on load; META is deferred to the emit sites.
-            # See the equivalent loop in _rehydrate_slot_from_history for the
-            # measured rationale (content ~0.4s / ~204 readers, meta ~5.5s /
-            # 31 readers that touch only control fields outside the emit sites).
-            if role != "user":
-                content, _ = redact_exfiltration_urls(content)
-                content, _ = redact_credentials(content)
-            slot.append(
-                role,
-                content,
-                cls,
-                ts=m.get("ts", ""),
-                broadcast=False,
-                meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
-            )
-            _attach_variants(slot, m)
-        slot.drain()
-        slot._resumed_count = len(slot.messages)
-        # Loaded window is the on-disk window region; older lines (counted in
-        # _disk_older_count above) are the frozen prefix saves never rewrite.
-        slot._disk_window_len = len(slot.messages)
+        # Create as stub: cheap tail preview for sidebar, no full transcript read.
+        preview = state.conversation_log.last_message_preview(key)
+        if preview:
+            preview, _ = redact_exfiltration_urls(preview)
+            preview, _ = redact_credentials(preview)
+            preview = (preview[:80] + "\u2026") if len(preview) > 80 else preview
+        slot._stub = True
+        slot._stub_last_msg = preview
+        slot._stub_last_ts = meta.get("created_at", "")
+        slot._stub_message_count = 0
         slot._dirty = False
         restored += 1
-        logger.info("Restored session %s (%s)", slot_name, slot.title)
+        logger.info("Restored session %s (%s) as stub", slot_name, slot.title)
         # One yield point per restored session (see _restore_open_slots_steps).
         yield restored
     _sync_dashboard_slots(state)
@@ -899,12 +1012,7 @@ def _frozen_prefix_and_foreign_appends(
     except OSError:
         return ("", [], [])
     cache = slot._frozen_prefix_cache
-    if (
-        cache is not None
-        and cache[0] == mtime
-        and cache[1] == size
-        and cache[2] == disk_older
-    ):
+    if cache is not None and cache[0] == mtime and cache[1] == size and cache[2] == disk_older:
         # File is byte-identical to our last write → prefix AND the foreign
         # lines that write preserved are both served from cache. Returning the
         # cached foreign lines (a copy, so the caller cannot mutate the cache)
@@ -1244,14 +1352,10 @@ def _save_slot_to_history(
             # foreign lines so a concurrent cross-process append (landed between
             # this save's pre-lock ``window`` snapshot and the lock) is preserved
             # rather than clobbered by the meta+frozen+window replace.
-            window_entries = [
-                e for m in window if (e := _build_message_entry(m)) is not None
-            ]
+            window_entries = [e for m in window if (e := _build_message_entry(m)) is not None]
             window_lines = [json.dumps(e) + "\n" for e in window_entries]
-            frozen_prefix, foreign_lines, dedup_dropped = (
-                _frozen_prefix_and_foreign_appends(
-                    slot, path, disk_older, window_entries, collect_foreign=not rewrite
-                )
+            frozen_prefix, foreign_lines, dedup_dropped = _frozen_prefix_and_foreign_appends(
+                slot, path, disk_older, window_entries, collect_foreign=not rewrite
             )
             # A fresh-``ts`` disk copy folded into the window by the bounded
             # (role, content) tiebreak is redundant with a window entry, so the
@@ -1261,23 +1365,15 @@ def _save_slot_to_history(
             # the trade-off loses no data permanently (arbiter long-term item 2b).
             if dedup_dropped:
                 try:
-                    base = (
-                        state.conversation_log._dir
-                        if state.conversation_log
-                        else None
-                    )
-                    _archive_lines(
-                        history_key, dedup_dropped, reason="foreign-dedup", base=base
-                    )
+                    base = state.conversation_log._dir if state.conversation_log else None
+                    _archive_lines(history_key, dedup_dropped, reason="foreign-dedup", base=base)
                 except Exception:
                     logger.warning(
                         "Failed to archive foreign-dedup drops for %s",
                         history_key,
                         exc_info=True,
                     )
-            payload = (
-                meta_str + frozen_prefix + "".join(window_lines) + "".join(foreign_lines)
-            )
+            payload = meta_str + frozen_prefix + "".join(window_lines) + "".join(foreign_lines)
 
             # Rewrite paths (rewind/regenerate/fork) intentionally TRUNCATE the
             # window, so the dropped tail must be archived first to stay
@@ -1373,9 +1469,7 @@ async def save_slot_off_loop(
     """
 
     def _do() -> None:
-        _save_slot_to_history(
-            state, slot, messages, closed=closed, force=force, rewrite=rewrite
-        )
+        _save_slot_to_history(state, slot, messages, closed=closed, force=force, rewrite=rewrite)
 
     try:
         loop = asyncio.get_running_loop()
