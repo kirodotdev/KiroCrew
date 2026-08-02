@@ -1,4 +1,5 @@
-"""Folder management — CRUD, pin, assignment, icon generation."""
+"""Folder management — CRUD, pin, assignment. Also hosts the shared
+LLM emoji generator the artifact library uses for ITS folder icons."""
 
 from __future__ import annotations
 
@@ -71,6 +72,23 @@ def _is_single_emoji(s: str) -> bool:
 _FOLDER_ICON_MODEL = "claude-haiku-4.5"
 
 
+# Folder color palette — the identity mark a user picks for a folder in the
+# config modal. Mirrors the Artifacts page's FOLDER_COLORS so the two folder
+# systems speak one visual language. KEEP IN SYNC with FOLDER_COLOR_PALETTE in
+# website/src/components/folderIconCatalog.tsx.
+_FOLDER_COLOR_PALETTE = frozenset(
+    {
+        "#ef4444", "#f97316", "#f59e0b", "#84cc16", "#22c55e", "#14b8a6",
+        "#06b6d4", "#3b82f6", "#6366f1", "#8b5cf6", "#ec4899", "#94a3b8",
+    }
+)
+
+
+def _is_valid_folder_color(s: str) -> bool:
+    """True for a palette color value (lowercase hex, allowlisted)."""
+    return s in _FOLDER_COLOR_PALETTE
+
+
 async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
     """Ask the cheapest model for ONE emoji representing a folder ``name``.
 
@@ -104,16 +122,6 @@ async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
     icon, _ = redact_credentials(icon)
     # Validate: must be exactly one emoji (guard against stray LLM text).
     return icon if _is_single_emoji(icon) else ""
-
-
-async def _generate_folder_icon(state: DashboardState, folder: dict) -> None:
-    """Background task: ask LLM for a single emoji for the folder name."""
-    icon = await generate_emoji_for_name(state, folder["name"])
-    if icon:
-        if any(f["id"] == folder["id"] for f in state._folders):
-            folder["icon"] = icon
-            state.save_folders()
-            state.push_slots_update()
 
 
 def _folder_history_counts(state: DashboardState) -> dict[str, int]:
@@ -225,18 +233,14 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     project_dir, err = _validate_project_dir(project_dir)
     if err:
         return web.json_response({"error": err}, status=400)
-    # `icon` and `default_agent` were previously PATCH-only, so the create modal
-    # had to follow every creation with an update. Accepting them here makes a
-    # fully-configured folder one request, and — for `icon` — avoids a visible
-    # flash of the auto-generated emoji before the user's choice lands.
     default_agent = str(body.get("default_agent") or "").strip()
-    icon = str(body.get("icon") or "").strip()
-    if icon and not _is_single_emoji(icon):
+    color = str(body.get("color") or "").strip().lower()
+    if color and not _is_valid_folder_color(color):
         # `code` is the contract, `error` is advisory prose (RFC 9457 3.1.3) —
         # the dashboard renders `error` verbatim into a localized UI, so a new
         # error response without an id is untranslatable by construction.
         return web.json_response(
-            {"error": "icon must be a single emoji", "code": "icon_not_single_emoji"},
+            {"error": "color must be one of the folder palette values", "code": "color_invalid"},
             status=400,
         )
     folder = {
@@ -249,19 +253,11 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         "project_dir": project_dir,
         "default_agent": default_agent,
     }
-    if icon:
-        folder["icon"] = icon[:16]
+    if color:
+        folder["color"] = color
     state._folders.append(folder)
     state.save_folders()
     state.push_slots_update()
-    # Generate icon in background — don't block the response. Skipped when the
-    # caller chose an icon: _generate_folder_icon writes unconditionally on
-    # success, so running it anyway would silently clobber that choice a few
-    # seconds after creation (the same conflict PATCH rejects outright).
-    if not icon:
-        task = asyncio.ensure_future(_generate_folder_icon(state, folder))
-        state._background_tasks.add(task)
-        task.add_done_callback(state._background_tasks.discard)
     sel().log_api_access(
         caller="dashboard", operation="chat.folder_create",
         outcome="allowed", source="dashboard", resources=str(folder["id"]),
@@ -320,30 +316,21 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         if err:
             return web.json_response({"error": err}, status=400)
         changes["project_dir"] = pd
-    if "icon" in body and body.get("regenerate_icon"):
-        # Mutually exclusive: a manual icon would be saved and returned, then the
-        # background regeneration would silently overwrite it. Reject the
-        # ambiguous request so the conflict is explicit to the caller.
-        return web.json_response(
-            {"error": "Cannot set icon and regenerate_icon in the same request"},
-            status=400,
-        )
-    if "icon" in body:
-        # User-chosen emoji. None or empty string clears to the default;
-        # otherwise it must be exactly one emoji (no text / multiple emoji).
-        raw_icon = body["icon"]
-        icon_val = str(raw_icon).strip() if raw_icon is not None else ""
-        if icon_val and not _is_single_emoji(icon_val):
-            return web.json_response({"error": "icon must be a single emoji"}, status=400)
-        changes["icon"] = icon_val[:16]
+    if "color" in body:
+        # Palette color for the folder glyph. None or empty string clears back
+        # to the default gray; anything else must be an allowlisted value.
+        raw_color = body["color"]
+        color_val = str(raw_color).strip().lower() if raw_color is not None else ""
+        if color_val and not _is_valid_folder_color(color_val):
+            return web.json_response(
+                {"error": "color must be one of the folder palette values", "code": "color_invalid"},
+                status=400,
+            )
+        changes["color"] = color_val
     # All fields validated — apply atomically.
     folder.update(changes)
-    if body.get("regenerate_icon"):
-        # "Reset to auto" — re-run the LLM emoji generator in the background.
-        # _generate_folder_icon saves + pushes a slots update on success.
-        task = asyncio.create_task(_generate_folder_icon(state, folder))
-        state._background_tasks.add(task)
-        task.add_done_callback(state._background_tasks.discard)
+    if not folder.get("color"):
+        folder.pop("color", None)
     state.save_folders()
     state.push_slots_update()
     sel().log_api_access(

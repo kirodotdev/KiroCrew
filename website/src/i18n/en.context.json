@@ -56,6 +56,7 @@
     "components.commandPalette.tab": "The literal Tab key cap, shown inside a key badge. Do not translate or transliterate: it names a physical key the user presses.",
     "components.discoverySearchBar.no": "Answer/state value meaning negative. Not the beginning of a phrase such as \"No results\".",
     "components.executionsView.ok": "Status value in a table or log line, meaning the operation succeeded. A state, not the confirmation button.",
+    "components.folderColorNames.red": "Display name of the red folder color, interpolated into “Set color to {{name}}” on a swatch in the folder-settings color palette. The color adjective as a noun-like label.",
     "components.jobForm.add": "Verb on the submit button of the scheduled-job form: add this job. Shown only when the form is horizontal and owns its own submit control, and it swaps to \"Adding…\" while the request is in flight. If the target language needs an object, name the job.",
     "components.logEntry.ok": "Status value in a table or log line, meaning the operation succeeded. A state, not the confirmation button.",
     "components.mcpBrowserModal.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",

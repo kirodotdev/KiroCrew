@@ -460,7 +460,7 @@ export interface PullRequestSource {
 }
 
 export interface ChatFolder {
-  id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; icon?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
 }
 
 export interface ChatTag {

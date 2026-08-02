@@ -54,6 +54,12 @@ export default [
       // reports at the whole node — but these quasis are ordinary English sentences, so
       // no regex covers them without also exempting genuine UI copy.
       'src/**/*.prompt.ts',
+      // Color paint plumbing for the sidebar folder glyph: every string is a
+      // CSS value template (color-mix over theme variables), never
+      // user-visible copy. Same named-boundary idiom as `*.prompt.ts` above —
+      // the module may contain ONLY paint data, so the filename IS the
+      // boundary and its consumer (FolderGlyph.tsx) stays fully covered.
+      'src/components/folderColorPaint.ts',
       // Generated and data-only.
       'src/i18n/locales/**',
       // Generated sources: the copy's real home is the panel that declares the
