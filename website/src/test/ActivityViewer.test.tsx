@@ -71,6 +71,28 @@ function wrapper({ children }: { children: React.ReactNode }) {
   )
 }
 
+/* ── Section-header helpers ───────────────────────────────────────────────────
+ * Both list tabs render their group headers through PanelSectionHeader, which
+ * keeps the count as a SIBLING node of the label rather than punctuation inside
+ * it. So `findByText('Artifact library (1)')` matches nothing — read the pair
+ * through these helpers instead. */
+
+/** Every section header in the tree, as `[label, count]`. `count` is null when
+ *  the header was rendered without one (children[1] is then the hairline rule). */
+function sectionHeaders(): (string | null)[][] {
+  return screen.getAllByTestId('panel-section-header').map(h => [
+    h.children[0].textContent,
+    h.children[1]?.classList.contains('h-px') ? null : h.children[1]?.textContent ?? null,
+  ])
+}
+
+/** Waits for a section header carrying this label and count to appear. */
+async function findSection(label: string, count: number) {
+  await waitFor(() => {
+    expect(sectionHeaders()).toContainEqual([label, String(count)])
+  })
+}
+
 describe('ActivityViewer', () => {
   const baseProps = {
     subagents: {},
@@ -686,10 +708,10 @@ describe('ActivityViewer — Artifacts tab', () => {
       ],
     )
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    expect(await screen.findByText('This session (1)')).toBeInTheDocument()
+    await findSection('This session', 1)
     // The library section excludes the session's own artifact, so it counts 1,
     // not 2 — the de-dup is visible in the header count, not just the rows.
-    expect(await screen.findByText('Artifact library (1)')).toBeInTheDocument()
+    await findSection('Artifact library', 1)
     expect(screen.getByText('From Last Week')).toBeInTheDocument()
     // 'Made Here' appears exactly once, in the session section.
     expect(screen.getAllByText('Made Here')).toHaveLength(1)
@@ -698,7 +720,7 @@ describe('ActivityViewer — Artifacts tab', () => {
   it('hides the session header entirely when the session touched nothing', async () => {
     mockArtifactQueries([], [{ slug: 'older', name: 'From Last Week', kind: 'markdown', pinned: true }])
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    expect(await screen.findByText('Artifact library (1)')).toBeInTheDocument()
+    await findSection('Artifact library', 1)
     // A fresh session shows the library alone, not an empty "This session" heading.
     expect(screen.queryByText(/^This session/)).not.toBeInTheDocument()
   })
@@ -725,7 +747,7 @@ describe('ActivityViewer — Artifacts tab', () => {
     }))
     mockArtifactQueries([], many)
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    expect(await screen.findByText('Artifact library (55)')).toBeInTheDocument()
+    await findSection('Artifact library', 55)
     // 50 rendered, 5 held back — the panel is ~460px wide, so the DOM is capped.
     expect(screen.queryByText('Artifact 54')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText(/Show all \(5\)/))
@@ -758,7 +780,7 @@ describe('ActivityViewer — Artifacts tab', () => {
     // the agent never read or edited it — touched_by returns nothing here.
     mockArtifactQueries([], [{ slug: 'cr-queue', name: 'CR Queue', kind: 'widget', pinned: true }])
     renderWithSlots([{ key: 'test-slot', title: 'Artifact: CR Queue', messages: 2, running: false, artifact: 'cr-queue' }])
-    expect(await screen.findByText('This session (1)')).toBeInTheDocument()
+    await findSection('This session', 1)
     expect(screen.getAllByText('CR Queue')).toHaveLength(1)
     // Pulled up into the session section, so the library section is now empty.
     expect(screen.queryByText(/^Artifact library/)).not.toBeInTheDocument()
@@ -770,7 +792,7 @@ describe('ActivityViewer — Artifacts tab', () => {
       [{ slug: 'cr-queue', name: 'CR Queue', kind: 'widget', pinned: true }],
     )
     renderWithSlots([{ key: 'test-slot', title: 'Artifact: CR Queue', messages: 2, running: false, artifact: 'cr-queue' }])
-    expect(await screen.findByText('This session (1)')).toBeInTheDocument()
+    await findSection('This session', 1)
     expect(screen.getAllByText('CR Queue')).toHaveLength(1)
   })
 
@@ -804,7 +826,7 @@ describe('ActivityViewer — Artifacts tab', () => {
     const onArtifactOpen = vi.fn()
     mockArtifactQueries([], [{ slug: 'old-doc', name: 'Old Doc', kind: 'markdown', pinned: false }])
     render(<ActivityViewer {...artifactProps} onArtifactOpen={onArtifactOpen} />, { wrapper: routerWrapper })
-    expect(await screen.findByText('Artifact library (1)')).toBeInTheDocument()
+    await findSection('Artifact library', 1)
     fireEvent.click(screen.getByText('Old Doc'))
     expect(onArtifactOpen).toHaveBeenCalledWith('old-doc')
   })
@@ -947,5 +969,66 @@ describe('ActivityViewer — queued subagents', () => {
     render(<ActivityViewer {...baseProps} view="subagents" />, { wrapper: queuedWrapper(0) })
     expect(screen.getByText('No subagents running')).toBeInTheDocument()
     expect(screen.queryByTestId('subagent-queued-banner')).not.toBeInTheDocument()
+  })
+})
+
+// ── Section headers are shared across tabs ──────────────────────────────────
+//
+// The Files and Artifacts tabs sit behind adjacent buttons in the same panel, so
+// a user flipping between them sees both headers within a second of each other.
+// They used to be hand-rolled separately and had drifted apart on case, size,
+// weight, colour, divider, and whether the count was a node or punctuation in
+// the label — one panel that looked like two. Both now route through
+// PanelSectionHeader; these tests fail if either tab grows its own idiom again.
+describe('ActivityViewer — panel section headers', () => {
+  function panelWrapper({ children }: { children: React.ReactNode }) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    return (
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>{children}</MemoryRouter>
+        </QueryClientProvider>
+      </Provider>
+    )
+  }
+
+  const headerProps = { subagents: {}, toolLog: [], open: true, onToggle: vi.fn(), slot: 'test-slot' }
+
+  beforeEach(() => {
+    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] })
+    vi.mocked(api.artifactSessionDocs).mockResolvedValue({ docs: [] })
+  })
+
+  it('renders the Files tab groups through the shared header', () => {
+    render(
+      <ActivityViewer
+        {...headerProps}
+        view="files"
+        files={[{ path: '/proj/a.md', source: 'tool' }]}
+        navLinks={[{ url: 'https://example.com/x', type: 'other', label: 'Notes', msgIdx: 0 }]}
+        onFileOpen={vi.fn()}
+      />,
+      { wrapper: panelWrapper },
+    )
+    expect(sectionHeaders()).toEqual([['Changed files', '1'], ['Resources', '1']])
+  })
+
+  it('renders the Artifacts tab groups through the shared header, count outside the label', async () => {
+    vi.mocked(api.artifacts).mockImplementation((params?: { touchedBy?: string }) =>
+      Promise.resolve({
+        artifacts: params?.touchedBy
+          ? [{ slug: 'w1', name: 'Widget One', kind: 'widget', pinned: false }]
+          : [{ slug: 'w1', name: 'Widget One', kind: 'widget', pinned: false },
+             { slug: 'lib1', name: 'Kept Doc', kind: 'markdown', pinned: true }],
+      }) as never)
+    render(<ActivityViewer {...headerProps} view="artifacts" />, { wrapper: panelWrapper })
+    await findSection('Artifact library', 1)
+    // "This session", not "THIS SESSION (1)" — the count is its own node, so no
+    // translated label carries parentheses, and nothing is uppercased.
+    expect(sectionHeaders()).toEqual([['This session', '1'], ['Artifact library', '1']])
+    expect(screen.queryByText(/\(1\)/)).not.toBeInTheDocument()
   })
 })

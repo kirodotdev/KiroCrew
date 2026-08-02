@@ -19,6 +19,7 @@ import IssuePanel from '../../components/IssuePanel'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
+import { PanelSectionHeader } from '../../components/ui'
 import { colorForExt, fileIcon } from '../../utils/fileIcons'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
@@ -561,11 +562,11 @@ function FilesTab({
           <>
             {filteredChanged.length > 0 && (
               <div className="px-3 mb-2">
-                <div className="flex items-center gap-2 mt-1 mb-0.5">
-                  <span className="text-[11.5px] font-semibold text-muted">{i18nT('pages.chat.activityViewer.changed_files')}</span>
-                  <span className="text-[10.5px] text-muted/50 font-mono tabular-nums">{filteredChanged.length}</span>
-                  <span className="flex-1 h-px bg-border" />
-                </div>
+                <PanelSectionHeader
+                  label={i18nT('pages.chat.activityViewer.changed_files')}
+                  count={filteredChanged.length}
+                  className="mt-1 mb-0.5"
+                />
                 <div className="flex flex-col">
                   {filteredChanged.map(f => <FileRow key={f.path} f={f} onFileOpen={openInline} onFileRemove={onFileRemove} />)}
                 </div>
@@ -573,12 +574,14 @@ function FilesTab({
             )}
             {filteredLinks.length > 0 && (
               <div className="px-3 mb-2">
-                <div className="flex items-center gap-2 mt-1 mb-0.5">
-                  <span className="text-[11.5px] font-semibold text-muted">{i18nT('pages.chat.activityViewer.resources')}</span>
-                  <span className="text-[10.5px] text-muted/50 font-mono tabular-nums">{filteredLinks.length}</span>
-                  <span className="flex-1 h-px bg-border" />
-                  {navResolving && <span className="text-[10px] text-accent animate-pulse">{i18nT('pages.chat.activityViewer.resolving_2')}</span>}
-                </div>
+                <PanelSectionHeader
+                  label={i18nT('pages.chat.activityViewer.resources')}
+                  count={filteredLinks.length}
+                  className="mt-1 mb-0.5"
+                  trailing={navResolving
+                    ? <span className="text-[10px] text-accent animate-pulse">{i18nT('pages.chat.activityViewer.resolving_2')}</span>
+                    : undefined}
+                />
                 <div className="flex flex-col">
                   {filteredLinks.map((link, i) => (
                     <ResourceRow key={i} link={link} />
@@ -909,9 +912,11 @@ function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: strin
             heading above it. */}
         {rows.length > 0 && (
           <>
-            <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1 mt-0.5">
-              {i18nT('pages.chat.activityViewer.artifacts_this_session')} ({rows.length})
-            </div>
+            <PanelSectionHeader
+              label={i18nT('pages.chat.activityViewer.artifacts_this_session')}
+              count={rows.length}
+              className="mt-0.5 mb-0.5"
+            />
             {rows.map(r => (
               <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onToggleStar={toggleStar} />
             ))}
@@ -920,9 +925,11 @@ function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: strin
         {/* Section B — the rest of the library. */}
         {libraryRows.length > 0 && (
           <>
-            <div className={`text-[10px] text-muted/40 uppercase tracking-wider mb-1 ${rows.length > 0 ? 'mt-3' : 'mt-0.5'}`}>
-              {i18nT('pages.chat.activityViewer.artifacts_library')} ({libraryRows.length})
-            </div>
+            <PanelSectionHeader
+              label={i18nT('pages.chat.activityViewer.artifacts_library')}
+              count={libraryRows.length}
+              className={`mb-0.5 ${rows.length > 0 ? 'mt-3' : 'mt-0.5'}`}
+            />
             {visibleLibrary.map(r => (
               <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onToggleStar={toggleStar} />
             ))}

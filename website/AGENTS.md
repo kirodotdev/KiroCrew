@@ -439,7 +439,9 @@ Tailwind CSS with custom theme in `tailwind.config.js` — `darkMode: ['selector
 
 ## Shared Components
 
-`src/components/ui.tsx`: `Card`, `CardTitle`, `Btn`, `SendBtn`, `Input`, `Badge`, `AimBadge`, `StatCard`, `Skeleton`, `ContentSkeleton`, `EmptyState`, `PageHeader`, `SearchInput`, `Toggle`
+`src/components/ui.tsx`: `Card`, `CardTitle`, `Btn`, `SendBtn`, `Input`, `Badge`, `AimBadge`, `StatCard`, `Skeleton`, `ContentSkeleton`, `EmptyState`, `PageHeader`, `PanelSectionHeader`, `SearchInput`, `Toggle`
+
+`PanelSectionHeader` is the one idiom for a counted list-section header inside a side panel (label + count node + hairline rule). Route a new panel section through it rather than hand-rolling a header — the Files and Artifacts tabs each grew their own and silently diverged on case, size, colour, and whether the count was a node or punctuation baked into the translated label. Hierarchy comes from weight and size, never from an opacity modifier, and the label is not uppercased (`text-transform` is a no-op on CJK).
 
 Other shared: `SegmentedControl.tsx` (iOS-style sliding tab selector with Framer Motion), `DetailPanel.tsx` (resizable side panel with animated open/close), `SidePanelLayout.tsx` (shared side-panel page layout), `AgentSelector.tsx` (portal dropdown with ARIA), `layout.ts` (`LAYOUT` constants), `InfoTip.tsx`, `MarkdownRenderer.tsx` (with highlight.js syntax highlighting), `TypewriterText.tsx`
 
