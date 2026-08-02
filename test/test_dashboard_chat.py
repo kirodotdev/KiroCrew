@@ -439,6 +439,39 @@ class TestBroadcastCompactionResultBackoff:
         msg = _broadcast_compaction_result(state, slot, self._failed_event())
         assert msg is not None
 
+    def test_completed_broadcasts_context_usage_reset(self, tmp_path, monkeypatch):
+        """Regression: the in-turn compaction path posted the notice but never
+        refreshed the context meter — the bar stayed at the pre-compaction
+        value until the next turn."""
+        from kiro_crew.dashboard.chat_utils import _broadcast_compaction_result
+
+        state, slot = self._make_slot_and_state(tmp_path, monkeypatch)
+
+        _broadcast_compaction_result(state, slot, self._completed_event())
+
+        resets = [
+            c
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] == "context_usage"
+        ]
+        assert resets, "completed compaction must broadcast a context_usage event"
+        payload = resets[0].args[1]
+        assert payload == {"slot": slot.key, "pct": 0.0, "reset": True}
+
+    def test_failed_does_not_broadcast_context_usage(self, tmp_path, monkeypatch):
+        """A failed compaction leaves usage unchanged — no meter reset."""
+        from kiro_crew.dashboard.chat_utils import _broadcast_compaction_result
+
+        state, slot = self._make_slot_and_state(tmp_path, monkeypatch)
+
+        _broadcast_compaction_result(state, slot, self._failed_event())
+
+        assert not [
+            c
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] == "context_usage"
+        ]
+
 
 @pytest.mark.asyncio
 class TestApiChatDrainOnDisconnect:
@@ -2972,6 +3005,8 @@ class TestRunChatCompactDeferredWait:
     def _make_mock_client(events):
         client = AsyncMock()
         client.context_usage_pct = MagicMock(return_value=10.0)
+        client.context_window_tokens = MagicMock(return_value=0)
+        client.context_used_tokens = MagicMock(return_value=0)
         client.wait_for_compaction = AsyncMock(return_value={"type": "timeout"})
 
         async def _stream(msg):
@@ -3051,6 +3086,10 @@ class TestRunChatCompactDeferredWait:
         client.wait_for_compaction = AsyncMock(
             return_value={"type": "completed", "summary": "summary text"}
         )
+        # A real client dropped its counts when the completed status arrived
+        # (AcpPromptStats.reset_after_compaction) — model that so the
+        # end-of-turn payload broadcast reflects the post-compaction state.
+        client.context_usage_pct = MagicMock(return_value=0.0)
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_runner.is_claude_backend", lambda _provider: False
@@ -3063,10 +3102,104 @@ class TestRunChatCompactDeferredWait:
         client.wait_for_compaction.assert_awaited_once()
         assistant_msgs = [m for m in slot.messages if m.get("role") == "assistant"]
         assert any("summary text" in m["content"] for m in assistant_msgs)
+        # A completed deferred compaction must send the `reset` form — the
+        # provider's counts were just dropped, so a payload broadcast would
+        # claim "0 used" of a window nothing has re-measured yet.
+        usage_calls = [
+            c
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] == "context_usage"
+        ]
+        assert {"slot": slot.key, "pct": 0.0, "reset": True} in [c.args[1] for c in usage_calls]
+        # No later broadcast may resurrect the stale pre-compaction meter.
+        assert all(c.args[1].get("pct") == 0.0 for c in usage_calls)
         # Notice tagged kind="compaction" on the kiro deferred-wait path too.
         compaction_msgs = [m for m in assistant_msgs if "summary text" in m["content"]]
         assert compaction_msgs
         assert all(m.get("meta", {}).get("kind") == "compaction" for m in compaction_msgs)
+
+    @pytest.mark.asyncio
+    async def test_kiro_backend_broadcasts_real_post_compaction_usage(self, tmp_path, monkeypatch):
+        """When the wait_for_compaction grace drain captured kiro's fresh
+        post-compaction metadata, the broadcast must carry the REAL numbers
+        (accurate pct + served window), not the reset/unknown fallback."""
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        events = [LLMEvent(kind=EVENT_COMPLETE)]
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+
+        client = self._make_mock_client(events)
+        client.wait_for_compaction = AsyncMock(return_value={"type": "completed", "summary": ""})
+        # Post-drain provider state: metadata applied against the kept 1M
+        # served window.
+        client.context_usage_pct = MagicMock(return_value=5.0)
+        client.context_window_tokens = MagicMock(return_value=1_000_000)
+        client.context_used_tokens = MagicMock(return_value=50_000)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.is_claude_backend", lambda _provider: False
+        )
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "/compact")
+
+        usage_calls = [
+            c
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] == "context_usage"
+        ]
+        assert usage_calls
+        expected = {
+            "slot": slot.key,
+            "pct": 5.0,
+            "used_tokens": 50_000,
+            "window_tokens": 1_000_000,
+        }
+        assert expected in [c.args[1] for c in usage_calls]
+        # The accurate numbers must not be wiped by a reset broadcast.
+        assert not any(c.args[1].get("reset") for c in usage_calls)
+
+    @pytest.mark.asyncio
+    async def test_kiro_backend_failed_compaction_keeps_meter(self, tmp_path, monkeypatch):
+        """A failed deferred compaction leaves usage unchanged: re-send the
+        current counts, never the reset form (which would blank a still-valid
+        meter)."""
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        events = [LLMEvent(kind=EVENT_COMPLETE)]
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+
+        client = self._make_mock_client(events)
+        client.wait_for_compaction = AsyncMock(return_value={"type": "failed"})
+        client.context_window_tokens = MagicMock(return_value=200_000)
+        client.context_used_tokens = MagicMock(return_value=150_000)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.is_claude_backend", lambda _provider: False
+        )
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "/compact")
+
+        usage_calls = [
+            c
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] == "context_usage"
+        ]
+        assert usage_calls
+        payload = usage_calls[-1].args[1]
+        assert payload == {
+            "slot": slot.key,
+            "pct": 10.0,  # unchanged, from context_usage_pct()
+            "used_tokens": 150_000,
+            "window_tokens": 200_000,
+        }
 
 
 class TestTokenPersistenceBackfill:

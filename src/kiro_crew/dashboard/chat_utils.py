@@ -290,7 +290,7 @@ def _broadcast_compaction_result(
     the first couple of failures are shown as-is (so the user sees it's
     happening), then subsequent failures within the cooldown window are
     suppressed from the chat (still logged server-side via
-    AcpClient._log_compaction_status) until the cooldown elapses, at which
+    AcpClient._handle_compaction_status) until the cooldown elapses, at which
     point a single collapsed notice reports the streak length instead of
     repeating the same line indefinitely.
     """
@@ -303,6 +303,13 @@ def _broadcast_compaction_result(
         msg_text = (
             f"✅ Conversation compacted: {summary}" if summary else "✅ Conversation compacted."
         )
+        # Reset the context meter — the provider dropped its stale counts when
+        # the completed status arrived (AcpPromptStats.reset_after_compaction),
+        # and `reset` tells the frontend to delete its stored token counts too
+        # (same contract as the threshold auto-compact path in
+        # DashboardState.wire_session_compact_callback). Without this the bar
+        # kept showing the pre-compaction usage until the next turn.
+        state.broadcast_ws("context_usage", {"slot": slot.key, "pct": 0.0, "reset": True})
     elif status_type == "failed":
         now = time.monotonic()
         slot._compaction_fail_streak += 1

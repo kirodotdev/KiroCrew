@@ -273,6 +273,7 @@ class TestCompactRouting:
         provider = _build_provider(backend="")
         status = AcpEvent(kind="compaction_status", text="completed", title="sum")
         provider._client.stream_events = MagicMock(return_value=_async_iter([status]))
+        provider._client._drain_post_compaction_metadata = AsyncMock()
         provider._client.wait_for_compaction = AsyncMock(
             return_value={"type": "timeout"}  # would be WRONG if consulted
         )
@@ -282,6 +283,10 @@ class TestCompactRouting:
 
         assert result == {"type": "completed", "summary": "sum"}
         provider._client.wait_for_compaction.assert_not_awaited()
+        # The cached completed path must still grace-drain the inner client
+        # for kiro's post-compaction metadata, so the mid-turn path reports
+        # real numbers too (mirrors AcpSessionHandle.wait_for_compaction).
+        provider._client._drain_post_compaction_metadata.assert_awaited_once()
         # Cache is one-shot: the next wait falls through to the client.
         result2 = await provider.wait_for_compaction(timeout=1.0)
         assert result2 == {"type": "timeout"}

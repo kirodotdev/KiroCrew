@@ -581,6 +581,11 @@ _DRAIN_DURATION = 1.0  # hard cap on draining MCP server init notifications
 _DRAIN_IDLE_EXIT = 0.5
 _DEFAULT_PROMPT_TIMEOUT = 7200.0  # 2 hours — allow very long tool execution
 _READ_TIMEOUT = 20.0
+# After a compaction `completed` status, kiro-cli emits a fresh
+# `_kiro.dev/metadata` with the real post-compaction contextUsagePercentage
+# about ~1s later (live-probe confirmed). Wait up to this long for it so the
+# meter can report accurate numbers instead of the reset/unknown fallback.
+_POST_COMPACTION_METADATA_GRACE_SECS = 5.0
 # After streaming content, if no new data arrives for this many seconds,
 # treat the turn as done.  Handles kiro-cli silently finishing without
 # sending the JSON-RPC `result` response.
@@ -3065,7 +3070,7 @@ class AcpClient:
                 elif action == "metadata":
                     self._track_metadata(msg)
                 elif action == "compaction":
-                    self._log_compaction_status(msg)
+                    self._handle_compaction_status(msg)
 
         # Loop ended without "complete" — timeout or process death.
         self._last_stop_reason = ""
@@ -3255,7 +3260,7 @@ class AcpClient:
             elif action == "metadata":
                 self._track_metadata(msg)
             elif action == "compaction":
-                self._log_compaction_status(msg)
+                self._handle_compaction_status(msg)
                 params = msg.params or {}
                 status = params.get("status", {})
                 status_type = status.get("type", "") if isinstance(status, dict) else str(status)
@@ -3709,7 +3714,7 @@ class AcpClient:
             elif action == "metadata":
                 self._track_metadata(msg)
             elif action == "compaction":
-                self._log_compaction_status(msg)
+                self._handle_compaction_status(msg)
 
         self._last_stop_reason = ""
         self._turn_done.set()
@@ -4488,16 +4493,26 @@ class AcpClient:
         authoritative window (from /api/models) drives the meter rather than a
         guess. kiro's real ``usage_update.size`` always wins when present (this
         no-ops once it has set the window).
+
+        A surviving ``context_window_tokens`` outranks the registry: after a
+        compaction reset the counts are dropped but the SERVED window is kept
+        (the model did not change), and the served size can differ from the
+        registry's static entry (e.g. opus served at [1m] vs a 200K registry
+        row). Deriving against the kept window keeps the post-compaction
+        numbers consistent with what the adapter actually serves.
         """
         if self.last_prompt_stats.context_tokens_from_usage:
             return  # a real usage_update already set authoritative counts
-        model_id = self._resolved_model_id or self._model
-        if not model_id or not model_registry.has_known_window(model_id):
-            return
-        win = model_registry.model_window(model_id)
+        win = self.last_prompt_stats.context_window_tokens
         if not win or win <= 0:
-            return
-        self.last_prompt_stats.context_window_tokens = win
+            model_id = self._resolved_model_id or self._model
+            if not model_id or not model_registry.has_known_window(model_id):
+                return
+            reg_win = model_registry.model_window(model_id)
+            if not reg_win or reg_win <= 0:
+                return
+            win = int(reg_win)
+            self.last_prompt_stats.context_window_tokens = win
         # A malformed metadata percentage (NaN, ±inf, or a huge finite value
         # like 1e308) would overflow ``round(win * pct / 100)`` and abort the
         # turn. Sanitize to a sane [0, 100] before deriving used tokens (NaN
@@ -4537,7 +4552,17 @@ class AcpClient:
                     except (TypeError, ValueError):
                         pass
 
-    def _log_compaction_status(self, msg: JsonRpcMessage) -> None:
+    def _handle_compaction_status(self, msg: JsonRpcMessage) -> None:
+        """Log a ``_kiro.dev/compaction/status`` notification and, on
+        completion, drop the now-stale context-usage counts.
+
+        This is the single chokepoint every compaction-status arrival routes
+        through (all prompt dispatch loops and ``wait_for_compaction``), so the
+        reset cannot be missed by one path. Without it the pre-compaction
+        counts survive — and their ``context_tokens_from_usage=True`` flag
+        blocks ``_track_metadata`` from applying any fresh percentage — so the
+        dashboard's context meter kept showing the old usage after a compact.
+        """
         params = msg.params or {}
         status = params.get("status", "")
         logger.info("Compaction status: %s", status)
@@ -4550,9 +4575,20 @@ class AcpClient:
         s_type = status.get("type", "") if isinstance(status, dict) else str(status)
         if s_type == "failed":
             logger.warning("Compaction failed — raw notification params: %s", params)
+        elif s_type == "completed":
+            self.last_prompt_stats.reset_after_compaction()
 
     async def wait_for_compaction(self, timeout: float = 120.0) -> dict:
-        """Read messages until compaction completed/failed arrives. Returns status dict."""
+        """Read messages until compaction completed/failed arrives. Returns status dict.
+
+        On ``completed``, keeps draining for a short grace window: kiro-cli
+        emits a fresh ``_kiro.dev/metadata`` with the REAL post-compaction
+        ``contextUsagePercentage`` about a second after the completed status
+        (live-probe confirmed). ``_handle_compaction_status`` has already
+        dropped the stale counts (clearing the authoritative flag), so that
+        metadata re-derives accurate numbers — the caller's ``context_usage``
+        broadcast then reports the true compacted size instead of an unknown.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -4560,12 +4596,14 @@ class AcpClient:
             if msg is None:
                 continue
             if msg.is_method(METHOD_COMPACTION_STATUS):
-                self._log_compaction_status(msg)
+                self._handle_compaction_status(msg)
                 params = msg.params or {}
                 status = params.get("status", {})
                 s_type = status.get("type", "") if isinstance(status, dict) else str(status)
                 if s_type in ("completed", "failed"):
                     self._track_metadata(msg)
+                    if s_type == "completed":
+                        await self._drain_post_compaction_metadata()
                     return {"type": s_type, "summary": params.get("summary", "")}
             elif msg.is_method(METHOD_METADATA):
                 self._track_metadata(msg)
@@ -4574,3 +4612,38 @@ class AcpClient:
                 if msg.method and not msg.id:
                     self._mcp_notifications.append(msg)
         return {"type": "timeout"}
+
+    async def _drain_post_compaction_metadata(
+        self, grace: float = _POST_COMPACTION_METADATA_GRACE_SECS
+    ) -> None:
+        """Drain for the post-compaction ``_kiro.dev/metadata`` notification.
+
+        Returns as soon as a metadata frame carrying a real
+        ``contextUsagePercentage`` is applied — a credits-only/empty metadata
+        frame is consumed but does NOT end the drain, or the usage frame
+        behind it would be stranded and the meter would fall back to the
+        reset/unknown state. Gives up quietly at the grace deadline (the
+        meter then self-corrects on the next turn's telemetry). Non-metadata
+        notifications are buffered exactly like the main wait loop. Process
+        death (``AcpError``) propagates — the outer ``wait_for_compaction``
+        contract lets it, and swallowing it here would report a completed
+        compaction on a dead runtime.
+        """
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                msg = await self._read_message(timeout=remaining)
+            except AcpError:
+                raise
+            except Exception:
+                return
+            if msg is None:
+                continue
+            if msg.is_method(METHOD_METADATA):
+                self._track_metadata(msg)
+                if (msg.params or {}).get("contextUsagePercentage") is not None:
+                    return
+                continue
+            if msg.method and not msg.id:
+                self._mcp_notifications.append(msg)

@@ -1074,10 +1074,17 @@ class AcpProvider(LLMProvider):
         Consumes the result compact() captured mid-turn if there is one
         (kiro-cli may emit the terminal status before end_turn), otherwise
         delegates to the client's queue wait (async-after-end_turn case).
+        On a cached ``completed``, still grace-drains the inner client for
+        kiro's post-compaction metadata so the mid-turn path reports real
+        numbers too — mirrors ``AcpSessionHandle.wait_for_compaction``.
         """
         cached = getattr(self, "_compact_result", None)
         if cached is not None:
             self._compact_result = None
+            if cached.get("type") == "completed":
+                drain = getattr(self._client, "_drain_post_compaction_metadata", None)
+                if drain is not None:
+                    await drain()
             return cached
         return await self._client.wait_for_compaction(timeout)
 

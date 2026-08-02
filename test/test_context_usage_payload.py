@@ -53,3 +53,15 @@ def test_payload_pct_only_for_provider_without_token_accessors():
     stub.context_usage_pct.return_value = 12.3
     payload = _context_usage_payload("dashboard:1", stub)
     assert payload == {"slot": "dashboard:1", "pct": 12.3}
+
+
+def test_payload_omits_tokens_when_used_unmeasured():
+    # Post-compaction state: reset_after_compaction keeps the window but
+    # zeroes the counts. used == 0 means "not measured yet", not "empty
+    # context" — shipping {used: 0, window: W} would overwrite the compaction
+    # reset with a false "0 / W tokens" tooltip claim.
+    provider = _provider_with_stats(used=0, window=200000, pct=0.0)
+    payload = _context_usage_payload("dashboard:1", provider)
+    assert payload == {"slot": "dashboard:1", "pct": 0.0}
+    assert "used_tokens" not in payload
+    assert "window_tokens" not in payload

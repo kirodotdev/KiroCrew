@@ -371,6 +371,21 @@ class AcpPromptStats:
     # meteringUsage (unit="credit"). 0 for providers that bill in tokens.
     credits: float = 0.0
 
+    def reset_after_compaction(self) -> None:
+        """Drop the usage counts after a successful compaction.
+
+        The compacted transcript's true size is unknown until the next turn's
+        telemetry reports it, and the pre-compaction counts no longer describe
+        the session. Keeping them would re-broadcast a stale meter, and —
+        worse — a stale ``context_tokens_from_usage=True`` gates
+        ``_track_metadata`` / ``_backfill_context_window``, so even a fresh
+        post-compaction metadata percentage could never correct it. The window
+        is kept: the model did not change, so the served window still holds.
+        """
+        self.context_tokens_from_usage = False
+        self.context_used_tokens = 0
+        self.context_pct = 0.0
+
     def rebase_to_window(self, window_tokens: int) -> None:
         """Re-anchor the token stats to a new model's context window.
 

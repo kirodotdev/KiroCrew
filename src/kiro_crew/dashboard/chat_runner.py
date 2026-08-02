@@ -367,8 +367,14 @@ def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
     window = client.context_window_tokens() if hasattr(client, "context_window_tokens") else 0
     if window:
         used = client.context_used_tokens() if hasattr(client, "context_used_tokens") else 0
-        payload["used_tokens"] = used
-        payload["window_tokens"] = window
+        # used == 0 means "not measured yet", not "empty context" — it is the
+        # post-compaction state (AcpPromptStats.reset_after_compaction keeps
+        # the window but zeroes the counts until the next turn's telemetry).
+        # Shipping {used: 0, window: W} would overwrite the compaction reset
+        # with a false "0 / W tokens" claim in the ring tooltip.
+        if used:
+            payload["used_tokens"] = used
+            payload["window_tokens"] = window
     return payload
 
 
@@ -4566,8 +4572,30 @@ async def _run_chat(
                 else:
                     msg = "⚠️ Compaction timed out."
                 _append_compaction_notice(state, slot, msg)
-                # Update context usage after compaction
-                state.broadcast_ws("context_usage", _context_usage_payload(slot.key, client))
+                # Update context usage after compaction. On success the
+                # provider dropped its stale counts when the completed status
+                # arrived (AcpPromptStats.reset_after_compaction), then
+                # wait_for_compaction grace-drained for kiro's fresh
+                # post-compaction metadata (~1s after the status), which
+                # re-derives REAL numbers against the kept served window. If
+                # that metadata arrived, broadcast the accurate payload; if
+                # not, fall back to the `reset` form so the frontend drops its
+                # stale counts (same contract as the threshold auto-compact
+                # path) and the meter self-corrects on the next turn. On
+                # failure/timeout the counts are unchanged and still valid, so
+                # re-send them as-is.
+                if compaction_result["type"] == "completed":
+                    _payload = _context_usage_payload(slot.key, client)
+                    if _payload.get("used_tokens"):
+                        state.broadcast_ws("context_usage", _payload)
+                    else:
+                        state.broadcast_ws(
+                            "context_usage", {"slot": slot.key, "pct": 0.0, "reset": True}
+                        )
+                else:
+                    state.broadcast_ws(
+                        "context_usage", _context_usage_payload(slot.key, client)
+                    )
 
         if assistant_text:
             # ── Plan format validation (orchestrator mode only) ─────

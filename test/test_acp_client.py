@@ -4364,8 +4364,13 @@ class TestWaitForCompaction:
         assert result == {"type": "timeout"}
 
     @pytest.mark.asyncio
-    async def test_buffers_non_compaction_notifications(self, tmp_path):
+    async def test_buffers_non_compaction_notifications(self, tmp_path, monkeypatch):
+        import kiro_crew.acp.client as c
+
+        monkeypatch.setattr(c.model_registry, "has_known_window", lambda mid: True)
+        monkeypatch.setattr(c.model_registry, "model_window", lambda mid, **kw: 200_000)
         client = AcpClient(work_dir=tmp_path)
+        client._model = "some-model"
         from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, METHOD_METADATA, JsonRpcMessage
 
         meta_msg = JsonRpcMessage(method=METHOD_METADATA, params={"contextUsagePercentage": 55.0})
@@ -4378,7 +4383,12 @@ class TestWaitForCompaction:
 
         result = await client.wait_for_compaction(timeout=5.0)
         assert result["type"] == "completed"
-        assert client.last_prompt_stats.context_pct == 55.0
+        # The metadata WAS consumed (window backfill proves _track_metadata
+        # ran), but its pct described the PRE-compaction transcript — the
+        # completed status drops it (reset_after_compaction) so the meter
+        # doesn't freeze at a stale value.
+        assert client.last_prompt_stats.context_window_tokens == 200_000
+        assert client.last_prompt_stats.context_pct == 0.0
         assert len(client._mcp_notifications) == 1
 
 
@@ -8516,3 +8526,191 @@ class TestSetModelRebasesContextStats:
         assert stats.context_pct == 100.0
         assert stats.context_window_tokens == 272_000
         assert stats.context_tokens_from_usage is False
+
+
+class TestCompactionResetsContextStats:
+    """A completed compaction must drop the stale context-usage counts.
+
+    Regression for the frozen context meter after /compact: the pre-compaction
+    counts carried an authoritative ``context_tokens_from_usage=True`` flag, so
+    ``_track_metadata`` refused to apply any fresh percentage and every
+    ``context_usage`` broadcast re-sent the old numbers — the dashboard bar
+    never moved after a compact.
+    """
+
+    def _client(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path)
+        client._session_id = "s1"
+        return client
+
+    def _usage_msg(self, used, size):
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        return JsonRpcMessage(
+            method="session/update",
+            params={"update": {"sessionUpdate": "usage_update", "used": used, "size": size}},
+        )
+
+    def _compaction_msg(self, status_type):
+        from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+        return JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={"status": {"type": status_type}, "summary": ""},
+        )
+
+    def test_completed_resets_counts_and_keeps_window(self, tmp_path):
+        client = self._client(tmp_path)
+        client._track_usage_update(self._usage_msg(150_000, 200_000))
+        assert client.last_prompt_stats.context_pct == 75.0
+
+        client._handle_compaction_status(self._compaction_msg("completed"))
+
+        stats = client.last_prompt_stats
+        assert stats.context_pct == 0.0
+        assert stats.context_used_tokens == 0
+        assert stats.context_tokens_from_usage is False
+        # The model did not change — the served window still holds.
+        assert stats.context_window_tokens == 200_000
+
+    def test_failed_keeps_counts(self, tmp_path):
+        client = self._client(tmp_path)
+        client._track_usage_update(self._usage_msg(150_000, 200_000))
+
+        client._handle_compaction_status(self._compaction_msg("failed"))
+
+        stats = client.last_prompt_stats
+        assert stats.context_pct == 75.0
+        assert stats.context_used_tokens == 150_000
+        assert stats.context_tokens_from_usage is True
+
+    def test_post_compaction_metadata_reapplies(self, tmp_path, monkeypatch):
+        """Load-bearing: with the reset reverted, context_tokens_from_usage
+        stays True and this fresh metadata percentage would be ignored,
+        freezing the meter at the pre-compaction value forever."""
+        import kiro_crew.acp.client as c
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        monkeypatch.setattr(c.model_registry, "has_known_window", lambda mid: True)
+        monkeypatch.setattr(c.model_registry, "model_window", lambda mid, **kw: 200_000)
+        client = self._client(tmp_path)
+        client._model = "some-model"
+        client._track_usage_update(self._usage_msg(150_000, 200_000))
+
+        client._handle_compaction_status(self._compaction_msg("completed"))
+        client._track_metadata(
+            JsonRpcMessage(
+                method="_kiro.dev/metadata",
+                params={"contextUsagePercentage": 12.0},
+            )
+        )
+
+        assert client.last_prompt_stats.context_pct == 12.0
+
+    def test_backfill_prefers_kept_served_window_over_registry(self, tmp_path, monkeypatch):
+        """After the compaction reset the SERVED window survives (model
+        unchanged) and can differ from the registry's static entry (opus
+        served at 1M vs a 200K registry row). A metadata pct must derive
+        against the kept served window, not clobber it with the registry."""
+        import kiro_crew.acp.client as c
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        monkeypatch.setattr(c.model_registry, "has_known_window", lambda mid: True)
+        monkeypatch.setattr(c.model_registry, "model_window", lambda mid, **kw: 200_000)
+        client = self._client(tmp_path)
+        client._model = "some-model"
+        client._track_usage_update(self._usage_msg(900_000, 1_000_000))  # served 1M
+        client._handle_compaction_status(self._compaction_msg("completed"))
+
+        client._track_metadata(
+            JsonRpcMessage(
+                method="_kiro.dev/metadata",
+                params={"contextUsagePercentage": 5.0},
+            )
+        )
+
+        stats = client.last_prompt_stats
+        assert stats.context_window_tokens == 1_000_000  # served window kept
+        assert stats.context_used_tokens == 50_000  # derived against it
+        assert stats.context_pct == 5.0
+
+    @pytest.mark.asyncio
+    async def test_wait_for_compaction_grace_drains_post_metadata(self, tmp_path, monkeypatch):
+        """Load-bearing: kiro emits the real post-compaction pct in a
+        metadata frame ~1s AFTER the completed status (live-probe confirmed).
+        wait_for_compaction must capture it so the dashboard broadcast
+        reports accurate numbers instead of the unknown fallback."""
+        import kiro_crew.acp.client as c
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        monkeypatch.setattr(c.model_registry, "has_known_window", lambda mid: True)
+        monkeypatch.setattr(c.model_registry, "model_window", lambda mid, **kw: 200_000)
+        client = self._client(tmp_path)
+        client._model = "some-model"
+        client._track_usage_update(self._usage_msg(900_000, 1_000_000))
+
+        post_meta = JsonRpcMessage(
+            method="_kiro.dev/metadata",
+            params={"contextUsagePercentage": 5.0},
+        )
+        client._read_message = AsyncMock(
+            side_effect=[self._compaction_msg("completed"), post_meta]
+        )
+
+        result = await client.wait_for_compaction(timeout=5.0)
+
+        assert result["type"] == "completed"
+        stats = client.last_prompt_stats
+        assert stats.context_pct == 5.0
+        assert stats.context_window_tokens == 1_000_000
+        assert stats.context_used_tokens == 50_000
+
+    @pytest.mark.asyncio
+    async def test_grace_drain_skips_metadata_without_percentage(self, tmp_path, monkeypatch):
+        """A credits-only metadata frame (no contextUsagePercentage) must not
+        end the grace drain — the real usage frame behind it would be
+        stranded and the meter would fall back to the reset state."""
+        import kiro_crew.acp.client as c
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        monkeypatch.setattr(c.model_registry, "has_known_window", lambda mid: True)
+        monkeypatch.setattr(c.model_registry, "model_window", lambda mid, **kw: 200_000)
+        client = self._client(tmp_path)
+        client._model = "some-model"
+        client._track_usage_update(self._usage_msg(900_000, 1_000_000))
+
+        credits_only = JsonRpcMessage(
+            method="_kiro.dev/metadata",
+            params={"meteringUsage": [{"unit": "credit", "amount": 0.1}]},
+        )
+        usage_meta = JsonRpcMessage(
+            method="_kiro.dev/metadata",
+            params={"contextUsagePercentage": 5.0},
+        )
+        client._read_message = AsyncMock(
+            side_effect=[self._compaction_msg("completed"), credits_only, usage_meta]
+        )
+
+        result = await client.wait_for_compaction(timeout=5.0)
+
+        assert result["type"] == "completed"
+        assert client.last_prompt_stats.context_pct == 5.0
+        assert client.last_prompt_stats.context_used_tokens == 50_000
+
+    @pytest.mark.asyncio
+    async def test_wait_for_compaction_without_post_metadata_leaves_reset(self, tmp_path):
+        """No metadata within the grace window: the reset state stands (the
+        meter shows unknown and self-corrects on the next turn)."""
+        client = self._client(tmp_path)
+        client._track_usage_update(self._usage_msg(150_000, 200_000))
+        # side_effect exhaustion after the completed status makes the grace
+        # drain bail immediately instead of sleeping out the window.
+        client._read_message = AsyncMock(side_effect=[self._compaction_msg("completed")])
+
+        result = await client.wait_for_compaction(timeout=5.0)
+
+        assert result["type"] == "completed"
+        stats = client.last_prompt_stats
+        assert stats.context_pct == 0.0
+        assert stats.context_used_tokens == 0
+        assert stats.context_window_tokens == 200_000

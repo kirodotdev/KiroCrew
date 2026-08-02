@@ -1318,6 +1318,292 @@ async def test_dispatch_compaction_and_clear():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_compaction_completed_resets_context_stats():
+    """A completed compaction in the prompt dispatch loop must drop the stale
+    context-usage counts (regression: the meter froze at the pre-compaction
+    value because context_tokens_from_usage=True blocked fresh metadata)."""
+    from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, AcpPromptStats
+
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.last_prompt_stats = AcpPromptStats(
+        context_pct=75.0,
+        context_used_tokens=150_000,
+        context_window_tokens=200_000,
+        context_tokens_from_usage=True,
+    )
+    task = await _start_reader(rt)
+    try:
+
+        async def drive():
+            async for _ev in handle.prompt("hi", timeout=3.0):
+                pass
+
+        driver = asyncio.ensure_future(drive())
+        await asyncio.sleep(0.05)
+        req_id = rt._next_id - 1
+        _feed(
+            reader,
+            {
+                "method": METHOD_COMPACTION_STATUS,
+                "params": {
+                    "sessionId": "sA",
+                    "status": {"type": "completed"},
+                    "summary": "squeezed",
+                },
+            },
+        )
+        _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
+        await asyncio.wait_for(driver, timeout=3.0)
+        stats = handle.last_prompt_stats
+        assert stats.context_pct == 0.0
+        assert stats.context_used_tokens == 0
+        assert stats.context_tokens_from_usage is False
+        assert stats.context_window_tokens == 200_000  # model unchanged
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_compaction_drain_path_resets_context_stats():
+    """The async-after-end_turn drain path in wait_for_compaction bypasses the
+    prompt dispatch loop, so it must drop the stale counts itself."""
+    from kiro_crew.acp.types import (
+        METHOD_COMPACTION_STATUS,
+        AcpPromptStats,
+        JsonRpcMessage,
+    )
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.last_prompt_stats = AcpPromptStats(
+        context_pct=75.0,
+        context_used_tokens=150_000,
+        context_window_tokens=200_000,
+        context_tokens_from_usage=True,
+    )
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={"sessionId": "sA", "status": {"type": "completed"}, "summary": "ok"},
+        )
+    )
+    # Poison the queue behind the status so the post-compaction metadata grace
+    # drain exits immediately instead of sleeping out its window.
+    q["sA"].put_nowait(None)
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result["type"] == "completed"
+    stats = handle.last_prompt_stats
+    assert stats.context_pct == 0.0
+    assert stats.context_used_tokens == 0
+    assert stats.context_tokens_from_usage is False
+    assert stats.context_window_tokens == 200_000
+
+
+@pytest.mark.asyncio
+async def test_wait_for_compaction_drain_applies_post_compaction_metadata():
+    """kiro emits the real post-compaction pct ~1s after the completed status;
+    the drain path must capture it and derive against the KEPT served window."""
+    from kiro_crew.acp.types import (
+        METHOD_COMPACTION_STATUS,
+        AcpPromptStats,
+        JsonRpcMessage,
+    )
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.last_prompt_stats = AcpPromptStats(
+        context_pct=90.0,
+        context_used_tokens=900_000,
+        context_window_tokens=1_000_000,  # served window (differs from registry)
+        context_tokens_from_usage=True,
+    )
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={"sessionId": "sA", "status": {"type": "completed"}, "summary": "ok"},
+        )
+    )
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method="_kiro.dev/metadata",
+            params={"sessionId": "sA", "contextUsagePercentage": 5.0},
+        )
+    )
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result["type"] == "completed"
+    stats = handle.last_prompt_stats
+    assert stats.context_pct == 5.0
+    assert stats.context_window_tokens == 1_000_000
+    assert stats.context_used_tokens == 50_000
+
+
+@pytest.mark.asyncio
+async def test_post_compaction_drain_requeues_frames_before_poison():
+    """Death during the grace drain: buffered frames must be re-queued BEFORE
+    the poison sentinel, or recovery would see death first and strand them."""
+    from kiro_crew.acp.types import (
+        METHOD_COMPACTION_STATUS,
+        AcpPromptStats,
+        JsonRpcMessage,
+    )
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.last_prompt_stats = AcpPromptStats(
+        context_pct=75.0,
+        context_used_tokens=150_000,
+        context_window_tokens=200_000,
+        context_tokens_from_usage=True,
+    )
+    stray = JsonRpcMessage(method="session/update", params={"sessionId": "sA", "update": {}})
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={"sessionId": "sA", "status": {"type": "completed"}, "summary": "ok"},
+        )
+    )
+    q["sA"].put_nowait(stray)
+    q["sA"].put_nowait(None)
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result["type"] == "completed"
+    # Order restored: the stray frame first, the poison sentinel last.
+    assert q["sA"].get_nowait() is stray
+    assert q["sA"].get_nowait() is None
+
+
+@pytest.mark.asyncio
+async def test_outer_buffered_frame_restored_before_poison_from_nested_drain():
+    """A frame buffered by wait_for_compaction ITSELF (before the completed
+    status) must also be restored ahead of a poison consumed by the NESTED
+    grace drain — separate buffers restored at different times would park the
+    frame behind the death sentinel and its consumer would see AcpProcessDied
+    despite a completed command."""
+    from kiro_crew.acp.types import (
+        METHOD_COMPACTION_STATUS,
+        AcpPromptStats,
+        JsonRpcMessage,
+    )
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.last_prompt_stats = AcpPromptStats(
+        context_pct=75.0,
+        context_used_tokens=150_000,
+        context_window_tokens=200_000,
+        context_tokens_from_usage=True,
+    )
+    stray = JsonRpcMessage(method="session/update", params={"sessionId": "sA", "update": {}})
+    q["sA"].put_nowait(stray)  # buffered by the OUTER wait loop
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={"sessionId": "sA", "status": {"type": "completed"}, "summary": "ok"},
+        )
+    )
+    q["sA"].put_nowait(None)  # death consumed by the NESTED drain
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result["type"] == "completed"
+    assert q["sA"].get_nowait() is stray
+    assert q["sA"].get_nowait() is None
+
+
+@pytest.mark.asyncio
+async def test_drain_passes_metering_frames_through_for_next_turn_billing():
+    """A late meteringUsage frame must NOT be consumed by the grace drain —
+    on the between-turns auto-compact path the credits would land in a stats
+    window nothing reads and be wiped by the next prompt's re-init. The frame
+    is re-queued untouched so the next turn's dispatch loop bills it."""
+    from kiro_crew.acp.types import (
+        METHOD_COMPACTION_STATUS,
+        AcpPromptStats,
+        JsonRpcMessage,
+    )
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.last_prompt_stats = AcpPromptStats(
+        context_pct=90.0,
+        context_used_tokens=900_000,
+        context_window_tokens=1_000_000,
+        context_tokens_from_usage=True,
+    )
+    metering = JsonRpcMessage(
+        method="_kiro.dev/metadata",
+        params={"sessionId": "sA", "meteringUsage": [{"unit": "credit", "amount": 0.5}]},
+    )
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={"sessionId": "sA", "status": {"type": "completed"}, "summary": "ok"},
+        )
+    )
+    q["sA"].put_nowait(metering)
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method="_kiro.dev/metadata",
+            params={"sessionId": "sA", "contextUsagePercentage": 5.0},
+        )
+    )
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result["type"] == "completed"
+    stats = handle.last_prompt_stats
+    # The pct frame WAS applied...
+    assert stats.context_pct == 5.0
+    # ...but the metering frame was neither billed to the dead window nor lost:
+    assert stats.credits == 0.0
+    assert q["sA"].get_nowait() is metering
+
+
+@pytest.mark.asyncio
+async def test_wait_for_compaction_cached_result_applies_post_compaction_metadata():
+    """The mid-turn cached path (compact() captured the completed status while
+    draining its own prompt) must also grace-drain for the metadata."""
+    from kiro_crew.acp.types import AcpPromptStats, JsonRpcMessage
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    # The dispatch loop already reset the stats when it captured the result.
+    handle.last_prompt_stats = AcpPromptStats(
+        context_pct=0.0,
+        context_used_tokens=0,
+        context_window_tokens=1_000_000,
+        context_tokens_from_usage=False,
+    )
+    handle._compact_result = {"type": "completed", "summary": "ok"}
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method="_kiro.dev/metadata",
+            params={"sessionId": "sA", "contextUsagePercentage": 5.0},
+        )
+    )
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result["type"] == "completed"
+    stats = handle.last_prompt_stats
+    assert stats.context_pct == 5.0
+    assert stats.context_used_tokens == 50_000
+
+
+@pytest.mark.asyncio
 async def test_dispatch_agent_switched():
     """Agent switched notification yields EVENT_AGENT_SWITCHED."""
     from kiro_crew.acp.types import EVENT_AGENT_SWITCHED, METHOD_AGENT_SWITCHED

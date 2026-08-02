@@ -468,6 +468,12 @@ class AcpSessionProvider(LLMProvider):
         """Wait for compaction completed/failed event."""
         return await self._guarded(self._handle.wait_for_compaction(timeout))
 
+    async def _drain_post_compaction_metadata(self) -> None:
+        """Grace-drain for kiro's post-compaction metadata (delegates to the
+        handle). Called by ``AcpProvider.wait_for_compaction`` on its cached
+        mid-turn result so the shared-runtime path reports real numbers."""
+        await self._guarded(self._handle._drain_post_compaction_metadata())
+
     # ── Model & Effort ──
 
     async def set_model(self, model_id: str) -> None:

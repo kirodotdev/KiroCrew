@@ -148,6 +148,10 @@ _WORKING_LOG_INTERVAL_SECS = 600.0
 # AcpClient's _CANCEL_GRACE_SECS floor without the process-kill (which is
 # impossible on a multiplexed runtime).
 _CANCEL_GRACE_SECS = 10.0
+# Post-compaction metadata grace: kiro-cli emits fresh _kiro.dev/metadata with
+# the real post-compaction contextUsagePercentage ~1s after the completed
+# status (live-probe confirmed). Mirrors AcpClient's constant.
+_POST_COMPACTION_METADATA_GRACE_SECS = 5.0
 # MCP-server-init drain (parity with AcpClient._drain_notifications): after
 # set_mode, briefly consume the session queue so MCP-init/oauth/config frames
 # are processed before the first prompt, instead of racing into the first turn.
@@ -666,9 +670,24 @@ class AcpSessionHandle:
         cached = self._compact_result
         if cached is not None:
             self._compact_result = None
+            if cached.get("type") == "completed":
+                # The dispatch loop reset the stats when it captured this
+                # mid-turn; kiro's fresh post-compaction metadata arrives ~1s
+                # after the completed status — wait briefly so callers can
+                # broadcast the REAL compacted usage instead of the unknown
+                # fallback.
+                await self._drain_post_compaction_metadata()
             return cached
         deadline = time.monotonic() + timeout
+        # ONE buffer for this call AND the nested grace drain, restored at ONE
+        # point (the finally below) strictly BEFORE any re-poison. Separate
+        # buffers restored at different times invert the order around a death
+        # sentinel: the nested drain would re-queue ``None`` while this frame
+        # buffer was still held, so a concurrent command's already-received
+        # response would land BEHIND the poison and its consumer would see
+        # process death despite a completed command.
         buffered: list[JsonRpcMessage] = []
+        poisoned = False
         try:
             while time.monotonic() < deadline:
                 remaining = deadline - time.monotonic()
@@ -681,8 +700,9 @@ class AcpSessionHandle:
                 except asyncio.TimeoutError:
                     continue
                 if msg is None:
-                    # Re-poison so the live turn / next consumer also sees death.
-                    self._queue.put_nowait(None)
+                    # Re-poison (in the finally, AFTER the buffered frames are
+                    # restored) so the live turn / next consumer also sees death.
+                    poisoned = True
                     raise AcpProcessDied("Runtime died while waiting for compaction")
                 # Check for compaction status
                 if msg.method == "_kiro.dev/compaction/status":
@@ -690,6 +710,14 @@ class AcpSessionHandle:
                     status = params.get("status", {})
                     s_type = status.get("type", "") if isinstance(status, dict) else str(status)
                     if s_type in ("completed", "failed"):
+                        if s_type == "completed":
+                            # This drain path bypasses the prompt dispatch
+                            # loop, so it must drop the stale counts itself —
+                            # mirrors AcpClient._handle_compaction_status.
+                            self.last_prompt_stats.reset_after_compaction()
+                            poisoned = await self._drain_post_compaction_metadata(
+                                buffered=buffered
+                            )
                         # Redact backend-echoed summary before it reaches callers
                         # (compact() surfaces this to the dashboard).
                         return {
@@ -708,6 +736,74 @@ class AcpSessionHandle:
         finally:
             for _m in buffered:
                 self._queue.put_nowait(_m)
+            if poisoned:
+                self._queue.put_nowait(None)
+
+    async def _drain_post_compaction_metadata(
+        self,
+        grace: float = _POST_COMPACTION_METADATA_GRACE_SECS,
+        buffered: list[JsonRpcMessage] | None = None,
+    ) -> bool:
+        """Drain the session queue for kiro's post-compaction metadata.
+
+        kiro-cli emits a fresh ``_kiro.dev/metadata`` with the real
+        post-compaction ``contextUsagePercentage`` about a second after the
+        ``completed`` status (live-probe confirmed). The compaction reset
+        cleared the authoritative flag, so applying it re-derives accurate
+        counts against the kept served window. Returns on the first metadata
+        frame carrying a real percentage — a credits-only/empty metadata frame
+        is consumed but does not end the drain (the usage frame behind it
+        would be stranded). Gives up quietly at the grace deadline.
+
+        ``buffered``: when the caller (``wait_for_compaction``) passes its own
+        frame buffer, non-metadata frames are appended to it and the CALLER
+        restores everything at one point before any re-poison — two buffers
+        restored at different times would invert the order around a death
+        sentinel and strand the caller's frames behind the ``None``. Without
+        a shared buffer this method restores (and re-poisons) itself.
+        Returns True when the poison sentinel was consumed, so a sharing
+        caller re-queues it after the single restore.
+        """
+        own_buffer = buffered is None
+        frames: list[JsonRpcMessage] = [] if buffered is None else buffered
+        deadline = time.monotonic() + grace
+        poisoned = False
+        try:
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    msg = await asyncio.wait_for(self._queue.get(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+                if msg is None:
+                    poisoned = True
+                    return True
+                if msg.method == "_kiro.dev/metadata":
+                    mparams = msg.params or {}
+                    if mparams.get("meteringUsage"):
+                        # Late compaction credits. This drain runs BETWEEN
+                        # turns on the auto-compact path — credits tracked
+                        # here land in a stats window nothing reads and the
+                        # next prompt's re-init wipes them. Pass the frame
+                        # through untouched instead: the re-queue hands it to
+                        # the next turn's dispatch loop, which bills it like
+                        # any other metering frame (the pre-drain behavior).
+                        frames.append(msg)
+                        continue
+                    self._track_metadata(msg)
+                    if mparams.get("contextUsagePercentage") is not None:
+                        return False
+                    continue
+                frames.append(msg)
+            return False
+        finally:
+            if own_buffer:
+                for _m in frames:
+                    self._queue.put_nowait(_m)
+                if poisoned:
+                    self._queue.put_nowait(None)
 
     # ── Responsiveness ──
 
@@ -1176,6 +1272,13 @@ class AcpSessionHandle:
                     params = msg.params or {}
                     status = params.get("status", {})
                     status_type = status.get("type", "") if isinstance(status, dict) else str(status)
+                    if status_type == "completed":
+                        # The pre-compaction counts (and their authoritative
+                        # context_tokens_from_usage flag) no longer describe
+                        # the session — drop them so the context meter resets
+                        # and the next telemetry can re-derive real numbers.
+                        # Mirrors AcpClient._handle_compaction_status.
+                        self.last_prompt_stats.reset_after_compaction()
                     # Compaction summary is backend-echoed text (LLM-influenced)
                     # that reaches the dashboard — redact exfil URLs/credentials
                     # before surfacing it (parity with other text surfaces).
@@ -1415,17 +1518,22 @@ class AcpSessionHandle:
         (kiro-list cache > registry > heuristic); only backfills a KNOWN window,
         leaving 0 for a genuinely-unknown model so the frontend's own
         authoritative window drives the meter. kiro's real usage_update.size
-        always wins when present.
+        always wins when present. A surviving ``context_window_tokens`` (e.g.
+        kept across a compaction reset — the model did not change) outranks the
+        registry, since the served size can differ from the static entry.
         """
         if self.last_prompt_stats.context_tokens_from_usage:
             return  # a real usage_update already set authoritative counts
-        model_id = self._resolved_model_id or self._model
-        if not model_id or not model_registry.has_known_window(model_id):
-            return
-        win = model_registry.model_window(model_id)
+        win = self.last_prompt_stats.context_window_tokens
         if not win or win <= 0:
-            return
-        self.last_prompt_stats.context_window_tokens = win
+            model_id = self._resolved_model_id or self._model
+            if not model_id or not model_registry.has_known_window(model_id):
+                return
+            reg_win = model_registry.model_window(model_id)
+            if not reg_win or reg_win <= 0:
+                return
+            win = int(reg_win)
+            self.last_prompt_stats.context_window_tokens = win
         # A malformed metadata percentage (NaN, ±inf, or a huge finite value
         # like 1e308) would overflow ``round(win * pct / 100)`` and abort the
         # turn. Sanitize to a sane [0, 100] before deriving used tokens (NaN
