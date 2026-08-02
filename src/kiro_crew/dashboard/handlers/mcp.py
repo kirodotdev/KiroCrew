@@ -404,9 +404,21 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
 
     # Also re-probe if a new server appeared (e.g. fresh install from AIM
     # Browse) so status transitions from "Unknown" to "ok"/"error" on the
-    # next page refresh without waiting out the 30-min TTL.
+    # next page refresh without waiting out the cache TTL.
+    #
+    # Only consider rows probe_all() would actually probe. It excludes
+    # consent-disabled servers on purpose (probing spawns the process), so a
+    # disabled row can never enter _mcp_probe_cache — while list_servers()
+    # deliberately returns it so the UI can render the row. Comparing the
+    # unfiltered list against the cache therefore treated every disabled
+    # server as "new" on EVERY request, bypassing the cache TTL and leaving a
+    # full spawn fan-out permanently in flight for anyone with one disabled
+    # server. Applying probe_all's own filter here keeps the freshness check
+    # and the cache contents talking about the same set.
     if not should_reprobe and not _mcp_probe_in_progress:
         for srv in servers:
+            if srv.disabled:
+                continue
             if srv.name not in cached_by_name:
                 should_reprobe = True
                 break
