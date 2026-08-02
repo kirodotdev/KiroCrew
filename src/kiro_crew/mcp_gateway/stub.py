@@ -67,11 +67,39 @@ _BINARY_HASH_CAP_BYTES = 4 * 1024 * 1024
 _CONFIG_SNAPSHOT_PLACEHOLDER = "0" * 64
 
 
+def _crew_home() -> Path:
+    """Data home the stub resolves its paths under.
+
+    ``Path.home()`` rather than ``os.environ["HOME"]``: that variable is
+    normally unset on Windows (which uses ``USERPROFILE``), so the previous
+    fallback evaluated to ``Path("")`` and every derived path became RELATIVE to
+    the stub's cwd. For the socket that is worse than untidy on Windows, where
+    the pipe name is a hash of this path -- a daemon and a stub started from
+    different working directories would hash to different pipe names and never
+    meet. ``Path.home()`` consults the right variable on each platform.
+
+    Never raises. ``Path.home()`` raises ``RuntimeError`` when no home can be
+    resolved at all, and both callers are on paths that must not fail: the
+    socket default is an argparse default (a raise there kills the stub before
+    it can degrade to a per-session exec) and the log path is used by
+    ``log_fallback``, whose handler catches ``OSError`` only.
+
+    Deliberately not ``config.paths.config_dir()``: this module is on the stub's
+    cold-start path and stays import-light.
+    """
+    home = os.environ.get("KIROCREW_HOME")
+    if home:
+        return Path(home)
+    try:
+        base = Path.home()
+    except RuntimeError:
+        base = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or ".")
+    return base / ".kiro" / "crew"
+
+
 def _default_socket_path() -> str:
     """Resolve the default gateway socket under KIROCREW_HOME (0700 dir)."""
-    home = os.environ.get("KIROCREW_HOME")
-    base = Path(home) if home else Path(os.environ.get("HOME", "")) / ".kiro" / "crew"
-    return str(base / "mc-mcp-gateway.sock")
+    return str(_crew_home() / "mc-mcp-gateway.sock")
 
 
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -689,9 +717,7 @@ async def run_bridge(
 
 
 def _fallback_log_path() -> Path:
-    home = os.environ.get("KIROCREW_HOME")
-    base = Path(home) if home else Path(os.environ.get("HOME", "")) / ".kiro" / "crew"
-    return base / "logs" / "stub_fallback.jsonl"
+    return _crew_home() / "logs" / "stub_fallback.jsonl"
 
 
 def log_fallback(
