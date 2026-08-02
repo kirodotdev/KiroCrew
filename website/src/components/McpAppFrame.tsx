@@ -8,6 +8,7 @@ import {
   buildAllowAttribute,
   type McpAppRenderPayload,
 } from '../lib/mcpAppSrcdoc'
+import { planReveal, prefersReducedMotion, hasRevealed, markRevealed } from './mcpAppReveal'
 
 /** Inline height for a rendered MCP App before it reports its own size. */
 const DEFAULT_HEIGHT = 480
@@ -25,6 +26,10 @@ const M_REQUEST_DISPLAY_MODE = 'ui/request-display-mode'
 const M_OPEN_LINK = 'ui/open-link'
 const N_INITIALIZED = 'ui/notifications/initialized'
 const N_TOOL_INPUT = 'ui/notifications/tool-input'
+/** Incomplete arguments, "may change" — the notification a streaming-aware app
+ *  redraws from. Posted in ascending prefixes ahead of N_TOOL_INPUT; see
+ *  `mcpAppReveal.ts` for why the pacing is the host's and not the model's. */
+const N_TOOL_INPUT_PARTIAL = 'ui/notifications/tool-input-partial'
 const N_TOOL_RESULT = 'ui/notifications/tool-result'
 const N_SIZE_CHANGED = 'ui/notifications/size-changed'
 const N_HOST_CONTEXT_CHANGED = 'ui/notifications/host-context-changed'
@@ -456,6 +461,17 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
   // replacement document must never wield the host-held callback_secret).
   const loadCountRef = useRef<number>(0)
   const navigatedRef = useRef<boolean>(false)
+  // Pending progressive-reveal step. Held in a ref so unmount (and app
+  // navigation) can cancel a reveal mid-flight instead of posting into a torn
+  // down frame.
+  const revealTimerRef = useRef<number | null>(null)
+  // Whether this app document has already completed its init handshake. A
+  // SECOND `initialized` must not be serviced: the spool is already marked
+  // revealed by then, so the duplicate would take the no-plan branch and post
+  // the complete input + result immediately while the first reveal's timer is
+  // still armed — the remaining partials would then land AFTER the result and
+  // leave a partial-aware app rendering a truncated prefix permanently.
+  const initializedRef = useRef<boolean>(false)
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -525,25 +541,67 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
           }
           return
 
-        case N_INITIALIZED:
+        case N_INITIALIZED: {
           // App finished its own init handshake → deliver the tool invocation
           // context: the ORIGINATING tools/call arguments and result content
           // captured by the gateway at interception time, so apps that
           // initialize from their inputs get real state.
-          post({
-            jsonrpc: '2.0',
-            method: N_TOOL_INPUT,
-            params: { arguments: toolInputRef.current ?? {} },
-          })
-          post({
-            jsonrpc: '2.0',
-            method: N_TOOL_RESULT,
-            params: {
-              content: Array.isArray(resultContentRef.current) ? resultContentRef.current : [],
-              structuredContent: structuredRef.current ?? null,
-            },
-          })
+          //
+          // Exactly once per app document: a duplicate would race the in-flight
+          // reveal and invert the notification ordering (see initializedRef).
+          if (initializedRef.current) return
+          initializedRef.current = true
+          const args = toolInputRef.current ?? {}
+          const postResult = () => {
+            post({
+              jsonrpc: '2.0',
+              method: N_TOOL_RESULT,
+              params: {
+                content: Array.isArray(resultContentRef.current) ? resultContentRef.current : [],
+                structuredContent: structuredRef.current ?? null,
+              },
+            })
+          }
+          const postComplete = () => {
+            post({ jsonrpc: '2.0', method: N_TOOL_INPUT, params: { arguments: args } })
+            // Ordering is a contract: the result may only land once the app has
+            // been told the arguments are complete.
+            postResult()
+          }
+          // Reveal the arguments progressively when they have a revealable
+          // shape, the user has not asked for reduced motion, and this spool has
+          // not already animated in this page session (a remounted transcript
+          // frame must not replay history's draw-on).
+          const plan =
+            prefersReducedMotion() || hasRevealed(spoolIdRef.current)
+              ? null
+              : planReveal(args)
+          if (!plan) {
+            postComplete()
+            return
+          }
+          markRevealed(spoolIdRef.current)
+          const step = (i: number) => {
+            revealTimerRef.current = null
+            // The bridge dies with the app document; a reveal in flight when the
+            // app navigates must stop rather than post into the replacement.
+            if (navigatedRef.current) return
+            if (i >= plan.frames.length) {
+              postComplete()
+              return
+            }
+            post({
+              jsonrpc: '2.0',
+              method: N_TOOL_INPUT_PARTIAL,
+              params: { arguments: plan.frames[i] },
+            })
+            revealTimerRef.current = window.setTimeout(() => step(i + 1), plan.stepMs)
+          }
+          // First frame goes out synchronously, so the app paints immediately
+          // and the reveal reads as drawing rather than as a delayed start.
+          step(0)
           return
+        }
 
         case N_SIZE_CHANGED: {
           const params = msg.params as { width?: number; height?: number } | undefined
@@ -716,7 +774,13 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
       }
     }
     window.addEventListener('message', handler)
-    return () => window.removeEventListener('message', handler)
+    return () => {
+      window.removeEventListener('message', handler)
+      if (revealTimerRef.current !== null) {
+        window.clearTimeout(revealTimerRef.current)
+        revealTimerRef.current = null
+      }
+    }
   }, [])
 
   // Push a partial hostContext update into the app. Mirrors the inbound bridge's

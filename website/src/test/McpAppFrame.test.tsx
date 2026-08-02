@@ -1,8 +1,9 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderWithProviders } from './helpers'
 import { act } from '@testing-library/react'
 import McpAppFrame from '../components/McpAppFrame'
 import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
+import { __resetRevealedForTests } from '../components/mcpAppReveal'
 
 function payload(over: Partial<McpAppRenderPayload> = {}): McpAppRenderPayload {
   return {
@@ -37,6 +38,13 @@ function dispatchFromApp(data: unknown, source: unknown) {
 }
 
 describe('McpAppFrame', () => {
+  // The progressive-reveal "already animated" cache is module-level (it must
+  // outlive a remounted transcript frame), so tests have to reset it or the
+  // first animating test would suppress every later one sharing a spool id.
+  beforeEach(() => {
+    __resetRevealedForTests()
+  })
+
   it('renders a sandboxed iframe WITHOUT allow-same-origin', () => {
     const { container } = renderWithProviders(<McpAppFrame payload={payload()} />)
     const iframe = container.querySelector('iframe')!
@@ -122,6 +130,179 @@ describe('McpAppFrame', () => {
     expect(win.postMessage.mock.calls[1][0].params.content).toEqual([
       { type: 'text', text: 'opened' },
     ])
+  })
+
+  // ---- progressive reveal (host-paced tool-input-partial) -------------------
+
+  /** A JSON-string element array, the shape excalidraw's create_view sends. */
+  function elementsArg(n: number): string {
+    return JSON.stringify(Array.from({ length: n }, (_, i) => ({ id: `e${i}` })))
+  }
+
+  it('reveals array arguments as tool-input-partial, then the complete input, then the result', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const { container } = renderWithProviders(
+        <McpAppFrame
+          payload={payload({
+            tool_input: { elements: elementsArg(5) },
+            result_content: [{ type: 'text', text: 'drawn' }],
+          })}
+        />,
+      )
+      const win = stubContentWindow(container.querySelector('iframe')!)
+
+      dispatchFromApp({ jsonrpc: '2.0', method: 'ui/notifications/initialized' }, win)
+
+      // The first partial is synchronous: the app paints immediately instead of
+      // waiting out a step interval before anything appears.
+      expect(win.postMessage).toHaveBeenCalledTimes(1)
+      expect(win.postMessage.mock.calls[0][0].method).toBe('ui/notifications/tool-input-partial')
+
+      act(() => {
+        vi.runAllTimers()
+      })
+
+      const methods = win.postMessage.mock.calls.map((c) => c[0].method)
+      // Every partial precedes the completion pair, and the result is LAST —
+      // an app must never see a result before its arguments are complete.
+      expect(methods.slice(-2)).toEqual([
+        'ui/notifications/tool-input',
+        'ui/notifications/tool-result',
+      ])
+      expect(new Set(methods.slice(0, -2))).toEqual(new Set(['ui/notifications/tool-input-partial']))
+      expect(methods.filter((m) => m === 'ui/notifications/tool-input-partial').length).toBe(4)
+
+      // Partials grow monotonically and stay short of the full array.
+      const counts = win.postMessage.mock.calls
+        .filter((c) => c[0].method === 'ui/notifications/tool-input-partial')
+        .map((c) => (JSON.parse(c[0].params.arguments.elements as string) as unknown[]).length)
+      expect(counts).toEqual([1, 2, 3, 4])
+
+      // The COMPLETE notification carries the whole payload, unmodified.
+      const complete = win.postMessage.mock.calls.at(-2)![0]
+      expect((JSON.parse(complete.params.arguments.elements as string) as unknown[]).length).toBe(5)
+      expect(win.postMessage.mock.calls.at(-1)![0].params.content).toEqual([
+        { type: 'text', text: 'drawn' },
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores a duplicate initialized so no partial can land after the result', () => {
+    // Both local reviewers found this: without the guard, the second
+    // `initialized` sees the spool already marked revealed, takes the no-plan
+    // branch and posts complete-input + result immediately, while chain 1's
+    // timer keeps firing partials afterwards — a partial-aware app would repaint
+    // a truncated prefix over the finished diagram and stay there.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const { container } = renderWithProviders(
+        <McpAppFrame payload={payload({ tool_input: { elements: elementsArg(8) } })} />,
+      )
+      const win = stubContentWindow(container.querySelector('iframe')!)
+      const init = { jsonrpc: '2.0', method: 'ui/notifications/initialized' }
+
+      dispatchFromApp(init, win)
+      dispatchFromApp(init, win) // duplicate, mid-reveal
+      act(() => {
+        vi.runAllTimers()
+      })
+
+      const methods = win.postMessage.mock.calls.map((c) => c[0].method)
+      // Exactly one completion pair, and it is the LAST thing posted.
+      expect(methods.filter((m) => m === 'ui/notifications/tool-input').length).toBe(1)
+      expect(methods.filter((m) => m === 'ui/notifications/tool-result').length).toBe(1)
+      expect(methods.slice(-2)).toEqual([
+        'ui/notifications/tool-input',
+        'ui/notifications/tool-result',
+      ])
+      // No partial after the complete input.
+      const completeAt = methods.indexOf('ui/notifications/tool-input')
+      expect(methods.slice(completeAt).includes('ui/notifications/tool-input-partial')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('skips the reveal entirely when the user prefers reduced motion', () => {
+    // The stub must be a COMPLETE MediaQueryList: the theme provider subscribes
+    // with mql.addEventListener during render, and a bare {matches} object
+    // throws there — wedging React's act queue for every later test in the file.
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes('prefers-reduced-motion'),
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(() => false),
+      })),
+    )
+    try {
+      const { container } = renderWithProviders(
+        <McpAppFrame payload={payload({ tool_input: { elements: elementsArg(6) } })} />,
+      )
+      const win = stubContentWindow(container.querySelector('iframe')!)
+      dispatchFromApp({ jsonrpc: '2.0', method: 'ui/notifications/initialized' }, win)
+
+      expect(win.postMessage.mock.calls.map((c) => c[0].method)).toEqual([
+        'ui/notifications/tool-input',
+        'ui/notifications/tool-result',
+      ])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('does not replay the reveal when the same spool remounts', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const p = payload({ tool_input: { elements: elementsArg(5) } })
+      const first = renderWithProviders(<McpAppFrame payload={p} />)
+      const win1 = stubContentWindow(first.container.querySelector('iframe')!)
+      dispatchFromApp({ jsonrpc: '2.0', method: 'ui/notifications/initialized' }, win1)
+      act(() => {
+        vi.runAllTimers()
+      })
+      first.unmount()
+
+      // Same spool id → history must not animate again on a scroll-back remount.
+      const second = renderWithProviders(<McpAppFrame payload={p} />)
+      const win2 = stubContentWindow(second.container.querySelector('iframe')!)
+      dispatchFromApp({ jsonrpc: '2.0', method: 'ui/notifications/initialized' }, win2)
+      expect(win2.postMessage.mock.calls.map((c) => c[0].method)).toEqual([
+        'ui/notifications/tool-input',
+        'ui/notifications/tool-result',
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels an in-flight reveal on unmount instead of posting into a dead frame', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const { container, unmount } = renderWithProviders(
+        <McpAppFrame payload={payload({ tool_input: { elements: elementsArg(20) } })} />,
+      )
+      const win = stubContentWindow(container.querySelector('iframe')!)
+      dispatchFromApp({ jsonrpc: '2.0', method: 'ui/notifications/initialized' }, win)
+      const afterFirstFrame = win.postMessage.mock.calls.length
+
+      unmount()
+      act(() => {
+        vi.runAllTimers()
+      })
+
+      expect(win.postMessage.mock.calls.length).toBe(afterFirstFrame)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('relays tools/call to POST /api/mcp-apps/call and posts back the result', async () => {
