@@ -53,11 +53,14 @@ jobs:
     # (branch lives in this repo) so they still enter the job and are handled by
     # the step-level dependabot skip + gate pass below.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    # Hard runtime ceiling: if the agentic review ever runs away, the job is
-    # cancelled at 30 min and the gate fails closed (a no-output review can't
-    # look clean). Lowered from 40 alongside --max-turns: the review is now a
-    # single narrow pass, not a whole-repo audit.
-    timeout-minutes: 30
+    # Runaway/hang backstop only, NOT a per-review budget: a healthy review
+    # self-terminates at --max-turns 120 (see below) long before this, so this
+    # ceiling exists solely to fail the gate closed (a no-output review can't
+    # look clean) if the agentic review ever HANGS -- a Bedrock stall or retry
+    # loop. Set generously at 90 min so it never cuts a completing 120-turn
+    # review the way the old 30-min wall did, while still killing a true hang
+    # well under GitHub's 360-min job default. Keep in sync with codex-review.yml.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

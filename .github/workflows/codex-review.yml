@@ -35,7 +35,12 @@ jobs:
   codex-review:
     name: GPT 5.6 Review
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Runaway/hang backstop only, NOT a per-review budget: the two-pass review
+    # self-terminates on its own long before this. Set generously at 90 min so
+    # it never cuts a completing review the way the old 30-min wall did, while
+    # still failing the gate closed on a true hang well under GitHub's 360-min
+    # job default. Keep in sync with claude-review.yml.
+    timeout-minutes: 90
     # Only run on PRs from the same repo (not forks) to prevent budget abuse,
     # prompt injection via malicious diffs, and secret exfiltration attempts.
     if: github.event.pull_request.head.repo.full_name == github.repository
