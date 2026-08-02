@@ -1077,7 +1077,13 @@
     "crewCompanion": {
       "header": {
         "title": "Crew Companion",
-        "subtitle": "Um mascote que vive na sua área de trabalho, incentiva você a fazer pausas, guarda os lembretes que você anota em linguagem simples e respira com você."
+        "subtitle": "Defina seu ritmo de pausas, adicione lembretes, escolha sobre o que seu companheiro te conta e relembre o tempo que passaram juntos."
+      },
+      "offline": {
+        "title": "O Crew Companion não está em execução",
+        "body": "Abra-o para alterar os lembretes de pausa e definir lembretes — eles ficam dentro do companheiro no seu Mac.",
+        "open": "Abrir o Crew Companion",
+        "quit_tip": "Clique no companheiro na sua área de trabalho para abrir o painel dele; clique com o botão direito para trocar o avatar ou sair."
       },
       "settings": {
         "title": "Configurações",
@@ -1120,6 +1126,7 @@
         "title": "Lembranças",
         "loading": "Relembrando…",
         "empty": "Nada para relembrar ainda.",
+        "from_last_session": "Da sua última vez juntos",
         "offline": "Abra o aplicativo de desktop para ver suas lembranças.",
         "days_together": "{{days}} dias juntos",
         "row_time": "Fez companhia a você por {{time}}",
@@ -1316,7 +1323,6 @@
         "enabled": "Ativado",
         "expand_details": "Expandir detalhes",
         "external": "Externo",
-        "hide": "Ocultar",
         "installed": "Instalado:",
         "lifecycle": "| Ciclo de vida:",
         "local": "Local",
@@ -1334,7 +1340,6 @@
         "resources": "| Recursos:",
         "run_this_on_your_local_machine": "Execute isto na sua máquina local:",
         "self_managed": "Autogerenciado",
-        "show": "Mostrar",
         "skill_many": "{{count}} habilidades",
         "skill_one": "{{count}} habilidade",
         "skill_other": "{{count}} habilidades",
@@ -3080,7 +3085,6 @@
       "failed_to_uninstall": "Falha ao desinstalar",
       "features": "Funcionalidades",
       "fix_with_ai": "Corrigir com IA",
-      "hide": "Ocultar",
       "install": "Instalar",
       "install_complete": "Instalação concluída",
       "install_failed": "Falha na instalação",
@@ -3111,7 +3115,6 @@
       "resources_2": "| Recursos:",
       "screenshots": "Capturas de tela",
       "self_managed": "Autogerenciado",
-      "show": "Mostrar",
       "starting_install": "Iniciando a instalação…",
       "storage_yes": "Armazenamento: sim",
       "sync": "Sincronizar",
@@ -3155,7 +3158,7 @@
       "failed_to_load_apps": "Falha ao carregar os apps",
       "failed_to_load_registry": "Falha ao carregar o registro",
       "find_apps_in_the_discover_tab_or_install_from_a": "Encontre apps na aba Descobrir ou instale a partir de um caminho local pela engrenagem de fontes acima.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Oculto. Você pode reativá-lo na aba Descobrir.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Desativado. Você pode reativá-lo na aba Descobrir.",
       "keep_app_data": "Manter dados do app",
       "keep_this_dependency": "Manter esta dependência",
       "kept": "Mantido —",

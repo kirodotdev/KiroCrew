@@ -2,17 +2,17 @@
   "name": "crew-companion",
   "version": "1.0.0",
   "displayName": "Crew Companion",
-  "description": "A Kiro 👻 desktop companion for KiroCrew. A ghost floats on your screen with no Dock icon, tells you the moment a session finishes, fails, or needs your OK, and lets you swap its avatar. This dashboard page manages the companion — see what every session is working on, review reminders and break nudges, and configure notifications — while the companion app itself runs on your Mac.",
-  "author": "xuejint",
+  "description": "A desktop companion for KiroCrew that helps you pace your day: it nudges you to take breaks, holds the reminders you set in plain language, and runs a short breathing exercise when you need to reset. It also lets you know when a session finishes, fails, or needs your OK.",
+  "author": "kirocrew",
   "license": "MIT",
   "repo": "crew-companion",
   "openCommand": "open \"$HOME/Applications/Crew Companion.app\"",
   "highlights": [
-    "Floating desktop ghost — a macOS accessory app with no Dock icon",
-    "Notifies you the moment a session finishes, fails, or needs your OK",
-    "Live view of what every KiroCrew session is working on",
-    "Reminders and gentle break nudges you set in plain language",
-    "Switchable avatar, including your own imported packs"
+    "Gentle break nudges — water, stretch, look away — on an interval you choose",
+    "Reminders you set in plain language, like “drink water in 20 minutes”",
+    "A short breathing exercise to reset when you need it",
+    "Tells you when a session finishes, fails, or needs your OK",
+    "Floats on your desktop with a swappable avatar"
   ],
   "defaultEnabled": false,
   "mcpServers": {
@@ -69,10 +69,8 @@
     "network": false
   },
   "tags": [
-    "desktop-pet",
+    "desktop-companion",
     "companion",
-    "ghost",
-    "pomodoro",
     "notifications",
     "macos"
   ],

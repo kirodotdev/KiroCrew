@@ -113,7 +113,13 @@
     "crewCompanion": {
       "header": {
         "title": "Crew Companion",
-        "subtitle": "Un compagnon qui vit sur ton bureau, t’encourage à faire des pauses, retient les rappels que tu définis en langage courant, et respire avec toi."
+        "subtitle": "Définis ton rythme de pauses, ajoute des rappels, choisis ce dont ton compagnon te parle, et repense au temps passé ensemble."
+      },
+      "offline": {
+        "title": "Crew Companion n’est pas lancé",
+        "body": "Ouvre-le pour modifier les rappels de pause et définir des rappels — ils vivent dans le compagnon sur ton Mac.",
+        "open": "Ouvrir Crew Companion",
+        "quit_tip": "Clique sur le compagnon sur ton bureau pour ouvrir son panneau ; clique droit pour changer son avatar ou le quitter."
       },
       "settings": {
         "title": "Paramètres",
@@ -154,6 +160,7 @@
       },
       "memories": {
         "title": "Souvenirs",
+        "from_last_session": "De ton dernier moment ensemble",
         "loading": "Retour en arrière…",
         "empty": "Rien à se remémorer pour l’instant.",
         "offline": "Ouvre l’application de bureau pour voir tes souvenirs.",
@@ -1316,7 +1323,6 @@
         "enabled": "Activé",
         "expand_details": "Développer les détails",
         "external": "Externe",
-        "hide": "Masquer",
         "installed": "Installée :",
         "lifecycle": "| Cycle de vie :",
         "local": "Local",
@@ -1334,7 +1340,6 @@
         "resources": "| Ressources :",
         "run_this_on_your_local_machine": "Exécutez ceci sur votre machine locale :",
         "self_managed": "Autogérée",
-        "show": "Afficher",
         "skill_many": "{{count}} compétences",
         "skill_one": "{{count}} compétence",
         "skill_other": "{{count}} compétences",
@@ -3080,7 +3085,6 @@
       "failed_to_uninstall": "Échec de la désinstallation",
       "features": "Fonctionnalités",
       "fix_with_ai": "Corriger avec l'IA",
-      "hide": "Masquer",
       "install": "Installer",
       "install_complete": "Installation terminée",
       "install_failed": "Échec de l’installation",
@@ -3111,7 +3115,6 @@
       "resources_2": "| Ressources :",
       "screenshots": "Captures d'écran",
       "self_managed": "Autogérée",
-      "show": "Afficher",
       "starting_install": "Démarrage de l’installation…",
       "storage_yes": "Stockage : oui",
       "sync": "Synchroniser",
@@ -3155,7 +3158,7 @@
       "failed_to_load_apps": "Échec du chargement des applications",
       "failed_to_load_registry": "Échec du chargement du registre",
       "find_apps_in_the_discover_tab_or_install_from_a": "Trouve des applications dans l’onglet Découvrir, ou installe-en depuis un chemin local via l’engrenage des sources ci-dessus.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Masquée. Tu peux la réactiver depuis l’onglet Découvrir.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Désactivée. Tu peux la réactiver depuis l’onglet Découvrir.",
       "keep_app_data": "Conserver les données de l'application",
       "keep_this_dependency": "Conserver cette dépendance",
       "kept": "Conservée —",

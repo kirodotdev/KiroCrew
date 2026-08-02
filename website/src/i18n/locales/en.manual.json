@@ -271,7 +271,13 @@
     "crewCompanion": {
       "header": {
         "title": "Crew Companion",
-        "subtitle": "A pet that lives on your desktop and nudges you to take breaks, holds the reminders you set in plain language, and breathes with you."
+        "subtitle": "Set your break rhythm, add reminders, choose what your companion tells you about, and look back on your time together."
+      },
+      "offline": {
+        "title": "Crew Companion isn’t running",
+        "body": "Open it to change break nudges and set reminders — those live inside the companion on your Mac.",
+        "open": "Open Crew Companion",
+        "quit_tip": "Click the companion on your desktop to open its panel; right-click to change its avatar or quit."
       },
       "settings": {
         "title": "Settings",
@@ -314,6 +320,7 @@
         "loading": "Looking back…",
         "empty": "Nothing to look back on yet.",
         "offline": "Open the desktop app to see your memories.",
+        "from_last_session": "From your last time together",
         "days_together": "{{days}} days together",
         "row_time": "Kept you company for {{time}}",
         "row_streak": "{{streak}}-day streak",
@@ -382,9 +389,7 @@
         "disabled": "Disabled",
         "enable": "Enable",
         "enabled": "Enabled",
-        "expand_details": "Expand details",
-        "hide": "Hide",
-        "show": "Show"
+        "expand_details": "Expand details"
       },
       "sourcesPopover": {
         "install": "Install",
@@ -1066,7 +1071,7 @@
       "failed_to_load_apps": "Failed to load apps",
       "failed_to_load_registry": "Failed to load registry",
       "find_apps_in_the_discover_tab_or_install_from_a": "Find apps in the Discover tab, or install from a local path via the sources gear above.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Hidden. You can re-enable it from the Discover tab.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Disabled. You can re-enable it from the Discover tab.",
       "kirocrew_registry": "KiroCrew registry",
       "library": "Library",
       "no_apps_installed_yet": "No apps installed yet",

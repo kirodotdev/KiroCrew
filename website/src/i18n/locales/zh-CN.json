@@ -1057,7 +1057,13 @@
     "crewCompanion": {
       "header": {
         "title": "Crew Companion",
-        "subtitle": "一只住在你桌面上的小宠物，它会提醒你休息、记住你用大白话设定的提醒事项，还会陪你一起呼吸。"
+        "subtitle": "设定你的休息节奏、添加提醒、选择让伙伴告诉你哪些事，并回顾你们一起度过的时光。"
+      },
+      "offline": {
+        "title": "Crew Companion 尚未运行",
+        "body": "打开它就能修改休息提醒、设定提醒事项 — 这些都在你 Mac 上的伙伴里。",
+        "open": "打开 Crew Companion",
+        "quit_tip": "点击桌面上的伙伴来打开它的面板；右键点击可更换头像或退出。"
       },
       "settings": {
         "title": "设置",
@@ -1096,6 +1102,7 @@
       },
       "memories": {
         "title": "回忆",
+        "from_last_session": "来自你们上次的相处时光",
         "loading": "正在回顾…",
         "empty": "还没有什么可以回顾的。",
         "offline": "打开桌面应用来查看你的回忆。",
@@ -1284,7 +1291,6 @@
         "enabled": "已启用",
         "expand_details": "展开详情",
         "external": "外部",
-        "hide": "隐藏",
         "installed": "已安装：",
         "lifecycle": "| 生命周期：",
         "local": "本地",
@@ -1300,7 +1306,6 @@
         "resources": "| 资源：",
         "run_this_on_your_local_machine": "在本地机器上运行：",
         "self_managed": "自管理",
-        "show": "显示",
         "skill_other": "{{count}} 个技能",
         "sops": "SOP：",
         "source": "来源：",
@@ -3004,7 +3009,6 @@
       "failed_to_uninstall": "卸载失败",
       "features": "功能",
       "fix_with_ai": "用 AI 修复",
-      "hide": "隐藏",
       "install": "安装",
       "install_complete": "安装完成",
       "install_failed": "安装失败",
@@ -3035,7 +3039,6 @@
       "resources_2": "| 资源：",
       "screenshots": "截图",
       "self_managed": "自管理",
-      "show": "展开",
       "starting_install": "正在开始安装…",
       "storage_yes": "存储：是",
       "sync": "同步",
@@ -3073,7 +3076,7 @@
       "failed_to_load_apps": "加载应用失败",
       "failed_to_load_registry": "加载注册表失败",
       "find_apps_in_the_discover_tab_or_install_from_a": "在“发现”标签页查找应用，或通过上方的来源齿轮图标从本地路径安装。",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "已隐藏。可以在“发现”标签页重新启用。",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "已停用。可以在“发现”标签页重新启用。",
       "keep_app_data": "保留应用数据",
       "keep_this_dependency": "保留此依赖",
       "kept": "已保留 —",

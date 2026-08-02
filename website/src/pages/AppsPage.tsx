@@ -130,12 +130,13 @@ export default function AppsPage() {
 
   // ---- Discover data -------------------------------------------------------
 
-  // Browse catalog: disabled (non-hidden) builtins merged with registry
-  // entries; installed apps enrich matching registry entries with local
-  // hero/screenshot metadata.
+  // Browse catalog: all non-hidden builtins (each carrying its live enabled
+  // state, so Discover shows Enabled/Disabled rather than dropping enabled
+  // ones) merged with registry entries; installed apps enrich matching
+  // registry entries with local hero/screenshot metadata.
   const browseApps: RegistryApp[] = useMemo(() => {
-    const disabledBuiltins: RegistryApp[] = apps
-      .filter(a => a.origin === 'builtin' && !a.enabled && !a.manifest?.hidden)
+    const builtinEntries: RegistryApp[] = apps
+      .filter(a => a.origin === 'builtin' && !a.manifest?.hidden)
       .map(a => ({
         name: a.name,
         displayName: a.displayName || a.name,
@@ -149,18 +150,18 @@ export default function AppsPage() {
         icon: a.manifest?.ui?.pages?.[0]?.icon || '',
         iconUrl: a.manifest?.iconUrl || '',
         installed: true,
-        enabled: false,
+        enabled: a.enabled,
         origin: 'builtin',
         lifecycle: 'locked',
       }))
-    const builtinNames = new Set(disabledBuiltins.map(a => a.name))
+    const builtinNames = new Set(builtinEntries.map(a => a.name))
     const enriched = registry.filter(r => !builtinNames.has(r.name)).map(r => {
       const installed = apps.find(a => a.name === r.name)
       return installed
         ? { ...r, heroImage: r.heroImage || installed.manifest?.heroImage, heroImageDark: r.heroImageDark || installed.manifest?.heroImageDark, screenshots: r.screenshots || installed.manifest?.screenshots }
         : r
     })
-    return [...disabledBuiltins, ...enriched]
+    return [...builtinEntries, ...enriched]
   }, [apps, registry])
 
   const featured = useMemo(() => pickFeatured(browseApps), [browseApps])
@@ -170,7 +171,8 @@ export default function AppsPage() {
 
   const sources: SourceRow[] = useMemo(() => {
     // Count built-ins from browseApps so the SOURCES totals describe the same
-    // population as the "All apps" count (enabled built-ins are not browsable).
+    // population as the "All apps" count (built-ins are always browsable now,
+    // enabled or not).
     const builtinCount = browseApps.filter(a => a.origin === 'builtin').length
     const counts = new Map<string, number>()
     let coreCount = 0
