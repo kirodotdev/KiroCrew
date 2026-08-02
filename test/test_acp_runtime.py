@@ -96,6 +96,105 @@ async def _stop_reader(task: asyncio.Task) -> None:
         pass
 
 
+async def _await_routed(
+    rt: AcpRuntime, *session_ids: str, timeout: float = 5.0
+) -> dict[str, int]:
+    """Wait until the runtime has an in-flight request for each session, and
+    return the ``{session_id: request_id}`` map.
+
+    This replaces the ``await asyncio.sleep(0.05); req_id = rt._next_id - 1``
+    idiom, which was wrong in two independent ways.
+
+    The **timing** problem: 50ms is a guess at how long a driver task takes to
+    reach ``send_request``. It holds on an idle machine and fails on a loaded
+    Windows CI runner, where the driver may not have run yet. The test then reads
+    an id belonging to no request, feeds a response nothing is waiting for, and
+    fails much later as an opaque ``TimeoutError`` in ``wait_for`` rather than at
+    the line that guessed wrong.
+
+    The **correctness** problem: ``_next_id - 1`` assumes the most recently
+    allocated id belongs to *this* prompt. That is only true when nothing else
+    allocated an id in between, which no test actually enforces.
+    ``_routed_requests`` maps request id to session id, so looking a session up
+    there is exact regardless of what else is in flight.
+
+    Waiting on ``_routed_requests`` is the right signal: ``send_request``
+    populates it in the same synchronous block that allocates the id
+    (``runtime.py``), so the entry is visible as soon as the request exists.
+    """
+    deadline = time.monotonic() + timeout
+    wanted = set(session_ids)
+    while True:
+        routed = {sid: rid for rid, sid in rt._routed_requests.items()}
+        if wanted <= routed.keys():
+            return routed
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"timed out after {timeout}s waiting for in-flight requests for "
+                f"{sorted(wanted)}; currently routed: {routed}"
+            )
+        # Yield rather than spin: the driver task needs the loop to progress.
+        await asyncio.sleep(0.001)
+
+
+# ── The _await_routed helper itself ──
+
+
+@pytest.mark.asyncio
+async def test_await_routed_tolerates_a_driver_that_has_not_run_yet():
+    """The helper must not depend on the driver having been scheduled.
+
+    This is the exact condition that made the old
+    ``await asyncio.sleep(0.05); req_id = rt._next_id - 1`` idiom flake on loaded
+    Windows runners: the sleep expires, but the driver task has not yet reached
+    ``send_request``, so ``_next_id`` has not advanced and the computed id
+    belongs to no request. The test then feeds a response nothing is waiting for
+    and fails later as an opaque ``TimeoutError``.
+
+    Here the driver is deliberately never given a chance to run before the read,
+    which is the worst case of that race.
+    """
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    task = await _start_reader(rt)
+    try:
+
+        async def drive():
+            async for _ in handle.prompt("hi", timeout=3.0):
+                pass
+
+        driver = asyncio.ensure_future(drive())
+        # No yield: the driver has definitely not sent anything yet, so the old
+        # arithmetic would compute an id for a request that does not exist.
+        assert rt._routed_requests == {}
+        stale_id = rt._next_id - 1
+
+        routed = await _await_routed(rt, "sA")
+        assert routed["sA"] != stale_id, "the old idiom would have used a wrong id"
+        assert rt._routed_requests[routed["sA"]] == "sA"
+
+        _feed(reader, {"id": routed["sA"], "result": {"stopReason": "end_turn"}})
+        await asyncio.wait_for(driver, timeout=3.0)
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_await_routed_reports_which_sessions_were_missing_on_timeout():
+    """A timeout must name the sessions it waited for, not just time out.
+
+    The old idiom failed indirectly, in an unrelated ``wait_for``; this keeps the
+    diagnosis at the line that actually waited.
+    """
+    rt, _, _ = _make_runtime()
+    _register(rt, "sA")
+    with pytest.raises(AssertionError) as exc:
+        await _await_routed(rt, "sA", timeout=0.05)
+    assert "sA" in str(exc.value)
+    assert "currently routed" in str(exc.value)
+
+
 # ── Notification routing by sessionId ──
 
 
@@ -701,8 +800,7 @@ async def test_multiple_sessions_routed_independently():
     db = asyncio.ensure_future(drive(handle_b, out_b))
     try:
         # Let both turns issue their session/prompt requests and register routing.
-        await asyncio.sleep(0.05)
-        sid_to_req = {sid: rid for rid, sid in rt._routed_requests.items()}
+        sid_to_req = await _await_routed(rt, "sA", "sB")
         assert set(sid_to_req) == {"sA", "sB"}, "both prompts must be in flight"
 
         # Interleave text chunks for the two sessions (out of order on purpose).
@@ -1009,8 +1107,7 @@ async def test_dispatch_permission_request():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         # First a tool_call update (seeds the trusted is_shell cache).
         _feed(
             reader,
@@ -1109,8 +1206,7 @@ async def test_dispatch_tool_call_and_result():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         # Tool call
         _feed(
             reader,
@@ -1251,8 +1347,7 @@ async def test_dispatch_thinking_chunk():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -1293,8 +1388,7 @@ async def test_dispatch_compaction_and_clear():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -1341,8 +1435,7 @@ async def test_dispatch_compaction_completed_resets_context_stats():
                 pass
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -1620,8 +1713,7 @@ async def test_dispatch_agent_switched():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -1657,8 +1749,7 @@ async def test_dispatch_mcp_oauth_request():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -1697,8 +1788,7 @@ async def test_dispatch_mcp_server_initialized():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -1734,8 +1824,7 @@ async def test_dispatch_mcp_server_init_failure():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -1770,8 +1859,7 @@ async def test_dispatch_unknown_server_request_gets_error_response():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         # Unknown method WITH an id (server request, not notification)
         _feed(reader, {"id": 9999, "method": "unknown/method", "params": {"sessionId": "sA"}})
         _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
@@ -1806,8 +1894,7 @@ async def test_dispatch_tool_call_update_raw_output():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -1847,8 +1934,7 @@ async def test_dispatch_tool_call_update_refinement():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -1889,8 +1975,7 @@ async def test_dispatch_usage_update():
                 pass
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -1962,8 +2047,7 @@ async def test_dispatch_metadata_credits():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -2006,8 +2090,7 @@ async def test_dispatch_metadata_credits_robust():
                 pass
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -2047,8 +2130,7 @@ async def test_metadata_credits_routed_per_session():
     da = asyncio.ensure_future(drive(handle_a))
     db = asyncio.ensure_future(drive(handle_b))
     try:
-        await asyncio.sleep(0.05)
-        sid_to_req = {sid: rid for rid, sid in rt._routed_requests.items()}
+        sid_to_req = await _await_routed(rt, "sA", "sB")
         assert set(sid_to_req) == {"sA", "sB"}, "both prompts must be in flight"
 
         _feed(
@@ -2101,8 +2183,7 @@ async def test_dispatch_subagent_list():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -2143,8 +2224,7 @@ async def test_dispatch_subagent_activity_tool():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         q["sA"].put_nowait(
             JsonRpcMessage.from_dict(
                 {
@@ -2183,8 +2263,7 @@ async def test_dispatch_subagent_activity_text():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         q["sA"].put_nowait(
             JsonRpcMessage.from_dict(
                 {
@@ -2226,8 +2305,7 @@ async def test_dispatch_subagent_activity_text_is_redacted():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         q["sA"].put_nowait(
             JsonRpcMessage.from_dict(
                 {
@@ -2271,8 +2349,7 @@ async def test_prompt_error_response_raises():
                 pass
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(reader, {"id": req_id, "error": {"code": -1, "message": "throttled"}})
         with pytest.raises(AcpError):
             await asyncio.wait_for(driver, timeout=3.0)
@@ -2299,8 +2376,7 @@ async def test_prompt_transient_error_sets_transient_flag():
                 pass
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -2340,8 +2416,7 @@ async def test_prompt_auth_error_not_transient():
                 pass
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -2423,8 +2498,7 @@ async def test_n_sessions_routed_independently():
 
     drivers = [asyncio.ensure_future(drive(sid)) for sid in sids]
     try:
-        await asyncio.sleep(0.05)
-        sid_to_req = {sid: rid for rid, sid in rt._routed_requests.items()}
+        sid_to_req = await _await_routed(rt, *sids)
         assert set(sid_to_req) == set(sids), "all prompts must be in flight"
 
         # Feed each session a uniquely-identifying text chunk, reverse order.
@@ -2486,8 +2560,7 @@ async def test_one_session_errors_others_unaffected():
     d_ok = asyncio.ensure_future(drive_ok())
     d_err = asyncio.ensure_future(drive_err())
     try:
-        await asyncio.sleep(0.05)
-        sid_to_req = {sid: rid for rid, sid in rt._routed_requests.items()}
+        sid_to_req = await _await_routed(rt, "sOk", "sErr")
         # sErr gets an error response; sOk gets text + normal completion.
         _feed(reader, {"id": sid_to_req["sErr"], "error": {"code": -1, "message": "boom"}})
         _feed(
@@ -2540,8 +2613,7 @@ async def test_interleaved_tool_calls_routed_per_session():
     da = asyncio.ensure_future(drive(h_a, out_a))
     db = asyncio.ensure_future(drive(h_b, out_b))
     try:
-        await asyncio.sleep(0.05)
-        sid_to_req = {sid: rid for rid, sid in rt._routed_requests.items()}
+        sid_to_req = await _await_routed(rt, "sA", "sB")
         # Interleave tool calls for each session.
         _feed(
             reader,
@@ -3076,8 +3148,7 @@ async def test_steer_notifications_yield_steer_events():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         _feed(
             reader,
             {
@@ -3586,8 +3657,7 @@ async def test_dispatch_mcp_oauth_guard_and_dedup():
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())
-        await asyncio.sleep(0.05)
-        req_id = rt._next_id - 1
+        req_id = (await _await_routed(rt, "sA"))["sA"]
         base = {"sessionId": "sA"}
         # unsafe scheme -> dropped
         _feed(

@@ -50,21 +50,57 @@ _FAST_WD = WatchdogSettings(
 )
 
 
+class _FreshActivityRuntime:
+    """Runtime double whose ``_last_activity`` always reads as the current instant.
+
+    Stands in for a stderr drain that keeps refreshing the keepalive clock while
+    stdout is silent.
+
+    This replaces a refresher task that rewrote the attribute every 20ms against
+    the 50ms ``stale_window_secs`` above. That left only 30ms of margin, and an
+    ``asyncio.sleep`` on a loaded CI runner overruns easily — Windows timer
+    granularity alone is about 15.6ms — at which point the attribute looks stale
+    and the stale guard trips, failing the test for a reason unrelated to the
+    behaviour under test. A property cannot be late.
+
+    ``AcpSessionHandle`` only ever READS ``_runtime._last_activity`` (the writes
+    live in the real runtime's own drain), so exposing it read-only is faithful.
+    """
+
+    def __init__(self) -> None:
+        # pid None keeps the liveness oracle at UNKNOWN, matching _make_handle.
+        self.pid = None
+        self.is_alive = MagicMock(return_value=True)
+        self.send_notification = AsyncMock()
+
+    @property
+    def _last_activity(self) -> float:
+        return time.monotonic()
+
+
 def _make_handle(
     last_activity: float | None = None,
     watchdog: WatchdogSettings = _FAST_WD,
+    fresh_activity: bool = False,
 ) -> AcpSessionHandle:
     """A handle over a fake runtime with a controllable ``_last_activity``.
 
     ``rt.pid`` is None so the liveness oracle returns UNKNOWN ("no runtime
     pid") and the timeout-governed UNKNOWN class — the legacy-equivalent
     behavior these tests exercise — applies.
+
+    With ``fresh_activity=True`` the clock reports "now" on every read, which is
+    what a continuously-active stderr drain looks like.
     """
-    rt = MagicMock()
-    rt._last_activity = last_activity if last_activity is not None else time.monotonic()
-    rt.pid = None
-    rt.is_alive = MagicMock(return_value=True)
-    rt.send_notification = AsyncMock()
+    rt: object
+    if fresh_activity:
+        rt = _FreshActivityRuntime()
+    else:
+        rt = MagicMock()
+        rt._last_activity = last_activity if last_activity is not None else time.monotonic()
+        rt.pid = None
+        rt.is_alive = MagicMock(return_value=True)
+        rt.send_notification = AsyncMock()
     handle = AcpSessionHandle("sA", asyncio.Queue(), rt, watchdog=watchdog)
     handle._turn_done.clear()  # a turn is in flight
     handle._stale_eligible = True  # text was streamed → staleness eligible
@@ -82,22 +118,12 @@ async def _drain(handle: AcpSessionHandle, req_id: int, timeout: float) -> list:
 async def test_fresh_stderr_activity_prevents_stale_probe():
     """Recent ``_runtime._last_activity`` (thinking on stderr) keeps the turn
     alive: no probe cancel is sent even though stdout is silent."""
-    handle = _make_handle()
+    # The activity clock reports "now" on every read, which is what a
+    # continuously-active stderr drain looks like -- and unlike a refresher task
+    # it cannot be late when the event loop is contended.
+    handle = _make_handle(fresh_activity=True)
 
-    # Emulate the stderr drain refreshing _last_activity while stdout is silent.
-    stop = asyncio.Event()
-
-    async def refresher():
-        while not stop.is_set():
-            handle._runtime._last_activity = time.monotonic()
-            await asyncio.sleep(0.02)
-
-    task = asyncio.ensure_future(refresher())
-    try:
-        events = await _drain(handle, req_id=1, timeout=0.3)
-    finally:
-        stop.set()
-        await task
+    events = await _drain(handle, req_id=1, timeout=0.3)
 
     assert handle._stale_probe is False  # fold-in: not falsely stale
     handle._runtime.send_notification.assert_not_awaited()  # no probe cancel
