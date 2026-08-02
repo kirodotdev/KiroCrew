@@ -6052,7 +6052,9 @@
         "installs_openai_whisper_ffmpeg_uses_system_pytho": "Устанавливает openai-whisper и ffmpeg. Использует системный python3 (≥ 3.10).",
         "native": "Нативно",
         "pulls_python_3_11_slim_for_docker_based_transcri": "Скачивает python:3.11-slim для транскрибации через Docker (AL2).",
-        "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper установлен, но ffmpeg отсутствует — для голосовой транскрибации нужен ffmpeg."
+        "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper установлен, но ffmpeg отсутствует — для голосовой транскрибации нужен ffmpeg.",
+        "endpointing": "Отправлять автоматически, когда я закончу говорить",
+        "endpointing_desc": "Использует быструю модель, чтобы определить, когда вы закончили полный запрос, и отправляет его автоматически. Только для потоковой передачи (Transcribe)."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "выше. В отличие от Slack, у Bot Framework нет\n              режима только для исходящих сообщений.",

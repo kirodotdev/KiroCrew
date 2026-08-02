@@ -455,6 +455,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "voice.auto-submit-when-i-finish-speaking",
+    "label": "Auto-submit when I finish speaking",
+    "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming (Transcribe) only.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "voice.aws-profile-polly",
     "label": "AWS Profile (Polly)",
     "description": "AWS credentials profile for Polly",

@@ -536,6 +536,8 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt["language_code"] = body["language_code"]
             if "streaming" in body and isinstance(body["streaming"], bool):
                 stt["streaming"] = body["streaming"]
+            if "endpointing" in body and isinstance(body["endpointing"], bool):
+                stt["endpointing"] = body["endpointing"]
             if "dictation_panel" in body and isinstance(body["dictation_panel"], bool):
                 stt["dictation_panel"] = body["dictation_panel"]
             await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
@@ -557,6 +559,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "mlx_model": cfg.stt.mlx_model,
             "available": available,
             "streaming": cfg.stt.streaming,
+            "endpointing": cfg.stt.endpointing,
             "dictation_panel": cfg.stt.dictation_panel,
             "transcribe_region": cfg.stt.transcribe_region,
             "transcribe_profile": cfg.stt.transcribe_profile,

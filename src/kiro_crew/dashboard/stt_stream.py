@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover — exercised by test_import_error_*
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.origin import check_origin
+from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.transcribe import _ProfileCredentialResolver
@@ -50,6 +51,24 @@ _MAX_TEXT_FRAME_BYTES = 256
 # Safe as a plain int on the single-threaded asyncio loop.
 _MAX_CONCURRENT_SESSIONS = 3
 _active_sessions = 0
+
+# ── Semantic endpointing (stt.endpointing, default off) ──
+# On each stable Transcribe `final`, a fast background model judges whether the
+# user has finished a complete request; a COMPLETE verdict emits an `endpoint`
+# frame so the frontend can auto-submit. Pinned to the cheap Haiku-class model
+# (parity with title/tip generation). Debounced so mid-utterance finals don't
+# each fire a model call, and single-flight so at most one bg call runs at once.
+_ENDPOINT_MODEL = "claude-haiku-4.5"
+_ENDPOINT_DEBOUNCE_SECS = 0.35
+_ENDPOINT_TIMEOUT_SECS = 5.0
+_ENDPOINT_PROMPT = (
+    "You decide whether a person has FINISHED speaking a complete request or "
+    "thought, from a live speech-to-text transcript that may cut off mid-word.\n"
+    "Reply with EXACTLY one word and nothing else:\n"
+    "COMPLETE — the utterance is a finished, actionable request or statement.\n"
+    "INCOMPLETE — the speaker is mid-sentence, trailing off, or clearly about "
+    "to continue.\n\nTranscript:\n{transcript}"
+)
 
 
 def _emit_end_audit(caller: str, *, outcome: str) -> None:
@@ -115,7 +134,137 @@ def _emit_guard_audit(caller: str, *, outcome: str) -> None:
         logger.exception("Failed to emit stt_stream_rejected SEL audit")
 
 
-def _make_handler(ws: web.WebSocketResponse):  # type: ignore[no-untyped-def]
+class _Endpointer:
+    """Debounced, single-flight semantic end-of-utterance detector.
+
+    On each Transcribe ``final`` the accumulated transcript is scheduled for a
+    Haiku-class COMPLETE/INCOMPLETE judgment. A monotonic generation counter
+    gives the debounce (a scheduled task aborts if a newer ``final`` arrived
+    during its wait) and staleness guard (a verdict is discarded if the user
+    kept speaking while it was classifying). An ``_inflight`` flag caps cost at
+    one background model call at a time. A COMPLETE verdict emits
+    ``{"type":"endpoint","complete":true}`` so the frontend can auto-submit.
+
+    ``sessions`` is duck-typed (anything exposing ``get_bg_session()`` — the
+    ``SessionManager``) so this stays free of a dashboard->session import cycle.
+    Best-effort throughout: any failure logs at debug and never disrupts the
+    live transcript stream.
+    """
+
+    def __init__(
+        self,
+        ws: web.WebSocketResponse,
+        sessions: object,
+        *,
+        model: str = _ENDPOINT_MODEL,
+        debounce: float = _ENDPOINT_DEBOUNCE_SECS,
+        timeout: float = _ENDPOINT_TIMEOUT_SECS,
+    ) -> None:
+        self._ws = ws
+        self._sessions = sessions
+        self._model = model
+        self._debounce = debounce
+        self._timeout = timeout
+        self._finals: list[str] = []
+        self._gen = 0
+        self._inflight = False
+        # Latched (gen, transcript) for the LATEST final that arrived while a
+        # classification was already running — re-run once it finishes rather
+        # than silently dropped (that drop stranded the terminal final so
+        # auto-submit never fired).
+        self._pending: "tuple[int, str] | None" = None
+        self._tasks: "set[asyncio.Task]" = set()  # type: ignore[type-arg]
+
+    def note_partial(self, text: str) -> None:
+        """A live partial means the user is STILL speaking, so invalidate any
+        pending/in-flight verdict — it was computed for an earlier, now-
+        superseded transcript — WITHOUT scheduling a new classification (only
+        stable finals are worth a model call). Advancing the generation makes
+        both the debounce wait and the post-classify staleness check discard the
+        stale verdict, so a COMPLETE for "deploy the service" can't auto-submit
+        after the user has gone on to say "to production"."""
+        if text:
+            self._gen += 1
+
+    def note_final(self, text: str) -> None:
+        """Record a stable transcript segment and schedule a debounced judgment.
+
+        An empty final is ignored ENTIRELY (before touching ``_gen``): it adds
+        nothing to classify, and bumping the generation would invalidate a good
+        pending verdict while scheduling no successor — stranding auto-submit."""
+        if not text:
+            return
+        self._finals.append(text)
+        self._gen += 1
+        gen = self._gen
+        transcript = " ".join(self._finals).strip()
+        if not transcript:
+            return
+        self._schedule(gen, transcript)
+
+    def _schedule(self, gen: int, transcript: str) -> None:
+        task = asyncio.create_task(self._classify(gen, transcript))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _classify(self, gen: int, transcript: str) -> None:
+        try:
+            await asyncio.sleep(self._debounce)
+        except asyncio.CancelledError:
+            return
+        if gen != self._gen:
+            return  # a newer partial/final superseded this one (debounce coalesce)
+        if self._inflight:
+            # Another classification is in flight. Latch this (the current) gen
+            # so it re-runs after that one completes instead of being dropped —
+            # otherwise the last final of a continuous utterance is lost and
+            # auto-submit never fires.
+            self._pending = (gen, transcript)
+            return
+        self._inflight = True
+        verdict = ""
+        try:
+            verdict = await run_bg_oneliner(
+                self._sessions,
+                _ENDPOINT_PROMPT.format(transcript=transcript),
+                model=self._model,
+                sel_source="stt_endpointing",
+                timeout=self._timeout,
+            )
+        except Exception:
+            logger.debug("stt endpointing classification failed", exc_info=True)
+        finally:
+            self._inflight = False
+        # Re-run a superseded final that collided with this in-flight call, if it
+        # is still the current generation and the socket is open.
+        pending = self._pending
+        self._pending = None
+        if pending is not None and pending[0] == self._gen and not self._ws.closed:
+            self._schedule(pending[0], pending[1])
+        if gen != self._gen:
+            return  # user kept speaking while classifying — verdict is stale
+        if verdict.strip().upper().startswith("COMPLETE") and not self._ws.closed:
+            try:
+                await self._ws.send_json({"type": "endpoint", "complete": True})
+            except Exception:
+                logger.debug("stt endpoint frame send failed", exc_info=True)
+
+    async def aclose(self) -> None:
+        """Cancel any in-flight judgment tasks on stream teardown.
+
+        ``gather(return_exceptions=True)`` collects each task's own
+        ``CancelledError``/exception WITHOUT re-raising, so a cancellation of the
+        enclosing ``api_ws_stt`` task (e.g. gateway shutdown) awaiting here is
+        NOT swallowed — it propagates as it should."""
+        tasks = list(self._tasks)
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _make_handler(ws: web.WebSocketResponse, endpointer: "_Endpointer | None" = None):  # type: ignore[no-untyped-def]
     """Build a TranscriptResultStreamHandler that forwards events to ``ws``.
 
     Both partials and finals pass through ``redact_credentials`` and
@@ -138,8 +287,21 @@ def _make_handler(ws: web.WebSocketResponse):  # type: ignore[no-untyped-def]
                 redacted, _ = redact_credentials(redacted)
                 try:
                     if result.is_partial:
+                        # Invalidate any pending end-of-utterance verdict BEFORE
+                        # the awaited send: a live partial means the user is
+                        # still speaking, and doing it after `await send_json`
+                        # leaves a window where that await yields and a stale
+                        # COMPLETE emits, auto-submitting a truncated request.
+                        if endpointer is not None:
+                            endpointer.note_partial(redacted)
                         await ws.send_json({"type": "partial", "text": redacted})
                     else:
+                        # Feed the stable segment to the endpointer BEFORE the
+                        # awaited send (same yield-window reason as above). Uses
+                        # the SAME redacted text sent to the client, so the model
+                        # never sees an unredacted credential the wire didn't.
+                        if endpointer is not None:
+                            endpointer.note_final(redacted)
                         await ws.send_json({"type": "final", "text": redacted})
                 except Exception:
                     # Client disconnected mid-send. Stop processing rather
@@ -269,10 +431,19 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
         # silently bills and counts against the concurrent-stream quota.
         handler_task = None
         deadline_task = None
+        # Build the endpointer once, before the try, so it is always bound in the
+        # finally (a raise before assignment would otherwise NameError there).
+        # Gated on stt.endpointing + a reachable SessionManager (get_bg_session).
+        endpointer: "_Endpointer | None" = None
+        if cfg.stt.endpointing:
+            _state = request.app.get("state")
+            _sessions = getattr(_state, "sessions", None)
+            if _sessions is not None:
+                endpointer = _Endpointer(ws, _sessions)
         try:
             await ws.send_json({"type": "ready"})
 
-            handler = _make_handler(ws)(stream.output_stream)
+            handler = _make_handler(ws, endpointer)(stream.output_stream)
             handler_task = asyncio.create_task(handler.handle_events())
             deadline_task = asyncio.create_task(_enforce_deadline())
 
@@ -335,6 +506,14 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
                     # expiry) so operators can see why transcription stopped instead of
                     # silently cancelling the task.
                     logger.exception("Transcribe handler task failed")
+            # Cancel pending endpointing judgments AFTER the handler drain: a
+            # trailing Transcribe final delivered during the drain calls
+            # note_final(), which can schedule a fresh task — cancelling before
+            # the drain would let that task escape teardown (leak a background
+            # session / try to send on a closing ws). The handler task is
+            # done/cancelled by here, so no further note_final can fire.
+            if endpointer is not None:
+                await endpointer.aclose()
             # Audit BEFORE the close, for the reason documented on
             # _close_and_end_audit: ws.close() awaits the peer's close ack under
             # its own timeout, so a client that already went away would otherwise

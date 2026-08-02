@@ -25,6 +25,8 @@ const WARM_IDLE_MS = 15000
 interface Opts {
   streaming?: boolean
   onPartial?: (text: string) => void
+  /** Fired when streaming semantic endpointing judges the utterance complete. */
+  onEndpoint?: () => void
 }
 
 export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
@@ -64,6 +66,11 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
     (text: string) => { setPartial(''); if (text) onText(text) },
     [onText],
   )
+  const optsEndpoint = opts.onEndpoint
+  const streamOnEndpoint = useCallback(
+    () => { optsEndpoint?.() },
+    [optsEndpoint],
+  )
   // Destructure individual members so downstream useCallback deps track
   // stable references (start/stop/recording) instead of the hook's
   // always-new return object literal, preventing memoization churn.
@@ -73,6 +80,7 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
     onError: setError,
     onLevel: setLevel,
     onDevice: setDeviceLabel,
+    onEndpoint: streamOnEndpoint,
     sampleRef,
   })
 

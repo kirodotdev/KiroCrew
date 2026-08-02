@@ -30,11 +30,13 @@ interface Opts {
   onLevel?: (v: number) => void
   /** Active capture device label (e.g. "MacBook Pro Microphone"). */
   onDevice?: (label: string) => void
+  /** Fired when the backend semantic endpointer judges the utterance complete. */
+  onEndpoint?: () => void
   /** Unthrottled per-frame audio features for canvas consumers (see mic.ts). */
   sampleRef?: { current: AudioSample }
 }
 
-export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevice, sampleRef }: Opts) {
+export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevice, onEndpoint, sampleRef }: Opts) {
   const [recording, setRecording] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
@@ -54,6 +56,8 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
   onErrorRef.current = onError
   onLevelRef.current = onLevel
   onDeviceRef.current = onDevice
+  const onEndpointRef = useRef(onEndpoint)
+  onEndpointRef.current = onEndpoint
 
   const cleanup = useCallback(() => {
     try { levelStopRef.current?.() } catch { /* ignore */ }
@@ -124,6 +128,11 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
         } else if (msg.type === 'error') {
           onErrorRef.current?.(msg.message || i18nT('hooks.useStreamingStt.stt_error'))
           rejectReady(new Error(msg.message || 'stt error'))
+        } else if (msg.type === 'endpoint') {
+          // Backend semantic endpointer judged the utterance complete.
+          // The composer already holds the streamed transcript (via onPartial),
+          // so the caller can submit directly.
+          if (msg.complete) onEndpointRef.current?.()
         }
       } catch { /* ignore */ }
     }

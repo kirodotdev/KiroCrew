@@ -15,6 +15,7 @@ interface SttConfig {
   available: boolean
   docker_mode: boolean
   streaming?: boolean
+  endpointing?: boolean
   dictation_panel?: boolean
   transcribe_region?: string
   transcribe_profile?: string
@@ -207,6 +208,10 @@ export default function SttSettings() {
 
         {isTranscribe && (
           <SettingsToggle label={i18nT('pages.settings.sttSettings.streaming')} description={i18nT('pages.settings.sttSettings.stream_live_partial_transcripts_into_the_input_b')} checked={!!stt.streaming} onChange={v => set({ streaming: v })} disabled={saving} />
+        )}
+
+        {isTranscribe && stt.streaming && (
+          <SettingsToggle label={i18nT('pages.settings.sttSettings.endpointing')} description={i18nT('pages.settings.sttSettings.endpointing_desc')} checked={!!stt.endpointing} onChange={v => set({ endpointing: v })} disabled={saving} />
         )}
 
         <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} description={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />

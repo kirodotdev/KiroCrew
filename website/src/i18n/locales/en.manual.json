@@ -2008,7 +2008,9 @@
         "installs_openai_whisper_ffmpeg_uses_system_pytho": "Installs openai-whisper + ffmpeg. Uses system python3 (≥ 3.10).",
         "native": "Native",
         "pulls_python_3_11_slim_for_docker_based_transcri": "Pulls python:3.11-slim for Docker-based transcription (AL2).",
-        "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper installed but ffmpeg is missing — voice transcription needs ffmpeg."
+        "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper installed but ffmpeg is missing — voice transcription needs ffmpeg.",
+        "endpointing": "Auto-submit when I finish speaking",
+        "endpointing_desc": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming (Transcribe) only."
       },
       "teamsPanel": {
         "microsoft_app_id": "Microsoft App ID",

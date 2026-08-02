@@ -2657,6 +2657,15 @@ class SttConfig:
             "Stream partial transcripts live to the dashboard input (transcribe provider only).",
         ),
     )
+    endpointing: bool = field(
+        default=False,
+        metadata=_meta(
+            "Semantic endpointing",
+            "While streaming dictation, run a fast background model on each stable "
+            "transcript segment to detect when you have finished a complete request, "
+            "then auto-submit. Transcribe streaming only; off by default.",
+        ),
+    )
     dictation_panel: bool = field(
         default=True,
         metadata=_meta(
@@ -4454,6 +4463,7 @@ class KiroCrewConfig:
                 transcribe_profile=stt_data.get("transcribe_profile", ""),
                 language_code=stt_data.get("language_code", "en-US"),
                 streaming=stt_data.get("streaming", False),
+                endpointing=_safe_bool(stt_data.get("endpointing"), False),
                 dictation_panel=_safe_bool(stt_data.get("dictation_panel"), True),
             ),
             # Every numeric knob is clamped to the same ceiling the MCP tool

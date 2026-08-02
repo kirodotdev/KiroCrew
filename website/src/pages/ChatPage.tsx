@@ -1302,6 +1302,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // this guard, a delayed onFinal would overwrite text the user has
   // already typed in the new slot.
   const sttDisarmedRef = useRef(false)
+  // Forward ref to send() (defined far below) so the streaming endpointer's
+  // auto-submit callback — wired into the voice hook here, above send — can
+  // fire it. Kept fresh by an effect after send is declared.
+  const sendRef = useRef<((optionText?: string, targetSlot?: string) => void) | null>(null)
   const voice = useVoiceInput(
     useCallback((text: string) => {
       if (sttDisarmedRef.current) return
@@ -1318,6 +1322,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         if (frozenInputRef.current === null) frozenInputRef.current = inputRef.current
         const base = frozenInputRef.current
         setInput(base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text)
+      }, []),
+      // Semantic endpointing (stt.endpointing) judged the utterance complete:
+      // auto-submit. The composer already holds the streamed transcript via
+      // onPartial, and send() reads inputRef.current + stops the live capture
+      // itself (its recording+streaming branch), so this is the same path as
+      // pressing Enter mid-dictation — just triggered by the backend verdict.
+      onEndpoint: useCallback(() => {
+        if (sttDisarmedRef.current) return
+        sendRef.current?.()
       }, []),
     }
   )
@@ -2751,6 +2764,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // land where the document belongs. switchSlot.pending sets activeSlot
   // synchronously, but send()'s closure activeSlot is stale until re-render,
   // so the origin slot is passed to send() explicitly.
+  // Keep sendRef current so the streaming endpointer's auto-submit callback
+  // (wired into the voice hook above, before send is declared) always invokes
+  // the latest send(). Assigned in render like inputRef.current = input above.
+  sendRef.current = send
   const submitComments = useCallback((message: string) => {
     const target = tabsCtl.activeTab?.slot ?? null
     if (target && target !== activeSlot) dispatch(switchSlot(target))

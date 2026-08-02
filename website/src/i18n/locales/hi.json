@@ -5936,7 +5936,9 @@
         "installs_openai_whisper_ffmpeg_uses_system_pytho": "openai-whisper + ffmpeg इंस्टॉल करता है। सिस्टम python3 (≥ 3.10) इस्तेमाल करता है।",
         "native": "नेटिव",
         "pulls_python_3_11_slim_for_docker_based_transcri": "Docker-आधारित ट्रांसक्रिप्शन (AL2) के लिए python:3.11-slim खींचता है।",
-        "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper इंस्टॉल है लेकिन ffmpeg नहीं मिला — वॉइस ट्रांसक्रिप्शन के लिए ffmpeg ज़रूरी है।"
+        "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper इंस्टॉल है लेकिन ffmpeg नहीं मिला — वॉइस ट्रांसक्रिप्शन के लिए ffmpeg ज़रूरी है।",
+        "endpointing": "बोलना समाप्त करने पर स्वतः भेजें",
+        "endpointing_desc": "यह पता लगाने के लिए एक तेज़ मॉडल का उपयोग करता है कि आपने पूरा अनुरोध कब समाप्त किया, और उसे स्वतः भेज देता है। केवल स्ट्रीमिंग (Transcribe) के लिए।"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "ऊपर। Slack के विपरीत, Bot Framework में कोई\n              केवल-आउटबाउंड मोड नहीं है।",

@@ -5994,7 +5994,9 @@
         "installs_openai_whisper_ffmpeg_uses_system_pytho": "Installa openai-whisper + ffmpeg. Usa il python3 di sistema (≥ 3.10).",
         "native": "Nativo",
         "pulls_python_3_11_slim_for_docker_based_transcri": "Scarica python:3.11-slim per la trascrizione basata su Docker (AL2).",
-        "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper è installato ma manca ffmpeg — la trascrizione vocale richiede ffmpeg."
+        "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper è installato ma manca ffmpeg — la trascrizione vocale richiede ffmpeg.",
+        "endpointing": "Invia automaticamente quando finisco di parlare",
+        "endpointing_desc": "Usa un modello veloce per rilevare quando hai terminato una richiesta completa e la invia automaticamente. Solo streaming (Transcribe)."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "sopra. A differenza di Slack, il Bot Framework non ha\n              una modalità solo in uscita.",
