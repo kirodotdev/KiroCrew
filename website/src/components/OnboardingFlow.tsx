@@ -49,32 +49,42 @@ import { i18nT } from '../i18n/t'
 interface PopStep {
   navId: string
   route: string
-  title: string
-  body: string
 }
 
 // Steps 3-5 anchor to real left-rail nav items (see `data-onboarding-nav`
 // on <NavItem> in App.tsx). The client's Sessions surface is the Chat rail
 // item (navId 'chat').
 const POPS: Record<number, PopStep> = {
-  3: {
-    navId: 'schedule',
-    route: '/schedule',
-    title: 'Work that runs on time',
-    body: 'Set tasks to run automatically so things happen without you lifting a finger.',
-  },
-  4: {
-    navId: 'apps',
-    route: '/apps',
-    title: 'Extend what you can do with KiroCrew',
-    body: 'Install purpose-built tools that unlock new capabilities and workflows.',
-  },
-  5: {
-    navId: 'chat',
-    route: '/chat',
-    title: 'Start your first session',
-    body: 'Ask a question, assign a task, or just say hi — your agent is ready.',
-  },
+  3: { navId: 'schedule', route: '/schedule' },
+  4: { navId: 'apps', route: '/apps' },
+  5: { navId: 'chat', route: '/chat' },
+}
+
+/**
+ * Catalog KEYS for the step 3-5 popover copy, keyed by step number.
+ *
+ * Held apart from `POPS` and as flat `Record`s of full literal keys, indexed
+ * inline at the `i18nT()` call, because that is the only shape
+ * `scripts/check-i18n-keys.mjs` can resolve statically — nested inside `POPS` and
+ * read as `i18nT(pop.titleKey)` the gate cannot see the key at all, and a key it
+ * cannot resolve is a key it cannot verify exists. Keys rather than strings
+ * because these tables are built at module load, where an `i18nT()` call would
+ * freeze the boot language; the lookup runs during render.
+ *
+ * Keyed by `navId` rather than by step number: the gate refuses an object whose
+ * property names are numeric literals (`resolveObjectLiteral` accepts only
+ * identifier / string names), and the surface a popover describes is the stable
+ * thing about it — inserting a step should not renumber its copy.
+ */
+const POP_TITLE_KEY: Record<string, string> = {
+  schedule: 'components.onboardingFlow.pop_schedule_title',
+  apps: 'components.onboardingFlow.pop_apps_title',
+  chat: 'components.onboardingFlow.pop_chat_title',
+}
+const POP_BODY_KEY: Record<string, string> = {
+  schedule: 'components.onboardingFlow.pop_schedule_body',
+  apps: 'components.onboardingFlow.pop_apps_body',
+  chat: 'components.onboardingFlow.pop_chat_body',
 }
 
 // Step 6 (privacy) is the last step and uses the chapter-shell layout, so the
@@ -86,19 +96,38 @@ const LAST_POP_STEP = 5
 // dashboard.user_role / dashboard.user_technical_level enums in the config
 // PATCH allowlist (handlers/core.py) and mapped to prompt descriptions in
 // context.py — keep all three in sync.
-const ROLE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'developer', label: 'Developer' },
-  { value: 'designer', label: 'UX Designer' },
-  { value: 'product-manager', label: 'Product Manager' },
-  { value: 'data-ml', label: 'Data / ML' },
-  { value: 'it-ops', label: 'IT / Ops' },
-  { value: 'other', label: 'Other' },
+const ROLE_OPTIONS: ReadonlyArray<{ value: string }> = [
+  { value: 'developer' },
+  { value: 'designer' },
+  { value: 'product-manager' },
+  { value: 'data-ml' },
+  { value: 'it-ops' },
+  { value: 'other' },
 ]
-const TECH_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'codes', label: 'I write code' },
-  { value: 'somewhat-technical', label: 'Somewhat' },
-  { value: 'non-technical', label: 'Not technical' },
+const TECH_OPTIONS: ReadonlyArray<{ value: string }> = [
+  { value: 'codes' },
+  { value: 'somewhat-technical' },
+  { value: 'non-technical' },
 ]
+
+/**
+ * Catalog KEY for each chip's visible text, keyed by the enum slug above. Flat
+ * and indexed inline at the `i18nT()` call for the same static-resolution reason
+ * as `POP_TITLE_KEY`; the slug in `value` is persisted config and stays verbatim.
+ */
+const ROLE_LABEL_KEY: Record<string, string> = {
+  developer: 'components.onboardingFlow.role_developer',
+  designer: 'components.onboardingFlow.role_designer',
+  'product-manager': 'components.onboardingFlow.role_product_manager',
+  'data-ml': 'components.onboardingFlow.role_data_ml',
+  'it-ops': 'components.onboardingFlow.role_it_ops',
+  other: 'components.onboardingFlow.role_other',
+}
+const TECH_LABEL_KEY: Record<string, string> = {
+  codes: 'components.onboardingFlow.tech_codes',
+  'somewhat-technical': 'components.onboardingFlow.tech_somewhat',
+  'non-technical': 'components.onboardingFlow.tech_non_technical',
+}
 
 type ProfileConfig = {
   dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string }
@@ -558,7 +587,7 @@ export default function OnboardingFlow({
               style={role === o.value ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
             >
               {role === o.value && <Check size={13} aria-hidden />}
-              {o.label}
+              {i18nT(ROLE_LABEL_KEY[o.value])}
             </button>
           ))}
         </div>
@@ -619,7 +648,7 @@ export default function OnboardingFlow({
               style={techLevel === o.value ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
             >
               {techLevel === o.value && <Check size={13} aria-hidden />}
-              {o.label}
+              {i18nT(TECH_LABEL_KEY[o.value])}
             </button>
           ))}
         </div>
@@ -700,8 +729,8 @@ export default function OnboardingFlow({
         <div className="absolute" style={{ bottom: 'calc(100% + 6px)', left: -4 }}>
           <GhostVar2 width={44} />
         </div>
-        <h3 className="text-[18px] font-semibold text-text-strong leading-tight">{pop.title}</h3>
-        <p className="text-[13px] text-muted mt-2.5 leading-relaxed">{pop.body}</p>
+        <h3 className="text-[18px] font-semibold text-text-strong leading-tight">{i18nT(POP_TITLE_KEY[pop.navId])}</h3>
+        <p className="text-[13px] text-muted mt-2.5 leading-relaxed">{i18nT(POP_BODY_KEY[pop.navId])}</p>
         <div className="flex items-center mt-[18px]">
           <div className="flex items-center gap-1.5">
             {[0, 1, 2].map(i => (

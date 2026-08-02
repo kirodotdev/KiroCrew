@@ -5,45 +5,78 @@ import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
 /* ── CSS variable groups for the color picker ── */
-export const VAR_GROUPS: { label: string; vars: { key: string; label: string }[] }[] = [
+
+/**
+ * Catalog KEY for each group heading and each CSS-variable row label.
+ *
+ * Keys, not strings: `VAR_GROUPS` below is evaluated at module load, so an
+ * `i18nT()` call there would freeze whatever language was active at boot and
+ * never re-resolve on a language switch. Both lookups happen in
+ * `ColorModeEditor`, which runs during render.
+ *
+ * Shaped as flat `Record`s of full literal keys and indexed inline at the
+ * `i18nT()` call, because that is the form `scripts/check-i18n-keys.mjs` can
+ * resolve statically — a key it cannot resolve is a key it cannot verify exists.
+ *
+ * The CSS custom-property names themselves (`--bg`, `--accent-hover`) are NOT in
+ * here: they are the identifiers the theme JSON, the stylesheet and
+ * `ALLOWED_CSS_VARS` in `hooks/useTheme.tsx` agree on, so they are data. Only
+ * the human labels beside them are copy.
+ */
+const VAR_GROUP_LABEL_KEY: Record<string, string> = {
+  backgrounds: 'components.themeEditor.group_backgrounds',
+  text: 'components.themeEditor.group_text_muted',
+  borders: 'components.themeEditor.group_borders',
+  accent: 'components.themeEditor.group_accent',
+  status: 'components.themeEditor.group_status',
+}
+
+const VAR_LABEL_KEY: Record<string, string> = {
+  '--bg': 'components.themeEditor.var_bg',
+  '--bg-accent': 'components.themeEditor.var_bg_accent',
+  '--bg-elevated': 'components.themeEditor.var_bg_elevated',
+  '--bg-hover': 'components.themeEditor.var_bg_hover',
+  '--card': 'components.themeEditor.var_card',
+  '--card-fg': 'components.themeEditor.var_card_text',
+  '--panel': 'components.themeEditor.var_panel',
+  '--panel-strong': 'components.themeEditor.var_panel_strong',
+  '--text': 'components.themeEditor.var_text',
+  '--text-strong': 'components.themeEditor.var_text_strong',
+  '--muted': 'components.themeEditor.var_muted',
+  '--muted-strong': 'components.themeEditor.var_muted_strong',
+  '--border': 'components.themeEditor.var_border',
+  '--border-strong': 'components.themeEditor.var_border_strong',
+  '--border-hover': 'components.themeEditor.var_border_hover',
+  '--accent': 'components.themeEditor.var_accent',
+  '--accent-hover': 'components.themeEditor.var_accent_hover',
+  '--ring': 'components.themeEditor.var_ring',
+  '--ok': 'components.themeEditor.var_ok',
+  '--warn': 'components.themeEditor.var_warning',
+  '--danger': 'components.themeEditor.var_danger',
+  '--info': 'components.themeEditor.var_info',
+  '--aim': 'components.themeEditor.var_aim',
+}
+
+/**
+ * Picker layout: group id plus the CSS variables that group edits, in display
+ * order.
+ *
+ * `id` is a stable slug rather than the English heading because the heading is
+ * also the accordion's expanded-state identity and its React key — keying either
+ * on display copy would silently change both under a language switch.
+ */
+export const VAR_GROUPS: { id: string; vars: string[] }[] = [
   {
-    label: 'Backgrounds',
+    id: 'backgrounds',
     vars: [
-      { key: '--bg', label: 'Background' }, { key: '--bg-accent', label: 'Bg Accent' },
-      { key: '--bg-elevated', label: 'Bg Elevated' }, { key: '--bg-hover', label: 'Bg Hover' },
-      { key: '--card', label: 'Card' }, { key: '--card-fg', label: 'Card Text' },
-      { key: '--panel', label: 'Panel' }, { key: '--panel-strong', label: 'Panel Strong' },
+      '--bg', '--bg-accent', '--bg-elevated', '--bg-hover',
+      '--card', '--card-fg', '--panel', '--panel-strong',
     ],
   },
-  {
-    label: 'Text & Muted',
-    vars: [
-      { key: '--text', label: 'Text' }, { key: '--text-strong', label: 'Text Strong' },
-      { key: '--muted', label: 'Muted' }, { key: '--muted-strong', label: 'Muted Strong' },
-    ],
-  },
-  {
-    label: 'Borders',
-    vars: [
-      { key: '--border', label: 'Border' }, { key: '--border-strong', label: 'Border Strong' },
-      { key: '--border-hover', label: 'Border Hover' },
-    ],
-  },
-  {
-    label: 'Accent',
-    vars: [
-      { key: '--accent', label: 'Accent' }, { key: '--accent-hover', label: 'Accent Hover' },
-      { key: '--ring', label: 'Ring' },
-    ],
-  },
-  {
-    label: 'Status',
-    vars: [
-      { key: '--ok', label: 'OK' }, { key: '--warn', label: 'Warning' },
-      { key: '--danger', label: 'Danger' }, { key: '--info', label: 'Info' },
-      { key: '--aim', label: 'AIM' },
-    ],
-  },
+  { id: 'text', vars: ['--text', '--text-strong', '--muted', '--muted-strong'] },
+  { id: 'borders', vars: ['--border', '--border-strong', '--border-hover'] },
+  { id: 'accent', vars: ['--accent', '--accent-hover', '--ring'] },
+  { id: 'status', vars: ['--ok', '--warn', '--danger', '--info', '--aim'] },
 ]
 
 /** Extract current CSS variable values from the active theme */
@@ -51,7 +84,7 @@ export function getCurrentThemeVars(): Record<string, string> {
   const computed = getComputedStyle(document.documentElement)
   const result: Record<string, string> = {}
   for (const group of VAR_GROUPS) {
-    for (const v of group.vars) result[v.key] = computed.getPropertyValue(v.key).trim()
+    for (const key of group.vars) result[key] = computed.getPropertyValue(key).trim()
   }
   // Extra vars not in groups
   const extras = [
@@ -199,7 +232,7 @@ export function ColorRow({ label, value, onChange }: { label: string; value: str
     <div className="flex items-center gap-2 py-1">
       <span className="text-[13px] text-muted w-28 shrink-0 truncate" title={label}>{label}</span>
       {isSimpleColor ? (
-        <input type="color" aria-label={`${label} color picker`} value={toHex(value)} onChange={e => onChange(e.target.value)}
+        <input type="color" aria-label={i18nT('components.themeEditor.color_picker_for_var', { label })} value={toHex(value)} onChange={e => onChange(e.target.value)}
           className="w-8 h-7 rounded border border-border cursor-pointer bg-transparent shrink-0" />
       ) : (
         <div className="w-8 h-7 rounded border border-border shrink-0" style={{ background: value }} />
@@ -221,24 +254,24 @@ export function ColorModeEditor({ label, vars, onChange }: {
       <div className="text-[13px] font-medium text-text-strong mb-2">{label}</div>
       <div className="space-y-1">
         {VAR_GROUPS.map(group => (
-          <div key={group.label} className="border border-border rounded-md overflow-hidden">
+          <div key={group.id} className="border border-border rounded-md overflow-hidden">
             <button
               className="w-full flex items-center justify-between px-3 py-1.5 text-[13px] text-muted hover:text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent border-none"
-              onClick={() => setExpanded(expanded === group.label ? null : group.label)}
+              onClick={() => setExpanded(expanded === group.id ? null : group.id)}
             >
-              <span>{group.label}</span>
+              <span>{i18nT(VAR_GROUP_LABEL_KEY[group.id])}</span>
               <span className="flex items-center gap-1">
-                {group.vars.slice(0, 5).map(v => (
-                  <span key={v.key} className="w-3 h-3 rounded-sm border border-border"
-                    style={{ background: vars[v.key] || '#000' }} title={`${v.label}: ${vars[v.key] || '?'}`} />
+                {group.vars.slice(0, 5).map(key => (
+                  <span key={key} className="w-3 h-3 rounded-sm border border-border"
+                    style={{ background: vars[key] || '#000' }} title={`${i18nT(VAR_LABEL_KEY[key])}: ${vars[key] || '?'}`} />
                 ))}
-                <span className="ml-1 text-[11px]">{expanded === group.label ? '▲' : '▼'}</span>
+                <span className="ml-1 text-[11px]">{expanded === group.id ? '▲' : '▼'}</span>
               </span>
             </button>
-            {expanded === group.label && (
+            {expanded === group.id && (
               <div className="px-3 pb-2 border-t border-border bg-bg-elevated/50">
-                {group.vars.map(v => (
-                  <ColorRow key={v.key} label={v.label} value={vars[v.key] || ''} onChange={val => onChange(v.key, val)} />
+                {group.vars.map(key => (
+                  <ColorRow key={key} label={i18nT(VAR_LABEL_KEY[key])} value={vars[key] || ''} onChange={val => onChange(key, val)} />
                 ))}
               </div>
             )}

@@ -169,19 +169,37 @@ export function calculateTopbarSearchLayout(brandWidth: number, actionsWidth: nu
 const APP_NAV_MAX_RETRIES = 4
 const APP_NAV_RETRY_BASE_MS = 500
 
-const UPDATE_STEPS: Record<string, { icon: ReactNode; label: string }> = {
-  pulling:    { icon: <Download className="lucide-inline" />, label: 'Pulling latest changes' },
-  syncing:    { icon: <RefreshCw className="lucide-inline" />, label: 'Syncing workspace' },
-  building:   { icon: <Hammer className="lucide-inline" />, label: 'Rebuilding package' },
-  installing: { icon: <Package className="lucide-inline" />, label: 'Installing packages' },
-  restarting: { icon: <Rocket className="lucide-inline" />, label: 'Restarting server' },
-  failed:     { icon: <XCircle className="lucide-inline" />, label: 'Update failed' },
+const UPDATE_STEPS: Record<string, { icon: ReactNode }> = {
+  pulling:    { icon: <Download className="lucide-inline" /> },
+  syncing:    { icon: <RefreshCw className="lucide-inline" /> },
+  building:   { icon: <Hammer className="lucide-inline" /> },
+  installing: { icon: <Package className="lucide-inline" /> },
+  restarting: { icon: <Rocket className="lucide-inline" /> },
+  failed:     { icon: <XCircle className="lucide-inline" /> },
+}
+
+/**
+ * Catalog KEY per update step. Separate from UPDATE_STEPS and FLAT on purpose:
+ * this table is evaluated at module load, so an `i18nT()` call here would freeze
+ * the boot language, and `scripts/check-i18n-keys.mjs` only resolves a key that
+ * is indexed in ONE step from a file-scope map — `i18nT(UPDATE_STEPS[s].labelKey)`
+ * would be an unresolvable dynamic site.
+ */
+const UPDATE_STEP_LABEL_KEY: Record<string, string> = {
+  pulling: 'app.pulling_latest_changes',
+  syncing: 'app.syncing_workspace',
+  building: 'app.rebuilding_package',
+  installing: 'app.installing_packages',
+  restarting: 'app.restarting_server',
+  failed: 'app.update_failed_2',
 }
 
 const STEP_ORDER = ['pulling', 'syncing', 'building', 'installing', 'restarting']
 const STUCK_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
 
 const REASONING_EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
+// Approval-mode DISCRIMINANTS in escalating order, cycled by keyboard shortcut.
+// Sent to the backend and compared, never rendered — the picker has its own copy.
 const APPROVAL_MODE_LEVELS = ['normal', 'trust_reads', 'trust', 'yolo']
 
 function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
@@ -237,7 +255,7 @@ function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
             return (
               <div key={s} className={`flex items-center gap-2.5 text-[13px] transition-colors ${done ? 'text-ok' : active ? 'text-accent font-medium' : 'text-muted/40'}`}>
                 <span className="w-5 text-center">{done ? <Check className="lucide-inline" /> : active ? si.icon : '○'}</span>
-                <span>{si.label}</span>
+                <span>{i18nT(UPDATE_STEP_LABEL_KEY[s])}</span>
                 {active && <span className="ml-auto text-[11px] text-muted animate-pulse">{elapsedStr}</span>}
               </div>
             )
@@ -1965,7 +1983,14 @@ export default function App() {
               and slides up into place. */}
           {!effectiveCollapsed ? (
             <div className="nav-section flex items-center justify-between gap-2 pl-3 pr-1 pt-3 pb-1">
-              <span className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden">{i18nT('app.apps')}</span>
+              <span
+                // `overflow-hidden` + `whitespace-nowrap` means this clips
+                // silently once the label grows — which it does in a longer
+                // locale. The `title` keeps the full string reachable instead
+                // of losing the tail with no affordance.
+                title={i18nT('app.apps')}
+                className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden"
+              >{i18nT('app.apps')}</span>
               <Clickable
                 data-onboarding-nav="apps"
                 onClick={() => { closeMobileNav?.(); navigate('/apps') }}

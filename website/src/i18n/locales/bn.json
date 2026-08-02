@@ -98,7 +98,12 @@
     "signed_in_with": "{{provider}} দিয়ে সাইন ইন করা হয়েছে",
     "updates": "আপডেট",
     "kiro_credits_title": "Kiro ক্রেডিট: {{used}} / {{limit}} ({{pct}}) — বিশদ দেখতে ক্লিক করো",
-    "kiro_credits_title_with_bonus": "Kiro ক্রেডিট: {{used}} / {{limit}} ব্যবহৃত — প্ল্যান {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — বিশদ দেখতে ক্লিক করো"
+    "kiro_credits_title_with_bonus": "Kiro ক্রেডিট: {{used}} / {{limit}} ব্যবহৃত — প্ল্যান {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — বিশদ দেখতে ক্লিক করো",
+    "installing_packages": "প্যাকেজ ইনস্টল হচ্ছে",
+    "pulling_latest_changes": "সর্বশেষ পরিবর্তন টানা হচ্ছে",
+    "rebuilding_package": "প্যাকেজ আবার বিল্ড হচ্ছে",
+    "restarting_server": "সার্ভার আবার চালু হচ্ছে",
+    "syncing_workspace": "ওয়ার্কস্পেস সিঙ্ক হচ্ছে"
   },
   "appSdk": {
     "chatEmbed": {
@@ -270,7 +275,15 @@
         "when_should_the_agent_stop": "এজেন্ট কখন থামবে?",
         "your_answer": "আপনার উত্তর",
         "your_answer_2": "আপনার উত্তর...",
-        "your_guidance": "তোমার নির্দেশনা"
+        "your_guidance": "তোমার নির্দেশনা",
+        "state_done": "সম্পন্ন",
+        "state_failed": "ব্যর্থ",
+        "state_needs_input": "ইনপুট দরকার",
+        "state_paused": "পজ করা",
+        "state_ready": "প্রস্তুত",
+        "state_stalled": "স্থবির",
+        "state_stopped": "থামানো হয়েছে",
+        "state_working": "কাজ করছে"
       }
     },
     "codeReviewSage": {
@@ -342,7 +355,12 @@
         "the_review_runs_on_the_gateway_host_and_needs_th": "রিভিউটি গেটওয়ে হোস্টে চলে\n        এবং এর দরকার",
         "unavailable_could_not_be_fetched": "“অনুপলব্ধ — আনা যায়নি”",
         "updated": "আপডেটেড",
-        "usually_means": "সাধারণত এর মানে"
+        "usually_means": "সাধারণত এর মানে",
+        "phase_deep": "গভীর রিভিউ…",
+        "phase_done": "রিভিউ হয়েছে",
+        "phase_failed": "ব্যর্থ",
+        "phase_gating": "ডিজাইন গেট…",
+        "phase_queued": "সারিতে"
       }
     },
     "fileExplorer": {
@@ -593,7 +611,11 @@
           "timeline": "টাইমলাইন",
           "unassigned": "অনির্ধারিত",
           "unknown_branches": "অজানা ব্রাঞ্চ",
-          "updated": "আপডেট হয়েছে"
+          "updated": "আপডেট হয়েছে",
+          "approved_these_changes": "এই পরিবর্তনগুলো অনুমোদন করেছেন",
+          "dismissed_a_review": "একটি রিভিউ খারিজ করেছেন",
+          "requested_changes": "পরিবর্তন চেয়েছেন",
+          "reviewed": "রিভিউ করেছেন"
         },
         "prFiltersSection": {
           "assigned_to_me": "আমাকে নির্ধারিত",
@@ -737,6 +759,19 @@
           "selected_one": "{{count}}টি নির্বাচিত",
           "selected_other": "{{count}}টি নির্বাচিত",
           "type_to_confirm": "চালিয়ে যেতে নিশ্চিতকরণ শব্দটি টাইপ করুন"
+        },
+        "memberBadge": {
+          "admin": "অ্যাডমিন",
+          "collaborator": "সহযোগী",
+          "contributor": "অবদানকারী",
+          "first_time_contributor": "প্রথমবারের অবদানকারী",
+          "first_timer": "প্রথমবার",
+          "maintainer": "মেইনটেইনার",
+          "member": "সদস্য",
+          "owner": "মালিক",
+          "read": "পড়া",
+          "triage": "ট্রায়াজ",
+          "write": "লেখা"
         }
       },
       "connectPanel": {
@@ -892,7 +927,15 @@
             "which_labels_mark_newcomer_friendly_work_so_issu": "কোন লেবেলগুলো নতুনদের উপযোগী কাজ চিহ্নিত করে, যাতে Issue Radar প্রথমবারের কন্ট্রিবিউটরদের জন্য ইস্যু সামনে আনতে পারে।",
             "which_labels_mean_an_issue_still_needs_triage_dr": "কোন লেবেলগুলো বোঝায় যে ইস্যুর এখনো ট্রায়াজ দরকার। এটাই ওভারভিউয়ের “ট্রায়াজ হয়নি” সংখ্যা আর মনোযোগ-দরকার তালিকা ঠিক করে।",
             "without_push_access_to": "পুশ অ্যাক্সেস না থাকলে এখানে:",
-            "your_edits_are_kept_here_but_won_t_persist_if_yo": "আপনার সম্পাদনাগুলো এখানে রাখা হচ্ছে, কিন্তু স্থায়ী হবে না। আপনি যদি সদ্য Issue Radar আপডেট করে থাকেন, তবে ব্যাকএন্ড পুনরায় চালু করুন যাতে সেটিংস API পাওয়া যায়।"
+            "your_edits_are_kept_here_but_won_t_persist_if_yo": "আপনার সম্পাদনাগুলো এখানে রাখা হচ্ছে, কিন্তু স্থায়ী হবে না। আপনি যদি সদ্য Issue Radar আপডেট করে থাকেন, তবে ব্যাকএন্ড পুনরায় চালু করুন যাতে সেটিংস API পাওয়া যায়।",
+            "role_admin": "অ্যাডমিন",
+            "role_collaborator": "সহযোগী",
+            "role_maintainer": "মেইনটেইনার",
+            "role_member": "সদস্য",
+            "role_owner": "মালিক",
+            "role_read": "পড়া",
+            "role_triage": "ট্রায়াজ",
+            "role_write": "লেখা"
           }
         },
         "tagging": {
@@ -947,13 +990,27 @@
           "untagged_issues": "ট্যাগ-না-করা ইস্যু",
           "what_you_see_below_is_the_previous_result_not_th": "নিচে যা দেখছেন তা আগের ফলাফল, বর্তমান অবস্থা নয়।",
           "write_every_staged_label_to_github": "স্টেজ করা প্রতিটি লেবেল GitHub-এ লিখে দাও"
+        },
+        "registry": {
+          "overview": "ওভারভিউ",
+          "tagging": "ট্যাগিং"
         }
       },
       "welcomeCarousel": {
         "back": "পিছনে",
         "carl_sagan": "— Carl Sagan",
         "next": "পরবর্তী",
-        "somewhere_something_incredible_is_waiting_to_be": "\"কোথাও, অবিশ্বাস্য কিছু জানার অপেক্ষায় রয়েছে।\""
+        "somewhere_something_incredible_is_waiting_to_be": "\"কোথাও, অবিশ্বাস্য কিছু জানার অপেক্ষায় রয়েছে।\"",
+        "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — নতুন করে শুরু না করে Issue Radar পড়ে নেয় তোমার বটরা আগেই যা খুঁজে পেয়েছে।",
+        "slide_bots_title": "তোমার বটরা আগেই যা বলেছে, তা-ই পড়ে",
+        "slide_decide_subtitle": "এটি প্রস্তাব দেয়; অনুমোদন করো তুমি। প্রতিটি সিদ্ধান্ত লোকালেই থাকে, তুমি ফিরে এলেই তৈরি।",
+        "slide_decide_title": "সিদ্ধান্ত তোমার — আর এটি মনে রাখে",
+        "slide_linked_prs_subtitle": "প্রতিটি ইস্যু ঠিক করার জন্য যে PR, সেটি খোলা, ড্রাফট নাকি মার্জ হয়েছে — সব দেখো। কোড রিভিউ তোমার নিজের টুলেই থাকে।",
+        "slide_linked_prs_title": "সংযুক্ত PR, এক নজরে",
+        "slide_local_subtitle": "কোনো AWS অ্যাকাউন্ট নয়, কোনো কী নয়, ইস্যু-প্রতি বিলও নয়। শুধু তোমার মেশিনে থাকা gh CLI।",
+        "slide_local_title": "কোনো ক্লাউড অ্যাকাউন্ট নয়, কোনো API কী নয়",
+        "slide_welcome_subtitle": "তোমার ইস্যুর জন্য AI দিয়ে ডুপ্লিকেট শনাক্তকরণ আর লেবেলিং — সব চলে লোকালি, আর প্রতিটি অনুসন্ধান মনে রাখে।",
+        "slide_welcome_title": "Issue Radar-এ স্বাগতম"
       },
       "workspace": {
         "resize_list": "তালিকার আকার বদলান",
@@ -964,6 +1021,12 @@
       },
       "api": {
         "these_settings_changed_elsewhere": "এই সেটিংস অন্য কোথাও বদলে গেছে।"
+      },
+      "lib": {
+        "format": {
+          "last_update": "সর্বশেষ আপডেট",
+          "number": "নম্বর"
+        }
       }
     },
     "meetings": {
@@ -1465,6 +1528,48 @@
       "waitingScreen": {
         "cancel_this_run": "এই রানটি বাতিল করুন",
         "stop_this_run_and_discard_it": "এই রান থামিয়ে বাতিল করুন"
+      },
+      "constants": {
+        "blocked_figma_app_missing_hint": "Figma ডেস্কটপে ফাইলটা খোলো আর আবার চেষ্টা করো, বা ফ্রেমগুলো PNG হিসেবে এক্সপোর্ট করে এখানে ফেলে দাও।",
+        "blocked_figma_app_missing_say": "আমি Figma-তে পৌঁছাতে পারছি না — ডেস্কটপ অ্যাপ চলছে না, বা আমার কাছে Figma টুলগুলো নেই।",
+        "blocked_figma_file_closed_hint": "Figma ডেস্কটপে এটা খোলো, তারপর আবার চেষ্টা করো।",
+        "blocked_figma_file_closed_say": "Figma চলছে, কিন্তু সেই ফাইলটা খোলা নেই।",
+        "blocked_figma_no_permission_auth_lead": "Figma-র অ্যাক্সেস অ্যাকাউন্ট ধরে দেওয়া হয়, আর ডেস্কটপ অ্যাপে যা খোলা থাকে আমি শুধু সেটাই পড়ি — আমার নিজের কোনো লগইন নেই। কীভাবে ঠিক করবে তা এখানে দেওয়া আছে।",
+        "blocked_figma_no_permission_auth_step_1": "1. ফাইলের মালিককে বলো তোমার Figma অ্যাকাউন্টের সঙ্গে এটা শেয়ার করতে",
+        "blocked_figma_no_permission_auth_step_2": "2. Figma ডেস্কটপে এটা খোলো",
+        "blocked_figma_no_permission_auth_step_3": "3. ফিরে এসে আবার চেষ্টা করার বোতামে চাপো",
+        "blocked_figma_no_permission_auth_tail": "অ্যাক্সেস যদি না আসে, ফ্রেমগুলো PNG হিসেবে এক্সপোর্ট করলেও একই কাজ হয় — পিক্সেল দেখেই আমি সমালোচনা করি।",
+        "blocked_figma_no_permission_hint": "অ্যাক্সেস চেয়ে নাও, বা ফ্রেমগুলো PNG হিসেবে এক্সপোর্ট করে এখানে ফেলে দাও।",
+        "blocked_figma_no_permission_say": "তোমার Figma অ্যাকাউন্ট সেই ফাইলটা দেখতে পারে না।",
+        "blocked_no_access_auth_lead": "Git-এর অ্যাক্সেস প্রতি মেশিনে সেট করা হয়, প্রতি অ্যাপে নয় — একবার করে নিলে এখানে আর সব জায়গাতেই প্রাইভেট রিপো কাজ করবে। এগুলো তোমার টার্মিনালে চালাও।",
+        "blocked_no_access_auth_tail": "তারপর ফিরে এসে আবার চেষ্টা করার বোতামে চাপো। আমি কখনো টোকেন চাই না বা জমা রাখি না — এই অ্যাপে পেস্ট করা যেকোনো কিছু সংরক্ষিত ট্রান্সক্রিপ্টে থেকে যাবে।",
+        "blocked_no_access_hint": "যদি তোমার কাছে চেকআউট করা থাকে, বদলে আমাকে ফোল্ডারের পাথ দাও।",
+        "blocked_no_access_say": "সেই রিপোটা খুলতে পারলাম না। হয় এটা প্রাইভেট (আর আমার কাছে এর কোনো ক্রেডেনশিয়াল নেই), নয়তো এটার অস্তিত্বই নেই — GitHub দুটোর জন্যই একই এরর দেয়।",
+        "blocked_not_found_hint": "মালিক আর নাম মিলিয়ে দেখো, বা আমাকে একটা লোকাল ফোল্ডারের পাথ দাও।",
+        "blocked_not_found_say": "সেই URL-এ ওই রিপোর অস্তিত্ব নেই।",
+        "blocked_other_hint": "স্ক্রিনশটই এটা এড়ানোর সবচেয়ে দ্রুত উপায়।",
+        "blocked_other_say": "ওটার ভেতরে ঢুকতে পারলাম না।",
+        "kind_figma": "Figma ফাইল",
+        "kind_local": "লোকাল কোড",
+        "kind_repo": "রিপো",
+        "kind_url": "চালু থাকা অ্যাপ",
+        "scan_finding_screens": "স্ক্রিনগুলো খোঁজা হচ্ছে",
+        "scan_grouping_flows": "সম্ভাব্য ফ্লো অনুযায়ী সাজানো হচ্ছে",
+        "scan_which_renderable": "কোনগুলো রেন্ডার করতে পারব তা বের করা হচ্ছে",
+        "sev_catastrophe": "বিপর্যয়",
+        "sev_cosmetic": "সৌন্দর্যগত",
+        "sev_major": "গুরুতর",
+        "sev_minor": "সামান্য",
+        "stage_checking_hierarchy": "হায়ারার্কি, কনট্রাস্ট ও কনটেন্ট যাচাই করা হচ্ছে",
+        "stage_double_checking": "প্রতিটি ফলাফল আবার মিলিয়ে দেখা হচ্ছে",
+        "stage_getting_pixels": "দেখার জন্য আসল পিক্সেল আনা হচ্ছে",
+        "stage_reading_screens": "স্ক্রিনগুলো পড়া হচ্ছে",
+        "stage_weighing_task": "কাজের সঙ্গে মিলিয়ে বিচার করা হচ্ছে",
+        "stage_writing_up": "সমালোচনা লেখা হচ্ছে",
+        "wait_figma": "Figma ফাইল খোলা হচ্ছে আর তার ফ্রেমগুলোর তালিকা করা হচ্ছে…",
+        "wait_local": "রুট খুঁজতে কোড স্ক্যান করা হচ্ছে…",
+        "wait_repo": "রিপো ক্লোন করা হচ্ছে আর তার রুটগুলোর তালিকা করা হচ্ছে…",
+        "wait_url": "পেজ লোড করা হচ্ছে আর তার লিঙ্কগুলো অনুসরণ করা হচ্ছে…"
       }
     },
     "crewCompanion": {
@@ -1896,6 +2001,15 @@
       "types": {
         "built_in": "বিল্ট-ইন",
         "kirocrew_registry": "KiroCrew রেজিস্ট্রি"
+      },
+      "categories": {
+        "agents_automation": "এজেন্ট ও অটোমেশন",
+        "designer_tools": "ডিজাইনার টুল",
+        "developer_tools": "ডেভেলপার টুল",
+        "oncall_ops": "অন-কল ও অপস",
+        "other": "অন্যান্য",
+        "productivity": "উৎপাদনশীলতা",
+        "research_writing": "রিসার্চ ও লেখালেখি"
       }
     },
     "artifactBody": {
@@ -2049,7 +2163,10 @@
       "upload_file": "ফাইল আপলোড করুন",
       "use_a_skill": "একটি স্কিল ব্যবহার করুন",
       "used": "ব্যবহৃত",
-      "voice_input": "ভয়েস ইনপুট"
+      "voice_input": "ভয়েস ইনপুট",
+      "queue": "কিউ",
+      "queue_desc": "বর্তমান টার্ন শেষ হলে চালাও",
+      "steer_desc": "চলমান টার্নে সঙ্গে সঙ্গে ঢুকিয়ে দাও"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -2097,7 +2214,30 @@
           "pin_this_chat_to_the_top": "এই চ্যাট উপরে পিন করো",
           "remove_pin_from_this_chat": "এই চ্যাট থেকে পিন সরাও",
           "start_a_fresh_chat": "নতুন একটি চ্যাট শুরু করো",
-          "unpin_current_session": "বর্তমান সেশনের পিন সরাও"
+          "unpin_current_session": "বর্তমান সেশনের পিন সরাও",
+          "actions": "অ্যাকশন"
+        },
+        "allAggregator": {
+          "all": "সব"
+        },
+        "knowledgeProvider": {
+          "knowledge": "জ্ঞানভান্ডার"
+        },
+        "pagesProvider": {
+          "developer": "ডেভেলপার",
+          "explore": "অন্বেষণ",
+          "hooks": "Hooks",
+          "kirocrew_agents": "KiroCrew এজেন্ট",
+          "logs": "লগ",
+          "pages": "পেজ",
+          "remote_crew": "রিমোট ক্রু",
+          "tasks": "টাস্ক"
+        },
+        "promptsProvider": {
+          "prompts": "প্রম্পট"
+        },
+        "skillsProvider": {
+          "skills": "স্কিল"
         }
       },
       "search_everywhere": "সর্বত্র অনুসন্ধান করুন",
@@ -2153,7 +2293,10 @@
       "scroll_to_the_highlighted_text": "হাইলাইট করা লেখায় স্ক্রল করো",
       "shared_comment": "শেয়ার করা মন্তব্য",
       "show": "দেখাও",
-      "unknown": "অজানা"
+      "unknown": "অজানা",
+      "anchor_text_no_longer_found_in_content": "অ্যাঙ্কর টেক্সট আর কনটেন্টে পাওয়া যাচ্ছে না",
+      "failed_to_sync_to_provider": "প্রোভাইডারে সিঙ্ক করা যায়নি",
+      "pending_sync_to_provider": "প্রোভাইডারে সিঙ্ক হওয়ার অপেক্ষায়"
     },
     "commentThreadPopover": {
       "close": "বন্ধ করুন",
@@ -2180,7 +2323,15 @@
       "show_live_desktop_view": "লাইভ ডেস্কটপ ভিউ দেখাও",
       "shrink": "ছোট করো",
       "shrink_live_desktop_view": "লাইভ ডেস্কটপ ভিউ ছোট করো",
-      "updated": "সর্বশেষ আপডেট"
+      "updated": "সর্বশেষ আপডেট",
+      "resize_live_desktop_view_bottom": "লাইভ ডেস্কটপ ভিউ রিসাইজ করো (নিচে)",
+      "resize_live_desktop_view_bottom_left": "লাইভ ডেস্কটপ ভিউ রিসাইজ করো (নিচে বাঁয়ে)",
+      "resize_live_desktop_view_bottom_right": "লাইভ ডেস্কটপ ভিউ রিসাইজ করো (নিচে ডানে)",
+      "resize_live_desktop_view_left": "লাইভ ডেস্কটপ ভিউ রিসাইজ করো (বাঁয়ে)",
+      "resize_live_desktop_view_right": "লাইভ ডেস্কটপ ভিউ রিসাইজ করো (ডানে)",
+      "resize_live_desktop_view_top": "লাইভ ডেস্কটপ ভিউ রিসাইজ করো (উপরে)",
+      "resize_live_desktop_view_top_left": "লাইভ ডেস্কটপ ভিউ রিসাইজ করো (উপরে বাঁয়ে)",
+      "resize_live_desktop_view_top_right": "লাইভ ডেস্কটপ ভিউ রিসাইজ করো (উপরে ডানে)"
     },
     "contentRenderer": {
       "loading_editor": "এডিটর লোড হচ্ছে…"
@@ -2411,7 +2562,15 @@
       "open_state": "খোলা",
       "opened_time": "{{time}} খোলা হয়েছে",
       "provider_results_may_be_partial_for_sections_ope": "{{sections}}-এর জন্য প্রোভাইডারের ফলাফল আংশিক হতে পারে। সম্পূর্ণ তালিকার জন্য ইস্যুটি খোলো।",
-      "updated_time": "{{time}} আপডেট হয়েছে"
+      "updated_time": "{{time}} আপডেট হয়েছে",
+      "reaction_confused": "বিভ্রান্ত",
+      "reaction_eyes": "চোখ",
+      "reaction_heart": "হৃদয়",
+      "reaction_hooray": "হুররে",
+      "reaction_laugh": "হাসি",
+      "reaction_minus1": "থাম্বস ডাউন",
+      "reaction_plus1": "থাম্বস আপ",
+      "reaction_rocket": "রকেট"
     },
     "jobForm": {
       "a_short_label_for_this_job": "এই জবের জন্য একটি সংক্ষিপ্ত লেবেল",
@@ -2616,7 +2775,8 @@
       "view_preview": "প্রিভিউ দেখো",
       "view_source": "সোর্স দেখো",
       "word_wrap": "ওয়ার্ড র‍্যাপ",
-      "failed_to_add_source": "সোর্স যোগ করা যায়নি"
+      "failed_to_add_source": "সোর্স যোগ করা যায়নি",
+      "download_failed": "ডাউনলোড ব্যর্থ হয়েছে"
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_reveal_in_finder": "ব্রাউজ করতে ক্লিক করুন / Finder-এ দেখাতে Shift+ক্লিক করুন",
@@ -2736,7 +2896,19 @@
         "this_week": "এই সপ্তাহ",
         "today": "আজ",
         "unknown_date": "অজানা তারিখ",
-        "yesterday": "গতকাল"
+        "yesterday": "গতকাল",
+        "kind_agent": "এজেন্ট",
+        "kind_all": "সব",
+        "kind_approval": "অনুমোদন",
+        "kind_cron": "Cron",
+        "kind_cron_job": "Cron জব",
+        "kind_heartbeat": "Heartbeat",
+        "kind_hooks": "Hooks",
+        "kind_notification": "নোটিফিকেশন",
+        "kind_subagent": "সাবএজেন্ট",
+        "kind_task_runner": "টাস্ক রানার",
+        "kind_tasks": "টাস্ক",
+        "kind_webhook": "ওয়েবহুক"
       },
       "notificationDetailPanel": {
         "approve": "অনুমোদন করুন",
@@ -2814,7 +2986,22 @@
       "set_your_look_and_tell_kiro_about_you_so_respons": "নিজের পছন্দের চেহারা ঠিক করো আর Kiro-কে নিজের সম্পর্কে বলো, যাতে উত্তরগুলো তোমার কাজের ধরনের সঙ্গে মেলে।",
       "skip": "বাদ দিন",
       "tell_kiro_about_you": "Kiro-কে আপনার সম্পর্কে বলুন",
-      "your_role": "আপনার ভূমিকা"
+      "your_role": "আপনার ভূমিকা",
+      "pop_apps_body": "বিশেষভাবে তৈরি টুল ইনস্টল করো, যেগুলো নতুন সক্ষমতা আর ওয়ার্কফ্লো খুলে দেয়।",
+      "pop_apps_title": "KiroCrew দিয়ে তুমি যা করতে পারো, তার পরিসর বাড়াও",
+      "pop_chat_body": "একটা প্রশ্ন করো, কাজ দাও, বা শুধু হাই বলো — তোমার এজেন্ট তৈরি।",
+      "pop_chat_title": "তোমার প্রথম সেশন শুরু করো",
+      "pop_schedule_body": "টাস্ক স্বয়ংক্রিয়ভাবে চলার জন্য সেট করো, যাতে তোমাকে কিছু না করেই কাজ হয়ে যায়।",
+      "pop_schedule_title": "কাজ চলবে সময়মতো",
+      "role_data_ml": "ডেটা / ML",
+      "role_designer": "UX ডিজাইনার",
+      "role_developer": "ডেভেলপার",
+      "role_it_ops": "IT / অপারেশন",
+      "role_other": "অন্যান্য",
+      "role_product_manager": "প্রোডাক্ট ম্যানেজার",
+      "tech_codes": "আমি কোড লিখি",
+      "tech_non_technical": "প্রযুক্তিগত নয়",
+      "tech_somewhat": "কিছুটা"
     },
     "pastedChip": {
       "collapse_paste": "পেস্ট সংকুচিত করো",
@@ -2927,7 +3114,17 @@
       "take_this_merge_request_out_of_draft": "এই মার্জ রিকোয়েস্ট ড্রাফট থেকে বের করো",
       "take_this_pull_request_out_of_draft": "এই পুল রিকোয়েস্ট ড্রাফট থেকে বের করো",
       "this_authorizes_the_merge_as_soon_as_requirement": "শর্তগুলো পাস হওয়ার সাথে সাথেই এটি মার্জের অনুমতি দেয়, আর এই রিপোজিটরি অনুমোদন করলে স্কোয়াশ করে (নাহলে একটি মার্জ কমিট, তারপর রিবেস)।",
-      "this_authorizes_the_merge_when_the_pipeline_succ": "পাইপলাইন সফল হলে এটি মার্জের অনুমতি দেয়।"
+      "this_authorizes_the_merge_when_the_pipeline_succ": "পাইপলাইন সফল হলে এটি মার্জের অনুমতি দেয়।",
+      "check_failed": "ব্যর্থ",
+      "check_in_progress": "চলমান",
+      "check_passed": "পাস",
+      "check_skipped": "এড়িয়ে যাওয়া হয়েছে",
+      "checks_failed": "চেক ব্যর্থ",
+      "checks_passed": "চেক পাস",
+      "state_closed": "বন্ধ",
+      "state_draft": "ড্রাফট",
+      "state_merged": "মার্জ হয়েছে",
+      "state_open": "খোলা"
     },
     "questionCard": {
       "collapse_all": "সব সংকুচিত করুন",
@@ -3232,7 +3429,36 @@
       "saving": "সেভ হচ্ছে…",
       "theme_json": "থিম JSON",
       "theme_name": "থিমের নাম",
-      "update_theme": "থিম আপডেট করো"
+      "update_theme": "থিম আপডেট করো",
+      "color_picker_for_var": "{{label}}-এর কালার পিকার",
+      "group_accent": "অ্যাকসেন্ট",
+      "group_backgrounds": "পটভূমি",
+      "group_borders": "সীমানা",
+      "group_status": "অবস্থা",
+      "group_text_muted": "টেক্সট ও ম্লান",
+      "var_accent": "অ্যাকসেন্ট",
+      "var_accent_hover": "হোভার অ্যাকসেন্ট",
+      "var_aim": "AIM",
+      "var_bg": "পটভূমি",
+      "var_bg_accent": "অ্যাকসেন্ট পটভূমি",
+      "var_bg_elevated": "উঁচু পটভূমি",
+      "var_bg_hover": "হোভার পটভূমি",
+      "var_border": "সীমানা",
+      "var_border_hover": "হোভার সীমানা",
+      "var_border_strong": "জোরালো সীমানা",
+      "var_card": "কার্ড",
+      "var_card_text": "কার্ডের টেক্সট",
+      "var_danger": "বিপদ",
+      "var_info": "তথ্য",
+      "var_muted": "ম্লান",
+      "var_muted_strong": "জোরালো ম্লান",
+      "var_ok": "OK",
+      "var_panel": "প্যানেল",
+      "var_panel_strong": "জোরালো প্যানেল",
+      "var_ring": "ফোকাস রিং",
+      "var_text": "টেক্সট",
+      "var_text_strong": "জোরালো টেক্সট",
+      "var_warning": "সতর্কতা"
     },
     "themeExperienceLayer": {
       "adopt_a_themed_persona_in_the_assistant_security": "• সহকারীতে একটি থিমযুক্ত পার্সোনা গ্রহণ করা হবে (নিরাপত্তা ও নির্ভুলতা সর্বদাই অগ্রাধিকার পায়; আপনি যেকোনো সময় পার্সোনাটি বাদ দিতে বলতে পারেন)।",
@@ -3398,7 +3624,8 @@
       "updated": "সর্বশেষ আপডেট",
       "view_only_clicks_here_don_t_reach_the_page": "শুধু দেখার জন্য — এখানে ক্লিক করলে পেজে পৌঁছায় না",
       "waiting_for_the_browser_to_take_a_screenshot": "ব্রাউজার স্ক্রিনশট নেওয়ার জন্য অপেক্ষা করা হচ্ছে…",
-      "web_preview": "ওয়েব প্রিভিউ"
+      "web_preview": "ওয়েব প্রিভিউ",
+      "responsive_desktop": "রেসপন্সিভ (ডেস্কটপ)"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "শুধু এজেন্ট — KiroCrew কনটেক্সট বা MCP নেই",
@@ -3451,6 +3678,41 @@
       "copied": "কপি করা হয়েছে",
       "copy_url": "URL কপি করুন",
       "copy_url_of": "{{name}} এর URL কপি করুন"
+    },
+    "readingWidthToggle": {
+      "label_full": "প",
+      "label_md": "ম",
+      "title_full": "পূর্ণ প্রস্থ",
+      "title_md": "মধ্যম প্রস্থ"
+    },
+    "slashCommandMenu": {
+      "desc_agent": "সক্রিয় এজেন্ট বদলাও বা পরিচালনা করো",
+      "desc_changelog": "রিলিজ চেঞ্জলগ দেখাও",
+      "desc_chat": "একটি চ্যাট সেশন সেভ বা লোড করো",
+      "desc_clear": "কথাবার্তার ইতিহাস মুছে দাও",
+      "desc_code": "কোড ইন্টেলিজেন্স টুল খোলো",
+      "desc_compact": "কনটেক্সট খালি করতে কথাবার্তা সংক্ষিপ্ত করো",
+      "desc_context": "কনটেক্সট ফাইল আর টোকেন ব্যবহার পরিচালনা করো",
+      "desc_editor": "বাইরের কোনো এডিটরে তোমার প্রম্পট লেখো",
+      "desc_exit": "চ্যাট সেশন থেকে বেরিয়ে যাও",
+      "desc_experiment": "পরীক্ষামূলক ফিচার চালু বা বন্ধ করো",
+      "desc_help": "যে কমান্ডগুলো আছে তা দেখাও",
+      "desc_hooks": "কনফিগার করা কনটেক্সট হুক দেখো",
+      "desc_issue": "কোনো সমস্যা বা বাগ জানাও",
+      "desc_kb": "জ্ঞানভান্ডারে খোঁজো",
+      "desc_logdump": "সেশনের লগ একটি ফাইলে ডাম্প করো",
+      "desc_mcp": "কনফিগার করা MCP সার্ভার দেখাও",
+      "desc_model": "চলতি মডেল দেখাও বা বদলাও",
+      "desc_onboarding": "সেটআপ ইমপোর্ট আর স্বাগত ট্যুর আবার চালাও",
+      "desc_paste": "ক্লিপবোর্ড থেকে একটি ছবি পেস্ট করো",
+      "desc_prompts": "সেভ করা প্রম্পট ও এজেন্ট SOP দেখাও বা চালাও",
+      "desc_quit": "চ্যাট সেশন বন্ধ করো",
+      "desc_reply": "সহকারীর শেষ মেসেজে উত্তর দাও",
+      "desc_side": "পাশে একটি কথাবার্তার প্যানেল খোলো",
+      "desc_tangent": "একটি ট্যানজেন্ট কথাবার্তা শুরু করো",
+      "desc_todos": "টাস্কের তালিকা দেখাও বা পরিচালনা করো",
+      "desc_tools": "যে টুলগুলো আছে তা দেখাও",
+      "desc_usage": "বিলিং আর ব্যবহারের তথ্য দেখাও"
     }
   },
   "hooks": {
@@ -3466,7 +3728,34 @@
       "failed_to_run_job": "জব চালানো যায়নি"
     },
     "useKeyboardShortcuts": {
-      "close_this_session": "এই সেশন বন্ধ করবে?"
+      "close_this_session": "এই সেশন বন্ধ করবে?",
+      "chats_panel": "চ্যাট প্যানেল",
+      "cycle_agent": "এজেন্ট পাল্টানো",
+      "cycle_approval_mode": "অনুমোদন মোড পাল্টানো",
+      "cycle_model": "মডেল পাল্টানো",
+      "cycle_reasoning_effort": "রিজনিং এফোর্ট পাল্টানো",
+      "focus_text_input": "টেক্সট ইনপুটে ফোকাস",
+      "group_actions": "অ্যাকশন",
+      "group_chat_navigation": "চ্যাট নেভিগেশন",
+      "group_panel_navigation": "প্যানেল নেভিগেশন",
+      "group_remote_crews": "রিমোট ক্রু",
+      "jump_to_chat": "চ্যাট {{n}}-এ যাওয়া",
+      "last_visited_chat_mru": "সর্বশেষ দেখা চ্যাট (MRU)",
+      "next_chat": "পরের চ্যাট",
+      "notifications_panel": "নোটিফিকেশন প্যানেল",
+      "open_agent_monitor": "এজেন্ট মনিটর খোলা (সাবএজেন্ট)",
+      "open_settings": "সেটিংস খোলা",
+      "open_shortcuts_help": "শর্টকাট সহায়িকা খোলা",
+      "previous_agent": "আগের এজেন্ট",
+      "previous_approval_mode": "আগের অনুমোদন মোড",
+      "previous_chat": "আগের চ্যাট",
+      "previous_model": "আগের মডেল",
+      "previous_reasoning_effort": "আগের রিজনিং এফোর্ট",
+      "projects_panel": "প্রজেক্ট প্যানেল",
+      "schedule_panel": "শিডিউল প্যানেল",
+      "switch_to_local": "লোকাল-এ যাওয়া",
+      "switch_to_remote_crew": "রিমোট ক্রু {{n}}-এ যাওয়া",
+      "walk_back_mru_history": "MRU ইতিহাসে পিছিয়ে যাওয়া"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "সব স্লট ভর্তি",
@@ -3515,6 +3804,20 @@
       "a_task_needs_your_decision": "একটা কাজের জন্য তোমার সিদ্ধান্ত দরকার",
       "approval_required": "অনুমোদন দরকার",
       "unknown": "অজানা"
+    },
+    "theme": {
+      "high_contrast": "🔆 উচ্চ কনট্রাস্ট"
+    },
+    "usePanelTabs": {
+      "artifacts": "আর্টিফ্যাক্ট",
+      "browser": "ব্রাউজার",
+      "changes": "পরিবর্তন",
+      "files": "ফাইল",
+      "issues": "ইস্যু",
+      "logs": "লগ",
+      "side": "সাইড",
+      "subagents": "সাবএজেন্ট",
+      "workflows": "ওয়ার্কফ্লো"
     }
   },
   "nav": {
@@ -3588,7 +3891,15 @@
       "dagView": {
         "approve": "অনুমোদন করুন",
         "deny": "অস্বীকার করুন",
-        "no_tasks_to_visualize": "ভিজ্যুয়ালাইজ করার মতো কোনো টাস্ক নেই"
+        "no_tasks_to_visualize": "ভিজ্যুয়ালাইজ করার মতো কোনো টাস্ক নেই",
+        "cancelling": "বাতিল করা হচ্ছে",
+        "done": "সম্পন্ন",
+        "needs_approval": "অনুমোদন দরকার",
+        "paused": "পজ করা",
+        "pausing": "পজ করা হচ্ছে",
+        "pending": "অপেক্ষমাণ",
+        "reviewing": "রিভিউ চলছে",
+        "running": "চলছে"
       },
       "phasedView": {
         "cancelled": "বাতিল করা হয়েছে",
@@ -4155,7 +4466,18 @@
       "topic": "টপিক",
       "unknown_error": "অজানা ত্রুটি",
       "reply_2_one": "{{count}}টি উত্তর",
-      "reply_2_other": "{{count}}টি উত্তর"
+      "reply_2_other": "{{count}}টি উত্তর",
+      "listen_all": "সব",
+      "listen_mention": "মেনশন",
+      "listen_silent": "নীরব",
+      "preset_custom_empty": "কাস্টম (খালি)",
+      "preset_incident_response": "ইনসিডেন্ট রেসপন্স",
+      "state_done": "সম্পন্ন",
+      "state_failed": "ব্যর্থ",
+      "state_listening": "শোনা হচ্ছে",
+      "state_pending": "অপেক্ষমাণ",
+      "state_running": "চলছে",
+      "state_working": "কাজ করছে"
     },
     "chat": {
       "activityViewer": {
@@ -4221,7 +4543,14 @@
         "waiting_for_output": "আউটপুটের অপেক্ষায়…",
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে",
         "file_not_found_on_disk_it_may_have_been_moved_or": "ডিস্কে ফাইলটি পাওয়া যায়নি। হয়তো সরানো বা মুছে ফেলা হয়েছে।",
-        "unable_to_read_file": "ফাইল পড়া যাচ্ছে না।"
+        "unable_to_read_file": "ফাইল পড়া যাচ্ছে না।",
+        "artifacts": "আর্টিফ্যাক্ট",
+        "changes": "পরিবর্তন",
+        "issues": "ইস্যু",
+        "logs": "লগ",
+        "side": "সাইড",
+        "subagents": "সাবএজেন্ট",
+        "workflows": "ওয়ার্কফ্লো"
       },
       "assistantMessage": {
         "applied_to_tasks": "টাস্কে প্রয়োগ করা হয়েছে",
@@ -4419,7 +4748,27 @@
         "show_line_numbers": "লাইন নম্বর দেখাও",
         "switch_to_split_view": "স্প্লিট ভিউতে যাও",
         "switch_to_unified_view": "ইউনিফায়েড ভিউতে যাও",
-        "turn_diff": "টার্ন ডিফ"
+        "turn_diff": "টার্ন ডিফ",
+        "menu_artifacts": "আর্টিফ্যাক্ট",
+        "menu_artifacts_desc": "সেশনের ভেতরের ডকুমেন্ট ও স্টার",
+        "menu_browser": "ব্রাউজার",
+        "menu_browser_desc": "একটি ওয়েব পেজ বা লোকাল ডেভ সার্ভার দেখো",
+        "menu_changes": "পরিবর্তন",
+        "menu_changes_desc": "পুল রিকোয়েস্ট, চেক ও রিভিউ",
+        "menu_files": "ফাইল",
+        "menu_files_desc": "ফাইল ব্রাউজ ও এডিট করো",
+        "menu_issues": "ইস্যু",
+        "menu_issues_desc": "এই সেশনে উল্লেখ করা ইস্যু",
+        "menu_logs": "লগ",
+        "menu_logs_desc": "গেটওয়ে লগ স্ট্রিম",
+        "menu_side": "সাইড",
+        "menu_side_desc": "সমান্তরাল চ্যাট, একই কনটেক্সট",
+        "menu_subagents": "সাবএজেন্ট",
+        "menu_subagents_desc": "লাইভ এজেন্ট অ্যাক্টিভিটি ও ট্রান্সক্রিপ্ট",
+        "menu_terminal": "টার্মিনাল",
+        "menu_terminal_desc": "গেটওয়ে হোস্টে শেল",
+        "menu_workflows": "ওয়ার্কফ্লো",
+        "menu_workflows_desc": "রান, ফেজ ও আবার চালানো যায় এমন ধাপ"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "থামানো ব্যর্থ, সেশন রিসেট হয়েছে",
@@ -4925,10 +5274,48 @@
       "removed_name": "{{name}} সরিয়ে ফেলা হয়েছে",
       "restarted_name": "{{name}} রিস্টার্ট হয়েছে",
       "starting_pod_for_name_can_take_1_min": "{{name}}-এর জন্য pod চালু হচ্ছে… (~1 মিনিট লাগতে পারে)",
-      "stopped_name": "{{name}} বন্ধ করা হয়েছে"
+      "stopped_name": "{{name}} বন্ধ করা হয়েছে",
+      "pending": "অপেক্ষমাণ",
+      "removed": "সরানো হয়েছে",
+      "stopping_pod": "পড থামানো হচ্ছে",
+      "verifying": "যাচাই করা হচ্ছে"
     },
     "developerPage": {
-      "developer": "ডেভেলপার"
+      "developer": "ডেভেলপার",
+      "tabs": {
+        "archive": {
+          "description": "রোটেট/সংক্ষিপ্ত করা সেশন ইতিহাস (7 দিন সংরক্ষণ)",
+          "label": "আর্কাইভ"
+        },
+        "config": {
+          "description": "KiroCrew ও এজেন্ট কনফিগারেশন ভিউয়ার (শুধু পড়া)",
+          "label": "কনফিগ"
+        },
+        "logs": {
+          "description": "লেভেল ফিল্টার ও সার্চসহ লাইভ লগ ভিউয়ার",
+          "label": "লগ"
+        },
+        "mcpPool": {
+          "description": "শেয়ার করা MCP গেটওয়ে ও পুলযোগ্য সার্ভার কনফিগারেশন",
+          "label": "MCP পুল"
+        },
+        "memory": {
+          "description": "মেমরি গ্রাফ, এমবেডিং প্রোভাইডার ও ভেক্টর স্টোরের অন্তর্গঠন",
+          "label": "মেমরি"
+        },
+        "storage": {
+          "description": "localStorage ব্যবহার, কোটা ও গার্বেজ কলেকশন",
+          "label": "স্টোরেজ"
+        },
+        "system": {
+          "description": "CPU, মেমরি, নেটওয়ার্ক ও প্রসেস মেট্রিক",
+          "label": "সিস্টেম"
+        },
+        "telemetry": {
+          "description": "সেশন চালুর লেটেন্সি (p50/p90) আর MCP/স্কিল অ্যাক্সিলারেশন মেট্রিক",
+          "label": "টেলিমেট্রি"
+        }
+      }
     },
     "embedSettingsPage": {
       "back": "ফিরে যান",
@@ -5123,7 +5510,10 @@
         "try_different_keywords_or_filters": "অন্য কীওয়ার্ড বা ফিল্টার চেষ্টা করুন",
         "copied": "কপি হয়েছে!",
         "copy_content": "কনটেন্ট কপি করো",
-        "embeddings_loading": "এমবেডিং লোড হচ্ছে"
+        "embeddings_loading": "এমবেডিং লোড হচ্ছে",
+        "graph_view": "গ্রাফ ভিউ",
+        "list_view": "লিস্ট ভিউ",
+        "sources_tab": "উৎস"
       },
       "knowledgeGraph": {
         "edges": "এজ",
@@ -5221,6 +5611,14 @@
         "other": "অন্যান্য",
         "select_item": "{{title}} বেছে নাও",
         "untitled": "শিরোনামহীন"
+      },
+      "helpers": {
+        "documents_are_chunked_entities_extracted_and_rel": "ডকুমেন্ট স্বয়ংক্রিয়ভাবে চাংক করা হয়, এনটিটি বের করা হয় আর সম্পর্ক ম্যাপ করা হয়",
+        "drop_files_here_or_click_upload_to_ingest_docume": "ডকুমেন্ট নিতে ফাইল এখানে ফেলে দাও বা আপলোডে ক্লিক করো",
+        "search_across_all_knowledge_filter_by_type_or_ex": "সব জ্ঞানভান্ডারে খোঁজো, ধরন অনুযায়ী ফিল্টার করো, বা এনটিটি গ্রাফ ঘুরে দেখো",
+        "supported_formats": "সমর্থিত ফরম্যাট: {{formats}}",
+        "welcome_to_the_knowledge_library": "জ্ঞানভান্ডারে স্বাগতম",
+        "your_centralized_knowledge_base_with_entity_extr": "এনটিটি এক্সট্র্যাকশন, গ্রাফ সম্পর্ক আর ফুল-টেক্সট সার্চসহ তোমার কেন্দ্রীয় জ্ঞানভান্ডার।"
       }
     },
     "localStorageDebug": {
@@ -5517,7 +5915,12 @@
         "refresh": "রিফ্রেশ",
         "search_memory_nodes": "মেমরি নোড অনুসন্ধান",
         "search_nodes": "নোড অনুসন্ধান…",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "সব KiroCrew মেমরির GPU-রেন্ডার করা ভিজ্যুয়ালাইজেশন। নোডগুলি ধরন অনুযায়ী রঙ করা। লেবেল দেখতে জুম করো, নোড দেখতে ক্লিক করো, ফোকাস করতে ফিল্টার ব্যবহার করো।"
+        "gpu_rendered_visualization_of_all_kirocrew_memor": "সব KiroCrew মেমরির GPU-রেন্ডার করা ভিজ্যুয়ালাইজেশন। নোডগুলি ধরন অনুযায়ী রঙ করা। লেবেল দেখতে জুম করো, নোড দেখতে ক্লিক করো, ফোকাস করতে ফিল্টার ব্যবহার করো।",
+        "group_history_count": "ইতিহাস ({{count}})",
+        "group_lessons_count": "শিক্ষা ({{count}})",
+        "group_preferences_count": "পছন্দসমূহ ({{count}})",
+        "group_projects_count": "প্রজেক্ট ({{count}})",
+        "group_semantic_count": "সিমান্টিক ({{count}})"
       },
       "memoryTab": {
         "actions": "অ্যাকশন",
@@ -5671,7 +6074,10 @@
         "steering_file_name": "স্টিয়ারিং ফাইলের নাম",
         "steering_files": "স্টিয়ারিং ফাইল",
         "workspace_this_project_only": "ওয়ার্কস্পেস — শুধু এই প্রজেক্ট",
-        "always_on_markdown_conventions_injected_into_eve": "সব সময় চালু Markdown নিয়মকানুন, প্রতিটি সেশনে ঢোকানো হয়। গ্লোবাল ফাইল ~/.kiro/steering এ থাকে ও সব জায়গায় খাটে; ওয়ার্কস্পেস ফাইল <project>/.kiro/steering এ থাকে ও শুধু সেই প্রজেক্টে খাটে।"
+        "always_on_markdown_conventions_injected_into_eve": "সব সময় চালু Markdown নিয়মকানুন, প্রতিটি সেশনে ঢোকানো হয়। গ্লোবাল ফাইল ~/.kiro/steering এ থাকে ও সব জায়গায় খাটে; ওয়ার্কস্পেস ফাইল <project>/.kiro/steering এ থাকে ও শুধু সেই প্রজেক্টে খাটে।",
+        "global": "গ্লোবাল",
+        "title_describe_the_convention_the_agent_should_a": "# শিরোনাম\n\nএজেন্ট সবসময় যে নিয়ম মেনে চলবে তা এখানে লেখো।",
+        "workspace": "ওয়ার্কস্পেস"
       },
       "tokenDailyChart": {
         "all": "সব",
@@ -6291,7 +6697,20 @@
         "shift_enter_for_newline": "নতুন লাইনের জন্য Shift+Enter",
         "show_occasional_feature_discovery_tips_above_the": "এজেন্ট কাজ করার সময় কম্পোজারের উপরে মাঝে মাঝে ফিচার আবিষ্কারের টিপস দেখাও",
         "single_line": "এক লাইন",
-        "smooth": "মসৃণ"
+        "smooth": "মসৃণ",
+        "both_head_tail_with_truncation_marker": "দুটোই (হেড + টেইল, ছাঁটাইয়ের চিহ্নসহ)",
+        "data_ml": "ডেটা / ML",
+        "developer": "ডেভেলপার",
+        "head_preserve_start_of_stream": "হেড (স্ট্রিমের শুরুটা রাখে)",
+        "i_write_code": "আমি কোড লিখি",
+        "it_ops": "IT / অপারেশন",
+        "not_set": "সেট করা নেই",
+        "not_technical": "প্রযুক্তিগত নয়",
+        "other": "অন্যান্য",
+        "product_manager": "প্রোডাক্ট ম্যানেজার",
+        "somewhat": "কিছুটা",
+        "tail_preserve_end_final_summary": "টেইল (শেষটা / চূড়ান্ত সারসংক্ষেপ রাখে)",
+        "ux_designer": "UX ডিজাইনার"
       },
       "computerUsePanel": {
         "accessibility": "অ্যাক্সেসিবিলিটি",
@@ -6310,7 +6729,19 @@
         "retry": "আবার চেষ্টা করুন",
         "screen_recording": "স্ক্রিন রেকর্ডিং",
         "screenshot_width": "স্ক্রিনশটের প্রস্থ",
-        "show_cursor_motion": "কার্সারের নড়াচড়া দেখান"
+        "show_cursor_motion": "কার্সারের নড়াচড়া দেখান",
+        "computer_use_lets_the_agent_read_any_app_window": "কম্পিউটার ব্যবহার এজেন্টকে যেকোনো অ্যাপ উইন্ডো পড়তে আর তাতে ক্লিক ও কীস্ট্রোক পাঠাতে দেয়। বেশিরভাগ ক্লিক সরাসরি অ্যাপেই পৌঁছে যায়, তোমার পয়েন্টারে হাত পড়ে না, তবে দরকার হলে এজেন্ট আসল পয়েন্টার সরানোর অনুমতি চাইতে পারে। পাসওয়ার্ড ফিল্ড কখনোই পড়া হয় না; কোন কোন অ্যাপ এটি চালাতে পারবে তার আর কোনো সীমা নেই।",
+        "could_not_check": "যাচাই করা গেল না",
+        "draw_a_cursor_that_glides_to_each_target_and_pul": "এমন একটি কার্সর দেখাও যা প্রতিটি লক্ষ্যের দিকে ভেসে যায় আর ক্লিক করার সময় স্পন্দিত হয়, যাতে তুমি পর্দায় চোখ রাখতে পারো। এটা শুধুই দৃশ্যগত — এজেন্ট কী করতে পারবে তার কিছুই এতে বদলায় না, আর কেবল যেসব ক্লিক আসল পয়েন্টার সরায় সেগুলোর জন্যই দেখা যায়।",
+        "granted": "অনুমতি দেওয়া হয়েছে",
+        "how_many_controls_one_window_reading_returns_a_w": "একবার উইন্ডো পড়ায় কতগুলো কন্ট্রোল ফিরবে। এর বেশি থাকলে উইন্ডোটা ছেঁটে দেওয়া হয়, আর এজেন্টকে তা জানানো হয়। ঘন অ্যাপের (স্প্রেডশিট, IDE) জন্য এটা বাড়াও; প্রতি পড়ায় কম টোকেন খরচ করতে কমাও।",
+        "how_much_of_a_window_the_agent_reads_at_once_the": "এজেন্ট একবারে উইন্ডোর কতটা পড়বে। এগুলো খরচ আর গতির নব, সুরক্ষার সেটিং নয় — প্রতিটি মান বিল্ট-ইন সীমার মধ্যেই থাকে। কোনো উইন্ডো একবারে পড়ার মতো বড় না হলে বা স্ক্রিনশট ধীর মনে না হলে এগুলোয় হাত দিয়ো না।",
+        "longest_edge_of_the_screenshot_in_pixels_smaller": "স্ক্রিনশটের সবচেয়ে বড় প্রান্তের মাপ, পিক্সেলে। ছোট হলে খরচ কম আর পড়াও দ্রুত; বড় হলে এজেন্টকে ছবির উপর ভরসা করতে হলেও ছোট লেখা পড়া যায়।",
+        "not_applicable": "প্রযোজ্য নয়",
+        "not_detected": "শনাক্ত হয়নি",
+        "not_detected_does_not_always_mean_unavailable_ma": "শনাক্ত হয়নি মানেই সবসময় এটা নেই তা নয় — macOS অনুমতিটি KiroCrew-কে নয়, যে প্রসেস KiroCrew চালু করেছে তাকে দেয়।",
+        "the_app_lists_in_computer_use_json_could_not_be": "computer_use.json-এ থাকা অ্যাপের তালিকা পড়া যায়নি, তাই এখানে খালি দেখানো হচ্ছে। ফাইলটি বৈধ JSON না হওয়া পর্যন্ত এজেন্ট ওই তালিকার উপর নির্ভরশীল প্রতিটি কাজ করতেই অস্বীকার করবে।",
+        "your_chat_sessions_were_restarted_so_this_takes": "তোমার চ্যাট সেশনগুলো আবার চালু করা হয়েছে যাতে এটা সঙ্গে সঙ্গেই কাজ করে — Kiro প্রতি সেশনে একবারই তার টুলের তালিকা পড়ে, তাই খোলা চ্যাট এটা টের পেত না। তোমার মেসেজ সবই আছে; পরের মেসেজেই এজেন্ট তার কনটেক্সট আবার পড়ে নেবে।"
       },
       "developerPanel": {
         "developer_mode": "ডেভেলপার মোড",
@@ -6462,7 +6893,30 @@
         "volume": "ভলিউম",
         "always_interrupts_cannot_be_muted_or_lowered": "সব সময় বাধা দেয় — মিউট বা কমানো যায় না",
         "channel_not_active_app_disabled_setting_retained": "চ্যানেল সক্রিয় নয় (অ্যাপ নিষ্ক্রিয়) — সেটিং রাখা হয়েছে",
-        "failed_to_load_channels": "চ্যানেল লোড করা যায়নি"
+        "failed_to_load_channels": "চ্যানেল লোড করা যায়নি",
+        "category_all": "ডিফল্ট (সব বিভাগ)",
+        "category_all_description": "কোনো বিভাগ-নির্দিষ্ট শব্দ ঠিক করা না থাকলে যেটা বাজবে",
+        "category_approval": "অনুমোদন",
+        "category_approval_description": "টুল অনুমোদনের অনুরোধ",
+        "category_cron": "Cron",
+        "category_cron_description": "শিডিউল করা জব শেষ হলে",
+        "category_heartbeat": "Heartbeat",
+        "category_heartbeat_description": "Heartbeat টাস্কের ফলাফল",
+        "category_hook": "ওয়েবহুক",
+        "category_hook_description": "বাইরের হুক ট্রিগার",
+        "category_subagent": "সাবএজেন্ট",
+        "category_subagent_description": "ব্যাকগ্রাউন্ড সাবএজেন্ট শেষ হলে",
+        "category_taskrunner": "টাস্ক",
+        "category_taskrunner_description": "টাস্ক রানার শেষ হলে",
+        "category_turn": "এজেন্টের উত্তর",
+        "category_turn_description": "যেকোনো চ্যাটে এজেন্ট একটি টার্ন শেষ করলে",
+        "channel_default": "চ্যানেলের ডিফল্ট",
+        "preset_blip": "ব্লিপ",
+        "preset_chime": "চাইম (C6-E6-G6)",
+        "preset_ding": "ডিং",
+        "preset_none": "নীরব",
+        "preset_pop": "পপ",
+        "use_default": "ডিফল্ট ব্যবহার করো"
       },
       "postureDisclosure": {
         "more": "আরও",
@@ -6539,7 +6993,57 @@
         "standard": "স্ট্যান্ডার্ড",
         "turn_off_every_rule": "একবারে সব বিল্ট-ইন নিষিদ্ধ-কমান্ড নিয়ম বন্ধ করুন। স্বতন্ত্র বহুস্তরীয় প্রতিরক্ষা নিয়ন্ত্রণ (সংবেদনশীল পাথ, IMDS, git-publish) বলবৎ থাকবে।",
         "turn_off_every_rule_governance_locked": "একবারে সব বিল্ট-ইন নিষিদ্ধ-কমান্ড নিয়ম বন্ধ করুন। স্বতন্ত্র বহুস্তরীয় প্রতিরক্ষা নিয়ন্ত্রণ (সংবেদনশীল পাথ, IMDS, git-publish) বলবৎ থাকবে, এবং তোমার প্রতিষ্ঠানের পলিসিতে পিন করা নিয়মগুলি চালু থাকে।",
-        "yolo_auto_approve": "YOLO (স্বয়ংক্রিয় অনুমোদন)"
+        "yolo_auto_approve": "YOLO (স্বয়ংক্রিয় অনুমোদন)",
+        "feature_credential_redaction": "ক্রেডেনশিয়াল রিড্যাকশন",
+        "feature_credential_redaction_description": "প্রতিটি আউটপুট পথে প্লেইনটেক্সট ও base64-এনকোড করা AWS কী, প্রাইভেট কী আর প্রোভাইডার টোকেন স্ক্যান করে",
+        "feature_csrf": "CSRF সুরক্ষা",
+        "feature_csrf_description": "সব POST/PUT/DELETE রিকোয়েস্ট আর WebSocket সংযোগে Origin/Referer যাচাই",
+        "feature_denied_commands_description": "ধ্বংসাত্মক ও ক্রেডেনশিয়াল পাচার করা CLI কাজ আটকাতে বিল্ট-ইন regex প্যাটার্ন (নিচে বদলানো যায়)",
+        "feature_enterprise_grid": "Enterprise Grid যাচাই",
+        "feature_enterprise_grid_description": "ব্যক্তিগত/বাইরের Slack ওয়ার্কস্পেসে ডেটা পাচারের বিরুদ্ধে দুই স্তরের প্রতিরক্ষা",
+        "feature_mcp_validation": "MCP ইনপুট যাচাই",
+        "feature_mcp_validation_description": "প্রতিটি টুল হ্যান্ডলারে টাইপ-সেফ স্কিমা, ইউনিকোড নরমালাইজেশন, দীর্ঘতার সীমা আর অজানা ফিল্ড বাতিল",
+        "feature_observe_mode": "অবজার্ভ মোড আইসোলেশন",
+        "feature_observe_mode_description": "শেয়ার করা চ্যানেলে শুধু মালিক বা অনুমোদিত মেসেজই রাখা হয় — কনটেক্সট বিষিয়ে দেওয়া আটকায়",
+        "feature_os_sandbox": "OS-স্তরের স্যান্ডবক্স",
+        "feature_os_sandbox_description": "ইউজার ও মাউন্ট নেমস্পেস আইসোলেশন (Linux) / Seatbelt স্যান্ডবক্স (macOS) এজেন্টের সাবপ্রসেস থেকে ক্রেডেনশিয়ালের পাথ লুকিয়ে রাখে",
+        "feature_sel_audit": "SEL অডিট লগিং",
+        "feature_sel_audit_description": "অপরিবর্তনীয়, HMAC-চেইন করা সিকিউরিটি ইভেন্টের হিসাব; পাঠানোর আগে ক্রেডেনশিয়াল মুছে দেওয়া হয়",
+        "feature_sensitive_paths": "সংবেদনশীল পাথ ব্লকিং",
+        "feature_sensitive_paths_description": "টুল চালানোর আগেই হুক স্তরে ক্রেডেনশিয়াল ডিরেক্টরি আর KiroCrew ট্রাস্ট রুট আটকে দেওয়া হয়",
+        "feature_suspicious_patterns": "সন্দেহজনক Bash প্যাটার্ন",
+        "feature_suspicious_patterns_description": "শেল কমান্ডে মুছে ফেলা, পাচার আর পাইপ-এক্সিকিউশন হামলার আকার শনাক্ত করে",
+        "feature_token_auth": "ড্যাশবোর্ড টোকেন অথ",
+        "feature_token_auth_description": "HMAC-SHA256 দিয়ে সই করা, IP-পিন করা, একবার ব্যবহারযোগ্য টোকেন — লিঙ্ক আর সেশন দুটোতেই আলাদা সময়সীমা",
+        "feature_url_exfil": "URL এক্সফিলট্রেশন শনাক্তকরণ",
+        "feature_url_exfil_description": "URL-এ সন্দেহজনক কোয়েরি স্ট্রিং, base64 ব্লব আর ক্রেডেনশিয়াল প্যাটার্নের জন্য ডোমেইন-নিরপেক্ষ স্ক্যান",
+        "gov_plane_access": "টুল ও কমান্ড",
+        "gov_plane_capabilities": "সক্ষমতা",
+        "gov_plane_channels": "মেসেজিং চ্যানেল",
+        "gov_plane_io": "ফাইলসিস্টেম ও নেটওয়ার্ক",
+        "gov_plane_modes": "প্রয়োগ মোড",
+        "gov_plane_other": "অন্যান্য নিয়ন্ত্রিত স্কোপ",
+        "gov_scope_approval_mode": "টুল অনুমোদন",
+        "gov_scope_apps": "অ্যাপ",
+        "gov_scope_channels": "চ্যানেল",
+        "gov_scope_commands": "কমান্ড",
+        "gov_scope_cron": "Cron",
+        "gov_scope_filesystem_read": "ফাইলসিস্টেম পড়া",
+        "gov_scope_filesystem_write": "ফাইলসিস্টেমে লেখা",
+        "gov_scope_mcp": "MCP সার্ভার",
+        "gov_scope_memory_writes": "মেমরিতে লেখা",
+        "gov_scope_messaging": "মেসেজিং",
+        "gov_scope_network_egress": "নেটওয়ার্ক এগ্রেস",
+        "gov_scope_sandbox_level": "স্যান্ডবক্স স্তর",
+        "gov_scope_script_hooks": "স্ক্রিপ্ট হুক",
+        "gov_scope_spawn": "স্পন",
+        "gov_scope_telemetry": "নামহীন টেলিমেট্রি",
+        "gov_scope_theme_install": "থিম ইনস্টল",
+        "gov_scope_theme_persona": "থিম পার্সোনা",
+        "gov_scope_tools": "টুল",
+        "layer_auth": "অথ",
+        "layer_n": "স্তর {{n}}",
+        "pinned_by_policy": "তোমার প্রতিষ্ঠানের সিকিউরিটি নীতিতে নির্ধারিত"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "বাতিল",
@@ -6673,7 +7177,21 @@
         "pulls_python_3_11_slim_for_docker_based_transcri": "Docker-ভিত্তিক ট্রান্সক্রিপশনের জন্য python:3.11-slim নামায় (AL2)।",
         "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper ইনস্টল হয়েছে কিন্তু ffmpeg নেই — ভয়েস ট্রান্সক্রিপশনের জন্য ffmpeg দরকার।",
         "endpointing": "বলা শেষ হলে স্বয়ংক্রিয়ভাবে পাঠান",
-        "endpointing_desc": "আপনি একটি সম্পূর্ণ অনুরোধ শেষ করেছেন কিনা তা শনাক্ত করতে একটি দ্রুত মডেল ব্যবহার করে এবং স্বয়ংক্রিয়ভাবে পাঠায়। শুধুমাত্র স্ট্রিমিং (Transcribe)।"
+        "endpointing_desc": "আপনি একটি সম্পূর্ণ অনুরোধ শেষ করেছেন কিনা তা শনাক্ত করতে একটি দ্রুত মডেল ব্যবহার করে এবং স্বয়ংক্রিয়ভাবে পাঠায়। শুধুমাত্র স্ট্রিমিং (Transcribe)।",
+        "provider_mlx": "Whisper MLX (লোকাল — শুধু Apple Silicon)",
+        "provider_transcribe": "Transcribe (AWS)",
+        "provider_whisper": "Whisper (লোকাল)",
+        "step_checking": "Python খোঁজা হচ্ছে…",
+        "step_done": "সম্পন্ন!",
+        "step_error": "ব্যর্থ",
+        "step_installing_brew": "Homebrew ইনস্টল হচ্ছে…",
+        "step_installing_ffmpeg": "ffmpeg ইনস্টল হচ্ছে…",
+        "step_installing_mlx": "mlx-whisper ইনস্টল হচ্ছে…",
+        "step_installing_python": "Python ইনস্টল হচ্ছে…",
+        "step_installing_whisper": "whisper ইনস্টল হচ্ছে (~1.6 GB)…",
+        "step_installing_xcode": "Xcode CLI Tools ইনস্টল হচ্ছে…",
+        "step_pulling": "Docker ইমেজ টানা হচ্ছে…",
+        "step_starting": "শুরু হচ্ছে…"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "উপরে। Slack-এর বিপরীতে, Bot Framework-এ কোনো\n              শুধু-আউটবাউন্ড মোড নেই।",
@@ -6777,7 +7295,15 @@
         "text_to_speech": "টেক্সট-টু-স্পিচ",
         "us_east_1": "us-east-1",
         "voice": "কণ্ঠস্বর",
-        "failed_to_save_voice_config": "ভয়েস কনফিগ সেভ করা যায়নি"
+        "failed_to_save_voice_config": "ভয়েস কনফিগ সেভ করা যায়নি",
+        "aws_polly_cloud": "AWS Polly (ক্লাউড)",
+        "faster": "দ্রুততর",
+        "fastest": "দ্রুততম",
+        "normal": "সাধারণ",
+        "piper_local_offline": "Piper (লোকাল, অফলাইন)",
+        "slow": "ধীর",
+        "slower": "ধীরতর",
+        "slowest": "ধীরতম"
       },
       "webexPanel": {
         "access": "অ্যাক্সেস",
@@ -6840,6 +7366,54 @@
         "scanned_confirm_in_wechat": "স্ক্যান হয়েছে — WeChat-এ নিশ্চিত করো",
         "sign_in_again": "আবার সাইন ইন করো",
         "waiting_for_scan": "স্ক্যানের অপেক্ষায়…"
+      },
+      "channels": {
+        "get_your_bot_credentials": "তোমার বট ক্রেডেনশিয়াল সংগ্রহ করো",
+        "threshold_description": "সেশন কনটেক্সট এই শতাংশ ছাড়ালে {{compact}} বা {{new}} করার প্রম্পট দেখাও।"
+      },
+      "discordPanel": {
+        "allowed_server_thread_ids": "অনুমোদিত সার্ভার থ্রেড ID",
+        "allowlist_description": "DM-এ বা অনুমোদিত থ্রেডে এজেন্ট চালানোর অনুমতি আছে যেসব Discord ইউজার ID-র। খালি = সবাইকে না (ফেল ক্লোজড)।",
+        "description": "গেটওয়ে WebSocket-এর মাধ্যমে Discord DM বা স্পষ্টভাবে অনুমোদিত সার্ভার থ্রেড থেকে তোমার এজেন্টের সঙ্গে কথা বলো। সাধারণ সার্ভার চ্যানেল সবসময়ই উপেক্ষা করা হয়।",
+        "empty_allowlist_hint": "কোনো অনুমোদিত ইউজার ID নেই: বট প্রতিটি মেসেজ ফিরিয়ে দেয় (ফেল ক্লোজড)। নিচে তোমার Discord ইউজার ID যোগ করো।",
+        "guide_body": "Discord Developer Portal-এ একটি অ্যাপ তৈরি করো, তারপর <mono>Bot</mono> পেজ থেকে টোকেন কপি করো। শুধু DM-এর জন্য হলে প্রিভিলেজড ইন্টেন্ট বন্ধ রাখো। সার্ভার থ্রেডের জন্য <mono>Message Content Intent</mono> চালু করো, আর <mono>bot</mono> স্কোপের পাশাপাশি View Channel, Read Message History ও Send Messages in Threads দিয়ে ইনস্টল করো। Discord Developer Mode চালু করো, তারপর নিজের নামের উপর ডান-ক্লিক করে তোমার সাংখ্যিক ইউজার ID কপি করো।",
+        "open_developer_portal": "Developer Portal খোলো",
+        "thread_allowlist_description": "ঐচ্ছিক। অনুমোদিত ব্যবহারকারীরা কেবল ঠিক এই Discord থ্রেডগুলোতেই এজেন্ট চালাতে পারবে। খালি = শুধু DM।",
+        "thread_help": "Developer Mode চালু থাকলে থ্রেডে ডান-ক্লিক করো → <mono>Copy Channel ID</mono>। থ্রেডের নিজের ID ব্যবহার করো, তার প্যারেন্ট চ্যানেলের ID নয়।",
+        "thread_warning": "থ্রেড মোড Discord-এর গ্লোবাল Message Content ইন্টেন্ট চালু করে দেয়। বট যে সব সার্ভার চ্যানেল দেখতে পায়, Discord সেগুলোর কনটেন্টই পাঠায়; Kiro Crew অনুমোদিত থ্রেডের বাইরের সবকিছু ফেলে দেয়। অনুমোদিত থ্রেড দেখতে পারে এমন সবাই এজেন্টের উত্তর আর টুলের আউটপুট পড়তে পারবে।",
+        "threshold_description": "সেশন কনটেক্সট এই শতাংশ ছাড়ালে !compact বা !new করার প্রম্পট দেখাও।",
+        "token_description": "Developer Portal-এর Bot পেজ থেকে (একবার দেখতে Reset Token করো)।",
+        "token_placeholder": "Discord বট টোকেন পেস্ট করো"
+      },
+      "telegramPanel": {
+        "allowlist_description": "বটকে DM করার অনুমতি আছে যেসব সাংখ্যিক Telegram ইউজার ID-র। খালি = সবাইকে না (ফেল ক্লোজড): একটি Telegram বটে @username দিয়ে পৃথিবীর যে কেউ পৌঁছাতে পারে।",
+        "description": "Bot API-র মাধ্যমে Telegram থেকে তোমার এজেন্টের সঙ্গে কথা বলো (লং-পোলিং — কোনো ওয়েবহুক বা পাবলিক অ্যাড্রেস লাগে না)। বট যাতে উত্তর দিতে পারে, তার জন্য অনুমোদিত ইউজার ID যোগ করো।",
+        "empty_allowlist_hint": "কোনো অনুমোদিত ইউজার ID নেই: বট প্রতিটি মেসেজ ফিরিয়ে দেয় (ফেল ক্লোজড)। নিচে তোমার সাংখ্যিক Telegram ইউজার ID যোগ করো।",
+        "forum_allowlist_description": "ফোরাম-টপিক সেশন চালানোর অনুমতি আছে যেসব সাংখ্যিক সুপারগ্রুপ chat_id-র। এগুলো ঋণাত্মক (যেমন -1001234567890) — গ্রুপে @getidsbot-এর মতো একটা বট যোগ করে একটা খুঁজে নাও। খালি = সব গ্রুপকে না (ফেল ক্লোজড)।",
+        "forum_allowlist_label": "অনুমোদিত সুপারগ্রুপ chat ID",
+        "forum_empty_hint": "ফোরাম চালু আছে কিন্তু কোনো অনুমোদিত চ্যাট নেই: সব ফোরাম ট্রাফিক আটকে দেওয়া হচ্ছে। নিচে তোমার সুপারগ্রুপের chat_id যোগ করো (-100… এর মতো একটি ঋণাত্মক সংখ্যা)।",
+        "forum_toggle_description": "অনুমোদিত সুপারগ্রুপের প্রতিটি Topic-কে তার নিজের এজেন্ট সেশনে পাঠাও (Slack-থ্রেডের মতো)। একটি সুপারগ্রুপ তৈরি করো, `Topics` চালু করো, বটটা যোগ করো, তারপর নিচে সুপারগ্রুপের `chat_id` লেখো। General টপিক আর সাধারণ (ফোরাম নয়) গ্রুপ সবসময়ই আটকে দেওয়া হয়।",
+        "forum_toggle_label": "ফোরাম Topic-গুলোকে আলাদা সেশন হিসেবে চালাও",
+        "guide_body": "Telegram-এ `@BotFather`-কে মেসেজ করো, `/newbot` পাঠাও, আর নির্দেশ অনুসরণ করো। BotFather একটি বট টোকেন দিয়ে উত্তর দেয় — সেটা নিচে পেস্ট করো। তোমার সাংখ্যিক ইউজার ID জানতে `@userinfobot`-কে মেসেজ করো।",
+        "guide_link_label": "@BotFather খোলো",
+        "token_description": "বট তৈরি করার পর @BotFather থেকে (দেখতে এমন 110201543:AAHdqT…)।",
+        "token_placeholder": "Telegram বট টোকেন পেস্ট করো (123456:ABC-…)"
+      },
+      "weComPanel": {
+        "allow_all_bypass_note": "সবাইকে অনুমতি চালু আছে: উপরের userid তালিকা এড়িয়ে যাওয়া হচ্ছে। আবার ফিরে গেলে কাজে লাগবে বলে তালিকাটা রেখে দেওয়া হয়েছে।",
+        "allow_all_description": "প্রতিটি userid আলাদা করে না লিখেই তোমার WeCom প্রতিষ্ঠানের সবাইকে বটকে DM করতে দাও। WeCom AI বটে শুধু তোমার নিজের অর্গ টেন্যান্টের ভেতর থেকেই পৌঁছানো যায়, তবু এতে পুরো কোম্পানি এজেন্টের অ্যাক্সেস পেয়ে যায় — প্রতি-ব্যক্তি অনুমোদিত তালিকার জন্য এটা বন্ধ রাখো।",
+        "allow_all_label": "প্রতিষ্ঠানের সব সদস্যকে অনুমতি দাও",
+        "allowlist_description": "বটকে DM করার অনুমতি আছে যেসব WeCom userid (账号)-এর। খালি = সবাইকে না (ফেল ক্লোজড)।",
+        "bot_id_description": "WeCom অ্যাডমিন কনসোলে তোমার AI বটের সেটিংস পেজে থাকা Bot ID।",
+        "bot_id_label": "WeCom বট ID",
+        "bot_id_placeholder": "WeCom বট ID পেস্ট করো",
+        "description": "একটি WeCom (企业微信) AI বটের মাধ্যমে WeCom থেকে তোমার এজেন্টের সঙ্গে কথা বলো। সংযোগটি বাইরের দিকে যাওয়া একটি WebSocket — কোনো কলব্যাক URL বা খোলা পোর্ট সামলাতে হয় না।",
+        "empty_allowlist_hint": "কোনো অনুমোদিত userid নেই: বট প্রতিটি মেসেজ ফিরিয়ে দেয় (ফেল ক্লোজড)। নিচে তোমার WeCom userid যোগ করো।",
+        "guide_body": "WeCom অ্যাডমিন কনসোলে <mono>应用管理 → AI 智能体</mono> খোলো আর একটি বট তৈরি করো। তার সেটিংস পেজে একটি <mono>Bot ID</mono> আর একটি <mono>Secret</mono> দেখাবে — দুটোই নিচে পেস্ট করো। প্রতিটি WeCom সদস্যের একটি <mono>userid</mono> (账号) আছে, অনুমোদিত তালিকার জন্য সেটাই লাগবে।",
+        "open_admin_console": "WeCom অ্যাডমিন কনসোল খোলো",
+        "token_description": "একই সেটিংস পেজে Bot ID-র পাশে দেখানো Secret।",
+        "token_label": "WeCom বট সিক্রেট",
+        "token_placeholder": "WeCom বট সিক্রেট পেস্ট করো"
       }
     },
     "settingsPage": {
@@ -7088,6 +7662,35 @@
       "black": "কালো",
       "gray": "ধূসর",
       "white": "সাদা"
+    },
+    "channelOrigin": {
+      "direct_message": "সরাসরি মেসেজ"
+    },
+    "schedulePresets": {
+      "dependency_guardian_description": "প্যাকেজ আপগ্রেড করে, টেস্ট চালায়, আর সব সবুজ হলেই কেবল একটি PR খোলে।",
+      "dependency_guardian_message": "এই প্রজেক্টে পুরনো হয়ে যাওয়া ডিপেনডেন্সি আছে কি না দেখো। সেগুলো আপগ্রেড করো, পুরো টেস্ট স্যুট চালাও, আর যা ভাঙে তা ঠিক করো। সব টেস্ট সবুজ হলেই কেবল একটি পুল রিকোয়েস্ট খোলো — নইলে কী ব্যর্থ হয়েছে তা জানাও।",
+      "dependency_guardian_title": "ডিপেনডেন্সি গার্ডিয়ান",
+      "error_digest_description": "নতুন প্রোডাকশন এরর একসঙ্গে সাজায়, প্রতিটির জন্য সম্ভাব্য কারণ দেয়।",
+      "error_digest_message": "গত রানের পর থেকে আসা নতুন প্রোডাকশন এররগুলো দেখো। ধরন অনুযায়ী সেগুলো একসঙ্গে সাজাও, আর প্রতিটি দলের জন্য একটি সংক্ষিপ্ত সারসংক্ষেপ আর সম্ভাব্য কারণ দাও।",
+      "error_digest_title": "এরর ডাইজেস্ট",
+      "nightly_build_watch_description": "রাতভর main বিল্ড ও টেস্ট করে; ব্যর্থতা আর সম্ভাব্য সমাধান জানায়।",
+      "nightly_build_watch_message": "main ব্রাঞ্চ বিল্ড আর টেস্ট করো। কিছু ব্যর্থ হলে ঠিক কী ব্যর্থ হয়েছে, সম্ভাব্য মূল কারণ আর একটি প্রস্তাবিত সমাধান জানাও।",
+      "nightly_build_watch_title": "নাইটলি বিল্ড ওয়াচ",
+      "standup_brief_description": "স্ট্যান্ডআপের আগে তোমার কমিট, PR, CI স্ট্যাটাস আর বাধাগুলো।",
+      "standup_brief_message": "আজকের স্ট্যান্ডআপের জন্য আমার সাম্প্রতিক কমিট, খোলা পুল রিকোয়েস্ট, CI স্ট্যাটাস আর যেকোনো বাধার সারসংক্ষেপ করো। সংক্ষিপ্ত রাখো আর মিটিংয়ের আগেই দিয়ে দাও।",
+      "standup_brief_title": "স্ট্যান্ডআপ ব্রিফ"
+    },
+    "sensitiveCommand": {
+      "dumps_sensitive_environment_variables": "সংবেদনশীল এনভায়রনমেন্ট ভেরিয়েবল ডাম্প করে",
+      "encodes_credential_files": "ক্রেডেনশিয়াল ফাইল এনকোড করে",
+      "opens_raw_tcp_connection": "সরাসরি TCP সংযোগ খোলে",
+      "pipes_data_to_external_url": "বাইরের URL-এ ডেটা পাইপ করে",
+      "reads_credential_files": "ক্রেডেনশিয়াল ফাইল পড়ে",
+      "reads_sensitive_environment_variable": "সংবেদনশীল এনভায়রনমেন্ট ভেরিয়েবল পড়ে",
+      "reads_system_credentials": "সিস্টেম ক্রেডেনশিয়াল পড়ে",
+      "sends_command_output_to_external_url": "কমান্ডের আউটপুট বাইরের URL-এ পাঠায়",
+      "sends_data_to_network_socket": "নেটওয়ার্ক সকেটে ডেটা পাঠায়",
+      "uploads_file_to_external_url": "বাইরের URL-এ ফাইল আপলোড করে"
     }
   },
   "store": {

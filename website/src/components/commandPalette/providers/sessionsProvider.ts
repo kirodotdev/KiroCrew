@@ -8,6 +8,7 @@ import { api } from '../../../api/client'
 import { useAppDispatch } from '../../../store'
 import { resumeFromHistory } from '../../../store/chatSlice'
 import { fuzzyMatch, makeScoreThenNameComparator, substringIndices } from '../../../utils/fuzzyMatch'
+import { i18nT } from '../../../i18n/t'
 import type { Result, ResourceProvider } from '../types'
 
 /**
@@ -33,7 +34,16 @@ import type { Result, ResourceProvider } from '../types'
  */
 
 const PROVIDER_ID = 'sessions'
-const PROVIDER_LABEL = 'Sessions'
+/**
+ * Catalog KEY for the palette scope tab, resolved where the provider object is
+ * BUILT (never here — this is module scope, so an `i18nT()` call would freeze the
+ * boot language).
+ *
+ * Reuses `nav.sessions` rather than adding a tenth `Sessions` entry: the scope tab
+ * and the nav rail item name the same surface with the same word, so a locale that
+ * renders one differently from the other would be inconsistent, not nuanced.
+ */
+const PROVIDER_LABEL_KEY = 'nav.sessions'
 
 /** Cache server responses briefly so retyping the same query is free. */
 const SESSIONS_STALE_MS = 30_000
@@ -98,7 +108,14 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
 
   return {
     id: PROVIDER_ID,
-    label: PROVIDER_LABEL,
+    // A GETTER, not a plain call: the provider object is built inside a `useMemo`
+    // whose deps do not include the language, so `label: i18nT(...)` would resolve
+    // once and keep the pre-switch wording forever. `LanguageProvider` forces a
+    // re-RENDER via `cloneElement` (it deliberately does NOT remount — see its own
+    // comment rejecting `key={active}`), and a re-render does not recompute a memo.
+    // An accessor moves the lookup to the consumer's render, where the tab strip
+    // reads it. Satisfies `ResourceProvider.label: string`.
+    get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: sessionIcon(),
     async search(query: string): Promise<Result[]> {
       const q = query.trim()

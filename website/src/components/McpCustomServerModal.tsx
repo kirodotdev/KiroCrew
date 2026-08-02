@@ -84,6 +84,12 @@ function specSummary(spec: McpCustomSpec): string {
   return parts.filter(Boolean).join(' ') || '(invalid spec)'
 }
 
+/** Textarea placeholder showing the shape of an `mcpServers` config block.
+ *  A CODE SAMPLE, not prose — do not translate. Every token is a protocol key
+ *  (`mcpServers`, `command`, `args`, `env`), an executable name (`npx`), a
+ *  package specifier, or an env-var name, and the whole thing must stay valid
+ *  JSON the user can paste back. `my-server` is an illustrative server id, in
+ *  the same class: the user replaces it with their own. */
 const PLACEHOLDER = `{
   "mcpServers": {
     "my-server": {

@@ -18,7 +18,14 @@ const { getBuiltinSurfaces } = vi.hoisted(() => ({
   ]),
 }))
 
-vi.mock('../../../surfaces/registry', () => ({ getBuiltinSurfaces }))
+// `surfaceLabel` is mocked alongside `getBuiltinSurfaces` because pagesProvider
+// now resolves the display title through it (the registry's `label` is a frozen
+// English fallback beside a `labelKey`). Mirroring the real resolver's
+// fallback order keeps these fixtures asserting on their own `label` values.
+vi.mock('../../../surfaces/registry', () => ({
+  getBuiltinSurfaces,
+  surfaceLabel: (s: { label: string; labelKey?: string }) => s.label,
+}))
 
 import { createPagesProvider } from './pagesProvider'
 

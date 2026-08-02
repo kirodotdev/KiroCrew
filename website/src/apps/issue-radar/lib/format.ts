@@ -2,6 +2,7 @@
 // Issue Radar. No React, no component imports — safe to pull into any module.
 import { Clock, Hash, type LucideIcon } from 'lucide-react'
 import { fmtRelative, toDate } from '../../../i18n/format'
+import { i18nT } from '../../../i18n/t'
 import { loadColumnCollapsed, loadColumnWidth } from '../../../lib/columnWidth'
 import { DASHBOARD_TABS, SORT_KEYS } from './types'
 import type { ActiveRepo, DashboardTab, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter } from './types'
@@ -303,16 +304,23 @@ export function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-/** Sort options rendered in the Filters section. */
+/** Sort options rendered in the Filters section.
+ *
+ * `label` is a GETTER, not a value: this table is evaluated once at import, so an
+ * `i18nT()` call in the initialiser would freeze the boot language and never
+ * re-resolve on a language switch. A getter runs on every property access, and
+ * the access is `{f.label}` inside FiltersSection's render — so the consumers
+ * need no change. */
 export const SORT_FIELDS: { key: SortKey; label: string; icon: LucideIcon }[] = [
-  { key: 'number', label: 'Number', icon: Hash },
-  { key: 'updated', label: 'Last update', icon: Clock },
+  { key: 'number', get label() { return i18nT('apps.issueRadar.lib.format.number') }, icon: Hash },
+  { key: 'updated', get label() { return i18nT('apps.issueRadar.lib.format.last_update') }, icon: Clock },
 ]
 
-/** Sort options for the pull-request list — same fields as the issue list. */
+/** Sort options for the pull-request list — same fields, and deliberately the
+ *  same two catalog keys, as the issue list above. */
 export const PR_SORT_FIELDS: { key: PrSortKey; label: string; icon: LucideIcon }[] = [
-  { key: 'number', label: 'Number', icon: Hash },
-  { key: 'updated', label: 'Last update', icon: Clock },
+  { key: 'number', get label() { return i18nT('apps.issueRadar.lib.format.number') }, icon: Hash },
+  { key: 'updated', get label() { return i18nT('apps.issueRadar.lib.format.last_update') }, icon: Clock },
 ]
 
 // ── Persisted UI state ────────────────────────────────────────────────────

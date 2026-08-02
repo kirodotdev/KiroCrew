@@ -1,13 +1,23 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useEffect, useState } from 'react'
 import { X, Keyboard } from 'lucide-react'
-import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY } from '../hooks/useKeyboardShortcuts'
+import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUT_GROUPS, shortcutGroupLabel, shortcutLabel, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY } from '../hooks/useKeyboardShortcuts'
 import { isElectron } from '../lib/electron'
 import { Toggle } from './ui'
 
 import { i18nT } from '../i18n/t'
-/** Shortcut group headings, in display order. Shared with Settings → Shortcuts. */
-export const SHORTCUT_GROUPS = ['Chat Navigation', 'Panel Navigation', 'Actions', 'Remote Crews'] as const
+/**
+ * Shortcut group ids + heading resolver, re-exported from the hook that owns
+ * them.
+ *
+ * `useKeyboardShortcuts` is the single source of truth: `SHORTCUT_GROUPS` is the
+ * canonical id set and display order, and the ids are the discriminant matched
+ * against `ShortcutDef.group` in `groupShortcuts()` below — never display copy.
+ * The heading is resolved by `shortcutGroupLabel()` at render. They are re-exported
+ * here because `Settings → Shortcuts` (`pages/settings/ShortcutsPanel.tsx`) imports
+ * the group list from this module.
+ */
+export { SHORTCUT_GROUPS, shortcutGroupLabel }
 
 export function Kbd({ children }: { children: string }) {
   return <kbd className="inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 rounded-md bg-bg border border-border text-[12px] font-mono font-medium text-text-strong shadow-sm">{children}</kbd>
@@ -44,7 +54,7 @@ export function groupShortcuts(group: string, macCtrl: boolean) {
   // plain browser those chords are reserved for browser tab switching and the
   // handler never binds (see useInstanceShortcuts). Don't advertise a binding
   // the host environment will steal.
-  if (group === 'Remote Crews' && !isElectron) return []
+  if (group === 'remote-crews' && !isElectron) return []
   return DEFAULT_SHORTCUTS.filter(s => s.group === group).map(s => {
     // When Mac user toggles back to Alt+digit, adjust the display
     if (IS_MAC && !macCtrl && s.id.startsWith('chat-') && s.ctrl) {
@@ -114,10 +124,10 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
           if (entries.length === 0) return null
           return (
             <div key={group} className="mb-5 last:mb-0">
-              <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{group}</div>
+              <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{shortcutGroupLabel(group)}</div>
               <div className="grid gap-1">
                 {entries.map(s => (
-                  <ShortcutRow key={s.id} label={s.label} keys={formatShortcut(s).split(' + ')} />
+                  <ShortcutRow key={s.id} label={shortcutLabel(s)} keys={formatShortcut(s).split(' + ')} />
                 ))}
               </div>
             </div>

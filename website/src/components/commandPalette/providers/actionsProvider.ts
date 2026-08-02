@@ -36,7 +36,12 @@ import { i18nT } from '../../../i18n/t'
  */
 
 const PROVIDER_ID = 'actions'
-const PROVIDER_LABEL = 'Actions'
+/** Catalog KEY for the tab label — not the label itself. This is module scope,
+ *  evaluated once at import, so an `i18nT()` call here would freeze the boot
+ *  language; the call sits in `createActionsProvider()` below. The label is also
+ *  what a typed scope prefix matches against in CommandPalette, so localising it
+ *  localises the scope shortcut too (type the translated word, then Tab). */
+const PROVIDER_LABEL_KEY = 'components.commandPalette.providers.actionsProvider.actions'
 
 /** Icon convention: lucide element with `lucide-inline` (`use-lucide-icons` lint rule). */
 function inlineIcon(Icon: typeof Command): ReactNode {
@@ -125,7 +130,14 @@ export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvid
 
   return {
     id: PROVIDER_ID,
-    label: PROVIDER_LABEL,
+    // A GETTER, not a plain call: the provider object is built inside a `useMemo`
+    // whose deps do not include the language, so `label: i18nT(...)` would resolve
+    // once and keep the pre-switch wording forever. `LanguageProvider` forces a
+    // re-RENDER via `cloneElement` (it deliberately does NOT remount — see its own
+    // comment rejecting `key={active}`), and a re-render does not recompute a memo.
+    // An accessor moves the lookup to the consumer's render, where the tab strip
+    // reads it. Satisfies `ResourceProvider.label: string`.
+    get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: inlineIcon(Command),
     search(query: string): Result[] {
       const results: Result[] = []

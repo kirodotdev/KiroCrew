@@ -88,9 +88,32 @@ const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
 // user picks via the split send button's dropdown; choice persists.
 const BUSY_SEND_MODE_LS_KEY = 'mc-busy-send-mode'
 type BusySendMode = 'steer' | 'queue'
-const BUSY_SEND_MODES: Array<{ mode: BusySendMode; label: string; desc: string; icon: React.ReactNode }> = [
-  { mode: 'steer', label: 'Steer', desc: 'Inject into the running turn right away', icon: <Target size={15} /> },
-  { mode: 'queue', label: 'Queue', desc: 'Run after the current turn finishes', icon: <ArrowUpFromLine size={15} /> },
+/**
+ * Catalog KEYS for the two busy-send modes' menu copy.
+ *
+ * Keys, not strings: `BUSY_SEND_MODES` is built at module load, so an `i18nT()`
+ * call in it would freeze whatever language was active at boot and never
+ * re-resolve on a language switch. The lookups happen in the menu's render.
+ *
+ * Held apart from `BUSY_SEND_MODES` and shaped as flat `Record`s of full literal
+ * keys, indexed inline at the `i18nT()` call, because that is the only form
+ * `scripts/check-i18n-keys.mjs` can resolve statically — nested in the array and
+ * read as `i18nT(m.labelKey)` the gate cannot see the key at all.
+ *
+ * `steer` reuses the label the split button's `aria-label` already ships rather
+ * than sending a duplicate English string to ten locales.
+ */
+const BUSY_SEND_MODE_LABEL_KEY: Record<BusySendMode, string> = {
+  steer: 'components.chatInput.steer',
+  queue: 'components.chatInput.queue',
+}
+const BUSY_SEND_MODE_DESC_KEY: Record<BusySendMode, string> = {
+  steer: 'components.chatInput.steer_desc',
+  queue: 'components.chatInput.queue_desc',
+}
+const BUSY_SEND_MODES: Array<{ mode: BusySendMode; icon: React.ReactNode }> = [
+  { mode: 'steer', icon: <Target size={15} /> },
+  { mode: 'queue', icon: <ArrowUpFromLine size={15} /> },
 ]
 
 // Prompt undo/redo tuning. The chat textarea is a controlled component, so any
@@ -2398,7 +2421,7 @@ function ChatInput({
                         className="fixed w-[250px] rounded-xl bg-bg-elevated border border-border shadow-xl p-1.5 animate-slide-up z-[60]"
                         style={{ left: Math.max(8, Math.min(busyMenuRect.right - 250, window.innerWidth - 250 - 8)), bottom: window.innerHeight - busyMenuRect.top + 8 }}
                       >
-                        {BUSY_SEND_MODES.map(({ mode, label, desc, icon }) => (
+                        {BUSY_SEND_MODES.map(({ mode, icon }) => (
                           <button
                             key={mode}
                             role="menuitemradio"
@@ -2411,8 +2434,8 @@ function ChatInput({
                           >
                             <span className={`shrink-0 ${mode === 'steer' ? 'text-accent' : 'text-warn'}`}>{icon}</span>
                             <div className="min-w-0 flex-1">
-                              <div className="text-[12px] font-medium text-text">{label}</div>
-                              <div className="text-[11px] text-muted leading-snug">{desc}</div>
+                              <div className="text-[12px] font-medium text-text">{i18nT(BUSY_SEND_MODE_LABEL_KEY[mode])}</div>
+                              <div className="text-[11px] text-muted leading-snug">{i18nT(BUSY_SEND_MODE_DESC_KEY[mode])}</div>
                             </div>
                             {busySendMode === mode && <Check size={14} className="text-accent shrink-0" />}
                           </button>

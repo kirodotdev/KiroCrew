@@ -267,17 +267,44 @@ export function pullRequestCiSignal(
   return 'passed'
 }
 
-const LIFECYCLE_META: Record<LifecycleState, { icon: typeof GitMerge; tone: string; label: string }> = {
-  merged: { icon: GitMerge, tone: 'text-aim', label: 'Merged' },
-  closed: { icon: GitPullRequestClosed, tone: 'text-danger', label: 'Closed' },
-  draft: { icon: GitPullRequestDraft, tone: 'text-muted', label: 'Draft' },
-  open: { icon: GitPullRequest, tone: 'text-ok', label: 'Open' },
+/**
+ * Lifecycle glyph and tone for a pull request's state.
+ *
+ * Presentational fields only. The display copy lives in `LIFECYCLE_LABEL_KEY`
+ * below, named once so the two cannot drift apart.
+ */
+const LIFECYCLE_META: Record<LifecycleState, { icon: typeof GitMerge; tone: string }> = {
+  merged: { icon: GitMerge, tone: 'text-aim' },
+  closed: { icon: GitPullRequestClosed, tone: 'text-danger' },
+  draft: { icon: GitPullRequestDraft, tone: 'text-muted' },
+  open: { icon: GitPullRequest, tone: 'text-ok' },
 }
 
-const CI_META: Record<NonNullable<PullRequestStatus['ci']>, { icon: typeof Check; tone: string; label: string; spin?: boolean }> = {
-  running: { icon: Loader, tone: 'text-warn', label: 'Checks running', spin: true },
-  passed: { icon: Check, tone: 'text-ok', label: 'Checks passed' },
-  failed: { icon: XCircle, tone: 'text-danger', label: 'Checks failed' },
+/**
+ * Catalog keys for the lifecycle states, flat and indexed inline at the
+ * `i18nT()` call so the key gate can resolve them. Split out of
+ * `LIFECYCLE_META` for that reason alone — the glyph/tone table below still
+ * carries the presentational fields.
+ */
+const LIFECYCLE_LABEL_KEY: Record<LifecycleState, string> = {
+  merged: 'components.pullRequestPanel.state_merged',
+  closed: 'components.pullRequestPanel.state_closed',
+  draft: 'components.pullRequestPanel.state_draft',
+  open: 'components.pullRequestPanel.state_open',
+}
+
+/** Catalog keys for the CI rollup. See LIFECYCLE_LABEL_KEY for why it is flat. */
+const CI_LABEL_KEY: Record<NonNullable<PullRequestStatus['ci']>, string> = {
+  running: 'components.pullRequestPanel.checks_running',
+  passed: 'components.pullRequestPanel.checks_passed',
+  failed: 'components.pullRequestPanel.checks_failed',
+}
+
+/** CI rollup glyph, tone, and catalog KEY. Keys not strings — see LIFECYCLE_META. */
+const CI_META: Record<NonNullable<PullRequestStatus['ci']>, { icon: typeof Check; tone: string; spin?: boolean }> = {
+  running: { icon: Loader, tone: 'text-warn', spin: true },
+  passed: { icon: Check, tone: 'text-ok' },
+  failed: { icon: XCircle, tone: 'text-danger' },
 }
 
 /** State markers for one pull-request tab in the source strip: lifecycle glyph
@@ -293,15 +320,22 @@ function SourceTabState({ status }: { status: PullRequestStatus | undefined }) {
   const check = ci ? CI_META[ci] : null
   const LifeIcon = life?.icon
   const CheckIcon = check?.icon
+  // Resolved here, in the component body, so a language switch re-renders into
+  // the new locale — LIFECYCLE_META / CI_META hold keys, not strings.
+  // Indexed inline off the discriminant, not `life.labelKey`: reading the key
+  // through a looked-up object is a shape `scripts/check-i18n-keys.mjs` cannot
+  // resolve, which would exempt these sites from every catalog check.
+  const lifeLabel = lifecycle ? i18nT(LIFECYCLE_LABEL_KEY[lifecycle]) : ''
+  const checkLabel = ci ? i18nT(CI_LABEL_KEY[ci]) : ''
   return (
     <>
       {LifeIcon && life && (
-        <span className={`inline-flex shrink-0 ${life.tone}`} aria-label={life.label} title={life.label}>
+        <span className={`inline-flex shrink-0 ${life.tone}`} aria-label={lifeLabel} title={lifeLabel}>
           <LifeIcon className="lucide-inline" aria-hidden="true" />
         </span>
       )}
       {CheckIcon && check && (
-        <span className={`inline-flex shrink-0 ${check.tone}`} aria-label={check.label} title={check.label}>
+        <span className={`inline-flex shrink-0 ${check.tone}`} aria-label={checkLabel} title={checkLabel}>
           <CheckIcon className={`lucide-inline ${check.spin ? 'animate-spin' : ''}`} aria-hidden="true" />
         </span>
       )}
@@ -397,16 +431,28 @@ function ChangeRow({ file }: { file: PullRequestFile }) {
   )
 }
 
+/**
+ * Per-check bucket glyph, colour, and label.
+ *
+ * `label` is a GETTER, not a string: this table is module-level, so a plain
+ * `i18nT()` call in it would resolve once at import and keep the boot language
+ * forever. An accessor moves the lookup to whichever consumer reads it, each of
+ * which runs per render. The key is a literal inside the getter, which is the
+ * shape `scripts/check-i18n-keys.mjs` resolves statically.
+ */
 const CHECK_META = {
-  failed: { icon: XCircle, color: 'text-danger', label: 'Failed' },
-  pending: { icon: Loader, color: 'text-warn', label: 'In progress' },
-  passed: { icon: Check, color: 'text-ok', label: 'Passed' },
-  skipped: { icon: SkipForward, color: 'text-muted', label: 'Skipped' },
+  failed: { icon: XCircle, color: 'text-danger', get label() { return i18nT('components.pullRequestPanel.check_failed') } },
+  pending: { icon: Loader, color: 'text-warn', get label() { return i18nT('components.pullRequestPanel.check_in_progress') } },
+  passed: { icon: Check, color: 'text-ok', get label() { return i18nT('components.pullRequestPanel.check_passed') } },
+  skipped: { icon: SkipForward, color: 'text-muted', get label() { return i18nT('components.pullRequestPanel.check_skipped') } },
 } as const
 
 function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; source: PullRequestSource; onAddToChat: (text: string) => void }) {
   const meta = CHECK_META[check.bucket]
   const Icon = meta.icon
+  // `meta.label` is the last-resort status, read where it renders (and in the
+  // handoff closure) so a language switch picks it up; `check.conclusion` /
+  // `check.status` ahead of it are raw provider tokens and stay verbatim.
   const checkUrl = safeExternalUrl(check.url)
   const sourceUrl = safeExternalUrl(source.url)
   const handoff = () => {

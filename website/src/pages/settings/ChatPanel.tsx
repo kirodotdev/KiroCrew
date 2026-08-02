@@ -10,16 +10,50 @@ import { isMac } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 
 import { i18nT } from '../../i18n/t'
+/**
+ * Option labels are FUNCTIONS, not module-level arrays.
+ *
+ * Every `*_LABELS` array below used to be a module-level const, which is evaluated
+ * once at import: an `i18nT()` call there would freeze whatever language was active
+ * at boot and never re-resolve. Each resolver is called in the render body instead
+ * (`optionLabels={roleLabels()}`), so a language switch re-reads the catalog.
+ *
+ * Each list stays POSITIONALLY paired with its `*_OPTIONS` array — `SettingsSelect`
+ * matches a label to a value by index — so entries must be added and reordered in
+ * lockstep.
+ */
 const RESTORE_OPTIONS = ['15', '30', '60', '120', '360', '720', '1440', '0']
-const RESTORE_LABELS = ['15m', '30m', '1h', '2h', '6h', '12h', '24h', 'No limit']
+/** Duration abbreviations are left verbatim (locale-aware unit formatting is Phase 4
+ *  territory); only the `'0'` sentinel's label is prose. It reuses the in-chat
+ *  settings popover's key — same setting, same option, one string to translate. */
+function restoreLabels(): string[] {
+  return ['15m', '30m', '1h', '2h', '6h', '12h', '24h', i18nT('pages.chat.chatSettings.no_limit')]
+}
 const COMPACT_OPTIONS = ['20', '40', '60', '80', '90']
 const COMPACT_LABELS = ['20% (aggressive)', '40%', '60%', '80%', '90% (default)']
 
 // About You — slugs shared with onboarding step 2 and context.py's prompt maps.
 const ROLE_OPTIONS = ['', 'developer', 'designer', 'product-manager', 'data-ml', 'it-ops', 'other']
-const ROLE_LABELS = ['Not set', 'Developer', 'UX Designer', 'Product Manager', 'Data / ML', 'IT / Ops', 'Other']
+function roleLabels(): string[] {
+  return [
+    i18nT('pages.settings.chatPanel.not_set'),
+    i18nT('pages.settings.chatPanel.developer'),
+    i18nT('pages.settings.chatPanel.ux_designer'),
+    i18nT('pages.settings.chatPanel.product_manager'),
+    i18nT('pages.settings.chatPanel.data_ml'),
+    i18nT('pages.settings.chatPanel.it_ops'),
+    i18nT('pages.settings.chatPanel.other'),
+  ]
+}
 const TECH_OPTIONS = ['', 'codes', 'somewhat-technical', 'non-technical']
-const TECH_LABELS = ['Not set', 'I write code', 'Somewhat', 'Not technical']
+function techLabels(): string[] {
+  return [
+    i18nT('pages.settings.chatPanel.not_set'),
+    i18nT('pages.settings.chatPanel.i_write_code'),
+    i18nT('pages.settings.chatPanel.somewhat'),
+    i18nT('pages.settings.chatPanel.not_technical'),
+  ]
+}
 
 const SOFT_STOP_MIN = 0.5
 const SOFT_STOP_MAX = 60
@@ -27,11 +61,13 @@ const SOFT_STOP_DEFAULT = 10.0
 
 type CompletionKeepMode = 'head' | 'tail' | 'both'
 const COMPLETION_KEEP_OPTIONS: CompletionKeepMode[] = ['head', 'tail', 'both']
-const COMPLETION_KEEP_LABELS = [
-  'Head (preserve start of stream)',
-  'Tail (preserve end / final summary)',
-  'Both (head + tail with truncation marker)',
-]
+function completionKeepLabels(): string[] {
+  return [
+    i18nT('pages.settings.chatPanel.head_preserve_start_of_stream'),
+    i18nT('pages.settings.chatPanel.tail_preserve_end_final_summary'),
+    i18nT('pages.settings.chatPanel.both_head_tail_with_truncation_marker'),
+  ]
+}
 const COMPLETION_KEEP_CHARS_MIN = 0
 // Mirrors RESULT_FILE_MAX_BYTES on the backend (handlers/core.py _EDITABLE_CONFIG).
 const COMPLETION_KEEP_CHARS_MAX = 512000
@@ -299,7 +335,7 @@ export function ChatPanel() {
             description={i18nT('pages.settings.chatPanel.kiro_matches_vocabulary_and_examples_to_your_pro')}
             value={userRole}
             options={ROLE_OPTIONS}
-            optionLabels={ROLE_LABELS}
+            optionLabels={roleLabels()}
             onChange={v => profileMut.mutate({ path: 'dashboard.user_role', value: v })}
           />
           {userRole === 'other' && (
@@ -318,7 +354,7 @@ export function ChatPanel() {
             description={i18nT('pages.settings.chatPanel.sets_how_deep_explanations_go_plain_language_vs')}
             value={userTechLevel}
             options={TECH_OPTIONS}
-            optionLabels={TECH_LABELS}
+            optionLabels={techLabels()}
             onChange={v => profileMut.mutate({ path: 'dashboard.user_technical_level', value: v })}
           />
         </SettingsCard>
@@ -392,7 +428,7 @@ export function ChatPanel() {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.tail_only_fork')} description={i18nT('pages.settings.chatPanel.fork_keeps_only_the_messages_after_the_chosen_po')} checked={dashCfg.tail_fork_enabled} onChange={v => setDash({ tail_fork_enabled: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.restore_sessions')} description={i18nT('pages.settings.chatPanel.re_open_recently_active_sessions_on_startup')} checked={dashCfg.restore_sessions} onChange={v => setDash({ restore_sessions: v })} disabled={dashDisabled} />
           {dashCfg.restore_sessions && (
-            <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} description={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={RESTORE_LABELS} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
+            <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} description={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
           )}
         </SettingsCard>
       </SettingsSection>
@@ -422,7 +458,7 @@ export function ChatPanel() {
             description={i18nT('pages.settings.chatPanel.which_part_of_a_subagent_s_stream_to_keep_when_i')}
             value={mcCfg?.agent?.completion_keep ?? 'head'}
             options={COMPLETION_KEEP_OPTIONS}
-            optionLabels={COMPLETION_KEEP_LABELS}
+            optionLabels={completionKeepLabels()}
             onChange={v => keepModeMut.mutate(v as CompletionKeepMode)}
             disabled={!mcQ.isSuccess}
           />

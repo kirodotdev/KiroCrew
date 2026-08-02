@@ -94,8 +94,13 @@ route it through the catalog or it will render as English in every language.
   Preferred for new code — it subscribes to language changes.
 - **Anywhere a hook is illegal** (render callbacks, plain helpers, non-component
   modules): `import { i18nT } from '../i18n/t'` then `i18nT('key')`. It reads the
-  current language but does NOT subscribe; `LanguageProvider` remounts the tree on
-  a language change so these re-evaluate.
+  current language but does NOT subscribe. `LanguageProvider` forces a re-RENDER
+  of the tree on a language change (via `cloneElement`, which defeats React's
+  referential-equality bailout) — it deliberately does **not** remount, because
+  remounting discards in-flight state. So an `i18nT()` call in RENDER position
+  re-resolves, but a value baked into a `useMemo` whose deps exclude the language
+  does **not**: put such lookups behind a getter or a function, never in the
+  memoized value itself.
 - **Never `import { t } from 'i18next'`** — `t` is a very common local identifier
   here (`.map(t => …)` over tabs/turns/tasks/themes) and a bare `t` gets shadowed,
   turning the call into `SomeObject(...)`.

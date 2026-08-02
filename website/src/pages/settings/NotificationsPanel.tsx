@@ -12,24 +12,80 @@ import {
 
 import { i18nT } from '../../i18n/t'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
-const PRESET_LABELS: Record<SoundPreset, string> = {
-  none: 'Silent', chime: 'Chime (C6-E6-G6)', ding: 'Ding', blip: 'Blip', pop: 'Pop',
+
+/**
+ * Catalog KEY for each sound preset's display label.
+ *
+ * Keys, not strings: this table is evaluated at module load, so an `i18nT()`
+ * call here would freeze the boot language and never re-resolve on a language
+ * switch. The lookup happens in `presetLabels()`, which runs during render.
+ *
+ * Shaped as a flat `Record` of full literal keys, indexed inline at the
+ * `i18nT()` call, because that is the form `scripts/check-i18n-keys.mjs` can
+ * resolve statically — a key it cannot resolve is a key it cannot verify exists.
+ */
+const PRESET_LABEL_KEY: Record<SoundPreset, string> = {
+  none: 'pages.settings.notificationsPanel.preset_none',
+  chime: 'pages.settings.notificationsPanel.preset_chime',
+  ding: 'pages.settings.notificationsPanel.preset_ding',
+  blip: 'pages.settings.notificationsPanel.preset_blip',
+  pop: 'pages.settings.notificationsPanel.preset_pop',
 }
 const DEFAULT_SENTINEL = 'default'
 const OVERRIDE_OPTIONS: string[] = [DEFAULT_SENTINEL, ...PRESET_OPTIONS]
-const OVERRIDE_LABELS: string[] = ['Use default', ...PRESET_OPTIONS.map(p => PRESET_LABELS[p])]
 
-const CATEGORY_ROWS: { key: SoundCategory; label: string; description: string }[] = [
-  { key: 'all',        label: 'Default (all categories)', description: 'Fallback sound when no category-specific override is set' },
-  { key: 'turn',       label: 'Agent replies', description: 'When the agent finishes a turn in any chat' },
-  { key: 'cron',       label: 'Cron',       description: 'Scheduled job completions' },
-  { key: 'approval',   label: 'Approval',   description: 'Tool approval requests' },
-  { key: 'hook',       label: 'Webhook',    description: 'External hook triggers' },
-  { key: 'heartbeat',  label: 'Heartbeat',  description: 'Heartbeat task results' },
-  { key: 'subagent',   label: 'Subagent',   description: 'Background subagent completions' },
-  { key: 'taskrunner', label: 'Tasks',      description: 'Task runner completions' },
+/** Localised preset labels, positionally aligned with `PRESET_OPTIONS`. No
+ *  `hasOwnProperty` guard: `SoundPreset` is a closed union and
+ *  `loadSoundSettings` validates stored values against it, so every id reaching
+ *  this table has an entry (unlike `lib/effort.ts`, whose levels are whatever
+ *  the backend reports). */
+const presetLabels = (): string[] => PRESET_OPTIONS.map(p => i18nT(PRESET_LABEL_KEY[p]))
+
+/** …plus the leading "inherit the default sound" row the per-category selects
+ *  carry, aligned with `OVERRIDE_OPTIONS`. */
+const overrideLabels = (): string[] => [
+  i18nT('pages.settings.notificationsPanel.use_default'),
+  ...presetLabels(),
 ]
 
+/** Per-category sound rows, in display order. Ids only — the label and
+ *  description are catalog keys below, resolved per render for the same reason
+ *  `PRESET_LABEL_KEY` holds keys. */
+const CATEGORY_ROWS: SoundCategory[] = [
+  'all', 'turn', 'cron', 'approval', 'hook', 'heartbeat', 'subagent', 'taskrunner',
+]
+const CATEGORY_LABEL_KEY: Record<SoundCategory, string> = {
+  all: 'pages.settings.notificationsPanel.category_all',
+  turn: 'pages.settings.notificationsPanel.category_turn',
+  cron: 'pages.settings.notificationsPanel.category_cron',
+  approval: 'pages.settings.notificationsPanel.category_approval',
+  hook: 'pages.settings.notificationsPanel.category_hook',
+  heartbeat: 'pages.settings.notificationsPanel.category_heartbeat',
+  subagent: 'pages.settings.notificationsPanel.category_subagent',
+  taskrunner: 'pages.settings.notificationsPanel.category_taskrunner',
+}
+const CATEGORY_DESCRIPTION_KEY: Record<SoundCategory, string> = {
+  all: 'pages.settings.notificationsPanel.category_all_description',
+  turn: 'pages.settings.notificationsPanel.category_turn_description',
+  cron: 'pages.settings.notificationsPanel.category_cron_description',
+  approval: 'pages.settings.notificationsPanel.category_approval_description',
+  hook: 'pages.settings.notificationsPanel.category_hook_description',
+  heartbeat: 'pages.settings.notificationsPanel.category_heartbeat_description',
+  subagent: 'pages.settings.notificationsPanel.category_subagent_description',
+  taskrunner: 'pages.settings.notificationsPanel.category_taskrunner_description',
+}
+
+/** Sentinel for "this channel has no priority override". It is the select's
+ *  COMPARED value, not its rendered text: the option renders
+ *  `i18nT('…channel_default')` while `value` / `onValueChange` compare this
+ *  string, so localising it in place would silently change what the handler
+ *  matches on. Nothing persists it (choosing it PUTs `priority: null`) and the
+ *  backend never emits it.
+ *
+ *  Left as the English phrase deliberately. Making it an opaque id is the right
+ *  shape, but that rewrite lands on the same line the zero-tolerance
+ *  `[added-lines]` i18n gate reads, and it is out of scope here — see the PR's
+ *  follow-ups. */
 const PRIORITY_SENTINEL = 'Channel default'
 const PRIORITY_OPTIONS = [PRIORITY_SENTINEL, 'critical', 'default', 'passive']
 
@@ -117,7 +173,11 @@ function ChannelsSection() {
                         </SelectTrigger>
                         <SelectContent>
                           {PRIORITY_OPTIONS.map(opt => (
-                            <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                            <SelectItem key={opt} value={opt}>
+                              {opt === PRIORITY_SENTINEL
+                                ? i18nT('pages.settings.notificationsPanel.channel_default')
+                                : opt}
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -191,30 +251,28 @@ export function NotificationsPanel() {
 
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.per_category_sounds')}>
         <SettingsCard>
-          {CATEGORY_ROWS.map(row => {
-            const hasOverride = row.key !== 'all' && settings.perCategory[row.key] !== undefined
-            const effective: SoundPreset = row.key === 'all'
+          {CATEGORY_ROWS.map(cat => {
+            const hasOverride = cat !== 'all' && settings.perCategory[cat] !== undefined
+            const effective: SoundPreset = cat === 'all'
               ? fallback
-              : (settings.perCategory[row.key] ?? fallback)
-            const selectValue: string = row.key === 'all'
+              : (settings.perCategory[cat] ?? fallback)
+            const selectValue: string = cat === 'all'
               ? fallback
-              : (hasOverride ? (settings.perCategory[row.key] as SoundPreset) : DEFAULT_SENTINEL)
-            const opts = row.key === 'all' ? PRESET_OPTIONS : OVERRIDE_OPTIONS
-            const optLabels = row.key === 'all'
-              ? PRESET_OPTIONS.map(p => PRESET_LABELS[p])
-              : OVERRIDE_LABELS
+              : (hasOverride ? (settings.perCategory[cat] as SoundPreset) : DEFAULT_SENTINEL)
+            const opts = cat === 'all' ? PRESET_OPTIONS : OVERRIDE_OPTIONS
+            const optLabels = cat === 'all' ? presetLabels() : overrideLabels()
             return (
-              <div key={row.key} className="flex items-end gap-2">
+              <div key={cat} className="flex items-end gap-2">
                 <div className="flex-1 min-w-0">
                   <SettingsSelect
-                    label={row.label}
-                    description={row.description}
+                    label={i18nT(CATEGORY_LABEL_KEY[cat])}
+                    description={i18nT(CATEGORY_DESCRIPTION_KEY[cat])}
                     value={selectValue}
                     options={opts}
                     optionLabels={optLabels}
                     onChange={v => {
-                      if (v === DEFAULT_SENTINEL) clearCategoryOverride(row.key)
-                      else setCategoryPreset(row.key, v as SoundPreset)
+                      if (v === DEFAULT_SENTINEL) clearCategoryOverride(cat)
+                      else setCategoryPreset(cat, v as SoundPreset)
                     }}
                     disabled={!settings.enabled}
                   />

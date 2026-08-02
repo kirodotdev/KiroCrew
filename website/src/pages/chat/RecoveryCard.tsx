@@ -18,6 +18,14 @@ import { useRowDisclosure } from './rowDisclosure'
  */
 export type RecoveryKind = 'refusal' | 'stalled' | 'tool_stall' | 'posttoken' | 'empty'
 
+/**
+ * WIRE VALUES, never rendered — do not translate. These are matched with
+ * `startsWith` against gateway-authored content and must stay byte-identical to
+ * the Python constants; the matched prefix is then SLICED OFF, so no character
+ * of it reaches the screen. The card's visible copy is the `i18nT()` title /
+ * detail below. Translating these would silently stop every recovery card from
+ * rendering in that locale.
+ */
 const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   ['refusal', '[Tool refusal — automatic recovery]'],
   ['stalled', '[Stalled turn — automatic recovery]'],

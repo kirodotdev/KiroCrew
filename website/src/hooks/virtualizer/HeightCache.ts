@@ -20,6 +20,9 @@
 // (private browsing, quota exceeded, sandboxed iframes, etc.). Corrupted
 // JSON triggers a console.warn and a fresh cache for that session.
 
+// localStorage key prefix — a storage identifier, never rendered. Not UI copy.
+// Kept in sync with SESSION_PREFIXES in `utils/storageGc.ts`, which garbage-
+// collects these keys; changing it orphans every persisted height map.
 const LS_KEY_PREFIX = 'vc_heights_'
 // Baseline floor for the eviction cap. The effective cap grows with the
 // session's row count up to HARD_CEILING (see effectiveCap()).

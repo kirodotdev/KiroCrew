@@ -27,7 +27,13 @@ import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChap
 import { i18nT } from '../i18n/t'
 type Stage = 1 | 2 | 3 | 4
 
-const STAGE_LABELS = ['Sources', 'Categories', 'Review', 'Results']
+/** The wizard's stages, in order. Only the COUNT is ever displayed (the "2 of 4"
+ *  eyebrow) — each stage's on-screen heading and description are separate,
+ *  already-localised strings in `stageHeader`. This used to be an array of
+ *  English stage NAMES ('Sources', 'Categories', 'Review', 'Results') that
+ *  nothing rendered, which read like a label table needing translation and was
+ *  not one. Typed as `Stage[]` so an id here has to be a real stage. */
+const STAGES: Stage[] = [1, 2, 3, 4]
 const SUPPORTED_SOURCE_IDS = new Set([
   'codex',
   'claude_code',
@@ -697,7 +703,7 @@ export default function AgentImportFlow({
       eyebrow={
         <>
           {i18nT('components.agentImportFlow.import_setup')}
-          {showStepFooter && ` · ${stage} of ${STAGE_LABELS.length}`}
+          {showStepFooter && ` · ${stage} of ${STAGES.length}`}
         </>
       }
       onSkipAll={skipAll}

@@ -222,11 +222,29 @@ function Section({
   )
 }
 
-const REVIEW_VISUAL: Record<string, { Icon: LucideIcon; color: string; verb: string }> = {
-  approved: { Icon: CheckCircle2, color: 'text-ok', verb: 'approved these changes' },
-  changes_requested: { Icon: XCircle, color: 'text-danger', verb: 'requested changes' },
-  commented: { Icon: MessageSquare, color: 'text-muted', verb: 'reviewed' },
-  dismissed: { Icon: Eye, color: 'text-muted', verb: 'dismissed a review' },
+/**
+ * Catalog KEYS for the inline sentence a review event reads as ("<who> approved
+ * these changes").
+ *
+ * Split out of `REVIEW_VISUAL` and kept FLAT on purpose: a nested
+ * `REVIEW_VISUAL[state].verbKey` is not statically resolvable by
+ * `scripts/check-i18n-keys.mjs`, so its keys could never be verified to exist.
+ * Keys rather than strings because this table is evaluated at module load, where
+ * an `i18nT()` call would freeze the boot language; the lookup happens in
+ * `eventVisual()`, which runs during render.
+ */
+const REVIEW_VERB_KEY: Record<string, string> = {
+  approved: 'apps.issueRadar.components.prDetail.approved_these_changes',
+  changes_requested: 'apps.issueRadar.components.prDetail.requested_changes',
+  commented: 'apps.issueRadar.components.prDetail.reviewed',
+  dismissed: 'apps.issueRadar.components.prDetail.dismissed_a_review',
+}
+
+const REVIEW_VISUAL: Record<string, { Icon: LucideIcon; color: string }> = {
+  approved: { Icon: CheckCircle2, color: 'text-ok' },
+  changes_requested: { Icon: XCircle, color: 'text-danger' },
+  commented: { Icon: MessageSquare, color: 'text-muted' },
+  dismissed: { Icon: Eye, color: 'text-muted' },
 }
 
 /** One row of the timeline rail: [relative time | dot + connector | content]. */
@@ -268,7 +286,15 @@ function eventVisual(
 
   switch (ev.kind) {
     case 'reviewed': {
-      const rv = REVIEW_VISUAL[ev.review_state ?? 'commented'] ?? REVIEW_VISUAL.commented
+      // `hasOwnProperty`, not a bare index with a `??` fallback: `review_state`
+      // is provider data, so a value like `constructor` would otherwise resolve
+      // to an inherited Object.prototype member — truthy, so the `??` never
+      // fired, leaving `rv.Icon` undefined and crashing the row.
+      const state = ev.review_state
+        && Object.prototype.hasOwnProperty.call(REVIEW_VISUAL, ev.review_state)
+        ? ev.review_state
+        : 'commented'
+      const rv = REVIEW_VISUAL[state]
       const reviewerRole = ev.actor ? roleByLogin?.get(ev.actor) ?? null : null
       return {
         Icon: rv.Icon, color: rv.color,
@@ -277,7 +303,7 @@ function eventVisual(
             <div className="flex items-center gap-1.5 flex-wrap">
               {who}
               <MemberBadge role={reviewerRole} assoc={ev.author_association} />
-              <span>{rv.verb}</span>
+              <span>{i18nT(REVIEW_VERB_KEY[state])}</span>
             </div>
             {/* A review's own text is a comment too — same 3-line clamp. */}
             {ev.body?.trim() && (

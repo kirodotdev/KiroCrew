@@ -33,15 +33,39 @@ function initials(c: ArtifactComment): string {
   return n.slice(0, 2).toUpperCase()
 }
 
-const SYNC_WARN: Record<string, string> = {
-  push_failed: 'Failed to sync to provider',
-  pending_push: 'Pending sync to provider',
+/**
+ * Catalog KEY for each provider sync state that warrants a warning.
+ *
+ * Keys, not strings: this table is evaluated at module load, so an `i18nT()` call
+ * here would freeze the boot language and never re-resolve on a language switch.
+ * The lookup happens in `syncWarnText()`, which runs during render.
+ */
+const SYNC_WARN_KEY: Record<string, string> = {
+  push_failed: 'components.commentsSidebar.failed_to_sync_to_provider',
+  pending_push: 'components.commentsSidebar.pending_sync_to_provider',
 }
 
-/** Warning shown when the anchored text no longer exists in the content
- *  (backend rescans anchors on every content write — `anchor_orphaned` is a
- *  dedicated field, independent of provider `sync_state`). */
-const ORPHAN_WARN = 'Anchor text no longer found in content'
+/**
+ * Warning for a sync state, or `undefined` when that state needs none.
+ *
+ * `undefined` rather than the state name: the call site joins this with the
+ * orphan warning through `.filter(Boolean)`, so returning the raw state would
+ * render a backend identifier as a user-facing warning for every healthy comment.
+ */
+function syncWarnText(state: string): string | undefined {
+  // `hasOwnProperty`, not `in`: the state comes off an API response, so a backend
+  // reporting `toString` would otherwise resolve to an inherited
+  // Object.prototype member and hand a function to i18next.
+  return Object.prototype.hasOwnProperty.call(SYNC_WARN_KEY, state)
+    ? i18nT(SYNC_WARN_KEY[state])
+    : undefined
+}
+
+/** Catalog KEY for the warning shown when the anchored text no longer exists in
+ *  the content (backend rescans anchors on every content write —
+ *  `anchor_orphaned` is a dedicated field, independent of provider
+ *  `sync_state`). Resolved at the call site, which runs during render. */
+const ORPHAN_WARN_KEY = 'components.commentsSidebar.anchor_text_no_longer_found_in_content'
 
 /** A small inline reply composer used under a root thread. */
 export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => void; onCancel: () => void }) {
@@ -155,8 +179,8 @@ export function CommentRow({
   // letting one clobber the other (they're separate backend fields for the
   // same reason).
   const syncWarn = [
-    SYNC_WARN[comment.sync_state],
-    comment.anchor_orphaned ? ORPHAN_WARN : undefined,
+    syncWarnText(comment.sync_state),
+    comment.anchor_orphaned ? i18nT(ORPHAN_WARN_KEY) : undefined,
   ].filter(Boolean).join(' · ') || undefined
   // Comments mirrored in from an external publishing provider can't be resolved
   // or deleted from KiroCrew — those are human-only actions on the provider.

@@ -9,18 +9,29 @@ const STATUS_FILL: Record<string, string> = {
   pending: '#6b7280', in_progress: '#f59e32', reviewing: '#f59e32', passed: '#22c55e', failed: '#ef4444', skipped: '#9ca3af', cancelled: '#9ca3af', cancelling: '#f59e32', paused: '#3b82f6', pausing: '#f59e32', blocked: '#eab308',
 }
 const StatusDot = ({ color }: { color: string }) => <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+/**
+ * Legend rows under the graph. `label` is a GETTER, not a value: this table is
+ * evaluated once at import, so an `i18nT()` call in the initialiser would freeze
+ * the boot language and never re-resolve on a language switch. A getter runs on
+ * every property access, and the only access is the `Object.values(...)` map in
+ * the render below.
+ *
+ * `failed` / `skipped` / `cancelled` deliberately point at the `phasedView` keys:
+ * PhasedView groups the very same aidlc task statuses under those exact words, so
+ * the two views must not be able to drift apart. The rest have no existing key.
+ */
 const STATUS_DOT: Record<string, { color: string; label: ReactNode; key: string }> = {
-  pending: { color: '#6b7280', label: <><StatusDot color="#6b7280" /> Pending</>, key: 'pending' },
-  in_progress: { color: '#f59e32', label: <><StatusDot color="#f59e32" /> Running</>, key: 'in_progress' },
-  reviewing: { color: '#f59e32', label: <><StatusDot color="#f59e32" /> Reviewing</>, key: 'reviewing' },
-  passed: { color: '#22c55e', label: <><StatusDot color="#22c55e" /> Done</>, key: 'passed' },
-  failed: { color: 'var(--danger)', label: <><StatusDot color="var(--danger)" /> Failed</>, key: 'failed' },
-  skipped: { color: '#9ca3af', label: <><SkipForward className="lucide-inline" /> Skipped</>, key: 'skipped' },
-  cancelled: { color: '#9ca3af', label: <><Square className="lucide-inline" /> Cancelled</>, key: 'cancelled' },
-  cancelling: { color: '#f59e32', label: <><Hourglass className="lucide-inline" /> Cancelling</>, key: 'cancelling' },
-  paused: { color: '#3b82f6', label: <><Pause className="lucide-inline" /> Paused</>, key: 'paused' },
-  pausing: { color: '#f59e32', label: <><Hourglass className="lucide-inline" /> Pausing</>, key: 'pausing' },
-  blocked: { color: '#eab308', label: <><StatusDot color="#eab308" /> Needs Approval</>, key: 'blocked' },
+  pending: { color: '#6b7280', get label() { return <><StatusDot color="#6b7280" /> {i18nT('pages.aidlc.dagView.pending')}</> }, key: 'pending' },
+  in_progress: { color: '#f59e32', get label() { return <><StatusDot color="#f59e32" /> {i18nT('pages.aidlc.dagView.running')}</> }, key: 'in_progress' },
+  reviewing: { color: '#f59e32', get label() { return <><StatusDot color="#f59e32" /> {i18nT('pages.aidlc.dagView.reviewing')}</> }, key: 'reviewing' },
+  passed: { color: '#22c55e', get label() { return <><StatusDot color="#22c55e" /> {i18nT('pages.aidlc.dagView.done')}</> }, key: 'passed' },
+  failed: { color: 'var(--danger)', get label() { return <><StatusDot color="var(--danger)" /> {i18nT('pages.aidlc.phasedView.failed')}</> }, key: 'failed' },
+  skipped: { color: '#9ca3af', get label() { return <><SkipForward className="lucide-inline" /> {i18nT('pages.aidlc.phasedView.skipped')}</> }, key: 'skipped' },
+  cancelled: { color: '#9ca3af', get label() { return <><Square className="lucide-inline" /> {i18nT('pages.aidlc.phasedView.cancelled')}</> }, key: 'cancelled' },
+  cancelling: { color: '#f59e32', get label() { return <><Hourglass className="lucide-inline" /> {i18nT('pages.aidlc.dagView.cancelling')}</> }, key: 'cancelling' },
+  paused: { color: '#3b82f6', get label() { return <><Pause className="lucide-inline" /> {i18nT('pages.aidlc.dagView.paused')}</> }, key: 'paused' },
+  pausing: { color: '#f59e32', get label() { return <><Hourglass className="lucide-inline" /> {i18nT('pages.aidlc.dagView.pausing')}</> }, key: 'pausing' },
+  blocked: { color: '#eab308', get label() { return <><StatusDot color="#eab308" /> {i18nT('pages.aidlc.dagView.needs_approval')}</> }, key: 'blocked' },
 }
 const TYPE_STYLE: Record<string, { fill: string; stroke: string; icon: ReactNode }> = {
   fix: { fill: 'rgba(245,158,50,.08)', stroke: '#f59e32', icon: <Wrench size={16} /> },

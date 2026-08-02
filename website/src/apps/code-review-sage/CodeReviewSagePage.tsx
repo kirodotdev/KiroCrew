@@ -47,9 +47,37 @@ function changeLabel(id: string): string {
   return m ? `${m[1]}/${m[2]} #${m[3]}` : id
 }
 
-const PHASE_LABEL: Record<string, string> = {
-  queued: 'queued', gating: 'design gate…', deep: 'deep review…',
-  done: 'reviewed', failed: 'failed',
+/**
+ * Catalog KEY for each run-phase label.
+ *
+ * Keys, not strings: this table is evaluated at module load, so an `i18nT()`
+ * call here would freeze the boot language and never re-resolve on a language
+ * switch. The lookup happens in `phaseLabel()`, which runs during render.
+ *
+ * Flat `Record` of full literal keys indexed inline at the `i18nT()` call —
+ * the only shape `scripts/check-i18n-keys.mjs` can resolve statically.
+ */
+const PHASE_LABEL_KEY: Record<string, string> = {
+  queued: 'apps.codeReviewSage.codeReviewSagePage.phase_queued',
+  gating: 'apps.codeReviewSage.codeReviewSagePage.phase_gating',
+  deep: 'apps.codeReviewSage.codeReviewSagePage.phase_deep',
+  done: 'apps.codeReviewSage.codeReviewSagePage.phase_done',
+  failed: 'apps.codeReviewSage.codeReviewSagePage.phase_failed',
+}
+
+/**
+ * Localised label for a run phase, or the phase id VERBATIM when the backend
+ * reports one this table does not know — the same fallback the previous
+ * `PHASE_LABEL[phase] ?? phase` gave, and better than fabricating copy.
+ *
+ * `hasOwnProperty`, not `in`: the phase comes off a backend progress payload,
+ * so a value like `toString` would otherwise resolve to an inherited
+ * Object.prototype member and hand a function to i18next.
+ */
+function phaseLabel(phase: string): string {
+  return Object.prototype.hasOwnProperty.call(PHASE_LABEL_KEY, phase)
+    ? i18nT(PHASE_LABEL_KEY[phase])
+    : phase
 }
 
 async function getJSON<T>(url: string): Promise<T> {
@@ -335,7 +363,7 @@ export default function CodeReviewSagePage() {
                         className="font-mono text-accent">{changeLabel(id)}</a>
                     : <span className="font-mono">{changeLabel(id)}</span>}
                   <span className={`ml-auto flex items-center gap-1 ${phase === 'failed' ? 'text-danger' : 'text-muted'}`}>
-                    {PHASE_LABEL[phase] ?? phase}
+                    {phaseLabel(phase)}
                     {counts && phase === 'done' && (
                       <>
                         <Circle size={9} className="text-danger ml-1.5" fill="currentColor" />

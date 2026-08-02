@@ -7,16 +7,30 @@ import { ChatPanel } from './settings/ChatPanel'
 import { NotificationsPanel } from './settings/NotificationsPanel'
 
 import { i18nT } from '../i18n/t'
-const TABS = [
-  { key: 'display', label: 'Display', icon: <Palette size={14} /> },
-  { key: 'chat', label: 'Chat', icon: <MessageSquare size={14} /> },
-  { key: 'notifications', label: 'Notifications', icon: <Bell size={14} /> },
-]
+
+/**
+ * A FUNCTION, not a module-level array: a module-level constant is evaluated
+ * once at import, so an `i18nT()` call there would freeze the boot language and
+ * leave the tab bar English after a language switch. Called once per render.
+ *
+ * The labels REUSE the settings-page tab keys rather than adding duplicates:
+ * these three tabs render the very same DisplayPanel / ChatPanel /
+ * NotificationsPanel that `settings.tabs.{display,chat,notifications}` name in
+ * the full settings rail, so the two must not be able to drift apart.
+ */
+function buildTabs() {
+  return [
+    { key: 'display', label: i18nT('settings.tabs.display.label'), icon: <Palette size={14} /> },
+    { key: 'chat', label: i18nT('settings.tabs.chat.label'), icon: <MessageSquare size={14} /> },
+    { key: 'notifications', label: i18nT('settings.tabs.notifications.label'), icon: <Bell size={14} /> },
+  ]
+}
 
 export default function EmbedSettingsPage() {
   const navigate = useNavigate()
   const [tab, setTab] = useState('display')
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  const tabs = buildTabs()
 
   const goBack = () => {
     if (activeSlot) {
@@ -42,7 +56,7 @@ export default function EmbedSettingsPage() {
 
       {/* Tab bar */}
       <div className="flex gap-1 px-4 py-2 border-b border-border shrink-0 overflow-x-auto">
-        {TABS.map(t => (
+        {tabs.map(t => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}

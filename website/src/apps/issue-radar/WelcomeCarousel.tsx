@@ -28,47 +28,67 @@ import ConnectPanel, { COLLAPSED_CARD, EXPANDED_CARD, expandsCard, useConnectFlo
 
 import { i18nT } from '../../i18n/t'
 interface Slide {
-  title: string
-  subtitle: string
+  /** Stable slide identifier — indexes the copy tables below and keys nothing else. */
+  id: string
   icon: React.ReactNode
   /** CSS animation class applied to the icon wrapper — varies per slide so the
    * carousel doesn't feel like the exact same motion five times in a row. */
   animClass: string
 }
 
+/**
+ * Catalog KEYS for the slide headings and body copy.
+ *
+ * Keys rather than the strings themselves: `SLIDES` is module-level data,
+ * evaluated once at import, so an `i18nT()` call in it would freeze whatever
+ * language was active at boot and never re-resolve on a language switch. The
+ * lookups happen in the component body, which runs per render.
+ *
+ * Two flat `Record`s of full literal keys, indexed inline at the `i18nT()` call
+ * (`i18nT(SLIDE_TITLE_KEY[slide.id])`) — the only shape
+ * `scripts/check-i18n-keys.mjs` can resolve statically. Nesting them per slide
+ * (`SLIDES[page].titleKey`) would not resolve, and would land this file in
+ * `dynamic-keys-baseline.json`.
+ */
+export const SLIDE_TITLE_KEY: Record<string, string> = {
+  welcome: 'apps.issueRadar.welcomeCarousel.slide_welcome_title',
+  local: 'apps.issueRadar.welcomeCarousel.slide_local_title',
+  bots: 'apps.issueRadar.welcomeCarousel.slide_bots_title',
+  linked_prs: 'apps.issueRadar.welcomeCarousel.slide_linked_prs_title',
+  decide: 'apps.issueRadar.welcomeCarousel.slide_decide_title',
+}
+
+export const SLIDE_SUBTITLE_KEY: Record<string, string> = {
+  welcome: 'apps.issueRadar.welcomeCarousel.slide_welcome_subtitle',
+  local: 'apps.issueRadar.welcomeCarousel.slide_local_subtitle',
+  bots: 'apps.issueRadar.welcomeCarousel.slide_bots_subtitle',
+  linked_prs: 'apps.issueRadar.welcomeCarousel.slide_linked_prs_subtitle',
+  decide: 'apps.issueRadar.welcomeCarousel.slide_decide_subtitle',
+}
+
 const SLIDES: Slide[] = [
   {
-    title: 'Welcome to Issue Radar',
-    subtitle:
-      'AI duplicate detection and labeling for your issues — running locally, and remembering every investigation.',
+    id: 'welcome',
     icon: <Radar size={48} strokeWidth={1.5} />,
     animClass: 'wc-spin',
   },
   {
-    title: 'No Cloud Account, No API Keys',
-    subtitle:
-      'No AWS account, no keys, no per-issue bill. Just your existing gh CLI, on your machine.',
+    id: 'local',
     icon: <Search size={48} strokeWidth={1.5} />,
     animClass: 'wc-float',
   },
   {
-    title: 'Reads What Your Bots Already Told You',
-    subtitle:
-      'Renovate, Dependabot, CodeRabbit — Issue Radar reads what your bots already found instead of starting over.',
+    id: 'bots',
     icon: <BookOpen size={48} strokeWidth={1.5} />,
     animClass: 'wc-pulse',
   },
   {
-    title: 'Linked PRs, at a Glance',
-    subtitle:
-      "See the PR meant to fix each issue and whether it's open, draft, or merged. Code review stays with your tools.",
+    id: 'linked_prs',
     icon: <GitPullRequest size={48} strokeWidth={1.5} />,
     animClass: 'wc-float',
   },
   {
-    title: 'You Decide — and It Remembers',
-    subtitle:
-      'It suggests; you approve. Every conclusion stays local, ready when you come back.',
+    id: 'decide',
     icon: <Radar size={48} strokeWidth={1.5} />,
     animClass: 'wc-spin',
   },
@@ -128,8 +148,12 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: A
               <div className={`flex items-center justify-center h-20 text-accent ${SLIDES[page].animClass}`}>
                 {SLIDES[page].icon}
               </div>
-              <div className="text-[20px] font-bold text-text tracking-[-0.2px]">{SLIDES[page].title}</div>
-              <div className="text-[13.5px] text-muted leading-[1.7] max-w-[380px]">{SLIDES[page].subtitle}</div>
+              <div className="text-[20px] font-bold text-text tracking-[-0.2px]">
+                {i18nT(SLIDE_TITLE_KEY[SLIDES[page].id])}
+              </div>
+              <div className="text-[13.5px] text-muted leading-[1.7] max-w-[380px]">
+                {i18nT(SLIDE_SUBTITLE_KEY[SLIDES[page].id])}
+              </div>
             </div>
           )}
           {isConnectSlide && <ConnectPanel flow={flow} />}

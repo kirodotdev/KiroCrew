@@ -98,7 +98,12 @@
     "signed_in_with": "已通过 {{provider}} 登录",
     "updates": "项更新",
     "kiro_credits_title": "Kiro 额度：{{used}} / {{limit}}（{{pct}}）— 点击查看详情",
-    "kiro_credits_title_with_bonus": "Kiro 额度：已用 {{used}} / {{limit}} — 套餐 {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — 点击查看详情"
+    "kiro_credits_title_with_bonus": "Kiro 额度：已用 {{used}} / {{limit}} — 套餐 {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — 点击查看详情",
+    "installing_packages": "正在安装依赖包",
+    "pulling_latest_changes": "正在拉取最新变更",
+    "rebuilding_package": "正在重新构建包",
+    "restarting_server": "正在重启服务器",
+    "syncing_workspace": "正在同步工作区"
   },
   "appSdk": {
     "chatEmbed": {
@@ -180,6 +185,48 @@
       "waitingScreen": {
         "cancel_this_run": "取消本次运行",
         "stop_this_run_and_discard_it": "停止并丢弃本次运行"
+      },
+      "constants": {
+        "blocked_figma_app_missing_hint": "在 Figma 桌面版中打开该文件后重试，或把画板导出为 PNG 拖到这里。",
+        "blocked_figma_app_missing_say": "我连不上 Figma — 桌面应用没在运行，或者我这边没有可用的 Figma 工具。",
+        "blocked_figma_file_closed_hint": "在 Figma 桌面版中打开它，然后重试。",
+        "blocked_figma_file_closed_say": "Figma 正在运行，但那个文件没有打开。",
+        "blocked_figma_no_permission_auth_lead": "Figma 的访问权限按账号划分，而我只能读取桌面应用当前打开的内容 — 我自己没有登录账号。解决办法如下。",
+        "blocked_figma_no_permission_auth_step_1": "1. 让文件所有者把它分享给你的 Figma 账号",
+        "blocked_figma_no_permission_auth_step_2": "2. 在 Figma 桌面版中打开它",
+        "blocked_figma_no_permission_auth_step_3": "3. 回到这里，按“重试”",
+        "blocked_figma_no_permission_auth_tail": "如果一直拿不到权限，把画板导出为 PNG 同样有效 — 两种方式我评审的都是像素。",
+        "blocked_figma_no_permission_hint": "申请权限，或把画板导出为 PNG 拖到这里。",
+        "blocked_figma_no_permission_say": "你的 Figma 账号无法查看那个文件。",
+        "blocked_no_access_auth_lead": "Git 访问权限按机器配置，而不是按应用 — 配置一次，所有私有仓库都能用，这里和别处都一样。在你的终端里执行这些命令。",
+        "blocked_no_access_auth_tail": "然后回到这里，按“重试”。我从不索取也不保存令牌 — 粘贴进这个应用的任何内容都会留在保存下来的记录里。",
+        "blocked_no_access_hint": "如果你已经把它检出到本地，直接给我文件夹路径也行。",
+        "blocked_no_access_say": "我打不开那个仓库。它要么是私有的（而我没有凭证），要么不存在 — GitHub 对这两种情况返回相同错误。",
+        "blocked_not_found_hint": "检查所有者和名称，或给我一个本地文件夹路径。",
+        "blocked_not_found_say": "那个 URL 上没有这个仓库。",
+        "blocked_other_hint": "用截图是最快的绕行办法。",
+        "blocked_other_say": "我进不去。",
+        "kind_figma": "Figma 文件",
+        "kind_local": "本地代码",
+        "kind_repo": "仓库",
+        "kind_url": "运行中的应用",
+        "scan_finding_screens": "正在查找界面",
+        "scan_grouping_flows": "正在按可能的流程分组",
+        "scan_which_renderable": "正在判断哪些可以渲染",
+        "sev_catastrophe": "灾难级",
+        "sev_cosmetic": "外观",
+        "sev_major": "重大",
+        "sev_minor": "轻微",
+        "stage_checking_hierarchy": "正在检查层级、对比度和内容",
+        "stage_double_checking": "正在复核每条结论",
+        "stage_getting_pixels": "正在获取真实像素",
+        "stage_reading_screens": "正在阅读界面",
+        "stage_weighing_task": "正在结合任务权衡",
+        "stage_writing_up": "正在撰写评审",
+        "wait_figma": "正在打开 Figma 文件并列出其中的画板…",
+        "wait_local": "正在扫描代码中的路由…",
+        "wait_repo": "正在克隆仓库并列出其中的路由…",
+        "wait_url": "正在加载页面并跟踪其中的链接…"
       }
     },
     "autoResearch": {
@@ -340,7 +387,15 @@
         "when_should_the_agent_stop": "代理应在何时停止？",
         "your_answer": "你的回答",
         "your_answer_2": "你的回答…",
-        "your_guidance": "你的指导"
+        "your_guidance": "你的指导",
+        "state_done": "已完成",
+        "state_failed": "失败",
+        "state_needs_input": "需要输入",
+        "state_paused": "已暂停",
+        "state_ready": "就绪",
+        "state_stalled": "已停滞",
+        "state_stopped": "已停止",
+        "state_working": "进行中"
       }
     },
     "codeReviewSage": {
@@ -410,7 +465,12 @@
         "the_review_runs_on_the_gateway_host_and_needs_th": "审查在网关主机上运行，\n        需要",
         "unavailable_could_not_be_fetched": "“不可用 — 无法获取”",
         "updated": "已更新",
-        "usually_means": "通常意味着"
+        "usually_means": "通常意味着",
+        "phase_deep": "深度审查中…",
+        "phase_done": "已审查",
+        "phase_failed": "失败",
+        "phase_gating": "设计门禁中…",
+        "phase_queued": "已排队"
       }
     },
     "fileExplorer": {
@@ -660,7 +720,11 @@
           "timeline": "时间线",
           "unassigned": "取消分配",
           "unknown_branches": "未知分支",
-          "updated": "更新时间"
+          "updated": "更新时间",
+          "approved_these_changes": "批准了这些变更",
+          "dismissed_a_review": "撤销了一条审查",
+          "requested_changes": "请求了变更",
+          "reviewed": "提交了审查"
         },
         "prFiltersSection": {
           "assigned_to_me": "分配给我",
@@ -794,6 +858,19 @@
           "select_all_visible": "选中当前筛选结果中的所有行",
           "selected_other": "已选择 {{count}} 项",
           "type_to_confirm": "输入确认词以继续"
+        },
+        "memberBadge": {
+          "admin": "管理员",
+          "collaborator": "协作者",
+          "contributor": "贡献者",
+          "first_time_contributor": "首次贡献者",
+          "first_timer": "新人",
+          "maintainer": "维护者",
+          "member": "成员",
+          "owner": "所有者",
+          "read": "读取",
+          "triage": "分类",
+          "write": "写入"
         }
       },
       "connectPanel": {
@@ -949,7 +1026,15 @@
             "which_labels_mark_newcomer_friendly_work_so_issu": "哪些标签标记新手友好的工作，以便 Issue Radar 挑出可以分给首次贡献者的 issue。",
             "which_labels_mean_an_issue_still_needs_triage_dr": "哪些标签表示 issue 仍需分类。它决定概览中的“未分类”计数和待关注队列。",
             "without_push_access_to": "若没有对以下仓库的 push 权限：",
-            "your_edits_are_kept_here_but_won_t_persist_if_yo": "你的编辑会保留在此处但不会持久化。如果你刚更新了 Issue Radar，请重启后端以启用设置 API。"
+            "your_edits_are_kept_here_but_won_t_persist_if_yo": "你的编辑会保留在此处但不会持久化。如果你刚更新了 Issue Radar，请重启后端以启用设置 API。",
+            "role_admin": "管理员",
+            "role_collaborator": "协作者",
+            "role_maintainer": "维护者",
+            "role_member": "成员",
+            "role_owner": "所有者",
+            "role_read": "读取",
+            "role_triage": "分类",
+            "role_write": "写入"
           }
         },
         "tagging": {
@@ -1004,13 +1089,27 @@
           "untagged_issues": "未标记的 issue",
           "what_you_see_below_is_the_previous_result_not_th": "下方显示的是上一次的结果，而非当前状态。",
           "write_every_staged_label_to_github": "将所有暂存的标签写入 GitHub"
+        },
+        "registry": {
+          "overview": "概览",
+          "tagging": "打标签"
         }
       },
       "welcomeCarousel": {
         "back": "上一步",
         "carl_sagan": "— Carl Sagan",
         "next": "下一步",
-        "somewhere_something_incredible_is_waiting_to_be": "“在某处，某些不可思议的事物正等待被人知晓。”"
+        "somewhere_something_incredible_is_waiting_to_be": "“在某处，某些不可思议的事物正等待被人知晓。”",
+        "slide_bots_subtitle": "Renovate、Dependabot、CodeRabbit — Issue Radar 直接读取机器人已经查到的结果，不用从头再来。",
+        "slide_bots_title": "读取机器人已经告诉你的信息",
+        "slide_decide_subtitle": "它给建议，你来批准。所有结论都留在本地，下次回来就能接着用。",
+        "slide_decide_title": "你来决定 — 它帮你记住",
+        "slide_linked_prs_subtitle": "看清每个 issue 对应的修复 PR，以及它是待处理、草稿还是已合并。代码审查仍留在你自己的工具里。",
+        "slide_linked_prs_title": "一眼看清关联的 PR",
+        "slide_local_subtitle": "不需要 AWS 账号，不需要密钥，也不按 issue 计费。只用你机器上已有的 gh CLI。",
+        "slide_local_title": "无需云账号，无需 API 密钥",
+        "slide_welcome_subtitle": "为你的 issue 做 AI 重复检测和打标签 — 全程本地运行，并记住每一次调查。",
+        "slide_welcome_title": "欢迎使用 Issue Radar"
       },
       "workspace": {
         "resize_list": "调整列表大小",
@@ -1021,6 +1120,12 @@
       },
       "api": {
         "these_settings_changed_elsewhere": "这些设置已在别处更改。"
+      },
+      "lib": {
+        "format": {
+          "last_update": "最后更新",
+          "number": "编号"
+        }
       }
     },
     "meetings": {
@@ -1863,6 +1968,15 @@
       "types": {
         "built_in": "内置",
         "kirocrew_registry": "KiroCrew 注册表"
+      },
+      "categories": {
+        "agents_automation": "代理与自动化",
+        "designer_tools": "设计师工具",
+        "developer_tools": "开发者工具",
+        "oncall_ops": "值班与运维",
+        "other": "其他",
+        "productivity": "效率",
+        "research_writing": "研究与写作"
       }
     },
     "artifactBody": {
@@ -2013,7 +2127,10 @@
       "upload_file": "上传文件",
       "use_a_skill": "使用技能",
       "used": "已用",
-      "voice_input": "语音输入"
+      "voice_input": "语音输入",
+      "queue": "排队",
+      "queue_desc": "在当前轮次结束后运行",
+      "steer_desc": "立即注入正在运行的轮次"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -2061,7 +2178,30 @@
           "pin_this_chat_to_the_top": "将此聊天置顶",
           "remove_pin_from_this_chat": "取消此聊天的置顶",
           "start_a_fresh_chat": "开始新聊天",
-          "unpin_current_session": "取消置顶当前会话"
+          "unpin_current_session": "取消置顶当前会话",
+          "actions": "操作"
+        },
+        "allAggregator": {
+          "all": "全部"
+        },
+        "knowledgeProvider": {
+          "knowledge": "知识库"
+        },
+        "pagesProvider": {
+          "developer": "开发者",
+          "explore": "探索",
+          "hooks": "钩子",
+          "kirocrew_agents": "KiroCrew 代理",
+          "logs": "日志",
+          "pages": "页面",
+          "remote_crew": "远程 Crew",
+          "tasks": "任务"
+        },
+        "promptsProvider": {
+          "prompts": "提示词"
+        },
+        "skillsProvider": {
+          "skills": "技能"
         }
       },
       "search_everywhere": "全局搜索",
@@ -2116,7 +2256,10 @@
       "scroll_to_the_highlighted_text": "滚动到高亮文本",
       "shared_comment": "共享评论",
       "show": "展开",
-      "unknown": "未知"
+      "unknown": "未知",
+      "anchor_text_no_longer_found_in_content": "内容中已找不到锚点文本",
+      "failed_to_sync_to_provider": "同步到平台失败",
+      "pending_sync_to_provider": "等待同步到平台"
     },
     "commentThreadPopover": {
       "close": "关闭",
@@ -2142,7 +2285,15 @@
       "show_live_desktop_view": "显示实时桌面视图",
       "shrink": "缩小",
       "shrink_live_desktop_view": "缩小实时桌面视图",
-      "updated": "已更新"
+      "updated": "已更新",
+      "resize_live_desktop_view_bottom": "调整实时桌面视图大小（底部）",
+      "resize_live_desktop_view_bottom_left": "调整实时桌面视图大小（左下）",
+      "resize_live_desktop_view_bottom_right": "调整实时桌面视图大小（右下）",
+      "resize_live_desktop_view_left": "调整实时桌面视图大小（左侧）",
+      "resize_live_desktop_view_right": "调整实时桌面视图大小（右侧）",
+      "resize_live_desktop_view_top": "调整实时桌面视图大小（顶部）",
+      "resize_live_desktop_view_top_left": "调整实时桌面视图大小（左上）",
+      "resize_live_desktop_view_top_right": "调整实时桌面视图大小（右上）"
     },
     "contentRenderer": {
       "loading_editor": "正在加载编辑器…"
@@ -2367,7 +2518,15 @@
       "open_state": "待处理",
       "opened_time": "创建于 {{time}}",
       "provider_results_may_be_partial_for_sections_ope": "服务商返回的结果可能不完整：{{sections}}。打开 issue 以获取完整内容。",
-      "updated_time": "更新于 {{time}}"
+      "updated_time": "更新于 {{time}}",
+      "reaction_confused": "困惑",
+      "reaction_eyes": "关注",
+      "reaction_heart": "爱心",
+      "reaction_hooray": "庆祝",
+      "reaction_laugh": "笑",
+      "reaction_minus1": "不赞同",
+      "reaction_plus1": "赞同",
+      "reaction_rocket": "火箭"
     },
     "jobForm": {
       "a_short_label_for_this_job": "此任务的简短标签",
@@ -2572,7 +2731,8 @@
       "view_preview": "查看预览",
       "view_source": "查看源码",
       "word_wrap": "自动换行",
-      "failed_to_add_source": "添加来源失败"
+      "failed_to_add_source": "添加来源失败",
+      "download_failed": "下载失败"
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_reveal_in_finder": "点击浏览 / Shift+点击在 Finder 中显示",
@@ -2692,7 +2852,19 @@
         "this_week": "本周",
         "today": "今天",
         "unknown_date": "未知日期",
-        "yesterday": "昨天"
+        "yesterday": "昨天",
+        "kind_agent": "代理",
+        "kind_all": "全部",
+        "kind_approval": "审批",
+        "kind_cron": "Cron",
+        "kind_cron_job": "定时任务",
+        "kind_heartbeat": "心跳",
+        "kind_hooks": "钩子",
+        "kind_notification": "通知",
+        "kind_subagent": "子代理",
+        "kind_task_runner": "任务运行器",
+        "kind_tasks": "任务",
+        "kind_webhook": "Webhook"
       },
       "notificationDetailPanel": {
         "approve": "批准",
@@ -2770,7 +2942,22 @@
       "set_your_look_and_tell_kiro_about_you_so_respons": "设置外观并告诉 Kiro 你的情况，让回复贴合你的工作方式。",
       "skip": "跳过",
       "tell_kiro_about_you": "介绍一下你自己",
-      "your_role": "你的角色"
+      "your_role": "你的角色",
+      "pop_apps_body": "安装专门打造的工具，解锁新的能力和工作流。",
+      "pop_apps_title": "拓展你能用 KiroCrew 做到的事",
+      "pop_chat_body": "提个问题、派个任务，或者只是打声招呼 — 你的代理已经就绪。",
+      "pop_chat_title": "开始你的第一个会话",
+      "pop_schedule_body": "设置任务自动运行，不用你动手，事情也会照常发生。",
+      "pop_schedule_title": "准时自动跑起来的工作",
+      "role_data_ml": "数据 / 机器学习",
+      "role_designer": "UX 设计师",
+      "role_developer": "开发者",
+      "role_it_ops": "IT / 运维",
+      "role_other": "其他",
+      "role_product_manager": "产品经理",
+      "tech_codes": "我会写代码",
+      "tech_non_technical": "非技术人员",
+      "tech_somewhat": "略懂"
     },
     "pastedChip": {
       "collapse_paste": "折叠粘贴内容",
@@ -2880,7 +3067,17 @@
       "take_this_merge_request_out_of_draft": "将此合并请求撤出草稿状态",
       "take_this_pull_request_out_of_draft": "将此拉取请求撤出草稿状态",
       "this_authorizes_the_merge_as_soon_as_requirement": "此操作会在要求通过后立即授权合并，若此仓库允许则压缩为单个提交（否则生成合并提交，再变基）。",
-      "this_authorizes_the_merge_when_the_pipeline_succ": "此操作会在流水线成功后授权合并。"
+      "this_authorizes_the_merge_when_the_pipeline_succ": "此操作会在流水线成功后授权合并。",
+      "check_failed": "失败",
+      "check_in_progress": "进行中",
+      "check_passed": "通过",
+      "check_skipped": "已跳过",
+      "checks_failed": "检查失败",
+      "checks_passed": "检查通过",
+      "state_closed": "已关闭",
+      "state_draft": "草稿",
+      "state_merged": "已合并",
+      "state_open": "待处理"
     },
     "questionCard": {
       "collapse_all": "全部折叠",
@@ -3183,7 +3380,36 @@
       "saving": "保存中…",
       "theme_json": "主题 JSON",
       "theme_name": "主题名称",
-      "update_theme": "更新主题"
+      "update_theme": "更新主题",
+      "color_picker_for_var": "{{label}}拾色器",
+      "group_accent": "强调色",
+      "group_backgrounds": "背景色",
+      "group_borders": "边框色",
+      "group_status": "状态色",
+      "group_text_muted": "文本与次要文本",
+      "var_accent": "强调色",
+      "var_accent_hover": "强调色（悬停）",
+      "var_aim": "AIM",
+      "var_bg": "背景",
+      "var_bg_accent": "背景（强调）",
+      "var_bg_elevated": "背景（上层）",
+      "var_bg_hover": "背景（悬停）",
+      "var_border": "边框",
+      "var_border_hover": "边框（悬停）",
+      "var_border_strong": "边框（强）",
+      "var_card": "卡片",
+      "var_card_text": "卡片文本",
+      "var_danger": "危险",
+      "var_info": "信息",
+      "var_muted": "次要文本",
+      "var_muted_strong": "次要文本（强）",
+      "var_ok": "成功",
+      "var_panel": "面板",
+      "var_panel_strong": "面板（强）",
+      "var_ring": "焦点环",
+      "var_text": "文本",
+      "var_text_strong": "文本（强）",
+      "var_warning": "警告"
     },
     "themeExperienceLayer": {
       "adopt_a_themed_persona_in_the_assistant_security": "• 让助手采用主题化人格（安全与准确性始终优先；你可以随时要求它取消人格）。",
@@ -3349,7 +3575,8 @@
       "updated": "已更新",
       "view_only_clicks_here_don_t_reach_the_page": "仅供查看 — 在此处点击不会作用于页面",
       "waiting_for_the_browser_to_take_a_screenshot": "正在等待浏览器截图…",
-      "web_preview": "网页预览"
+      "web_preview": "网页预览",
+      "responsive_desktop": "自适应（桌面）"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "仅代理 — 无 KiroCrew 上下文或 MCP",
@@ -3402,6 +3629,41 @@
       "copied": "已复制",
       "copy_url": "复制网址",
       "copy_url_of": "复制 {{name}} 的网址"
+    },
+    "readingWidthToggle": {
+      "label_full": "全",
+      "label_md": "中",
+      "title_full": "全宽",
+      "title_md": "中等宽度"
+    },
+    "slashCommandMenu": {
+      "desc_agent": "切换或管理当前代理",
+      "desc_changelog": "显示版本更新日志",
+      "desc_chat": "保存或加载聊天会话",
+      "desc_clear": "清除对话历史",
+      "desc_code": "打开代码智能工具",
+      "desc_compact": "压缩对话以释放上下文",
+      "desc_context": "管理上下文文件和 token 用量",
+      "desc_editor": "在外部编辑器中撰写提示词",
+      "desc_exit": "退出聊天会话",
+      "desc_experiment": "开关实验性功能",
+      "desc_help": "显示可用命令",
+      "desc_hooks": "查看已配置的上下文钩子",
+      "desc_issue": "报告问题或缺陷",
+      "desc_kb": "搜索知识库",
+      "desc_logdump": "把会话日志导出到文件",
+      "desc_mcp": "显示已配置的 MCP 服务器",
+      "desc_model": "显示或切换当前模型",
+      "desc_onboarding": "重放设置导入和欢迎引导",
+      "desc_paste": "从剪贴板粘贴图片",
+      "desc_prompts": "列出或调用已保存的提示词与代理 SOP",
+      "desc_quit": "结束聊天会话",
+      "desc_reply": "回复最后一条助手消息",
+      "desc_side": "打开旁支对话面板",
+      "desc_tangent": "开始一段支线对话",
+      "desc_todos": "显示或管理任务清单",
+      "desc_tools": "显示可用工具",
+      "desc_usage": "显示计费和用量信息"
     }
   },
   "hooks": {
@@ -3417,7 +3679,34 @@
       "failed_to_run_job": "运行任务失败"
     },
     "useKeyboardShortcuts": {
-      "close_this_session": "关闭此会话？"
+      "close_this_session": "关闭此会话？",
+      "chats_panel": "聊天面板",
+      "cycle_agent": "循环切换代理",
+      "cycle_approval_mode": "循环切换审批模式",
+      "cycle_model": "循环切换模型",
+      "cycle_reasoning_effort": "循环切换推理强度",
+      "focus_text_input": "聚焦文本输入框",
+      "group_actions": "操作",
+      "group_chat_navigation": "聊天导航",
+      "group_panel_navigation": "面板导航",
+      "group_remote_crews": "远程 Crew",
+      "jump_to_chat": "跳转到聊天 {{n}}",
+      "last_visited_chat_mru": "上次访问的聊天（MRU）",
+      "next_chat": "下一个聊天",
+      "notifications_panel": "通知面板",
+      "open_agent_monitor": "打开代理监视器（子代理）",
+      "open_settings": "打开设置",
+      "open_shortcuts_help": "打开快捷键帮助",
+      "previous_agent": "上一个代理",
+      "previous_approval_mode": "上一个审批模式",
+      "previous_chat": "上一个聊天",
+      "previous_model": "上一个模型",
+      "previous_reasoning_effort": "上一个推理强度",
+      "projects_panel": "项目面板",
+      "schedule_panel": "计划面板",
+      "switch_to_local": "切换到本地",
+      "switch_to_remote_crew": "切换到远程 Crew {{n}}",
+      "walk_back_mru_history": "回溯 MRU 历史"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "所有槽位都已占用",
@@ -3466,6 +3755,20 @@
       "a_task_needs_your_decision": "有任务需要你决策",
       "approval_required": "需要审批",
       "unknown": "未知"
+    },
+    "theme": {
+      "high_contrast": "🔆 高对比度"
+    },
+    "usePanelTabs": {
+      "artifacts": "工件",
+      "browser": "浏览器",
+      "changes": "变更",
+      "files": "文件",
+      "issues": "Issues",
+      "logs": "日志",
+      "side": "旁支",
+      "subagents": "子代理",
+      "workflows": "工作流"
     }
   },
   "nav": {
@@ -3538,7 +3841,15 @@
       "dagView": {
         "approve": "批准",
         "deny": "拒绝",
-        "no_tasks_to_visualize": "无可视化的任务"
+        "no_tasks_to_visualize": "无可视化的任务",
+        "cancelling": "正在取消",
+        "done": "已完成",
+        "needs_approval": "需要审批",
+        "paused": "已暂停",
+        "pausing": "正在暂停",
+        "pending": "待处理",
+        "reviewing": "审查中",
+        "running": "运行中"
       },
       "phasedView": {
         "cancelled": "已取消",
@@ -4094,7 +4405,18 @@
       "thread": "话题",
       "topic": "主题",
       "unknown_error": "未知错误",
-      "reply_2_other": "{{count}} 条回复"
+      "reply_2_other": "{{count}} 条回复",
+      "listen_all": "全部",
+      "listen_mention": "提及",
+      "listen_silent": "静默",
+      "preset_custom_empty": "自定义（空）",
+      "preset_incident_response": "事件响应",
+      "state_done": "已完成",
+      "state_failed": "失败",
+      "state_listening": "聆听中",
+      "state_pending": "待处理",
+      "state_running": "运行中",
+      "state_working": "工作中"
     },
     "chat": {
       "activityViewer": {
@@ -4160,7 +4482,14 @@
         "waiting_for_output": "等待输出…",
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队",
         "file_not_found_on_disk_it_may_have_been_moved_or": "磁盘上找不到此文件。可能已移动或删除。",
-        "unable_to_read_file": "无法读取文件。"
+        "unable_to_read_file": "无法读取文件。",
+        "artifacts": "工件",
+        "changes": "变更",
+        "issues": "Issues",
+        "logs": "日志",
+        "side": "旁支",
+        "subagents": "子代理",
+        "workflows": "工作流"
       },
       "assistantMessage": {
         "applied_to_tasks": "已应用到任务",
@@ -4356,7 +4685,27 @@
         "show_line_numbers": "显示行号",
         "switch_to_split_view": "切换到并排视图",
         "switch_to_unified_view": "切换到统一视图",
-        "turn_diff": "本轮差异"
+        "turn_diff": "本轮差异",
+        "menu_artifacts": "工件",
+        "menu_artifacts_desc": "会话内的文档与收藏",
+        "menu_browser": "浏览器",
+        "menu_browser_desc": "查看网页或本地开发服务器",
+        "menu_changes": "变更",
+        "menu_changes_desc": "拉取请求、检查与审查",
+        "menu_files": "文件",
+        "menu_files_desc": "浏览与编辑文件",
+        "menu_issues": "Issues",
+        "menu_issues_desc": "本会话中提到的 issue",
+        "menu_logs": "日志",
+        "menu_logs_desc": "网关日志流",
+        "menu_side": "旁支",
+        "menu_side_desc": "并行聊天，共享上下文",
+        "menu_subagents": "子代理",
+        "menu_subagents_desc": "实时代理活动与记录",
+        "menu_terminal": "终端",
+        "menu_terminal_desc": "网关主机上的 Shell",
+        "menu_workflows": "工作流",
+        "menu_workflows_desc": "运行、阶段与可重启的步骤"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "停止失败，会话已重置",
@@ -4855,10 +5204,48 @@
       "removed_name": "已移除 {{name}}",
       "restarted_name": "已重启 {{name}}",
       "starting_pod_for_name_can_take_1_min": "正在为 {{name}} 启动 pod…（可能需要约 1 分钟）",
-      "stopped_name": "已停止 {{name}}"
+      "stopped_name": "已停止 {{name}}",
+      "pending": "待处理",
+      "removed": "已移除",
+      "stopping_pod": "正在停止 pod",
+      "verifying": "正在验证"
     },
     "developerPage": {
-      "developer": "开发者"
+      "developer": "开发者",
+      "tabs": {
+        "archive": {
+          "description": "已轮转/压缩的会话历史（保留 7 天）",
+          "label": "归档"
+        },
+        "config": {
+          "description": "KiroCrew 与代理配置查看器（只读）",
+          "label": "配置"
+        },
+        "logs": {
+          "description": "支持按级别筛选和搜索的实时日志查看器",
+          "label": "日志"
+        },
+        "mcpPool": {
+          "description": "共享 MCP 网关与可池化的服务器配置",
+          "label": "MCP 池"
+        },
+        "memory": {
+          "description": "记忆图谱、嵌入提供方与向量存储内部信息",
+          "label": "记忆"
+        },
+        "storage": {
+          "description": "localStorage 用量、配额与垃圾回收",
+          "label": "存储"
+        },
+        "system": {
+          "description": "CPU、内存、网络与进程指标",
+          "label": "系统"
+        },
+        "telemetry": {
+          "description": "会话启动延迟（p50/p90）与 MCP/技能加速指标",
+          "label": "遥测"
+        }
+      }
     },
     "embedSettingsPage": {
       "back": "返回",
@@ -5053,7 +5440,10 @@
         "try_different_keywords_or_filters": "尝试其他关键词或筛选条件",
         "copied": "已复制！",
         "copy_content": "复制内容",
-        "embeddings_loading": "嵌入加载中"
+        "embeddings_loading": "嵌入加载中",
+        "graph_view": "图谱视图",
+        "list_view": "列表视图",
+        "sources_tab": "来源"
       },
       "knowledgeGraph": {
         "edges": "条边",
@@ -5150,6 +5540,14 @@
         "other": "其他",
         "select_item": "选择 {{title}}",
         "untitled": "未命名"
+      },
+      "helpers": {
+        "documents_are_chunked_entities_extracted_and_rel": "文档会自动分块、抽取实体并映射关系",
+        "drop_files_here_or_click_upload_to_ingest_docume": "把文件拖到这里，或点击“上传”导入文档",
+        "search_across_all_knowledge_filter_by_type_or_ex": "搜索全部知识、按类型筛选，或探索实体图谱",
+        "supported_formats": "支持的格式：{{formats}}",
+        "welcome_to_the_knowledge_library": "欢迎使用知识库",
+        "your_centralized_knowledge_base_with_entity_extr": "你的集中式知识库，支持实体抽取、图谱关系和全文搜索。"
       }
     },
     "localStorageDebug": {
@@ -5445,7 +5843,12 @@
         "refresh": "刷新",
         "search_memory_nodes": "搜索记忆节点",
         "search_nodes": "搜索节点…",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "由 GPU 渲染的全部 KiroCrew 记忆可视化视图。节点按类型着色。放大可显示标签，点击节点可检查，使用筛选器可聚焦。"
+        "gpu_rendered_visualization_of_all_kirocrew_memor": "由 GPU 渲染的全部 KiroCrew 记忆可视化视图。节点按类型着色。放大可显示标签，点击节点可检查，使用筛选器可聚焦。",
+        "group_history_count": "历史（{{count}}）",
+        "group_lessons_count": "经验（{{count}}）",
+        "group_preferences_count": "偏好设置（{{count}}）",
+        "group_projects_count": "项目（{{count}}）",
+        "group_semantic_count": "语义（{{count}}）"
       },
       "memoryTab": {
         "actions": "操作",
@@ -5597,7 +6000,10 @@
         "steering_file_name": "引导文件名",
         "steering_files": "引导文件",
         "workspace_this_project_only": "工作区 — 仅当前项目",
-        "always_on_markdown_conventions_injected_into_eve": "注入到每个会话的常开 markdown 约定。全局文件位于 ~/.kiro/steering，在所有位置生效；工作区文件位于 <project>/.kiro/steering，仅对相应项目生效。"
+        "always_on_markdown_conventions_injected_into_eve": "注入到每个会话的常开 markdown 约定。全局文件位于 ~/.kiro/steering，在所有位置生效；工作区文件位于 <project>/.kiro/steering，仅对相应项目生效。",
+        "global": "全局",
+        "title_describe_the_convention_the_agent_should_a": "# 标题\n\n描述代理应始终遵循的约定。",
+        "workspace": "工作区"
       },
       "tokenDailyChart": {
         "all": "全部",
@@ -6215,7 +6621,20 @@
         "shift_enter_for_newline": "Shift+Enter 换行",
         "show_occasional_feature_discovery_tips_above_the": "代理工作时在输入框上方不时显示功能发现提示",
         "single_line": "单行",
-        "smooth": "平滑"
+        "smooth": "平滑",
+        "both_head_tail_with_truncation_marker": "两端（头部 + 尾部，带截断标记）",
+        "data_ml": "数据 / 机器学习",
+        "developer": "开发者",
+        "head_preserve_start_of_stream": "头部（保留流的开头）",
+        "i_write_code": "我会写代码",
+        "it_ops": "IT / 运维",
+        "not_set": "未设置",
+        "not_technical": "非技术人员",
+        "other": "其他",
+        "product_manager": "产品经理",
+        "somewhat": "略懂",
+        "tail_preserve_end_final_summary": "尾部（保留结尾 / 最终摘要）",
+        "ux_designer": "UX 设计师"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",
@@ -6234,7 +6653,19 @@
         "retry": "重试",
         "screen_recording": "屏幕录制",
         "screenshot_width": "截图宽度",
-        "show_cursor_motion": "显示光标移动轨迹"
+        "show_cursor_motion": "显示光标移动轨迹",
+        "computer_use_lets_the_agent_read_any_app_window": "电脑操作允许代理读取任意应用窗口，并向其发送点击和按键。大多数点击直接送给应用，不会动你的指针；但当某个目标确实需要时，代理可以请求移动真实指针。密码字段绝不读取；除此之外，没有任何限制约束它能操作哪些应用。",
+        "could_not_check": "无法检查",
+        "draw_a_cursor_that_glides_to_each_target_and_pul": "绘制一个光标，它会滑向每个目标并在点击时闪动，方便你在屏幕上跟着看。纯视觉效果 — 不会改变代理的权限范围，而且只在会移动真实指针的点击时出现。",
+        "granted": "已授权",
+        "how_many_controls_one_window_reading_returns_a_w": "一次窗口读取最多返回多少个控件。超过这个数量的窗口会被截断，并会告知代理。控件密集的应用（表格、IDE）可以调高；想减少每次读取消耗的 token 就调低。",
+        "how_much_of_a_window_the_agent_reads_at_once_the": "代理一次读取窗口的多少内容。这些是成本和速度的调节项，不是安全设置 — 每个值都不会超出内置上限。除非窗口太大、一次读不完，或者截图感觉变慢，否则不用改动。",
+        "longest_edge_of_the_screenshot_in_pixels_smaller": "截图最长边的像素数。越小越省钱、读得越快；越大则在代理不得不回退到图像时，小字仍然清晰可读。",
+        "not_applicable": "不适用",
+        "not_detected": "未检测到",
+        "not_detected_does_not_always_mean_unavailable_ma": "未检测到并不总是意味着不可用 — macOS 会把权限授予记在启动 KiroCrew 的进程上，而不是 KiroCrew 本身。",
+        "the_app_lists_in_computer_use_json_could_not_be": "无法读取 computer_use.json 中的应用列表，因此这里显示为空。在该文件成为有效 JSON 之前，代理仍会拒绝所有依赖这些列表的操作。",
+        "your_chat_sessions_were_restarted_so_this_takes": "你的聊天会话已重启，所以改动立即生效 — Kiro 每个会话只读取一次工具列表，否则已经打开的聊天不会拾取到改动。你的消息都还在；代理会在你下一条消息时重新读取上下文。"
       },
       "developerPanel": {
         "developer_mode": "开发者模式",
@@ -6386,7 +6817,30 @@
         "volume": "音量",
         "always_interrupts_cannot_be_muted_or_lowered": "始终打断 — 无法静音或降低优先级",
         "channel_not_active_app_disabled_setting_retained": "渠道未启用（应用已禁用） — 设置已保留",
-        "failed_to_load_channels": "加载渠道失败"
+        "failed_to_load_channels": "加载渠道失败",
+        "category_all": "默认（所有类别）",
+        "category_all_description": "未设置类别专属提示音时使用的后备音",
+        "category_approval": "审批",
+        "category_approval_description": "工具审批请求",
+        "category_cron": "Cron",
+        "category_cron_description": "定时任务完成",
+        "category_heartbeat": "心跳",
+        "category_heartbeat_description": "心跳任务结果",
+        "category_hook": "Webhook",
+        "category_hook_description": "外部钩子触发",
+        "category_subagent": "子代理",
+        "category_subagent_description": "后台子代理完成",
+        "category_taskrunner": "任务",
+        "category_taskrunner_description": "任务运行器完成",
+        "category_turn": "代理回复",
+        "category_turn_description": "代理在任意聊天中完成一轮时",
+        "channel_default": "渠道默认",
+        "preset_blip": "嘀",
+        "preset_chime": "铃声（C6-E6-G6）",
+        "preset_ding": "叮",
+        "preset_none": "静默",
+        "preset_pop": "啵",
+        "use_default": "使用默认"
       },
       "postureDisclosure": {
         "more": "更多",
@@ -6463,7 +6917,57 @@
         "standard": "标准",
         "turn_off_every_rule": "一次性关闭所有内置的拒绝命令规则。独立的纵深防御控制项（敏感路径、IMDS、git 发布）仍会强制执行。",
         "turn_off_every_rule_governance_locked": "一次性关闭所有内置的拒绝命令规则。独立的纵深防御控制项（敏感路径、IMDS、git 发布）仍会强制执行，以及由组织策略固定的规则仍会保持启用。",
-        "yolo_auto_approve": "YOLO（自动批准）"
+        "yolo_auto_approve": "YOLO（自动批准）",
+        "feature_credential_redaction": "凭证脱敏",
+        "feature_credential_redaction_description": "扫描每条输出路径，查找明文和 base64 编码的 AWS 密钥、私钥及提供方令牌",
+        "feature_csrf": "CSRF 防护",
+        "feature_csrf_description": "对所有 POST/PUT/DELETE 请求和 WebSocket 连接校验 Origin/Referer",
+        "feature_denied_commands_description": "内置正则模式，拦截破坏性和窃取凭证的 CLI 操作（可在下方配置）",
+        "feature_enterprise_grid": "Enterprise Grid 校验",
+        "feature_enterprise_grid_description": "双层防护，阻止数据外泄到个人/外部 Slack 工作区",
+        "feature_mcp_validation": "MCP 输入校验",
+        "feature_mcp_validation_description": "每个工具处理器都执行类型安全 schema、unicode 规范化、长度限制和未知字段拒绝",
+        "feature_observe_mode": "观察模式隔离",
+        "feature_observe_mode_description": "共享渠道中只记录所有者/允许列表内的消息 — 防止上下文投毒",
+        "feature_os_sandbox": "操作系统级沙箱",
+        "feature_os_sandbox_description": "用户 + 挂载命名空间隔离（Linux）/ Seatbelt 沙箱（macOS）让代理子进程看不到凭证路径",
+        "feature_sel_audit": "SEL 审计日志",
+        "feature_sel_audit_description": "不可篡改、HMAC 链式的安全事件轨迹，转发前先对凭证脱敏",
+        "feature_sensitive_paths": "敏感路径拦截",
+        "feature_sensitive_paths_description": "在工具执行前，于钩子层拦截凭证目录和 KiroCrew 信任根",
+        "feature_suspicious_patterns": "可疑 Bash 模式",
+        "feature_suspicious_patterns_description": "检测 shell 命令中的删除、外泄和管道执行攻击形态",
+        "feature_token_auth": "仪表板令牌认证",
+        "feature_token_auth_description": "HMAC-SHA256 签名、绑定 IP、一次性使用的令牌，链接和会话双重过期",
+        "feature_url_exfil": "URL 外泄检测",
+        "feature_url_exfil_description": "与域名无关地扫描 URL 中的可疑查询字符串、base64 数据块和凭证模式",
+        "gov_plane_access": "工具与命令",
+        "gov_plane_capabilities": "能力",
+        "gov_plane_channels": "消息渠道",
+        "gov_plane_io": "文件系统与网络",
+        "gov_plane_modes": "强制模式",
+        "gov_plane_other": "其他受治理作用域",
+        "gov_scope_approval_mode": "工具审批",
+        "gov_scope_apps": "应用",
+        "gov_scope_channels": "渠道",
+        "gov_scope_commands": "命令",
+        "gov_scope_cron": "定时任务",
+        "gov_scope_filesystem_read": "文件系统读取",
+        "gov_scope_filesystem_write": "文件系统写入",
+        "gov_scope_mcp": "MCP 服务器",
+        "gov_scope_memory_writes": "记忆写入",
+        "gov_scope_messaging": "消息收发",
+        "gov_scope_network_egress": "网络外发",
+        "gov_scope_sandbox_level": "沙箱级别",
+        "gov_scope_script_hooks": "脚本钩子",
+        "gov_scope_spawn": "派生",
+        "gov_scope_telemetry": "匿名遥测",
+        "gov_scope_theme_install": "主题安装",
+        "gov_scope_theme_persona": "主题人格",
+        "gov_scope_tools": "工具",
+        "layer_auth": "认证",
+        "layer_n": "第 {{n}} 层",
+        "pinned_by_policy": "由你所在组织的安全策略强制执行"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "取消",
@@ -6597,7 +7101,21 @@
         "pulls_python_3_11_slim_for_docker_based_transcri": "拉取 python:3.11-slim 用于基于 Docker 的转写（AL2）。",
         "whisper_installed_but_ffmpeg_is_missing_voice_tr": "已安装 Whisper，但缺少 ffmpeg — 语音转写需要 ffmpeg。",
         "endpointing": "说完后自动发送",
-        "endpointing_desc": "使用快速模型判断你是否已说完一个完整的请求，然后自动发送。仅适用于流式（Transcribe）。"
+        "endpointing_desc": "使用快速模型判断你是否已说完一个完整的请求，然后自动发送。仅适用于流式（Transcribe）。",
+        "provider_mlx": "Whisper MLX（本地 — 仅 Apple Silicon）",
+        "provider_transcribe": "Transcribe（AWS）",
+        "provider_whisper": "Whisper（本地）",
+        "step_checking": "正在查找 Python…",
+        "step_done": "完成！",
+        "step_error": "失败",
+        "step_installing_brew": "正在安装 Homebrew…",
+        "step_installing_ffmpeg": "正在安装 ffmpeg…",
+        "step_installing_mlx": "正在安装 mlx-whisper…",
+        "step_installing_python": "正在安装 Python…",
+        "step_installing_whisper": "正在安装 whisper（约 1.6 GB）…",
+        "step_installing_xcode": "正在安装 Xcode CLI Tools…",
+        "step_pulling": "正在拉取 Docker 镜像…",
+        "step_starting": "正在启动…"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "。与 Slack 不同，Bot Framework 没有\n              仅出站模式。",
@@ -6701,7 +7219,15 @@
         "text_to_speech": "文字转语音",
         "us_east_1": "us-east-1",
         "voice": "语音",
-        "failed_to_save_voice_config": "保存语音配置失败"
+        "failed_to_save_voice_config": "保存语音配置失败",
+        "aws_polly_cloud": "AWS Polly（云端）",
+        "faster": "更快",
+        "fastest": "最快",
+        "normal": "正常",
+        "piper_local_offline": "Piper（本地、离线）",
+        "slow": "慢",
+        "slower": "更慢",
+        "slowest": "最慢"
       },
       "webexPanel": {
         "access": "访问",
@@ -6764,6 +7290,54 @@
         "scanned_confirm_in_wechat": "已扫码 — 在微信中确认",
         "sign_in_again": "重新登录",
         "waiting_for_scan": "等待扫码…"
+      },
+      "channels": {
+        "get_your_bot_credentials": "获取你的机器人凭证",
+        "threshold_description": "会话上下文超过此百分比时，提示使用 {{compact}} 或 {{new}}。"
+      },
+      "discordPanel": {
+        "allowed_server_thread_ids": "允许的服务器话题 ID",
+        "allowlist_description": "允许在私聊或已批准话题中运行代理的 Discord 用户 ID。留空 = 全部拒绝（失败关闭）。",
+        "description": "通过网关 WebSocket，从 Discord 私聊或明确批准的服务器话题与你的代理对话。普通服务器频道一律忽略。",
+        "empty_allowlist_hint": "没有允许的用户 ID：机器人会拒绝所有消息（失败关闭）。在下方添加你的 Discord 用户 ID。",
+        "guide_body": "在 Discord Developer Portal 中创建一个应用，然后从 <mono>Bot</mono> 页面复制令牌。仅用于私聊时，特权 intent 保持关闭。要用服务器话题，需启用 <mono>Message Content Intent</mono>，并在安装时选择 <mono>bot</mono> scope，同时勾选 View Channel、Read Message History 和 Send Messages in Threads。启用 Discord Developer Mode，然后右键点击自己的用户名，复制数字用户 ID。",
+        "open_developer_portal": "打开开发者门户",
+        "thread_allowlist_description": "可选。已批准的用户只能在这些指定的 Discord 话题中运行代理。留空 = 仅私聊。",
+        "thread_help": "开启 Developer Mode 后，右键点击话题 → <mono>Copy Channel ID</mono>。用话题本身的 ID，而不是父频道的 ID。",
+        "thread_warning": "话题模式会启用 Discord 的全局 Message Content intent。Discord 会投递机器人可见的每个服务器频道的内容；Kiro Crew 会丢弃已批准话题之外的流量。任何能查看已批准话题的人都能读到代理回复和工具输出。",
+        "threshold_description": "会话上下文超过此百分比时，提示使用 !compact 或 !new。",
+        "token_description": "来自开发者门户的 Bot 页面（点击 Reset Token 查看一次）。",
+        "token_placeholder": "粘贴 Discord 机器人令牌"
+      },
+      "telegramPanel": {
+        "allowlist_description": "允许私聊机器人的 Telegram 数字用户 ID。留空 = 全部拒绝（失败关闭）：任何人都能通过 @username 找到 Telegram 机器人。",
+        "description": "通过 Bot API 从 Telegram 与你的代理对话（长轮询 — 无需 webhook 或公网地址）。添加允许的用户 ID，机器人才能回复。",
+        "empty_allowlist_hint": "没有允许的用户 ID：机器人会拒绝所有消息（失败关闭）。在下方添加你的 Telegram 数字用户 ID。",
+        "forum_allowlist_description": "允许运行论坛话题会话的超级群组数字 chat_id。这些值是负数（例如 -1001234567890） — 把 @getidsbot 这样的机器人加入群组就能查到。留空 = 拒绝所有群组（失败关闭）。",
+        "forum_allowlist_label": "允许的超级群组 chat ID",
+        "forum_empty_hint": "已启用论坛，但允许列表里没有会话：所有论坛流量都会被拒绝。添加你的超级群组 chat_id（形如 -100… 的负数）。",
+        "forum_toggle_description": "把允许列表中超级群组的每个 Topic 路由到各自的代理会话（类似 Slack 话题）。创建一个超级群组，打开 `Topics`，添加机器人，然后在下方列出该超级群组的 `chat_id`。General 话题和普通（非论坛）群组一律拒绝。",
+        "forum_toggle_label": "把论坛 Topic 作为独立会话提供",
+        "guide_body": "在 Telegram 上给 `@BotFather` 发消息，发送 `/newbot`，然后按提示操作。BotFather 会回复一个机器人令牌 — 把它粘贴到下方。要查你的数字用户 ID，给 `@userinfobot` 发消息。",
+        "guide_link_label": "打开 @BotFather",
+        "token_description": "创建机器人后从 @BotFather 获取（形如 110201543:AAHdqT…）。",
+        "token_placeholder": "粘贴 Telegram 机器人令牌（123456:ABC-…）"
+      },
+      "weComPanel": {
+        "allow_all_bypass_note": "已开启全部允许：上方的 userid 列表不再生效。它会保留下来，方便你切换回去。",
+        "allow_all_description": "让你企业微信组织里的每个人都能私聊机器人，不用逐个列出 userid。企业微信 AI 机器人只能在你自己的组织租户内访问，但这会把代理开放给整家公司 — 想按人授权就保持关闭。",
+        "allow_all_label": "允许所有组织成员",
+        "allowlist_description": "允许私聊机器人的企业微信 userid（账号）。留空 = 全部拒绝（失败关闭）。",
+        "bot_id_description": "企业微信管理后台中 AI 机器人设置页面上的 Bot ID。",
+        "bot_id_label": "企业微信机器人 ID",
+        "bot_id_placeholder": "粘贴企业微信机器人 ID",
+        "description": "通过企业微信 AI 机器人，从企业微信与你的代理对话。连接是出站 WebSocket — 无需管理回调 URL 或开放端口。",
+        "empty_allowlist_hint": "没有允许的 userid：机器人会拒绝所有消息（失败关闭）。在下方添加你的企业微信 userid。",
+        "guide_body": "在企业微信管理后台中打开 <mono>应用管理 → AI 智能体</mono> 并创建一个机器人。它的设置页面会显示 <mono>Bot ID</mono> 和 <mono>Secret</mono> — 把两者都粘贴到下方。每个企业微信成员都有一个用于允许列表的 <mono>userid</mono>（账号）。",
+        "open_admin_console": "打开企业微信管理后台",
+        "token_description": "同一设置页面上 Bot ID 旁显示的 Secret。",
+        "token_label": "企业微信机器人密钥",
+        "token_placeholder": "粘贴企业微信机器人密钥"
       }
     },
     "settingsPage": {
@@ -7009,6 +7583,35 @@
       "black": "黑色",
       "gray": "灰色",
       "white": "白色"
+    },
+    "channelOrigin": {
+      "direct_message": "私信"
+    },
+    "schedulePresets": {
+      "dependency_guardian_description": "升级依赖包、运行测试，只在全绿时才开 PR。",
+      "dependency_guardian_message": "检查此项目里过期的依赖。升级它们，运行完整测试套件，并修复任何出问题的地方。只有所有测试全绿才开拉取请求 — 否则报告失败的内容。",
+      "dependency_guardian_title": "依赖守卫",
+      "error_digest_description": "把新的生产错误聚类，并给出每一类的可疑原因。",
+      "error_digest_message": "审查自上次运行以来新增的生产错误。按类型聚类，并为每一类给出简短摘要和可疑原因。",
+      "error_digest_title": "错误摘要",
+      "nightly_build_watch_description": "每晚构建并测试 main；报告失败和可能的修复。",
+      "nightly_build_watch_message": "构建并测试 main 分支。如果有任何失败，准确报告失败内容、可能的根因和建议修复方案。",
+      "nightly_build_watch_title": "每晚构建监控",
+      "standup_brief_description": "站会前汇总你的提交、PR、CI 状态和阻塞项。",
+      "standup_brief_message": "为今天的站会总结我近期提交、待处理的拉取请求、CI 状态和所有阻塞项。保持简洁，并在会议前送出。",
+      "standup_brief_title": "站会简报"
+    },
+    "sensitiveCommand": {
+      "dumps_sensitive_environment_variables": "导出敏感环境变量",
+      "encodes_credential_files": "编码凭证文件",
+      "opens_raw_tcp_connection": "打开原始 TCP 连接",
+      "pipes_data_to_external_url": "把数据管道传输到外部 URL",
+      "reads_credential_files": "读取凭证文件",
+      "reads_sensitive_environment_variable": "读取敏感环境变量",
+      "reads_system_credentials": "读取系统凭证",
+      "sends_command_output_to_external_url": "把命令输出发送到外部 URL",
+      "sends_data_to_network_socket": "把数据发送到网络套接字",
+      "uploads_file_to_external_url": "把文件上传到外部 URL"
     }
   },
   "store": {

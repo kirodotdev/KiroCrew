@@ -13,14 +13,45 @@ type VoiceConfig = {
 }
 
 const PROVIDER_OPTIONS = ['piper', 'polly']
-const PROVIDER_LABELS = ['Piper (local, offline)', 'AWS Polly (cloud)']
+/**
+ * Catalog KEY per provider — not the label itself. This table is evaluated at
+ * module load, so an `i18nT()` call here would freeze the boot language and
+ * never re-resolve on a language switch; the lookup happens per render below.
+ *
+ * Keyed by the provider VALUE rather than by array position, so the pairing
+ * with PROVIDER_OPTIONS cannot silently drift, and indexed inline at the
+ * `i18nT()` call because that is the only shape `scripts/check-i18n-keys.mjs`
+ * can resolve statically.
+ */
+const PROVIDER_LABEL_KEY: Record<string, string> = {
+  piper: 'pages.settings.voicePanel.piper_local_offline',
+  polly: 'pages.settings.voicePanel.aws_polly_cloud',
+}
 
 // Piper speed is controlled by length_scale (lower = faster). Map friendly
 // labels to length_scale values; the backend consumes piper_length_scale (rate
 // is a Polly-only knob and is ignored by Piper synthesis).
 const PIPER_SPEED_OPTIONS = ['0.7', '0.85', '1.0', '1.15', '1.3', '1.5']
-const PIPER_SPEED_LABELS = ['Fastest', 'Faster', 'Normal', 'Slower', 'Slow', 'Slowest']
+/** Catalog KEY per length_scale value; resolved per render (see PROVIDER_LABEL_KEY). */
+const PIPER_SPEED_LABEL_KEY: Record<string, string> = {
+  '0.7': 'pages.settings.voicePanel.fastest',
+  '0.85': 'pages.settings.voicePanel.faster',
+  '1.0': 'pages.settings.voicePanel.normal',
+  '1.15': 'pages.settings.voicePanel.slower',
+  '1.3': 'pages.settings.voicePanel.slow',
+  '1.5': 'pages.settings.voicePanel.slowest',
+}
 
+/**
+ * Offline stand-in for `aws polly describe-voices` (Piper users have no AWS
+ * credentials, so the catalogue is never fetched for them).
+ *
+ * DO NOT TRANSLATE any of these. `value` is the Polly VoiceId sent verbatim to
+ * the TTS API, and `label` reproduces the exact shape built from the live
+ * catalogue (`${name} (${languageCode} ${gender})`) — provider-supplied data
+ * that no catalog can localise. Translating the fallback would make it disagree
+ * with the online list the moment Polly is selected.
+ */
 const VOICE_OPTIONS_FALLBACK = [
   { value: 'Ruth', label: 'Ruth (US F)' },
   { value: 'Matthew', label: 'Matthew (US M)' },
@@ -121,7 +152,7 @@ export function VoicePanel() {
           ) : (
             <>
               <SettingsToggle label={i18nT('pages.settings.voicePanel.auto_speak_responses')} description={i18nT('pages.settings.voicePanel.speak_every_assistant_reply_automatically')} checked={voiceCfg.autoSpeak} onChange={v => setVoice({ autoSpeak: v, ...(v ? { enabled: true } : {}) })} disabled={voiceDisabled} />
-              <SettingsSelect label={i18nT('pages.settings.voicePanel.provider')} description={i18nT('pages.settings.voicePanel.piper_runs_locally_and_offline_polly_uses_aws_cr')} value={voiceCfg.provider} options={PROVIDER_OPTIONS} optionLabels={PROVIDER_LABELS} onChange={v => setVoice({ provider: v })} disabled={voiceDisabled} />
+              <SettingsSelect label={i18nT('pages.settings.voicePanel.provider')} description={i18nT('pages.settings.voicePanel.piper_runs_locally_and_offline_polly_uses_aws_cr')} value={voiceCfg.provider} options={PROVIDER_OPTIONS} optionLabels={PROVIDER_OPTIONS.map(p => i18nT(PROVIDER_LABEL_KEY[p]))} onChange={v => setVoice({ provider: v })} disabled={voiceDisabled} />
               {isPolly ? (
                 <>
                   <SettingsSelect label={i18nT('pages.settings.voicePanel.voice')} description={i18nT('pages.settings.voicePanel.aws_polly_voice_for_tts')} value={voiceCfg.voice} options={voiceOptions.map(o => o.value)} optionLabels={voiceOptions.map(o => o.label)} onChange={v => { const engines = voiceOptions.find(o => o.value === v)?.engines ?? ENGINE_OPTIONS; const patch: Partial<VoiceConfig> = { voice: v }; if (!engines.includes(voiceCfg.engine)) patch.engine = engines[0]; setVoice(patch) }} disabled={voiceDisabled} />
@@ -134,7 +165,7 @@ export function VoicePanel() {
                 <>
                   <SettingsInput label={i18nT('pages.settings.voicePanel.piper_model')} description={i18nT('pages.settings.voicePanel.path_to_the_piper_voice_model_onnx_required_down')} value={localPiperModel} onChange={setLocalPiperModel} onBlur={() => setVoice({ piper_model: localPiperModel.trim() })} placeholder={i18nT('pages.settings.voicePanel.piper_en_us_lessac_medium_onnx')} disabled={voiceDisabled} />
                   <SettingsInput label={i18nT('pages.settings.voicePanel.piper_binary')} description={i18nT('pages.settings.voicePanel.path_to_the_piper_executable_leave_blank_to_auto')} value={localPiperBinary} onChange={setLocalPiperBinary} onBlur={() => setVoice({ piper_binary: localPiperBinary.trim() })} placeholder={i18nT('pages.settings.voicePanel.auto_detect')} disabled={voiceDisabled} />
-                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} description={i18nT('pages.settings.voicePanel.piper_speech_speed_length_scale')} value={String(voiceCfg.piper_length_scale)} options={PIPER_SPEED_OPTIONS} optionLabels={PIPER_SPEED_LABELS} onChange={v => setVoice({ piper_length_scale: Number(v) })} disabled={voiceDisabled} />
+                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} description={i18nT('pages.settings.voicePanel.piper_speech_speed_length_scale')} value={String(voiceCfg.piper_length_scale)} options={PIPER_SPEED_OPTIONS} optionLabels={PIPER_SPEED_OPTIONS.map(v => i18nT(PIPER_SPEED_LABEL_KEY[v]))} onChange={v => setVoice({ piper_length_scale: Number(v) })} disabled={voiceDisabled} />
                 </>
               )}
             </>

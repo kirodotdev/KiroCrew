@@ -199,13 +199,11 @@ function CommentHint({ onDismiss }: { onDismiss: () => void }) {
 
 const HINT_KEY = 'kirocrew:comment-hint-dismissed'
 
-const DOWNLOAD_FAILED = 'Download failed'
-
 async function downloadFile(filePath: string) {
   try {
     const res = await fetch(fileDownloadUrl(filePath))
     // eslint-disable-next-line no-console -- surface download failures for diagnostics
-    if (!res.ok) { console.error('downloadFile failed', res.status, res.statusText); alert(DOWNLOAD_FAILED); return }
+    if (!res.ok) { console.error('downloadFile failed', res.status, res.statusText); alert(i18nT('components.markdownPanel.download_failed')); return }
     const blob = await res.blob()
     const a = document.createElement('a')
     const url = URL.createObjectURL(blob)
@@ -216,7 +214,7 @@ async function downloadFile(filePath: string) {
     document.body.removeChild(a)
     setTimeout(() => URL.revokeObjectURL(url), 2_000)
     // eslint-disable-next-line no-console -- surface download failures for diagnostics
-  } catch (err) { console.error('downloadFile failed', err); alert(DOWNLOAD_FAILED) }
+  } catch (err) { console.error('downloadFile failed', err); alert(i18nT('components.markdownPanel.download_failed')) }
 }
 
 /** 26px square icon toggle for the file toolbar (borderless, accent when on). */

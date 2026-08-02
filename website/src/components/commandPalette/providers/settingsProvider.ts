@@ -5,6 +5,7 @@ import { Settings } from 'lucide-react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
+import { i18nT } from '../../../i18n/t'
 import type { ResourceProvider, Result } from '../types'
 import { SETTINGS_REGISTRY } from '../settingsRegistry.gen'
 import { SETTINGS_KEYWORDS } from '../settingsKeywords'
@@ -29,7 +30,17 @@ import type { SettingEntry } from '../settingsTypes'
  */
 
 const PROVIDER_ID = 'settings'
-const PROVIDER_LABEL = 'Settings'
+/**
+ * Catalog KEY for the palette tab label, not the string: a literal here would be
+ * frozen at module load and never re-resolve on a language switch. `i18nT()` is
+ * called where the provider object is built, inside `createSettingsProvider()` —
+ * `useSettingsProvider`'s `useMemo` is destroyed when `<App>` remounts on the
+ * language key (see `src/i18n/t.ts`), so that call site does re-run.
+ *
+ * Reuses `nav.settings` ('Settings') rather than minting a duplicate: it is the same
+ * word for the same destination as the sidebar nav entry.
+ */
+const PROVIDER_LABEL_KEY = 'nav.settings'
 
 function settingsIcon() {
   return createElement(Settings, { className: 'lucide-inline' })
@@ -134,7 +145,14 @@ export function createSettingsProvider(navigate: NavigateFunction): ResourceProv
 
   return {
     id: PROVIDER_ID,
-    label: PROVIDER_LABEL,
+    // A GETTER, not a plain call: the provider object is built inside a `useMemo`
+    // whose deps do not include the language, so `label: i18nT(...)` would resolve
+    // once and keep the pre-switch wording forever. `LanguageProvider` forces a
+    // re-RENDER via `cloneElement` (it deliberately does NOT remount — see its own
+    // comment rejecting `key={active}`), and a re-render does not recompute a memo.
+    // An accessor moves the lookup to the consumer's render, where the tab strip
+    // reads it. Satisfies `ResourceProvider.label: string`.
+    get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: settingsIcon(),
     search(query: string): Result[] {
       const q = query.trim()

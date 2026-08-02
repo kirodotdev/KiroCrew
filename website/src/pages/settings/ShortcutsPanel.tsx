@@ -1,5 +1,5 @@
-import { formatShortcut, IS_MAC } from '../../hooks/useKeyboardShortcuts'
-import { SHORTCUT_GROUPS, ShortcutRow, SearchEverywhereRow, groupShortcuts, useShortcutPrefs } from '../../components/ShortcutsModal'
+import { formatShortcut, IS_MAC, shortcutLabel } from '../../hooks/useKeyboardShortcuts'
+import { SHORTCUT_GROUPS, ShortcutRow, SearchEverywhereRow, groupShortcuts, shortcutGroupLabel, useShortcutPrefs } from '../../components/ShortcutsModal'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 
 import { i18nT } from '../../i18n/t'
@@ -38,10 +38,10 @@ export function ShortcutsPanel() {
         if (entries.length === 0) return null
         return (
           <div key={group}>
-            <SettingsSection title={group} />
+            <SettingsSection title={shortcutGroupLabel(group)} />
             <SettingsCard>
               {entries.map(s => (
-                <ShortcutRow key={s.id} label={s.label} keys={formatShortcut(s).split(' + ')} />
+                <ShortcutRow key={s.id} label={shortcutLabel(s)} keys={formatShortcut(s).split(' + ')} />
               ))}
             </SettingsCard>
           </div>

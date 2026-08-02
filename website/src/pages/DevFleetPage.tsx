@@ -162,14 +162,46 @@ export function pruneVerdictLabel(code?: string): string {
   }
 }
 
-// Per-item prune status -> chip label + visual kind, driving the checklist.
-export const PRUNE_STATUS_META: Record<string, { label: string; kind: 'idle' | 'spin' | 'done' | 'failed' }> = {
-  pending: { label: 'Pending', kind: 'idle' },
-  verifying: { label: 'Verifying', kind: 'spin' },
-  stopping_pod: { label: 'Stopping pod', kind: 'spin' },
-  removing: { label: 'Removing', kind: 'spin' },
-  done: { label: 'Removed', kind: 'done' },
-  failed: { label: 'Failed', kind: 'failed' },
+// Per-item prune status -> visual kind, driving the checklist's icon and badge.
+export const PRUNE_STATUS_META: Record<string, { kind: 'idle' | 'spin' | 'done' | 'failed' }> = {
+  pending: { kind: 'idle' },
+  verifying: { kind: 'spin' },
+  stopping_pod: { kind: 'spin' },
+  removing: { kind: 'spin' },
+  done: { kind: 'done' },
+  failed: { kind: 'failed' },
+}
+
+/**
+ * Catalog KEY for each prune status's chip label — kept in its own flat table,
+ * beside PRUNE_STATUS_META (add a status to both).
+ *
+ * Keys, not strings: this is module scope, evaluated once at import, so an
+ * `i18nT()` call here would freeze the boot language. `pruneStatusLabel()` does
+ * the lookup during render. Flat `Record` of full literal keys indexed inline at
+ * the `i18nT()` call, because that is the form `scripts/check-i18n-keys.mjs` can
+ * resolve statically. `removing` / `failed` reuse the keys this page already
+ * ships for those two words rather than adding duplicates.
+ */
+const PRUNE_STATUS_LABEL_KEY: Record<string, string> = {
+  pending: 'pages.devFleetPage.pending',
+  verifying: 'pages.devFleetPage.verifying',
+  stopping_pod: 'pages.devFleetPage.stopping_pod',
+  removing: 'pages.devFleetPage.removing',
+  done: 'pages.devFleetPage.removed',
+  failed: 'pages.devFleetPage.failed',
+}
+
+/** Localised chip label for a prune status, falling back to the `pending` copy for
+ *  the same reason the caller falls back to its meta — the status arrives from the
+ *  /api/run poll, so an unrecognised value must still render something.
+ *
+ *  `hasOwnProperty`, not `in`: a status of `toString` would otherwise resolve to an
+ *  inherited Object.prototype member and hand a function to i18next. */
+function pruneStatusLabel(status: string): string {
+  return Object.prototype.hasOwnProperty.call(PRUNE_STATUS_LABEL_KEY, status)
+    ? i18nT(PRUNE_STATUS_LABEL_KEY[status])
+    : i18nT(PRUNE_STATUS_LABEL_KEY.pending)
 }
 
 // Auto-scrolling <pre> for the FULL provision log (mirrors the sync log panel's
@@ -1273,7 +1305,7 @@ export default function DevFleetPage() {
                   {it.status === 'failed' && it.error && (
                     <span title={it.error} style={{ color: 'var(--danger)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.error}</span>
                   )}
-                  <Badge variant={meta.kind === 'done' ? 'ok' : meta.kind === 'failed' ? 'err' : 'muted'} className="text-[10.5px] px-1.5 py-0">{meta.label}</Badge>
+                  <Badge variant={meta.kind === 'done' ? 'ok' : meta.kind === 'failed' ? 'err' : 'muted'} className="text-[10.5px] px-1.5 py-0">{pruneStatusLabel(it.status)}</Badge>
                 </span>
               </div>
             )

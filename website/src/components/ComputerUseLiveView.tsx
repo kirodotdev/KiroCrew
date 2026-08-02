@@ -79,16 +79,27 @@ const GRIP_STYLES: Record<Grip, { box: string; cursor: string; onTop: boolean }>
 
 const GRIP_ORDER: Grip[] = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se']
 
-/** Human name for a grip's aria-label, so each handle is addressable in tests. */
-const GRIP_NAMES: Record<Grip, string> = {
-  n: 'top',
-  s: 'bottom',
-  w: 'left',
-  e: 'right',
-  nw: 'top left',
-  ne: 'top right',
-  sw: 'bottom left',
-  se: 'bottom right',
+/**
+ * Catalog KEY for each grip's full aria-label, so every handle is addressable by
+ * name in tests and by a screen reader.
+ *
+ * Keys, not strings, and the WHOLE label rather than a compass word interpolated
+ * into an English frame: this table is evaluated at module load, so an `i18nT()`
+ * call here would freeze the boot language, and a `Resize … (${name})` template
+ * would hand translators a fragment with no control over the phrasing around it.
+ * The lookup happens in the render callback below. Flat `Record` of full literal
+ * keys indexed inline at the `i18nT()` call, because that is the form
+ * `scripts/check-i18n-keys.mjs` can resolve statically.
+ */
+const GRIP_LABEL_KEY: Record<Grip, string> = {
+  n: 'components.computerUseLiveView.resize_live_desktop_view_top',
+  s: 'components.computerUseLiveView.resize_live_desktop_view_bottom',
+  w: 'components.computerUseLiveView.resize_live_desktop_view_left',
+  e: 'components.computerUseLiveView.resize_live_desktop_view_right',
+  nw: 'components.computerUseLiveView.resize_live_desktop_view_top_left',
+  ne: 'components.computerUseLiveView.resize_live_desktop_view_top_right',
+  sw: 'components.computerUseLiveView.resize_live_desktop_view_bottom_left',
+  se: 'components.computerUseLiveView.resize_live_desktop_view_bottom_right',
 }
 
 const between = (low: number, value: number, high: number): number =>
@@ -339,7 +350,7 @@ export default function ComputerUseLiveView() {
         <div
           key={grip}
           role="separator"
-          aria-label={`Resize live desktop view (${GRIP_NAMES[grip]})`}
+          aria-label={i18nT(GRIP_LABEL_KEY[grip])}
           title={i18nT('components.computerUseLiveView.drag_to_resize')}
           onPointerDown={beginGesture(grip)}
           className={`absolute ${GRIP_STYLES[grip].box} ${GRIP_STYLES[grip].cursor} ${

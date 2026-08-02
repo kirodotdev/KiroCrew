@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import { usePaletteActions } from '../paletteActions'
+import { i18nT } from '../../../i18n/t'
 import type { Result, ResourceProvider } from '../types'
 
 /**
@@ -31,7 +32,19 @@ import type { Result, ResourceProvider } from '../types'
  */
 
 const PROVIDER_ID = 'prompts'
-const PROVIDER_LABEL = 'Prompts'
+
+/**
+ * Catalog KEY for the palette tab label, not the label itself.
+ *
+ * The provider object is built inside a `useMemo` whose deps do not include the
+ * language, so `label: i18nT(…)` would resolve once and keep the pre-switch
+ * wording. It is exposed as a GETTER below instead, which re-resolves on every
+ * read — `CommandPalette` reads `provider.label` during render (scope hint, Tab
+ * completion), so the getter runs per render without the memo having to know
+ * about i18n. `PROVIDER_ID` stays a code constant: it is the provider's
+ * identity, matched against persisted palette scope.
+ */
+const PROVIDER_LABEL_KEY = 'components.commandPalette.providers.promptsProvider.prompts'
 
 /** Cache the prompt list briefly; reuses the `['prompts']` React-Query entry. */
 const PROMPTS_STALE_MS = 30_000
@@ -96,7 +109,7 @@ export function createPromptsProvider(deps: PromptsProviderDeps): ResourceProvid
 
   return {
     id: PROVIDER_ID,
-    label: PROVIDER_LABEL,
+    get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: promptIcon(),
     async search(query: string): Promise<Result[]> {
       const prompts = (await fetchPrompts()) ?? []

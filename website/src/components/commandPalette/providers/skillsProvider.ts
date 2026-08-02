@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../../../api/client'
+import { i18nT } from '../../../i18n/t'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import { resolveInvokableEnter, usePaletteActions } from '../paletteActions'
 import type { Result, ResourceProvider } from '../types'
@@ -37,7 +38,13 @@ import type { Result, ResourceProvider } from '../types'
  */
 
 const PROVIDER_ID = 'skills'
-const PROVIDER_LABEL = 'Skills'
+
+/**
+ * Catalog KEY for the palette tab label — resolved by the `label` getter below,
+ * not here. This constant is initialised at module load, so an `i18nT()` call at
+ * this position would freeze whatever language was active at boot.
+ */
+const PROVIDER_LABEL_KEY = 'components.commandPalette.providers.skillsProvider.skills'
 
 /** Cache the skill list briefly; reuses the `['skills']` React-Query entry. */
 const SKILLS_STALE_MS = 30_000
@@ -105,7 +112,12 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
 
   return {
     id: PROVIDER_ID,
-    label: PROVIDER_LABEL,
+    // A getter, not a value: the provider object is built once inside
+    // `useSkillsProvider`'s `useMemo`, whose deps do not include the language, so
+    // a plain `label: i18nT(…)` would resolve once per mount. Reading it through
+    // an accessor moves the lookup to the consumer's render, which is where the
+    // tab strip reads it. Satisfies `ResourceProvider.label: string`.
+    get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: skillIcon(),
     async search(query: string): Promise<Result[]> {
       const skills = (await fetchSkills()) ?? []

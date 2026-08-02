@@ -32,18 +32,61 @@ const KIND_ICON: Record<TabKind, ReactNode> = {
   file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Package size={16} />, folder: <Folder size={16} />,
 }
 
-/** Views offered by the + menu. */
-const NEW_MENU: { kind: ViewKind | 'terminal'; label: string; icon: ReactNode; desc: string }[] = [
-  { kind: 'changes', label: 'Changes', icon: <GitPullRequest size={15} />, desc: 'Pull requests, checks & reviews' },
-  { kind: 'issues', label: 'Issues', icon: <CircleDot size={15} />, desc: 'Issues mentioned in this session' },
-  { kind: 'files', label: 'Files', icon: <FileText size={15} />, desc: 'Browse & edit files' },
-  { kind: 'artifacts', label: 'Artifacts', icon: <Component size={15} />, desc: 'In-session documents & stars' },
-  { kind: 'subagents', label: 'Subagents', icon: <Bot size={15} />, desc: 'Live agent activity & transcripts' },
-  { kind: 'workflows', label: 'Workflows', icon: <Workflow size={15} />, desc: 'Runs, phases & restartable steps' },
-  { kind: 'logs', label: 'Logs', icon: <ScrollText size={15} />, desc: 'Gateway log stream' },
-  { kind: 'side', label: 'Side', icon: <MessageSquare size={15} />, desc: 'Parallel chat, shared context' },
-  { kind: 'browser', label: 'Browser', icon: <Globe size={15} />, desc: 'View a web page or a local dev server' },
-  { kind: 'terminal', label: 'Terminal', icon: <TerminalSquare size={15} />, desc: 'Shell on the gateway host' },
+/**
+ * Catalog KEYS for the + menu's labels and one-line descriptions.
+ *
+ * Keys, not strings, and in their own tables rather than as `NEW_MENU` fields:
+ * this module evaluates once at import, so an `i18nT()` call here would freeze
+ * the boot language and never re-resolve on a language switch (see
+ * `lib/effort.ts`). The lookups happen at the two render sites below.
+ *
+ * Flat `Record`s of full literal keys, indexed inline at the `i18nT()` call,
+ * because that is the form `scripts/check-i18n-keys.mjs` can resolve statically
+ * — `i18nT(item.labelKey)` over a loop variable cannot be resolved, so a field
+ * on `NEW_MENU` would have made every menu key unverifiable.
+ *
+ * Keyed by `ViewKind | 'terminal'` (not `string`) so adding a view without its
+ * label and description is a type error rather than a missing-key render.
+ */
+export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
+  changes: 'pages.chat.sidePanel.menu_changes',
+  issues: 'pages.chat.sidePanel.menu_issues',
+  files: 'pages.chat.sidePanel.menu_files',
+  artifacts: 'pages.chat.sidePanel.menu_artifacts',
+  subagents: 'pages.chat.sidePanel.menu_subagents',
+  workflows: 'pages.chat.sidePanel.menu_workflows',
+  logs: 'pages.chat.sidePanel.menu_logs',
+  side: 'pages.chat.sidePanel.menu_side',
+  browser: 'pages.chat.sidePanel.menu_browser',
+  terminal: 'pages.chat.sidePanel.menu_terminal',
+}
+
+export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
+  changes: 'pages.chat.sidePanel.menu_changes_desc',
+  issues: 'pages.chat.sidePanel.menu_issues_desc',
+  files: 'pages.chat.sidePanel.menu_files_desc',
+  artifacts: 'pages.chat.sidePanel.menu_artifacts_desc',
+  subagents: 'pages.chat.sidePanel.menu_subagents_desc',
+  workflows: 'pages.chat.sidePanel.menu_workflows_desc',
+  logs: 'pages.chat.sidePanel.menu_logs_desc',
+  side: 'pages.chat.sidePanel.menu_side_desc',
+  browser: 'pages.chat.sidePanel.menu_browser_desc',
+  terminal: 'pages.chat.sidePanel.menu_terminal_desc',
+}
+
+/** Views offered by the + menu. `kind` is the PERSISTED tab id (`usePanelTabs`),
+ *  so it stays a code constant — only its label and description are localised. */
+const NEW_MENU: { kind: ViewKind | 'terminal'; icon: ReactNode }[] = [
+  { kind: 'changes', icon: <GitPullRequest size={15} /> },
+  { kind: 'issues', icon: <CircleDot size={15} /> },
+  { kind: 'files', icon: <FileText size={15} /> },
+  { kind: 'artifacts', icon: <Component size={15} /> },
+  { kind: 'subagents', icon: <Bot size={15} /> },
+  { kind: 'workflows', icon: <Workflow size={15} /> },
+  { kind: 'logs', icon: <ScrollText size={15} /> },
+  { kind: 'side', icon: <MessageSquare size={15} /> },
+  { kind: 'browser', icon: <Globe size={15} /> },
+  { kind: 'terminal', icon: <TerminalSquare size={15} /> },
 ]
 
 const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'side'])
@@ -419,7 +462,7 @@ export default function SidePanel({
                   onClick={() => { openMenuItem(item.kind); closeMenuToTrigger() }}
                 >
                   <span className="text-muted shrink-0">{item.icon}</span>
-                  <span className="flex-1">{item.label}</span>
+                  <span className="flex-1">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
                 </button>
               ))}
             </div>
@@ -458,12 +501,12 @@ export default function SidePanel({
                   >
                     <div className="flex items-center gap-2.5 w-full text-text">
                       <span className="shrink-0 opacity-80">{item.icon}</span>
-                      <span className="text-[13px] font-medium">{item.label}</span>
+                      <span className="text-[13px] font-medium">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
                       {badge && (
                         <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium shrink-0">{badge}</span>
                       )}
                     </div>
-                    <div className="text-[11px] text-muted leading-snug">{item.desc}</div>
+                    <div className="text-[11px] text-muted leading-snug">{i18nT(NEW_MENU_DESC_KEY[item.kind])}</div>
                   </button>
                 )
               })}

@@ -1162,14 +1162,14 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   const effectiveTab = requestedTab === 'changes' && !hasSources && !view ? 'files' : requestedTab
 
   const TABS: { key: typeof tab; label: string; icon: ReactNode; count?: number }[] = [
-    ...(hasSources ? [{ key: 'changes' as const, label: 'Changes', icon: <GitPullRequest size={13} />, count: sources!.length }] : []),
-    ...(hasIssues ? [{ key: 'issues' as const, label: 'Issues', icon: <CircleDot size={13} />, count: issues!.length }] : []),
-    { key: 'files', label: 'Files', icon: <FileText size={13} />, count: files?.length || 0 },
-    { key: 'artifacts', label: 'Artifacts', icon: <Component size={13} /> },
-    { key: 'subagents', label: 'Subagents', icon: <Bot size={13} />, count: ids.length + visibleLog.filter(isSpawnApproval).length },
-    { key: 'workflows', label: 'Workflows', icon: <Workflow size={13} />, count: wfRunningCount },
-    { key: 'logs', label: 'Logs', icon: <ScrollText size={13} /> },
-    { key: 'side', label: 'Side', icon: <MessageSquare size={13} /> },
+    ...(hasSources ? [{ key: 'changes' as const, label: i18nT('pages.chat.activityViewer.changes'), icon: <GitPullRequest size={13} />, count: sources!.length }] : []),
+    ...(hasIssues ? [{ key: 'issues' as const, label: i18nT('pages.chat.activityViewer.issues'), icon: <CircleDot size={13} />, count: issues!.length }] : []),
+    { key: 'files', label: i18nT('pages.chat.activityViewer.files'), icon: <FileText size={13} />, count: files?.length || 0 },
+    { key: 'artifacts', label: i18nT('pages.chat.activityViewer.artifacts'), icon: <Component size={13} /> },
+    { key: 'subagents', label: i18nT('pages.chat.activityViewer.subagents'), icon: <Bot size={13} />, count: ids.length + visibleLog.filter(isSpawnApproval).length },
+    { key: 'workflows', label: i18nT('pages.chat.activityViewer.workflows'), icon: <Workflow size={13} />, count: wfRunningCount },
+    { key: 'logs', label: i18nT('pages.chat.activityViewer.logs'), icon: <ScrollText size={13} /> },
+    { key: 'side', label: i18nT('pages.chat.activityViewer.side'), icon: <MessageSquare size={13} /> },
   ]
 
   return (

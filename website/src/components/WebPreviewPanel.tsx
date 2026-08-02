@@ -79,12 +79,15 @@ const SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-
  *  present = a fixed device-sized frame (mobile/tablet). */
 interface DevicePreset {
   id: string
-  label: string
+  /** Device NAME, verbatim — a hardware product name, never translated. Absent
+   *  for the responsive preset, whose label is descriptive copy and therefore
+   *  lives in `DEVICE_LABEL_KEY` instead. */
+  label?: string
   w?: number
   h?: number
 }
 const DEVICE_PRESETS: DevicePreset[] = [
-  { id: 'responsive', label: 'Responsive (desktop)' },
+  { id: 'responsive' },
   { id: 'iphone-se', label: 'iPhone SE', w: 375, h: 667 },
   { id: 'iphone-15', label: 'iPhone 15 / 14', w: 390, h: 844 },
   { id: 'iphone-15-pro-max', label: 'iPhone 15 Pro Max', w: 430, h: 932 },
@@ -92,6 +95,31 @@ const DEVICE_PRESETS: DevicePreset[] = [
   { id: 'galaxy-s20', label: 'Galaxy S20', w: 360, h: 800 },
   { id: 'ipad-mini', label: 'iPad Mini', w: 768, h: 1024 },
 ]
+
+/**
+ * Catalog KEY for the presets whose label is descriptive copy rather than a
+ * hardware product name — only the responsive one, which describes a BEHAVIOUR
+ * ("fill the panel") and not a device.
+ *
+ * A key rather than the string itself: `DEVICE_PRESETS` is module-level data
+ * evaluated at import, so an `i18nT()` call in it would freeze the boot language.
+ * `deviceLabel()` does the lookup during render. Flat `Record` of full literal
+ * keys, indexed inline at the call, because that is the shape
+ * `scripts/check-i18n-keys.mjs` can resolve statically.
+ */
+export const DEVICE_LABEL_KEY: Record<string, string> = {
+  responsive: 'components.webPreviewPanel.responsive_desktop',
+}
+
+/** A preset's display label for the CURRENT language. Product-named presets fall
+ *  through to their verbatim `label`. */
+function deviceLabel(d: DevicePreset): string {
+  // `hasOwnProperty`, not `in`: guards against a preset id colliding with an
+  // inherited Object.prototype member and handing a function to i18next.
+  return Object.prototype.hasOwnProperty.call(DEVICE_LABEL_KEY, d.id)
+    ? i18nT(DEVICE_LABEL_KEY[d.id])
+    : (d.label ?? d.id)
+}
 
 /** Coerce free-form input into a safe http(s) URL, or null if unusable. A bare
  *  `host:port` / `localhost:5173` gets an `http://` scheme; any explicit scheme
@@ -647,7 +675,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             className={`flex items-center h-7 px-1.5 rounded-md transition-colors bg-transparent border-none cursor-pointer ${
               isDeviceSized ? 'text-accent bg-accent-subtle hover:text-accent' : 'text-muted hover:text-text hover:bg-bg-hover'
             }`}
-            title={`Preview size: ${device.label}`}
+            title={`${i18nT('components.webPreviewPanel.preview_size')}: ${deviceLabel(device)}`}
             aria-label={i18nT('components.webPreviewPanel.preview_size')}
             aria-haspopup="menu"
             aria-expanded={deviceMenuOpen}
@@ -669,7 +697,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
                   onClick={() => { setDeviceId(d.id); setDeviceMenuOpen(false) }}
                 >
                   <span className="text-muted shrink-0">{d.w ? <Smartphone size={14} /> : <Monitor size={14} />}</span>
-                  <span className="flex-1">{d.label}</span>
+                  <span className="flex-1">{deviceLabel(d)}</span>
                   {d.w && <span className="text-[10px] text-muted font-mono shrink-0">{d.w}×{d.h}</span>}
                   {d.id === deviceId && <Check size={13} className="text-accent shrink-0" />}
                 </button>

@@ -23,6 +23,8 @@ import { CATALOGS } from '../i18n/index'
 import { EFFORT_LABEL_KEY, effortLabel } from '../lib/effort'
 import { FILTER_LABEL_KEY, FILTER_DESCRIPTION_KEY, SORT_LABEL_KEY } from '../pages/ChatSidebar'
 import { STAT_LABEL_KEY } from '../pages/OverviewPage'
+import { NEW_MENU_LABEL_KEY, NEW_MENU_DESC_KEY } from '../pages/chat/SidePanel'
+import { STATE_LABEL_KEY } from '../apps/auto-research/ResearchLabPage'
 
 function flatten(obj: unknown, prefix = ''): Record<string, string> {
   const out: Record<string, string> = {}
@@ -44,6 +46,9 @@ const TABLES: Record<string, Record<string, string>> = {
   FILTER_DESCRIPTION_KEY,
   SORT_LABEL_KEY,
   STAT_LABEL_KEY,
+  NEW_MENU_LABEL_KEY,
+  NEW_MENU_DESC_KEY,
+  STATE_LABEL_KEY,
 }
 
 describe('user-visible label tables hold catalog keys', () => {
@@ -57,8 +62,17 @@ describe('user-visible label tables hold catalog keys', () => {
       // `A → Z` and `Z → A` are symbol-led and legitimately identical in zh-CN;
       // anything else identical to English means an untranslated catalog entry.
       const SYMBOLIC = new Set(['pages.chatSidebar.sort_name_asc', 'pages.chatSidebar.sort_name_desc'])
+      // "Issues" is a borrowed product noun, not copy: it names GitHub's Issues
+      // surface. The shipped zh-CN catalog already leaves it verbatim at
+      // `apps.issueRadar.components.issueList.issues`,
+      // `apps.issueRadar.components.leftRail.issues` and
+      // `components.issuePanel.issues`, all of which predate this table. Demanding
+      // a translation here would make the side panel disagree with the three
+      // surfaces it navigates to, so the exemption follows the existing catalog
+      // rather than inventing a fourth spelling.
+      const BORROWED = new Set(['pages.chat.sidePanel.menu_issues'])
       const untranslated = Object.values(table)
-        .filter(key => !SYMBOLIC.has(key))
+        .filter(key => !SYMBOLIC.has(key) && !BORROWED.has(key))
         .filter(key => zh[key] === en[key])
       expect(untranslated).toEqual([])
     })

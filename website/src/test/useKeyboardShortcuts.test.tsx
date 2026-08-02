@@ -32,7 +32,7 @@ describe('formatShortcut', () => {
       expect(formatShortcut({ id: 't', key: 'n', alt: true, shift: true, label: '', group: 'Actions' })).toBe('Alt + Shift + N')
     })
     it('formats arrow keys', () => {
-      expect(formatShortcut({ id: 't', key: 'ArrowLeft', alt: true, label: '', group: 'Chat Navigation' })).toBe('Alt + \u2190')
+      expect(formatShortcut({ id: 't', key: 'ArrowLeft', alt: true, label: '', group: 'chat-navigation' })).toBe('Alt + \u2190')
     })
   })
 })
@@ -44,9 +44,9 @@ describe('DEFAULT_SHORTCUTS', () => {
   })
   it('has all required groups', () => {
     const groups = new Set(DEFAULT_SHORTCUTS.map(s => s.group))
-    expect(groups).toContain('Chat Navigation')
-    expect(groups).toContain('Panel Navigation')
-    expect(groups).toContain('Actions')
+    expect(groups).toContain('chat-navigation')
+    expect(groups).toContain('panel-navigation')
+    expect(groups).toContain('actions')
   })
 })
 
@@ -380,8 +380,8 @@ describe('⌘/Ctrl+[ and ⌘/Ctrl+] session cycling', () => {
   it('is advertised in the shortcuts registry as a ⌘/Ctrl chord', () => {
     const prev = DEFAULT_SHORTCUTS.find(s => s.id === 'chat-prev-bracket')
     const next = DEFAULT_SHORTCUTS.find(s => s.id === 'chat-next-bracket')
-    expect(prev).toMatchObject({ key: '[', meta: true, group: 'Chat Navigation' })
-    expect(next).toMatchObject({ key: ']', meta: true, group: 'Chat Navigation' })
+    expect(prev).toMatchObject({ key: '[', meta: true, group: 'chat-navigation' })
+    expect(next).toMatchObject({ key: ']', meta: true, group: 'chat-navigation' })
     expect(prev?.alt).toBeUndefined()
     expect(next?.ctrl).toBeUndefined()
   })

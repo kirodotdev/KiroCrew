@@ -21,20 +21,31 @@ import { KiroCrewCfgTab, AgentCfgTab } from './overview'
 const MemoryGraphTab = lazy(() => import('./overview/MemoryGraphTab'))
 
 import { i18nT } from '../i18n/t'
-const TABS = [
-  { key: 'logs', label: 'Logs', icon: <ScrollText size={16} />, description: 'Live log viewer with level filtering and search' },
-  { key: 'system', label: 'System', icon: <Monitor size={16} />, description: 'CPU, memory, network, and process metrics' },
-  { key: 'telemetry', label: 'Telemetry', icon: <Activity size={16} />, description: 'Session startup latency (p50/p90) and MCP/skill acceleration metrics' },
-  { key: 'storage', label: 'Storage', icon: <Database size={16} />, description: 'localStorage usage, quotas, and garbage collection' },
-  { key: 'mcp-pool', label: 'MCP Pool', icon: <Network size={16} />, description: 'Shared MCP gateway and poolable server configuration' },
-  { key: 'memory', label: 'Memory', icon: <Brain size={16} />, description: 'Memory graph, embedding provider, and vector store internals' },
-  { key: 'config', label: 'Config', icon: <FileCode2 size={16} />, description: 'KiroCrew and agent configuration viewers (read-only)' },
-  { key: 'archive', label: 'Archive', icon: <Archive size={16} />, description: 'Rotated/compacted session history (7-day retention)' },
-]
+
+/**
+ * A FUNCTION, not a module-level array: the labels and descriptions are
+ * translated, and a module-level constant is evaluated once at import — which
+ * would freeze whichever language was active at boot and leave the tab rail
+ * English after a language switch. Called once per render instead, mirroring
+ * `buildTabs()` in SettingsPage.tsx, which feeds the same SidePanelLayout.
+ */
+function buildTabs() {
+  return [
+    { key: 'logs', label: i18nT('pages.developerPage.tabs.logs.label'), icon: <ScrollText size={16} />, description: i18nT('pages.developerPage.tabs.logs.description') },
+    { key: 'system', label: i18nT('pages.developerPage.tabs.system.label'), icon: <Monitor size={16} />, description: i18nT('pages.developerPage.tabs.system.description') },
+    { key: 'telemetry', label: i18nT('pages.developerPage.tabs.telemetry.label'), icon: <Activity size={16} />, description: i18nT('pages.developerPage.tabs.telemetry.description') },
+    { key: 'storage', label: i18nT('pages.developerPage.tabs.storage.label'), icon: <Database size={16} />, description: i18nT('pages.developerPage.tabs.storage.description') },
+    { key: 'mcp-pool', label: i18nT('pages.developerPage.tabs.mcpPool.label'), icon: <Network size={16} />, description: i18nT('pages.developerPage.tabs.mcpPool.description') },
+    { key: 'memory', label: i18nT('pages.developerPage.tabs.memory.label'), icon: <Brain size={16} />, description: i18nT('pages.developerPage.tabs.memory.description') },
+    { key: 'config', label: i18nT('pages.developerPage.tabs.config.label'), icon: <FileCode2 size={16} />, description: i18nT('pages.developerPage.tabs.config.description') },
+    { key: 'archive', label: i18nT('pages.developerPage.tabs.archive.label'), icon: <Archive size={16} />, description: i18nT('pages.developerPage.tabs.archive.description') },
+  ]
+}
 
 export default function DeveloperPage() {
+  const tabs = buildTabs()
   return (
-    <SidePanelLayout title={i18nT('pages.developerPage.developer')} tabs={TABS}>
+    <SidePanelLayout title={i18nT('pages.developerPage.developer')} tabs={tabs}>
       {tab => <>
         {tab === 'logs' && <div className="h-[calc(100vh-160px)] min-h-[300px] flex flex-col overflow-hidden"><LogViewer compact /></div>}
         {tab === 'system' && <SystemPage embedded />}

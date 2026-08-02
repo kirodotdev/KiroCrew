@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 import { Sparkles } from 'lucide-react'
 
 import { makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
+import { i18nT } from '../../../i18n/t'
 import type { ResourceProvider, Result } from '../types'
 import { getProviders as getRegisteredProviders, getProvider } from './index'
 
@@ -29,7 +30,14 @@ import { getProviders as getRegisteredProviders, getProvider } from './index'
  */
 
 const PROVIDER_ID = 'all'
-const PROVIDER_LABEL = 'All'
+
+/**
+ * Catalog KEY for the tab label. `PROVIDER_ID` is the identity the registry and
+ * the aggregator's own self-filter match on — this is only display copy, so the
+ * two stay separate. Resolved in {@link createAllAggregator}, never here: a
+ * module-scope `i18nT()` would freeze the boot language.
+ */
+const PROVIDER_LABEL_KEY = 'components.commandPalette.providers.allAggregator.all'
 
 /** Default cap on how many hits each provider contributes to the blend. */
 const DEFAULT_PER_PROVIDER_LIMIT = 5
@@ -81,7 +89,14 @@ export function createAllAggregator(deps: AllAggregatorDeps): ResourceProvider {
 
   return {
     id: PROVIDER_ID,
-    label: PROVIDER_LABEL,
+    // A GETTER, not a plain call: the provider object is built inside a `useMemo`
+    // whose deps do not include the language, so `label: i18nT(...)` would resolve
+    // once and keep the pre-switch wording forever. `LanguageProvider` forces a
+    // re-RENDER via `cloneElement` (it deliberately does NOT remount — see its own
+    // comment rejecting `key={active}`), and a re-render does not recompute a memo.
+    // An accessor moves the lookup to the consumer's render, where the tab strip
+    // reads it. Satisfies `ResourceProvider.label: string`.
+    get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: inlineIcon(),
     async search(query: string): Promise<Result[]> {
       const q = query.trim()

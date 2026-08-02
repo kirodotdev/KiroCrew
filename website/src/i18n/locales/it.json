@@ -98,7 +98,12 @@
     "signed_in_with": "Accesso effettuato con {{provider}}",
     "updates": "aggiornamenti",
     "kiro_credits_title": "Crediti Kiro: {{used}} / {{limit}} ({{pct}}) — fai clic per i dettagli",
-    "kiro_credits_title_with_bonus": "Crediti Kiro: {{used}} / {{limit}} utilizzati — piano {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — fai clic per i dettagli"
+    "kiro_credits_title_with_bonus": "Crediti Kiro: {{used}} / {{limit}} utilizzati — piano {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — fai clic per i dettagli",
+    "installing_packages": "Installazione dei pacchetti",
+    "pulling_latest_changes": "Download delle ultime modifiche",
+    "rebuilding_package": "Ricompilazione del pacchetto",
+    "restarting_server": "Riavvio del server",
+    "syncing_workspace": "Sincronizzazione del workspace"
   },
   "appSdk": {
     "chatEmbed": {
@@ -270,7 +275,15 @@
         "when_should_the_agent_stop": "Quando dovrebbe fermarsi l'agente?",
         "your_answer": "La tua risposta",
         "your_answer_2": "La tua risposta...",
-        "your_guidance": "le tue indicazioni"
+        "your_guidance": "le tue indicazioni",
+        "state_done": "Fatto",
+        "state_failed": "Non riuscito",
+        "state_needs_input": "Richiede input",
+        "state_paused": "In pausa",
+        "state_ready": "Pronto",
+        "state_stalled": "In stallo",
+        "state_stopped": "Arrestato",
+        "state_working": "Al lavoro"
       }
     },
     "codeReviewSage": {
@@ -344,7 +357,12 @@
         "the_review_runs_on_the_gateway_host_and_needs_th": "La revisione viene eseguita sull'host del gateway\n        e richiede il",
         "unavailable_could_not_be_fetched": "\"non disponibile — impossibile recuperarlo\"",
         "updated": "aggiornata",
-        "usually_means": "di solito significa"
+        "usually_means": "di solito significa",
+        "phase_deep": "revisione approfondita…",
+        "phase_done": "esaminato",
+        "phase_failed": "non riuscito",
+        "phase_gating": "gate di progettazione…",
+        "phase_queued": "in coda"
       }
     },
     "designCritique": {
@@ -415,6 +433,48 @@
       "waitingScreen": {
         "cancel_this_run": "Annulla questa esecuzione",
         "stop_this_run_and_discard_it": "Arresta questa esecuzione e scartala"
+      },
+      "constants": {
+        "blocked_figma_app_missing_hint": "Apri il file in Figma desktop e riprova, oppure esporta i frame come PNG e trascinali qui.",
+        "blocked_figma_app_missing_say": "Non riesco a raggiungere Figma — l’app desktop non è in esecuzione, oppure non ho a disposizione gli strumenti Figma.",
+        "blocked_figma_file_closed_hint": "Aprilo in Figma desktop, poi riprova.",
+        "blocked_figma_file_closed_say": "Figma è in esecuzione, ma quel file non è aperto.",
+        "blocked_figma_no_permission_auth_lead": "L’accesso a Figma è per account e io leggo ciò che l’app desktop ha aperto — non ho un login mio. Ecco come risolvere.",
+        "blocked_figma_no_permission_auth_step_1": "1. Chiedi al proprietario del file di condividerlo con il tuo account Figma",
+        "blocked_figma_no_permission_auth_step_2": "2. Aprilo in Figma desktop",
+        "blocked_figma_no_permission_auth_step_3": "3. Torna qui e premi Riprova",
+        "blocked_figma_no_permission_auth_tail": "Se l’accesso non arriva, esportare i frame come PNG funziona altrettanto bene — in ogni caso critico i pixel.",
+        "blocked_figma_no_permission_hint": "Chiedi l’accesso, oppure esporta i frame come PNG e trascinali qui.",
+        "blocked_figma_no_permission_say": "Il tuo account Figma non può visualizzare quel file.",
+        "blocked_no_access_auth_lead": "L’accesso a Git si configura per macchina, non per app — fallo una volta e ogni repo privato funziona, qui e altrove. Esegui questi comandi nel tuo terminale.",
+        "blocked_no_access_auth_tail": "Poi torna qui e premi Riprova. Non chiedo né conservo mai un token — qualsiasi cosa incollata in questa app finirebbe in una trascrizione salvata.",
+        "blocked_no_access_hint": "Se ne hai già una copia locale, dammi invece il percorso della cartella.",
+        "blocked_no_access_say": "Non sono riuscito ad aprire quel repo. O è privato (e non ho credenziali per accedervi) oppure non esiste — GitHub restituisce lo stesso errore in entrambi i casi.",
+        "blocked_not_found_hint": "Controlla proprietario e nome, oppure dammi il percorso di una cartella locale.",
+        "blocked_not_found_say": "Quel repo non esiste a quell’URL.",
+        "blocked_other_hint": "Gli screenshot sono il modo più rapido per aggirare il problema.",
+        "blocked_other_say": "Non sono riuscito ad accedervi.",
+        "kind_figma": "File Figma",
+        "kind_local": "codice locale",
+        "kind_repo": "repo",
+        "kind_url": "app in esecuzione",
+        "scan_finding_screens": "Ricerca delle schermate",
+        "scan_grouping_flows": "Raggruppamento nei flussi probabili",
+        "scan_which_renderable": "Individuazione di quelle che posso renderizzare",
+        "sev_catastrophe": "Catastrofe",
+        "sev_cosmetic": "Estetico",
+        "sev_major": "Grave",
+        "sev_minor": "Lieve",
+        "stage_checking_hierarchy": "Verifica di gerarchia, contrasto e contenuto",
+        "stage_double_checking": "Ricontrollo di ogni riscontro",
+        "stage_getting_pixels": "Recupero dei pixel reali da esaminare",
+        "stage_reading_screens": "Lettura delle schermate",
+        "stage_weighing_task": "Valutazione rispetto all’obiettivo",
+        "stage_writing_up": "Stesura della critica",
+        "wait_figma": "Apertura del file Figma ed elenco dei suoi frame…",
+        "wait_local": "Scansione del codice in cerca di route…",
+        "wait_repo": "Clonazione del repo ed elenco delle sue route…",
+        "wait_url": "Caricamento della pagina e navigazione dei suoi link…"
       }
     },
     "fileExplorer": {
@@ -666,7 +726,11 @@
           "timeline": "Cronologia",
           "unassigned": "non assegnato",
           "unknown_branches": "Branch sconosciuti",
-          "updated": "Aggiornato"
+          "updated": "Aggiornato",
+          "approved_these_changes": "ha approvato queste modifiche",
+          "dismissed_a_review": "ha annullato una revisione",
+          "requested_changes": "ha richiesto modifiche",
+          "reviewed": "ha esaminato"
         },
         "prFiltersSection": {
           "assigned_to_me": "Assegnate a me",
@@ -820,6 +884,19 @@
           "selected_one": "{{count}} selezionata",
           "selected_other": "{{count}} selezionate",
           "type_to_confirm": "Digita la parola di conferma per continuare"
+        },
+        "memberBadge": {
+          "admin": "Amministratore",
+          "collaborator": "Collaboratore",
+          "contributor": "Contributore",
+          "first_time_contributor": "Contributore per la prima volta",
+          "first_timer": "Prima volta",
+          "maintainer": "Manutentore",
+          "member": "Membro",
+          "owner": "Proprietario",
+          "read": "Lettura",
+          "triage": "Triage",
+          "write": "Scrittura"
         }
       },
       "connectPanel": {
@@ -975,7 +1052,15 @@
             "which_labels_mark_newcomer_friendly_work_so_issu": "Quali etichette indicano il lavoro adatto ai nuovi arrivati, così Issue Radar può mostrare le issue da indirizzare ai contributori alla prima esperienza.",
             "which_labels_mean_an_issue_still_needs_triage_dr": "Quali etichette indicano che una issue necessita ancora di triage. Determina il conteggio \"Senza triage\" della Panoramica e la coda degli elementi che richiedono attenzione.",
             "without_push_access_to": "Senza accesso push a",
-            "your_edits_are_kept_here_but_won_t_persist_if_yo": "le tue modifiche vengono mantenute qui ma non verranno salvate in modo permanente. Se hai appena aggiornato Issue Radar, riavvia il backend così l'API delle impostazioni diventa disponibile."
+            "your_edits_are_kept_here_but_won_t_persist_if_yo": "le tue modifiche vengono mantenute qui ma non verranno salvate in modo permanente. Se hai appena aggiornato Issue Radar, riavvia il backend così l'API delle impostazioni diventa disponibile.",
+            "role_admin": "Amministratore",
+            "role_collaborator": "Collaboratore",
+            "role_maintainer": "Manutentore",
+            "role_member": "Membro",
+            "role_owner": "Proprietario",
+            "role_read": "Lettura",
+            "role_triage": "Triage",
+            "role_write": "Scrittura"
           }
         },
         "tagging": {
@@ -1030,13 +1115,27 @@
           "untagged_issues": "Issue senza tag",
           "what_you_see_below_is_the_previous_result_not_th": "quello che vedi qui sotto è il risultato precedente, non lo stato attuale.",
           "write_every_staged_label_to_github": "Scrivi su GitHub tutte le etichette preparate"
+        },
+        "registry": {
+          "overview": "Panoramica",
+          "tagging": "Etichettatura"
         }
       },
       "welcomeCarousel": {
         "back": "Indietro",
         "carl_sagan": "— Carl Sagan",
         "next": "Avanti",
-        "somewhere_something_incredible_is_waiting_to_be": "\"Da qualche parte, qualcosa di incredibile attende di essere scoperto.\""
+        "somewhere_something_incredible_is_waiting_to_be": "\"Da qualche parte, qualcosa di incredibile attende di essere scoperto.\"",
+        "slide_bots_subtitle": "Renovate, Dependabot, CodeRabbit — Issue Radar legge quello che i tuoi bot hanno già trovato invece di ripartire da zero.",
+        "slide_bots_title": "Legge quello che i tuoi bot ti hanno già detto",
+        "slide_decide_subtitle": "Lui suggerisce, tu approvi. Ogni conclusione resta in locale, pronta quando torni.",
+        "slide_decide_title": "Decidi tu — e lui ricorda",
+        "slide_linked_prs_subtitle": "Vedi la PR che dovrebbe risolvere ogni issue e se è aperta, in bozza o unita. La revisione del codice resta nei tuoi strumenti.",
+        "slide_linked_prs_title": "PR collegate, a colpo d’occhio",
+        "slide_local_subtitle": "Nessun account AWS, nessuna chiave, nessun costo per issue. Solo la tua CLI gh, sulla tua macchina.",
+        "slide_local_title": "Nessun account cloud, nessuna chiave API",
+        "slide_welcome_subtitle": "Rilevamento dei duplicati ed etichettatura delle issue tramite IA — tutto in locale, con memoria di ogni indagine.",
+        "slide_welcome_title": "Benvenuto in Issue Radar"
       },
       "workspace": {
         "resize_list": "Ridimensiona l'elenco",
@@ -1047,6 +1146,12 @@
       },
       "api": {
         "these_settings_changed_elsewhere": "Queste impostazioni sono state modificate altrove."
+      },
+      "lib": {
+        "format": {
+          "last_update": "Ultimo aggiornamento",
+          "number": "Numero"
+        }
       }
     },
     "meetings": {
@@ -1929,6 +2034,15 @@
       "types": {
         "built_in": "Integrato",
         "kirocrew_registry": "Registry KiroCrew"
+      },
+      "categories": {
+        "agents_automation": "Agenti e automazione",
+        "designer_tools": "Strumenti per designer",
+        "developer_tools": "Strumenti per sviluppatori",
+        "oncall_ops": "Reperibilità e Ops",
+        "other": "Altro",
+        "productivity": "Produttività",
+        "research_writing": "Ricerca e scrittura"
       }
     },
     "artifactBody": {
@@ -2085,7 +2199,10 @@
       "upload_file": "Carica file",
       "use_a_skill": "Usa una skill",
       "used": "Utilizzato",
-      "voice_input": "Input vocale"
+      "voice_input": "Input vocale",
+      "queue": "Metti in coda",
+      "queue_desc": "Esegui al termine del turno corrente",
+      "steer_desc": "Inserisci subito nel turno in corso"
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",
@@ -2133,7 +2250,30 @@
           "pin_this_chat_to_the_top": "Fissa questa chat in alto",
           "remove_pin_from_this_chat": "Non fissare più questa chat",
           "start_a_fresh_chat": "Avvia una nuova chat",
-          "unpin_current_session": "Non fissare più la sessione corrente"
+          "unpin_current_session": "Non fissare più la sessione corrente",
+          "actions": "Azioni"
+        },
+        "allAggregator": {
+          "all": "Tutte"
+        },
+        "knowledgeProvider": {
+          "knowledge": "Conoscenze"
+        },
+        "pagesProvider": {
+          "developer": "Sviluppatore",
+          "explore": "Esplora",
+          "hooks": "Hook",
+          "kirocrew_agents": "Agenti KiroCrew",
+          "logs": "Log",
+          "pages": "Pagine",
+          "remote_crew": "Crew remote",
+          "tasks": "Attività"
+        },
+        "promptsProvider": {
+          "prompts": "Prompt"
+        },
+        "skillsProvider": {
+          "skills": "Skill"
         }
       },
       "search_everywhere": "Cerca in tutto",
@@ -2190,7 +2330,10 @@
       "scroll_to_the_highlighted_text": "Scorri fino al testo evidenziato",
       "shared_comment": "Commento condiviso",
       "show": "Mostra",
-      "unknown": "Sconosciuto"
+      "unknown": "Sconosciuto",
+      "anchor_text_no_longer_found_in_content": "Testo di ancoraggio non più presente nel contenuto",
+      "failed_to_sync_to_provider": "Sincronizzazione con il provider non riuscita",
+      "pending_sync_to_provider": "Sincronizzazione con il provider in attesa"
     },
     "commentThreadPopover": {
       "close": "Chiudi",
@@ -2218,7 +2361,15 @@
       "show_live_desktop_view": "Mostra la vista live del desktop",
       "shrink": "Rimpicciolisci",
       "shrink_live_desktop_view": "Rimpicciolisci la vista live del desktop",
-      "updated": "aggiornata"
+      "updated": "aggiornata",
+      "resize_live_desktop_view_bottom": "Ridimensiona la vista live del desktop (in basso)",
+      "resize_live_desktop_view_bottom_left": "Ridimensiona la vista live del desktop (in basso a sinistra)",
+      "resize_live_desktop_view_bottom_right": "Ridimensiona la vista live del desktop (in basso a destra)",
+      "resize_live_desktop_view_left": "Ridimensiona la vista live del desktop (a sinistra)",
+      "resize_live_desktop_view_right": "Ridimensiona la vista live del desktop (a destra)",
+      "resize_live_desktop_view_top": "Ridimensiona la vista live del desktop (in alto)",
+      "resize_live_desktop_view_top_left": "Ridimensiona la vista live del desktop (in alto a sinistra)",
+      "resize_live_desktop_view_top_right": "Ridimensiona la vista live del desktop (in alto a destra)"
     },
     "contentRenderer": {
       "loading_editor": "Caricamento dell'editor…"
@@ -2455,7 +2606,15 @@
       "open_state": "Aperta",
       "opened_time": "aperta {{time}}",
       "provider_results_may_be_partial_for_sections_ope": "I risultati del provider potrebbero essere parziali per {{sections}}. Apri l’issue per l’insieme completo.",
-      "updated_time": "aggiornata {{time}}"
+      "updated_time": "aggiornata {{time}}",
+      "reaction_confused": "Perplesso",
+      "reaction_eyes": "Occhi",
+      "reaction_heart": "Cuore",
+      "reaction_hooray": "Evviva",
+      "reaction_laugh": "Risata",
+      "reaction_minus1": "Pollice giù",
+      "reaction_plus1": "Pollice su",
+      "reaction_rocket": "Razzo"
     },
     "jobForm": {
       "a_short_label_for_this_job": "Una breve etichetta per questo job",
@@ -2660,7 +2819,8 @@
       "view_preview": "Vedi l'anteprima",
       "view_source": "Vedi il sorgente",
       "word_wrap": "Ritorno a capo automatico",
-      "failed_to_add_source": "Impossibile aggiungere l’origine"
+      "failed_to_add_source": "Impossibile aggiungere l’origine",
+      "download_failed": "Download non riuscito"
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_reveal_in_finder": "Clicca per esplorare / Maiusc+clic per mostrare nel Finder",
@@ -2780,7 +2940,19 @@
         "this_week": "Questa settimana",
         "today": "Oggi",
         "unknown_date": "Data sconosciuta",
-        "yesterday": "Ieri"
+        "yesterday": "Ieri",
+        "kind_agent": "Agente",
+        "kind_all": "Tutti",
+        "kind_approval": "Approvazione",
+        "kind_cron": "Cron",
+        "kind_cron_job": "Job cron",
+        "kind_heartbeat": "Heartbeat",
+        "kind_hooks": "Hook",
+        "kind_notification": "Notifica",
+        "kind_subagent": "Subagente",
+        "kind_task_runner": "Task Runner",
+        "kind_tasks": "Attività",
+        "kind_webhook": "Webhook"
       },
       "notificationDetailPanel": {
         "approve": "Approva",
@@ -2858,7 +3030,22 @@
       "set_your_look_and_tell_kiro_about_you_so_respons": "Scegli il tuo aspetto e racconta a Kiro chi sei, così le risposte si adattano al tuo modo di lavorare.",
       "skip": "Salta",
       "tell_kiro_about_you": "Parla di te a Kiro",
-      "your_role": "Il tuo ruolo"
+      "your_role": "Il tuo ruolo",
+      "pop_apps_body": "Installa strumenti dedicati che sbloccano nuove capacità e nuovi workflow.",
+      "pop_apps_title": "Estendi ciò che puoi fare con KiroCrew",
+      "pop_chat_body": "Fai una domanda, assegna un’attività o dì semplicemente ciao — il tuo agente è pronto.",
+      "pop_chat_title": "Avvia la tua prima sessione",
+      "pop_schedule_body": "Imposta attività che si eseguono automaticamente, così le cose succedono senza che tu muova un dito.",
+      "pop_schedule_title": "Lavoro che parte all’ora giusta",
+      "role_data_ml": "Dati / ML",
+      "role_designer": "Designer UX",
+      "role_developer": "Sviluppatore",
+      "role_it_ops": "IT / Ops",
+      "role_other": "Altro",
+      "role_product_manager": "Product Manager",
+      "tech_codes": "Scrivo codice",
+      "tech_non_technical": "Non tecnico",
+      "tech_somewhat": "In parte"
     },
     "pastedChip": {
       "collapse_paste": "Comprimi il testo incollato",
@@ -2974,7 +3161,17 @@
       "take_this_merge_request_out_of_draft": "Togli questa merge request dallo stato di bozza",
       "take_this_pull_request_out_of_draft": "Togli questa pull request dallo stato di bozza",
       "this_authorizes_the_merge_as_soon_as_requirement": "Autorizza il merge appena i requisiti sono soddisfatti, con squash se questo repository lo consente (altrimenti un commit di merge, poi rebase).",
-      "this_authorizes_the_merge_when_the_pipeline_succ": "Autorizza il merge quando la pipeline riesce."
+      "this_authorizes_the_merge_when_the_pipeline_succ": "Autorizza il merge quando la pipeline riesce.",
+      "check_failed": "Non riuscito",
+      "check_in_progress": "In corso",
+      "check_passed": "Riuscito",
+      "check_skipped": "Saltato",
+      "checks_failed": "Controlli non riusciti",
+      "checks_passed": "Controlli riusciti",
+      "state_closed": "Chiusa",
+      "state_draft": "Bozza",
+      "state_merged": "Unita",
+      "state_open": "Aperta"
     },
     "questionCard": {
       "collapse_all": "Comprimi tutto",
@@ -3281,7 +3478,36 @@
       "saving": "Salvataggio in corso…",
       "theme_json": "JSON del tema",
       "theme_name": "Nome del tema",
-      "update_theme": "Aggiorna il tema"
+      "update_theme": "Aggiorna il tema",
+      "color_picker_for_var": "Selettore colori per {{label}}",
+      "group_accent": "Accento",
+      "group_backgrounds": "Sfondi",
+      "group_borders": "Bordi",
+      "group_status": "Stato",
+      "group_text_muted": "Testo e attenuato",
+      "var_accent": "Accento",
+      "var_accent_hover": "Accento hover",
+      "var_aim": "AIM",
+      "var_bg": "Sfondo",
+      "var_bg_accent": "Sfondo accento",
+      "var_bg_elevated": "Sfondo elevato",
+      "var_bg_hover": "Sfondo hover",
+      "var_border": "Bordo",
+      "var_border_hover": "Bordo hover",
+      "var_border_strong": "Bordo forte",
+      "var_card": "Card",
+      "var_card_text": "Testo card",
+      "var_danger": "Pericolo",
+      "var_info": "Info",
+      "var_muted": "Attenuato",
+      "var_muted_strong": "Attenuato forte",
+      "var_ok": "OK",
+      "var_panel": "Pannello",
+      "var_panel_strong": "Pannello forte",
+      "var_ring": "Anello di focus",
+      "var_text": "Testo",
+      "var_text_strong": "Testo forte",
+      "var_warning": "Avviso"
     },
     "themeExperienceLayer": {
       "adopt_a_themed_persona_in_the_assistant_security": "• Adottare una persona a tema nell'assistente (sicurezza e accuratezza hanno sempre la priorità; puoi chiedere di abbandonare la persona in qualsiasi momento).",
@@ -3447,7 +3673,8 @@
       "updated": "aggiornata",
       "view_only_clicks_here_don_t_reach_the_page": "Solo visualizzazione — i clic qui non raggiungono la pagina",
       "waiting_for_the_browser_to_take_a_screenshot": "In attesa che il browser acquisisca uno screenshot…",
-      "web_preview": "Anteprima web"
+      "web_preview": "Anteprima web",
+      "responsive_desktop": "Responsive (desktop)"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Solo agente — nessun contesto KiroCrew né MCP",
@@ -3500,6 +3727,41 @@
       "copied": "Copiato",
       "copy_url": "Copia URL",
       "copy_url_of": "Copia URL di {{name}}"
+    },
+    "readingWidthToggle": {
+      "label_full": "I",
+      "label_md": "M",
+      "title_full": "Larghezza intera",
+      "title_md": "Larghezza media"
+    },
+    "slashCommandMenu": {
+      "desc_agent": "Cambia o gestisci l’agente attivo",
+      "desc_changelog": "Mostra il changelog della versione",
+      "desc_chat": "Salva o carica una sessione di chat",
+      "desc_clear": "Cancella la cronologia della conversazione",
+      "desc_code": "Apri gli strumenti di code intelligence",
+      "desc_compact": "Comprimi la conversazione per liberare contesto",
+      "desc_context": "Gestisci i file di contesto e l’uso dei token",
+      "desc_editor": "Scrivi il prompt in un editor esterno",
+      "desc_exit": "Esci dalla sessione di chat",
+      "desc_experiment": "Attiva o disattiva le funzionalità sperimentali",
+      "desc_help": "Mostra i comandi disponibili",
+      "desc_hooks": "Visualizza gli hook di contesto configurati",
+      "desc_issue": "Segnala un problema o un bug",
+      "desc_kb": "Cerca nella libreria delle conoscenze",
+      "desc_logdump": "Esporta i log della sessione in un file",
+      "desc_mcp": "Mostra i server MCP configurati",
+      "desc_model": "Mostra o cambia il modello corrente",
+      "desc_onboarding": "Ripeti l’importazione iniziale e il tour di benvenuto",
+      "desc_paste": "Incolla un’immagine dagli appunti",
+      "desc_prompts": "Elenca o richiama i prompt salvati e le SOP degli agenti",
+      "desc_quit": "Chiudi la sessione di chat",
+      "desc_reply": "Rispondi all’ultimo messaggio dell’assistente",
+      "desc_side": "Apri un pannello di conversazione laterale",
+      "desc_tangent": "Avvia una conversazione tangente",
+      "desc_todos": "Mostra o gestisci l’elenco delle attività",
+      "desc_tools": "Mostra gli strumenti disponibili",
+      "desc_usage": "Mostra informazioni su fatturazione e utilizzo"
     }
   },
   "hooks": {
@@ -3515,7 +3777,34 @@
       "failed_to_run_job": "Impossibile eseguire il job"
     },
     "useKeyboardShortcuts": {
-      "close_this_session": "Chiudere questa sessione?"
+      "close_this_session": "Chiudere questa sessione?",
+      "chats_panel": "Pannello delle chat",
+      "cycle_agent": "Scorri gli agenti",
+      "cycle_approval_mode": "Scorri le modalità di approvazione",
+      "cycle_model": "Scorri i modelli",
+      "cycle_reasoning_effort": "Scorri i livelli di ragionamento",
+      "focus_text_input": "Attiva il campo di testo",
+      "group_actions": "Azioni",
+      "group_chat_navigation": "Navigazione tra le chat",
+      "group_panel_navigation": "Navigazione tra i pannelli",
+      "group_remote_crews": "Crew remote",
+      "jump_to_chat": "Vai alla chat {{n}}",
+      "last_visited_chat_mru": "Ultima chat visitata (MRU)",
+      "next_chat": "Chat successiva",
+      "notifications_panel": "Pannello delle notifiche",
+      "open_agent_monitor": "Apri il monitor degli agenti (subagenti)",
+      "open_settings": "Apri le impostazioni",
+      "open_shortcuts_help": "Apri la guida alle scorciatoie",
+      "previous_agent": "Agente precedente",
+      "previous_approval_mode": "Modalità di approvazione precedente",
+      "previous_chat": "Chat precedente",
+      "previous_model": "Modello precedente",
+      "previous_reasoning_effort": "Livello di ragionamento precedente",
+      "projects_panel": "Pannello dei progetti",
+      "schedule_panel": "Pannello della pianificazione",
+      "switch_to_local": "Passa a Locale",
+      "switch_to_remote_crew": "Passa alla crew remota {{n}}",
+      "walk_back_mru_history": "Torna indietro nella cronologia MRU"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Tutti gli slot sono occupati",
@@ -3564,6 +3853,20 @@
       "a_task_needs_your_decision": "Un'attività richiede una tua decisione",
       "approval_required": "Approvazione richiesta",
       "unknown": "Sconosciuto"
+    },
+    "theme": {
+      "high_contrast": "🔆 Contrasto elevato"
+    },
+    "usePanelTabs": {
+      "artifacts": "Artefatti",
+      "browser": "Browser",
+      "changes": "Modifiche",
+      "files": "File",
+      "issues": "Issue",
+      "logs": "Log",
+      "side": "Laterale",
+      "subagents": "Subagenti",
+      "workflows": "Workflow"
     }
   },
   "nav": {
@@ -3638,7 +3941,15 @@
       "dagView": {
         "approve": "Approva",
         "deny": "Nega",
-        "no_tasks_to_visualize": "Nessuna attività da visualizzare"
+        "no_tasks_to_visualize": "Nessuna attività da visualizzare",
+        "cancelling": "Annullamento",
+        "done": "Fatto",
+        "needs_approval": "Richiede approvazione",
+        "paused": "In pausa",
+        "pausing": "Messa in pausa",
+        "pending": "In attesa",
+        "reviewing": "In revisione",
+        "running": "In esecuzione"
       },
       "phasedView": {
         "cancelled": "Annullato",
@@ -4216,7 +4527,18 @@
       "unknown_error": "errore sconosciuto",
       "reply_2_many": "{{count}} risposte",
       "reply_2_one": "{{count}} risposta",
-      "reply_2_other": "{{count}} risposte"
+      "reply_2_other": "{{count}} risposte",
+      "listen_all": "tutti",
+      "listen_mention": "menzione",
+      "listen_silent": "silenzioso",
+      "preset_custom_empty": "Personalizzato (vuoto)",
+      "preset_incident_response": "Risposta agli incidenti",
+      "state_done": "fatto",
+      "state_failed": "non riuscito",
+      "state_listening": "in ascolto",
+      "state_pending": "in attesa",
+      "state_running": "in esecuzione",
+      "state_working": "al lavoro"
     },
     "chat": {
       "activityViewer": {
@@ -4282,7 +4604,14 @@
         "waiting_for_output": "In attesa dell'output…",
         "waiting_to_start_queued_behind_the_concurrency_l": "in attesa di avvio — in coda a causa del limite di concorrenza",
         "file_not_found_on_disk_it_may_have_been_moved_or": "File non trovato sul disco. Potrebbe essere stato spostato o eliminato.",
-        "unable_to_read_file": "Impossibile leggere il file."
+        "unable_to_read_file": "Impossibile leggere il file.",
+        "artifacts": "Artefatti",
+        "changes": "Modifiche",
+        "issues": "Issue",
+        "logs": "Log",
+        "side": "Laterale",
+        "subagents": "Subagenti",
+        "workflows": "Workflow"
       },
       "assistantMessage": {
         "applied_to_tasks": "Applicato alle attività",
@@ -4482,7 +4811,27 @@
         "show_line_numbers": "Mostra i numeri di riga",
         "switch_to_split_view": "Passa alla vista divisa",
         "switch_to_unified_view": "Passa alla vista unificata",
-        "turn_diff": "Diff del turno"
+        "turn_diff": "Diff del turno",
+        "menu_artifacts": "Artefatti",
+        "menu_artifacts_desc": "Documenti e preferiti della sessione",
+        "menu_browser": "Browser",
+        "menu_browser_desc": "Visualizza una pagina web o un server di sviluppo locale",
+        "menu_changes": "Modifiche",
+        "menu_changes_desc": "Pull request, controlli e revisioni",
+        "menu_files": "File",
+        "menu_files_desc": "Sfoglia e modifica i file",
+        "menu_issues": "Issue",
+        "menu_issues_desc": "Issue citate in questa sessione",
+        "menu_logs": "Log",
+        "menu_logs_desc": "Flusso dei log del gateway",
+        "menu_side": "Laterale",
+        "menu_side_desc": "Chat parallela, contesto condiviso",
+        "menu_subagents": "Subagenti",
+        "menu_subagents_desc": "Attività degli agenti in tempo reale e trascrizioni",
+        "menu_terminal": "Terminale",
+        "menu_terminal_desc": "Shell sull’host del gateway",
+        "menu_workflows": "Workflow",
+        "menu_workflows_desc": "Esecuzioni, fasi e passaggi riavviabili"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Arresto non riuscito, sessione reimpostata",
@@ -4995,10 +5344,48 @@
       "removed_name": "{{name}} rimosso",
       "restarted_name": "{{name}} riavviato",
       "starting_pod_for_name_can_take_1_min": "Avvio del pod per {{name}}… (può richiedere ~1 min)",
-      "stopped_name": "{{name}} arrestato"
+      "stopped_name": "{{name}} arrestato",
+      "pending": "In attesa",
+      "removed": "Rimosso",
+      "stopping_pod": "Arresto del pod",
+      "verifying": "Verifica in corso"
     },
     "developerPage": {
-      "developer": "Sviluppatore"
+      "developer": "Sviluppatore",
+      "tabs": {
+        "archive": {
+          "description": "Cronologia delle sessioni ruotata/compressa (conservazione di 7 giorni)",
+          "label": "Archivio"
+        },
+        "config": {
+          "description": "Visualizzatori della configurazione di KiroCrew e degli agenti (in sola lettura)",
+          "label": "Configurazione"
+        },
+        "logs": {
+          "description": "Visualizzatore dei log in tempo reale con filtro per livello e ricerca",
+          "label": "Log"
+        },
+        "mcpPool": {
+          "description": "Gateway MCP condiviso e configurazione dei server raggruppabili",
+          "label": "Pool MCP"
+        },
+        "memory": {
+          "description": "Grafo della memoria, provider di embedding e interni del vector store",
+          "label": "Memoria"
+        },
+        "storage": {
+          "description": "Utilizzo di localStorage, quote e garbage collection",
+          "label": "Archiviazione"
+        },
+        "system": {
+          "description": "Metriche di CPU, memoria, rete e processi",
+          "label": "Sistema"
+        },
+        "telemetry": {
+          "description": "Latenza di avvio delle sessioni (p50/p90) e metriche di accelerazione di MCP/skill",
+          "label": "Telemetria"
+        }
+      }
     },
     "embedSettingsPage": {
       "back": "Indietro",
@@ -5193,7 +5580,10 @@
         "try_different_keywords_or_filters": "Prova con parole chiave o filtri diversi",
         "copied": "Copiato!",
         "copy_content": "Copia contenuto",
-        "embeddings_loading": "caricamento embedding"
+        "embeddings_loading": "caricamento embedding",
+        "graph_view": "Vista a grafo",
+        "list_view": "Vista a elenco",
+        "sources_tab": "Origini"
       },
       "knowledgeGraph": {
         "edges": "archi",
@@ -5292,6 +5682,14 @@
         "other": "Altro",
         "select_item": "Seleziona {{title}}",
         "untitled": "Senza titolo"
+      },
+      "helpers": {
+        "documents_are_chunked_entities_extracted_and_rel": "I documenti vengono suddivisi in blocchi, le entità estratte e le relazioni mappate automaticamente",
+        "drop_files_here_or_click_upload_to_ingest_docume": "Trascina qui i file oppure clicca su Carica per acquisire i documenti",
+        "search_across_all_knowledge_filter_by_type_or_ex": "Cerca in tutte le conoscenze, filtra per tipo oppure esplora il grafo delle entità",
+        "supported_formats": "Formati supportati: {{formats}}",
+        "welcome_to_the_knowledge_library": "Benvenuto nella libreria delle conoscenze",
+        "your_centralized_knowledge_base_with_entity_extr": "La tua base di conoscenza centralizzata con estrazione delle entità, relazioni a grafo e ricerca full-text."
       }
     },
     "localStorageDebug": {
@@ -5589,7 +5987,12 @@
         "refresh": "Aggiorna",
         "search_memory_nodes": "Cerca tra i nodi della memoria",
         "search_nodes": "Cerca tra i nodi…",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "Visualizzazione con rendering GPU di tutta la memoria di KiroCrew. I nodi sono colorati per tipo. Ingrandisci per mostrare le etichette, clicca un nodo per ispezionarlo, usa i filtri per restringere il campo."
+        "gpu_rendered_visualization_of_all_kirocrew_memor": "Visualizzazione con rendering GPU di tutta la memoria di KiroCrew. I nodi sono colorati per tipo. Ingrandisci per mostrare le etichette, clicca un nodo per ispezionarlo, usa i filtri per restringere il campo.",
+        "group_history_count": "Cronologia ({{count}})",
+        "group_lessons_count": "Lezioni ({{count}})",
+        "group_preferences_count": "Preferenze ({{count}})",
+        "group_projects_count": "Progetti ({{count}})",
+        "group_semantic_count": "Semantica ({{count}})"
       },
       "memoryTab": {
         "actions": "Azioni",
@@ -5745,7 +6148,10 @@
         "steering_file_name": "Nome del file di steering",
         "steering_files": "File di steering",
         "workspace_this_project_only": "Workspace — solo questo progetto",
-        "always_on_markdown_conventions_injected_into_eve": "Convenzioni Markdown sempre attive, inserite in ogni sessione. I file globali si trovano in ~/.kiro/steering e si applicano a tutto; i file di workspace si trovano in <project>/.kiro/steering e si applicano solo a quel progetto."
+        "always_on_markdown_conventions_injected_into_eve": "Convenzioni Markdown sempre attive, inserite in ogni sessione. I file globali si trovano in ~/.kiro/steering e si applicano a tutto; i file di workspace si trovano in <project>/.kiro/steering e si applicano solo a quel progetto.",
+        "global": "Globale",
+        "title_describe_the_convention_the_agent_should_a": "# Titolo\n\nDescrivi la convenzione che l’agente deve sempre seguire.",
+        "workspace": "Workspace"
       },
       "tokenDailyChart": {
         "all": "Tutti",
@@ -6367,7 +6773,20 @@
         "shift_enter_for_newline": "Shift+Enter per andare a capo",
         "show_occasional_feature_discovery_tips_above_the": "Mostra di tanto in tanto suggerimenti sulle funzionalità sopra la casella di composizione mentre l’agente lavora",
         "single_line": "Riga singola",
-        "smooth": "Fluido"
+        "smooth": "Fluido",
+        "both_head_tail_with_truncation_marker": "Entrambi (inizio + fine con indicatore di troncamento)",
+        "data_ml": "Dati / ML",
+        "developer": "Sviluppatore",
+        "head_preserve_start_of_stream": "Inizio (conserva l’avvio dello stream)",
+        "i_write_code": "Scrivo codice",
+        "it_ops": "IT / Ops",
+        "not_set": "Non impostato",
+        "not_technical": "Non tecnico",
+        "other": "Altro",
+        "product_manager": "Product Manager",
+        "somewhat": "In parte",
+        "tail_preserve_end_final_summary": "Fine (conserva la parte finale / il riepilogo conclusivo)",
+        "ux_designer": "Designer UX"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",
@@ -6386,7 +6805,19 @@
         "retry": "Riprova",
         "screen_recording": "Registrazione schermo",
         "screenshot_width": "Larghezza dello screenshot",
-        "show_cursor_motion": "Mostra il movimento del cursore"
+        "show_cursor_motion": "Mostra il movimento del cursore",
+        "computer_use_lets_the_agent_read_any_app_window": "Il computer use permette all’agente di leggere qualsiasi finestra di un’app e di inviarle clic e pressioni di tasti. La maggior parte dei clic viene consegnata direttamente all’app e non tocca il tuo puntatore, ma l’agente può chiedere di spostare il puntatore reale quando un bersaglio lo richiede. I campi password non vengono mai letti; nient’altro limita quali app può pilotare.",
+        "could_not_check": "Verifica non riuscita",
+        "draw_a_cursor_that_glides_to_each_target_and_pul": "Disegna un cursore che scorre verso ogni bersaglio e pulsa quando fa clic, così puoi seguirlo sullo schermo. Puramente visivo — non cambia nulla di ciò che l’agente può fare e compare solo per i clic che spostano il puntatore reale.",
+        "granted": "Concesso",
+        "how_many_controls_one_window_reading_returns_a_w": "Quanti controlli restituisce la lettura di una finestra. Una finestra che ne ha di più viene troncata e l’agente ne viene informato. Aumentalo per le app dense (un foglio di calcolo, un IDE); abbassalo per spendere meno token per lettura.",
+        "how_much_of_a_window_the_agent_reads_at_once_the": "Quanta parte di una finestra l’agente legge in una volta. Sono manopole di costo e velocità, non impostazioni di sicurezza — ogni valore resta entro un limite massimo integrato. Lasciali invariati a meno che una finestra sia troppo grande da leggere in un solo passaggio o gli screenshot risultino lenti.",
+        "longest_edge_of_the_screenshot_in_pixels_smaller": "Lato più lungo dello screenshot, in pixel. Un valore più piccolo costa meno ed è più rapido da leggere; uno più grande mantiene leggibile il testo piccolo se l’agente deve ripiegare sull’immagine.",
+        "not_applicable": "Non applicabile",
+        "not_detected": "Non rilevato",
+        "not_detected_does_not_always_mean_unavailable_ma": "«Non rilevato» non significa sempre non disponibile — macOS attribuisce la concessione di un permesso al processo che ha avviato KiroCrew, non a KiroCrew stesso.",
+        "the_app_lists_in_computer_use_json_could_not_be": "Non è stato possibile leggere gli elenchi di app in computer_use.json, quindi qui appaiono vuoti. L’agente continua a rifiutare ogni azione che dipende da essi fino a quando il file non è JSON valido.",
+        "your_chat_sessions_were_restarted_so_this_takes": "Le tue sessioni di chat sono state riavviate perché questa modifica abbia effetto subito — Kiro legge l’elenco dei suoi strumenti una volta per sessione, quindi una chat aperta non l’avrebbe recepita. I tuoi messaggi sono ancora lì; l’agente rilegge il proprio contesto al tuo prossimo messaggio."
       },
       "developerPanel": {
         "developer_mode": "Modalità sviluppatore",
@@ -6538,7 +6969,30 @@
         "volume": "Volume",
         "always_interrupts_cannot_be_muted_or_lowered": "Interrompe sempre — non può essere silenziato né abbassato",
         "channel_not_active_app_disabled_setting_retained": "Canale non attivo (app disattivata) — impostazione conservata",
-        "failed_to_load_channels": "Impossibile caricare i canali"
+        "failed_to_load_channels": "Impossibile caricare i canali",
+        "category_all": "Predefinito (tutte le categorie)",
+        "category_all_description": "Suono di riserva quando non è impostata alcuna sostituzione per categoria",
+        "category_approval": "Approvazione",
+        "category_approval_description": "Richieste di approvazione degli strumenti",
+        "category_cron": "Cron",
+        "category_cron_description": "Completamenti dei job pianificati",
+        "category_heartbeat": "Heartbeat",
+        "category_heartbeat_description": "Risultati delle attività heartbeat",
+        "category_hook": "Webhook",
+        "category_hook_description": "Attivazioni di hook esterni",
+        "category_subagent": "Subagente",
+        "category_subagent_description": "Completamenti dei subagenti in background",
+        "category_taskrunner": "Attività",
+        "category_taskrunner_description": "Completamenti del task runner",
+        "category_turn": "Risposte dell’agente",
+        "category_turn_description": "Quando l’agente termina un turno in qualsiasi chat",
+        "channel_default": "Predefinito del canale",
+        "preset_blip": "Blip",
+        "preset_chime": "Carillon (C6-E6-G6)",
+        "preset_ding": "Ding",
+        "preset_none": "Silenzioso",
+        "preset_pop": "Pop",
+        "use_default": "Usa il predefinito"
       },
       "postureDisclosure": {
         "more": "altri",
@@ -6615,7 +7069,57 @@
         "standard": "Standard",
         "turn_off_every_rule": "Disattiva in un colpo solo tutte le regole integrate sui comandi bloccati. I controlli indipendenti di difesa in profondità (percorsi sensibili, IMDS, git-publish) restano attivi.",
         "turn_off_every_rule_governance_locked": "Disattiva in un colpo solo tutte le regole integrate sui comandi bloccati. I controlli indipendenti di difesa in profondità (percorsi sensibili, IMDS, git-publish) restano attivi, e le regole fissate dalla policy della tua organizzazione restano attive.",
-        "yolo_auto_approve": "YOLO (approvazione automatica)"
+        "yolo_auto_approve": "YOLO (approvazione automatica)",
+        "feature_credential_redaction": "Oscuramento delle credenziali",
+        "feature_credential_redaction_description": "Analizza ogni percorso di output in cerca di chiavi AWS, chiavi private e token dei provider in chiaro o codificati in base64",
+        "feature_csrf": "Protezione CSRF",
+        "feature_csrf_description": "Convalida di Origin/Referer su tutte le richieste POST/PUT/DELETE e sulle connessioni WebSocket",
+        "feature_denied_commands_description": "Pattern regex integrati che bloccano le operazioni CLI distruttive e di esfiltrazione delle credenziali (configurabili qui sotto)",
+        "feature_enterprise_grid": "Convalida Enterprise Grid",
+        "feature_enterprise_grid_description": "Difesa a due livelli contro l’esfiltrazione di dati verso workspace Slack personali o esterni",
+        "feature_mcp_validation": "Convalida dell’input MCP",
+        "feature_mcp_validation_description": "Schemi con tipi sicuri, normalizzazione unicode, limiti di lunghezza e rifiuto dei campi sconosciuti su ogni handler di strumento",
+        "feature_observe_mode": "Isolamento della modalità di osservazione",
+        "feature_observe_mode_description": "Nei canali condivisi vengono registrati solo i messaggi del proprietario o degli utenti consentiti — previene l’avvelenamento del contesto",
+        "feature_os_sandbox": "Sandbox a livello di sistema operativo",
+        "feature_os_sandbox_description": "L’isolamento dei namespace utente e mount (Linux) / la sandbox Seatbelt (macOS) nasconde i percorsi delle credenziali ai sottoprocessi dell’agente",
+        "feature_sel_audit": "Registrazione di audit SEL",
+        "feature_sel_audit_description": "Traccia immutabile degli eventi di sicurezza concatenata con HMAC, con oscuramento delle credenziali prima dell’inoltro",
+        "feature_sensitive_paths": "Blocco dei percorsi sensibili",
+        "feature_sensitive_paths_description": "Le directory delle credenziali e le radici di fiducia di KiroCrew sono bloccate a livello di hook prima dell’esecuzione degli strumenti",
+        "feature_suspicious_patterns": "Pattern Bash sospetti",
+        "feature_suspicious_patterns_description": "Rileva nei comandi shell le forme di attacco basate su cancellazione, esfiltrazione ed esecuzione tramite pipe",
+        "feature_token_auth": "Autenticazione della dashboard tramite token",
+        "feature_token_auth_description": "Token monouso firmati con HMAC-SHA256 e vincolati all’IP, con doppia scadenza sul link e sulla sessione",
+        "feature_url_exfil": "Rilevamento dell’esfiltrazione tramite URL",
+        "feature_url_exfil_description": "Scansione indipendente dal dominio di query string sospette, blob base64 e pattern di credenziali negli URL",
+        "gov_plane_access": "Strumenti e comandi",
+        "gov_plane_capabilities": "Capacità",
+        "gov_plane_channels": "Canali di messaggistica",
+        "gov_plane_io": "Filesystem e rete",
+        "gov_plane_modes": "Modalità di applicazione",
+        "gov_plane_other": "Altri ambiti governati",
+        "gov_scope_approval_mode": "Approvazione degli strumenti",
+        "gov_scope_apps": "App",
+        "gov_scope_channels": "Canali",
+        "gov_scope_commands": "Comandi",
+        "gov_scope_cron": "Cron",
+        "gov_scope_filesystem_read": "Lettura del filesystem",
+        "gov_scope_filesystem_write": "Scrittura sul filesystem",
+        "gov_scope_mcp": "Server MCP",
+        "gov_scope_memory_writes": "Scritture in memoria",
+        "gov_scope_messaging": "Messaggistica",
+        "gov_scope_network_egress": "Traffico di rete in uscita",
+        "gov_scope_sandbox_level": "Livello della sandbox",
+        "gov_scope_script_hooks": "Hook di script",
+        "gov_scope_spawn": "Avvio di subagenti",
+        "gov_scope_telemetry": "Telemetria anonima",
+        "gov_scope_theme_install": "Installazione dei temi",
+        "gov_scope_theme_persona": "Persona del tema",
+        "gov_scope_tools": "Strumenti",
+        "layer_auth": "Autenticazione",
+        "layer_n": "Livello {{n}}",
+        "pinned_by_policy": "Applicato dalla policy di sicurezza della tua organizzazione"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Annulla",
@@ -6749,7 +7253,21 @@
         "pulls_python_3_11_slim_for_docker_based_transcri": "Scarica python:3.11-slim per la trascrizione basata su Docker (AL2).",
         "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper è installato ma manca ffmpeg — la trascrizione vocale richiede ffmpeg.",
         "endpointing": "Invia automaticamente quando finisco di parlare",
-        "endpointing_desc": "Usa un modello veloce per rilevare quando hai terminato una richiesta completa e la invia automaticamente. Solo streaming (Transcribe)."
+        "endpointing_desc": "Usa un modello veloce per rilevare quando hai terminato una richiesta completa e la invia automaticamente. Solo streaming (Transcribe).",
+        "provider_mlx": "Whisper MLX (locale — solo Apple Silicon)",
+        "provider_transcribe": "Transcribe (AWS)",
+        "provider_whisper": "Whisper (locale)",
+        "step_checking": "Ricerca di Python…",
+        "step_done": "Fatto!",
+        "step_error": "Non riuscito",
+        "step_installing_brew": "Installazione di Homebrew…",
+        "step_installing_ffmpeg": "Installazione di ffmpeg…",
+        "step_installing_mlx": "Installazione di mlx-whisper…",
+        "step_installing_python": "Installazione di Python…",
+        "step_installing_whisper": "Installazione di whisper (~1,6 GB)…",
+        "step_installing_xcode": "Installazione degli Xcode CLI Tools…",
+        "step_pulling": "Download dell’immagine Docker…",
+        "step_starting": "Avvio…"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "sopra. A differenza di Slack, il Bot Framework non ha\n              una modalità solo in uscita.",
@@ -6853,7 +7371,15 @@
         "text_to_speech": "Da testo a voce",
         "us_east_1": "us-east-1",
         "voice": "Voce",
-        "failed_to_save_voice_config": "Impossibile salvare la configurazione vocale"
+        "failed_to_save_voice_config": "Impossibile salvare la configurazione vocale",
+        "aws_polly_cloud": "AWS Polly (cloud)",
+        "faster": "Più veloce",
+        "fastest": "Molto veloce",
+        "normal": "Normale",
+        "piper_local_offline": "Piper (locale, offline)",
+        "slow": "Lento",
+        "slower": "Più lento",
+        "slowest": "Molto lento"
       },
       "webexPanel": {
         "access": "Accesso",
@@ -6916,6 +7442,54 @@
         "scanned_confirm_in_wechat": "Scansionato — conferma in WeChat",
         "sign_in_again": "Accedi di nuovo",
         "waiting_for_scan": "In attesa della scansione…"
+      },
+      "channels": {
+        "get_your_bot_credentials": "Ottieni le credenziali del tuo bot",
+        "threshold_description": "Chiede di eseguire {{compact}} o {{new}} quando il contesto della sessione supera questa percentuale."
+      },
+      "discordPanel": {
+        "allowed_server_thread_ids": "ID dei thread del server consentiti",
+        "allowlist_description": "ID utente Discord autorizzati a eseguire l’agente nei messaggi diretti o nei thread approvati. Vuoto = nega tutti (fail closed).",
+        "description": "Parla con il tuo agente dai messaggi diretti di Discord o dai thread del server esplicitamente approvati, tramite il WebSocket del Gateway. I normali canali del server vengono sempre ignorati.",
+        "empty_allowlist_hint": "Nessun ID utente consentito: il bot rifiuta ogni messaggio (fail closed). Aggiungi qui sotto il tuo ID utente Discord.",
+        "guide_body": "Crea un’app nel Discord Developer Portal, poi copia il token dalla pagina <mono>Bot</mono>. Se usi solo i messaggi diretti, lascia disattivati gli intent privilegiati. Per i thread del server, attiva <mono>Message Content Intent</mono> e installa l’app con lo scope <mono>bot</mono> più View Channel, Read Message History e Send Messages in Threads. Attiva Discord Developer Mode, poi fai clic con il tasto destro sul tuo nome per copiare il tuo ID utente numerico.",
+        "open_developer_portal": "Apri il Developer Portal",
+        "thread_allowlist_description": "Opzionale. Gli utenti approvati possono eseguire l’agente solo in questi thread Discord esatti. Vuoto = solo messaggi diretti.",
+        "thread_help": "Con Developer Mode attivo, fai clic con il tasto destro sul thread → <mono>Copy Channel ID</mono>. Usa l’ID del thread, non quello del canale che lo contiene.",
+        "thread_warning": "La modalità thread attiva l’intent globale Message Content di Discord. Discord recapita il contenuto di ogni canale del server visibile al bot; Kiro Crew scarta il traffico esterno ai thread approvati. Chiunque possa vedere un thread approvato può leggere le risposte dell’agente e l’output degli strumenti.",
+        "threshold_description": "Chiede di eseguire !compact o !new quando il contesto della sessione supera questa percentuale.",
+        "token_description": "Dalla pagina Bot del Developer Portal (Reset Token per visualizzarlo una sola volta).",
+        "token_placeholder": "Incolla il token del bot Discord"
+      },
+      "telegramPanel": {
+        "allowlist_description": "ID utente Telegram numerici autorizzati a inviare messaggi diretti al bot. Vuoto = nega tutti (fail closed): un bot Telegram è raggiungibile globalmente tramite @username.",
+        "description": "Parla con il tuo agente da Telegram tramite la Bot API (long-polling — nessun webhook o indirizzo pubblico necessario). Aggiungi gli ID utente consentiti così che il bot possa rispondere.",
+        "empty_allowlist_hint": "Nessun ID utente consentito: il bot rifiuta ogni messaggio (fail closed). Aggiungi qui sotto il tuo ID utente numerico Telegram.",
+        "forum_allowlist_description": "chat_id numerici dei supergruppi autorizzati a eseguire sessioni per argomento del forum. Sono negativi (ad es. -1001234567890) — puoi trovarne uno aggiungendo al gruppo un bot come @getidsbot. Vuoto = nega tutti i gruppi (fail closed).",
+        "forum_allowlist_label": "ID chat dei supergruppi consentiti",
+        "forum_empty_hint": "Forum attivo ma nessuna chat nell’elenco dei consentiti: tutto il traffico del forum viene negato. Aggiungi il chat_id del tuo supergruppo (un numero negativo come -100…).",
+        "forum_toggle_description": "Indirizza ogni Topic di un supergruppo presente nell’elenco dei consentiti verso una sessione dell’agente dedicata (in stile thread di Slack). Crea un supergruppo, attiva `Topics`, aggiungi il bot, poi elenca qui sotto il `chat_id` del supergruppo. Il topic General e i gruppi ordinari (non forum) vengono sempre negati.",
+        "forum_toggle_label": "Servi i Topic del forum come sessioni per singolo Topic",
+        "guide_body": "Scrivi a `@BotFather` su Telegram, invia `/newbot` e segui le istruzioni. BotFather risponde con un token del bot — incollalo qui sotto. Per trovare il tuo ID utente numerico, scrivi a `@userinfobot`.",
+        "guide_link_label": "Apri @BotFather",
+        "token_description": "Da @BotFather dopo aver creato il bot (ha questo aspetto: 110201543:AAHdqT…).",
+        "token_placeholder": "Incolla il token del bot Telegram (123456:ABC-…)"
+      },
+      "weComPanel": {
+        "allow_all_bypass_note": "«Consenti a tutti» è attivo: l’elenco di userid qui sopra viene ignorato. Viene conservato per quando tornerai indietro.",
+        "allow_all_description": "Consenti a chiunque nella tua organizzazione WeCom di inviare messaggi diretti al bot senza elencare ogni userid. Un bot AI di WeCom è raggiungibile solo all’interno del tenant della tua organizzazione, ma questo concede l’accesso all’agente a tutta l’azienda — lascialo disattivato per un elenco dei consentiti per singola persona.",
+        "allow_all_label": "Consenti tutti i membri dell’organizzazione",
+        "allowlist_description": "userid WeCom (账号) autorizzati a inviare messaggi diretti al bot. Vuoto = nega tutti (fail closed).",
+        "bot_id_description": "Il Bot ID dalla pagina delle impostazioni del tuo bot AI nella console di amministrazione WeCom.",
+        "bot_id_label": "ID del bot WeCom",
+        "bot_id_placeholder": "Incolla l’ID del bot WeCom",
+        "description": "Parla con il tuo agente da WeCom tramite un bot AI WeCom (企业微信). La connessione è un WebSocket in uscita — nessun URL di callback o porta aperta da gestire.",
+        "empty_allowlist_hint": "Nessun userid consentito: il bot rifiuta ogni messaggio (fail closed). Aggiungi qui sotto il tuo userid WeCom.",
+        "guide_body": "Nella console di amministrazione WeCom, apri <mono>应用管理 → AI 智能体</mono> e crea un bot. La sua pagina delle impostazioni mostra un <mono>Bot ID</mono> e un <mono>Secret</mono> — incollali entrambi qui sotto. Ogni membro WeCom ha uno <mono>userid</mono> (账号) per l’elenco dei consentiti.",
+        "open_admin_console": "Apri la console di amministrazione WeCom",
+        "token_description": "Il Secret mostrato accanto al Bot ID nella stessa pagina delle impostazioni.",
+        "token_label": "Secret del bot WeCom",
+        "token_placeholder": "Incolla il secret del bot WeCom"
       }
     },
     "settingsPage": {
@@ -7167,6 +7741,35 @@
       "black": "Nero",
       "gray": "Grigio",
       "white": "Bianco"
+    },
+    "channelOrigin": {
+      "direct_message": "Messaggio diretto"
+    },
+    "schedulePresets": {
+      "dependency_guardian_description": "Aggiorna i pacchetti, esegue i test e apre una PR solo quando è tutto verde.",
+      "dependency_guardian_message": "Controlla questo progetto in cerca di dipendenze obsolete. Aggiornale, esegui l’intera suite di test e correggi tutto ciò che si rompe. Apri una pull request solo se tutti i test passano — altrimenti riporta cosa non è riuscito.",
+      "dependency_guardian_title": "Guardiano delle dipendenze",
+      "error_digest_description": "Raggruppa i nuovi errori di produzione indicando per ciascuno una causa sospetta.",
+      "error_digest_message": "Esamina i nuovi errori di produzione dall’ultima esecuzione. Raggruppali per tipo e, per ogni gruppo, fornisci un breve riepilogo e una causa sospetta.",
+      "error_digest_title": "Digest degli errori",
+      "nightly_build_watch_description": "Compila e testa main durante la notte; segnala i fallimenti e le probabili correzioni.",
+      "nightly_build_watch_message": "Compila e testa il branch main. Se qualcosa non riesce, riporta esattamente cosa è fallito, la probabile causa radice e una correzione suggerita.",
+      "nightly_build_watch_title": "Controllo notturno della build",
+      "standup_brief_description": "I tuoi commit, le PR, lo stato della CI e i blocchi prima dello standup.",
+      "standup_brief_message": "Riassumi i miei commit recenti, le pull request aperte, lo stato della CI e gli eventuali blocchi per lo standup di oggi. Sii conciso e consegnalo prima della riunione.",
+      "standup_brief_title": "Riepilogo per lo standup"
+    },
+    "sensitiveCommand": {
+      "dumps_sensitive_environment_variables": "Esporta variabili d’ambiente sensibili",
+      "encodes_credential_files": "Codifica file di credenziali",
+      "opens_raw_tcp_connection": "Apre una connessione TCP raw",
+      "pipes_data_to_external_url": "Convoglia dati verso un URL esterno",
+      "reads_credential_files": "Legge file di credenziali",
+      "reads_sensitive_environment_variable": "Legge una variabile d’ambiente sensibile",
+      "reads_system_credentials": "Legge le credenziali di sistema",
+      "sends_command_output_to_external_url": "Invia l’output del comando a un URL esterno",
+      "sends_data_to_network_socket": "Invia dati a un socket di rete",
+      "uploads_file_to_external_url": "Carica un file su un URL esterno"
     }
   },
   "store": {

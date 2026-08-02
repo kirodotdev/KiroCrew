@@ -13,6 +13,8 @@ import { reportSeamCollision } from '../apps/seamCollision'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { safeSetItem } from '../utils/safeStorage'
 
+import { i18nT } from '../i18n/t'
+
 export type ModePreference = 'dark' | 'light' | 'system'
 export type ResolvedMode = 'dark' | 'light'
 export type ColorTheme = string  // built-in slug or 'custom-{slug}'
@@ -589,6 +591,30 @@ function applyThemeBranding(theme: CustomThemeData | undefined) {
   }
 }
 
+/**
+ * Catalog KEY for each built-in theme whose display name is descriptive COPY
+ * rather than a proper noun.
+ *
+ * Nearly every built-in is named after an upstream palette project (Monokai,
+ * Solarized, Dracula, Nord, Rosé Pine, Catppuccin, Tokyo Night, Gruvbox,
+ * Everforest), a product (Kiro, IntelliJ), or the display technology it is tuned
+ * for (AMOLED). Those are proper nouns — translating one would sever the name
+ * from the upstream project a user is looking for — so they stay verbatim as
+ * `label` in `THEMES` below, exactly like the theme names an installed pack or a
+ * `registerTheme()` caller supplies. `High Contrast` is the one that names a
+ * rendering PROPERTY (the accessibility palette) rather than a palette identity,
+ * so it is copy in the same sense as every other settings label.
+ *
+ * Keys, not strings: `THEMES` is evaluated at module load, so an `i18nT()` call
+ * there would freeze whatever language was active at boot. The lookup happens in
+ * `builtinThemes()`, which runs during render. Shaped as a flat `Record` of full
+ * literal keys and indexed inline at the `i18nT()` call, because that is the form
+ * `scripts/check-i18n-keys.mjs` can resolve statically.
+ */
+export const THEME_LABEL_KEY: Record<string, string> = {
+  highcontrast: 'hooks.theme.high_contrast',
+}
+
 export const THEMES: ThemeEntry[] = [
   { value: 'emerald', label: '🌿 Emerald' },
   { value: 'monokai', label: '🎨 Monokai' },
@@ -604,11 +630,36 @@ export const THEMES: ThemeEntry[] = [
   { value: 'amoled', label: '🖤 AMOLED' },
   { value: 'kiro', label: '👻 Kiro' },
   { value: 'intellij', label: '😶‍🌫️ IntelliJ' },
-  { value: 'highcontrast', label: '🔆 High Contrast' },
+  // The only descriptive name here, so the only one with a catalog key: `label`
+  // holds the glyph alone as the pre-resolution fallback and the full display
+  // string lives in `hooks.theme.high_contrast` (emoji included, as
+  // `components.themeEditor.color_picker` already does). Nothing renders this
+  // entry's `label` directly — `allThemes` goes through `builtinThemes()`.
+  { value: 'highcontrast', label: '🔆' },
   { value: 'everforest', label: '🌲 Everforest' },
   { value: 'amoled-midnight', label: '🌌 AMOLED Midnight' },
   { value: 'amoled-grey-calm', label: '🌑 AMOLED Grey Calm' },
 ]
+
+/**
+ * `THEMES` with every descriptive name resolved for the CURRENT language.
+ *
+ * Called from `useThemeState()` on each render (through `allThemes`), which is
+ * what lets the picker follow a language switch — the module-level `THEMES` array
+ * cannot. An entry with no `THEME_LABEL_KEY` entry is passed through untouched:
+ * its name is a proper noun and has no catalog key by design.
+ */
+function builtinThemes(): ThemeEntry[] {
+  return THEMES.map((t) =>
+    // `hasOwnProperty`, not `in`: theme values also arrive from persisted config
+    // and from `registerTheme()`, so a value named `toString` or `constructor`
+    // would otherwise resolve to an inherited Object.prototype member and hand a
+    // function to i18next.
+    Object.prototype.hasOwnProperty.call(THEME_LABEL_KEY, t.value)
+      ? { ...t, label: i18nT(THEME_LABEL_KEY[t.value]) }
+      : t,
+  )
+}
 
 /** Default color theme applied on first run when no preference is persisted. */
 export const DEFAULT_COLOR_THEME: ColorTheme = 'kiro'
@@ -1050,8 +1101,10 @@ function useThemeState(): ThemeContextValue {
     broadcastCustomThemesChanged()
   }, [colorTheme, setColorTheme, loadCustomThemes])
 
-  // Combined themes list: built-in + custom
-  const allThemes: ThemeEntry[] = [...THEMES, ...REGISTERED_THEMES, ...customThemes]
+  // Combined themes list: built-in + custom. `builtinThemes()` (not `THEMES`) so
+  // a descriptive built-in name is resolved for the current language on every
+  // render; every consumer reads `allThemes`, so none of them needs a resolver.
+  const allThemes: ThemeEntry[] = [...builtinThemes(), ...REGISTERED_THEMES, ...customThemes]
 
   const markOnboarded = useCallback(() => {
     safeSetItem('mc-onboarded', '1')
