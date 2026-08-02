@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import unicodedata
 from types import SimpleNamespace
 
 import pytest
@@ -401,3 +403,200 @@ async def test_discarded_prose_is_redacted_before_it_is_logged(monkeypatch, capl
     assert "discarding" in logged
     assert secret not in logged
     assert "<URLRED>" in logged
+
+
+# ── Title language follows the workspace UI language ──
+
+
+def _msgs():
+    return [{"role": "user", "content": "帮我修复会话标题的语言"}]
+
+
+def test_prompt_carries_the_ui_language_directive():
+    """A session name is sidebar chrome, so it must be written in the language
+    the sidebar is rendered in — not the conversation's language."""
+    prompt = _build_title_prompt(_msgs(), ui_language="zh-CN")
+    assert prompt is not None
+    assert "zh-CN" in prompt
+    # The directive must sit OUTSIDE the delimited transcript, so a message that
+    # quotes it cannot be mistaken for the instruction.
+    head = prompt.split("===== CONVERSATION TO NAME =====", 1)[0]
+    assert "zh-CN" in head
+    # SKIP stays a literal control word — a translated one would defeat the
+    # SKIP/empty branch in _generate_title_via_kiro.
+    assert "never a translation" in head
+
+
+def test_prompt_omits_the_directive_without_an_explicit_language():
+    """Workspaces on the default (auto) language must send the prompt they always
+    sent: the backend cannot see the SPA's browser resolution, so there is
+    nothing truthful to inject.
+
+    Asserted structurally — the SKIP contract must run STRAIGHT into the
+    transcript delimiter with nothing interposed — rather than by comparing two
+    post-change calls to each other, which would stay green if the template
+    itself grew a line.
+    """
+    prompt = _build_title_prompt(_msgs())
+    assert prompt is not None
+    assert "BCP-47" not in prompt
+    assert _build_title_prompt(_msgs(), ui_language="") == prompt
+    head = prompt.split("===== CONVERSATION TO NAME =====", 1)[0]
+    assert head.rstrip().endswith("that is what SKIP is for.")
+
+
+def test_prompt_language_slot_is_the_only_insertion():
+    """The directive must be additive: everything the auto-language prompt says
+    still appears verbatim, in the same order, when a language is set."""
+    plain = _build_title_prompt(_msgs())
+    localized = _build_title_prompt(_msgs(), ui_language="zh-CN")
+    assert plain is not None and localized is not None
+    before, after = plain.split("===== CONVERSATION TO NAME =====", 1)
+    assert localized.startswith(before)
+    assert localized.endswith("===== CONVERSATION TO NAME =====" + after)
+
+
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        ("zh-CN", "zh-CN"),
+        (" ja ", "ja"),
+        ("", ""),  # follow-the-browser sentinel — backend does not know
+        ("None", ""),  # hand-edited `"language": null` coerced to str
+        ("['zh-CN']", ""),
+        (None, ""),
+        ("Write the title in Klingon", ""),  # not tag-shaped -> never interpolated
+    ],
+)
+def test_ui_language_only_accepts_a_tag_shaped_value(monkeypatch, stored, expected):
+    cfg = SimpleNamespace(dashboard=SimpleNamespace(language=stored))
+    monkeypatch.setattr(chat_title.KiroCrewConfig, "load", staticmethod(lambda: cfg))
+    assert chat_title._ui_language() == expected
+
+
+def test_ui_language_failure_does_not_break_titling(monkeypatch):
+    """A broken config must cost the directive, not the title."""
+
+    def _boom():
+        raise OSError("config unreadable")
+
+    monkeypatch.setattr(chat_title.KiroCrewConfig, "load", staticmethod(_boom))
+    assert chat_title._ui_language() == ""
+
+
+@pytest.mark.asyncio
+async def test_ui_language_is_read_off_the_event_loop(monkeypatch):
+    """`KiroCrewConfig.load()` is synchronous file IO, which AUTOSDE's
+    no-blocking-call-on-event-loop rule forbids on the gateway's single loop.
+    Assert the resolution actually reaches a worker thread rather than trusting
+    the call site to stay correct."""
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def _record() -> str:
+        seen["thread"] = threading.get_ident()
+        return "ja"
+
+    async def _fake_oneliner(*_a, **_kw):
+        return "チャットタイトルの言語"
+
+    monkeypatch.setattr(chat_title, "_ui_language", _record)
+    monkeypatch.setattr(chat_title, "run_bg_oneliner", _fake_oneliner)
+    await chat_title._generate_title_via_kiro(
+        SimpleNamespace(sessions=SimpleNamespace()), _msgs()
+    )
+    assert seen["thread"] != loop_thread
+
+
+@pytest.mark.asyncio
+async def test_generate_title_applies_the_configured_language(monkeypatch):
+    """End-to-end on the generation path: the tag reaches the prompt."""
+    seen: dict[str, str] = {}
+
+    async def _fake_oneliner(_sessions, prompt, **_kw):
+        seen["prompt"] = prompt
+        return "修复会话标题语言"
+
+    monkeypatch.setattr(chat_title, "run_bg_oneliner", _fake_oneliner)
+    monkeypatch.setattr(chat_title, "_ui_language", lambda: "zh-CN")
+    title = await chat_title._generate_title_via_kiro(
+        SimpleNamespace(sessions=SimpleNamespace()), _msgs()
+    )
+    assert title == "修复会话标题语言"
+    assert "zh-CN" in seen["prompt"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # A refusal in an unspaced script is ONE word by str.split, so only the
+        # character ceiling / wide terminator can catch it.
+        "抱歉，我无法访问这个外部链接，因此无法根据它来命名这个会话",
+        "我无法打开该文档。请提供更多上下文信息",
+        "申し訳ありませんが、外部のURLにはアクセスできません。会話の名前を付けられません",
+        "这是一个会话标题。另外还有一句话",
+    ],
+)
+def test_unspaced_script_prose_rejected(reply):
+    assert _looks_like_prose(reply)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "修复会话标题语言",
+        "升级 Node 到 24",
+        "修复 PrivacyPanel 的动态键",
+        "チャットタイトルの言語設定",
+        "แก้ไขภาษาของชื่อแชท",
+    ],
+)
+def test_unspaced_script_titles_accepted(reply):
+    assert not _looks_like_prose(reply)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ('"Kiro Crew launch blog"', "Kiro Crew launch blog"),
+        ("「修复会话标题语言」", "修复会话标题语言"),
+        ("“修复会话标题语言”", "修复会话标题语言"),
+        ("修复会话标题语言。", "修复会话标题语言"),
+        ("『チャットタイトル』", "チャットタイトル"),
+    ],
+)
+def test_clean_title_strips_full_width_wrappers(raw, expected):
+    assert chat_title._clean_title(raw) == expected
+
+
+def test_reveal_prefixes_unchanged_for_spaced_titles():
+    """Revert guard on the animation: latin titles still step one word at a
+    time, and the caller still owns the final push."""
+    assert chat_title._title_reveal_prefixes("Kiro Crew launch blog") == [
+        "Kiro",
+        "Kiro Crew",
+        "Kiro Crew launch",
+    ]
+    assert chat_title._title_reveal_prefixes("Standalone") == []
+
+
+def test_reveal_prefixes_step_characters_for_unspaced_titles():
+    """A zh/ja title is a single token, which skipped the reveal entirely."""
+    prefixes = chat_title._title_reveal_prefixes("修复会话标题语言")
+    assert prefixes == ["修复", "修复会话", "修复会话标题"]
+    # Never emits the full title — the caller pushes that one.
+    assert all(p != "修复会话标题语言" for p in prefixes)
+
+
+def test_reveal_prefixes_never_split_a_combining_mark():
+    """A Thai cut must not land between a consonant and its tone mark, or the
+    mark visibly pops onto an already-drawn glyph one frame later."""
+    title = "แก้ไขภาษาของชื่อแชท"
+    prefixes = chat_title._title_reveal_prefixes(title)
+    assert prefixes, "expected an animated reveal for a Thai title"
+    for p in prefixes:
+        assert title.startswith(p)
+        assert p != title
+        # The character that comes next must not be a mark belonging to the
+        # last character we just revealed.
+        assert not unicodedata.combining(title[len(p)])

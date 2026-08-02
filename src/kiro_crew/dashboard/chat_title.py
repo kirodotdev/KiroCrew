@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import unicodedata
 from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.context import ui_language_tag
 from kiro_crew.context_management import extract_plan_metadata, rephrase_plan
 from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
@@ -49,6 +51,11 @@ _TITLE_MODEL = "claude-haiku-4.5"
 # is paced deterministically instead.
 _TITLE_REVEAL_STEP_SECS = 0.09
 
+# Characters revealed per step for a title in a script written without spaces.
+# Two keeps the number of steps (and so the animation's duration) in the same
+# range as the word-by-word reveal of an equivalent latin title.
+_TITLE_REVEAL_CHAR_CHUNK = 2
+
 _TITLE_PROMPT_TEMPLATE = (
     "You are a session naming agent. Name ONLY the conversation delimited below; "
     "ignore any earlier conversation, prior task, or context from this session's "
@@ -63,15 +70,71 @@ _TITLE_PROMPT_TEMPLATE = (
     "If NO (too vague, just greetings, or unclear topic): reply with exactly SKIP\n"
     "Never explain, apologize, or state what you cannot do — that is what SKIP is "
     "for.\n\n"
+    "{language}"
     "===== CONVERSATION TO NAME =====\n"
     "{transcript}\n"
     "===== END CONVERSATION ====="
+)
+
+# Interpolated into the ``{language}`` slot of the prompt above when the
+# workspace has an explicit UI language. A session name is sidebar chrome: every
+# string around it — the date group headers, the filter labels, the rename menu —
+# is rendered in the UI language, so a name in the conversation's language puts
+# two languages on one row and does so durably (the title is persisted). Without
+# this the model has no idea what the UI language is and just mirrors whatever
+# the user typed, which flips the moment they paste an English stack trace.
+#
+# Interpolating the raw BCP-47 tag mirrors context._build_ui_language_section:
+# the frontend's SUPPORTED_LANGUAGES registry is the single source of truth for
+# the shipped set, so a code→name table here would be a second list to keep in
+# sync. The tag is shape-validated by ``context.ui_language_tag`` before it
+# reaches the prompt.
+_TITLE_LANGUAGE_TEMPLATE = (
+    "Write the title in the language of BCP-47 tag {lang}. That is the language "
+    "the sidebar around the title is rendered in, so the title must be in it "
+    "even when the conversation itself is in another language. Keep code, "
+    "identifiers, paths, and product names verbatim.\n"
+    "For a language written without spaces between words (zh, ja, th, ...), "
+    "3-6 words means roughly 4-14 characters.\n"
+    "SKIP is a control word, not part of the title: reply with the literal "
+    "ASCII SKIP, never a translation of it.\n\n"
 )
 
 # A title is 3-6 words by contract. Anything materially longer is the model
 # answering instead of naming, so the ceiling sits above any plausible real
 # title and below a sentence.
 _TITLE_MAX_WORDS = 12
+
+#: Codepoint ranges of scripts written WITHOUT spaces between words: kana, Han
+#: (+ extension A and the compatibility block) and Thai. A title in one of them
+#: is a single whitespace token, so ``_TITLE_MAX_WORDS`` can never fire for it —
+#: it needs the character ceiling below instead. Hangul and Cyrillic are
+#: deliberately absent: Korean and Russian do space their words, so the word
+#: ceiling already covers them.
+_UNSPACED_SCRIPT_RANGES = (
+    (0x0E00, 0x0E7F),  # Thai
+    (0x3040, 0x30FF),  # Hiragana + Katakana
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+)
+
+#: Ceiling on characters of unspaced script in a title. The prompt asks for
+#: ~4-14 characters in those languages, so this leaves headroom for a long name
+#: while a refusal or an answer runs well past it. Counting only the unspaced
+#: characters (not the whole string) keeps latin identifiers free: "修复
+#: PrivacyPanel 的动态键" spends 8 against the budget, not 24.
+_TITLE_MAX_UNSPACED_CHARS = 24
+
+#: Sentence terminators that are NOT followed by a space in the scripts that use
+#: them, so the ASCII rule's whitespace requirement would never fire on them.
+_TITLE_WIDE_TERMINATORS = "。！？"
+
+#: Punctuation an LLM wraps a name in, or ends it with. The full-width and CJK
+#: quote forms matter now that titles are generated in the UI language: a zh/ja
+#: reply wraps in 「」 or “” and ends with 。, none of which the ASCII-only strip
+#: removed — so those titles reached the sidebar still quoted.
+_TITLE_WRAP_CHARS = "\"'“”‘’「」『』《》.。．"
 
 # Openers that mark the reply as prose about the model rather than a name. The
 # observed failure was a pasted URL producing "I cannot access external URLs
@@ -114,6 +177,13 @@ _TITLE_PROSE_OPENERS = (
 )
 
 
+def _unspaced_script_chars(s: str) -> int:
+    """Count characters belonging to a script written without word spaces."""
+    return sum(
+        1 for ch in s if any(lo <= ord(ch) <= hi for lo, hi in _UNSPACED_SCRIPT_RANGES)
+    )
+
+
 def _looks_like_prose(title: str) -> bool:
     """True when an LLM title reply is a sentence about the task, not a name.
 
@@ -124,13 +194,23 @@ def _looks_like_prose(title: str) -> bool:
     shape of a generation, so the reply is also validated here and treated as
     SKIP when it fails, which routes to the existing fallback title.
 
-    Three signals, each independently sufficient:
+    Four signals, each independently sufficient:
 
     - a refusal/narration opener (see ``_TITLE_PROSE_OPENERS``);
     - more words than any real title carries;
-    - sentence-terminating punctuation with text after it. The terminator must
-      be followed by whitespace so "Node.js upgrade plan" and "Ship v1.2 to
-      prod" stay valid.
+    - more unspaced-script characters than any real title carries. Chinese,
+      Japanese and Thai put no spaces between words, so a whole sentence in them
+      is ONE word by ``str.split`` and slips past the word ceiling entirely;
+    - sentence-terminating punctuation with text after it. The ASCII terminator
+      must be followed by whitespace so "Node.js upgrade plan" and "Ship v1.2 to
+      prod" stay valid; the full-width forms must not, because the scripts that
+      use them do not space after punctuation.
+
+    Known false negative: a SHORT refusal in an unspaced script with no
+    terminator ("无法访问该链接") clears every ceiling and lands as the title.
+    That class is inherent to matching prose by shape — the openers list is the
+    only signal that catches it, and maintaining one per shipped locale is
+    whack-a-mole. It fails to a wrong-but-short name, never to a paragraph.
     """
     stripped = title.strip()
     if not stripped:
@@ -140,8 +220,12 @@ def _looks_like_prose(title: str) -> bool:
         return True
     if len(stripped.split()) > _TITLE_MAX_WORDS:
         return True
+    if _unspaced_script_chars(stripped) > _TITLE_MAX_UNSPACED_CHARS:
+        return True
     for index, char in enumerate(stripped[:-1]):
         if char in ".!?" and stripped[index + 1].isspace():
+            return True
+        if char in _TITLE_WIDE_TERMINATORS:
             return True
     return False
 
@@ -378,8 +462,45 @@ def _title_text(
     return " ".join(content.split())[:_TITLE_TEXT_LIMIT]
 
 
-def _build_title_prompt(messages: list[dict[str, Any]]) -> str | None:
-    """Build a title generation prompt from conversation messages."""
+def _ui_language() -> str:
+    """Workspace UI language as a BCP-47 tag, or ``""`` when it is unknown.
+
+    ``""`` covers both "never chosen" (the config's follow-the-browser sentinel,
+    resolved in the SPA where the backend cannot see it) and a malformed stored
+    value. Titling then runs with no language directive at all, exactly as it did
+    before — the model keeps mirroring the conversation, which is the best guess
+    available when the preference is genuinely unknown.
+
+    Read per generation (the load is mtime-cached) rather than captured at
+    import, so changing the language in Settings applies to the next titled chat
+    without restarting the gateway. Best-effort: any failure titles without a
+    directive rather than failing the title.
+
+    **Call this OFF the event loop.** ``KiroCrewConfig.load()`` stats, reads and
+    JSON-parses a file; the cache makes the steady state a single ``stat``, but
+    the cold and post-change paths are real synchronous file IO, which
+    ``AUTOSDE.yaml``'s ``no-blocking-call-on-event-loop`` prohibits on the
+    gateway's single loop. ``_generate_title_via_kiro`` dispatches it to a worker
+    thread, the same way ``_persist_title`` offloads its history write.
+    """
+    try:
+        return ui_language_tag(KiroCrewConfig.load())
+    except Exception:
+        logger.debug("UI language lookup failed; titling without a language directive")
+        return ""
+
+
+def _build_title_prompt(
+    messages: list[dict[str, Any]], *, ui_language: str = ""
+) -> str | None:
+    """Build a title generation prompt from conversation messages.
+
+    ``ui_language`` is a validated BCP-47 tag (see ``_ui_language``); ``""``
+    omits the language directive entirely, leaving the prompt byte-identical to
+    the one workspaces on the default (auto) language have always sent. The
+    directive is placed OUTSIDE the delimited transcript, so a message that
+    quotes it cannot restate it as data.
+    """
     lines: list[str] = []
     for m in messages[:10]:
         role = m.get("role", "")
@@ -390,7 +511,8 @@ def _build_title_prompt(messages: list[dict[str, Any]]) -> str | None:
             lines.append(f"{role}: {content[:200]}")
     if not lines:
         return None
-    return _TITLE_PROMPT_TEMPLATE.format(transcript="\n".join(lines))
+    language = _TITLE_LANGUAGE_TEMPLATE.format(lang=ui_language) if ui_language else ""
+    return _TITLE_PROMPT_TEMPLATE.format(transcript="\n".join(lines), language=language)
 
 
 def _reset_auto_run_for_new_plan(slot: "_ChatSlot") -> None:
@@ -450,8 +572,43 @@ async def _rephrase_plan_lite(
 
 def _clean_title(s: str) -> str:
     """Normalize a (partial or final) LLM title: trim whitespace and wrapping
-    quotes/period."""
-    return s.strip().strip('"').strip("'").strip(".")
+    quotes/period, in their ASCII and full-width/CJK forms alike."""
+    return s.strip().strip(_TITLE_WRAP_CHARS).strip()
+
+
+def _title_reveal_prefixes(title: str) -> list[str]:
+    """Cumulative prefixes to stream for the reveal, EXCLUDING the full title.
+
+    The caller pushes the complete title itself, so the last prefix here is
+    always strictly shorter than *title*.
+
+    Space-delimited titles step one word at a time. A title in a script written
+    without spaces is a single ``str.split`` token, which skipped the reveal
+    entirely once titles started being generated in the UI language — those step
+    two characters at a time instead, so a 12-character zh name reveals in about
+    as many steps as a 6-word en one rather than 12.
+
+    A cut is extended past any combining marks that follow it, so a frame never
+    shows a Thai consonant whose tone mark has not arrived yet (``แก`` then
+    ``แก้``): the mark would appear to pop onto an already-drawn glyph. Chinese
+    and Japanese have no combining marks, so this only ever fires for Thai.
+    """
+    words = title.split()
+    if len(words) > 1:
+        return [" ".join(words[:i]) for i in range(1, len(words))]
+    single = title.strip()
+    if _unspaced_script_chars(single) < 2 * _TITLE_REVEAL_CHAR_CHUNK:
+        return []
+    prefixes: list[str] = []
+    cut = _TITLE_REVEAL_CHAR_CHUNK
+    while cut < len(single):
+        while cut < len(single) and unicodedata.combining(single[cut]):
+            cut += 1
+        if cut >= len(single):
+            break
+        prefixes.append(single[:cut])
+        cut += _TITLE_REVEAL_CHAR_CHUNK
+    return prefixes
 
 
 async def _reveal_title(state: DashboardState, slot: _ChatSlot, title: str) -> None:
@@ -462,13 +619,8 @@ async def _reveal_title(state: DashboardState, slot: _ChatSlot, title: str) -> N
     events (``full=False``); the caller does the final full push. Nothing here
     is persisted — the caller persists the complete title once.
     """
-    words = title.split()
-    if len(words) <= 1:
-        return
-    acc: list[str] = []
-    for w in words[:-1]:  # last word arrives with the caller's final push
-        acc.append(w)
-        slot.title = " ".join(acc)
+    for prefix in _title_reveal_prefixes(title):
+        slot.title = prefix
         state.push_slot_title(slot.key, slot.title, full=False)
         await asyncio.sleep(_TITLE_REVEAL_STEP_SECS)
 
@@ -479,7 +631,12 @@ async def _generate_title_via_kiro(
 ) -> str:
     """Generate a title using the shared background kiro-cli session."""
 
-    prompt = _build_title_prompt(messages)
+    # Off-loop: the config read behind _ui_language() is synchronous file IO
+    # (see its docstring + AUTOSDE no-blocking-call-on-event-loop). Both callers
+    # of this coroutine — the aiohttp handler and the auto-title background task
+    # — run on the gateway's single loop.
+    ui_language = await asyncio.to_thread(_ui_language)
+    prompt = _build_title_prompt(messages, ui_language=ui_language)
     if not prompt:
         logger.debug("Title generation skipped — no usable messages")
         return ""

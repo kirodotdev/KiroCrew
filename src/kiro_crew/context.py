@@ -722,6 +722,30 @@ def _build_user_profile_section(cfg: "KiroCrewConfig") -> str:
 _UI_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 
 
+def ui_language_tag(cfg: "KiroCrewConfig") -> str:
+    """Return ``dashboard.language`` as a validated BCP-47 tag, or ``""``.
+
+    Public because the UI language now steers more than the session-context block
+    below: the dashboard's auto-titler asks a background model for a session name
+    that renders in the sidebar, so it needs the same tag resolved the same way.
+    One resolver keeps the two from disagreeing about what counts as a usable
+    value (see ``_UI_LANGUAGE_TAG_RE`` for why the shape is re-checked here even
+    though the writer validates it).
+
+    ``""`` means "the backend does not know" — either nothing was chosen (the
+    "follow the browser" sentinel, resolved in the SPA's ``resolveLanguage()``)
+    or the stored value is not tag-shaped. Callers must treat it as unknown
+    rather than as English.
+    """
+    lang = cfg.dashboard.language
+    if not isinstance(lang, str):
+        return ""
+    lang = lang.strip()
+    if not lang or not _UI_LANGUAGE_TAG_RE.match(lang):
+        return ""
+    return lang
+
+
 def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
     """Build the [UI LANGUAGE] block from ``dashboard.language``.
 
@@ -760,11 +784,8 @@ def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
     This is best-effort steering, not enforcement — there is no fallback if the
     model ignores it.
     """
-    lang = cfg.dashboard.language
-    if not isinstance(lang, str):
-        return ""
-    lang = lang.strip()
-    if not lang or not _UI_LANGUAGE_TAG_RE.match(lang):
+    lang = ui_language_tag(cfg)
+    if not lang:
         return ""
     return (
         f"[UI LANGUAGE] {lang}\n"

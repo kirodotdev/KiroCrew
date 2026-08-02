@@ -742,6 +742,45 @@ Three properties are load-bearing:
 It is best-effort steering with no enforcement path: nothing validates the
 language a model actually emits.
 
+#### The tag also names the session
+
+Auto-titling (`dashboard/chat_title.py`) asks a background model for the session
+name that renders in the chat sidebar, and that name is chrome by the same
+argument as the tool-call purpose above: the date group headers, filter labels and
+rename menu around it are all in the UI language, and the name is *persisted*, so
+one written in the conversation's language leaves two languages on the row for
+good. With no directive the model simply mirrors the language of the prompt it was
+given — measured on `claude-haiku-4.5`, a fully Chinese conversation is named
+"Chat Title Language Mismatch".
+
+The tag reaches the titler through the **prompt**, not the `[UI LANGUAGE]` block:
+titling runs on the shared `_bg` session, and that block scopes itself explicitly
+to tool-call purpose text. `chat_title._ui_language()` resolves the same tag
+through the shared `context.ui_language_tag()`, and `_build_title_prompt()`
+interpolates a directive into the prompt's `{language}` slot — outside the
+delimited transcript, so a message that quotes the directive cannot restate it.
+`""` omits the slot entirely and the prompt stays byte-identical to the one
+auto-language workspaces have always sent.
+
+Two consequences fall out of naming in a non-latin script:
+
+- **The prose guard needs a second ceiling.** `_looks_like_prose` rejects a reply
+  that is a sentence rather than a name, and its word ceiling counts
+  `str.split()` tokens — which is 1 for any length of Chinese, Japanese or Thai.
+  `_TITLE_MAX_UNSPACED_CHARS` bounds those scripts by character instead, counting
+  only unspaced-script characters so latin identifiers in a mixed title stay
+  free, and the full-width terminators `。！？` are matched without the ASCII
+  rule's trailing-whitespace requirement (those scripts do not space after
+  punctuation). A short refusal with no terminator remains a documented false
+  negative.
+- **The reveal animation needs characters.** The sidebar types a new title in one
+  word at a time; a single-token title skipped the animation entirely, so
+  `_title_reveal_prefixes` steps unspaced scripts two characters at a time
+  instead, landing in the same step count as an equivalent latin title.
+
+`_clean_title` strips the full-width and CJK quote/period forms (`「」`, `“”`,
+`。`) alongside the ASCII ones, since that is what a zh/ja reply wraps a name in.
+
 ### Foreign-agent import onboarding state
 
 `DashboardConfig.import_onboarded` is a separate workspace-persistent gate from
