@@ -274,11 +274,14 @@ export default function IssuePanel({
   issues,
   selectedUrl,
   onSelect,
+  onReconcile,
   onAddToChat,
 }: {
   issues: PullRequestLink[]
   selectedUrl: string
   onSelect: (url: string) => void
+  // See PullRequestPanel: the self-normalizing path must not be persisted.
+  onReconcile?: (url: string) => void
   onAddToChat?: (text: string) => void
 }) {
   const cappedIssues = issues.slice(0, MAX_PULL_REQUEST_SOURCES)
@@ -289,8 +292,8 @@ export default function IssuePanel({
   const forceRefreshRef = useRef(false)
 
   useEffect(() => {
-    if (selected && selected.url !== selectedUrl) onSelect(selected.url)
-  }, [selected, selectedUrl, onSelect])
+    if (selected && selected.url !== selectedUrl) (onReconcile || onSelect)(selected.url)
+  }, [selected, selectedUrl, onSelect, onReconcile])
 
   useEffect(() => { setTab('description') }, [selected?.url])
 

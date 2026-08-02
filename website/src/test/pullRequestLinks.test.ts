@@ -1,12 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { ChatMessage } from '../types'
 import {
+  adoptSourceSelections,
+  commitSourceSelection,
   extractPullRequestLinks,
+  isSourceSelectionKey,
   loadSeenPullRequestLinks,
+  loadSourceSelections,
   MAX_PULL_REQUEST_SOURCES,
   persistSeenPullRequestLinks,
   PullRequestLinkIndex,
   recordNewPullRequestLinks,
+  sourceSelection,
+  withSourceSelection,
 } from '../utils/pullRequestLinks'
 
 // Default to assistant-authored messages: under first-mention attribution only
@@ -301,6 +307,305 @@ describe('extractPullRequestLinks', () => {
     localStorage.setItem('mc-pr-source-seen-v1', JSON.stringify({ slot: ['not-an-array'] }))
     expect(loadSeenPullRequestLinks()).toEqual(new Map())
     localStorage.clear()
+  })
+})
+
+describe('per-slot focused source tab', () => {
+  const prA = 'https://github.com/acme/widgets/pull/11'
+  const prB = 'https://github.com/acme/widgets/pull/12'
+  const issue = 'https://github.com/acme/widgets/issues/9'
+
+  afterEach(() => { localStorage.clear() })
+
+  it('keeps each slot and each kind independent', () => {
+    let sel = withSourceSelection({}, 'slot-a', 'change', prB)
+    sel = withSourceSelection(sel, 'slot-a', 'issue', issue)
+    sel = withSourceSelection(sel, 'slot-b', 'change', prA)
+
+    expect(sourceSelection(sel, 'slot-a', 'change')).toBe(prB)
+    expect(sourceSelection(sel, 'slot-a', 'issue')).toBe(issue)
+    expect(sourceSelection(sel, 'slot-b', 'change')).toBe(prA)
+    // A slot that never selected anything reads as "no selection", so the
+    // caller's first-wins fallback applies.
+    expect(sourceSelection(sel, 'slot-c', 'change')).toBe('')
+    expect(sourceSelection(sel, null, 'change')).toBe('')
+  })
+
+  it('returns the same object when nothing changes so a state update bails', () => {
+    const sel = withSourceSelection({}, 'slot-a', 'change', prB)
+    expect(withSourceSelection(sel, 'slot-a', 'change', prB)).toBe(sel)
+    // No slot, and clearing a slot that has nothing stored, are both no-ops —
+    // the latter keeps PR-free sessions from each accumulating an empty entry.
+    expect(withSourceSelection(sel, null, 'change', prA)).toBe(sel)
+    expect(withSourceSelection(sel, 'slot-z', 'change', '')).toBe(sel)
+  })
+
+  it('restores the selection a slot had before it was left', () => {
+    expect(commitSourceSelection('slot-a', 'change', prB)).toBe('persisted')
+    expect(commitSourceSelection('slot-a', 'issue', issue)).toBe('persisted')
+
+    // Fresh mount (reload / route change): slot-a comes back on PR 12, not on
+    // whichever link the transcript happens to mention first.
+    const restored = loadSourceSelections()
+    expect(sourceSelection(restored, 'slot-a', 'change')).toBe(prB)
+    expect(sourceSelection(restored, 'slot-a', 'issue')).toBe(issue)
+  })
+
+  it('writes one key per (slot, kind) so a write can never touch another field', () => {
+    // The concurrency invariant: nothing is stored as a shared blob, so a write
+    // has no other field in scope to drop. Two windows can only collide on the
+    // exact same key.
+    commitSourceSelection('slot-a', 'change', prA)
+    commitSourceSelection('slot-a', 'issue', issue)
+    commitSourceSelection('slot-b', 'change', prB)
+
+    const keys: string[] = []
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (key?.startsWith('mc-pr-source-sel:')) keys.push(key)
+    }
+    keys.sort()
+    expect(keys).toEqual([
+      'mc-pr-source-sel:change:slot-a',
+      'mc-pr-source-sel:change:slot-b',
+      'mc-pr-source-sel:issue:slot-a',
+    ])
+    for (const key of keys) expect(isSourceSelectionKey(key)).toBe(true)
+    expect(isSourceSelectionKey('mc-panel-tabs:slot-a')).toBe(false)
+  })
+
+  it('survives two windows committing different slots', () => {
+    // Cross-document safety is STRUCTURAL here, not timing-dependent: with one
+    // key per field there is no read-modify-write for a concurrent document to
+    // interleave with, so no ordering of two windows' writes can drop a field
+    // neither of them named. (A single-threaded test cannot reproduce the real
+    // interleaving — the gap between another document's read and its write — so
+    // the invariant is pinned by the one-key-per-field test above; this case
+    // covers the ordinary two-window outcome.)
+    commitSourceSelection('slot-a', 'change', prA)
+    commitSourceSelection('slot-b', 'change', prB)
+
+    const merged = loadSourceSelections()
+    expect(sourceSelection(merged, 'slot-a', 'change')).toBe(prA)
+    expect(sourceSelection(merged, 'slot-b', 'change')).toBe(prB)
+  })
+
+  it('fails closed on malformed or non-canonical persisted selections', () => {
+    localStorage.setItem('mc-pr-source-sel:change:slot-a', '{not-json')
+    localStorage.setItem('mc-pr-source-sel:change:slot-b', JSON.stringify(['not-an-object']))
+    localStorage.setItem('mc-pr-source-sel:change:slot-c', JSON.stringify({ u: 42 }))
+    // Wrong host, and a canonical-looking url with a query tail, are both refused.
+    localStorage.setItem('mc-pr-source-sel:change:slot-d', JSON.stringify({ u: 'https://evil.example/acme/widgets/pull/3' }))
+    localStorage.setItem('mc-pr-source-sel:change:slot-e', JSON.stringify({ u: `${prA}?tab=files` }))
+    // An unknown kind segment is not a field this store owns.
+    localStorage.setItem('mc-pr-source-sel:bogus:slot-f', JSON.stringify({ u: prA }))
+    expect(loadSourceSelections()).toEqual({})
+  })
+
+  it('removes the key when a selection is cleared', () => {
+    expect(commitSourceSelection('slot-a', 'change', prA)).toBe('persisted')
+    expect(commitSourceSelection('slot-a', 'change', '')).toBe('persisted')
+    expect(loadSourceSelections()).toEqual({})
+    expect(localStorage.getItem('mc-pr-source-sel:change:slot-a')).toBeNull()
+  })
+
+  it('caps stored slots by write recency, pruning the oldest', () => {
+    // Recency is the stored timestamp, not key order — independent keys have no
+    // insertion order to trim by. Stamps are forced so the test does not depend
+    // on wall-clock resolution.
+    const now = Date.now()
+    for (let index = 0; index < 40; index += 1) {
+      localStorage.setItem(
+        `mc-pr-source-sel:change:slot-${index}`,
+        JSON.stringify({ u: `https://github.com/acme/widgets/pull/${index + 1}`, t: now + index }),
+      )
+    }
+    const restored = loadSourceSelections()
+    expect(Object.keys(restored)).toHaveLength(32)
+    expect(sourceSelection(restored, 'slot-39', 'change')).toBe('https://github.com/acme/widgets/pull/40')
+    expect(sourceSelection(restored, 'slot-0', 'change')).toBe('')
+  })
+
+  it('keeps a re-selected slot when the cap has to drop one', () => {
+    // Re-selecting a tab in an OLD session must move it out of the eviction
+    // queue, so the cap never evicts the session the user is actively reading.
+    // Seeded in the PAST (oldest first) so the fresh commits below are newest.
+    const past = Date.now() - 100_000
+    for (let index = 0; index < 32; index += 1) {
+      localStorage.setItem(
+        `mc-pr-source-sel:change:slot-${index}`,
+        JSON.stringify({ u: `https://github.com/acme/widgets/pull/${index + 1}`, t: past + index }),
+      )
+    }
+    // Touch the oldest slot, then add a 33rd so the cap has to drop exactly one.
+    expect(commitSourceSelection('slot-0', 'change', prB)).toBe('persisted')
+    expect(commitSourceSelection('slot-32', 'change', prA)).toBe('persisted')
+
+    const restored = loadSourceSelections()
+    expect(Object.keys(restored)).toHaveLength(32)
+    expect(sourceSelection(restored, 'slot-0', 'change')).toBe(prB)
+    expect(sourceSelection(restored, 'slot-32', 'change')).toBe(prA)
+    // The now-oldest untouched slot falls outside the cap on READ. Its key is
+    // deliberately left in place: deleting another slot's key by snapshot can
+    // race a sibling window that just refreshed it, so nothing prunes here.
+    expect(sourceSelection(restored, 'slot-1', 'change')).toBe('')
+    expect(localStorage.getItem('mc-pr-source-sel:change:slot-1')).not.toBeNull()
+  })
+
+  it('keeps a fresh selection visible when the clock steps backwards', () => {
+    // A stamp taken straight from a clock that has moved BACKWARD (NTP step,
+    // resumed VM, user setting the date) would sort below 32 older slots, so the
+    // read cap would hide the selection the user just made and the tab would
+    // reset on reload. The written stamp is clamped above whatever is stored.
+    const future = Date.now() + 10_000_000
+    for (let index = 0; index < 32; index += 1) {
+      localStorage.setItem(
+        `mc-pr-source-sel:change:slot-${index}`,
+        JSON.stringify({ u: `https://github.com/acme/widgets/pull/${index + 1}`, t: future + index }),
+      )
+    }
+    expect(commitSourceSelection('slot-new', 'change', prA)).toBe('persisted')
+
+    const restored = loadSourceSelections()
+    expect(Object.keys(restored)).toHaveLength(32)
+    expect(sourceSelection(restored, 'slot-new', 'change')).toBe(prA)
+  })
+
+  it('merges a commit into fresh storage instead of republishing a stale snapshot', () => {
+    // Two chat windows on one origin (a popped-out session shares this
+    // localStorage). Window B mounted BEFORE window A made its selection, so
+    // B's in-memory snapshot does not know about slot-a. Writing B's whole map
+    // back would delete slot-a; committing one slot against fresh storage keeps
+    // both.
+    expect(commitSourceSelection('slot-a', 'change', prA)).toBe('persisted')
+    expect(commitSourceSelection('slot-b', 'change', prB)).toBe('persisted')
+
+    const restored = loadSourceSelections()
+    expect(sourceSelection(restored, 'slot-a', 'change')).toBe(prA)
+    expect(sourceSelection(restored, 'slot-b', 'change')).toBe(prB)
+  })
+
+  it('reports whether a commit reached storage', () => {
+    expect(commitSourceSelection('slot-a', 'change', prA)).toBe('persisted')
+    // Re-committing the same value writes again, on purpose: the rewrite is what
+    // refreshes recency (see the capped-out re-selection test below), so
+    // 'unchanged' now means only "no write was attempted at all".
+    expect(commitSourceSelection('slot-a', 'change', prA)).toBe('persisted')
+    expect(commitSourceSelection('slot-z', 'change', '')).toBe('unchanged')
+    expect(commitSourceSelection(null, 'change', prB)).toBe('unchanged')
+  })
+
+  it('refreshes recency when a capped-out slot is re-selected', () => {
+    // Aged-out slots keep their keys but are excluded on read. Re-picking the url
+    // already stored for such a slot has to rewrite it, or the click can never
+    // pull the slot back inside the cap and the tab resets on every reload.
+    const aged = 'slot-aged'
+    commitSourceSelection(aged, 'change', prA)
+    // Push it out of the cap with MAX_PERSISTED_SOURCE_SLOTS newer slots.
+    for (let i = 0; i < 32; i += 1) {
+      commitSourceSelection(`slot-new-${i}`, 'change', `https://github.com/o/r/pull/${i + 100}`)
+    }
+    expect(loadSourceSelections()[aged]).toBeUndefined()
+
+    // The user clicks the tab for the url that is ALREADY stored for that slot.
+    expect(commitSourceSelection(aged, 'change', prA)).toBe('persisted')
+    expect(loadSourceSelections()[aged]?.change).toBe(prA)
+  })
+
+  it('reports failed when storage refuses the write', () => {    // 'failed' must be distinguishable from 'unchanged': only the former means
+    // storage now DISAGREES with what the caller intended.
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = () => {
+      throw new DOMException('full', 'QuotaExceededError')
+    }
+    try {
+      expect(commitSourceSelection('slot-a', 'change', prA)).toBe('failed')
+    } finally {
+      Storage.prototype.setItem = setItem
+    }
+  })
+
+  it('does not adopt a stored value whose own write was refused', () => {
+    // The user moved slot-a to PR 12 but the write was dropped, so storage still
+    // holds PR 11 — a value that IS in this window's transcript, so the
+    // availability rule alone would take it back and silently revert the tab.
+    commitSourceSelection('slot-a', 'change', prA)
+    const mine = withSourceSelection(loadSourceSelections(), 'slot-a', 'change', prB)
+
+    const naive = adoptSourceSelections(mine, 'slot-a', { change: [prA, prB] })
+    expect(sourceSelection(naive, 'slot-a', 'change')).toBe(prA)
+
+    const guarded = adoptSourceSelections(mine, 'slot-a', { change: [prA, prB] }, { 'slot-a': { change: true } })
+    expect(guarded).toBe(mine)
+    expect(sourceSelection(guarded, 'slot-a', 'change')).toBe(prB)
+  })
+
+  it('honors a refused write for a slot that is not on screen', () => {
+    // A refused write is equally lost whether or not the user happens to be
+    // looking at that session, so the ledger is not scoped to the active slot.
+    commitSourceSelection('slot-b', 'change', prB)
+    const mine = withSourceSelection(loadSourceSelections(), 'slot-b', 'change', prA)
+
+    // slot-a is on screen; slot-b's own write was refused, so storage still
+    // holds prB while this window has moved on to prA.
+    const adopted = adoptSourceSelections(
+      mine, 'slot-a', { change: [prA, prB] }, { 'slot-b': { change: true } },
+    )
+    expect(sourceSelection(adopted, 'slot-b', 'change')).toBe(prA)
+    // Without the ledger entry the sibling's stored value wins for that slot.
+    const unguarded = adoptSourceSelections(mine, 'slot-a', { change: [prA, prB] })
+    expect(sourceSelection(unguarded, 'slot-b', 'change')).toBe(prB)
+  })
+
+  it('adopts a sibling window write, including for the active slot', () => {
+    // This window mounted with slot-a on PR 11; a sibling then moved slot-a to
+    // PR 12 and picked a tab in slot-b. Both windows see both PRs, so PR 12 is
+    // usable here and the sibling's choice wins.
+    const mine = withSourceSelection({}, 'slot-a', 'change', prA)
+    commitSourceSelection('slot-a', 'change', prB)
+    commitSourceSelection('slot-b', 'change', prA)
+
+    const adopted = adoptSourceSelections(mine, 'slot-a', { change: [prA, prB] })
+    expect(sourceSelection(adopted, 'slot-a', 'change')).toBe(prB)
+    expect(sourceSelection(adopted, 'slot-b', 'change')).toBe(prA)
+  })
+
+  it('refuses an active-slot value this window cannot show', () => {
+    // The loop guard. Two windows on the SAME session with DIVERGENT transcripts
+    // (a sibling has a newer message mentioning another PR). Adopting a url this
+    // window has no tab for would make its reconciliation overwrite the
+    // sibling's choice, which the sibling then overwrites back — an unbounded
+    // cross-window write loop. Keeping our own value ends it: nothing changed
+    // here, so nothing gets committed.
+    const mine = withSourceSelection({}, 'slot-a', 'change', prA)
+    commitSourceSelection('slot-a', 'change', prB)
+
+    const adopted = adoptSourceSelections(mine, 'slot-a', { change: [prA] })
+    expect(adopted).toBe(mine)
+    expect(sourceSelection(adopted, 'slot-a', 'change')).toBe(prA)
+  })
+
+  it('keeps the active slot when storage has no entry for it', () => {
+    // Stands in for a dropped write (safeSetItem false under quota pressure):
+    // storage never learned about this window's own selection. Adopting the
+    // storage view wholesale would yank the tab the user is looking at.
+    const mine = withSourceSelection({}, 'slot-a', 'change', prA)
+    commitSourceSelection('slot-b', 'change', prB)
+
+    const adopted = adoptSourceSelections(mine, 'slot-a', { change: [prA] })
+    expect(sourceSelection(adopted, 'slot-a', 'change')).toBe(prA)
+    expect(sourceSelection(adopted, 'slot-b', 'change')).toBe(prB)
+    // A slot this window is NOT showing gets no such protection — the sibling's
+    // view of it is the truth, and this window's reconciliation never writes it.
+    expect(sourceSelection(adoptSourceSelections(mine, 'slot-b', { change: [prB] }), 'slot-a', 'change')).toBe('')
+  })
+
+  it('returns the same object when a sibling write changes nothing here', () => {
+    commitSourceSelection('slot-a', 'change', prA)
+    const mine = loadSourceSelections()
+    expect(adoptSourceSelections(mine, 'slot-a', { change: [prA] })).toBe(mine)
+    // An unrelated key being cleared leaves storage identical, so still a bail.
+    expect(adoptSourceSelections(mine, null)).toBe(mine)
   })
 })
 

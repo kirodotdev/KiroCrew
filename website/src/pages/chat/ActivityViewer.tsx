@@ -994,14 +994,14 @@ function ArtifactListRow({ row, busy, onOpen, onToggleStar }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onArtifactOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, issues, selectedIssueUrl, onSelectIssue, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onArtifactOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   files?: TouchedFile[]; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
   navLinks?: ExtractedLink[]; navResolving?: boolean
-  sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onAddToChat?: (text: string) => void
+  sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onReconcileSource?: (url: string) => void; onAddToChat?: (text: string) => void
   /** Issue links mentioned in this session, plus the Issues tab's own selection. */
-  issues?: PullRequestLink[]; selectedIssueUrl?: string; onSelectIssue?: (url: string) => void
+  issues?: PullRequestLink[]; selectedIssueUrl?: string; onSelectIssue?: (url: string) => void; onReconcileIssue?: (url: string) => void
   /** Save handler for the Files-tab inline file preview (opening a file keeps
    *  it in the Files tab instead of spawning a document tab). */
   onFileSave?: (filePath: string, content: string) => Promise<void>
@@ -1198,6 +1198,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
               sources={sources!}
               selectedUrl={selectedSourceUrl || ''}
               onSelect={onSelectSource || (() => {})}
+              onReconcile={onReconcileSource}
               onAddToChat={onAddToChat || (() => {})}
             />
           ) : (
@@ -1216,6 +1217,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
               issues={issues!}
               selectedUrl={selectedIssueUrl || ''}
               onSelect={onSelectIssue || (() => {})}
+              onReconcile={onReconcileIssue}
               onAddToChat={onAddToChat}
             />
           ) : (

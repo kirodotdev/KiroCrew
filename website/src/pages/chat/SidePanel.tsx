@@ -64,12 +64,14 @@ interface SidePanelProps {
   sources?: PullRequestLink[]
   selectedSourceUrl?: string
   onSelectSource?: (url: string) => void
+  onReconcileSource?: (url: string) => void
   /** Issue links mentioned in this session (the `kind: 'issue'` half of the
    *  extractor's output). Separate props — not a merged list — so the Changes
    *  and Issues tabs each keep their own selection. */
   issues?: PullRequestLink[]
   selectedIssueUrl?: string
   onSelectIssue?: (url: string) => void
+  onReconcileIssue?: (url: string) => void
   onAddSourceToChat?: (text: string) => void
   onSubmitComments?: (message: string) => void
   onFileSave: (filePath: string, content: string) => Promise<void>
@@ -182,8 +184,8 @@ export function measureSidePanelReservedW(): number {
 
 export default function SidePanel({
   tabsCtl, slot, files, onFileOpen, onArtifactOpen, onFileRemove, onFilesClear,
-  projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource,
-  issues, selectedIssueUrl, onSelectIssue,
+  projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource,
+  issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
   inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth,
 }: SidePanelProps) {
@@ -491,9 +493,11 @@ export default function SidePanel({
                   sources={sources}
                   selectedSourceUrl={selectedSourceUrl}
                   onSelectSource={onSelectSource}
+                  onReconcileSource={onReconcileSource}
                   issues={issues}
                   selectedIssueUrl={selectedIssueUrl}
                   onSelectIssue={onSelectIssue}
+                  onReconcileIssue={onReconcileIssue}
                   onAddToChat={onAddSourceToChat}
                   // The Files/Artifacts/Changes tabs are permanent (pinned).
                   // Files opens its file inline (kept in the Files tab, with a
