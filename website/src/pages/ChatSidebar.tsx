@@ -534,6 +534,12 @@ interface ChatSidebarProps {
   splitEnabled?: boolean
   splitActive?: boolean
   onOpenSplit?: () => void
+  /** Pending reveal request. When set, the sidebar expands ancestor folders,
+   *  scrolls the target row into view, and applies a transient highlight.
+   *  Increment `nonce` to re-trigger for the same key. */
+  revealSlot?: { key: string; nonce: number } | null
+  /** Callback to clear the pending reveal after it has been consumed. */
+  onRevealConsumed?: () => void
 }
 
 type SortKey = 'date-desc' | 'date-asc' | 'created-desc' | 'created-asc' | 'name-asc' | 'name-desc'
@@ -579,6 +585,7 @@ const SIDEBAR_LS_KEY = 'mc-sidebar-width'
 function ChatSidebar({
   slots, activeSlot, unreadSlots, history, historyHasMore,
   defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, collapsible, splitEnabled, splitActive, onOpenSplit,
+  revealSlot, onRevealConsumed,
 }: ChatSidebarProps) {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
@@ -1621,29 +1628,56 @@ function ChatSidebar({
     return m
   }, [folders])
 
-  // Reveal-in-sidebar: expand parent folder(s) then scroll to the slot
+  // Reveal-in-sidebar: expand parent folder(s), scroll to the slot, and flash it.
+  // Driven by the `revealSlot` prop (a durable handoff) instead of a window event
+  // so the request survives a late mount (fixes #912 race condition).
+  const revealConsumedNonce = useRef<number>(0)
+  const [highlightedSlotKey, setHighlightedSlotKey] = useState<string | null>(null)
   useEffect(() => {
-    const handler = (e: Event) => {
-      const key = (e as CustomEvent).detail as string
-      if (!key) return
-      const slot = slots.find(s => s.key === key)
-      if (slot?.folder_id) {
-        // Expand all ancestor folders
-        const expand = (fid: string) => {
-          const f = folders.find(x => x.id === fid)
-          if (f?.collapsed) updateFolderMutation.mutate({ id: fid, body: { collapsed: false } })
-          if (f?.parent_id) expand(f.parent_id)
-        }
-        expand(slot.folder_id)
+    if (!revealSlot || revealSlot.nonce === revealConsumedNonce.current) return
+    const { key, nonce } = revealSlot
+    revealConsumedNonce.current = nonce
+
+    // Expand ancestor folders
+    const slot = slots.find(s => s.key === key)
+    if (slot?.folder_id) {
+      const expand = (fid: string) => {
+        const f = folders.find(x => x.id === fid)
+        if (f?.collapsed) updateFolderMutation.mutate({ id: fid, body: { collapsed: false } })
+        if (f?.parent_id) expand(f.parent_id)
       }
-      setTimeout(() => {
-        const el = document.querySelector(`[data-slot-key="${key}"]`)
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }, 150)
+      expand(slot.folder_id)
     }
-    window.addEventListener('reveal-slot', handler)
-    return () => window.removeEventListener('reveal-slot', handler)
-  }, [slots, folders, updateFolderMutation])
+
+    // Set the highlight (cleared after animation completes)
+    setHighlightedSlotKey(key)
+
+    // Bounded retry: wait for the row to appear in the DOM (up to 2s) then scroll
+    let attempts = 0
+    const maxAttempts = 20
+    const tryScroll = () => {
+      const el = document.querySelector(`.sidebar-inner [data-slot-key="${key}"]`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        onRevealConsumed?.()
+        return
+      }
+      attempts++
+      if (attempts < maxAttempts) {
+        setTimeout(tryScroll, 100)
+      } else {
+        onRevealConsumed?.()
+      }
+    }
+    // Start after a short delay to let folder expansion re-render
+    setTimeout(tryScroll, 50)
+  }, [revealSlot, slots, folders, updateFolderMutation, onRevealConsumed])
+  // Clear highlight after the animation duration (2s + buffer)
+  useEffect(() => {
+    if (!highlightedSlotKey) return
+    const timer = setTimeout(() => setHighlightedSlotKey(null), 2200)
+    return () => clearTimeout(timer)
+  }, [highlightedSlotKey])
   const renameCommit = useCallback((id: string, name: string) => {
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)
@@ -2107,6 +2141,7 @@ function ChatSidebar({
     return (
       <motion.div key={s.key} layout="position" layoutId={`slot-${layoutScope}-${s.key}`}
         data-slot-key={s.key}
+        className={highlightedSlotKey === s.key ? 'animate-slot-reveal rounded-md' : undefined}
         initial={{ opacity: 0, x: -12 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ layout: { type: 'spring', stiffness: 500, damping: 35 }, opacity: { duration: 0.2 }, x: { duration: 0.2 } }}>
