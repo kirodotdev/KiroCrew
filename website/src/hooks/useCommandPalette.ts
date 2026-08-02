@@ -33,8 +33,15 @@ import { SHORTCUTS_ENABLED_KEY } from './useKeyboardShortcuts'
  * trigger + visibility toggle.
  */
 
-/** Max gap between the two Shift keydowns to count as a double-tap. */
-export const DOUBLE_SHIFT_WINDOW_MS = 400
+/**
+ * Max gap between the two Shift keydowns to count as a double-tap. Kept
+ * deliberately tight (250ms): a wider window makes the palette pop open on
+ * incidental Shift taps (e.g. reaching for a capital, then hesitating) that
+ * were never meant as the gesture. 250ms is comfortably reachable as an
+ * intentional double-tap while cutting most accidental opens; ⌘K / Ctrl+K and
+ * the nav button remain as unambiguous alternatives.
+ */
+export const DOUBLE_SHIFT_WINDOW_MS = 250
 
 /** Live read of the global shortcuts toggle (default on; '0' means disabled). */
 const shortcutsEnabled = () => localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== '0'

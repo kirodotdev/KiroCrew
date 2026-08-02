@@ -191,7 +191,7 @@ vi.mock('../store', () => ({
 }))
 
 import CommandPalette from './CommandPalette'
-import { useCommandPalette } from '../hooks/useCommandPalette'
+import { useCommandPalette, DOUBLE_SHIFT_WINDOW_MS } from '../hooks/useCommandPalette'
 import { SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
 import type { Result } from './commandPalette/types'
 
@@ -234,6 +234,33 @@ describe('useCommandPalette — global trigger', () => {
       fireEvent.keyDown(window, { key: 'Shift' })
     })
     expect(result.current.open).toBe(true)
+  })
+
+  it('two Shifts spaced BEYOND the double-tap window do not open (accidental tap)', () => {
+    const nowSpy = vi.spyOn(Date, 'now')
+    try {
+      const { result } = renderHook(() => useCommandPalette())
+      // Base off a NON-ZERO timestamp: t=0 collides with the hook's
+      // "no pending first tap" sentinel (lastShiftRef.current === 0), which
+      // would make the first tap silently fail to arm and pass this test for
+      // the wrong reason. With T0 > 0 the first tap genuinely arms.
+      const T0 = 1_000
+      nowSpy.mockReturnValue(T0)
+      act(() => fireEvent.keyDown(window, { key: 'Shift' }))
+      // Second tap one window+1ms later — too slow to count as a double-tap.
+      nowSpy.mockReturnValue(T0 + DOUBLE_SHIFT_WINDOW_MS + 1)
+      act(() => fireEvent.keyDown(window, { key: 'Shift' }))
+      expect(result.current.open).toBe(false)
+      // …but that slow second tap re-arms as a new first tap: a follow-up tap
+      // a real in-window gap later (half the window) still opens, so the
+      // gesture stays usable. A 0ms delta here would pass for any window ≥ 0
+      // and would not pin the 250ms boundary.
+      nowSpy.mockReturnValue(T0 + DOUBLE_SHIFT_WINDOW_MS + 1 + Math.floor(DOUBLE_SHIFT_WINDOW_MS / 2))
+      act(() => fireEvent.keyDown(window, { key: 'Shift' }))
+      expect(result.current.open).toBe(true)
+    } finally {
+      nowSpy.mockRestore()
+    }
   })
 
   it('a key pressed between the two Shifts cancels the gesture', () => {
