@@ -91,7 +91,7 @@ export function ShellAside({ copy }: { copy: ShellAsideCopy }) {
 // Exported for the Kiro CLI setup gate, which composes the same three pieces
 // (scrim + panel + section) around its own non-chapter content.
 export const SECTION_CLASS =
-  'flex min-h-[calc(100vh-248px)] min-w-0 flex-1 flex-col bg-card sm:min-h-0'
+  'flex min-h-[calc(100vh-248px)] min-w-0 flex-1 flex-col bg-card sm:min-h-0 sm:overflow-hidden'
 export const SCRIM_CLASS =
   'fixed inset-0 z-[120] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-sm p-0 text-text sm:items-center sm:justify-center sm:p-6'
 export const PANEL_CLASS =
