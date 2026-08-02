@@ -219,4 +219,51 @@ describe('ChatPage — sending while dictating', () => {
     await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
     expect(voice.toggle).not.toHaveBeenCalled()
   })
+
+  it('inserts a batch transcript at the caret, not appended to the end', async () => {
+    // Cursor-position dictation: with the caret in the MIDDLE of existing text,
+    // the transcript splices in at the caret (with a joining space) rather than
+    // appending to the end or overwriting. Guards the append→splice change.
+    setStt(false)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    expect(typeof voice.onText).toBe('function')
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
+    // Type a sentence, then place the caret right after "Hello" (offset 5).
+    await act(async () => { fireEvent.change(ta, { target: { value: 'Hello world' } }) })
+    await act(async () => { ta.setSelectionRange(5, 5); fireEvent.select(ta) })
+
+    await act(async () => { voice.onText?.('there') })
+    expect(ta.value).toBe('Hello there world')
+  })
+
+  it('adds a joining space when dictating right before existing text', async () => {
+    // Guards the gluing bug: caret at the very start of "world" + dictate
+    // "hello" must yield "hello world", not "helloworld".
+    setStt(false)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
+    await act(async () => { fireEvent.change(ta, { target: { value: 'world' } }) })
+    await act(async () => { ta.setSelectionRange(0, 0); fireEvent.select(ta) })
+    await act(async () => { voice.onText?.('hello') })
+    expect(ta.value).toBe('hello world')
+  })
+
+  it('leaves the draft untouched on an empty transcript (no selection deletion)', async () => {
+    // An empty transcript with an active selection must NOT delete the selected
+    // text (guards the empty-partial splice bug).
+    setStt(false)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
+    await act(async () => { fireEvent.change(ta, { target: { value: 'keep me' } }) })
+    await act(async () => { ta.setSelectionRange(0, 7); fireEvent.select(ta) })
+    await act(async () => { voice.onText?.('') })
+    expect(ta.value).toBe('keep me')
+  })
 })

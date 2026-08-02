@@ -1347,6 +1347,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // never be transcribed.
   const [voiceSetupOpen, setVoiceSetupOpen] = useState(false)
   const frozenInputRef = useRef<string | null>(null)
+  // Caret snapshot taken alongside frozenInputRef, so a streaming partial (and
+  // the final that replaces it) keeps inserting at the same spot. The batch
+  // path leaves both null and reads the LIVE composer caret instead.
+  const frozenCaretRef = useRef<{ start: number; end: number } | null>(null)
+  // Live composer caret, kept current by ChatInput (onSelect / click / typing).
+  // Dictation splices the transcript in HERE instead of always appending at end.
+  const voiceCaretRef = useRef<{ start: number; end: number } | null>(null)
+  // Caret offset ChatInput should restore after a dictation-driven value update
+  // lands (set by the splice below, consumed + cleared inside ChatInput).
+  const voicePendingCaretRef = useRef<number | null>(null)
   // Drops late-arriving partials/finals for the CURRENT slot after a send.
   // `stop()` is async (up to 5s for backend close) — without this guard, a
   // delayed onFinal would repopulate the composer with text the user already
@@ -1371,6 +1381,33 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // the live composer; a background slot gets it appended to its persisted draft
   // (recoverable, shown on return) instead of leaking into the active session or
   // being dropped. Mirrors handleOptimizeResult's cross-slot routing.
+  // Splice a dictation transcript into `base` at the caret (frozen snapshot
+  // when streaming, else the live caret), returning the new value and the caret
+  // offset to restore. Falls back to appending when no caret is known (e.g. the
+  // composer was never focused).
+  const spliceDictation = useCallback((base: string, text: string): { value: string; caret: number } => {
+    const caret = frozenCaretRef.current ?? voiceCaretRef.current
+    // An empty transcript (e.g. a silent streaming partial) must NOT mutate the
+    // draft: splicing "" across a selection would delete the selected range.
+    // Leave the base untouched and collapse the caret to the insertion point.
+    if (!text) return { value: base, caret: caret ? Math.min(caret.start, base.length) : base.length }
+    if (!caret) {
+      const value = base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text
+      return { value, caret: value.length }
+    }
+    const start = Math.min(caret.start, base.length)
+    const end = Math.min(caret.end, base.length)
+    const before = base.slice(0, start)
+    const after = base.slice(end)
+    // Leading space only when joining onto a non-space char, so mid-sentence
+    // dictation doesn't glue onto the preceding word.
+    // Leading/trailing space uses whitespace-class checks (not only ' ') so a
+    // caret beside a newline or tab doesn't get an unwanted literal space.
+    const lead = before && !/\s$/.test(before) && !/^\s/.test(text) ? ' ' : ''
+    const trail = after && !/^\s/.test(after) && !/\s$/.test(text) ? ' ' : ''
+    const insert = lead + text
+    return { value: before + insert + trail + after, caret: before.length + insert.length }
+  }, [])
   const applyVoiceText = useCallback((text: string, sessionId: string | null) => {
     // Disarmed after a send (streaming) — the transcript was already sent, so
     // drop it for EVERY route. Checked FIRST (before the cross-slot branch) so a
@@ -1404,13 +1441,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       saveDrafts()
       return
     }
-    // Foreground: streaming seeds frozenInputRef in onPartial (the pre-dictation
-    // snapshot); the batch path never fires onPartial so it's null — fall back
-    // to the live composer text so the transcript APPENDS to what the user typed
-    // instead of overwriting it.
-    setInput(append(frozenInputRef.current ?? inputRef.current ?? ''))
+    // Foreground: streaming seeds frozenInputRef/frozenCaretRef in onPartial
+    // (the pre-dictation snapshot); the batch path never fires onPartial so both
+    // are null — fall back to the live composer text + caret so the transcript
+    // inserts at the cursor instead of overwriting (or blindly appending to)
+    // what the user typed.
+    const spliced = spliceDictation(frozenInputRef.current ?? inputRef.current ?? '', text)
+    // Only arm the caret restore when the value actually changes. If a streaming
+    // final equals the last partial, setInput is a no-op and the restore effect
+    // (keyed on `value`) never fires — leaving a stale pending caret that would
+    // hijack the user's NEXT edit.
+    if (spliced.value !== inputRef.current) {
+      setInput(spliced.value)
+      voicePendingCaretRef.current = spliced.caret
+    }
     frozenInputRef.current = null
-  }, [saveDrafts])
+    frozenCaretRef.current = null
+  }, [saveDrafts, spliceDictation])
   const voice = useVoiceInput(
     applyVoiceText,
     {
@@ -1423,12 +1470,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // half-word into the wrong session.
         if (sessionId && sessionId !== activeSlotRef.current) return
         if (sttDisarmedRef.current) return
-        // Snapshot BEFORE setInput so the updater stays pure (no ref
-        // mutation inside a function React may invoke twice).
-        if (frozenInputRef.current === null) frozenInputRef.current = inputRef.current
-        const base = frozenInputRef.current
-        setInput(base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text)
-      }, []),
+        // Snapshot the pre-dictation text AND caret on the first partial
+        // (before setInput, so the updater stays pure — no ref mutation inside a
+        // function React may invoke twice) so every later partial and the final
+        // insert at the same spot, replacing the growing hypothesis.
+        if (frozenInputRef.current === null) {
+          frozenInputRef.current = inputRef.current
+          frozenCaretRef.current = voiceCaretRef.current
+        }
+        const spliced = spliceDictation(frozenInputRef.current ?? '', text)
+        if (spliced.value !== inputRef.current) {
+          setInput(spliced.value)
+          voicePendingCaretRef.current = spliced.caret
+        }
+      }, [spliceDictation]),
       // Semantic endpointing (stt.endpointing) judged the utterance complete:
       // auto-submit. The composer already holds the streamed transcript via
       // onPartial, and send() reads inputRef.current + stops the live capture
@@ -1481,6 +1536,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // finals — otherwise onPartial sees a non-null ref, skips
       // re-snapshotting, and text typed between sessions is dropped.
       frozenInputRef.current = null
+      frozenCaretRef.current = null
     } else if (streamEnabledRef.current) {
       // Manual stop of a STREAMING recording: streamStop() drains the socket
       // asynchronously and a final can still arrive. The dictated text is
@@ -1507,6 +1563,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // are preserved rather than clobbered by a stale snapshot.
   useEffect(() => {
     frozenInputRef.current = null
+    frozenCaretRef.current = null
+    // Drop the previous slot's caret so dictating in a freshly switched-to slot
+    // (without touching its composer) appends to that slot's draft instead of
+    // inserting at the old slot's offset.
+    voiceCaretRef.current = null
     // Streaming ONLY: disarm so a delayed streaming final arriving after this
     // switch is dropped instead of appended. Its live partial was already
     // flushed into the outgoing slot's draft, so appending the full final on
@@ -5036,6 +5097,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               voiceDictationPanel={sttDictationPanel}
               voiceSampleRef={voice.sampleRef}
               voicePartial={voiceOwned ? voice.partial : ''}
+              voiceCaretRef={voiceCaretRef}
+              voicePendingCaretRef={voicePendingCaretRef}
               onVoiceToggle={voiceInputSupported ? toggleVoice : undefined}
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
               agentName={currentSlot?.agent || 'default'}

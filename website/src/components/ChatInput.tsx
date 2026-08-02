@@ -276,6 +276,11 @@ interface ChatInputProps {
   voiceSampleRef?: { current: AudioSample }
   /** Latest partial hypothesis, rendered muted in the dictation panel. */
   voicePartial?: string
+  /** Live composer caret, updated by ChatInput so ChatPage's dictation handler
+   *  can splice the transcript in at the cursor instead of appending. */
+  voiceCaretRef?: React.MutableRefObject<{ start: number; end: number } | null>
+  /** Caret offset to restore after a dictation-driven value update lands. */
+  voicePendingCaretRef?: React.MutableRefObject<number | null>
   /** Chat-level controls in input bar */
   agentName?: string
   agentSource?: string
@@ -466,6 +471,8 @@ function ChatInput({
   voiceDictationPanel = false,
   voiceSampleRef,
   voicePartial = '',
+  voiceCaretRef,
+  voicePendingCaretRef,
   onClearVoiceError,
   agentName,
   agentSource,
@@ -686,6 +693,50 @@ function ChatInput({
   const approvalBtnClass = 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border text-text text-[12px] cursor-pointer font-body hover:bg-[color-mix(in_srgb,var(--warn)_25%,transparent)] hover:text-text hover:border-border-strong transition-colors disabled:opacity-50'
 
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // Publish the live caret so ChatPage's dictation handler can splice a
+  // transcript in at the cursor instead of appending. Written on every caret
+  // move (typing, click, selection); the value persists through blur (clicking
+  // the mic button), which is exactly when a batch transcript needs it.
+  const recordCaret = useCallback(() => {
+    const ta = inputRef.current
+    if (ta && voiceCaretRef) voiceCaretRef.current = { start: ta.selectionStart ?? 0, end: ta.selectionEnd ?? 0 }
+  }, [voiceCaretRef])
+  // Restore the caret after a dictation transcript lands in `value`. The update
+  // arrives via the parent (onChange → ChatPage setInput → value prop), so the
+  // parent can't set the DOM selection itself. rAF mirrors applyPickedToken:
+  // wait for the controlled value to commit before moving the caret. Cheap on
+  // ordinary edits — it no-ops unless a dictation splice armed a pending caret.
+  useLayoutEffect(() => {
+    const pendingRef = voicePendingCaretRef
+    const pos = pendingRef?.current
+    if (!pendingRef || pos == null) {
+      // No dictation restore pending: keep voiceCaretRef in sync with the live
+      // selection, but ONLY once it has been established by a real interaction.
+      // Guard on an already-non-null ref so an untouched textarea holding an
+      // existing draft doesn't publish offset 0 here (which would make the next
+      // batch transcript prepend at 0 instead of using the append fallback that
+      // a null ref provides).
+      const el = inputRef.current
+      if (el && voiceCaretRef && voiceCaretRef.current) voiceCaretRef.current = { start: el.selectionStart ?? 0, end: el.selectionEnd ?? 0 }
+      return
+    }
+    pendingRef.current = null
+    const raf = requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (!el) return
+      const p = Math.min(pos, el.value.length)
+      // Restore the caret WITHOUT taking focus: a batch transcript can land while
+      // the user is focused in another field/session, and stealing focus would
+      // corrupt their typing there. setSelectionRange works on an unfocused
+      // element, so the caret is correct the moment the composer is (re)focused.
+      el.setSelectionRange(p, p)
+      if (voiceCaretRef) voiceCaretRef.current = { start: p, end: p }
+    })
+    // Cancel the frame if the slot switches (autoFocusKey) or value changes
+    // again before it fires — otherwise the callback would stamp this slot's
+    // caret onto whatever composer is mounted next.
+    return () => cancelAnimationFrame(raf)
+  }, [value, voicePendingCaretRef, voiceCaretRef, autoFocusKey])
   // Dictation-panel gate. Three independent conditions must hold: the setting
   // is on, the browser has WebGL2, and the OS is not asking for reduced motion
   // (the hook covers the latter two). A mic error always falls through to
@@ -1809,6 +1860,7 @@ function ChatInput({
    *  Covers drag-select that ends mid-token, touch/long-press handles on mobile,
    *  and any other non-keyboard way selection could split a token. */
   const handleSelectSnap = useCallback(() => {
+    recordCaret()
     if (!pasteBlocks.length) return
     const ta = inputRef.current
     if (!ta) return
@@ -1832,7 +1884,7 @@ function ChatInput({
     if (newSs === ss && newSe === se) return
     const dir = ta.selectionDirection || 'forward'
     ta.setSelectionRange(Math.min(newSs, newSe), Math.max(newSs, newSe), dir as 'forward' | 'backward' | 'none')
-  }, [pasteBlocks])
+  }, [pasteBlocks, recordCaret])
 
   /** Prune paste blocks whose token was deleted from the textarea. */
   useEffect(() => {
@@ -2257,6 +2309,7 @@ function ChatInput({
             const skillQ = fileQ === null ? matchSkillToken(before) : null
             if (skillQ !== null) { setSkillPickerOpen(true); setSkillQuery(skillQ) }
             else { setSkillPickerOpen(false); setSkillQuery('') }
+            recordCaret()
           }}
           onKeyDown={handleKeyDown}
           {...ime.composition}
