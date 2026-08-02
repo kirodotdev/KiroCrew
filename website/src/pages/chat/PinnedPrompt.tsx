@@ -1,13 +1,19 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
+import { ChevronDown, ImageOff } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
-import { ROW_PAD_Y } from '../../utils/pinnedPrompt'
+import { ROW_PAD_Y, PINNED_PREVIEW_LINES, pinnedImageUrl } from '../../utils/pinnedPrompt'
 
 interface PinnedPromptProps {
-  /** One-line preview of the pinned prompt. */
+  /** Clamped plain-text preview of the pinned prompt (images stripped out). */
   text: string
   /** The full prompt, revealed when expanded. */
   fullText: string
+  /**
+   * Image sources the prompt referenced (`promptImages`). Rendered as thumbnails,
+   * because `text` has had their markdown removed — without these, a prompt whose
+   * whole content was an image pins as an empty card.
+   */
+  images: string[]
   /** px to translate up so the incoming prompt pushes this banner out of view. */
   pushUp: number
   /** Measured card height, used to shrink the backing band as the card is pushed. */
@@ -67,22 +73,48 @@ const MORPH_EASE = 'cubic-bezier(0.2,0,0,1)'
  *     its own outset hairline (`0 0 0 1px`), which is 3% white in dark themes
  *     (invisible) but 4% black in light ones — one pixel outside our inset ring,
  *     so light mode rendered a visible DOUBLE border. `--shadow-sm` has no ring.
+ *   - `items-start` on the band is LOAD-BEARING, not cosmetic. The band's height
+ *     is driven by the push (`ROW_PAD_Y * 2 + bannerH - pushUp` below) and the
+ *     card is its flex item with no height of its own, so under the default
+ *     `align-items: normal` the card is STRETCHED to whatever height the push
+ *     leaves — and the card is the element ChatPage measures for `bannerH`. That
+ *     closes a loop: pushing shrinks the band, the shrunk band shrinks the
+ *     measured card, the smaller `bannerH` shrinks `pinPushTravel`, and the
+ *     drop-when-cleared threshold fires against a moving target. Measured with
+ *     the real class list: at pushUp 20 the 34.75px card reported 22.75px, and at
+ *     full push it reported 0. `items-start` keeps the card at its natural height
+ *     so the measurement is a fixed point.
  *   - The chevron takes its room from the TEXT, never from the box, and it only
- *     appears once the text is actually truncated. That gate is what keeps the
- *     box honest: a truncated line means the card has already hit its max width,
+ *     appears once the text is actually clamped. That gate is what keeps the
+ *     box honest: a clamped line means the card has already hit its max width,
  *     so inserting the chevron cannot widen it — it only narrows the text
- *     further. A short prompt has no ellipsis, gets no chevron, and keeps hugging
+ *     further. A short prompt is unclamped, gets no chevron, and keeps hugging
  *     its text exactly like the bubble does. The two states are each stable, so
  *     the measurement below cannot oscillate: "overflowing at width W" still
  *     overflows at W minus the chevron.
+ *   - Images are shown as thumbnails rather than dropped. `promptPreview` strips
+ *     image markdown from the text, so a prompt whose entire content was an
+ *     image used to pin as a blank card.
  */
 export default function PinnedPrompt({
-  text, fullText, pushUp, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight,
+  text, fullText, images, pushUp, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight,
 }: PinnedPromptProps) {
   const textRef = useRef<HTMLParagraphElement | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
   const lastBoxH = useRef<number | null>(null)
-  const [truncated, setTruncated] = useState(false)
+  const [clamped, setClamped] = useState(false)
+  // Sources whose fetch failed (a prompt can reference a file that has since been
+  // deleted or moved, so `/api/file-raw` 404s). Tracked per-src rather than as one
+  // flag so one dead image does not suppress its siblings.
+  const [failed, setFailed] = useState<string[]>([])
+  const markFailed = useCallback((src: string) => {
+    setFailed(prev => (prev.includes(src) ? prev : [...prev, src]))
+  }, [])
+  // Reset when the pinned prompt changes: `failed` is keyed by src, and a later
+  // prompt can legitimately reference a src an earlier one failed on (the file may
+  // have been restored), so carrying the verdict forward would hide a live image.
+  useEffect(() => { setFailed([]) }, [fullText])
+  const shown = images.filter(src => !failed.includes(src))
 
   // Height MORPH on expand/collapse. The card's height is content-driven (the
   // <p> switches truncate↔wrap), so there is no fixed value to CSS-transition
@@ -135,15 +167,19 @@ export default function PinnedPrompt({
   }, [expanded, onCollapsedHeight])
 
   useEffect(() => {
-    // While expanded the text wraps and stops overflowing, so re-measuring would
-    // report "not truncated" and take the chevron away — leaving no way back.
+    // While expanded the text wraps in full and stops overflowing, so re-measuring
+    // would report "not clamped" and take the chevron away — leaving no way back.
     // Hold the collapsed-state verdict instead; it is re-taken on collapse.
     if (expanded) return
     const el = textRef.current
     const box = boxRef.current
     if (!el) return
     const measure = () => {
-      setTruncated(el.scrollWidth > el.clientWidth + 1)
+      // HEIGHT, not width. The collapsed paragraph is a multi-line clamp
+      // (`-webkit-line-clamp`), so it never overflows horizontally — every line
+      // wraps inside the box and `scrollWidth === clientWidth` always. Only the
+      // clamped-away lines show up, as scroll height beyond the visible box.
+      setClamped(el.scrollHeight > el.clientHeight + 1)
       // Re-report the collapsed height whenever the box itself resizes. The layout
       // effect above only runs on expand/collapse, so a host font-size or zoom
       // change would otherwise leave ChatPage's hand-off line on a stale height
@@ -159,11 +195,17 @@ export default function PinnedPrompt({
     return () => ro.disconnect()
   }, [text, expanded, onCollapsedHeight])
 
-  const showChevron = truncated || expanded
+  // Images earn the chevron on their own. Without this an image-only prompt never
+  // clamps (no text to clamp), so the readable expanded strip was unreachable and
+  // the only recourse was `onJump` — which scrolls away from the position the pin
+  // exists to preserve. Widening the box is not a concern in that case: parity with
+  // the bubble is already unattainable for a prompt whose bubble is a full-size
+  // image, and a clamped prompt has by definition already hit its max width.
+  const showChevron = clamped || images.length > 0 || expanded
 
   return (
     <div
-      className="relative px-5 py-1 mx-auto w-full pointer-events-none flex justify-end"
+      className="relative px-5 py-1 mx-auto w-full pointer-events-none flex items-start justify-end"
       style={{
         maxWidth: 'var(--mc-content-width, 900px)',
         // Clip ONLY while collapsed AND being pushed. The clip is what reveals
@@ -202,11 +244,68 @@ export default function PinnedPrompt({
             title={i18nT('pages.chat.pinnedPrompt.jump_to_this_prompt')}
             className="min-w-0 flex-1 bg-transparent border-none p-0 m-0 text-left cursor-pointer"
           >
+            {/* Expanded: images get their own strip at readable size, outside the
+                scrollable <p> so they stay put while long text scrolls. */}
+            {expanded && shown.length > 0 && (
+              <span className="flex flex-wrap gap-1.5 my-1.5">
+                {shown.map(src => (
+                  <img key={src} src={pinnedImageUrl(src)} alt="" loading="lazy"
+                    onError={() => markFailed(src)}
+                    className="h-20 w-auto max-w-[160px] rounded object-cover ring-1 ring-inset ring-border" />
+                ))}
+              </span>
+            )}
+            {/* The same all-failed fallback the collapsed card gets. Without it,
+                expanding an image-only prompt whose files are gone empties the card
+                completely — the strip is skipped and `fullText` is '' — so the
+                chevron's reward would be a blank box. */}
+            {expanded && !fullText && images.length > 0 && shown.length === 0 && (
+              <span className="flex my-1.5">
+                <ImageOff size={28} aria-hidden className="text-muted" />
+              </span>
+            )}
             <p
               ref={textRef}
-              className={`my-1.5 leading-relaxed ${expanded ? 'whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto' : 'truncate'}`}
-              style={expanded ? { overflowWrap: 'anywhere' } : undefined}
-            >{expanded ? fullText : text}</p>
+              className={`my-1.5 leading-relaxed ${expanded ? 'whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto' : 'overflow-hidden'}`}
+              style={expanded ? { overflowWrap: 'anywhere' } : {
+                // Tailwind ships `line-clamp-<n>` only for a literal n, and the
+                // line count is shared with the geometry module — so set the clamp
+                // from the constant rather than duplicating it in a class name.
+                display: '-webkit-box',
+                WebkitBoxOrient: 'vertical',
+                WebkitLineClamp: PINNED_PREVIEW_LINES,
+                overflowWrap: 'anywhere',
+              }}
+            >
+              {/* Collapsed: thumbnails are INLINE LEADING CONTENT of the same
+                  paragraph, sized in `em` so they sit in the first line's box and
+                  add no height to the card — which is what preserves the card's
+                  pixel equality with the bubble it replaces. They also fall inside
+                  the line clamp, so a prompt with many images cannot grow the card.
+                  Rendering them here (rather than dropping them, as promptPreview
+                  does to the text) is what stops an image-only prompt pinning as a
+                  blank card.
+
+                  When there is NO text, the em-sized thumbnail is the only content
+                  and 1.4em of it is unreadable — so it gets two lines' worth of
+                  height instead. Nothing is traded away: parity with the bubble is
+                  already unattainable for an image-only prompt, whose bubble is a
+                  full-size image, and the taller card only moves the hand-off line
+                  DOWN (see PINNED_PREVIEW_LINES). */}
+              {!expanded && shown.map(src => (
+                <img key={src} src={pinnedImageUrl(src)} alt="" loading="lazy"
+                  onError={() => markFailed(src)}
+                  className={`inline-block align-middle mr-1.5 rounded-sm object-cover ring-1 ring-inset ring-border ${
+                    text ? 'h-[1.4em] w-[1.4em]' : 'h-[2.8em] w-[3.6em]'}`} />
+              ))}
+              {/* Every image 404'd (deleted/moved file) AND there is no text: hiding
+                  the broken glyphs would put us back at the blank card this change
+                  exists to fix, so leave a neutral icon standing in for them. */}
+              {!expanded && !text && images.length > 0 && shown.length === 0 && (
+                <ImageOff size={20} aria-hidden className="inline-block align-middle text-muted" />
+              )}
+              {expanded ? fullText : text}
+            </p>
           </button>
           {showChevron && (
             <button

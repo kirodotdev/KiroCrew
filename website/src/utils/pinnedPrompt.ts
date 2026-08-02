@@ -143,16 +143,164 @@ export function computePinPush(bannerH: number, foldY: number, nextTop: number |
 }
 
 /**
- * Flatten a prompt to one line of plain text for the collapsed banner.
- * Attachment/image markdown carries no meaning at a glance, so images are
- * dropped, `[attached_file N] /abs/path` collapses to the basename, and fenced
- * code becomes an ellipsis.
+ * Lines of prompt text the COLLAPSED card shows before clamping.
+ *
+ * One line was the original choice and it loses too much: a long prompt is the
+ * one most worth summarising, and a single clamped line of it is usually just its
+ * opening clause. Three keeps the card small enough to sit under the title
+ * without dominating the viewport, and it widens the range over which the card is
+ * a pixel-exact copy of the bubble it replaces — every prompt up to three lines
+ * now hands over with no size change at all, where before only a one-liner did.
+ *
+ * Consequence for the hand-off line: a taller card pushes `pinHandoffY` DOWN,
+ * which makes the pin condition (`rowBottom <= handoffY`) EASIER to satisfy, so a
+ * card growing after it mounts can never invalidate the pin that mounted it. The
+ * coupling is monotone in the safe direction — see the test of the same name.
+ */
+export const PINNED_PREVIEW_LINES = 3
+
+/**
+ * Markdown image syntax. Shared by `promptPreview` (which removes it from the
+ * text) and `promptImages` (which collects the sources), so the two can never
+ * disagree about what counts as an image — the failure mode being a prompt whose
+ * image is stripped from the text AND missed by the thumbnail pass, i.e. silently
+ * lost. `g` is set; `matchAll` clones the regex and `replace` resets `lastIndex`
+ * itself, so the shared instance carries no state between calls.
+ */
+const IMAGE_MD_RE = /!\[[^\]]*\]\(([^)]*)\)/g
+
+/** Fenced code block. Shared so every pass agrees on where code starts and ends. */
+const FENCE_RE = /```[\s\S]*?```/g
+
+/**
+ * Partition a prompt into fenced-code and prose segments.
+ *
+ * The image passes MUST agree on fences, and sharing `IMAGE_MD_RE` alone was not
+ * enough to guarantee it: `promptPreview` folded fences away BEFORE looking for
+ * images, while `promptImages`/`promptBody` ran on raw content. A prompt that
+ * merely QUOTED image markdown inside a code fence therefore produced a phantom
+ * thumbnail for an image it never attached, and had that line rewritten inside the
+ * quoted code in the expanded view — i.e. the passes disagreed by ordering, not by
+ * pattern. Routing all three through this one split makes the agreement structural.
+ */
+function splitFences(content: string): { fence: boolean; text: string }[] {
+  const out: { fence: boolean; text: string }[] = []
+  let last = 0
+  for (const m of content.matchAll(FENCE_RE)) {
+    const at = m.index ?? 0
+    if (at > last) out.push({ fence: false, text: content.slice(last, at) })
+    out.push({ fence: true, text: m[0] })
+    last = at + m[0].length
+  }
+  if (last < content.length) out.push({ fence: false, text: content.slice(last) })
+  return out
+}
+
+/**
+ * Flatten a prompt to plain text for the collapsed banner.
+ *
+ * Images are removed from the TEXT because their markdown (`![alt](/very/long/
+ * path.png)`) is noise at a glance — but they are not discarded: `promptImages`
+ * pulls them out separately and the card renders them as thumbnails. Dropping
+ * them here and rendering nothing was the bug that made an image-only prompt pin
+ * as a completely empty card.
+ *
+ * `[attached_file N] /abs/path` collapses to the basename and fenced code becomes
+ * an ellipsis.
  */
 export function promptPreview(content: string): string {
   return content
-    .replace(/```[\s\S]*?```/g, ' … ')
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(FENCE_RE, ' … ')
+    .replace(IMAGE_MD_RE, ' ')
     .replace(/\[attached_file \d+\]\s*(\S+)/g, (_m, p: string) => p.split('/').pop() || '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/**
+ * The prompt as authored, minus the image markdown — what the EXPANDED card
+ * shows.
+ *
+ * Unlike `promptPreview` this keeps line structure: expanded is the "read it
+ * properly" view, so paragraphs and hard breaks matter. Only the image syntax is
+ * removed, because the card renders those images as a strip directly above this
+ * text; leaving the markdown in printed the source of an image the user is already
+ * looking at (`![screenshot](/tmp/a.png)` as literal text under the thumbnail).
+ *
+ * Blank lines left behind by the removal are collapsed so an image on its own line
+ * does not open a gap, and a prompt that was ONLY images yields an empty string —
+ * the strip is then the whole card.
+ */
+export function promptBody(content: string): string {
+  // Fence-aware: quoted code keeps its image syntax verbatim (it is the code the
+  // user is showing us); only real attachments are removed. The blank-line rule
+  // runs PER non-fence segment rather than over the joined string — doing it after
+  // the join re-applied IMAGE_MD_RE to everything, fences included, which deleted
+  // the very quoted lines this split exists to protect.
+  return splitFences(content)
+    .map(seg => {
+      if (seg.fence) return seg.text
+      return seg.text
+        .split('\n')
+        .map(line => ({ line, stripped: line.replace(IMAGE_MD_RE, '') }))
+        // A line that HELD an image and is now blank contributed nothing but that
+        // image: drop it, so an image on its own line leaves no hole. A line that
+        // was blank to begin with is authored spacing and is kept verbatim — this
+        // is the read-it-properly view, so the user's paragraph breaks survive.
+        .filter(({ line, stripped }) => stripped.trim() !== '' || line.trim() === '')
+        .map(({ stripped }) => stripped)
+        .join('\n')
+    })
+    .join('')
+    .trim()
+}
+
+/**
+ * Image sources referenced by a prompt, in document order, deduplicated.
+ *
+ * Returned raw (as authored) — resolving a local path to a fetchable URL is the
+ * renderer's job, and `PinnedPrompt` defers to the same `/api/file-raw` mapping
+ * `MarkdownRenderer`'s `img` handler uses, so a thumbnail and the bubble's own
+ * copy of the image always resolve identically.
+ *
+ * Empty sources are dropped: `![alt]()` is legal markdown that would otherwise
+ * render a broken thumbnail.
+ */
+export function promptImages(content: string): string[] {
+  const out: string[] = []
+  for (const seg of splitFences(content)) {
+    // Skip fences: an image merely QUOTED in a code block is not an attachment,
+    // and thumbnailing it invents an image the prompt never carried.
+    if (seg.fence) continue
+    for (const m of seg.text.matchAll(IMAGE_MD_RE)) {
+      const src = (m[1] || '').trim()
+      if (src && !out.includes(src)) out.push(src)
+    }
+  }
+  return out
+}
+
+/**
+ * Fetchable URL for a thumbnail source, mirroring `MarkdownRenderer`'s `img`
+ * handler: a local path goes through the gateway's `/api/file-raw`, anything
+ * already absolute (http/https/data) is passed straight through.
+ *
+ * Deliberately narrower than the renderer's version — it has no BasePathCtx to
+ * resolve a relative path against, and a pinned prompt is user-authored content
+ * with no base document, so a bare relative path is treated as local and left to
+ * the API to reject rather than being resolved against nothing.
+ */
+/**
+ * Gateway endpoint that serves a local file's bytes. Hoisted to a const because
+ * the i18n lint applies its shape exclusions (which exempt path-shaped literals)
+ * to a literal node, but reports a literal used as an operand of `+` as the whole
+ * binary expression — so an inline `'/api/…' + encodeURIComponent(x)` lands in the
+ * untranslated-copy ratchet for what is a URL.
+ */
+const FILE_RAW_PATH_PREFIX = '/api/file-raw?path='
+
+export function pinnedImageUrl(src: string): string {
+  return /^(?:https?:|data:|blob:)/i.test(src)
+    ? src
+    : FILE_RAW_PATH_PREFIX + encodeURIComponent(src)
 }

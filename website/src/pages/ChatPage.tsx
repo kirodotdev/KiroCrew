@@ -115,7 +115,7 @@ import { toSlug } from '../utils/shareUrl'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
-import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, pinHandoffY, pinPushTravel, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
+import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, promptImages, promptBody, pinHandoffY, pinPushTravel, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
 import {
   adoptSourceSelections,
   commitSourceSelection,
@@ -2187,7 +2187,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pinFoldRef = useRef<HTMLDivElement | null>(null)
   const pinCardRef = useRef<HTMLDivElement | null>(null)
   const pinEnabledRef = useRef(true)
-  const [pinned, setPinned] = useState<{ idx: number; text: string; full: string; push: number; bannerH: number } | null>(null)
+  const [pinned, setPinned] = useState<{ idx: number; text: string; raw: string; full: string; images: string[]; push: number; bannerH: number } | null>(null)
   const [pinExpanded, setPinExpanded] = useState(false)
   // Collapsed card height — the hand-off line is derived from it, so it must be
   // known even while nothing is pinned (no card mounted to measure). Seeded with
@@ -2257,10 +2257,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (push >= pinPushTravel(bannerH)) { setPinned(null); return }
     const full = pinItem.msg.content
     const text = promptPreview(full)
+    // Compare the RAW content (`prev.raw`), not `text` or the derived body:
+    // `text`, `full` and `images` are all derived from it, and an edit-and-resend
+    // that changes ONLY an attached image leaves the flattened preview text
+    // byte-identical. Comparing the source covers every derived value with one
+    // string compare — and returning `prev` unchanged matters because this runs
+    // once per animation frame during a scroll, so a fresh object (or a fresh
+    // `images` array) would re-render the banner on every one of them.
     setPinned(prev => (prev && prev.idx === pinIdx && prev.push === push
-      && prev.text === text && prev.bannerH === bannerH)
+      && prev.raw === full && prev.bannerH === bannerH)
       ? prev
-      : { idx: pinIdx, text, full, push, bannerH })
+      : { idx: pinIdx, text, raw: full, full: promptBody(full), images: promptImages(full), push, bannerH })
   }, [scrollerRef])
   // rAF-throttle the per-scroll recompute: updatePinnedPrompt does a
   // querySelectorAll + getBoundingClientRect loop (a forced layout read), and a
@@ -4505,6 +4512,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <PinnedPrompt
                   text={pinned.text}
                   fullText={pinned.full}
+                  images={pinned.images}
                   pushUp={pinned.push}
                   bannerH={pinned.bannerH}
                   expanded={pinExpanded}

@@ -4,10 +4,14 @@ import {
   findNextPromptIdx,
   computePinPush,
   promptPreview,
+  promptImages,
+  promptBody,
+  pinnedImageUrl,
   pinHandoffY,
   pinPushTravel,
   ROW_PAD_Y,
   DEFAULT_PINNED_CARD_H,
+  PINNED_PREVIEW_LINES,
 } from '../utils/pinnedPrompt'
 import type { DisplayItem } from '../pages/chat/types'
 
@@ -157,5 +161,140 @@ describe('promptPreview', () => {
   it('reduces attachment tokens to a basename', () => {
     expect(promptPreview('review [attached_file 1] /Users/me/proj/main.py now'))
       .toBe('review main.py now')
+  })
+
+  it('leaves an image-only prompt with no text at all', () => {
+    // Which is exactly why promptImages exists: the card would otherwise be blank.
+    expect(promptPreview('![shot](/tmp/a.png)')).toBe('')
+  })
+})
+
+describe('promptImages', () => {
+  it('finds nothing in a prompt without images', () => {
+    expect(promptImages('just text')).toEqual([])
+  })
+
+  it('collects sources in document order', () => {
+    expect(promptImages('a ![one](/x/1.png) b ![two](/y/2.jpg)'))
+      .toEqual(['/x/1.png', '/y/2.jpg'])
+  })
+
+  it('recovers the image of a prompt whose text is empty after preview', () => {
+    const content = '![shot](/tmp/a.png)'
+    expect(promptPreview(content)).toBe('')
+    expect(promptImages(content)).toEqual(['/tmp/a.png'])
+  })
+
+  it('deduplicates a repeated source', () => {
+    expect(promptImages('![a](/x/1.png) ![b](/x/1.png)')).toEqual(['/x/1.png'])
+  })
+
+  it('drops empty sources rather than yielding a broken thumbnail', () => {
+    expect(promptImages('![alt]()')).toEqual([])
+    expect(promptImages('![alt](   )')).toEqual([])
+  })
+
+  it('agrees with promptPreview about what an image is', () => {
+    // The two share IMAGE_MD_RE precisely so a form can never be stripped from the
+    // text while being missed by the thumbnail pass (i.e. silently lost).
+    const content = 'before ![x](/p/q.png) after'
+    expect(promptPreview(content)).toBe('before after')
+    expect(promptImages(content)).toEqual(['/p/q.png'])
+  })
+})
+
+describe('promptBody', () => {
+  it('keeps line structure, unlike the collapsed preview', () => {
+    expect(promptBody('one\n\ntwo')).toBe('one\n\ntwo')
+    expect(promptPreview('one\n\ntwo')).toBe('one two')
+  })
+
+  it('removes the image markdown the card renders as a thumbnail', () => {
+    // Leaving it in printed the source of an image the user is already looking at.
+    expect(promptBody('before ![x](/p/q.png) after')).toBe('before  after')
+  })
+
+  it('drops a line that held nothing but an image', () => {
+    expect(promptBody('intro\n![x](/p/q.png)\noutro')).toBe('intro\noutro')
+  })
+
+  it('yields empty for an image-only prompt, leaving the strip as the whole card', () => {
+    expect(promptBody('![x](/p/q.png)')).toBe('')
+    expect(promptImages('![x](/p/q.png)')).toEqual(['/p/q.png'])
+  })
+
+  it('preserves authored blank lines rather than reflowing them', () => {
+    // Expanded is the read-it-properly view: the user's own spacing is content,
+    // and only the lines an image vacated are removed.
+    expect(promptBody('a\n\n\n\nb')).toBe('a\n\n\n\nb')
+  })
+})
+
+describe('fenced code is treated identically by all three passes', () => {
+  // The three passes agreeing on IMAGE_MD_RE was not enough: promptPreview folded
+  // fences BEFORE the image pass while the other two ran on raw content, so a
+  // prompt that merely QUOTED image markdown in a code block produced a thumbnail
+  // for an image it never attached, and had that line rewritten inside the quoted
+  // code. They now share splitFences, so the agreement is structural.
+  const quoted = 'see this snippet:\n```md\n![alt](/x/1.png)\n```\nthat is all'
+
+  it('does not invent a thumbnail for an image quoted in a code fence', () => {
+    expect(promptImages(quoted)).toEqual([])
+  })
+
+  it('leaves quoted image syntax intact in the expanded body', () => {
+    expect(promptBody(quoted)).toContain('![alt](/x/1.png)')
+    expect(promptBody(quoted)).toContain('```md')
+  })
+
+  it('still folds the fence away in the collapsed preview', () => {
+    expect(promptPreview(quoted)).toBe('see this snippet: … that is all')
+  })
+
+  it('still collects a real attachment that sits outside the fence', () => {
+    const mixed = '![real](/r.png) and ```\n![quoted](/q.png)\n```'
+    expect(promptImages(mixed)).toEqual(['/r.png'])
+    expect(promptBody(mixed)).toContain('![quoted](/q.png)')
+    expect(promptBody(mixed)).not.toContain('![real]')
+  })
+
+  it('handles an unterminated fence without swallowing a later attachment', () => {
+    // An unclosed fence is not a fence as far as FENCE_RE is concerned, so the
+    // image after it is still a real attachment rather than silently dropped.
+    expect(promptImages('```\nnot closed ![a](/a.png)')).toEqual(['/a.png'])
+  })
+})
+
+describe('pinnedImageUrl', () => {
+  it('routes a local path through the gateway file endpoint', () => {
+    expect(pinnedImageUrl('/tmp/a b.png')).toBe('/api/file-raw?path=%2Ftmp%2Fa%20b.png')
+  })
+
+  it('passes absolute and inline sources through untouched', () => {
+    expect(pinnedImageUrl('https://e.com/a.png')).toBe('https://e.com/a.png')
+    expect(pinnedImageUrl('data:image/png;base64,AAA')).toBe('data:image/png;base64,AAA')
+    expect(pinnedImageUrl('blob:abc')).toBe('blob:abc')
+  })
+})
+
+describe('collapsed preview line count', () => {
+  it('shows more than one line', () => {
+    expect(PINNED_PREVIEW_LINES).toBeGreaterThan(1)
+  })
+
+  it('couples to the hand-off line in the SAFE direction', () => {
+    // The clamp makes the collapsed card taller, and its measured height feeds
+    // pinHandoffY. A taller card must only ever move the line DOWN, making the pin
+    // condition (rowBottom <= handoffY) easier — otherwise a card growing after it
+    // mounts could invalidate the very pin that mounted it and oscillate.
+    const foldY = 100
+    const oneLine = pinHandoffY(foldY, DEFAULT_PINNED_CARD_H)
+    const threeLine = pinHandoffY(foldY, DEFAULT_PINNED_CARD_H * PINNED_PREVIEW_LINES)
+    expect(threeLine).toBeGreaterThan(oneLine)
+    // A row that qualified against the shorter line still qualifies against the
+    // taller one.
+    const rowBottom = oneLine
+    expect(rowBottom <= oneLine).toBe(true)
+    expect(rowBottom <= threeLine).toBe(true)
   })
 })
