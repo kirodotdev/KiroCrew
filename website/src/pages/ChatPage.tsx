@@ -3298,6 +3298,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [])
 
   const lastRole = messages[messages.length - 1]?.role ?? ''
+  // Advances with every streamed chunk, so ChatFooter can tell "text is arriving"
+  // apart from "the stream went quiet mid-turn" (the model generating a tool call,
+  // or a tool group holding the trailing 'streaming' message open). 0 whenever no
+  // streaming message is in flight.
+  const streamTick = lastRole === 'streaming' ? (messages[messages.length - 1]?.content.length ?? 0) : 0
   // Precompute: index of last finalized assistant message (tools after this are "trailing")
   // The activity panel has exactly two modes, and the question that picks one
   // is NOT "how wide is the window" — it is "how much width is left for the
@@ -4397,7 +4402,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               {/* Bottom sentinel: drives downward window expansion when in jump mode. */}
               <div ref={virt.bottomSentinelRef} aria-hidden style={{ height: 1 }} />
               {/* Footer */}
-              <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} regenerating={regenerating} stopState={currentSlot?.stop_state} />
+              <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} />
               <div style={{height: '2vh'}} />
             </div>
             )}

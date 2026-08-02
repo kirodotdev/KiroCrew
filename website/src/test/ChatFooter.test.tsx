@@ -1,6 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import ChatFooter, { pickDistinct, resolveLoader, resolveLoaderIcons, SwapCarousel } from '../pages/chat/ChatFooter'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { render, screen, act } from '@testing-library/react'
+import ChatFooter, { pickDistinct, resolveLoader, resolveLoaderIcons, SwapCarousel, STREAM_IDLE_MS } from '../pages/chat/ChatFooter'
 import { GHOST_POSE_ICONS, GHOST_POSE_URLS } from '../components/GhostPoses'
 import { registerThemeBranding } from '../themeBranding'
 
@@ -29,8 +29,46 @@ describe('ChatFooter', () => {
   // ...but yields while text streams, so it never doubles up with the real inline
   // .streaming-caret that MarkdownRenderer injects.
   it('is hidden while streaming', () => {
-    const { container } = render(<ChatFooter {...base} running={true} lastRole="streaming" />)
+    const { container } = render(<ChatFooter {...base} running={true} state="streaming" lastRole="streaming" streamTick={1} />)
     expect(container.innerHTML).toBe('')
+  })
+
+  // The gap the user actually sees: the text block finished, the model is
+  // generating a tool call, and NOTHING streams back. `lastRole` is still
+  // 'streaming' (chat_segment is withheld until the tool ordering is settled), so
+  // the loader used to stay hidden for the whole quiet window.
+  it('takes over once the text stream goes quiet mid-turn', () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<ChatFooter {...base} running={true} state="streaming" lastRole="streaming" streamTick={7} />)
+      expect(container.innerHTML).toBe('')
+      act(() => { vi.advanceTimersByTime(STREAM_IDLE_MS + 50) })
+      expect(container.querySelector('.csb4')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('yields again as soon as chunks resume', () => {
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(<ChatFooter {...base} running={true} state="streaming" lastRole="streaming" streamTick={7} />)
+      act(() => { vi.advanceTimersByTime(STREAM_IDLE_MS + 50) })
+      expect(container.querySelector('.csb4')).toBeInTheDocument()
+      // A new chunk advances the tick — back to the inline caret owning the state.
+      rerender(<ChatFooter {...base} running={true} state="streaming" lastRole="streaming" streamTick={8} />)
+      expect(container.innerHTML).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A tool group leaves the trailing 'streaming' message unfinalized for its whole
+  // duration, so the role alone would hide the loader until post-tool text arrived.
+  // The slot state moving off 'streaming' shows it immediately — no idle wait.
+  it('shows during a tool group even though lastRole is still streaming', () => {
+    const { container } = render(<ChatFooter {...base} running={true} state="tool_running" lastRole="streaming" streamTick={7} />)
+    expect(container.querySelector('.csb4')).toBeInTheDocument()
   })
 
   it('shows stopping indicator', () => {
@@ -149,7 +187,7 @@ describe('loader — theme seam', () => {
     registerThemeBranding({ 'seam-whole-hidden': { loader: CustomLoader } })
     document.documentElement.setAttribute('data-theme', 'seam-whole-hidden-dark')
     // streaming -> hidden (the real caret owns that state)
-    const streaming = render(<ChatFooter {...base} running={true} lastRole="streaming" />)
+    const streaming = render(<ChatFooter {...base} running={true} state="streaming" lastRole="streaming" streamTick={1} />)
     expect(streaming.container.innerHTML).toBe('')
     // idle -> hidden
     const idle = render(<ChatFooter {...base} />)

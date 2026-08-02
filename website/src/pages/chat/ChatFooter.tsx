@@ -184,17 +184,49 @@ export function SwapCarousel({ icons }: { icons: ComponentType[] }) {
   )
 }
 
-const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState }) {
+/** How long the text stream must stay quiet before the footer takes over from the
+ *  inline caret. Ordinary inter-chunk jitter is tens of milliseconds, so this is
+ *  far above the noise floor while still short enough that the model's tool-call
+ *  gap does not read as a stalled turn. */
+export const STREAM_IDLE_MS = 700
+
+/**
+ * True once `tick` has not advanced for `ms` while `active` — i.e. the text stream
+ * has gone quiet without the turn ending.
+ *
+ * One timer, re-armed on each tick: no polling interval, and nothing runs at all
+ * once the stream is inactive.
+ */
+export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM_IDLE_MS): boolean {
+  const [idle, setIdle] = useState(false)
+  useEffect(() => {
+    if (!active) { setIdle(false); return }
+    setIdle(false)
+    const t = window.setTimeout(() => setIdle(true), ms)
+    return () => window.clearTimeout(t)
+  }, [tick, active, ms])
+  return active && idle
+}
+
+const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0 }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number }) {
   const loader = resolveLoader(useThemeSlug())
+  // Text is only ACTIVELY streaming while the slot says so AND chunks keep
+  // arriving. `lastRole` alone cannot tell the two apart: the trailing
+  // 'streaming' message is deliberately left unfinalized across a whole tool
+  // group (chat_segment is withheld so tool ordering survives), and the model
+  // also goes quiet for seconds while it generates a tool call. Both looked like
+  // "still streaming", so the loader stayed hidden with nothing else moving.
+  const streamingText = lastRole === 'streaming' && state === 'streaming'
+  const streamQuiet = useStreamIdle(streamTick, streamingText)
   // Hidden once the turn is inactive. While the turn RUNS the indicator shows for
   // thinking, tool calls, AND the gaps between steps — the post-tool gap used to
   // fall through every guard, so the indicator vanished mid-turn even though the
   // backend keeps slot.running true for the whole turn.
   if (!regenerating && !running && stopState !== 'soft_pending' && stopState !== 'killing') return null
-  // ...but never while text is actively streaming: MarkdownRenderer already renders
+  // ...but never while text is actively arriving: MarkdownRenderer already renders
   // the real blinking caret (.streaming-caret) there, and a second indicator
   // alongside it reads as two cursors.
-  if (!regenerating && lastRole === 'streaming' && state !== 'compacting' && stopState !== 'soft_pending' && stopState !== 'killing') return null
+  if (!regenerating && streamingText && !streamQuiet && stopState !== 'soft_pending' && stopState !== 'killing') return null
   // width from CSS var --mc-content-width
   return (
     <div data-testid="chat-footer" className={`px-5 mx-auto w-full py-1${regenerating ? '' : ' animate-slide-up'}`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
