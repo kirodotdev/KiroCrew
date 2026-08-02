@@ -1,6 +1,6 @@
 import { useState, useRef, useLayoutEffect } from 'react'
 import { motion } from 'framer-motion'
-import { ChevronRight, ChevronLeft, Settings2 } from 'lucide-react'
+import { ChevronRight, ChevronLeft, Settings2, Pin, Check } from 'lucide-react'
 import { Input } from './ui'
 import ModelDropdownList from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
@@ -26,10 +26,19 @@ interface Props {
    *  slot carries no override, so the row reflects what a turn would run at. */
   defaultEffort?: string
   onListKeyDown: (e: React.KeyboardEvent) => void
-  /** Deep-link to the Settings row that sets the default model for NEW sessions.
-   *  Optional so call sites that have no router (or don't want the link) are
-   *  unaffected — the row is simply not rendered. */
+  /** Deep-link to the Settings row that sets the GLOBAL fallback model — the
+   *  tier that applies to agents pinning no model of their own. Optional so
+   *  call sites that have no router (or don't want the link) are unaffected —
+   *  the row is simply not rendered. */
   onSetDefault?: () => void
+  /** Pin the currently-active model as this agent's own default, in place. Omit
+   *  to hide the row (e.g. surfaces with no agent in scope). */
+  onPinToAgent?: () => void
+  /** KiroCrew agent the pin row acts on; shown in its label. */
+  agentName?: string
+  /** True when that agent already pins the active model, so the row reports the
+   *  state instead of offering a no-op write. */
+  pinnedToAgent?: boolean
 }
 
 const WIDTH = 340
@@ -42,7 +51,7 @@ const SPRING = { type: 'spring' as const, stiffness: 420, damping: 38 }
 export default function ModelEffortDropdown({
   anchorRect, dropdownRef, inputRef, models, activeModel, onSelectModel,
   filter, setFilter, onClose, hasEffort, slot, currentEffort, onListKeyDown, onSetDefault,
-  defaultEffort = '',
+  defaultEffort = '', onPinToAgent, agentName = '', pinnedToAgent = false,
 }: Props) {
   const [showEffort, setShowEffort] = useState(false)
   const modelPage = useRef<HTMLDivElement>(null)
@@ -53,7 +62,7 @@ export default function ModelEffortDropdown({
   useLayoutEffect(() => {
     const el = showEffort ? effortPage.current : modelPage.current
     if (el) setHeight(el.offsetHeight)
-  }, [showEffort, models.length, filter, currentEffort, hasEffort, onSetDefault])
+  }, [showEffort, models.length, filter, currentEffort, hasEffort, onSetDefault, onPinToAgent, agentName, pinnedToAgent])
 
   // Right-align the dropdown to the button's right edge (clamped to viewport).
   const left = Math.max(8, Math.min(anchorRect.right - WIDTH, window.innerWidth - WIDTH - 8))
@@ -95,6 +104,22 @@ export default function ModelEffortDropdown({
                   {effortLabel(currentEffort || defaultEffort)}
                   <ChevronRight size={14} className="text-muted" />
                 </span>
+              </button>
+            )}
+            {onPinToAgent && agentName && (
+              <button
+                type="button"
+                onClick={pinnedToAgent ? undefined : onPinToAgent}
+                disabled={pinnedToAgent}
+                aria-pressed={pinnedToAgent}
+                className="shrink-0 border-t border-border flex items-center justify-between gap-2 px-3 py-2 text-[12px] cursor-pointer bg-transparent border-x-0 border-b-0 text-muted hover:text-text hover:bg-bg-hover transition-colors disabled:cursor-default disabled:hover:bg-transparent"
+              >
+                <span>
+                  {pinnedToAgent
+                    ? i18nT('components.modelEffortDropdown.default_for_agent', { agent: agentName })
+                    : i18nT('components.modelEffortDropdown.set_default_for_agent', { agent: agentName })}
+                </span>
+                {pinnedToAgent ? <Check size={13} className="text-accent" /> : <Pin size={13} />}
               </button>
             )}
             {onSetDefault && (

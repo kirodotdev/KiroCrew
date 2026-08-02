@@ -195,6 +195,25 @@ DEFAULT_MAX_PARALLEL_STEPS = (
     0  # 0 = auto: derive from agent.subagent_auto_max via compute_max_subagents
 )
 
+
+def normalize_agent_model(model: object) -> str:
+    """Collapse an "inherit" model spelling to ``""``.
+
+    ``""`` (never set) and ``DEFAULT_MODEL`` ("auto") both mean "do not pin a
+    model here, defer to the next tier down". Callers store and compare the
+    single ``""`` spelling so a tier set to "auto" keeps inheriting instead of
+    hard-pinning the backend's own default and shadowing the tier below it.
+
+    Total on purpose: this is the chokepoint for values that arrive from
+    hand-edited config and from request bodies, so a non-string is treated as
+    "no pin" rather than raising out of a resolver.
+    """
+    if not isinstance(model, str):
+        return ""
+    m = model.strip()
+    return "" if m == DEFAULT_MODEL else m
+
+
 _DEFAULT_PORT = 5476
 
 # KIROCREW_PORT is validated at CLI entry (cli.py main()).
@@ -1828,6 +1847,15 @@ class KiroCrewAgentConfig:
         default="default",
         metadata=_meta("Memory Store", "Named memory store from the memory_stores section."),
     )
+    model: str = field(
+        default="",
+        metadata=_meta(
+            "Model",
+            "Default model for sessions on this agent. Empty inherits: the bound "
+            "kiro agent's own pinned model first, then the global agent.model "
+            "fallback. A per-session pick still overrides this.",
+        ),
+    )
     description: str = field(
         default="",
         metadata=_meta("Description", "Human-readable agent description."),
@@ -2562,6 +2590,11 @@ class ResolvedBindings:
     memory_store_name: str
     effective_memory_config: dict
     kiro_agent: str
+    # The KiroCrew agent's own default model, "" when it pins none. Ranks below
+    # a per-session pick and above the bound kiro agent's pin / the global
+    # agent.model fallback. Defaulted so existing keyword constructions and
+    # test doubles built before this field stay valid.
+    model: str = ""
 
 
 @dataclass
@@ -3972,10 +4005,17 @@ class KiroCrewConfig:
         if isinstance(raw_agents, dict):
             for name, entry in raw_agents.items():
                 if isinstance(entry, dict):
+                    # config.json is hand-editable (and agent-writable), so a
+                    # non-string model (e.g. `model: 123`) must not survive the
+                    # load — it would reach normalize_agent_model().strip() and
+                    # raise AttributeError from the resolver instead of simply
+                    # being ignored.
+                    raw_model = entry.get("model", "")
                     agents[name] = KiroCrewAgentConfig(
                         kiro_agent=entry.get("kiro_agent", ""),
                         workspace=entry.get("workspace", "default"),
                         memory_store=entry.get("memory_store", "default"),
+                        model=raw_model if isinstance(raw_model, str) else "",
                         description=entry.get("description", ""),
                         source=entry.get("source", "kirocrew"),
                     )
@@ -4878,19 +4918,29 @@ class KiroCrewConfig:
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
-            # Resolve the model: slot override, else the default kirocrew model,
-            # else the custom agent's own model. Custom agents MUST resolve here
-            # because the ACP session/set_mode path switches prompt/tools but not
-            # the model, so an unset model makes kiro fall back to cli.json's
-            # chat.defaultModel. Use _resolve_named_agent_model (the kiro model
-            # slot) to match this backend. Returns "" when none is declared;
-            # AcpClient normalizes "" to DEFAULT_MODEL, same as None.
+            # Resolve the model, highest tier first:
+            #   1. model_override — the caller's explicit pick. The dashboard
+            #      passes the slot's own model, else the KiroCrew agent's
+            #      configured default (see chat_runner._run_chat).
+            #   2. the bound kiro agent's own pinned model, for a named agent.
+            #      Custom agents MUST resolve here because the ACP
+            #      session/set_mode path switches prompt/tools but not the model,
+            #      so an unset model makes kiro fall back to cli.json's
+            #      chat.defaultModel. Use _resolve_named_agent_model (the kiro
+            #      model slot) to match this backend.
+            #   3. ``model`` — the global agent.model default, already collapsed
+            #      through _resolve_agent_model() at factory-build time. It
+            #      applies to every agent, not just "kirocrew": an agent that
+            #      pins nothing inherits the user's configured default instead of
+            #      silently falling through to the backend's own choice.
+            # "" at the end means nothing is pinned anywhere; AcpClient
+            # normalizes "" to DEFAULT_MODEL, same as None.
             if model_override:
                 m = model_override
             elif not agent or agent == "kirocrew":
                 m = model
             else:
-                m = self._resolve_named_agent_model(agent)
+                m = self._resolve_named_agent_model(agent) or model
             # Translation boundary (mirrors the _claude_code factory): the model
             # may be a canonical registry key (e.g. "opus-4.8-1m" — the wire /
             # dropdown value after /api/models canonicalization) OR an already-
@@ -5053,7 +5103,46 @@ def resolve_agent_bindings(
         memory_store_name=store_name,
         effective_memory_config=effective_memory,
         kiro_agent=kiro_agent,
+        model=normalize_agent_model(agent_cfg.model),
     )
+
+
+def resolve_effective_model(
+    config: KiroCrewConfig,
+    agent_name: str | None = None,
+) -> str:
+    """Return the model a new session on *agent_name* would start with.
+
+    Single source of truth for the default-model precedence, so the display
+    path (the dashboard's model chip) and the execution path
+    (``create_provider_factory._acp``) cannot drift apart. Tiers, highest first:
+
+    1. the KiroCrew agent's own ``model``
+    2. the bound kiro agent's pinned ``model`` (skipped for the built-in
+       ``kirocrew`` agent, which tracks the global by design)
+    3. the global ``agent.model`` default
+    4. the installed ``kirocrew.json`` / bundled ``defaults.json`` model
+
+    A per-session pick outranks all of these and is NOT considered here — the
+    caller holds it. Returns ``""`` when every tier defers, meaning the backend
+    picks (kiro-cli's own ``chat.defaultModel``).
+    """
+    bindings = resolve_agent_bindings(config, agent_name)
+    if bindings.model:
+        return bindings.model
+
+    kiro_agent = bindings.kiro_agent
+    if kiro_agent and kiro_agent != "kirocrew":
+        pinned = normalize_agent_model(config._resolve_named_agent_model(kiro_agent))
+        if pinned:
+            return pinned
+
+    configured = normalize_agent_model(config.agent.model)
+    if configured:
+        return configured
+    # agent.model is "auto"/unset: fall through to the installed agent file the
+    # factory would read, so the chip shows what will actually be used.
+    return normalize_agent_model(config._resolve_agent_model())
 
 
 def validate_kiro_agent_references(

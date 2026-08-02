@@ -22,7 +22,13 @@ interface AgentUpdatePayload {
   kiro_agent: string
   workspace: string
   memory_store: string
+  /** '' = inherit (the kiro template's pin, then the global fallback). */
+  model: string
 }
+
+/** The stored spelling for "no per-agent pin, inherit the next tier down". The
+ *  select shows this as a real option; the backend normalizes it back to ''. */
+const INHERIT_MODEL = 'auto'
 
 /* ── Workspace Creation Modal ── */
 function WorkspaceModal({
@@ -153,6 +159,18 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   })
   const memoryStoreOptions = kirocrewCfg?.memory_stores ? Object.keys(kirocrewCfg.memory_stores) : ['default']
 
+  // Model list for the per-agent default. Same query key as every other model
+  // picker so the list is fetched once. INHERIT_MODEL leads so "no pin" is the
+  // obvious choice rather than an absent option.
+  const { data: availableModels } = useQuery({
+    queryKey: ['available-models', provider.id],
+    queryFn: () => provider.fetchAvailableModels(),
+  })
+  const modelOptions = [
+    INHERIT_MODEL,
+    ...(availableModels || []).map((m: { name: string }) => m.name).filter((n: string) => n && n !== INHERIT_MODEL),
+  ]
+
   const [filter, setFilter] = useState('')
   const [error, setError] = useState('')
   const [name, setName] = useState('')
@@ -163,6 +181,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [editKiro, setEditKiro] = useState('')
   const [editWs, setEditWs] = useState('')
   const [editMs, setEditMs] = useState('')
+  const [editModel, setEditModel] = useState(INHERIT_MODEL)
   const [wsModalTarget, setWsModalTarget] = useState<'create' | 'edit' | null>(null)
 
   const handleWsCreated = useCallback((newName: string) => {
@@ -199,12 +218,23 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
   const startEdit = (a: KiroCrewAgent) => {
     setEditing(a.name); setEditKiro(a.kiro_agent); setEditWs(a.workspace); setEditMs(a.memory_store)
+    setEditModel(a.model || INHERIT_MODEL)
   }
 
   const saveEdit = () => {
     if (!editing) return
     setError('')
-    updateMut.mutate({ name: editing, data: { kiro_agent: editKiro, workspace: editWs, memory_store: editMs } })
+    updateMut.mutate({
+      name: editing,
+      data: {
+        kiro_agent: editKiro,
+        workspace: editWs,
+        memory_store: editMs,
+        // INHERIT_MODEL is normalized to '' server-side; send it verbatim so
+        // clearing a pin is a real write rather than a skipped field.
+        model: editModel,
+      },
+    })
   }
 
   const remove = (n: string) => {
@@ -267,14 +297,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             <table className="w-full border-collapse table-striped">
               <thead>
                 <tr>
-                  {['Name', provider.labels.agentTemplateField, 'Source', 'Workspace', 'Memory Store', 'Actions'].map(h => (
+                  {[i18nT('pages.kiroCrewAgentsPage.name'), provider.labels.agentTemplateField, i18nT('pages.kiroCrewAgentsPage.source'), i18nT('pages.kiroCrewAgentsPage.workspace_2'), i18nT('pages.kiroCrewAgentsPage.memory_store'), i18nT('pages.kiroCrewAgentsPage.model'), i18nT('pages.kiroCrewAgentsPage.actions')].map(h => (
                     <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.kiroCrewAgentsPage.no_agents')}</td></tr>
+                  <tr><td colSpan={7} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.kiroCrewAgentsPage.no_agents')}</td></tr>
                 ) : filtered.map((a) => (
                   <tr key={a.name} className="hover:bg-bg-hover transition-colors">
                     <td className="px-2.5 py-2 border-b border-border text-sm font-mono font-semibold">
@@ -300,6 +330,24 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                         <td className="px-2.5 py-2 border-b border-border">
                           <SimpleSelect options={[...memoryStoreOptions, ...(!memoryStoreOptions.includes(editMs) ? [editMs] : [])]} value={editMs} onChange={setEditMs} aria-label={i18nT('pages.kiroCrewAgentsPage.edit_memory_store')} style={{ width: 140 }} />
                         </td>
+                        <td className="px-2.5 py-2 border-b border-border">
+                          <SimpleSelect
+                            options={[...modelOptions, ...(!modelOptions.includes(editModel) ? [editModel] : [])]}
+                            // The inherit option must NOT read as "auto": in the
+                            // chat picker "auto" promises task-based routing,
+                            // whereas here it means "pin nothing, inherit the
+                            // next tier" — which can resolve to a concrete
+                            // model. Label it as the read-only cell does so the
+                            // round trip (pick → save → cell) stays consistent.
+                            optionLabels={[...modelOptions, ...(!modelOptions.includes(editModel) ? [editModel] : [])].map(
+                              m => (m === INHERIT_MODEL ? i18nT('pages.kiroCrewAgentsPage.inherited') : m)
+                            )}
+                            value={editModel}
+                            onChange={setEditModel}
+                            aria-label={i18nT('pages.kiroCrewAgentsPage.edit_model')}
+                            style={{ width: 150 }}
+                          />
+                        </td>
                         <td className="px-2.5 py-2 border-b border-border text-sm">
                           <Btn onClick={saveEdit}>{i18nT('pages.kiroCrewAgentsPage.save')}</Btn>{' '}
                           <Btn onClick={() => setEditing(null)}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
@@ -311,6 +359,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                         <td className="px-2.5 py-2 border-b border-border text-sm"><SourceBadge source={a.source || 'kirocrew'} /></td>
                         <td className="px-2.5 py-2 border-b border-border text-sm font-mono">{a.workspace}</td>
                         <td className="px-2.5 py-2 border-b border-border text-sm font-mono">{a.memory_store}</td>
+                        <td className="px-2.5 py-2 border-b border-border text-sm font-mono">
+                          {a.model || <span className="text-muted italic font-sans">{i18nT('pages.kiroCrewAgentsPage.inherited')}</span>}
+                        </td>
                         <td className="px-2.5 py-2 border-b border-border text-sm">
                           <Btn onClick={() => startEdit(a)}>{i18nT('pages.kiroCrewAgentsPage.edit')}</Btn>{' '}
                           {a.name !== defaultAgent && <Btn danger onClick={() => remove(a.name)}>{i18nT('pages.kiroCrewAgentsPage.delete')}</Btn>}

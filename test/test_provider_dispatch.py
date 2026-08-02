@@ -51,15 +51,48 @@ class TestAcpPerAgentModel:
             )
         assert provider.client._model == "claude-sonnet-4.6"
 
-    def test_unresolved_agent_model_falls_back_to_default(self):
-        # When the agent declares no model, _resolve_named_agent_model returns "";
-        # AcpClient normalizes "" to DEFAULT_MODEL (same as the old None path).
+    def test_unresolved_agent_model_falls_back_to_the_global_default(self):
+        # When the agent declares no model, _resolve_named_agent_model returns ""
+        # and the factory falls through to the configured global default. This
+        # tier used to be skipped entirely for named agents, so an agent pinning
+        # nothing ignored the user's configured default and let kiro pick from
+        # cli.json instead — the global was not really a global.
         cfg = self._acp_cfg()
+        cfg.agent.model = "claude-sonnet-4.6"
         with patch.object(KiroCrewConfig, "_resolve_named_agent_model", return_value=""):
             provider = cfg.create_provider_factory()(
                 session_key="cron:job:run", agent="no-model-agent"
             )
+        assert provider.client._model == "claude-sonnet-4.6"
+
+    def test_unresolved_agent_and_unset_global_leaves_the_backend_to_pick(self):
+        # Nothing pinned anywhere: the global is the "auto" sentinel and the
+        # installed agent file declares nothing either, so no session/set_model
+        # is sent and kiro resolves from its own config. _resolve_agent_model is
+        # patched because the unpatched call reads the HOST's real
+        # ~/.kiro/agents/kirocrew.json, which pins a model on a dev machine.
+        cfg = self._acp_cfg()
+        cfg.agent.model = DEFAULT_MODEL
+        with (
+            patch.object(KiroCrewConfig, "_resolve_named_agent_model", return_value=""),
+            patch.object(KiroCrewConfig, "_resolve_agent_model", return_value=DEFAULT_MODEL),
+        ):
+            provider = cfg.create_provider_factory()(
+                session_key="cron:job:run", agent="no-model-agent"
+            )
         assert provider.client._model == DEFAULT_MODEL
+
+    def test_agent_pin_still_outranks_the_global_default(self):
+        # The new global fallback must not overtake an agent that pins a model.
+        cfg = self._acp_cfg()
+        cfg.agent.model = "claude-sonnet-4.6"
+        with patch.object(
+            KiroCrewConfig, "_resolve_named_agent_model", return_value="gpt-5.6-sol"
+        ):
+            provider = cfg.create_provider_factory()(
+                session_key="cron:job:run", agent="pinned-agent"
+            )
+        assert provider.client._model == "gpt-5.6-sol"
 
     def test_kiro_agent_ignores_cc_model_sidecar(self, tmp_path):
         # The acp factory calls _resolve_named_agent_model, which returns the

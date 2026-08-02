@@ -32,6 +32,7 @@ from kiro_crew.autonudge import get_instance
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_dir,
+    normalize_agent_model,
     resolve_agent_bindings,
 )
 from kiro_crew.constants import CHAT_TURN_TIMEOUT
@@ -2513,11 +2514,17 @@ async def _run_chat(
         # (e.g. "default") which has no matching ~/.kiro/agents/ config.
         kiro_agent: str | None = None
         memory_store: str | None = None
+        # The KiroCrew agent's own default model ("" = inherit). Ranks below the
+        # slot's explicit pick and above the bound kiro agent's pin / the global
+        # agent.model fallback, both of which get_or_create resolves when this
+        # and slot.model are empty.
+        agent_model = ""
         try:
             cfg = KiroCrewConfig.load()
             bindings = resolve_agent_bindings(cfg, slot.agent or None)
             kiro_agent = bindings.kiro_agent
             memory_store = bindings.memory_store_name
+            agent_model = normalize_agent_model(bindings.model)
         except Exception:
             logger.warning("Failed to resolve agent bindings in _run_chat", exc_info=True)
 
@@ -2532,7 +2539,7 @@ async def _run_chat(
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
-            model=slot.model or None,
+            model=slot.model or agent_model or None,
             cwd=slot.project or None,
             reasoning_effort_override=slot.reasoning_effort or None,
         )

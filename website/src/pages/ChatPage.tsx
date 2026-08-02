@@ -26,7 +26,7 @@ import {
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
 import { interceptSlashCommand } from './chat/ChatInput'
-import { sseSlotTitle } from '../store/dashboardSlice'
+import { sseSlotTitle, triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
@@ -876,14 +876,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pendingProjectRef = useRef('')
   const setPendingProject = useCallback((v: string) => { pendingProjectRef.current = v }, [])
 
-  // Sync pendingModel with default agent's model on initial load
+  // Sync pendingModel with default agent's model on initial load. Keyed by the
+  // KiroCrew agent name: the backend resolver owns the precedence (the agent's
+  // own model, then its kiro template's pin, then the global default).
   const _initAgent = pendingAgent || defaultAgent || 'default'
-  const _initMc = installedAgents.find(a => a.name === _initAgent)
-  const _initTemplateName = installedAgents.length > 0 ? provider.resolveAgentTemplate(_initMc || { name: _initAgent }) : ''
   const { data: _initResolvedModel } = useQuery({
-    queryKey: ['resolved-model', _initTemplateName, provider.id],
-    queryFn: () => provider.resolveModel(_initTemplateName),
-    enabled: !!_initTemplateName && !pendingModel,
+    queryKey: ['resolved-model', _initAgent, provider.id],
+    queryFn: () => provider.resolveModel(_initAgent),
+    enabled: !!_initAgent && !pendingModel,
   })
   useEffect(() => { if (_initResolvedModel && !pendingModel) setPendingModel(_initResolvedModel) }, [_initResolvedModel]) // eslint-disable-line react-hooks/exhaustive-deps
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
@@ -2757,9 +2757,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const switchAgent = useCallback(async (agentName: string) => {
     if (!activeSlot) {
       setPendingAgent(agentName)
-      const mc = installedAgents.find(a => a.name === agentName)
-      const templateName = provider.resolveAgentTemplate(mc || { name: agentName })
-      queryClient.fetchQuery({ queryKey: ['resolved-model', templateName, provider.id], queryFn: () => provider.resolveModel(templateName) })
+      queryClient.fetchQuery({ queryKey: ['resolved-model', agentName, provider.id], queryFn: () => provider.resolveModel(agentName) })
         .then(m => setPendingModel(m)).catch(() => setPendingModel(''))
       return
     }
@@ -3068,17 +3066,50 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const title = currentSlot?.title && currentSlot.title !== currentSlot.key ? currentSlot.title : activeSlot || ''
   const displayMode = approvalMode === 'yolo' ? 'yolo' : currentSlot?.trust ? 'trust' : currentSlot?.trust_reads ? 'trust_reads' : 'normal'
   // Resolve model for existing slots that don't have one stored
-  const _slotMc = installedAgents.find(a => a.name === currentSlot?.agent)
-  const _slotTemplateName = (currentSlot && !currentSlot.model && installedAgents.length > 0) ? provider.resolveAgentTemplate(_slotMc || { name: currentSlot.agent || 'default' }) : ''
+  const _slotAgentName = (currentSlot && !currentSlot.model) ? (currentSlot.agent || 'default') : ''
   const { data: _slotResolvedModel } = useQuery({
-    queryKey: ['resolved-model', _slotTemplateName, provider.id],
-    queryFn: () => provider.resolveModel(_slotTemplateName),
-    enabled: !!_slotTemplateName,
+    queryKey: ['resolved-model', _slotAgentName, provider.id],
+    queryFn: () => provider.resolveModel(_slotAgentName),
+    enabled: !!_slotAgentName,
+  })
+  // The agent the composer's "set as default" row acts on: the active slot's
+  // agent, else whichever agent a new session would open on.
+  const _modelPinAgent = currentSlot?.agent || pendingAgent || defaultAgent || 'default'
+  const _modelPinCfg = installedAgents.find(a => a.name === _modelPinAgent)
+  // Writes agents.<name>.model in config.json. Invalidates the resolved-model
+  // queries so a slot showing an inherited value picks the new pin up without a
+  // reload; open sessions keep the model they already resolved.
+  const pinModelToAgentMut = useMutation({
+    mutationFn: ({ agent, model }: { agent: string; model: string }) =>
+      api.updateKirocrewAgent(agent, { model }),
+    onSuccess: () => {
+      dispatch(triggerRefresh())
+      queryClient.invalidateQueries({ queryKey: ['resolved-model'] })
+    },
+    // The dropdown closes as soon as the row is clicked, so without this a
+    // failed write left NOTHING on screen and the old default silently stood —
+    // discoverable only by reopening the menu. Body is the agent name plus the
+    // server's own message, so it carries no untranslated prose of its own.
+    onError: (e: Error, vars) => {
+      dispatch(addNotification({
+        ts: uniqueNotificationTs(),
+        kind: 'agent',
+        priority: 'critical',
+        title: i18nT('pages.chatPage.could_not_set_the_agent_default_model'),
+        body: `${vars.agent}: ${e?.message || i18nT('components.errorBoundary.something_went_wrong')}`,
+      }))
+    },
   })
   // Derived, not mirrored into state via an effect: the effect form cost an extra
   // render pass every time the query settled, for a value that is a pure function
   // of the query result.
   const resolvedModel = _slotResolvedModel || ''
+  // True when the pin row would be a no-op: the agent already stores exactly
+  // the model the composer is showing. 'auto' is the inherit spelling, never a
+  // stored pin, so it never counts as pinned.
+  const _modelPinActive = currentSlot?.model || resolvedModel || ''
+  const _modelPinPinned =
+    !!_modelPinCfg?.model && _modelPinCfg.model === _modelPinActive && _modelPinActive !== 'auto'
   // The configured default effort for new sessions. A slot that has never
   // touched the effort control carries '' (no override) but still RUNS at this
   // default — the backend applies `slot.reasoning_effort or agent.reasoning_effort`
@@ -4702,6 +4733,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 onSetDefault={() => {
                   setModelDropdown(false)
                   navigate(`/settings?tab=chat&highlight=${SETTINGS_DEFAULT_MODEL_ID}`)
+                }}
+                agentName={_modelPinAgent}
+                pinnedToAgent={_modelPinPinned}
+                onPinToAgent={() => {
+                  setModelDropdown(false)
+                  pinModelToAgentMut.mutate({
+                    agent: _modelPinAgent,
+                    model: currentSlot?.model || resolvedModel || '',
+                  })
                 }}
               />,
               document.body

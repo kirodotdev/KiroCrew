@@ -93,7 +93,12 @@ if TYPE_CHECKING:
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.config.loader import POOL_SIZE_MAX, build_provider_factory, default_project_dir
+from kiro_crew.config.loader import (
+    POOL_SIZE_MAX,
+    build_provider_factory,
+    default_project_dir,
+    normalize_agent_model,
+)
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
 from kiro_crew.messaging.link import ChannelLink, canonical_key, legacy_key
@@ -348,6 +353,38 @@ def _model_fallback(per_agent_model: str, global_default: str) -> "str | None":
     if per_agent_model:
         return None
     return global_default if global_default and global_default not in _SENTINEL_MODELS else None
+
+
+def _session_model(cfg: "KiroCrewConfig", agent: str | None) -> "str | None":
+    """Resolve the model for a new session on *agent*, for EVERY surface.
+
+    ``agent`` is whatever the caller passed, and callers are not consistent: the
+    dashboard passes a resolved kiro template name, while Slack threads, cron
+    jobs and spawned agents pass a KiroCrew agent (crew) name. Both are handled
+    by trying the crew namespace first, so a crew's own ``model`` applies no
+    matter which surface starts the turn. Without this, a crew pinned to one
+    model in the Crews table still ran the template/global model from Slack or
+    cron — the same per-surface drift this tier exists to remove.
+
+    Returns ``None`` when nothing is pinned above the kiro layer, which leaves
+    the provider factory to resolve the template pin / global itself. A crew pin
+    is returned VERBATIM because the factory has no way to discover it: it never
+    sees the crew name.
+
+    Blocking I/O (globs + reads ``~/.kiro/agents/*.json``): call in an executor.
+    """
+    crew = cfg.agents.get(agent) if agent else None
+    if crew is not None:
+        crew_model = normalize_agent_model(crew.model)
+        if crew_model:
+            return crew_model
+        # The crew defers, so continue down the chain on the template it binds.
+        agent = crew.kiro_agent or agent
+
+    per_agent_model = ""
+    if agent and agent != "kirocrew":
+        per_agent_model = cfg._resolve_named_agent_model(agent)
+    return _model_fallback(per_agent_model, cfg.agent.model)
 
 
 # Type alias for provider factory — accepts optional session key
@@ -2057,24 +2094,20 @@ class SessionManager:
         if model is None:
             # KiroACP-only: the effective model is the kiro/ACP slot.
             #
-            # Precedence: a per-agent model pin outranks the global default — the
-            # global is a *fallback* and must not override an agent that pins its
-            # own model. ``_model_fallback`` defers to kiro (``None``) when a pin
-            # exists, else returns the global (unless a sentinel like "auto").
-            # Blank agents still inherit the global (the original inheritance
-            # behavior); the default ``kirocrew`` agent is excluded — it
-            # intentionally tracks the global.
-            per_agent_model = ""
-            if agent and agent != "kirocrew":
-                # Offload the resolver off the event loop: it globs +
-                # read_text() over ~/.kiro/agents/*.json, so on a slow/large
-                # agents dir a cold start would otherwise block the loop (and
-                # every concurrent task) for the duration. No lock or session
-                # semaphore is held at this point, so awaiting is safe.
-                per_agent_model = await asyncio.get_running_loop().run_in_executor(
-                    None, self._cfg._resolve_named_agent_model, agent
-                )
-            model = _model_fallback(per_agent_model, self._cfg.agent.model)
+            # Precedence: the KiroCrew agent's own model > the bound kiro
+            # agent's pin > the global default (a *fallback*, which must not
+            # override a tier that pins its own model). Resolved by
+            # ``_session_model`` so every surface — dashboard, Slack, cron,
+            # spawn — gets the same answer for the same agent.
+            #
+            # Offloaded to an executor: the resolver globs + read_text()s over
+            # ~/.kiro/agents/*.json, so on a slow/large agents dir a cold start
+            # would otherwise block the loop (and every concurrent task) for the
+            # duration. No lock or session semaphore is held here, so awaiting
+            # is safe.
+            model = await asyncio.get_running_loop().run_in_executor(
+                None, _session_model, self._cfg, agent
+            )
 
         # Check session map for resume — only for long-lived sessions
         resume_sid: str | None = None

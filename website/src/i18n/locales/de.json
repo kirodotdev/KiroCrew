@@ -1652,7 +1652,7 @@
       "this_session_has_no_project_directory_so_there_i": "Diese Sitzung hat kein Projektverzeichnis, daher gibt es kein Repository, von dem verzweigt werden kann"
     },
     "inboundLinkChip": {
-      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Sie können sie mit !sessions aus diesem Kanal erneut verbinden.",
+      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Du kannst sie mit !sessions aus diesem Kanal erneut verbinden.",
       "driven_from": "Gesteuert von {{label}}",
       "release": "Lösen",
       "release_aria": "Diese Sitzung von {{label}} lösen",
@@ -1811,15 +1811,6 @@
       "waiting_for_sign_in": "Warten auf Anmeldung…",
       "we_could_not_check_kiro_cli": "Wir konnten Kiro CLI nicht prüfen.",
       "your_crew_is_almost_ready": "Ihre Crew ist fast bereit."
-    },
-    "inboundLinkChip": {
-      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Du kannst sie mit !sessions aus diesem Kanal erneut verbinden.",
-      "driven_from": "Gesteuert von {{label}}",
-      "release": "Lösen",
-      "release_aria": "Diese Sitzung von {{label}} lösen",
-      "release_failed": "Sitzung konnte nicht gelöst werden: {{reason}}",
-      "released": "Von {{label}} gelöst",
-      "tooltip": "Diese Sitzung ist bidirektional mit {{label}} verbunden: Antworten werden dorthin geliefert, und dort gesendete Nachrichten kommen hier an."
     },
     "linkedSurfacesSection": {
       "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Du kannst sie mit !sessions aus diesem Kanal erneut verbinden.",
@@ -2010,11 +2001,13 @@
       "no_matches": "Keine Treffer"
     },
     "modelEffortDropdown": {
+      "default_for_agent": "Standard für {{agent}}",
       "filter_models": "Modelle filtern",
       "model_list": "Modellliste",
       "models": "Modelle",
       "reasoning": "Reasoning",
-      "set_default_for_new_sessions": "Standard für neue Sitzungen festlegen…",
+      "set_default_for_agent": "Als Standard für {{agent}} festlegen",
+      "set_default_for_new_sessions": "Globaler Fallback für neue Sitzungen…",
       "type_to_filter": "Zum Filtern tippen…"
     },
     "monacoCodeBlock": {
@@ -3727,6 +3720,7 @@
       "collapse_knowledge_context": "Wissenskontext einklappen",
       "connection_error": "Verbindungsfehler",
       "continue_a_previous_chat": "Einen früheren Chat fortsetzen?",
+      "could_not_set_the_agent_default_model": "Standardmodell des Agenten konnte nicht festgelegt werden",
       "could_not_start_a_new_session": "Neue Sitzung konnte nicht gestartet werden",
       "dismiss_error": "Fehler schließen",
       "dismiss_upload_error": "Upload-Fehler schließen",
@@ -4163,6 +4157,7 @@
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Eine eindeutige Kennung für diesen Workspace. Agenten verweisen über den Namen auf Workspaces.",
+      "actions": "Aktionen",
       "agents": "Crews",
       "cancel": "Abbrechen",
       "close_dialog": "Dialog schließen",
@@ -4181,19 +4176,23 @@
       "edit": "Bearbeiten",
       "edit_agent_template": "Agenten-Vorlage bearbeiten",
       "edit_memory_store": "Erinnerungsspeicher bearbeiten",
+      "edit_model": "Standardmodell bearbeiten",
       "edit_workspace": "Workspace bearbeiten",
       "failed_to_create_agent": "Agent konnte nicht erstellt werden",
       "failed_to_create_workspace": "Workspace konnte nicht erstellt werden",
       "failed_to_delete_agent": "Agent konnte nicht gelöscht werden",
       "failed_to_update_agent": "Agent konnte nicht aktualisiert werden",
       "filter_agents": "Crews filtern…",
+      "inherited": "Geerbt",
       "manage_agent_workspace_memory_store_bindings": "Crews, mit denen Sie chatten – jedes mit eigenem Workspace und eigener Erinnerung",
       "memory_store": "Erinnerungsspeicher",
+      "model": "Modell",
       "name": "Name",
       "name_is_required": "Name ist erforderlich",
       "no_agents": "Keine Crews",
       "none": "— keine —",
       "save": "Speichern",
+      "source": "Quelle",
       "subdirectory_inside_kiro_crew_where_this_workspa": "Unterverzeichnis in ~/.kiro/crew, in dem dieser Workspace seine Daten speichert (Chat-Verlauf, Lektionen, Projekte). Jeder Workspace erhält sein eigenes isoliertes Verzeichnis.",
       "total_agents": "Crews insgesamt",
       "workspace": "Workspace",
@@ -5196,8 +5195,8 @@
         "content_width": "Inhaltsbreite",
         "context": "Kontext",
         "context_usage_at_which_auto_compaction_triggers": "Kontextnutzung in %, bei der die automatische Verdichtung ausgelöst wird. Niedriger = häufigere Verdichtung, längere Sitzungen",
-        "default_defers_to_your_agent_config_and_then_to": "„Standard“ richtet sich nach Ihrer Agenten-Konfiguration und dann nach Kiros eigenem Standard. Eine Änderung wirkt sich nicht auf bereits geöffnete Sitzungen aus.",
-        "default_model": "Standardmodell",
+        "default_defers_to_your_agent_config_and_then_to": "Nur Fallback: Ein Agent mit eigenem Modell ignoriert diese Einstellung. „Standard“ richtet sich nach deiner Agenten-Konfiguration und dann nach Kiros eigenem Standard. Eine Änderung wirkt sich nicht auf bereits geöffnete Sitzungen aus.",
+        "default_model": "Fallback-Modell",
         "default_reasoning_effort": "Standard-Denkaufwand",
         "default_to_autopilot_mode": "Standardmäßig Autopilot-Modus",
         "dismiss": "Schließen",
@@ -5247,7 +5246,7 @@
         "time_window_for_session_restoration": "Zeitfenster für die Wiederherstellung von Sitzungen",
         "trim_filler_and_over_narration_lead_with_the_ans": "Füllwörter und übermäßige Erzählung kürzen: mit der Antwort beginnen, Fortschrittsnotizen auf hoher Ebene halten. Code, Befehle und Fehlermeldungen bleiben wortgetreu; Sicherheitswarnungen und mehrstufige Anweisungen behalten alle Details.",
         "when_enabled_inline_tool_pills_show_simplified_t": "Wenn aktiviert, zeigen Inline-Werkzeug-Pills den vereinfachten Zweck der Werkzeugnutzung anstelle des exakt ausgeführten Befehls",
-        "which_model_new_sessions_start_with_pick_a_model": "Mit welchem Modell neue Sitzungen starten. Wählen Sie innerhalb einer Sitzung ein Modell, um es dort zu übersteuern.",
+        "which_model_new_sessions_start_with_pick_a_model": "Mit welchem Modell neue Sitzungen starten, wenn ihr Agent keines festlegt. Lege pro Agent unter Agenten-Fähigkeiten → Crews ein Modell fest oder wähle innerhalb einer Sitzung eines, um es dort zu übersteuern.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Welcher Teil des Streams eines Subagenten beim Einfügen seines Abschlussereignisses in die übergeordnete Sitzung erhalten bleibt. „Kopf“ bewahrt den Anfang (Standard, entspricht dem Legacy-Verhalten). „Ende“ bewahrt die abschließende Zusammenfassung. „Beides“ behält einen Abschnitt von jedem Ende mit einer Markierung dazwischen.",
         "widget_density": "Widget-Dichte",
         "your_role": "Ihre Rolle"

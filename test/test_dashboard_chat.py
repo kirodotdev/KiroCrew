@@ -3469,6 +3469,7 @@ class TestRuntimeWiring:
         mock_bindings = MagicMock()
         mock_bindings.workspace_dir = Path("/tmp/oncall")
         mock_bindings.memory_store_name = "oncall-mem"
+        mock_bindings.model = ""
 
         monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
         monkeypatch.setattr(
@@ -3524,6 +3525,7 @@ class TestRuntimeWiring:
         mock_bindings = MagicMock()
         mock_bindings.workspace_dir = Path("/workspace/dev")
         mock_bindings.memory_store_name = "default"
+        mock_bindings.model = ""
 
         monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
         monkeypatch.setattr(
@@ -3635,6 +3637,7 @@ class TestRuntimeWiring:
         mock_bindings = MagicMock()
         mock_bindings.workspace_dir = Path("/tmp/research")
         mock_bindings.memory_store_name = "default"
+        mock_bindings.model = ""
 
         monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
         monkeypatch.setattr(
@@ -3709,6 +3712,7 @@ class TestRuntimeWiring:
 
         mock_bindings = MagicMock()
         mock_bindings.memory_store_name = "oncall-mem"
+        mock_bindings.model = ""
 
         monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
         monkeypatch.setattr(

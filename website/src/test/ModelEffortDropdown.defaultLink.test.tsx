@@ -7,11 +7,13 @@ import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 
 /**
- * The in-session model picker offers a link out to the global default-model
- * setting. Two things must hold: the link only appears when a call site opts in
- * (so pickers without a router are unaffected), and the id it deep-links to
- * still exists in the generated settings registry — otherwise the link lands on
- * Settings with no highlight.
+ * The in-session model picker carries two footer rows: an in-place "set as
+ * default for <agent>" write, and a link out to the GLOBAL fallback setting.
+ * Three things must hold: each row only appears when a call site opts in (so
+ * pickers without a router / without an agent in scope are unaffected), the pin
+ * row reports rather than re-writes when the agent already pins the active
+ * model, and the id the link deep-links to still exists in the generated
+ * settings registry — otherwise the link lands on Settings with no highlight.
  */
 
 const baseProps = {
@@ -35,16 +37,16 @@ function wrap(ui: React.ReactElement) {
   return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
 }
 
-describe('ModelEffortDropdown — default-model link', () => {
+describe('ModelEffortDropdown — global fallback link', () => {
   it('is absent when the call site passes no handler', () => {
     wrap(<ModelEffortDropdown {...baseProps} />)
-    expect(screen.queryByText(/Set default for new sessions/)).toBeNull()
+    expect(screen.queryByText(/Global fallback for new sessions/)).toBeNull()
   })
 
   it('renders and fires when a handler is supplied', () => {
     const onSetDefault = vi.fn()
     wrap(<ModelEffortDropdown {...baseProps} onSetDefault={onSetDefault} />)
-    const link = screen.getByText(/Set default for new sessions/)
+    const link = screen.getByText(/Global fallback for new sessions/)
     fireEvent.click(link)
     expect(onSetDefault).toHaveBeenCalledTimes(1)
   })
@@ -52,7 +54,60 @@ describe('ModelEffortDropdown — default-model link', () => {
   it('coexists with the reasoning-effort footer', () => {
     wrap(<ModelEffortDropdown {...baseProps} hasEffort onSetDefault={vi.fn()} />)
     expect(screen.getByText('Reasoning')).toBeInTheDocument()
-    expect(screen.getByText(/Set default for new sessions/)).toBeInTheDocument()
+    expect(screen.getByText(/Global fallback for new sessions/)).toBeInTheDocument()
+  })
+})
+
+describe('ModelEffortDropdown — per-agent default row', () => {
+  // The primary way to set a default: writes the agent's own model in place,
+  // without a trip to Settings. Named for the agent so it is unambiguous which
+  // scope is being changed.
+  it('is absent without a handler', () => {
+    wrap(<ModelEffortDropdown {...baseProps} agentName="oncall" />)
+    expect(screen.queryByText(/default for oncall/i)).toBeNull()
+  })
+
+  it('is absent without an agent in scope', () => {
+    wrap(<ModelEffortDropdown {...baseProps} onPinToAgent={vi.fn()} />)
+    expect(screen.queryByText(/Set as default for/)).toBeNull()
+  })
+
+  it('names the agent and fires the in-place write', () => {
+    const onPinToAgent = vi.fn()
+    wrap(<ModelEffortDropdown {...baseProps} agentName="oncall" onPinToAgent={onPinToAgent} />)
+    fireEvent.click(screen.getByText('Set as default for oncall'))
+    expect(onPinToAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports state instead of offering a no-op write when already pinned', () => {
+    const onPinToAgent = vi.fn()
+    wrap(
+      <ModelEffortDropdown
+        {...baseProps}
+        agentName="oncall"
+        pinnedToAgent
+        onPinToAgent={onPinToAgent}
+      />
+    )
+    const row = screen.getByText('Default for oncall')
+    expect(screen.queryByText('Set as default for oncall')).toBeNull()
+    fireEvent.click(row)
+    expect(onPinToAgent).not.toHaveBeenCalled()
+  })
+
+  it('coexists with both other footer rows', () => {
+    wrap(
+      <ModelEffortDropdown
+        {...baseProps}
+        hasEffort
+        agentName="oncall"
+        onPinToAgent={vi.fn()}
+        onSetDefault={vi.fn()}
+      />
+    )
+    expect(screen.getByText('Reasoning')).toBeInTheDocument()
+    expect(screen.getByText('Set as default for oncall')).toBeInTheDocument()
+    expect(screen.getByText(/Global fallback for new sessions/)).toBeInTheDocument()
   })
 })
 
@@ -83,7 +138,7 @@ describe('ModelEffortDropdown — effort footer value', () => {
 
 describe('SETTINGS_DEFAULT_MODEL_ID', () => {
   it('resolves to a real entry in the generated settings registry', () => {
-    // Registry ids derive from the setting's LABEL. If the "Default Model" row
+    // Registry ids derive from the setting's LABEL. If the fallback-model row
     // is renamed without regenerating/updating this constant, the deep link
     // silently loses its highlight — fail here instead.
     const entry = SETTINGS_REGISTRY.find(e => e.id === SETTINGS_DEFAULT_MODEL_ID)

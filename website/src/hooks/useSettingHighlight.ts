@@ -17,6 +17,10 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'voice.aws-region': 'voice.aws-region-transcribe',
   'voice.aws-profile-2': 'voice.aws-profile-polly',
   'voice.aws-region-2': 'voice.aws-region-polly',
+  // "Default Model" became "Fallback Model" when the per-agent tier landed, and
+  // registry ids derive from the label — without this, links saved or bookmarked
+  // against the old id silently lose their highlight.
+  'chat.default-model': 'chat.fallback-model',
 }
 
 /** Rewrite a legacy highlight id to its current form (identity for current ids). */
@@ -35,7 +39,7 @@ export function resolveLegacyHighlightId(id: string): string {
  * `ModelEffortDropdown.defaultLink.test.tsx` asserts it still resolves in
  * SETTINGS_REGISTRY — so a rename fails a test instead of shipping a dead link.
  */
-export const SETTINGS_DEFAULT_MODEL_ID = 'chat.default-model'
+export const SETTINGS_DEFAULT_MODEL_ID = 'chat.fallback-model'
 
 /**
  * useSettingHighlight — deep-link + highlight hook for Settings.

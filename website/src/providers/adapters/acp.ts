@@ -148,26 +148,27 @@ export class AcpAdapter implements ProviderAdapter {
     return agent.kiro_agent || agent.name
   }
 
-  async resolveModel(templateName: string): Promise<string> {
-    // Mirror ConfigLoader._acp()'s precedence so the composer shows the model a
-    // turn would ACTUALLY run on, before a session exists to report one.
+  async resolveModel(agentName: string): Promise<string> {
+    // Ask the backend which model a new session on this agent would run on, so
+    // the composer shows the real value before a session exists to report one.
     //
-    //   builtin agent (no template, or the "kirocrew" one) → agent.model, and
-    //     only when that is unset/"auto" does the kiro agent file's own model
-    //     apply (the backend's _resolve_agent_model fallback).
-    //   named custom agent → its own pinned model (the global default ranks
-    //     BELOW a per-agent pin, per _resolve_named_agent_model).
+    // This deliberately does NOT re-derive the precedence client-side. The
+    // chain is four tiers deep (the KiroCrew agent's own model, the bound kiro
+    // agent's pin, the global agent.model default, the installed agent file)
+    // and a second copy of it here drifted from the backend's: a fresh slot
+    // displayed the kiro agent file's model while the turn actually ran on the
+    // configured default, and the mismatch only self-corrected once the first
+    // turn backfilled slot.model from the live session.
     //
-    // Without the config read, a fresh slot displayed the kiro agent file's
-    // model (e.g. claude-opus-4.8) while the turn ran on the configured default
-    // (claude-opus-5) — the mismatch only self-corrected once the first turn
-    // backfilled slot.model from the live session.
-    const isBuiltin = !templateName || templateName === 'kirocrew'
-    const [tmpl, cfgModel] = await Promise.all([
-      api.agentDetail(templateName).then(d => d?.model || '').catch(() => ''),
-      isBuiltin ? this.resolveDefaultModel() : Promise.resolve(''),
-    ])
-    return isBuiltin ? (cfgModel || tmpl) : tmpl
+    // `agentName` is a KiroCrew agent name (a "crew"), not a kiro agent
+    // template — the per-agent default is stored per crew, and several crews can
+    // share one template.
+    try {
+      const d = await api.agentResolvedModel(agentName)
+      return d?.model || ''
+    } catch {
+      return ''
+    }
   }
 
   /** KiroCrew's configured default model (Settings → Chat → Default Model).

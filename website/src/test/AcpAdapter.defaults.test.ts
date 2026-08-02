@@ -1,12 +1,15 @@
 // Regression: a fresh session displayed the kiro agent FILE's model
 // (~/.kiro/agents/kirocrew.json → e.g. claude-opus-4.8) while the turn actually
-// ran on the configured default (Settings → Chat → Default Model, e.g.
-// claude-opus-5). resolveModel must mirror ConfigLoader._acp()'s precedence so
-// the composer never advertises a model the backend won't use.
+// ran on the configured default (e.g. claude-opus-5). The precedence chain is
+// now four tiers deep (the KiroCrew agent's own model, the bound kiro agent's
+// pin, the global fallback, the installed agent file) and ONE backend resolver
+// owns it — resolveModel must delegate rather than keep a second copy that can
+// drift, which is what produced the original mismatch.
 
 vi.mock('../api/client', () => ({
   api: {
     agentDetail: vi.fn(),
+    agentResolvedModel: vi.fn(),
     kirocrewConfig: vi.fn(),
   },
 }))
@@ -15,48 +18,50 @@ import { api } from '../api/client'
 import { AcpAdapter } from '../providers/adapters/acp'
 
 const agentDetail = api.agentDetail as unknown as ReturnType<typeof vi.fn>
+const agentResolvedModel = api.agentResolvedModel as unknown as ReturnType<typeof vi.fn>
 const kirocrewConfig = api.kirocrewConfig as unknown as ReturnType<typeof vi.fn>
 
-describe('AcpAdapter.resolveModel — configured default vs agent file', () => {
+describe('AcpAdapter.resolveModel — delegates to the backend resolver', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('prefers the configured default model over the builtin agent file', async () => {
-    agentDetail.mockResolvedValue({ model: 'claude-opus-4.8' })
-    kirocrewConfig.mockResolvedValue({ agent: { model: 'claude-opus-5' } })
-    expect(await new AcpAdapter().resolveModel('kirocrew')).toBe('claude-opus-5')
+  it('returns the model the backend resolved for the agent', async () => {
+    agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
+    expect(await new AcpAdapter().resolveModel('oncall')).toBe('claude-opus-5')
   })
 
-  it('falls back to the agent file when no default is configured', async () => {
-    agentDetail.mockResolvedValue({ model: 'claude-opus-4.8' })
-    kirocrewConfig.mockResolvedValue({ agent: { model: '' } })
-    expect(await new AcpAdapter().resolveModel('kirocrew')).toBe('claude-opus-4.8')
+  it('passes the KiroCrew agent name through, not a kiro template name', async () => {
+    // Several agents can share one template, so the agent name is the only
+    // input that can select a per-agent pin.
+    agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
+    await new AcpAdapter().resolveModel('oncall')
+    expect(agentResolvedModel).toHaveBeenCalledWith('oncall')
   })
 
-  it('treats "auto" as no default — the backend resolves it from the agent file', async () => {
-    agentDetail.mockResolvedValue({ model: 'claude-opus-4.8' })
-    kirocrewConfig.mockResolvedValue({ agent: { model: 'auto' } })
-    expect(await new AcpAdapter().resolveModel('kirocrew')).toBe('claude-opus-4.8')
-  })
-
-  it('lets a named custom agent pin outrank the global default', async () => {
-    agentDetail.mockResolvedValue({ model: 'claude-sonnet-4.6' })
-    kirocrewConfig.mockResolvedValue({ agent: { model: 'claude-opus-5' } })
-    // _resolve_named_agent_model: the agent's own model wins; the global default
-    // applies only to the builtin (kirocrew) agent.
-    expect(await new AcpAdapter().resolveModel('my-agent')).toBe('claude-sonnet-4.6')
+  it('does NOT re-derive the precedence client-side', async () => {
+    agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
+    await new AcpAdapter().resolveModel('oncall')
+    expect(agentDetail).not.toHaveBeenCalled()
     expect(kirocrewConfig).not.toHaveBeenCalled()
   })
 
-  it('survives a config read failure by using the agent file', async () => {
-    agentDetail.mockResolvedValue({ model: 'claude-opus-4.8' })
-    kirocrewConfig.mockRejectedValue(new Error('503'))
-    expect(await new AcpAdapter().resolveModel('kirocrew')).toBe('claude-opus-4.8')
+  it('reports "" when every tier defers, so callers keep the backend-picks semantics', async () => {
+    agentResolvedModel.mockResolvedValue({ model: '' })
+    expect(await new AcpAdapter().resolveModel('oncall')).toBe('')
   })
 
-  it('survives an agent-detail failure by using the configured default', async () => {
-    agentDetail.mockRejectedValue(new Error('404'))
-    kirocrewConfig.mockResolvedValue({ agent: { model: 'claude-opus-5' } })
-    expect(await new AcpAdapter().resolveModel('kirocrew')).toBe('claude-opus-5')
+  it('survives a resolver failure by reporting no model rather than throwing', async () => {
+    agentResolvedModel.mockRejectedValue(new Error('503'))
+    expect(await new AcpAdapter().resolveModel('oncall')).toBe('')
+  })
+
+  it('survives a partially-mocked api client without throwing', async () => {
+    // Many suites mock ../api/client partially, so a newly-added method is
+    // undefined there and calling it raises synchronously. A mount-time resolve
+    // must degrade to "" rather than crash the tree.
+    agentResolvedModel.mockImplementation(() => {
+      throw new TypeError('api.agentResolvedModel is not a function')
+    })
+    expect(await new AcpAdapter().resolveModel('oncall')).toBe('')
   })
 })
 

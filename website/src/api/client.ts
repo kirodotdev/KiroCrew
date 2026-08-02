@@ -916,6 +916,10 @@ export const api = {
   agentMetadataSave: (name: string, content: string) => fetch('/api/agent-metadata/' + encodeURIComponent(name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }).then(j),
   // KiroCrew agents
   kirocrewAgents: () => fetch('/api/agents').then(j),
+  /** The model a new session on this KiroCrew agent would run on. Empty
+   *  `agent` resolves the configured default agent. */
+  agentResolvedModel: (agent: string) =>
+    fetch('/api/agents/resolved-model?agent=' + encodeURIComponent(agent)).then(j),
   syncKirocrewAgents: () => post('/api/agents/sync', {}).then(j),
   createKirocrewAgent: (body: object) => post('/api/agents', body).then(j),
   updateKirocrewAgent: (name: string, body: object) =>

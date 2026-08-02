@@ -49,6 +49,9 @@ vi.mock('../api/client', () => ({
     ]),
     agents: vi.fn().mockResolvedValue([]),
     agentDetail: vi.fn().mockResolvedValue({ model: 'claude-opus-5' }),
+    // The backend resolver now owns the default-model precedence; the composer
+    // asks it what an un-pinned slot would run on.
+    agentResolvedModel: vi.fn().mockResolvedValue({ model: 'claude-opus-5' }),
     chatSlotModel: vi.fn().mockResolvedValue({ ok: true }),
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
     slackChannels: vi.fn().mockResolvedValue([]),
@@ -152,9 +155,9 @@ describe('ChatPage — Auto model selection', { timeout: 15_000 }, () => {
     expect(autoOption.getAttribute('aria-selected')).toBe('true')
   })
 
-  it('still inherits the agent template model when no model was ever chosen', async () => {
+  it('still inherits the resolved default when no model was ever chosen', async () => {
     // Unchanged behaviour for the legacy/never-chosen slot: an absent model
-    // resolves to the agent's own model rather than displaying Auto.
+    // shows what the backend resolver reports for the agent rather than Auto.
     await renderChat(undefined)
     expect(await waitFor(() => screen.getByTitle(`Model: ${AGENT_MODEL}`))).toBeTruthy()
   })

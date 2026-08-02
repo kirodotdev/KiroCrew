@@ -124,7 +124,11 @@ export interface ProviderAdapter {
   readonly labels: ProviderLabels
 
   resolveAgentTemplate(agent: AgentBinding): string
-  resolveModel(templateName: string): Promise<string>
+  /** The model a NEW session on this KiroCrew agent would run on ('' = the
+   *  backend picks). Takes a KiroCrew agent name, not a kiro agent template:
+   *  the per-agent default is stored per agent, and several agents can share
+   *  one template. */
+  resolveModel(agentName: string): Promise<string>
   /** The provider-level default model for NEW sessions ('' when none is set).
    *  Distinct from resolveModel, which resolves a specific agent template. */
   resolveDefaultModel(): Promise<string>

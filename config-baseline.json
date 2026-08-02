@@ -4526,6 +4526,20 @@
       "defaultValue": "default"
     },
     {
+      "path": "agents.*.model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Model",
+      "help": "Default model for sessions on this agent. Empty inherits: the bound kiro agent's own pinned model first, then the global agent.model fallback. A per-session pick still overrides this.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.description",
       "kind": "core",
       "type": "string",

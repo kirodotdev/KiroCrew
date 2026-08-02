@@ -13,6 +13,9 @@ export interface KiroCrewAgent {
   kiro_agent: string
   workspace: string
   memory_store: string
+  /** This agent's own default model. '' means inherit (kiro template pin, then
+   *  the global fallback). Optional: older payloads predate the field. */
+  model?: string
   description: string
   source: string
 }

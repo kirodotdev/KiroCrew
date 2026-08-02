@@ -1673,7 +1673,7 @@
       "this_session_has_no_project_directory_so_there_i": "Cette session n’a pas de répertoire de projet, il n’y a donc aucun dépôt d’où créer une branche"
     },
     "inboundLinkChip": {
-      "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Vous pouvez la rattacher avec !sessions depuis ce canal.",
+      "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Tu peux la rattacher avec !sessions depuis ce canal.",
       "driven_from": "Pilotée depuis {{label}}",
       "release": "Dissocier",
       "release_aria": "Dissocier cette session de {{label}}",
@@ -1832,15 +1832,6 @@
       "waiting_for_sign_in": "En attente de la connexion…",
       "we_could_not_check_kiro_cli": "Nous n'avons pas pu vérifier Kiro CLI.",
       "your_crew_is_almost_ready": "Votre équipe est presque prête."
-    },
-    "inboundLinkChip": {
-      "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Tu peux la rattacher avec !sessions depuis ce canal.",
-      "driven_from": "Pilotée depuis {{label}}",
-      "release": "Dissocier",
-      "release_aria": "Dissocier cette session de {{label}}",
-      "release_failed": "Impossible de dissocier la session : {{reason}}",
-      "released": "Dissociée de {{label}}",
-      "tooltip": "Cette session est liée à {{label}} dans les deux sens : les réponses y sont transmises et les messages envoyés là-bas arrivent ici."
     },
     "linkedSurfacesSection": {
       "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Tu peux la rattacher avec !sessions depuis ce canal.",
@@ -2031,11 +2022,13 @@
       "no_matches": "Aucun résultat"
     },
     "modelEffortDropdown": {
+      "default_for_agent": "Par défaut pour {{agent}}",
       "filter_models": "Filtrer les modèles",
       "model_list": "Liste des modèles",
       "models": "Modèles",
       "reasoning": "Raisonnement",
-      "set_default_for_new_sessions": "Définir par défaut pour les nouvelles sessions…",
+      "set_default_for_agent": "Définis par défaut pour {{agent}}",
+      "set_default_for_new_sessions": "Repli global pour les nouvelles sessions…",
       "type_to_filter": "Saisir pour filtrer…"
     },
     "monacoCodeBlock": {
@@ -3766,6 +3759,7 @@
       "collapse_knowledge_context": "Réduire le contexte de connaissances",
       "connection_error": "Erreur de connexion",
       "continue_a_previous_chat": "Reprendre un chat précédent ?",
+      "could_not_set_the_agent_default_model": "Impossible de définir le modèle par défaut de l’agent",
       "could_not_start_a_new_session": "Impossible de démarrer une nouvelle session",
       "dismiss_error": "Ignorer l'erreur",
       "dismiss_upload_error": "Ignorer l'erreur d'envoi",
@@ -4205,6 +4199,7 @@
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Un identifiant unique pour cet espace de travail. Les agents référencent les espaces de travail par leur nom.",
+      "actions": "Actions",
       "agents": "Crews",
       "cancel": "Annuler",
       "close_dialog": "Fermer la boîte de dialogue",
@@ -4223,19 +4218,23 @@
       "edit": "Modifier",
       "edit_agent_template": "Modifier le modèle d'agent",
       "edit_memory_store": "Modifier le magasin de mémoire",
+      "edit_model": "Modifier le modèle par défaut",
       "edit_workspace": "Modifier l'espace de travail",
       "failed_to_create_agent": "Échec de la création de l’agent",
       "failed_to_create_workspace": "Échec de la création de l’espace de travail",
       "failed_to_delete_agent": "Échec de la suppression de l’agent",
       "failed_to_update_agent": "Échec de la mise à jour de l’agent",
       "filter_agents": "Filtrer les crews…",
+      "inherited": "Hérité",
       "manage_agent_workspace_memory_store_bindings": "Les crews avec qui vous discutez, chacun avec son propre espace de travail et sa mémoire",
       "memory_store": "Magasin de mémoire",
+      "model": "Modèle",
       "name": "Nom",
       "name_is_required": "Le nom est obligatoire",
       "no_agents": "Aucun crew",
       "none": "— aucun —",
       "save": "Enregistrer",
+      "source": "Source",
       "subdirectory_inside_kiro_crew_where_this_workspa": "Sous-répertoire dans ~/.kiro/crew où cet espace de travail stocke ses données (historique des chats, leçons, projets). Chaque espace de travail dispose de son propre répertoire isolé.",
       "total_agents": "Nombre de crews",
       "workspace": "espace de travail",
@@ -5243,8 +5242,8 @@
         "content_width": "Largeur du contenu",
         "context": "Contexte",
         "context_usage_at_which_auto_compaction_triggers": "% d'utilisation du contexte à partir duquel le compactage automatique se déclenche. Plus bas = compactage plus fréquent, sessions plus longues",
-        "default_defers_to_your_agent_config_and_then_to": "« Par défaut » s'appuie sur la configuration de votre agent, puis sur celle de Kiro. Ce réglage n'affecte pas les sessions déjà ouvertes.",
-        "default_model": "Modèle par défaut",
+        "default_defers_to_your_agent_config_and_then_to": "Repli uniquement : un agent qui définit son propre modèle l’ignore. « Par défaut » s’appuie sur ta configuration d’agent, puis sur celle de Kiro. Ce réglage n’affecte pas les sessions déjà ouvertes.",
+        "default_model": "Modèle de repli",
         "default_reasoning_effort": "Effort de raisonnement par défaut",
         "default_to_autopilot_mode": "Mode Autopilot par défaut",
         "dismiss": "Ignorer",
@@ -5294,7 +5293,7 @@
         "time_window_for_session_restoration": "Fenêtre temporelle pour la restauration des sessions",
         "trim_filler_and_over_narration_lead_with_the_ans": "Supprimer le remplissage et la sur-narration : commencer par la réponse, garder des notes de progression générales. Le code, les commandes et les messages d'erreur restent tels quels ; les avertissements de sécurité et les instructions en plusieurs étapes conservent tous leurs détails.",
         "when_enabled_inline_tool_pills_show_simplified_t": "Lorsque cette option est activée, les pastilles d'outils en ligne indiquent l'objectif simplifié de l'outil au lieu de la commande exacte exécutée",
-        "which_model_new_sessions_start_with_pick_a_model": "Le modèle avec lequel démarrent les nouvelles sessions. Choisissez un modèle dans une session pour le remplacer localement.",
+        "which_model_new_sessions_start_with_pick_a_model": "Le modèle avec lequel démarrent les nouvelles sessions quand leur agent n’en fixe aucun. Définis un modèle pour chaque crew dans Capacités de l’agent → Crews, ou choisis-en un dans une session pour le remplacer localement.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Quelle partie du flux d'un sous-agent conserver lors de l'injection de son événement de fin dans la session parente. Début conserve le commencement (par défaut, correspond au comportement historique). Fin conserve le résumé final. Les deux conserve une tranche à chaque extrémité, avec un marqueur entre elles.",
         "widget_density": "Densité des widgets",
         "your_role": "Votre rôle"

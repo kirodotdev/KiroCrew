@@ -21,8 +21,11 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewAgentConfig,
     KiroCrewConfig,
+    normalize_agent_model,
     read_config_for_update,
+    resolve_agent_bindings,
     resolve_agent_config_path,
+    resolve_effective_model,
     write_config_atomically,
 )
 from kiro_crew.config.schema import SCHEMA_REGISTRY, config_entry_to_dict
@@ -1204,6 +1207,31 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "synced": synced, "pruned": pruned})
 
 
+async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Response:
+    """GET /api/agents/resolved-model?agent=NAME — the model a new session uses.
+
+    Serves the one backend resolver so the dashboard's model chip does not have
+    to re-derive the precedence client-side (and drift from it). ``agent`` is a
+    KiroCrew agent name; omitted falls back to the configured default agent.
+    ``model`` is "" when every tier defers to the backend's own choice.
+    """
+    agent_name = request.query.get("agent", "").strip()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    # Globs ~/.kiro/agents and may read the installed agent file — keep the
+    # filesystem work off the event loop.
+    model = await asyncio.to_thread(resolve_effective_model, cfg, agent_name or None)
+    bindings = resolve_agent_bindings(cfg, agent_name or None)
+    return web.json_response(
+        {
+            "model": model,
+            "agent": agent_name,
+            "kiro_agent": bindings.kiro_agent,
+            # Whether the agent itself pins the model, vs inheriting it.
+            "pinned": bool(bindings.model),
+        }
+    )
+
+
 async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     """POST /api/agents — create a new KiroCrew agent."""
 
@@ -1222,6 +1250,11 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             kiro_agent=body.get("kiro_agent", "kirocrew"),
             workspace=body.get("workspace", "default"),
             memory_store=body.get("memory_store", "default"),
+            # Passed RAW, not str()-coerced: normalize_agent_model is total and
+            # maps a non-string to "" (inherit). Wrapping in str() first would
+            # turn {"model": 123} into the literal "123", which normalizes to a
+            # string the backend then rejects as an unknown model id.
+            model=normalize_agent_model(body.get("model")),
             description=body.get("description", ""),
             source=body.get("source", "kirocrew"),
         )
@@ -1259,6 +1292,12 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "memory_store" in body:
             agent.memory_store = body["memory_store"]
             changed.append("memory_store")
+        if "model" in body:
+            # "auto"/"" both mean inherit; store the single "" spelling so the
+            # agent keeps deferring to the kiro pin / global fallback. Raw, not
+            # str()-coerced — see the create path for why.
+            agent.model = normalize_agent_model(body["model"])
+            changed.append("model")
         if "description" in body:
             agent.description = body["description"]
             changed.append("description")

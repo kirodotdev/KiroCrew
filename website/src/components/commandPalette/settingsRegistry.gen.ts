@@ -113,14 +113,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "chat.default-model",
-    "label": "Default Model",
-    "description": "Which model new sessions start with. Pick a model inside a session to override it there.",
-    "tab": "chat",
-    "type": "select",
-    "occurrence": 1
-  },
-  {
     "id": "chat.default-reasoning-effort",
     "label": "Default Reasoning Effort",
     "description": "How long models think before answering by default. Higher is slower and costs more. Only available on reasoning-capable models (Opus, Sonnet, Fable, GPT-5.x).",
@@ -134,6 +126,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "New sessions start in autopilot mode (plan → approve → execute). You can still toggle individual sessions.",
     "tab": "chat",
     "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.fallback-model",
+    "label": "Fallback Model",
+    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Crews, or pick one inside a session to override it there.",
+    "tab": "chat",
+    "type": "select",
     "occurrence": 1
   },
   {
