@@ -8,6 +8,7 @@ import { fileReadUrl } from '../../utils/fileReadUrl'
 import { LogViewer } from '../LogsPage'
 import TrustDropdown from '../../components/TrustDropdown'
 import Clickable from '../../components/Clickable'
+import { Badge } from '../../components/ui'
 import type { SubagentActivity, ToolActivity, SessionDoc, Artifact } from '../../types'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import { getInlineDraft, setInlineDraft, clearInlineDraft } from '../../hooks/usePanelTabs'
@@ -193,8 +194,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           : {})}
       >
         <span className="shrink-0 flex items-center">{STATUS[a.status]}</span>
-        <span className="text-[13px] font-semibold text-text truncate min-w-0" title={`Subagent ${statusLabel}`}>{statusLabel}</span>
+        <span className="text-[13px] font-semibold text-text truncate min-w-0" title={`Subagent ${statusLabel}`}>{a.task ? a.task.split('\n')[0].slice(0, 60) : (a.id.startsWith('native:') ? a.id.slice(7, 15) : a.id.slice(0, 8))}</span>
         {a.agent && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={a.agent}>{a.agent}</code>}
+        <Badge variant={isPending ? 'warn' : isDone ? (a.status === 'error' ? 'err' : 'ok') : 'aim'} >{statusLabel}</Badge>
         {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{fmtElapsed}</span>}
         {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}

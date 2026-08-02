@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import logging
+import os
 import sys
 import time
+from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.dashboard.origin import check_origin
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import (
+    NATIVE_SUBAGENT_TERMINAL_KEEP,
+    NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
+    DashboardState,
+)
+from kiro_crew.platform_compat import pid_exists
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.subagent_persistence import _subagents_dir, read_state
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +36,153 @@ SUBAGENT_REPLAY_BATCH_THRESHOLD = 8
 
 SIDE_RESULT_EVENT = "chat.side_result"
 SIDE_KIND = "side"
+
+# Bound the persistence scan: examine at most this many of the newest agent
+# folders (by mtime) so a long-lived install with thousands of folders does not
+# turn a reconnect into an unbounded stat storm. The replayed count is further
+# capped at NATIVE_SUBAGENT_TERMINAL_KEEP.
+_PERSIST_SCAN_CAP = 200
+
+
+def _redact_replay_text(text: str) -> str:
+    """Apply the exfil-URL + credential redaction the WS replay uses."""
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text
+
+
+def _entry_mtime(entry: os.DirEntry) -> float:
+    try:
+        return entry.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _collect_persisted_replay_frames(seen_ids: set[str], now: float) -> list[dict]:
+    """Build subagent replay frames from the durable persistence store (#759).
+
+    Runs entirely OFF the event loop (see the ``asyncio.to_thread`` call site):
+    the issue explicitly required the disk reads not stall the loop. Returns
+    ``subagent_snapshot`` / ``subagent_done`` frames for persisted agents the
+    in-memory manager no longer knows - e.g. after a gateway restart. Bounded by
+    ``_PERSIST_SCAN_CAP`` (directory walk) and ``NATIVE_SUBAGENT_TERMINAL_KEEP``
+    (replayed count), filtered by ``NATIVE_SUBAGENT_TERMINAL_TTL_SECS``.
+
+    An agent still marked ``running`` with no tombstone whose recorded PID is no
+    longer alive is a crashed/orphaned process, not a live one: it replays as a
+    terminal ``subagent_done`` (outcome ``failed``) so the panel rebuilds a card
+    for it rather than dropping it or showing a permanently stuck running card.
+    """
+    frames: list[dict] = []
+    sd = _subagents_dir()
+    try:
+        if not sd.is_dir():
+            return frames
+        with os.scandir(sd) as it:
+            entries = [e for e in it if e.is_dir()]
+    except OSError:
+        return frames
+
+    min_started = now - NATIVE_SUBAGENT_TERMINAL_TTL_SECS
+    # newest-first, bounded: nlargest is O(n log k) and caps how many candidates
+    # we then read, instead of sorting every folder.
+    candidates = heapq.nlargest(_PERSIST_SCAN_CAP, entries, key=_entry_mtime)
+
+    count = 0
+    for entry in candidates:
+        if count >= NATIVE_SUBAGENT_TERMINAL_KEEP:
+            break
+        name = entry.name
+        if name in seen_ids:
+            continue
+        ps = read_state(name)
+        if not ps:
+            continue
+        started = ps.get("started", 0) or 0
+        if started < min_started:
+            continue
+        parent = ps.get("parent_session", "") or ""
+        slot = parent.removeprefix("dashboard:") if parent.startswith("dashboard:") else ""
+        if not slot:
+            continue
+
+        task = _redact_replay_text(str(ps.get("task", "")))
+        agent = _redact_replay_text(str(ps.get("agent", "") or "kirocrew"))
+        tombstone_path = Path(entry.path) / "tombstone.json"
+        has_tombstone = tombstone_path.exists()
+        status_running = ps.get("status") == "running"
+        # Liveness: a running-marked agent with no tombstone whose PID is dead
+        # (or was never recorded) crashed without a terminal marker.
+        pid = ps.get("pid")
+        alive = pid_exists(int(pid)) if pid else False
+        crashed = status_running and not has_tombstone and not alive
+
+        if has_tombstone or not status_running or crashed:
+            error = ""
+            outcome = "completed"
+            elapsed = 0.0
+            if has_tombstone:
+                try:
+                    ts = json.loads(tombstone_path.read_text(encoding="utf-8"))
+                    cause = ts.get("cause", "")
+                    if cause == "delivered":
+                        outcome = "completed"
+                    elif cause:
+                        outcome = "failed"
+                        error = cause
+                    died = ts.get("died", 0)
+                    elapsed = max(0, died - started) if died else 0
+                except (json.JSONDecodeError, OSError):
+                    pass
+            elif crashed:
+                outcome = "failed"
+                error = "process ended without reporting a result"
+            frames.append(
+                {
+                    "type": "subagent_done",
+                    "data": {
+                        "id": name,
+                        "slot": slot,
+                        "elapsed": elapsed,
+                        "error": _redact_replay_text(error) if error else None,
+                        "stopped": False,
+                        "outcome": outcome,
+                        "task": task,
+                        "agent": agent,
+                    },
+                }
+            )
+        else:
+            frames.append(
+                {
+                    "type": "subagent_snapshot",
+                    "data": {
+                        "id": name,
+                        "slot": slot,
+                        "task": task,
+                        "agent": agent,
+                        "streaming": "",
+                        "last_tool": _redact_replay_text(str(ps.get("last_tool", ""))),
+                        "tool_count": ps.get("turns", 0),
+                        "stalled": False,
+                        "started": started,
+                    },
+                }
+            )
+        count += 1
+    return frames
+
+
+async def _load_persisted_replay_frames(seen_ids: set[str]) -> list[dict]:
+    """Off-loop wrapper for :func:`_collect_persisted_replay_frames` (#759).
+
+    The collector does blocking disk I/O (scandir + stat + json reads); running
+    it inline on the event loop would stall every other coroutine on the gateway
+    the moment a client reconnects. Mirror ``_load_status_counts`` and hop to a
+    worker thread. The pusher/reconnect path is not latency-critical, so the
+    extra thread hop is free.
+    """
+    return await asyncio.to_thread(_collect_persisted_replay_frames, seen_ids, time.time())
 
 
 async def _load_status_counts(state: DashboardState) -> tuple[int, int]:
@@ -244,9 +400,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.warning(
-                    "check-status refresh round failed; continuing", exc_info=True
-                )
+                logger.warning("check-status refresh round failed; continuing", exc_info=True)
 
     check_task = asyncio.create_task(_refresh_check_loop()) if owner_request else None
     try:
@@ -301,7 +455,18 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                                 "elapsed": native["elapsed"],
                                                 "error": _r(str(_err)) if _err else None,
                                                 "stopped": bool(native.get("stopped")),
-                                                "outcome": str(native.get("outcome") or ("stopped" if native.get("stopped") else ("failed" if native.get("error") else "completed"))),
+                                                "outcome": str(
+                                                    native.get("outcome")
+                                                    or (
+                                                        "stopped"
+                                                        if native.get("stopped")
+                                                        else (
+                                                            "failed"
+                                                            if native.get("error")
+                                                            else "completed"
+                                                        )
+                                                    )
+                                                ),
                                                 "task": _r(str(native["task"])),
                                                 "agent": _r(str(native["agent"])),
                                                 "result": _r(str(native["result"])),
@@ -373,6 +538,25 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                     )
                                 except Exception:
                                     pass
+                        # --- Persistence fallback (#759): replay persisted
+                        # records for agents the in-memory manager no longer
+                        # knows (e.g. after a gateway restart). The scan does
+                        # blocking disk I/O (scandir + stat + json reads), so it
+                        # runs OFF the event loop via a worker thread - the issue
+                        # explicitly required the disk reads not stall the loop.
+                        _seen_ids = {
+                            f.get("data", {}).get("id")
+                            for f in _replay
+                            if f.get("data", {}).get("id")
+                        }
+                        try:
+                            _persisted = await _load_persisted_replay_frames(_seen_ids)
+                            _replay.extend(_persisted)
+                        except Exception:
+                            logger.debug(
+                                "subscribe_subagents: persistence fallback failed",
+                                exc_info=True,
+                            )
                         try:
                             if len(_replay) > SUBAGENT_REPLAY_BATCH_THRESHOLD:
                                 await ws.send_json(
