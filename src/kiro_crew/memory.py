@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew._sqlite_compat import FTS5_UNAVAILABLE_HINT, fts5_available, sqlite3
 from kiro_crew.config.loader import config_dir
+from kiro_crew.metrics.db_metrics import timed, timed_query
 from kiro_crew.platform_compat import file_lock
 
 if TYPE_CHECKING:
@@ -341,6 +342,7 @@ class MemoryStore:
 
     # ── Context Injection ──
 
+    @timed("memory", "read")
     def get_context(
         self,
         prefs_cap: int = 4_000,
@@ -502,15 +504,21 @@ class MemoryStore:
         """Search memory using FTS5. Returns [{path, snippet, rank}]."""
         conn = None
         try:
-            conn = self._get_db()
-            cursor = conn.execute(
-                "SELECT path, snippet(memory_fts, 1, '>>>', '<<<', '...', 32), rank "
-                "FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
-                (query, limit),
-            )
-            results = [
-                {"path": row[0], "snippet": row[1], "rank": row[2]} for row in cursor.fetchall()
-            ]
+            # Inside the try, not around it: this method handles its own errors
+            # and returns [], so a timer wrapping the whole call would record
+            # every failure as a success. Here a raising query is tagged
+            # outcome=error before the except below swallows it.
+            with timed_query("memory", "search"):
+                conn = self._get_db()
+                cursor = conn.execute(
+                    "SELECT path, snippet(memory_fts, 1, '>>>', '<<<', '...', 32), rank "
+                    "FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
+                    (query, limit),
+                )
+                results = [
+                    {"path": row[0], "snippet": row[1], "rank": row[2]}
+                    for row in cursor.fetchall()
+                ]
             return results
         except Exception:
             logger.debug("FTS search failed", exc_info=True)

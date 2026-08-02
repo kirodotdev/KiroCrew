@@ -38,10 +38,12 @@ try:
         raise ImportError("pysqlite3 present but incomplete (no connect)")
 except ImportError:
     import sqlite3
+
 import time
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir
+from kiro_crew.metrics.db_metrics import timed
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # Consolidation caps live in vector_memory_constants (a light module with no
@@ -545,6 +547,7 @@ class VectorMemoryStore:
         rows = self.db.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    @timed("vector", "write")
     def set_semantic(
         self,
         key: str,
@@ -794,6 +797,7 @@ class VectorMemoryStore:
         if seen:
             logger.info("Retired %d stale episodic entries for key %r", len(seen), key)
 
+    @timed("vector", "search")
     def search_semantic(self, prefix: str) -> list[dict]:
         """Search semantic memory by key prefix."""
         rows = self.db.execute(
@@ -1288,6 +1292,7 @@ class VectorMemoryStore:
                 is not None
             )
 
+    @timed("vector", "search")
     def search_episodic(
         self,
         query_embedding: list[float] | None = None,
