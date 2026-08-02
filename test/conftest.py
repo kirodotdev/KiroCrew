@@ -48,7 +48,6 @@ if platform_compat.IS_WINDOWS:
         "test_pid_lifecycle.py",  # process-group semantics
         "test_pid_sweep_helpers.py",  # process-group semantics
         "test_process_tree_kill.py",  # killpg/getpgid semantics
-        "test_mcp_gateway_claim.py",  # AF_UNIX + SO_PEERCRED
         "test_source_providers.py",  # providers require the POSIX sandbox
         # Feature-parity gaps observed on the first Windows runs -- each is a
         # POSIX-shaped feature or test suite tracked as a Windows follow-up:

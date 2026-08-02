@@ -111,6 +111,85 @@ jobs:
           fi
           test -f cli.sh || { echo "::error::cli.sh is missing from the checkout."; exit 1; }
 
+      # The strict installer ships fail-closed: until KMS provisioning pins a
+      # real key fingerprint, cli.sh carries CLI_MANIFEST_KEY_ID=UNCONFIGURED
+      # and refuses every install before any network I/O. That is correct as a
+      # repository contract, but publishing it would replace the live
+      # `curl … | sh` one-liner with a script that hard-fails on all three
+      # channels. packaging/signing/README.md step 6 orders "publish the strict
+      # cli.sh only after a signed channel feed exists" -- this step is the
+      # mechanical enforcement of that ordering, so a merge alone can never
+      # brick the documented install path.
+      - name: Refuse to publish an unconfigured trust root
+        run: |
+          set -euo pipefail
+          key_id=$(sed -n 's/^CLI_MANIFEST_KEY_ID="\(.*\)"$/\1/p' cli.sh | head -n 1)
+          if [ -z "$key_id" ]; then
+            echo "::error::cli.sh no longer pins CLI_MANIFEST_KEY_ID; refusing to publish an installer without a manifest trust root."
+            exit 1
+          fi
+          if [ "$key_id" = "UNCONFIGURED" ]; then
+            echo "::error::cli.sh pins CLI_MANIFEST_KEY_ID=UNCONFIGURED (fail-closed pre-KMS state). Publishing it would brick 'curl … | sh' for every channel. Complete packaging/signing/README.md steps 1-6 and pin the real key fingerprint first."
+            exit 1
+          fi
+          public_key_b64=$(sed -n 's/^CLI_MANIFEST_PUBLIC_KEY_B64="\(.*\)"$/\1/p' cli.sh | head -n 1)
+          if [ -z "$public_key_b64" ]; then
+            echo "::error::cli.sh no longer pins CLI_MANIFEST_PUBLIC_KEY_B64; refusing to publish an installer without an embedded public key."
+            exit 1
+          fi
+          if ! printf '%s' "$public_key_b64" | base64 -d > /tmp/cli-manifest-public.pem; then
+            echo "::error::cli.sh pins a malformed base64 manifest public key; refusing to publish."
+            exit 1
+          fi
+          if ! openssl pkey -pubin -in /tmp/cli-manifest-public.pem \
+              -outform DER -out /tmp/cli-manifest-public.der; then
+            echo "::error::cli.sh pins an invalid manifest public key; refusing to publish."
+            exit 1
+          fi
+          derived_key_id="sha256:$(sha256sum /tmp/cli-manifest-public.der | awk '{print $1}')"
+          if [ "$key_id" != "$derived_key_id" ]; then
+            echo "::error::CLI_MANIFEST_KEY_ID '${key_id}' does not match the embedded public key fingerprint '${derived_key_id}'; refusing to publish an installer that would reject every signed feed."
+            exit 1
+          fi
+          echo "Manifest trust root pinned and self-consistent: ${key_id}"
+
+      # A pinned key is necessary but NOT sufficient: the strict installer
+      # refuses any feed it cannot verify, so publishing it while a LIVE
+      # channel still serves a legacy (unsigned, or signed-by-another-key)
+      # feed bricks that channel's installs just the same. Prove every live
+      # feed is installable by the strict installer before replacing it.
+      # A channel with NO feed (404) is skipped with a warning: it is not
+      # installable by the CURRENT installer either, so publishing is not a
+      # regression for it. Verification reuses the exact schema/fingerprint/
+      # signature checks cli.sh itself performs (cli-manifest.py verify).
+      - name: Verify every live channel feed against the pinned key
+        run: |
+          set -euo pipefail
+          sed -n 's/^CLI_MANIFEST_PUBLIC_KEY_B64="\(.*\)"$/\1/p' cli.sh | head -n 1 \
+            | base64 -d > /tmp/pinned-public.pem
+          test -s /tmp/pinned-public.pem || { echo "::error::cli.sh pins no manifest public key."; exit 1; }
+          for channel in nightly insider stable; do
+            feed_url="${CDN_BASE}/feed/${channel}/latest-cli.json"
+            status=$(curl -fsS --proto '=https' -o "/tmp/feed-${channel}.json" \
+              -w '%{http_code}' "$feed_url" || true)
+            if [ "$status" = "404" ] || [ "$status" = "403" ]; then
+              echo "::warning::channel '${channel}' serves no feed (${status}); not installable today, so not a publish regression. Skipping."
+              continue
+            fi
+            if [ "$status" != "200" ]; then
+              echo "::error::channel '${channel}' feed fetch failed (${status}); refusing to publish without proving it verifiable."
+              exit 1
+            fi
+            if ! python3 packaging/signing/cli-manifest.py verify \
+                --manifest "/tmp/feed-${channel}.json" \
+                --public-key /tmp/pinned-public.pem \
+                --expected-channel "$channel" \
+                --artifact-base "${CDN_BASE}"; then
+              echo "::error::channel '${channel}' live feed does not verify against the pinned key. Publishing the strict installer would brick '${channel}' installs. Publish signed feeds (packaging/signing/README.md step 6) first."
+              exit 1
+            fi
+          done
+
       # Catches the class of bug that motivated this lane: a syntax error or a
       # channel/prefix mismatch would otherwise reach every new user's shell.
       # The repo's own contract tests (test_publish_feed_contract.py) assert the

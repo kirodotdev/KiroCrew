@@ -116,7 +116,7 @@ export default function LabelPalette({
         })}
       </div>
       {searchOpen && matchedNames.size === 0 && (
-        <div className="text-[12px] text-muted">{i18nT('apps.issueRadar.components.labelPalette.no_labels_match')}{labelQuery}”.</div>
+        <div className="text-[12px] text-muted">{i18nT('apps.issueRadar.components.labelPalette.no_labels_match_query', { query: labelQuery })}</div>
       )}
     </div>
   )

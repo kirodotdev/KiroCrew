@@ -110,13 +110,27 @@ class TestReceive:
         async def _dispatch(inb: TeamsInbound) -> None:
             dispatched.append(inb)
 
-        t = TeamsTransport(
-            _FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch
-        )
+        t = TeamsTransport(_FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch)
         await t.receive(_dm())
         assert len(dispatched) == 1
         # serviceUrl learned for the conversation
         assert t.service_url_for("conv-1") == "https://smba.example.com/"
+
+    @pytest.mark.asyncio
+    async def test_configured_target_becomes_available_after_inbound(self) -> None:
+        async def _dispatch(inbound: TeamsInbound) -> None:
+            return None
+
+        transport = TeamsTransport(
+            _FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch
+        )
+        assert transport.configured_targets()[0].available is False
+        await transport.receive(_dm())
+        assert transport.configured_targets()[0].available is True
+        assert await transport.resolve_configured_target("user:alice@example.com") == (
+            "conv-1",
+            None,
+        )
 
     @pytest.mark.asyncio
     async def test_channel_scope_denied_and_audited(self, monkeypatch) -> None:
@@ -127,9 +141,7 @@ class TestReceive:
         async def _dispatch(inb: TeamsInbound) -> None:
             dispatched.append(inb)
 
-        t = TeamsTransport(
-            _FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch
-        )
+        t = TeamsTransport(_FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch)
         inb = _dm()
         inb.conversation_type = "channel"
         await t.receive(inb)
@@ -145,9 +157,7 @@ class TestReceive:
         async def _dispatch(inb: TeamsInbound) -> None:
             dispatched.append(inb)
 
-        t = TeamsTransport(
-            _FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch
-        )
+        t = TeamsTransport(_FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch)
         # Neither email nor AAD object id -> unresolved -> denied.
         await t.receive(_dm(email="", aad=""))
         assert dispatched == []
@@ -177,9 +187,7 @@ class TestReceive:
         async def _dispatch(inb: TeamsInbound) -> None:
             dispatched.append(inb)
 
-        t = TeamsTransport(
-            _FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch
-        )
+        t = TeamsTransport(_FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch)
         await t.receive(_dm(text=""))
         assert dispatched == []
 
@@ -196,8 +204,6 @@ class TestReceive:
         async def _dispatch(inb: TeamsInbound) -> None:
             dispatched.append(inb)
 
-        t = TeamsTransport(
-            _FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch
-        )
+        t = TeamsTransport(_FakeClient(), allowed_emails=["alice@example.com"], dispatch=_dispatch)
         await t.receive(_dm(email="mallory@evil.com"))
         assert dispatched == []

@@ -33,6 +33,14 @@ from kiro_crew.apps.registry import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _explicit_registry_execution_admission(monkeypatch):
+    """Registry tests exercise admitted installs unless they say otherwise."""
+    monkeypatch.setattr(
+        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
+    )
+
+
 @pytest.fixture()
 def cache_dir(tmp_path, monkeypatch):
     """Redirect manifest cache to a temp directory."""

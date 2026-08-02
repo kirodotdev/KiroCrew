@@ -32,6 +32,15 @@ import pytest
 from kiro_crew import platform_compat
 from kiro_crew.apps import registry
 
+
+@pytest.fixture(autouse=True)
+def _explicit_registry_execution_admission(monkeypatch):
+    """These tests must reach admitted registry subprocess paths."""
+    monkeypatch.setattr(
+        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
+    )
+
+
 # A portable long-lived child: sleeps well past any test timeout without
 # relying on POSIX-only binaries (``sleep``/``bash`` are absent on native
 # Windows, where they would fail collection with FileNotFoundError).

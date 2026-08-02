@@ -424,6 +424,10 @@ async def _run_hook_inner(
         )
     result_text = ""
     _complete_event: object | None = None
+    # Wall clock for the webhook agent turn: acp leaves TurnUsage.duration_ms
+    # at 0, so without this the row records a literal 0. Started after the
+    # context build so prompt assembly is not charged to the turn.
+    _turn_t0 = time.monotonic()
     async for event in client.stream(full_message):
         if event.kind == EVENT_TEXT_CHUNK:
             result_text += event.text
@@ -454,6 +458,7 @@ async def _run_hook_inner(
             agent=read_effective_agent(client) or agent or "",
             context_used=_used,
             context_window=_window,
+            elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
             model_source=client,
         )
     except Exception:

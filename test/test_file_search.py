@@ -129,12 +129,28 @@ class TestFileSearch:
             assert names[2] == "abcdef.py"
 
     @pytest.mark.asyncio
-    async def test_fallback_uses_home(self, tmp_path, mock_sel):
+    async def test_fallback_does_not_use_home(self, tmp_path, mock_sel):
+        """$HOME is not an implicit fallback root.
+
+        Walking it reached every TCC-gated folder on macOS -- one consent dialog
+        each -- for a query the caller scoped nowhere. Asking for home
+        explicitly (``?project=``) still works and is covered separately.
+        """
         (tmp_path / "findme.txt").write_text("x")
-        with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=False), \
+        with patch.dict(os.environ, {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}, clear=False), \
              patch.dict(os.environ, {"KIROCREW_PROJECT_DIR": ""}, clear=False):
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get("/api/file-search?q=findme")
+                names = {r["name"] for r in (await resp.json())["results"]}
+                assert "findme.txt" not in names
+
+    @pytest.mark.asyncio
+    async def test_explicit_home_project_still_searched(self, tmp_path, mock_sel):
+        """Naming home is deliberate and stays fully searchable."""
+        (tmp_path / "findme.txt").write_text("x")
+        with patch.dict(os.environ, {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}, clear=False):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/file-search?q=findme&project={tmp_path}")
                 names = {r["name"] for r in (await resp.json())["results"]}
                 assert "findme.txt" in names
 

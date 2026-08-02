@@ -23,7 +23,7 @@
         "sandbox": "off",
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
-        "apps_allow_third_party": true,
+        "apps_allow_third_party": false,
         "jail": "auto",
         "yolo": false,
         "notify_override_expiry": true,
@@ -207,10 +207,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Allow Third-Party Apps",
-      "help": "Allow running third-party (non-builtin) app Python. App code runs with FULL gateway privileges (filesystem, network, in-memory credentials) and is NOT sandboxed — the permission system gates only the SDK tool surface. Defaults to true (apps are operator-installed). Set false to refuse both in-process module loads AND out-of-process backend spawns for any app outside apps/builtins/ until out-of-process isolation ships (CSE SEC-012).",
+      "help": "Explicitly allow executable code from third-party (non-builtin) apps. Defaults to false. Only the JSON boolean true admits in-process Python hooks, backend processes, lifecycle/install scripts, and openCommand. App code can access the filesystem, network, and in-memory credentials; enable this only for apps you trust (CSE SEC-012).",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": false
     },
     {
       "path": "agent.jail",
@@ -2158,7 +2158,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Socket Path",
-      "help": "Unix socket for the broker. Empty -> $KIROCREW_HOME/mcp-gateway/gateway.sock.",
+      "help": "Local endpoint for the broker. Empty -> $KIROCREW_HOME/mcp-gateway/gateway.sock. A unix socket at this path on POSIX; on Windows the path is not created, it only derives the named-pipe name and locates the lock file beside it.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

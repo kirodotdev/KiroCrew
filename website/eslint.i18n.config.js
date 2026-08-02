@@ -142,6 +142,10 @@ export default [
               // (`WEBGL_lose_context`), which are mixed-case and so escape the
               // all-caps word exemption above.
               'getExtension',
+              // A regex source is a pattern, never copy. Needed for natural-language
+              // parsers, whose patterns are literals in the language they parse
+              // (`每(?:隔)?…`) and so look exactly like untranslated user text.
+              '^RegExp$',
               // HTTP and serialisation: header names, endpoints, content types.
               'fetch', '\\w*[Hh]eaders?\\.\\w+', 'JSON\\.\\w+', 'encodeURI(Component)?',
               'setAttribute', 'getAttribute', 'removeAttribute', 'classList\\.\\w+',

@@ -295,7 +295,7 @@ export default function MemoryGraphTab() {
           className="bg-bg-elevated border border-border rounded-md px-3 py-1.5 text-text text-sm font-body outline-none transition-colors focus-ring flex-1 min-w-[200px]"
           placeholder={i18nT('pages.overview.memoryGraphTab.search_nodes')} value={searchImmediate} onChange={e => setSearchImmediate(e.target.value)}
         />
-        <Btn onClick={() => setFilter(null)} className={!filter ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.memoryGraphTab.all')}{nodes.length})</Btn>
+        <Btn onClick={() => setFilter(null)} className={!filter ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.memoryGraphTab.all_count', { count: nodes.length })}</Btn>
         {Object.entries(GROUP_LABELS).map(([key, label]) => counts[key] ? (
           <Btn key={key} onClick={() => setFilter(filter === key ? null : key)} className={filter === key ? '!border-accent !text-accent' : ''}>{label} ({counts[key]})</Btn>
         ) : null)}

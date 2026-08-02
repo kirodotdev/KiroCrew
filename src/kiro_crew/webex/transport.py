@@ -27,6 +27,7 @@ import logging
 from typing import Any, Awaitable, Callable, Iterable
 
 from kiro_crew.messaging.transport import (
+    ConfiguredChannelTarget,
     InboundMessage,
     MessagingTransport,
     TransportCapabilities,
@@ -97,6 +98,18 @@ class WebexTransport(MessagingTransport):
     ) -> list[InboundMessage]:
         # Sessions persist via conversation_log instead.
         return []
+
+    def configured_targets(self) -> list[ConfiguredChannelTarget]:
+        return [
+            ConfiguredChannelTarget(f"user:{email}", f"Webex DM · {email}")
+            for email in sorted(self._allowed)
+        ]
+
+    async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
+        kind, separator, value = target_id.partition(":")
+        if kind != "user" or not separator or value.lower() not in self._allowed:
+            return None
+        return await self.resolve_conversation(value), None
 
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:

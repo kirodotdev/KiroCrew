@@ -201,7 +201,7 @@ export function PostureDisclosureRow({
               )}
 
               {filtered.length === 0 ? (
-                <div className="text-[12px] text-muted py-2 pl-6">{i18nT('pages.settings.postureDisclosure.no_matches_for')}{filter}”.</div>
+                <div className="text-[12px] text-muted py-2 pl-6">{i18nT('pages.settings.postureDisclosure.no_matches_for_query', { query: filter })}</div>
               ) : (
                 <div className="divide-y divide-border rounded-md bg-bg-elevated/40">
                   {/* Index-keyed: labels are unique across every shipped control

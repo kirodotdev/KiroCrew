@@ -460,7 +460,7 @@ function SkillDetailPanel({
       {(preview?.files?.length ?? 0) > 1 && (
         <details className="mt-4">
           <summary className="text-xs text-muted cursor-pointer hover:text-text">
-            {i18nT('components.skillBrowserModal.bundle_contents')}{preview!.file_count} {i18nT('components.skillBrowserModal.files')}
+            {i18nT('components.skillBrowserModal.bundle_contents_count', { count: preview!.file_count })}
           </summary>
           <ul className="mt-1.5 text-xs text-muted font-mono space-y-0.5 max-h-40 overflow-y-auto scrollbar-overlay">
             {preview!.files!.map(f => <li key={f}>{f}</li>)}

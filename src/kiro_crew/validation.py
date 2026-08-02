@@ -920,6 +920,36 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # Optional model override for the subagent (e.g. "deepseek-3.2").
         # When set, the subagent runs on this model instead of the gateway default.
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
+        # keep=True makes the run a continuable conversation: its session
+        # persists (hibernated on disk) after completion, and spawn_continue
+        # can dispatch follow-up turns into it with full prior context.
+        FieldSpec("keep", bool),
+    ],
+)
+
+SPAWN_CONTINUE_SCHEMA = ToolSchema(
+    tool_name="spawn_continue",
+    fields=[
+        FieldSpec("conversation", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
+        FieldSpec("max_turns", int, min_val=0, max_val=200),
+        FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
+    ],
+)
+
+SPAWN_STEER_SCHEMA = ToolSchema(
+    tool_name="spawn_steer",
+    fields=[
+        FieldSpec("agent_id", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("message", str, required=True, max_len=MAX_MEDIUM_STRING),
+    ],
+)
+
+SPAWN_RELEASE_SCHEMA = ToolSchema(
+    tool_name="spawn_release",
+    fields=[
+        FieldSpec("conversation", str, required=True, max_len=MAX_SHORT_STRING),
     ],
 )
 

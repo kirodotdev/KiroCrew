@@ -43,6 +43,7 @@ import { useTouchedFiles } from '../hooks/useTouchedFiles'
 import { useTheme } from '../hooks/useTheme'
 import CollapsibleToolGroup from './chat/CollapsibleToolGroup'
 import ThinkingBlock from './chat/ThinkingBlock'
+import { RowDisclosureProvider } from './chat/rowDisclosure'
 import type { DisplayItem, TurnItem } from './chat/types'
 import McpToolsPanel from './chat/McpToolsPanel'
 import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
@@ -647,6 +648,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return out
   }, [messages, activeSlot])
   const slotRunning = useAppSelector(s => s.chat.slotRunning)
+  // Turn disclosure ("N tool calls" / "Worked through N steps"), keyed by the
+  // virtualizer's stable row key. This lives HERE rather than in TurnBlock
+  // because the transcript is virtualised: a row is unmounted once it leaves
+  // the mounted window, which streaming does routinely as it scrolls content
+  // past, and row-local state would be destroyed every time. An entry exists
+  // only for a turn the user has explicitly toggled; absent means "use the
+  // default", so the automatic collapse-on-completion is untouched.
+  const [turnDisclosure, setTurnDisclosure] = useState<Record<string, boolean>>({})
+  const setTurnDisclosureFor = useCallback((key: string, expanded: boolean) => {
+    setTurnDisclosure(prev => (prev[key] === expanded ? prev : { ...prev, [key]: expanded }))
+  }, [])
+  // Same problem, same shape, for the per-tool-call pill (ToolCallLine): its
+  // expanded panel is also row-local and also dies when the virtualizer
+  // recycles the row. Keyed by the pill's own message key.
+  const [toolDisclosure, setToolDisclosure] = useState<Record<string, boolean>>({})
+  const setToolDisclosureFor = useCallback((key: string, expanded: boolean) => {
+    setToolDisclosure(prev => (prev[key] === expanded ? prev : { ...prev, [key]: expanded }))
+  }, [])
+  // Row keys are only unique within a slot, so carrying them across a slot
+  // switch would apply one session's choices to another's turns.
+  useEffect(() => { setTurnDisclosure({}); setToolDisclosure({}) }, [activeSlot])
   // Shared composer-busy rule (chatSlice.selectComposerBusy). Drives the
   // composer's busy/queue affordance so a message sent during a sub-agent run
   // reads as "will queue".
@@ -3719,7 +3741,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // one-shot entrance animation. clientTs keeps the key (and DOM) stable.
     const keyTs = (m.meta?.clientTs as string | undefined) || m.ts
     const key = keyTs ? `${m.role}-${keyTs}` : `${m.role}-${i}`
-    if (m.role === 'thinking') return m.content ? <ThinkingBlock key={key} content={m.content} /> : null
+    if (m.role === 'thinking') return m.content ? <ThinkingBlock key={key} content={m.content} disclosureKey={key} /> : null
     if (m.role === 'tool') {
       // Skip ✅/🚫 completion messages — completion shown via CircleCheckBig icon
       if (!m.content.startsWith('🔧')) return null
@@ -3735,7 +3757,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (spawnLaunch) return <SubagentRunCard key={key} launch={spawnLaunch} slot={activeSlot || ''} />
       // Animate tools in the trailing group (after last assistant/streaming text)
       const isInTrailingGroup = slotState === 'tool_running' && i > lastTextIdx
-      return <ToolCallLine key={key} message={m} running={isInTrailingGroup} onFileOpen={handleFileOpen} />
+      return <ToolCallLine key={key} message={m} running={isInTrailingGroup} onFileOpen={handleFileOpen} disclosure={toolDisclosure[key]} disclosureKey={key} onDisclosureChange={setToolDisclosureFor} />
     }
     if (m.role === 'file') {
       try {
@@ -3751,7 +3773,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // controls.
     if (m.role === 'nudge') {
       const ownLoop = nudgeMatchesLoop(m, autoNudgeLoop?.id)
-      return <NudgeCard key={key} message={m} onOpenLoop={ownLoop ? () => setAutoNudgeOpen(true) : undefined} />
+      return <NudgeCard key={key} message={m} disclosureKey={key} onOpenLoop={ownLoop ? () => setAutoNudgeOpen(true) : undefined} />
     }
     if (m.kind === 'stop_event' || m.meta?.kind === 'stop_event') return <StopEventCard key={m.meta?.id as string ?? key} message={m} />
     // A synthetic turn-recovery continuation (tool refusal / stalled turn /
@@ -3760,7 +3782,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // and the deny pattern rather than a full-width bubble of prompt prose.
     if (m.role === 'inject') {
       const recovery = parseRecoveryMessage(m.content)
-      if (recovery) return <RecoveryCard key={key} parsed={recovery} />
+      if (recovery) return <RecoveryCard key={key} parsed={recovery} disclosureKey={key} />
     }
     if (m.role === 'error') return <div key={key} className="bg-danger-subtle text-danger text-[13px] px-3 py-2 rounded-md border border-danger/15 self-center animate-scale-in">{m.content}</div>
     if (m.role === 'notice') return <div key={key} className="bg-card text-muted text-[13px] px-3 py-2 rounded-md border border-border self-center animate-scale-in">{m.content}</div>
@@ -3771,7 +3793,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     // An injected workflow completion event renders as a compact status card
     // (with the full result folded away) instead of a wall of raw JSON.
-    if (isWorkflowCompletionMessage(m)) return <WorkflowCompletionCard key={key} message={m} onFileOpen={handleFileOpen} />
+    if (isWorkflowCompletionMessage(m)) return <WorkflowCompletionCard key={key} message={m} onFileOpen={handleFileOpen} disclosureKey={key} />
     const isUser = m.role === 'user'
     const isStreaming = m.role === 'streaming'
     const isInject = m.role === 'inject'
@@ -3839,7 +3861,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop])
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor])
 
   const [mobileSessions, setMobileSessions] = useState(false)
   // Close mobile sessions panel when a session is selected
@@ -3942,6 +3964,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
 
   return (
+    <RowDisclosureProvider resetKey={activeSlot}>
     <TagPopoverProvider>
     <div ref={chatContainerRef} className="flex flex-1 min-h-0 h-full overflow-hidden relative">
       <AnimatePresence>
@@ -4316,6 +4339,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                         return (
                         <CollapsibleToolGroup
                           count={it.msgs.filter(m => m.role !== 'permission').length}
+                          disclosureKey={`ctg-g-${it.startIdx}`}
                           hasPermission={false}
                           isRunning={false}
                           permissionMeta={unresolvedPerms.at(-1)?.meta as Record<string, unknown> | undefined}
@@ -4331,7 +4355,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       })() : renderMessage(it.idx, it.msg)}
                     </div>
                   }
-                  return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx}><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} /></div>
+                  return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx}><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={turnDisclosure[vi.key]} onDisclosureChange={(next: boolean) => setTurnDisclosureFor(vi.key, next)} /></div>
                 }
                 return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-5 mx-auto w-full py-1`} style={{
                   maxWidth: 'var(--mc-content-width, 900px)',
@@ -4349,6 +4373,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 return (
                 <CollapsibleToolGroup
                   count={item.msgs.filter(m => m.role !== 'permission').length}
+                  disclosureKey={`ctg-${vi.key}`}
                   hasPermission={false}
                   isRunning={slotRunning && displayIdx === displayItems.length - 1}
                   permissionMeta={unresolvedGroupPerms.at(-1)?.meta as Record<string, unknown> | undefined}
@@ -4794,6 +4819,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       )}
     </div>
     </TagPopoverProvider>
+    </RowDisclosureProvider>
   )
 }
 

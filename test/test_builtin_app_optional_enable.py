@@ -28,6 +28,38 @@ from kiro_crew.apps.manager import (
 # ---------------------------------------------------------------------------
 
 
+def _ship_builtin(monkeypatch, root, name, **manifest_extra):
+    """Give a test builtin real shipped provenance.
+
+    Execution admission derives builtin status from the immutable shipped
+    package tree (``execution._BUILTINS_DIR``), never from installed metadata.
+    Tests that fabricate builtins must therefore ship them: create the package
+    directory with an authoritative ``app.json`` and point the provenance root
+    at it, mirroring how genuine builtins qualify.
+    """
+    import json as _json
+    from pathlib import Path
+
+    import kiro_crew.apps.execution as execution
+
+    shipped = Path(root) / "shipped-builtins"
+    app_root = shipped / name
+    app_root.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "name": name,
+        "version": "1.0.0",
+        "displayName": name,
+        "description": "Test shipped builtin",
+        "author": "kirocrew",
+        **manifest_extra,
+    }
+    (app_root / "app.json").write_text(
+        _json.dumps(manifest), encoding="utf-8"
+    )
+    monkeypatch.setattr(execution, "_BUILTINS_DIR", shipped)
+    return app_root
+
+
 @pytest.fixture()
 def app_home(tmp_path, monkeypatch):
     """Set KIROCREW_HOME to a temp directory for isolated testing."""
@@ -35,6 +67,53 @@ def app_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
     return home
+
+
+@pytest.mark.asyncio
+async def test_shipped_builtin_cron_registers_with_default_off(
+    app_home, tmp_path, monkeypatch
+):
+    import json
+
+    import kiro_crew.apps.execution as execution
+    import kiro_crew.apps.manager as mgr
+    from kiro_crew.apps.bridges import (
+        register_app,
+        register_app_crons_with_service,
+    )
+    from kiro_crew.cron import CronService
+
+    shipped_root = _ship_builtin(
+        monkeypatch,
+        tmp_path,
+        "builtin-cron-app",
+        defaultEnabled=True,
+        crons=[{
+            "name": "refresh",
+            "every": 3600,
+            "message": "refresh builtin state",
+        }],
+    )
+    manifest = json.loads((shipped_root / "app.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(mgr, "_BUILTIN_APPS", [manifest])
+    monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
+    monkeypatch.setattr(execution, "third_party_execution_allowed", lambda: False)
+
+    register_builtin_apps()
+    registration = register_app("builtin-cron-app")
+    assert registration.crons == ["builtin-cron-app/refresh"]
+    assert registration.errors == []
+
+    service = CronService(base_dir=app_home / "crons")
+    registered = await register_app_crons_with_service(
+        "builtin-cron-app",
+        service,
+    )
+
+    assert registered == ["builtin-cron-app/refresh"]
+    assert [job.name for job in service.list_jobs()] == [
+        "builtin-cron-app/refresh"
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -478,11 +557,12 @@ class TestValidateBuiltinApp:
 class TestProperty6EnableDisableRoundTrip:
     """Validates: Requirements 4.1, 5.1, 6.1"""
 
-    def test_enable_then_read(self, app_home, monkeypatch):
+    def test_enable_then_read(self, app_home, monkeypatch, tmp_path):
         """Enabling a disabled builtin app persists enabled=True."""
         import kiro_crew.apps.manager as mgr
         from kiro_crew.apps.manager import enable_app
 
+        _ship_builtin(monkeypatch, tmp_path, "roundtrip-app")
         monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
             "name": "roundtrip-app",
             "version": "1.0.0",
@@ -546,6 +626,7 @@ class TestProperty6EnableDisableRoundTrip:
 
         home = tempfile.mkdtemp()
         monkeypatch.setenv("KIROCREW_HOME", home)
+        _ship_builtin(monkeypatch, tmp_path, "toggle-app")
 
         import kiro_crew.apps.manager as mgr
         from kiro_crew.apps.manager import disable_app, enable_app

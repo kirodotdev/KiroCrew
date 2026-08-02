@@ -257,7 +257,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
           {validation.errors.length === 0 && <div className="text-sm text-ok flex items-center gap-1"><CheckCircle size={14} /> {i18nT('apps.autoResearch.researchLabPage.all_checks_passed')}</div>}
           {validation.warnings.map((w, i) => <div key={i} className="text-sm text-warn flex items-center gap-1"><AlertTriangle size={14} /> {w}</div>)}
           <div className="mt-3 p-3 rounded text-sm bg-bg border border-border">
-            <div>{i18nT('apps.autoResearch.researchLabPage.research')}{question.slice(0, 50)}{question.length > 50 ? '...' : ''}{"\u201d"}</div>
+            <div>{i18nT('apps.autoResearch.researchLabPage.research_question', { question: `${question.slice(0, 50)}${question.length > 50 ? '...' : ''}` })}</div>
             <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.up_to')} {maxCycles} {i18nT('apps.autoResearch.researchLabPage.cycles')} {idleSecs}{i18nT('apps.autoResearch.researchLabPage.s_idle')}{validation.estimated_duration_min} {i18nT('apps.autoResearch.researchLabPage.min')}</div>
             {successCriteria && <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.done_when')} {successCriteria}</div>}
           </div>
@@ -375,7 +375,7 @@ function ForkFlow({ parentId, onCancel, onDone }: { parentId: string; onCancel: 
   const subCount = promotedResearch(tree).length + manualSubs.length
 
   return <div className="max-w-2xl mx-auto space-y-4">
-    <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.challenge_the_findings_from')}{question?.slice(0, 60)}{i18nT('apps.autoResearch.researchLabPage.then_fork_into_a_new_campaign')}</div>
+    <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.challenge_the_findings_from_question', { question: question?.slice(0, 60) })}</div>
     {error && <div className="text-xs text-danger">{error}</div>}
     {tree.length === 0 ? (
       <button className="text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg disabled:opacity-50" disabled={grilling || !question} onClick={startChallenge}>{grilling ? i18nT('apps.autoResearch.researchLabPage.challenging') : <><Flame size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.challenge_findings')}</>}</button>
@@ -507,7 +507,7 @@ function SubQuestionAdder({ id, campaign }: { id: string; campaign: Campaign }) 
   const originLabel = (o?: string) => o === 'manual' ? i18nT('apps.autoResearch.researchLabPage.your_guidance') : o === 'emergent' ? i18nT('apps.autoResearch.researchLabPage.emergent') : (o || 'grill')
   return <div className="mb-4">
     <Clickable className="flex items-center gap-1 text-sm font-medium" onClick={() => setOpen(!open)}>
-      {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {i18nT('apps.autoResearch.researchLabPage.sub_questions_guidance')}{subs.length})
+      {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {i18nT('apps.autoResearch.researchLabPage.sub_questions_guidance_count', { count: subs.length })}
     </Clickable>
     {open && <div className="mt-2 pl-4 space-y-1">
       {subs.map((s, i) => <div key={i} className="text-xs flex items-center gap-1.5">
@@ -633,7 +633,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
     </div>}
     <div className="mt-4">
       <div className="flex items-center justify-between mb-2">
-        <div className="text-sm font-medium">{i18nT('apps.autoResearch.researchLabPage.findings_2')}{findings.filter(f => f.new_findings_count > 0).length})</div>
+        <div className="text-sm font-medium">{i18nT('apps.autoResearch.researchLabPage.findings_count', { count: findings.filter(f => f.new_findings_count > 0).length })}</div>
         <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => setShowReport(v => !v)}>{showReport ? i18nT('apps.autoResearch.researchLabPage.hide_report') : i18nT('apps.autoResearch.researchLabPage.view_report')}</button>
       </div>
       {showReport && <div className="mb-3">

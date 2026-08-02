@@ -157,6 +157,7 @@ class WeixinDispatcher:
                 persist=lambda user_text, reply, is_new: self._persist_turn(
                     session_key, user_text, reply, is_new
                 ),
+                after_persist=self._surface_own_session,
                 notice=lambda sk, provider: self._maybe_notice(user_id, sk, provider),
                 audit_caller=f"weixin:{user_id}",
             ),
@@ -242,6 +243,12 @@ class WeixinDispatcher:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "WeChat"
             self.conv_log.set_title(session_key, title)
 
+    async def _surface_own_session(self) -> None:
+        # Circular import: dashboard boot imports channel packages.
+        from kiro_crew.dashboard.channel_slots import surface_dispatcher_session
+
+        await surface_dispatcher_session(self)
+
     async def _maybe_notice(self, user_id: str, session_key: str, provider: Any) -> None:
         """Context-length handling, surfaced as a separate message post-turn.
 
@@ -262,9 +269,7 @@ class WeixinDispatcher:
                 logger.debug("weixin hard-threshold compaction failed", exc_info=True)
         elif pct >= soft and not self._conv.is_awaiting(user_id):
             self._conv.set_awaiting(user_id)
-            await self._say(
-                user_id, "⚠️ 对话上下文已较长，回复 /compact 压缩，或 /new 开始新对话。"
-            )
+            await self._say(user_id, "⚠️ 对话上下文已较长，回复 /compact 压缩，或 /new 开始新对话。")
 
     async def _handle_compact(self, user_id: str) -> None:
         """In-place ACP ``/compact`` on the user's current session."""

@@ -232,7 +232,13 @@ class TestParseDashboardUrlMalformed:
         assert port == 9090
 
 
-_MOD = "kiro_crew.dashboard.origin"
+# Patch target for TestFormatDashboardUrls below. format_dashboard_urls lives in
+# dashboard.urls (the stdlib-only leaf module the CLI imports); dashboard.origin
+# only re-exports it for back-compat. Collaborators are resolved in the defining
+# module's namespace, so patching "...origin.machine_hostname" is INERT here — it
+# rebinds origin's copy while format_dashboard_urls keeps calling urls'. Point at
+# the defining module so the patches actually take effect.
+_MOD = "kiro_crew.dashboard.urls"
 
 
 class TestBuildDashboardUrl:

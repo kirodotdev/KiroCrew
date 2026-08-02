@@ -95,14 +95,14 @@ class FileIndex:
         truncated = False
         # macOS: if this index is rooted at bare $HOME, prune the TCC-gated
         # folders. This walk re-runs every _REFRESH_SECS, so without the prune
-        # a dismissed consent dialog would be re-triggered on every refresh.
-        tcc_skip = platform_compat.tcc_protected_dirs_for_walk(self.root)
+        # a dismissed consent dialog would be re-triggered on every refresh --
+        # which is how one prompt becomes a recurring stream of them.
         for dirpath, dirnames, filenames in os.walk(self.root):
-            dirnames[:] = [
-                d for d in dirnames
-                if not d.startswith(".") and d not in _SKIP_DIRS
-                and not (dirpath == self.root and d in tcc_skip)
-            ]
+            dirnames[:] = platform_compat.tcc_prune_walk_dirs(
+                self.root,
+                dirpath,
+                [d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS],
+            )
             for fname in filenames:
                 if len(entries) >= _MAX_ENTRIES:
                     truncated = True

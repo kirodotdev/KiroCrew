@@ -224,6 +224,9 @@ class AcpSessionHandle:
         self._session_id = session_id
         self._queue = queue
         self._runtime = runtime
+        # When True, destroy() skips the transcript unlink (subagent
+        # continuability: the transcript is spawn_continue's resume material).
+        self.keep_transcript = False
         # Watchdog windows are snapshotted here (construction time) so the
         # dispatch loop never reads config; the liveness oracle carries the
         # per-session evidence state (tracked child, counter samples).
@@ -838,9 +841,17 @@ class AcpSessionHandle:
         sessions call destroy(): main-chat sessions are torn down via
         ``owns_runtime=True`` → ``runtime.kill()`` and intentionally keep their
         transcript for ``session/load`` resume, so cleaning up here is safe.
+
+        Exception: ``keep_transcript=True`` (set by SubagentManager before
+        teardown) skips the transcript deletion — subagent transcripts are the
+        resume material for ``spawn_continue`` and are lifecycle-managed by the
+        tombstone pruner / conversation TTL sweep instead. ``terminate_session``
+        still runs unconditionally: it is the RSS reclaim on the multiplexed
+        process; only the unlink is deferred.
         """
         await self._runtime.terminate_session(self._session_id)
-        self._cleanup_transcript()
+        if not getattr(self, "keep_transcript", False):
+            self._cleanup_transcript()
 
     def _cleanup_transcript(self) -> None:
         """Best-effort delete of this session's kiro-cli transcript files."""

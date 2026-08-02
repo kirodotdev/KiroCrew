@@ -931,7 +931,7 @@ function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: strin
                 onClick={() => setShowAllLibrary(true)}
                 className="self-start mt-1 px-2 py-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer transition-colors"
               >
-                {i18nT('pages.chat.activityViewer.show_all')}{cappedLibrary})
+                {i18nT('pages.chat.activityViewer.show_all_count', { count: cappedLibrary })}
               </button>
             )}
           </>
@@ -1231,7 +1231,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                   disabled={retryingFailed}
                   data-testid="retry-failed-btn"
                 >
-                  <RotateCcw size={11} className={retryingFailed ? 'animate-spin' : ''} /> {i18nT('pages.chat.activityViewer.retry_failed')}{failedRetryableIds.length})
+                  <RotateCcw size={11} className={retryingFailed ? 'animate-spin' : ''} /> {i18nT('pages.chat.activityViewer.retry_failed_count', { count: failedRetryableIds.length })}
                 </button>
               )}
               {terminalIds.length > 0 && (
@@ -1240,7 +1240,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                   onClick={dismissDone}
                   data-testid="dismiss-done-btn"
                 >
-                  <X size={11} /> {i18nT('pages.chat.activityViewer.dismiss_done')}{terminalIds.length})
+                  <X size={11} /> {i18nT('pages.chat.activityViewer.dismiss_done_count', { count: terminalIds.length })}
                 </button>
               )}
             </div>
@@ -1281,7 +1281,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                   onClick={() => setShowAllSubagents(true)}
                   data-testid="show-all-subagents"
                 >
-                  {i18nT('pages.chat.activityViewer.show_all')}{ids.length})
+                  {i18nT('pages.chat.activityViewer.show_all_count', { count: ids.length })}
                 </button>
               )}
             </>

@@ -236,3 +236,82 @@ class TestHiddenBuiltins:
         assert "deploy-web" not in shipped, (
             "deploy-web builtin should no longer exist — folded into Artifacts core"
         )
+
+
+# ---------------------------------------------------------------------------
+
+
+class TestAgentsAndSkillsSurviveDiscovery:
+    """``agents`` / ``skills`` are typed ``AppManifest`` fields, not ``extra``.
+
+    So ``_manifest_to_builtin_dict`` has to copy them EXPLICITLY. When it did
+    not, both were silently stripped from the dict that ``register_builtin_apps``
+    persists as the installed ``app.json`` — and ``bridges.register_app``
+    re-reads that stripped file, so a builtin's declared agents were never
+    symlinked into ``~/.kiro/agents`` and its skills were never registered. The
+    manifest looked correct on disk in the package and the app was simply inert.
+
+    A round-trip assertion is the only thing that catches this: every per-field
+    unit test passed while the aggregate dict was missing two keys.
+    """
+
+    def test_declared_agents_and_skills_reach_discovery_output(self, tmp_path: Path) -> None:
+        manifest = _valid_manifest("agentful-app")
+        manifest["agents"] = ["agents/one.json", "agents/two.json"]
+        manifest["skills"] = ["skills/the-skill"]
+        _write_manifest(tmp_path / "agentful-app", manifest)
+
+        apps = discover_builtin_apps(tmp_path)
+        assert len(apps) == 1
+        assert apps[0]["agents"] == ["agents/one.json", "agents/two.json"]
+        assert apps[0]["skills"] == ["skills/the-skill"]
+
+    def test_absent_agents_and_skills_stay_absent(self, tmp_path: Path) -> None:
+        """Omit the keys rather than emitting empty lists.
+
+        ``register_builtin_apps`` merges this dict over existing state, so an
+        empty list would be a meaningful value that could clear a real one.
+        """
+        _write_manifest(tmp_path / "plain-app", _valid_manifest("plain-app"))
+
+        apps = discover_builtin_apps(tmp_path)
+        assert "agents" not in apps[0]
+        assert "skills" not in apps[0]
+
+    def test_shipped_manifests_keep_their_agents_and_skills(self) -> None:
+        """The regression this guards, on the real shipped manifests.
+
+        An app that dispatches to its own agents by name does so as its PRIMARY
+        function, so a stripped ``agents`` list is not a degraded feature but a
+        dead one — and the failure is silent, because the manifest on disk in the
+        package still looks correct.
+
+        Derived from what the packaged ``app.json`` files actually declare rather
+        than a hardcoded app list: the invariant is "whatever a manifest declares
+        survives discovery", which is what makes this hold for every builtin
+        including ones added later. A named list would instead have to be edited
+        by the very change most likely to break the round-trip.
+        """
+        import kiro_crew.apps.builtins as builtins_pkg
+
+        builtins_dir = Path(builtins_pkg.__file__).resolve().parent
+        shipped = {a["name"]: a for a in discover_builtin_apps()}
+
+        checked = 0
+        for manifest_path in sorted(builtins_dir.glob("*/app.json")):
+            declared = json.loads(manifest_path.read_text(encoding="utf-8"))
+            name = declared.get("name")
+            for field in ("agents", "skills"):
+                if not declared.get(field):
+                    continue
+                assert name in shipped, f"{name} builtin not discovered"
+                assert shipped[name].get(field) == declared[field], (
+                    f"{name} declares {field} in its manifest but discovery "
+                    f"dropped or altered them"
+                )
+                checked += 1
+
+        assert checked, (
+            "no shipped builtin declares agents or skills, so this guard proved "
+            "nothing — if that is now genuinely true, delete it"
+        )

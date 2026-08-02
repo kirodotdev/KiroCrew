@@ -51,6 +51,10 @@ def app_home(tmp_path, monkeypatch):
     home = tmp_path / "kirocrew-home"
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
+    # Lifecycle success tests explicitly admit their synthetic third-party apps.
+    (home / "config.json").write_text(
+        json.dumps({"agent": {"apps_allow_third_party": True}}), encoding="utf-8"
+    )
     return home
 
 
@@ -517,7 +521,9 @@ class TestAppAdmission:
         })
         result = enable_app("builtin-app")
         assert result.ok
-        assert _read_installed("builtin-app").enabled is True
+        enabled_meta = _read_installed("builtin-app")
+        assert enabled_meta is not None
+        assert enabled_meta.enabled is True
 
     def test_enable_third_party_still_denied_under_require_signature(self, tmp_path, app_home):
         # A non-builtin (unsigned) app is still denied under require_signature.
@@ -1140,6 +1146,20 @@ class TestCopyAppTree:
         assert _read_installed("test-app") is None
 
 
+def _ship_test_builtin(monkeypatch, root, manifest_data):
+    """Give a synthetic builtin immutable package provenance for bridge tests."""
+    from kiro_crew.apps import execution
+
+    shipped = root / "shipped-builtins"
+    shipped_app = shipped / manifest_data["name"]
+    shipped_app.mkdir(parents=True)
+    (shipped_app / "app.json").write_text(
+        json.dumps(manifest_data), encoding="utf-8"
+    )
+    monkeypatch.setattr(execution, "_BUILTINS_DIR", shipped)
+    return shipped_app
+
+
 class TestBootSkillReconcile:
     """Tests for reconcile_app_skills — startup creates missing skill symlinks."""
 
@@ -1148,13 +1168,9 @@ class TestBootSkillReconcile:
         from kiro_crew.apps import bridges, manager
         from kiro_crew.apps.bridges import reconcile_app_skills
 
-        # Set up fake app dir with a skill directory
         apps_root = tmp_path / "apps"
         app_root = apps_root / "test-app"
         app_root.mkdir(parents=True)
-        skill_dir = app_root / "skills" / "my-skill"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# My Skill\n")
 
         # Set up fake skills dir (where symlinks go)
         skills_root = tmp_path / "skills"
@@ -1173,7 +1189,6 @@ class TestBootSkillReconcile:
         }
         (app_root / "installed.json").write_text(json.dumps(installed))
 
-        # Write app.json manifest with skills
         manifest_data = {
             "name": "test-app",
             "version": "1.0.0",
@@ -1183,8 +1198,12 @@ class TestBootSkillReconcile:
             "skills": ["skills/my-skill"],
         }
         (app_root / "app.json").write_text(json.dumps(manifest_data))
+        shipped_app = _ship_test_builtin(monkeypatch, tmp_path, manifest_data)
+        skill_dir = shipped_app / "skills" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# My Skill\n")
 
-        # Monkeypatch paths
+        # Monkeypatch installed-state and registration paths.
         monkeypatch.setattr(manager, "apps_dir", lambda: apps_root)
         monkeypatch.setattr(manager, "app_dir", lambda name: apps_root / name)
         monkeypatch.setattr(bridges, "_skills_dir", lambda: skills_root)
@@ -1194,15 +1213,13 @@ class TestBootSkillReconcile:
         assert not (skills_root / "test-app").exists()
         assert not (skills_root / "my-skill").exists()
 
-        # Run reconcile
         registered = reconcile_app_skills("test-app")
 
-        # Verify symlinks were created
         assert len(registered) == 1
         assert "test-app/my-skill" in registered
         assert (skills_root / "test-app" / "my-skill").is_symlink()
         assert (skills_root / "my-skill").is_symlink()
-        # Symlink target resolves to the actual skill dir
+        # Registration must target the immutable shipped skill, not its install.
         assert (skills_root / "test-app" / "my-skill").resolve() == skill_dir.resolve()
 
     def test_reconcile_removes_stale_skill_symlinks(self, tmp_path, monkeypatch):
@@ -1210,13 +1227,9 @@ class TestBootSkillReconcile:
         from kiro_crew.apps import bridges, manager
         from kiro_crew.apps.bridges import reconcile_app_skills
 
-        # Set up fake app dir with one skill (kept)
         apps_root = tmp_path / "apps"
         app_root = apps_root / "test-app"
         app_root.mkdir(parents=True)
-        kept_skill = app_root / "skills" / "kept-skill"
-        kept_skill.mkdir(parents=True)
-        (kept_skill / "SKILL.md").write_text("# Kept\n")
 
         # Set up skills dir with a STALE symlink (removed from manifest)
         skills_root = tmp_path / "skills"
@@ -1227,7 +1240,7 @@ class TestBootSkillReconcile:
         os.symlink(str(stale_target), str(app_skills_dir / "old-skill"))
         os.symlink(str(stale_target), str(skills_root / "old-skill"))
 
-        # Write metadata
+        # Write installed state and ship the authoritative builtin resources.
         installed = {
             "name": "test-app", "version": "1.0.0", "displayName": "Test",
             "enabled": True, "origin": "builtin", "resources": "gateway",
@@ -1240,6 +1253,10 @@ class TestBootSkillReconcile:
             "skills": ["skills/kept-skill"],  # old-skill NOT listed
         }
         (app_root / "app.json").write_text(json.dumps(manifest_data))
+        shipped_app = _ship_test_builtin(monkeypatch, tmp_path, manifest_data)
+        kept_skill = shipped_app / "skills" / "kept-skill"
+        kept_skill.mkdir(parents=True)
+        (kept_skill / "SKILL.md").write_text("# Kept\n")
 
         monkeypatch.setattr(manager, "apps_dir", lambda: apps_root)
         monkeypatch.setattr(manager, "app_dir", lambda name: apps_root / name)
@@ -1248,9 +1265,294 @@ class TestBootSkillReconcile:
 
         registered = reconcile_app_skills("test-app")
 
-        # Kept skill is registered
+        # Kept skill is registered from immutable provenance.
         assert "test-app/kept-skill" in registered
         assert (skills_root / "test-app" / "kept-skill").is_symlink()
+        assert (
+            skills_root / "test-app" / "kept-skill"
+        ).resolve() == kept_skill.resolve()
         # Stale skill symlinks removed
         assert not (app_skills_dir / "old-skill").exists()
         assert not (skills_root / "old-skill").exists()
+
+
+# ---------------------------------------------------------------------------
+# Builtin app-secret generation for mcpServers-only backends
+#
+# Platform defect: the gateway proxy (handle_app_api_proxy) resolves an app's
+# backend three ways — the third being a fallback that derives a loopback base
+# URL from a manifest's mcpServers entry (self-managed apps whose backend is a
+# separate loopback process, e.g. the Crew Companion desktop app on :7778).
+# register_builtin_apps() used to write a .app_secret ONLY when
+# backend.entryPoint was present, so a builtin declaring only mcpServers
+# resolved a backend fine but was refused a secret — and every proxied request
+# then 502'd with "has no secret". The fix generates the secret whenever a
+# backend is resolvable (entryPoint OR a loopback mcpServers URL), while an app
+# with no backend of any kind still gets none.
+# ---------------------------------------------------------------------------
+
+class TestBuiltinSecretForMcpServers:
+    def _register_only(self, monkeypatch, apps):
+        """Run register_builtin_apps() with exactly `apps` as the builtin set."""
+        from kiro_crew.apps import manager
+
+        monkeypatch.setattr(manager, "_BUILTIN_APPS", [])
+        monkeypatch.setattr(manager, "discover_builtin_apps", lambda *a, **k: apps)
+        monkeypatch.setattr(manager, "_edition_builtin_apps", lambda: [])
+        manager.register_builtin_apps()
+
+    def test_declares_backend_helper(self):
+        from kiro_crew.apps.manager import _app_declares_backend
+
+        # entryPoint → backend
+        assert _app_declares_backend({"backend": {"entryPoint": "pkg.server"}})
+        # loopback mcpServers URL → backend (the defect case)
+        assert _app_declares_backend(
+            {"mcpServers": {"x": {"url": "http://127.0.0.1:7778/mcp"}}}
+        )
+        assert _app_declares_backend(
+            {"mcpServers": {"x": {"url": "http://localhost:7778/mcp"}}}
+        )
+        # no backend of any kind → no secret
+        assert not _app_declares_backend({})
+        assert not _app_declares_backend({"mcpServers": {}})
+        # non-loopback URL is not a reachable local backend
+        assert not _app_declares_backend(
+            {"mcpServers": {"x": {"url": "http://10.0.0.5:7778/mcp"}}}
+        )
+        # self-referential gateway port is refused by the proxy → no secret
+        assert not _app_declares_backend(
+            {"mcpServers": {"x": {"url": "http://127.0.0.1:5476/mcp"}}}
+        )
+
+    def test_mcpservers_only_builtin_gets_secret(self, tmp_path, app_home, monkeypatch):
+        """A builtin declaring only mcpServers must receive a .app_secret.
+
+        FAILS before the fix (condition was `backend.entryPoint` only), passes
+        after (condition is `_app_declares_backend`).
+        """
+        from kiro_crew.apps.manager import app_dir
+
+        mcp_only = {
+            "name": "mcp-only-app",
+            "version": "1.0.0",
+            "displayName": "MCP Only",
+            "description": "declares only an mcpServers loopback backend",
+            "author": "tester",
+            "defaultEnabled": False,
+            "mcpServers": {"mcp-only-app": {"url": "http://127.0.0.1:7778/mcp"}},
+        }
+        self._register_only(monkeypatch, [mcp_only])
+        assert (app_dir("mcp-only-app") / ".app_secret").is_file()
+
+    def test_no_backend_builtin_gets_no_secret(self, tmp_path, app_home, monkeypatch):
+        """A builtin with no backend of any kind must NOT get a secret."""
+        from kiro_crew.apps.manager import app_dir
+
+        no_backend = {
+            "name": "no-backend-app",
+            "version": "1.0.0",
+            "displayName": "No Backend",
+            "description": "declares no backend at all",
+            "author": "tester",
+            "defaultEnabled": False,
+        }
+        self._register_only(monkeypatch, [no_backend])
+        assert not (app_dir("no-backend-app") / ".app_secret").is_file()
+
+
+class TestBuiltinDoesNotClobberUserInstall:
+    """A builtin must never take over a user-installed app of the same name.
+
+    Apps live at ``apps/<name>/`` keyed on name alone, so a builtin that shares a
+    name with an externally distributed app would, on every gateway restart:
+    replace the user's manifest, set ``lifecycle="locked"`` (removing their
+    ability to uninstall), and overwrite ``origin`` -- which destroys the only
+    record that the install was ever user-owned. That last part is why this is
+    pinned: after one restart, no corrective release could tell the two apart.
+    """
+
+    def _register_only(self, monkeypatch, apps):
+        from kiro_crew.apps import manager
+
+        monkeypatch.setattr(manager, "_BUILTIN_APPS", [])
+        monkeypatch.setattr(manager, "discover_builtin_apps", lambda *a, **k: apps)
+        monkeypatch.setattr(manager, "_edition_builtin_apps", lambda: [])
+        manager.register_builtin_apps()
+
+    BUILTIN = {
+        "name": "collide-app",
+        "version": "9.9.9",
+        "displayName": "Collide (builtin)",
+        "description": "a builtin that shares a name with a user install",
+        "author": "kirocrew",
+        "defaultEnabled": False,
+    }
+
+    def _seed_user_install(self, name="collide-app"):
+        """Write metadata + a manifest the way install_app() would."""
+        import json
+
+        from kiro_crew.apps.manager import (
+            APP_MANIFEST_FILENAME,
+            InstalledApp,
+            _now_iso,
+            _write_installed,
+            app_dir,
+        )
+
+        d = app_dir(name)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / APP_MANIFEST_FILENAME).write_text(
+            json.dumps({"name": name, "version": "0.1.0", "displayName": "Mine"}) + "\n"
+        )
+        _write_installed(name, InstalledApp(
+            name=name,
+            version="0.1.0",
+            displayName="Collide (user install)",
+            enabled=True,
+            installedAt=_now_iso(),
+            source="/Users/someone/src/collide-app",
+            origin="registry",
+            lifecycle="gateway",
+        ))
+        return d
+
+    def test_user_manifest_is_not_overwritten(self, tmp_path, app_home, monkeypatch):
+        """FAILS before the fix: the manifest was atomic_write'n unconditionally."""
+        import json
+
+        from kiro_crew.apps.manager import APP_MANIFEST_FILENAME
+
+        d = self._seed_user_install()
+        self._register_only(monkeypatch, [self.BUILTIN])
+
+        kept = json.loads((d / APP_MANIFEST_FILENAME).read_text())
+        assert kept["displayName"] == "Mine", "the user's manifest was replaced"
+        assert kept["version"] == "0.1.0"
+
+    def test_origin_and_lifecycle_survive(self, tmp_path, app_home, monkeypatch):
+        """The unrecoverable part: origin must still say the install was the user's.
+
+        FAILS before the fix (origin -> "builtin", lifecycle -> "locked").
+        """
+        from kiro_crew.apps.manager import _read_installed
+
+        self._seed_user_install()
+        self._register_only(monkeypatch, [self.BUILTIN])
+
+        meta = _read_installed("collide-app")
+        assert meta is not None
+        assert meta.origin == "registry", "the user-owned origin record was destroyed"
+        assert meta.lifecycle != "locked", "the user can no longer uninstall"
+        assert meta.version == "0.1.0", "the builtin's version was forced on to it"
+
+    def test_a_genuine_builtin_is_still_updated(self, tmp_path, app_home, monkeypatch):
+        """The guard must not freeze real builtins: ours still take the update."""
+        from kiro_crew.apps.manager import _read_installed
+
+        # First registration creates it with source="builtin".
+        self._register_only(monkeypatch, [self.BUILTIN])
+        assert _read_installed("collide-app").source == "builtin"
+
+        bumped = dict(self.BUILTIN, version="10.0.0", displayName="Collide v10")
+        self._register_only(monkeypatch, [bumped])
+
+        meta = _read_installed("collide-app")
+        assert meta.version == "10.0.0"
+        assert meta.displayName == "Collide v10"
+
+    def test_helper_classifies_both_cases(self):
+        from kiro_crew.apps.manager import InstalledApp, _builtin_owns_install
+
+        ours = InstalledApp(
+            name="x", version="1", displayName="X", enabled=False,
+            installedAt="t", source="builtin",
+        )
+        theirs = InstalledApp(
+            name="x", version="1", displayName="X", enabled=False,
+            installedAt="t", source="/path/to/x", origin="registry",
+        )
+        assert _builtin_owns_install(ours)
+        assert not _builtin_owns_install(theirs)
+
+
+class TestMalformedMcpUrlIsSkippedNotFatal:
+    """A malformed mcpServers URL must be SKIPPED, never raise.
+
+    ``resolve_mcp_backend_url`` runs inside ``register_builtin_apps()`` at gateway
+    startup, and a manifest is user-supplied data. ``urlparse`` accessors are lazy and
+    raise ValueError on malformed input -- ``parsed.port`` does it for ":notaport" --
+    so an escape from here propagates out of registration and the gateway fails to
+    START. One bad manifest would take down every builtin, not just its own app.
+    """
+
+    BAD_URLS = [
+        "http://127.0.0.1:notaport/mcp",   # port is not an integer
+        "http://127.0.0.1:99999/mcp",      # port out of range
+        "http://[::1:/mcp",                # unparsable authority
+    ]
+
+    def test_malformed_urls_return_none_and_do_not_raise(self):
+        from kiro_crew.apps.manager import resolve_mcp_backend_url
+
+        for url in self.BAD_URLS:
+            # The assertion is that this LINE does not raise.
+            assert resolve_mcp_backend_url({"x": {"url": url}}) is None, url
+
+    def test_a_hostless_url_defaults_to_loopback_by_design(self):
+        """`http://:7778/mcp` is not an error — it resolves to loopback deliberately.
+
+        `host = parsed.hostname or "127.0.0.1"` treats a missing host as "this
+        machine", which is the only safe default here: the SSRF guard still holds,
+        because the fallback is loopback rather than anything the manifest supplied.
+        Pinned so the malformed-input guard above is never "tightened" into rejecting
+        it.
+        """
+        from kiro_crew.apps.manager import resolve_mcp_backend_url
+
+        assert resolve_mcp_backend_url(
+            {"x": {"url": "http://:7778/mcp"}}
+        ) == "http://127.0.0.1:7778"
+
+    def test_a_good_server_after_a_bad_one_still_resolves(self):
+        """Skipping means continuing, not abandoning the whole manifest."""
+        from kiro_crew.apps.manager import resolve_mcp_backend_url
+
+        servers = {
+            "broken": {"url": "http://127.0.0.1:notaport/mcp"},
+            "good": {"url": "http://127.0.0.1:7778/mcp"},
+        }
+        assert resolve_mcp_backend_url(servers) == "http://127.0.0.1:7778"
+
+    def test_registration_survives_a_malformed_manifest(self, tmp_path, app_home, monkeypatch):
+        """The end-to-end shape: startup registration must not blow up.
+
+        FAILS before the fix with ValueError out of register_builtin_apps().
+        """
+        from kiro_crew.apps import manager
+
+        bad = {
+            "name": "bad-url-app",
+            "version": "1.0.0",
+            "displayName": "Bad URL",
+            "description": "declares an unparsable mcpServers port",
+            "author": "tester",
+            "defaultEnabled": False,
+            "mcpServers": {"bad-url-app": {"url": "http://127.0.0.1:notaport/mcp"}},
+        }
+        monkeypatch.setattr(manager, "_BUILTIN_APPS", [])
+        monkeypatch.setattr(manager, "discover_builtin_apps", lambda *a, **k: [bad])
+        monkeypatch.setattr(manager, "_edition_builtin_apps", lambda: [])
+
+        manager.register_builtin_apps()   # must not raise
+
+        # It registers, it just gets no secret — there is no reachable backend.
+        assert not (manager.app_dir("bad-url-app") / ".app_secret").is_file()
+
+    def test_a_valid_loopback_url_is_unaffected(self):
+        from kiro_crew.apps.manager import resolve_mcp_backend_url
+
+        assert resolve_mcp_backend_url(
+            {"crew-companion": {"url": "http://127.0.0.1:7778/mcp"}}
+        ) == "http://127.0.0.1:7778"

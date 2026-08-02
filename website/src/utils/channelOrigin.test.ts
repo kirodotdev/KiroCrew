@@ -52,6 +52,7 @@ describe('slotChannelNamespace', () => {
   it('returns the namespace for both key separators', () => {
     expect(slotChannelNamespace('slack:1785370133.085469')).toBe('slack')
     expect(slotChannelNamespace('slack_1785370133.085469')).toBe('slack')
+    expect(slotChannelNamespace('1785370133.085469')).toBe('slack')
     expect(slotChannelNamespace('discord:bot:direct:u1')).toBe('discord')
   })
 

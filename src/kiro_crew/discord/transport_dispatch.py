@@ -383,6 +383,7 @@ class DiscordDispatcher:
                 channel_id=chan_id,
                 agent=agent,
                 resumed=resumed,
+                runtime_source="discord",
             )
 
             # PreToolUse security gate (channel-neutral, off ctx_builder.hooks).
@@ -438,6 +439,15 @@ class DiscordDispatcher:
                     session_key,
                     exc_info=True,
                 )
+            if is_new_own_session:
+                try:
+                    await self._surface_own_session()
+                except Exception:
+                    logger.warning(
+                        "Discord: immediate dashboard session surface failed session=%s",
+                        session_key,
+                        exc_info=True,
+                    )
             try:
                 await self._maybe_notice(channel_id, scope_id, session_key, provider)
             except Exception:
@@ -961,9 +971,7 @@ class DiscordDispatcher:
             )
             return None
 
-    def _mirror_turn_to_live_slot(
-        self, session_key: str, user_text: str, reply_text: str
-    ) -> bool:
+    def _mirror_turn_to_live_slot(self, session_key: str, user_text: str, reply_text: str) -> bool:
         """Land a resumed turn in the live dashboard window. Loop-side only.
 
         A disk-only append is not enough. The dashboard save writes
@@ -1025,6 +1033,16 @@ class DiscordDispatcher:
         if is_new:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "Discord"
             self.conv_log.set_title(session_key, title)
+
+    async def _surface_own_session(self) -> None:
+        """Surface a newly created Discord session in the dashboard immediately."""
+        from kiro_crew.dashboard.channel_slots import surface_dispatcher_session
+
+        # Keep compatibility with the session-resume controller's older state
+        # attachment while all gateways move through register_channel_transport.
+        if not hasattr(self, "dashboard_state"):
+            self.dashboard_state = getattr(self._session_resume, "dashboard_state", None)
+        await surface_dispatcher_session(self)
 
     async def _maybe_notice(
         self, channel_id: str, scope_id: str, session_key: str, provider: Any

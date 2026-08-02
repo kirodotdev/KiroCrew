@@ -72,6 +72,7 @@
 // rather than a default. It does NOT itself decide the direction.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { isRailSettling, RAIL_SETTLE_MS } from '../useRailWidth'
 import { HeightCache } from './HeightCache'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import {
@@ -450,6 +451,12 @@ export function useVirtualChat<T>(
   // debounce still applies to every OTHER row, so a re-measuring widget
   // elsewhere in the transcript still gets the render-storm protection this
   // mechanism exists for.
+  // ---- Rail-collapse settle window (see the RO callback) ----
+  // One pending timer at a time; `follow` remembers whether we were pinned to
+  // the bottom when the window opened, so the single post-window re-pin only
+  // fires for a user who was actually following.
+  const railSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const railSettleFollowRef = useRef(false)
   const lastSyncedTotalRef = useRef(-1)
   const heightSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const syncHeightsNow = useCallback(() => {
@@ -882,6 +889,38 @@ export function useVirtualChat<T>(
         }
       }
 
+      // ---- Rail-collapse settle window ----
+      // The shell animates `grid-template-columns` for 150ms, so the content
+      // column's width changes on EVERY frame of the collapse and every mounted
+      // row rewraps. Measured in isolation, that multiplies this observer's
+      // fires and its forced `offsetHeight` reads by 13-18x per toggle — and the
+      // final cached heights come out identical, so all of the extra work is
+      // discarded. The cache updates above are kept (layout is already dirty, so
+      // reading is cheap, and this leaves no stale heights); what is held back
+      // is the part that thrashes: the `pinAuto()` scrollTop WRITE interleaved
+      // between those reads, the height-sync re-render, and the window
+      // recompute. Exactly one sync — plus one re-pin if we were following —
+      // runs when the window closes.
+      //
+      // The actively-streaming row is deliberately EXEMPT: stalling ITS growth
+      // for the length of the animation re-creates the spacer lurch that
+      // `streamingIndex`'s immediate path exists to prevent. Collapsing the rail
+      // mid-turn is rare; a visible lurch is not an acceptable trade for it.
+      if ((genuineResize || firstMount) && !streamingRowResized && isRailSettling()) {
+        railSettleFollowRef.current = railSettleFollowRef.current || stickRef.current
+        if (railSettleTimerRef.current === null) {
+          railSettleTimerRef.current = setTimeout(() => {
+            railSettleTimerRef.current = null
+            const shouldRepin = railSettleFollowRef.current
+            railSettleFollowRef.current = false
+            syncHeightsNow()
+            if (shouldRepin) pinAuto()
+            recomputeWindow(true)
+          }, RAIL_SETTLE_MS)
+        }
+        return
+      }
+
       // Follow streaming/widget growth — but only while the user is NOT
       // actively scrolling. A widget that re-measures mid-fling must not yank
       // the user to the bottom (which would also unmount the rows they were
@@ -925,9 +964,17 @@ export function useVirtualChat<T>(
       // Cancel a frame queued by the last resize so it can't fire a
       // setWindowRange after the observer is torn down.
       if (rafId) cancelAnimationFrame(rafId)
+      // Same for the rail-settle timer: it calls syncHeightsNow / pinAuto /
+      // recomputeWindow, all of which touch state and the scroller, so a
+      // survivor would run against a torn-down consumer.
+      if (railSettleTimerRef.current) {
+        clearTimeout(railSettleTimerRef.current)
+        railSettleTimerRef.current = null
+      }
+      railSettleFollowRef.current = false
       resizeObserverRef.current = null
     }
-  }, [recomputeWindow, pinAuto, scheduleHeightSync, scrollerRef])
+  }, [recomputeWindow, pinAuto, scheduleHeightSync, syncHeightsNow, scrollerRef])
 
   // ---- IntersectionObserver: top/bottom sentinels for window expansion ----
   useEffect(() => {

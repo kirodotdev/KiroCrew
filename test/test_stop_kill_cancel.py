@@ -216,6 +216,218 @@ class TestRecycleIfIdle:
         mock_kill.assert_not_called()
 
 
+class TestKillPathIsPlatformCorrect:
+    """The teardown paths must go through ``platform_compat``'s tree-kill
+    helpers, and specifically the ``_async`` variants.
+
+    Two independent regressions are pinned here:
+
+    1. ``os.getpgid`` / ``os.killpg`` do not exist on Windows, and the
+       ``except (ProcessLookupError, OSError)`` handlers these call sites use do
+       NOT catch the resulting ``AttributeError``. Calling them raised out of
+       ``recycle_if_idle`` / ``shutdown`` instead of degrading, and in
+       ``shutdown`` it also skipped the ``process.kill()`` fallback so the
+       backend was never killed at all.
+    2. Per Mesh-2801 the ``_async`` variant is mandatory from a coroutine: the
+       Windows branch spawns ``taskkill`` with a 5s timeout, which stalls the
+       loop. Patching only the async symbol would let a regression back to the
+       sync helper pass silently, so both symbols are pinned and the sync one
+       hard-fails.
+
+    These assert the mechanism rather than the outcome on purpose -- the
+    platform-specific behaviour is unreachable on this POSIX runner, so an
+    outcome-only test would keep passing after a Windows-breaking regression.
+    """
+
+    @staticmethod
+    def _forbid_sync(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError(
+            "sync kill helper must NOT be called from a coroutine -- "
+            "the _async variant exists to keep Windows taskkill off the loop"
+        )
+
+    @pytest.mark.asyncio
+    async def test_recycle_awaits_async_tree_kill_not_sync(self):
+        backend = _make_mock_backend()
+        backend.refcount = 0
+        pid = backend.process.pid
+
+        with (
+            patch(
+                "kiro_crew.platform_compat.kill_process_tree_async",
+                new_callable=AsyncMock,
+            ) as mock_async,
+            patch(
+                "kiro_crew.platform_compat.kill_process_tree",
+                side_effect=self._forbid_sync,
+            ),
+            # os.killpg/os.getpgid must not be reached directly any more.
+            patch("os.killpg", side_effect=self._forbid_sync),
+        ):
+            result = await backend.recycle_if_idle()
+
+        assert result is True
+        assert mock_async.await_count == 1
+        assert mock_async.await_args.args == (pid, signal.SIGKILL)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_escalation_awaits_async_tree_kill_not_sync(self):
+        backend = _make_mock_backend()
+        # Force the escalation branch: the process never exits on its own.
+        backend.process.wait = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        with (
+            patch(
+                "kiro_crew.platform_compat.kill_process_tree_async",
+                new_callable=AsyncMock,
+            ) as mock_async,
+            patch(
+                "kiro_crew.platform_compat.kill_process_tree",
+                side_effect=self._forbid_sync,
+            ),
+            patch("os.killpg", side_effect=self._forbid_sync),
+        ):
+            await backend.shutdown(timeout=0.01)
+
+        assert mock_async.await_count == 1
+        assert mock_async.await_args.args[1] == signal.SIGKILL
+
+    @pytest.mark.asyncio
+    async def test_shutdown_falls_back_to_process_kill_when_tree_kill_fails(self):
+        """The fallback that the uncaught AttributeError used to skip.
+
+        A Windows ``kill_process_tree`` failure must still reach
+        ``process.kill()`` -- otherwise a backend that ignores stdin close is
+        never terminated.
+        """
+        backend = _make_mock_backend()
+        backend.process.wait = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        with patch(
+            "kiro_crew.platform_compat.kill_process_tree_async",
+            new_callable=AsyncMock,
+            side_effect=OSError("taskkill: access denied"),
+        ):
+            await backend.shutdown(timeout=0.01)
+
+        backend.process.kill.assert_called_once()
+
+
+class TestTeardownUsesPortableSignalConstant:
+    """``signal.SIGKILL`` does not exist on Windows, and these teardown paths
+    evaluate their signal argument BEFORE the call -- so naming it that way
+    raised ``AttributeError`` from inside the very call that was supposed to be
+    the portable one, and no surrounding handler catches AttributeError.
+
+    Simulated by deleting the attribute rather than by running on Windows: the
+    whole of this file is in ``conftest``'s Windows ``collect_ignore`` list, so
+    a test here can never observe the platform it protects. That is exactly how
+    the original defect shipped -- the mechanism tests passed on Linux, where
+    ``signal.SIGKILL`` exists, while the constant was unusable on the target
+    platform. Deleting the attribute reproduces the Windows namespace on the
+    matrix that actually runs.
+    """
+
+    @staticmethod
+    def _hide_sigkill(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delattr(signal, "SIGKILL", raising=False)
+        assert not hasattr(signal, "SIGKILL"), "precondition: SIGKILL must be hidden"
+
+    @pytest.mark.asyncio
+    async def test_recycle_survives_without_signal_sigkill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._hide_sigkill(monkeypatch)
+        backend = _make_mock_backend()
+        backend.refcount = 0
+
+        with patch(
+            "kiro_crew.platform_compat.kill_process_tree_async",
+            new_callable=AsyncMock,
+        ) as mock_async:
+            result = await backend.recycle_if_idle()
+
+        assert result is True
+        # The portable constant is a plain int, so it survives the deletion.
+        assert mock_async.await_args.args[1] == 9
+
+    @pytest.mark.asyncio
+    async def test_shutdown_survives_without_signal_sigkill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._hide_sigkill(monkeypatch)
+        backend = _make_mock_backend()
+        backend.process.wait = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        with patch(
+            "kiro_crew.platform_compat.kill_process_tree_async",
+            new_callable=AsyncMock,
+        ) as mock_async:
+            await backend.shutdown(timeout=0.01)
+
+        assert mock_async.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_orphan_reap_survives_without_signal_sigkill(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from kiro_crew.mcp_gateway import manager as mgr
+
+        self._hide_sigkill(monkeypatch)
+        socket_path = tmp_path / "gateway.sock"
+        (tmp_path / "gateway.sock.backends").write_text("111\n", encoding="utf-8")
+
+        manager = object.__new__(mgr.GatewayManager)
+        manager._spec = MagicMock()
+        manager._spec.socket_path = str(socket_path)
+
+        with patch(
+            "kiro_crew.platform_compat.kill_process_tree_async",
+            new_callable=AsyncMock,
+        ) as mock_async:
+            await manager._reap_orphaned_backends()
+
+        assert mock_async.await_args.args == (111, 9)
+
+
+class TestOrphanReapIsPlatformCorrect:
+    """``_reap_orphaned_backends`` used a bare ``os.killpg`` per recorded pid.
+
+    On Windows that raises ``AttributeError`` (uncaught by its handler), and it
+    is awaited from ``_terminate_process``, so the sync helper would also spawn
+    one 5s-timeout ``taskkill`` per pid directly on the loop.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reap_awaits_async_tree_kill_for_each_pid(self, tmp_path):
+        from kiro_crew.mcp_gateway import manager as mgr
+
+        socket_path = tmp_path / "gateway.sock"
+        (tmp_path / "gateway.sock.backends").write_text("111 222\n", encoding="utf-8")
+
+        manager = object.__new__(mgr.GatewayManager)
+        manager._spec = MagicMock()
+        manager._spec.socket_path = str(socket_path)
+
+        def _forbid_sync(*_a: Any, **_kw: Any) -> None:
+            raise AssertionError("sync kill_process_tree must not be called from a coroutine")
+
+        with (
+            patch(
+                "kiro_crew.platform_compat.kill_process_tree_async",
+                new_callable=AsyncMock,
+            ) as mock_async,
+            patch(
+                "kiro_crew.platform_compat.kill_process_tree",
+                side_effect=_forbid_sync,
+            ),
+            patch("os.killpg", side_effect=_forbid_sync),
+        ):
+            await manager._reap_orphaned_backends()
+
+        assert [c.args[0] for c in mock_async.await_args_list] == [111, 222]
+
+
 # --- Scope A (gatewayd): abort frame handler tests ---------------------------
 
 class TestDetachOnCancelFailure:
@@ -228,10 +440,10 @@ class TestDetachOnCancelFailure:
     ) -> None:
         from kiro_crew.mcp_gateway import socketsec
 
-        monkeypatch.setattr(socketsec, "PEERCRED_SUPPORTED", True)
+        monkeypatch.setattr(socketsec, "PEER_IDENTITY_SUPPORTED", True)
         monkeypatch.setattr(
-            socketsec, "check_peer_uid",
-            lambda _w, _uid: socketsec.PeerCredResult.MATCH,
+            socketsec, "check_peer_is_self",
+            lambda _w: socketsec.PeerCredResult.MATCH,
         )
 
         class _FakeReader:

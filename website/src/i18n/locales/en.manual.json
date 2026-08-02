@@ -26,7 +26,11 @@
     "social_login": "Social login",
     "starting_update": "Starting update…",
     "update_failed_2": "Update failed",
-    "view_full_changelog": "▸ View Full Changelog"
+    "view_full_changelog": "▸ View Full Changelog",
+    "star_us": "Star us",
+    "report_issue": "Report issue",
+    "star_kirocrew_on_github": "Star KiroCrew on GitHub",
+    "report_an_issue_on_github": "Report an issue on GitHub"
   },
   "appSdk": {
     "chatEmbed": {
@@ -47,6 +51,7 @@
         "add_to_knowledge": "Add to Knowledge",
         "adding": "Adding…",
         "answer_resume": "Answer & resume",
+        "challenge_the_findings_from_question": "Challenge the findings from \"{{question}}…\", then fork into a new campaign.",
         "challenging": "Challenging…",
         "copied": "Copied!",
         "copy": "Copy",
@@ -56,6 +61,7 @@
         "exporting": "Exporting…",
         "failed_to_add_to_knowledge_library": "Failed to add to Knowledge Library",
         "failed_to_start_campaign_please_try_again": "Failed to start campaign — please try again.",
+        "findings_count": "Findings ({{count}})",
         "fork_failed_no_campaign_was_created": "Fork failed: no campaign was created.",
         "fork_failed_please_try_again": "Fork failed. Please try again.",
         "forking": "Forking…",
@@ -66,10 +72,12 @@
         "one_campaign_at_a_time": "One campaign at a time",
         "regenerate": "Regenerate",
         "regenerating": "Regenerating…",
+        "research_question": "Research “{{question}}”",
         "send": "Send",
         "sending": "Sending…",
         "start_campaign": "Start Campaign",
         "starting": "Starting...",
+        "sub_questions_guidance_count": "Sub-questions & guidance ({{count}})",
         "the_agent_is_waiting_for_your_direction": "The agent is waiting for your direction.",
         "the_campaign_stopped_unexpectedly": "The campaign stopped unexpectedly.",
         "validation_failed_check_your_connection_and_try": "Validation failed — check your connection and try again.",
@@ -79,6 +87,7 @@
     "codeReviewSage": {
       "codeReviewSagePage": {
         "active_loaded_during_reviews_uncheck_to_disable": "Active — loaded during reviews (uncheck to disable)",
+        "force_review_all_count": "Force review all ({{count}})",
         "inactive_check_to_load_during_reviews": "Inactive — check to load during reviews",
         "review": "Review",
         "running": "Running…"
@@ -119,6 +128,9 @@
         },
         "issueList": {
           "closed_issues_are_capped_at_the_100_most_recentl": "Closed issues are capped at the 100 most recently updated"
+        },
+        "labelPalette": {
+          "no_labels_match_query": "No labels match “{{query}}”."
         },
         "labelPicker": {
           "this_repo_has_no_labels": "This repo has no labels."
@@ -179,6 +191,7 @@
             "disconnecting": "Disconnecting…",
             "no_members_found_for_this_repo": "No members found for this repo.",
             "proposing_new_labels_for_this_repo_now_lives_on": "Proposing NEW labels for this repo now lives on the Tagging dashboard, next to the untagged issues those labels get applied to.",
+            "sign_in_no_extra_credentials_no_webhook": "sign-in (no\n          extra credentials, no {{provider}} webhook).",
             "watch_this_repo_in_the_background_and_post_a_kir": "Watch this repo in the background and post a KiroCrew notification whenever a new issue is opened.",
             "which_labels_mark_newcomer_friendly_work_so_issu": "Which labels mark newcomer-friendly work, so Issue Radar can surface issues to route to first-time contributors.",
             "which_labels_mean_an_issue_still_needs_triage_dr": "Which labels mean an issue still needs triage. Drives the Overview's “Untriaged” count and the needs-attention queue."
@@ -230,6 +243,78 @@
         "cancel": "Cancel",
         "cancelling": "Cancelling…",
         "run_detail": "Run detail"
+      }
+    },
+    "crewCompanion": {
+      "header": {
+        "title": "Crew Companion",
+        "subtitle": "A pet that lives on your desktop and nudges you to take breaks, holds the reminders you set in plain language, and breathes with you."
+      },
+      "settings": {
+        "title": "Settings",
+        "break_nudges": "Break nudges",
+        "break_nudges_hint": "Water, stretch, look away — about every {{mins}} minutes.",
+        "how_often": "How often",
+        "custom_minutes": "Custom interval in minutes",
+        "custom_placeholder": "min",
+        "preset_aria": "Nudge me every {{mins}} minutes",
+        "session_done": "Tell me when sessions are done",
+        "session_done_hint": "A short nudge when a task finishes.",
+        "always_notify_note": "Failures and anything waiting on you always notify, whatever these are set to.",
+        "offline_hint": "Open the desktop app to change these."
+      },
+      "reminders": {
+        "title": "Reminders",
+        "add_placeholder": "Tell me what to remember…",
+        "add_aria": "What should I remind you about?",
+        "add_button": "Add",
+        "needs_time": "Tell me when, too — try “drink water in 20 minutes” or “stand up every hour”.",
+        "default_text": "Reminder",
+        "empty": "Nothing scheduled yet.",
+        "loading": "Loading your reminders…",
+        "offline": "Open the desktop app to see and add reminders.",
+        "scheduled_count_one": "{{count}} scheduled",
+        "scheduled_count_other": "{{count}} scheduled",
+        "tag_done": "Done",
+        "skip": "Skip",
+        "skip_title": "Skip just the next one",
+        "skip_aria": "Skip the next “{{text}}”",
+        "remove_title": "Remove",
+        "remove_aria": "Remove “{{text}}”",
+        "couldnt_add": "Couldn’t add that reminder — {{error}}",
+        "couldnt_skip": "Couldn’t skip that one — {{error}}",
+        "couldnt_remove": "Couldn’t remove that reminder — {{error}}",
+        "couldnt_save": "Couldn’t save that setting — {{error}}"
+      },
+      "memories": {
+        "title": "Memories",
+        "loading": "Looking back…",
+        "empty": "Nothing to look back on yet.",
+        "offline": "Open the desktop app to see your memories.",
+        "days_together": "{{days}} days together",
+        "row_time": "Kept you company for {{time}}",
+        "row_streak": "{{streak}}-day streak",
+        "row_breathing_one": "Breathed with {{name}} {{count}} time",
+        "row_breathing_other": "Breathed with {{name}} {{count}} times",
+        "row_reminders_one": "Set {{count}} reminder",
+        "row_reminders_other": "Set {{count}} reminders",
+        "row_latest": "Latest you two were up: {{time}}",
+        "row_earliest": "Earliest start: {{time}}",
+        "dur_min": "{{n}} min",
+        "dur_hours": "{{h}} h",
+        "dur_hm": "{{h}} h {{m}} min"
+      },
+      "time": {
+        "now": "now",
+        "tomorrow": "tomorrow",
+        "in_min": "{{n}} min from now",
+        "in_h": "{{h}} h from now",
+        "in_hm": "{{h}} h {{m}} min from now",
+        "in_days": "{{n}} days from now",
+        "repeat_minutes": "every {{n}} min",
+        "repeat_hours": "every {{n}} h",
+        "repeat_days": "every {{n}} days",
+        "repeat_daily": "every day"
       }
     }
   },
@@ -400,11 +485,22 @@
       "switch_to_unified_view": "Switch to unified view",
       "unified_view": "Unified view"
     },
+    "discoverySearchBar": {
+      "found_for_query": "found for “{{query}}”"
+    },
     "embedTabStrip": {
       "sessions": "Sessions"
     },
+    "excalidrawBlock": {
+      "render_failed": "Couldn't render diagram — showing source"
+    },
     "executionsView": {
       "failed_to_load": "Failed to load"
+    },
+    "fileRenderers": {
+      "scroll_for_more_count": "Scroll for more… ({{count}} remaining)",
+      "showing_raw_content_count": "Showing raw content ({{count}} chars)",
+      "showing_raw_content_truncated_count": "Showing raw content ({{count}} chars, first {{shown}} shown)"
     },
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "Click to add to input (double-click to select and send)",
@@ -491,7 +587,7 @@
     },
     "linkedSurfacesSection": {
       "confirm_release": "Release this session from {{label}}?\n\nMessages sent there will stop arriving here, and replies will stop being delivered there. You can re-attach with !sessions from that channel.",
-      "confirm_stop_mirroring": "Stop mirroring this session to {{label}}?\n\nReplies will no longer be delivered there. For a non-Slack channel you can only re-link from that channel, not from the dashboard.",
+      "confirm_stop_mirroring": "Stop mirroring this session to {{label}}?\n\nReplies will no longer be delivered there. You can re-link it later from the configured-channel picker.",
       "connected": "Connected: {{label}}",
       "mirror": "Mirror",
       "mirror_stopped": "Stopped mirroring to {{label}}",
@@ -500,11 +596,13 @@
       "post_reminder": "Post reminder in {{label}}",
       "release": "Release {{label}}",
       "released": "Released from {{label}}",
+      "link_failed": "Could not link channel: {{reason}}",
       "reminder_failed": "Could not post reminder: {{reason}}",
       "reminder_sent": "Reminder posted in {{label}}",
       "stop_failed": "Could not stop mirroring: {{reason}}",
       "stop_mirroring": "Stop mirroring to {{label}}",
-      "two_way": "Two-way"
+      "two_way": "Two-way",
+      "unavailable": "This destination is unavailable."
     },
     "markdownPanel": {
       "adding": "Adding…",
@@ -544,6 +642,7 @@
       "open_app_full_screen": "Open app full screen"
     },
     "mcpBrowserModal": {
+      "a_server_named_already_exists": "A server named “{{name}}” already exists with a different configuration.\n          Manage it from the installed servers table.",
       "waiting_for_the_install_plan_to_load": "Waiting for the install plan to load"
     },
     "mcpCustomServerModal": {
@@ -561,6 +660,9 @@
       "hide_raw": "hide raw",
       "view_raw": "view raw"
     },
+    "migrationBanner": {
+      "install_app_from_apps": "Install \"{{app}}\" from Apps before the next KiroCrew update to keep using it."
+    },
     "monacoCodeBlock": {
       "copied": "Copied!",
       "copy": "Copy"
@@ -576,6 +678,7 @@
         "activity_will_appear_here": "Activity will appear here",
         "clear_all_filters": "Clear all filters",
         "hide_muted_channel_notifications": "Hide muted-channel notifications",
+        "muted_count": "Muted ({{count}})",
         "no_categories_selected_click_a_category_above": "No categories selected — click a category above",
         "select_all_categories": "Select all categories",
         "show_less": "Show less",
@@ -593,7 +696,9 @@
     },
     "pastedChip": {
       "collapse_paste": "Collapse paste",
-      "expand_paste": "Expand paste"
+      "expand_paste": "Expand paste",
+      "paste_lines_one": "[ Paste #{{seq}} · {{count}} line ]",
+      "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]"
     },
     "pixelCanvasWidget": {
       "project": "Project"
@@ -604,6 +709,8 @@
       "override_publish_anyway": "Override & Publish Anyway",
       "publish_failed": "Publish failed",
       "publishing_2": "Publishing…",
+      "scan_blocked_finding_one": "Scan blocked ({{count}} finding)",
+      "scan_blocked_finding_other": "Scan blocked ({{count}} findings)",
       "unexpected_response": "Unexpected response"
     },
     "pullRequestPanel": {
@@ -674,6 +781,7 @@
       "click_to_reset": "Click to reset"
     },
     "skillBrowserModal": {
+      "bundle_contents_count": "Bundle contents ({{count}} files)",
       "install_skill": "Install Skill",
       "no_preview_available": "No preview available."
     },
@@ -703,6 +811,7 @@
       "update_theme": "Update Theme"
     },
     "themeExperienceLayer": {
+      "enable_named_experience": "Enable “{{name}}” experience?",
       "mute_theme_sounds": "Mute theme sounds",
       "unmute_theme_sounds": "Unmute theme sounds"
     },
@@ -854,6 +963,7 @@
       "failed_to_uninstall": "Failed to uninstall",
       "install_complete": "Install complete",
       "install_failed": "Install failed",
+      "installed_version": "Installed (v{{version}})",
       "removing": "Removing…",
       "starting_install": "Starting install…"
     },
@@ -872,6 +982,15 @@
       "search_library": "Search library",
       "try_a_different_search_term": "Try a different search term",
       "update_all": "Update All"
+    },
+    "artifactDeployPage": {
+      "aws_profiles_count": "AWS Profiles ({{count}})",
+      "deployments_count": "Deployments ({{count}})",
+      "pending_confirmations_count": "Pending confirmations ({{count}})",
+      "ready_to_deploy_count": "Ready to deploy ({{count}})",
+      "aws_profiles_tip": "Every deploy runs as a registered profile. Register your existing AWS CLI profiles or create new ones — KiroCrew stores only the name, never credentials.",
+      "ready_to_deploy_tip": "Webapp artifacts that haven't been deployed yet. Deploy opens a skill-loaded chat session that adapts the app and ships it.",
+      "deployments_tip": "All deployed assets — static sites published from artifacts and full-stack webapp deployments. Recall = reversible takedown; Destroy = permanent infra removal."
     },
     "artifactDetailPage": {
       "agent_chat": "Agent chat",
@@ -954,6 +1073,7 @@
         "cancelled": "Cancelled",
         "clear": "Clear",
         "complete": "Complete",
+        "dismiss_done_count": "Dismiss done ({{count}})",
         "error": "Error",
         "no_issues_in_this_session_yet_mention_a_github_o": "No issues in this session yet. Mention a GitHub or GitLab issue link and it will appear here.",
         "no_matches": "No matches",
@@ -963,9 +1083,11 @@
         "resource_type_issue": "Issue",
         "resource_type_link": "Link",
         "resource_type_pr": "PR",
+        "retry_failed_count": "Retry failed ({{count}})",
         "running": "Running",
         "running_tool": "Running Tool",
         "search_files": "Search by file name, folder, or link…",
+        "show_all_count": "Show all ({{count}})",
         "starting": "Starting…",
         "stopped": "Stopped",
         "unable_to_read_this_file": "Unable to read this file."
@@ -977,7 +1099,8 @@
         "rendered": "rendered",
         "rendered_view": "Rendered view",
         "switch_to_raw_markdown_view": "Switch to raw markdown view",
-        "switch_to_rendered_view": "Switch to rendered view"
+        "switch_to_rendered_view": "Switch to rendered view",
+        "use_as_plan_count": "Use as Plan ({{count}} steps)"
       },
       "chatNavPanel": {
         "link": "Link"
@@ -985,6 +1108,14 @@
       "chatSettings": {
         "enter_for_newline": "Enter for newline",
         "shift_enter_for_newline": "Shift+Enter for newline"
+      },
+      "knowledgePicker": {
+        "knowledge_results_for_query": "Knowledge results for “{{query}}”",
+        "no_knowledge_found_for_query": "No knowledge found for “{{query}}”",
+        "searching_knowledge_for_query": "Searching knowledge for “{{query}}”…"
+      },
+      "mcpInfoButton": {
+        "mcp_servers_count": "MCP Servers ({{count}}/{{total}})"
       },
       "mcpOAuthBanner": {
         "mcp_server": "MCP server"
@@ -1008,6 +1139,7 @@
         "switch_to_unified_view": "Switch to unified view"
       },
       "subagentProgressBar": {
+        "retry_failed_count": "Retry failed ({{count}})",
         "stop_all_running_subagents": "Stop all running subagents",
         "stop_running_subagent": "Stop running subagent"
       },
@@ -1074,20 +1206,20 @@
       "checking": "Checking…",
       "collapse_hidden_folders": "Collapse hidden folders",
       "creating": "Creating…",
-      "dashboard_session": "Dashboard session",
       "flat_view_all_chats_without_folders": "Flat view — all chats without folders",
       "folder": "Folder",
       "hide": "Hide",
       "last_30_days": "Last 30 Days",
       "last_7_days": "Last 7 Days",
       "link_project_directory": "Link project directory",
+      "dashboard_source": "Dashboard",
       "mirroring_to": "Mirroring to {{label}}",
+      "session_source": "Session",
       "new": "New",
       "new_chat": "New chat",
       "no_inactive_sessions_to_archive": "No inactive sessions to archive.",
       "older": "Older",
       "show": "Show",
-      "slack_session": "Slack session",
       "switch_failed": "Switch failed",
       "switch_to_board_view": "Switch to board view",
       "switch_to_flat_view_all_chats_without_folders": "Switch to flat view (all chats without folders)",
@@ -1178,7 +1310,8 @@
       "synced_restart_gateway_to_apply_the_new_build": "Synced — restart gateway to apply the new build.",
       "the_primary_checkout_this_fleet_is_discovered_fr": "The primary checkout this fleet is discovered from",
       "token_mint_failed": "Token mint failed",
-      "up_to_date_with_main": "up to date with main"
+      "up_to_date_with_main": "up to date with main",
+      "worktrees_count": "Worktrees ({{count}})"
     },
     "hooksPage": {
       "disable_hook": "Disable hook",
@@ -1206,6 +1339,23 @@
       "subdirectory_inside_kiro_crew_where_this_workspa": "Subdirectory inside ~/.kiro/crew where this workspace stores its data (chat history, lessons, projects). Each workspace gets its own isolated directory.",
       "workspace_name_is_required": "Workspace name is required"
     },
+    "knowledge": {
+      "detailView": {
+        "entities_count": "Entities ({{count}})",
+        "match_score": "Match: {{type}} (score: {{score}})",
+        "related_items_count": "Related Items ({{count}})",
+        "relations_count": "Relations ({{count}})"
+      },
+      "embeddingStatus": {
+        "embedded_pct": "{{embedded}}/{{total}} embedded ({{pct}}%)"
+      },
+      "index": {
+        "items_count": "({{count}} items)"
+      },
+      "sourceGroup": {
+        "items_count": "({{count}} items)"
+      }
+    },
     "logsPage": {
       "latest_first": "Latest: first",
       "latest_last": "Latest: last",
@@ -1225,6 +1375,41 @@
     "notificationsPage": {
       "click_a_notification_to_view_details_jump_to_the": "Click a notification to view details. Jump to the source chat or job from the detail panel."
     },
+    "overview": {
+      "agentCfgTab": {
+        "agent_config_file": "Agent Config ({{file}})",
+        "agent_config_tip": "The {{process}} agent definition — prompt, tools, MCP servers, model settings. This is the execution layer config, separate from KiroCrew's operational bindings."
+      },
+      "kiroCrewCfgTab": {
+        "inherited_provider": "inherited ({{provider}})"
+      },
+      "mcpTab": {
+        "mcp_servers_count": "MCP Servers ({{count}})",
+        "off_count": "({{count}} off)"
+      },
+      "memoryGraphTab": {
+        "all_count": "All ({{count}})"
+      },
+      "memoryTab": {
+        "consolidated_sessions_failed": "Consolidated {{succeeded}}/{{total}} sessions ({{failed}} failed)"
+      },
+      "promptsTab": {
+        "prompts_count": "Prompts ({{count}})",
+        "prompts_filtered_count": "Prompts ({{count}} of {{total}})",
+        "user_prompts_count": "User Prompts ({{count}})",
+        "user_prompts_filtered_count": "User Prompts ({{count}} of {{total}})"
+      },
+      "skillsTab": {
+        "no_skills_match_query": "No skills match “{{query}}”.",
+        "pending_review_count": "Pending review ({{count}})",
+        "skills_count": "Skills ({{count}})",
+        "skills_tip": "On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from KiroCrew, kiro-cli (~/.kiro/skills), and AIM packages."
+      },
+      "steeringTab": {
+        "no_files_match_query": "No files match “{{query}}”.",
+        "steering_count": "Steering ({{count}})"
+      }
+    },
     "overviewPage": {
       "all_systems_running": "All systems running",
       "connecting": "Connecting…",
@@ -1235,7 +1420,8 @@
     },
     "projectDetailPage": {
       "export_yaml": "Export YAML",
-      "exporting": "Exporting…"
+      "exporting": "Exporting…",
+      "task_is_waiting_for_your_decision": "Task {{index}} \"{{title}}\" is waiting for your decision"
     },
     "projectsPage": {
       "default_workspace_folder": "Default workspace folder",
@@ -1312,6 +1498,7 @@
       "continue_session": "Continue session",
       "delete_failed": "Delete failed",
       "delete_job": "Delete job",
+      "delete_named_job": "Delete \"{{name}}\"?",
       "deleting": "Deleting…",
       "deleting_2": "Deleting...",
       "disable_strict_schedule_allow_jitter": "Disable strict schedule (allow jitter)",
@@ -1334,6 +1521,9 @@
       "scheduled_jobs_run_on_the_configured_interval_or": "Scheduled jobs run on the configured interval or cron expression.",
       "view": "View",
       "view_last_result": "View last result"
+    },
+    "sessionArchive": {
+      "no_matches_for_query": "No matches for \"{{query}}\"."
     },
     "settings": {
       "aboutPanel": {
@@ -1358,6 +1548,12 @@
       },
       "computerUsePanel": {
         "could_not_save_computer_use_settings": "Could not save computer-use settings."
+      },
+      "postureDisclosure": {
+        "no_matches_for_query": "No matches for “{{query}}”."
+      },
+      "slackPanel": {
+        "create_the_slack_app_from_the_manifest": "Create the Slack app from the pre-filled manifest below (Socket Mode and permissions\n            included, named KiroCrew-{{alias}}). Install it to your\n            workspace, then paste the bot token and app-level token here."
       }
     },
     "systemPage": {
@@ -1404,6 +1600,24 @@
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"
     }
+  },
+  "privacyDisclosure": {
+    "anonymousHeartbeatBody": "By default, KiroCrew sends at most one heartbeat per day. Its fixed payload contains a random installation ID, app version, release channel, operating system, CPU architecture, Python minor version, installation channel, governance posture, and a first-run flag. The ID identifies an installed copy, not a person.",
+    "anonymousHeartbeatTitle": "Anonymous daily heartbeat",
+    "controlsBody": "Use the commands below to inspect what would be sent or disable the heartbeat. This disclosure never pauses or blocks the application.",
+    "controlsTitle": "Disable telemetry from the command line",
+    "dataNeverSentBody": "The heartbeat never includes prompts, model responses, file contents or paths, repository or branch names, credentials, environment variables, hostnames, or usernames. The receiving service does not retain client IP addresses.",
+    "dataNeverSentTitle": "What telemetry never includes",
+    "details": "Privacy details",
+    "localDataBody": "Usage and context records stay on your device. Optional performance metrics are off by default; when enabled, they remain local unless you explicitly configure an OTLP endpoint.",
+    "localDataTitle": "Data that stays local",
+    "noticeBody": "By default, KiroCrew may send at most one anonymous usage heartbeat per day. Its fixed payload contains a random installation ID, app version, release channel, operating system, CPU architecture, Python minor version, installation channel, governance posture, and a first-run flag; it never includes prompts, responses, files, paths, credentials, hostnames, or usernames.",
+    "noticeTitle": "Privacy at a glance",
+    "settingsDescription": "Telemetry, local data, and privacy controls",
+    "settingsLabel": "Privacy",
+    "shellMacOSLinuxLabel": "macOS / Linux",
+    "shellPowerShellLabel": "Windows PowerShell",
+    "shellWindowsCmdLabel": "Windows Command Prompt"
   },
   "settings": {
     "display": {

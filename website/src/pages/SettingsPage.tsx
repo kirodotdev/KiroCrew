@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Bell, Code, Globe, Import, Info, Keyboard, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck, Sparkles, SquareMousePointer } from 'lucide-react'
+import { Bell, Code, Fingerprint, Globe, Import, Info, Keyboard, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck, Sparkles, SquareMousePointer } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
@@ -20,6 +20,7 @@ import { ShortcutsPanel } from './settings/ShortcutsPanel'
 import { AboutPanel } from './settings/AboutPanel'
 import { ImportPanel } from './settings/ImportPanel'
 import { ComputerUsePanel } from './settings/ComputerUsePanel'
+import { PrivacyPanel } from './settings/PrivacyPanel'
 
 import { i18nT } from '../i18n/t'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
@@ -54,6 +55,7 @@ function buildTabs() {
     { key: 'browser', label: i18nT('settings.tabs.browser.label'), icon: <Globe size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.browser.description') },
     { key: 'computer-use', label: i18nT('settings.tabs.computerUse.label'), icon: <SquareMousePointer className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.computerUse.description') },
     { key: 'instances', label: i18nT('settings.tabs.instances.label'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.instances.description') },
+    { key: 'privacy', label: i18nT('privacyDisclosure.settingsLabel'), icon: <Fingerprint className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('privacyDisclosure.settingsDescription') },
     { key: 'security', label: i18nT('settings.tabs.security.label'), icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.security.description') },
     { key: 'developer', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description') },
     { key: 'about', label: i18nT('settings.tabs.about.label'), icon: <Info size={16} />, dividerBefore: true, description: i18nT('settings.tabs.about.description') },
@@ -113,6 +115,7 @@ export default function SettingsPage() {
         {tab === 'browser' && <BrowserPanel />}
         {tab === 'computer-use' && <ComputerUsePanel />}
         {tab === 'instances' && !embedded && <InstancesPanel />}
+        {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <SecurityPanel />}
         {tab === 'developer' && <DeveloperPanel />}
         {tab === 'about' && <AboutPanel />}

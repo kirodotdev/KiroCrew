@@ -1,7 +1,9 @@
 """MCP gateway — sidecar broker for cross-session MCP sharing.
 
-This package wires an asyncio unix-socket broker into KiroCrew as a
-sidecar subprocess. When enabled, it:
+This package wires an asyncio local-IPC broker into KiroCrew as a
+sidecar subprocess. The endpoint is a unix-domain socket on POSIX and a named
+pipe on Windows; ``mcp_gateway.transport`` owns that split so no other module
+has to know which is in play. When enabled, it:
 
 1. Writes rewritten kiro agent JSON into an overlay directory
    (``~/.kiro/crew/mcp-gateway/agents/``) — never touches the user's
@@ -22,14 +24,25 @@ import importlib
 import sys
 from typing import TYPE_CHECKING
 
-#: Platforms where the sidecar broker can run. The broker listens on an
-#: ``AF_UNIX`` socket (``asyncio.start_unix_server``) and delivers each
-#: session's poolable stubs over ACP ``session/new`` injection (no bind-mount,
-#: no privileged operation), so it runs on any POSIX platform with
-#: unix-domain sockets. Windows is excluded: its asyncio proactor loop has no
-#: ``AF_UNIX`` support, so ``gatewayd`` cannot bind its listening socket there
-#: until a loopback/named-pipe transport is added.
-GATEWAY_SUPPORTED_PLATFORMS = ("linux", "darwin")
+#: Platforms where the sidecar broker can run. The broker listens on a local
+#: endpoint owned by ``mcp_gateway.transport`` -- an ``AF_UNIX`` socket on POSIX,
+#: a named pipe on Windows -- and delivers each session's poolable stubs over ACP
+#: ``session/new`` injection (no bind-mount, no privileged operation), so no
+#: platform needs a mount namespace or elevation.
+#:
+#: Windows is in this set now that the named-pipe transport exists. Two caveats
+#: apply there and neither blocks enabling it, because ``mcp_gateway.enabled``
+#: defaults to ``False`` and the whole feature is opt-in:
+#:
+#: * The same-name ``session/new`` override precedence that pooling relies on is
+#:   pinned by ``test_mcp_gateway_session_inject`` but is not documented by
+#:   kiro-cli. That pinning test now runs on any platform where kiro-cli is on
+#:   PATH, so a Windows machine with the CLI installed verifies it; the CI runner
+#:   has no kiro-cli, so CI alone cannot.
+#: * A macOS peer-*principal* check is still unimplemented (see
+#:   ``socketsec``), so macOS falls back to the filesystem gate. Windows does
+#:   compare SIDs.
+GATEWAY_SUPPORTED_PLATFORMS = ("linux", "darwin", "win32")
 
 
 def is_gateway_supported() -> bool:

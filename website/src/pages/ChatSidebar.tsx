@@ -3638,6 +3638,10 @@ function ChatSidebar({
                   const agentName = s.agent || defaultAgent || ''
                   const agentColor = agentColorFor(agentName)
                   const isDashboard = s.key.startsWith('dashboard')
+                  const channel = slotChannelNamespace(s.key)
+                  const surfaceLabel = isDashboard
+                    ? i18nT('pages.chatSidebar.dashboard_source')
+                    : slotChannelLabel(s.key) || i18nT('pages.chatSidebar.session_source')
                   return (
                     <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'resume sessions')} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
                       // WCAG 2.1.1: history rows must be resumable via keyboard.
@@ -3661,10 +3665,12 @@ function ChatSidebar({
                       dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
                     }}>
                       {/* Platform glyph — fills the left column that session rows reserve for the unread dot */}
-                      <span role="img" className="shrink-0 flex items-center justify-center self-center text-muted" title={isDashboard ? i18nT('pages.chatSidebar.dashboard_session') : i18nT('pages.chatSidebar.slack_session')} aria-label={isDashboard ? i18nT('pages.chatSidebar.dashboard_session') : i18nT('pages.chatSidebar.slack_session')}>
+                      <span role="img" className="shrink-0 flex items-center justify-center self-center text-muted" title={surfaceLabel} aria-label={surfaceLabel}>
                         {isDashboard
                           ? <Monitor size={12} />
-                          : <MessageSquare size={12} />
+                          : channel === 'unified'
+                            ? <MessageSquare size={12} />
+                            : <ChannelBrandIcon channel={channel ?? ''} size={12} />
                         }
                       </span>
                       <div className="flex-1 min-w-0 overflow-hidden">

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.messaging.transport import (
+    ConfiguredChannelTarget,
     InboundMessage,
     MessagingTransport,
     TransportCapabilities,
@@ -163,6 +164,18 @@ class TelegramTransport(MessagingTransport):
         # conversation_log instead.
         return []
 
+    def configured_targets(self) -> list[ConfiguredChannelTarget]:
+        return [
+            ConfiguredChannelTarget(f"user:{user_id}", f"Telegram DM · {user_id}")
+            for user_id in sorted(self._allowed)
+        ]
+
+    async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
+        kind, separator, value = target_id.partition(":")
+        if kind != "user" or not separator or value not in self._allowed:
+            return None
+        return await self.resolve_conversation(value), None
+
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
         await self._client.start()
@@ -230,9 +243,7 @@ class TelegramTransport(MessagingTransport):
             user_id=str(inbound.user_id),
             conversation_id=str(inbound.chat_id),
             text=inbound.text,
-            thread_id=(
-                str(inbound.message_thread_id) if inbound.message_thread_id else None
-            ),
+            thread_id=(str(inbound.message_thread_id) if inbound.message_thread_id else None),
             message_id=inbound.message_id,
             chat_type=inbound.chat_type,
         )

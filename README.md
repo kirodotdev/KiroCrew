@@ -121,7 +121,7 @@ export KIROCREW_TELEMETRY_DISABLED=1   # or per-shell / per-container
 kirocrew telemetry status         # print exactly what would be sent
 ```
 
-**Exactly these nine fields are sent, once per day, and nothing else:**
+**Exactly these nine fields are sent, at most once per day, and nothing else:**
 
 | Field | Example | Why |
 |-------|---------|-----|

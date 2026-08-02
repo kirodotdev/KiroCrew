@@ -681,6 +681,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/spawn/{agent_id}", handlers.api_spawn_status)
     app.router.add_delete("/api/spawn/{agent_id}", handlers.api_spawn_delete)
     app.router.add_post("/api/spawn/{agent_id}/retry", handlers.api_spawn_retry)
+    app.router.add_post("/api/spawn/{agent_id}/continue", handlers.api_spawn_continue)
+    app.router.add_post("/api/spawn/{agent_id}/steer", handlers.api_spawn_steer)
+    app.router.add_post("/api/spawn/{agent_id}/release", handlers.api_spawn_release)
     app.router.add_delete("/api/spawn", handlers.api_spawn_clear)
     app.router.add_get("/api/lessons", handlers.api_lessons)
     app.router.add_post("/api/lessons", handlers.api_lessons_create)
@@ -1928,9 +1931,7 @@ async def start_dashboard(
     app.router.add_delete("/api/agents/{name}", handlers.api_kirocrew_agent_delete)
     # Edition capability agents
     app.router.add_get("/api/capability/agents", handlers.api_capability_agents_list)
-    app.router.add_post(
-        "/api/capability/agents/install", handlers.api_capability_agents_install
-    )
+    app.router.add_post("/api/capability/agents/install", handlers.api_capability_agents_install)
     app.router.add_post(
         "/api/capability/agents/uninstall", handlers.api_capability_agents_uninstall
     )
@@ -1989,6 +1990,7 @@ async def start_dashboard(
     app.router.add_post("/api/chat/slots/{slot}/slack-unlink", chat.api_chat_slot_slack_unlink)
     app.router.add_post("/api/chat/slots/{slot}/mirror-link", chat.api_chat_slot_mirror_link)
     app.router.add_post("/api/chat/slots/{slot}/mirror-unlink", chat.api_chat_slot_mirror_unlink)
+    app.router.add_get("/api/chat/channel-targets", chat.api_channel_targets)
     app.router.add_get("/api/slack/channels", chat.api_slack_channels)
 
     # OpenAI-compatible API

@@ -46,7 +46,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-STUB_WRAPPER = REPO_ROOT / "src" / "kiro_crew" / "mcp_gateway" / "stub_wrapper.sh"
 DEFAULTS_JSON = REPO_ROOT / "src" / "kiro_crew" / "config" / "defaults.json"
 
 # ``.kirocrew`` NOT followed by ``-`` or ``.`` -- so the top-level siblings that
@@ -136,23 +135,6 @@ def test_default_audit_hook_writes_to_the_current_data_home() -> None:
         assert (
             CURRENT_HOME in command
         ), f"the audit hook should target {CURRENT_HOME}, got: {command}"
-
-
-def test_stub_wrapper_log_dir_targets_the_current_data_home() -> None:
-    """The wrapper's log-dir fallback must be the current home.
-
-    ``KIROCREW_HOME`` is normally unset here -- kiro-cli strips env when spawning
-    MCP subprocesses -- so the fallback is the branch that actually runs, which
-    is why the pre-move literal made this a writer rather than a dormant default.
-    """
-    lines = [
-        ln
-        for ln in STUB_WRAPPER.read_text(encoding="utf-8").splitlines()
-        if ln.startswith("_LOG_DIR=")
-    ]
-    assert len(lines) == 1, f"expected one _LOG_DIR assignment, got {lines}"
-    assert not LEGACY_HOME.search(lines[0]), f"wrapper log dir uses the legacy home: {lines[0]}"
-    assert CURRENT_HOME in lines[0], f"wrapper log dir should target {CURRENT_HOME}: {lines[0]}"
 
 
 def test_no_shell_home_default_points_at_the_legacy_home() -> None:

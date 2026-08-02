@@ -106,7 +106,10 @@ from kiro_crew.validation import (
     SEARCH_CHAT_HISTORY_SCHEMA,
     SET_PROJECT_SCHEMA,
     SKILL_SEARCH_SCHEMA,
+    SPAWN_CONTINUE_SCHEMA,
+    SPAWN_RELEASE_SCHEMA,
     SPAWN_RUN_SCHEMA,
+    SPAWN_STEER_SCHEMA,
     SPAWN_SUB_AGENTS_SCHEMA,
     SUGGEST_FOLLOWUP_SCHEMA,
     TASK_RUN_SCHEMA,
@@ -283,7 +286,96 @@ def _list_tools() -> list[dict[str, Any]]:
                             "run: kiro-cli chat --list-models --format json"
                         ),
                     },
+                    "keep": {
+                        "type": "boolean",
+                        "description": (
+                            "Optional. ALL runs are already continuable "
+                            "best-effort (~1h retention) via spawn_continue — "
+                            "keep=true additionally guarantees resumability "
+                            "(dedicated process) and extends retention to "
+                            "several hours upfront. Use for a run you know is "
+                            "a long-lived delegation workstream."
+                        ),
+                    },
                 },
+            },
+        },
+        {
+            "name": "spawn_continue",
+            "description": (
+                "Dispatch a follow-up task into ANY completed subagent run's "
+                "conversation — no flag needed at spawn time. The subagent "
+                "resumes with its full accumulated context (no re-explaining). "
+                "Continuing promotes the conversation: retention extends from "
+                "~1h (default) to several hours; release with spawn_release "
+                "when the workstream is done. Returns immediately; the result "
+                "arrives as a normal [Subagent completion event]. Typed "
+                "failures: conversation_busy (run in flight — use spawn_steer), "
+                "conversation_gone (files expired — re-spawn with a summary), "
+                "resume_failed (session could not be restored; never executes "
+                "context-free)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conversation": {
+                        "type": "string",
+                        "description": "Conversation id — the id of the original keep=true spawn_run",
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Follow-up task/instruction for the subagent",
+                    },
+                    "agent": {"type": "string", "description": "Agent name override"},
+                    "max_turns": {
+                        "type": "integer",
+                        "description": "Override tool-call budget for this turn",
+                    },
+                    "model": {"type": "string", "description": "Model override"},
+                },
+                "required": ["conversation", "task"],
+            },
+        },
+        {
+            "name": "spawn_steer",
+            "description": (
+                "Inject a message into a RUNNING subagent's in-flight turn "
+                "(course-correct without restarting it) — like steering a chat "
+                "session. Only works while the run is executing; for a finished "
+                "continuable run use spawn_continue instead."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "The running subagent's id (from spawn_run/spawn_list)",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Instruction to inject into the running turn",
+                    },
+                },
+                "required": ["agent_id", "message"],
+            },
+        },
+        {
+            "name": "spawn_release",
+            "description": (
+                "End a continuable subagent conversation (spawn_run keep=true): "
+                "deletes its persisted session so it can no longer be continued. "
+                "Call when the delegated workstream is finished. Idle "
+                "conversations also expire automatically after several hours."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conversation": {
+                        "type": "string",
+                        "description": "Conversation id — the id of the original keep=true spawn_run",
+                    },
+                },
+                "required": ["conversation"],
             },
         },
         {
@@ -1971,10 +2063,19 @@ def _get_ppid(pid: int) -> int:
       their parent session key (empty ``KIROCREW_SESSION_KEY``) and surfacing
       spurious tool-approval cards on trusted sessions. libproc needs no
       ``exec``, so it works under the sandbox.
+    - Windows: ``CreateToolhelp32Snapshot`` via
+      ``platform_compat.get_ppid``. Without this branch the walk fell through
+      to ``ps``, which does not exist on Windows, so every lookup returned 0
+      and ``_resolve_session_key`` could never resolve a key -- silently
+      breaking every session-keyed tool (``learn_add``, cron management,
+      callback delivery) with ``missing X-Session-Key``.
     - Other/unknown platforms: fall back to ``ps`` (may be blocked, then 0).
     """
     system = platform.system()
     try:
+        if system == "Windows":
+            ppid = platform_compat.get_ppid(pid)
+            return ppid if ppid > 0 else 0
         if system == "Linux":
             for line in Path(f"/proc/{pid}/status").read_text().splitlines():
                 if line.startswith("PPid:"):
@@ -3022,6 +3123,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         max_turns = args.get("max_turns") or 0
         cwd = args.get("cwd") or ""
         model = args.get("model") or ""
+        keep = bool(args.get("keep"))
         if agents_list and len(agents_list) != len(task_list):
             return f"Error: agents length ({len(agents_list)}) must match tasks length ({len(task_list)})"
 
@@ -3057,6 +3159,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 body["cwd"] = cwd
             if model:
                 body["model"] = model
+            if keep:
+                body["keep"] = True
             if approval_mode:
                 body["approval_mode"] = approval_mode
             d = _post("/api/spawn", body)
@@ -3123,6 +3227,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             for aid, a, t in zip(agent_ids, agent_names, agent_tasks):
                 label = f"{aid} ({a})" if a else aid
                 spawn_lines.append(f"  {label}: {t[:80]}")
+            if keep:
+                spawn_lines.append(
+                    "These conversations have GUARANTEED continuability: after "
+                    "completion, use spawn_continue(conversation=<id>, task=...) "
+                    "for follow-up work with full context, and "
+                    "spawn_release(conversation=<id>) when the workstream is done."
+                )
         if errors:
             if agent_ids:
                 spawn_lines.append(f"\n❌ {len(errors)} task(s) failed to start:")
@@ -3176,6 +3287,53 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # id or an error, but never imply work was accepted if neither did.
             spawn_lines.append("Error: no subagents were started.")
         return "\n".join(spawn_lines)
+
+    if name == "spawn_continue":
+        args = validate_tool_args(args, SPAWN_CONTINUE_SCHEMA)
+        conv = (args.get("conversation") or "").strip()
+        task = (args.get("task") or "").strip()
+        if not conv or not task:
+            return "Error: conversation and task are required"
+        parent_session = _resolve_session_key()
+        body = {"task": task, "parent_session": parent_session}
+        if args.get("agent"):
+            body["agent"] = args["agent"]
+        if args.get("model"):
+            body["model"] = args["model"]
+        if args.get("max_turns"):
+            body["max_turns"] = args["max_turns"]
+        d = _post(f"/api/spawn/{conv}/continue", body)
+        if d.get("error"):
+            return f"Error: {d['error']}"
+        return (
+            f"Continued conversation {conv} as run {d.get('id', '?')}. "
+            "The result will arrive as a [Subagent completion event] — "
+            "END YOUR TURN and wait for it."
+        )
+
+    if name == "spawn_steer":
+        args = validate_tool_args(args, SPAWN_STEER_SCHEMA)
+        agent_id = (args.get("agent_id") or "").strip()
+        message = (args.get("message") or "").strip()
+        if not agent_id or not message:
+            return "Error: agent_id and message are required"
+        d = _post(f"/api/spawn/{agent_id}/steer", {"message": message})
+        if d.get("error"):
+            return f"Error: {d['error']}"
+        return (
+            f"Steered run {agent_id}: the message was injected into its "
+            "running turn. Its completion event will reflect the correction."
+        )
+
+    if name == "spawn_release":
+        args = validate_tool_args(args, SPAWN_RELEASE_SCHEMA)
+        conv = (args.get("conversation") or "").strip()
+        if not conv:
+            return "Error: conversation is required"
+        d = _post(f"/api/spawn/{conv}/release", {})
+        if d.get("error"):
+            return f"Error: {d['error']}"
+        return f"Released conversation {conv} — it can no longer be continued."
 
     if name == "spawn_sub_agents":
         args = validate_tool_args(args, SPAWN_SUB_AGENTS_SCHEMA)

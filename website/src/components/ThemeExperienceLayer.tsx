@@ -697,7 +697,7 @@ export default function ThemeExperienceLayer() {
       >
         <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 text-text shadow-2xl">
           <h2 id="theme-consent-title" className="text-base font-semibold text-text-strong">
-            {i18nT('components.themeExperienceLayer.enable')}{active?.name}{i18nT('components.themeExperienceLayer.experience')}
+            {i18nT('components.themeExperienceLayer.enable_named_experience', { name: active?.name })}
           </h2>
           <p className="mt-2 text-sm text-muted">
             {i18nT('components.themeExperienceLayer.this_is_an_experience_theme_enabling_it_will')}

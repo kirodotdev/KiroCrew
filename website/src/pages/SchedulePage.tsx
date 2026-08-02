@@ -635,7 +635,7 @@ function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }
             onClick={e => e.stopPropagation()}
             onKeyDown={e => e.stopPropagation()}
           >
-            <h3 className="text-base font-semibold text-text mb-2">{i18nT('pages.schedulePage.delete_3')}{job.name}{"\"?"}</h3>
+            <h3 className="text-base font-semibold text-text mb-2">{i18nT('pages.schedulePage.delete_named_job', { name: job.name })}</h3>
             <p className="text-sm text-muted mb-4">{i18nT('pages.schedulePage.this_will_permanently_remove_the_scheduled_job_t')}</p>
             <div className="flex gap-2 justify-end">
               <Btn onClick={() => setConfirmDelete(false)}>{i18nT('pages.schedulePage.cancel')}</Btn>

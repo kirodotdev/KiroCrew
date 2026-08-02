@@ -98,6 +98,10 @@ def app_env(tmp_path, monkeypatch, worker_id):
     home = tmp_path / "kirocrew-home"
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
+    # These tests exercise admitted backend process mechanics.
+    (home / "config.json").write_text(
+        json.dumps({"agent": {"apps_allow_third_party": True}}), encoding="utf-8"
+    )
     import kiro_crew.apps.backend as bmod
 
     # Under xdist (-n auto) each worker runs in its OWN process with its own
@@ -790,7 +794,7 @@ class TestBackendLifecycle:
             )
         )
         monkeypatch.setattr(
-            "kiro_crew.apps.module_loader._third_party_apps_allowed", lambda: False
+            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
         )
         monkeypatch.setattr(
             bmod.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned despite gate off")
@@ -802,12 +806,11 @@ class TestBackendLifecycle:
         assert result is None
         assert any("Refusing to spawn third-party app" in r.message for r in caplog.records)
 
-    def test_builtin_module_backend_not_blocked_by_gate(self, tmp_path, app_env, monkeypatch):
-        # The gate must NOT block a builtin backend even when the switch is off.
-        # Builtin-ness is the installed record's origin == "builtin" (the trusted
-        # provenance signal), NOT the manifest entry format — so we persist an
-        # installed record with origin="builtin". Reaching the spawn sentinel proves
-        # the gate let it through.
+    def test_shipped_builtin_module_backend_not_blocked_by_gate(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # The gate stays open for a real shipped builtin only when the manifest's
+        # python -m target resolves inside that builtin's immutable package.
         import kiro_crew.apps.backend as bmod
         from kiro_crew.apps.manager import (
             InstalledApp,
@@ -816,25 +819,29 @@ class TestBackendLifecycle:
             get_app_manifest,
         )
 
-        root = app_dir("builtin-module-app")
+        name = "file-explorer"
+        root = app_dir(name)
         root.mkdir(parents=True, exist_ok=True)
         (root / APP_MANIFEST_FILENAME).write_text(
             json.dumps(
                 {
-                    "name": "builtin-module-app",
+                    "name": name,
                     "version": "1.0.0",
-                    "displayName": "Builtin",
-                    "description": "module-style builtin backend",
-                    "backend": {"entryPoint": "kiro_crew.apps.builtins.x.server", "port": "auto"},
+                    "displayName": "Files",
+                    "description": "shipped builtin backend",
+                    "backend": {
+                        "entryPoint": "kiro_crew.apps.builtins.file_explorer.server",
+                        "port": "auto",
+                    },
                 }
             )
         )
         _write_installed(
-            "builtin-module-app",
-            InstalledApp(name="builtin-module-app", origin="builtin", enabled=True),
+            name,
+            InstalledApp(name=name, origin="builtin", enabled=True),
         )
         monkeypatch.setattr(
-            "kiro_crew.apps.module_loader._third_party_apps_allowed", lambda: False
+            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
         )
 
         class _ReachedSpawn(Exception):
@@ -849,18 +856,17 @@ class TestBackendLifecycle:
         # mask whether the gate let the builtin through.
         monkeypatch.setattr(bmod, "wrap_argv", lambda cmd, **k: (cmd, None))
         monkeypatch.setattr(bmod.subprocess, "Popen", _sentinel)
-        manifest = get_app_manifest("builtin-module-app")
+        manifest = get_app_manifest(name)
         assert manifest is not None
-        # Reaching the spawn sentinel proves the gate did NOT block the builtin.
+        # Reaching the spawn sentinel proves the immutable package proof passed.
         with pytest.raises(_ReachedSpawn):
-            bmod._start_app_backend_body("builtin-module-app", manifest)
+            bmod._start_app_backend_body(name, manifest)
 
-    def test_third_party_dotted_entry_refused_when_gate_off(
+    def test_forged_builtin_origin_fake_name_cannot_claim_shipped_module(
         self, tmp_path, app_env, monkeypatch, caplog
     ):
-        # security-review bypass: a third-party app (origin != builtin) must NOT
-        # escape the off-switch by declaring a dotted module-style entryPoint. The
-        # gate keys on provenance, not entry format, so this is DENIED before any spawn.
+        # A forged installed.json origin cannot exempt a fake app name, even
+        # when its dotted entry resolves to genuine shipped builtin code.
         import logging
 
         import kiro_crew.apps.backend as bmod
@@ -879,17 +885,20 @@ class TestBackendLifecycle:
                     "name": "evil-dotted",
                     "version": "1.0.0",
                     "displayName": "Evil",
-                    "description": "third-party with a dotted entryPoint",
-                    "backend": {"entryPoint": "kiro_crew.cli_server", "port": "auto"},
+                    "description": "forged builtin provenance",
+                    "backend": {
+                        "entryPoint": "kiro_crew.apps.builtins.file_explorer.server",
+                        "port": "auto",
+                    },
                 }
             )
         )
         _write_installed(
             "evil-dotted",
-            InstalledApp(name="evil-dotted", origin="registry", enabled=True),
+            InstalledApp(name="evil-dotted", origin="builtin", enabled=True),
         )
         monkeypatch.setattr(
-            "kiro_crew.apps.module_loader._third_party_apps_allowed", lambda: False
+            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
         )
         monkeypatch.setattr(
             bmod.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned despite gate off")
@@ -898,6 +907,51 @@ class TestBackendLifecycle:
         assert manifest is not None
         with caplog.at_level(logging.WARNING):
             result = bmod._start_app_backend_body("evil-dotted", manifest)
+        assert result is None
+        assert any("Refusing to spawn third-party app" in r.message for r in caplog.records)
+
+    def test_forged_builtin_origin_real_name_cannot_claim_installed_file(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        import logging
+
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import (
+            InstalledApp,
+            _write_installed,
+            app_dir,
+            get_app_manifest,
+        )
+
+        name = "file-explorer"
+        root = app_dir(name)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "server.py").write_text("raise AssertionError('must not execute')\n")
+        (root / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": "Forged Files",
+                    "description": "real builtin name with mutable code",
+                    "backend": {"entryPoint": "server.py", "port": "auto"},
+                }
+            )
+        )
+        _write_installed(
+            name,
+            InstalledApp(name=name, origin="builtin", enabled=True),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
+        )
+        monkeypatch.setattr(
+            bmod.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned mutable code")
+        )
+        manifest = get_app_manifest(name)
+        assert manifest is not None
+        with caplog.at_level(logging.WARNING):
+            result = bmod._start_app_backend_body(name, manifest)
         assert result is None
         assert any("Refusing to spawn third-party app" in r.message for r in caplog.records)
 

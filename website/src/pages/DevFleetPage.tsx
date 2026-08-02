@@ -1315,7 +1315,7 @@ export default function DevFleetPage() {
               <StatCard label={i18nT('pages.devFleetPage.disk_worktrees')} value={diskGb} />
             </div>
             <Card>
-              <CardTitle><span className="flex items-center gap-1.5">{i18nT('pages.devFleetPage.worktrees_2')}{wts.length})<InfoTip text={i18nT('pages.devFleetPage.every_git_worktree_of_the_main_checkout_pull_bui')} /></span></CardTitle>
+              <CardTitle><span className="flex items-center gap-1.5">{i18nT('pages.devFleetPage.worktrees_count', { count: wts.length })}<InfoTip text={i18nT('pages.devFleetPage.every_git_worktree_of_the_main_checkout_pull_bui')} /></span></CardTitle>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', margin: '12px 0 4px' } as CSSProperties}>
                 <div className="flex-1 min-w-0">
                   <SearchInput placeholder={i18nT('pages.devFleetPage.filter_worktrees')} value={q} onChange={(e) => setQ((e.target as HTMLInputElement).value)} aria-label={i18nT('pages.devFleetPage.filter_worktrees_2')} />

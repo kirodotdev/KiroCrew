@@ -41,6 +41,9 @@ def app_env(tmp_path, monkeypatch):
     kiro_agents.mkdir()
     import kiro_crew.apps.bridges as bridges_mod
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
+    monkeypatch.setattr(
+        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
+    )
     return {"home": home, "kiro_agents": kiro_agents}
 
 

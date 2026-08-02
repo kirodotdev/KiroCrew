@@ -244,12 +244,17 @@ class _Context:
     hooks = _Hooks()
 
     def build_message(self, text: str, is_new: bool, key: str, **kwargs: Any) -> Any:
+        self.last_build_kwargs = kwargs
         return text, None
 
 
 def _config() -> Any:
     return SimpleNamespace(
         discord=SimpleNamespace(soft_threshold_pct=80),
+        dashboard=SimpleNamespace(
+            restore_window_minutes=30,
+            surface_channel_sessions=True,
+        ),
         agent=SimpleNamespace(default_agent="kirocrew"),
         messaging=SimpleNamespace(
             dm_scope="per-channel-peer",
@@ -683,9 +688,7 @@ async def test_choice_binds_replays_and_routes_followup() -> None:
     link = ChannelLink(channel_type="discord", channel_id="c1")
     assert sessions.mirror_links["dashboard:chat-1"] == link
     assert "dashboard:chat-1" in sessions.inbound_keys
-    visible = "\n".join(
-        [text for text, _ in client.sent] + [text for _, text, _ in client.edits]
-    )
+    visible = "\n".join([text for text, _ in client.sent] + [text for _, text, _ in client.edits])
     assert "Resumed: Launch plan" in visible
     assert "omitted oldest" not in visible
     assert secret not in visible
@@ -760,6 +763,7 @@ async def test_cold_resume_does_not_stamp_channel_or_retitle() -> None:
     assert getattr(sessions, "set_channel_calls", []) == []
     # ...and its title is untouched.
     assert getattr(log, "titles_set", []) == []
+    assert dispatcher.ctx_builder.last_build_kwargs["runtime_source"] == "discord"
 
 
 @pytest.mark.asyncio
@@ -771,10 +775,56 @@ async def test_own_session_still_gets_new_session_bookkeeping() -> None:
 
     await dispatcher.handle_message(_message("hello there"))
 
-    assert [key for key, _ in getattr(sessions, "set_channel_calls", [])] == [
-        sessions.last_key
-    ]
+    assert [key for key, _ in getattr(sessions, "set_channel_calls", [])] == [sessions.last_key]
     assert [key for key, _ in getattr(log, "titles_set", [])] == [sessions.last_key]
+
+
+@pytest.mark.asyncio
+async def test_new_own_session_surfaces_in_dashboard_immediately(monkeypatch) -> None:
+    """Discord must not wait for the 30-second lifetime reconcile pass."""
+    from kiro_crew.dashboard import channel_slots
+
+    log = _log()
+    dispatcher, _, sessions = _dispatcher({"u1"}, log)
+    sessions.is_new_result = True
+    state = object()
+    dispatcher._session_resume.dashboard_state = state
+    calls: list[tuple[Any, int]] = []
+
+    async def _reconcile(candidate: Any, window_minutes: int) -> int:
+        calls.append((candidate, window_minutes))
+        return 1
+
+    monkeypatch.setattr(channel_slots, "reconcile_channel_slots", _reconcile)
+
+    await dispatcher.handle_message(_message("hello there"))
+
+    assert calls == [(state, 30)]
+
+
+@pytest.mark.asyncio
+async def test_resumed_session_does_not_surface_duplicate_dashboard_slot(monkeypatch) -> None:
+    """A Discord-driven dashboard resume already owns a slot."""
+    from kiro_crew.dashboard import channel_slots
+
+    log = _log()
+    log.messages["dashboard:chat-1"] = [{"role": "assistant", "content": "prior"}]
+    dispatcher, client, sessions = _dispatcher({"u1"}, log)
+    calls: list[tuple[Any, int]] = []
+
+    async def _reconcile(candidate: Any, window_minutes: int) -> int:
+        calls.append((candidate, window_minutes))
+        return 1
+
+    monkeypatch.setattr(channel_slots, "reconcile_channel_slots", _reconcile)
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+    sessions.is_new_result = True
+
+    await dispatcher.handle_message(_message("continue here"))
+
+    assert calls == []
 
 
 @pytest.mark.asyncio

@@ -1,14 +1,52 @@
 # CLI Module
 
-Last Updated: 2026-07-27 (the Kiro CLI is now always launched IN PLACE — the
-resolve-to-exec integrity snapshot is REMOVED; it broke Kiro CLI 2.15+, a
-multi-call binary that exec's a sibling `kiro-cli-chat` resolved relative to its
-own path. Prior: trust simplified to "runs + valid login" — install
-source/owner/path do not gate setup or ACP launch)
+Last Updated: 2026-08-01 (standalone wheel installation now requires a
+pinned-key RSA-signed artifact manifest and a matching signed SHA-256 digest;
+the repository deliberately fails closed until its operational KMS public key
+is pinned. The Kiro CLI remains always launched IN PLACE — the resolve-to-exec
+integrity snapshot is REMOVED; it broke Kiro CLI 2.15+, a multi-call binary that
+exec's a sibling `kiro-cli-chat` resolved relative to its own path. Prior: trust
+simplified to "runs + valid login" — install source/owner/path do not gate setup
+or ACP launch)
 
 ## Overview
 
 The CLI module (`kiro_crew/cli.py`) provides the `kirocrew` command using stdlib `argparse`.
+
+## Standalone Wheel Installer Trust Contract
+
+`cli.sh` installs channel or pinned-version wheels only from an authenticated
+manifest. This distribution trust boundary is independent of the runtime CLI
+and of macOS signing/notarization.
+
+- Schema: `kirocrew-cli-artifact-manifest-v1`.
+- Algorithm: `RSASSA_PKCS1_V1_5_SHA_256`.
+- Key identity: `sha256:` plus the lowercase SHA-256 digest of the public
+  SubjectPublicKeyInfo DER bytes.
+- Signed fields: `algorithm`, `channel`, `key_id`, `pub_date`,
+  `python_requires`, `schema`, `sha256`, `version`, and `wheel_url`.
+- Signature field: base64 RSA signature over sorted, compact UTF-8 JSON of all
+  signed fields; `signature` itself is excluded.
+- Channel source: `feed/<channel>/latest-cli.json`. Pinned-version source:
+  `cli/<channel>/<version>/cli-manifest.json`; pinned installs do not resolve
+  through the mutable channel feed.
+
+The installer embeds the public key and expected key id. Before any network
+request, it requires OpenSSL, rejects an unconfigured pin, materializes the key,
+and verifies its DER fingerprint. It then applies bounded input/object sizes,
+duplicate-key and exact-field-set rejection, printable-ASCII/string checks,
+canonical URL and digest validation, requested channel/version matching, and
+pinned-key signature verification. Artifact fields are not consumed and wheel
+bytes are not fetched until the signature succeeds. The downloaded wheel must
+then match the authenticated SHA-256 digest before `pipx install` runs.
+
+Any unavailable trust root, malformed or unsigned legacy feed, unknown field,
+wrong schema/algorithm/key id, signature failure, metadata mismatch, network
+failure, or wheel digest mismatch terminates installation. There is no unsigned,
+`SHA256SUMS`, or trust-on-first-use fallback. Until the operational public key is
+pinned, the repository's explicit `UNCONFIGURED` state therefore makes stock
+`cli.sh` non-installing by design. Provisioning and rollout are specified in
+`packaging/signing/README.md`.
 
 ## Project Directory Detection
 

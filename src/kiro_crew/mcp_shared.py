@@ -366,6 +366,11 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
             def _get_ppid(pid: int) -> int:
                 system = platform.system()
                 try:
+                    if system == "Windows":
+                        # No ``ps`` on Windows: without this the fallback below
+                        # always returned 0 and no session key could resolve.
+                        win_ppid = platform_compat.get_ppid(pid)
+                        return win_ppid if win_ppid > 0 else 0
                     if system == "Linux":
                         for line in Path(f"/proc/{pid}/status").read_text().splitlines():
                             if line.startswith("PPid:"):

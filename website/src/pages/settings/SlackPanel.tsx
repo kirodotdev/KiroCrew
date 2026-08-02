@@ -252,7 +252,7 @@ export function SlackPanel() {
       <SettingsSection title={i18nT('pages.settings.slackPanel.get_your_credentials')}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">
-            {i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_pre_filled_manifes')}{manifestQ.data?.alias ?? 'you'}{i18nT('pages.settings.slackPanel.install_it_to_your_workspace_then_paste_the_bot')}
+            {i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest', { alias: manifestQ.data?.alias ?? 'you' })}
           </p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             <a

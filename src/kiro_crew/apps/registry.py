@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.manager import (
     get_app,
     install_app,
@@ -1378,6 +1379,12 @@ async def list_registry() -> list[dict[str, Any]]:
         detect_cmd = entry.get("detectInstalled", "")
         if not detect_cmd:
             continue
+        denied = app_execution_denied(
+            name, action="registry_detect_installed", caller="registry"
+        )
+        if denied:
+            logger.debug("Skipping registry detectInstalled for %s: %s", name, denied)
+            continue
         try:
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
@@ -1941,6 +1948,19 @@ async def install_from_registry(
                 "name": name,
                 "error": ver_err,
             }
+
+    # detectInstalled, clone/build, dependency setup, and onInstall are all
+    # executable third-party surfaces and share the same explicit admission.
+    execution_denied = app_execution_denied(
+        name, action="registry_install", caller="registry"
+    )
+    if execution_denied:
+        return {
+            "ok": False,
+            "name": name,
+            "error": f"blocked by execution policy: {execution_denied}",
+            "log": "\n".join(log_lines),
+        }
 
     # Guard: check if already installed externally (e.g. user ran setup.sh manually)
     detect_cmd = entry.get("detectInstalled", "")

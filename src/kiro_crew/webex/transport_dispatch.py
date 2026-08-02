@@ -138,6 +138,14 @@ class WebexDispatcher:
         # The turn skeleton (acquire -> identity -> context -> TurnDriver ->
         # guarded post-turn -> finally close/release) lives once in
         # messaging.dispatch. Only the webex-specific pieces are injected.
+        # Immediately surface a newly-created channel session in the dashboard
+        # (feature: don't wait for the ~30s reconciler). Circular import —
+        # dashboard boot imports channel packages — so import lazily.
+        async def _surface_new_session() -> None:
+            from kiro_crew.dashboard.channel_slots import surface_dispatcher_session
+
+            await surface_dispatcher_session(self)
+
         await drive_turn(
             ChannelTurn(
                 channel_type="webex",
@@ -153,6 +161,7 @@ class WebexDispatcher:
                 ),
                 notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                 audit_caller=f"webex:{email}",
+                after_persist=_surface_new_session,
             ),
             sessions=self.sessions,
             ctx_builder=self.ctx_builder,

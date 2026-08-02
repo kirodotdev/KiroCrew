@@ -23,14 +23,15 @@ import json
 import logging
 import os
 import signal
-import socket as _socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import resolve_krb5_ccname
+from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
 from kiro_crew.sandbox import _SENSITIVE_ENV_PREFIXES as _SANDBOX_SENSITIVE_ENV_PREFIXES
 
@@ -186,14 +187,16 @@ class GatewayManager:
 
         # Clear any stale socket from a prior crash.
         await self._clear_stale_socket()
-        self._spec.socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        # mkdir's mode is umask-masked and a no-op if the dir already exists;
-        # chmod enforces the 0700 the socketsec model calls the primary access
-        # boundary (a 0600 socket alone is insufficient on a shared host).
-        try:
-            self._spec.socket_path.parent.chmod(0o700)
-        except OSError:
-            pass
+        # Owner-only containing directory: the socketsec model calls this the
+        # primary access boundary (a 0600 socket alone is insufficient on a
+        # shared host), and on Windows it is where the singleton lock file and
+        # the out-of-band reap list live since the pipe itself has no entry.
+        # Off the event loop: on Windows the owner-only step shells out to
+        # icacls with a multi-second timeout, and this runs inside the live
+        # gateway's loop (dashboard toggle -> _init_mcp_gateway -> start()),
+        # so calling it inline stalls chat turns and the liveness heartbeat.
+        # Mirrors the log-file hunk below, which offloads the same helper.
+        await asyncio.to_thread(transport.prepare_dir, self._spec.socket_path)
 
         try:
             await self._spawn_once()
@@ -317,10 +320,15 @@ class GatewayManager:
         # output — never world-readable on a multi-user host. fchmod also
         # tightens a pre-existing looser file.
         _log_fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        # os.fchmod is a silent no-op on Windows, where mode bits carry no
+        # access meaning -- the real carrier is the DACL. restrict_to_owner is
+        # the fail-loud owner-only variant and is called by attribute so the
+        # hermetic-test stub in conftest can intercept it. It shells out to
+        # icacls on Windows, so it runs off the event loop.
         try:
-            os.fchmod(_log_fd, 0o600)
-        except OSError:
-            pass
+            await asyncio.to_thread(platform_compat.restrict_to_owner, log_path)
+        except OSError as exc:
+            logger.warning("could not restrict gatewayd log %s: %s", log_path, exc)
         log_fh = os.fdopen(_log_fd, "ab", buffering=0)
         try:
             self._process = await asyncio.create_subprocess_exec(
@@ -377,8 +385,8 @@ class GatewayManager:
         """
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(
-                    path=str(self._spec.socket_path),
+                transport.connect(
+                    self._spec.socket_path,
                     limit=READ_BUFFER_LIMIT_BYTES,
                 ),
                 timeout=_PING_TIMEOUT_SECS,
@@ -415,8 +423,8 @@ class GatewayManager:
         """Return the daemon's pool snapshot, or ``{}`` on any error."""
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(
-                    path=str(self._spec.socket_path),
+                transport.connect(
+                    self._spec.socket_path,
                     limit=READ_BUFFER_LIMIT_BYTES,
                 ),
                 timeout=_PING_TIMEOUT_SECS,
@@ -657,12 +665,14 @@ class GatewayManager:
             # SIGKILL skips gatewayd's pool.shutdown_all(), so its pooled MCP
             # backends (each a session leader via start_new_session) reparent to
             # init and leak. Reap the pgids gatewayd persisted out-of-band.
-            self._reap_orphaned_backends()
+            await self._reap_orphaned_backends()
 
-    def _reap_orphaned_backends(self) -> None:
-        """Best-effort killpg of pooled backends left orphaned by a SIGKILLed
+    async def _reap_orphaned_backends(self) -> None:
+        """Best-effort tree-kill of pooled backends left orphaned by a SIGKILLed
         gatewayd, read from the ``<socket>.backends`` sidecar the daemon
-        maintains. Each recorded pid is a session leader (pid == pgid)."""
+        maintains. Each recorded pid is a session leader (pid == pgid) on POSIX;
+        on Windows there is no process group (spawn's ``start_new_session`` is
+        inert there), so the recorded pid is treated as a tree root instead."""
         pidfile = Path(f"{self._spec.socket_path}.backends")
         try:
             raw = pidfile.read_text(encoding="utf-8")
@@ -673,65 +683,42 @@ class GatewayManager:
                 pid = int(token)
             except ValueError:
                 continue
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+            # platform_compat rather than os.killpg: that name is absent on
+            # Windows and the handler below would not catch the AttributeError.
+            # Async variant required — this is awaited from
+            # _terminate_process, and the Windows branch spawns taskkill with a
+            # 5s timeout once per recorded pid, which would stall the loop.
+            with contextlib.suppress(
+                ProcessLookupError, PermissionError, OSError, ValueError
+            ):
+                await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
         with contextlib.suppress(OSError):
             pidfile.unlink()
 
-    @staticmethod
-    def _probe_socket_live(sock_path: str) -> bool:
-        """Blocking probe: return True if a daemon is listening on *sock_path*.
-
-        Runs in a thread via :func:`asyncio.to_thread` so the event loop is
-        never blocked by the up-to-1s ``connect()`` timeout.
-        """
-        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        try:
-            s.settimeout(1.0)
-            s.connect(sock_path)
-            return True
-        except (ConnectionRefusedError, OSError):
-            return False
-        finally:
-            s.close()
-
     async def _clear_stale_socket(self) -> None:
-        """Remove a stale socket left behind by a prior crash.
+        """Remove an endpoint left behind by a prior crash.
 
-        Before unlinking, attempts a connect to verify the socket is not
-        live. If connect succeeds, another daemon is bound — leave the
-        socket in place and let asyncio.start_unix_server fail with
-        EADDRINUSE.
-
-        The blocking socket probe is offloaded to a thread so it never
-        stalls the event loop.
+        Delegates to :func:`transport.remove_stale`, which verifies the
+        endpoint is not live before removing it (a live one means another
+        daemon is bound; leaving it in place lets the bind fail with
+        EADDRINUSE, which is the correct user-visible error) and offloads the
+        blocking probe so the event loop is never stalled. A no-op on Windows,
+        where a named pipe leaves nothing behind to clean up.
         """
-        sock = self._spec.socket_path
-        try:
-            if not sock.exists():
-                return
-        except OSError:
-            return
-        # Probe liveness in a thread — blocking connect(timeout=1s) must
-        # not stall the event loop.
-        is_live = await asyncio.to_thread(self._probe_socket_live, str(sock))
-        if is_live:
-            logger.warning(
-                "mcp-gateway: socket %s is live; refusing to unlink", sock
-            )
-            return
-        try:
-            sock.unlink()
-        except OSError as exc:
-            logger.debug("mcp-gateway: could not remove stale socket %s: %s", sock, exc)
+        await transport.remove_stale(self._spec.socket_path)
 
     @staticmethod
     async def _wait_for_socket(path: Path, timeout: float) -> bool:
-        deadline = asyncio.get_running_loop().time() + timeout
-        while asyncio.get_running_loop().time() < deadline:
-            if path.exists():
+        """Poll until the endpoint is reachable, or the deadline passes.
+
+        Reachability rather than a directory entry: a Windows named pipe has no
+        filesystem presence, so ``transport.endpoint_exists`` probes it. The
+        Windows probe blocks briefly, so it runs off the loop.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if await asyncio.to_thread(transport.endpoint_exists, path):
                 return True
             await asyncio.sleep(_SOCKET_POLL_INTERVAL_SECS)
-        return path.exists()
+        return await asyncio.to_thread(transport.endpoint_exists, path)

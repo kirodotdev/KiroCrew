@@ -311,7 +311,7 @@ export default function ArtifactDeployPage() {
       <Card>
         <div className="flex justify-between items-center">
           <CardTitle>
-            {i18nT('pages.artifactDeployPage.aws_profiles')}{profiles.length}) <InfoTip text="Every deploy runs as a registered profile. Register your existing AWS CLI profiles or create new ones — KiroCrew stores only the name, never credentials." />
+            {i18nT('pages.artifactDeployPage.aws_profiles_count', { count: profiles.length })} <InfoTip text={i18nT('pages.artifactDeployPage.aws_profiles_tip')} />
           </CardTitle>
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <Btn onClick={() => setShowNewProfile((v) => !v)}><Plus size={12} /> {i18nT('pages.artifactDeployPage.new_profile')}</Btn>
@@ -462,7 +462,7 @@ export default function ArtifactDeployPage() {
       {draftWebapps.length > 0 && (
         <Card>
           <CardTitle>
-            {i18nT('pages.artifactDeployPage.ready_to_deploy_2')}{draftWebapps.length}) <InfoTip text="Webapp artifacts that haven't been deployed yet. Deploy opens a skill-loaded chat session that adapts the app and ships it." />
+            {i18nT('pages.artifactDeployPage.ready_to_deploy_count', { count: draftWebapps.length })} <InfoTip text={i18nT('pages.artifactDeployPage.ready_to_deploy_tip')} />
           </CardTitle>
           <table className="w-full border-collapse table-striped">
             <thead>
@@ -521,7 +521,7 @@ export default function ArtifactDeployPage() {
       <Card>
         <div className="flex justify-between items-center">
           <CardTitle>
-            {i18nT('pages.artifactDeployPage.deployments')}{sites.length + deployedWebapps.length}) <InfoTip text="All deployed assets — static sites published from artifacts and full-stack webapp deployments. Recall = reversible takedown; Destroy = permanent infra removal." />
+            {i18nT('pages.artifactDeployPage.deployments_count', { count: sites.length + deployedWebapps.length })} <InfoTip text={i18nT('pages.artifactDeployPage.deployments_tip')} />
           </CardTitle>
           <Btn onClick={() => { qc.invalidateQueries({ queryKey: ['deploy-web', 'sites'] }); qc.invalidateQueries({ queryKey: ['deploy-web', 'webapps'] }) }}><RefreshCw size={12} /> {i18nT('pages.artifactDeployPage.refresh')}</Btn>
         </div>
@@ -656,7 +656,7 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
   return (
     <Card>
       <CardTitle>
-        <Rocket size={15} /> {i18nT('pages.artifactDeployPage.pending_confirmations')}{pending.length})
+        <Rocket size={15} /> {i18nT('pages.artifactDeployPage.pending_confirmations_count', { count: pending.length })}
       </CardTitle>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
         {pending.map((e) => {

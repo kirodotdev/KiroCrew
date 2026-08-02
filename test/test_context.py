@@ -336,9 +336,7 @@ class TestGetMemoryForVectorStore:
 
         original = ctx_mod._memory_stores.copy()
         ctx_mod._memory_stores.clear()
-        monkeypatch.setattr(
-            ctx_mod, "workspace_dir_for", lambda key: tmp_path / key
-        )
+        monkeypatch.setattr(ctx_mod, "workspace_dir_for", lambda key: tmp_path / key)
         try:
             default_store = MemoryStore(workspace=tmp_path / "default")
             default_store.init()
@@ -355,17 +353,13 @@ class TestGetMemoryForVectorStore:
             ctx_mod._memory_stores.clear()
             ctx_mod._memory_stores.update(original)
 
-    def test_nondefault_store_without_default_has_no_vector_store(
-        self, tmp_path, monkeypatch
-    ):
+    def test_nondefault_store_without_default_has_no_vector_store(self, tmp_path, monkeypatch):
         """If no default store exists yet, non-default store gets no vector_store."""
         import kiro_crew.context as ctx_mod
 
         original = ctx_mod._memory_stores.copy()
         ctx_mod._memory_stores.clear()
-        monkeypatch.setattr(
-            ctx_mod, "workspace_dir_for", lambda key: tmp_path / key
-        )
+        monkeypatch.setattr(ctx_mod, "workspace_dir_for", lambda key: tmp_path / key)
         try:
             result = ContextBuilder.get_memory_for("orphan")
             assert result.vector_store is None
@@ -650,7 +644,16 @@ class TestRuntimeDisplayName:
             ("subagent:abc-123", "KiroCrew subagent"),
             ("taskrunner:proj:task1", "KiroCrew task runner"),
             ("_bg", "KiroCrew background"),
+            ("_hb", "KiroCrew heartbeat"),
             ("cli_chat", "CLI terminal"),
+            ("slack:1234567890.123456", "Slack"),
+            ("discord:kirocrew:direct:474737235959480320", "Discord"),
+            ("discord_kirocrew_direct_474737235959480320", "Discord"),
+            ("telegram:kirocrew:direct:123", "Telegram"),
+            ("wecom:kirocrew:direct:user@example.com", "WeCom"),
+            ("weixin:kirocrew:direct:wxid", "Weixin"),
+            ("webex:kirocrew:direct:user@example.com", "Webex"),
+            ("teams:kirocrew:direct:user@example.com", "Microsoft Teams"),
             ("1234567890.123456", "Slack"),
         ],
     )
@@ -679,6 +682,32 @@ class TestRuntimeDisplayName:
         ctx = builder.build_session_context("dashboard:chat-1")
         assert "[CURRENT AGENT] kirocrew" in ctx
 
+    def test_explicit_runtime_source_overrides_stable_session_key(self, tmp_path):
+        """The current transport wins when a dashboard session resumes elsewhere."""
+        builder = ContextBuilder(memory=MemoryStore(workspace=tmp_path))
+        ctx = builder.build_session_context(
+            "dashboard:chat-1",
+            runtime_source="discord",
+        )
+        assert "[RUNTIME] Discord" in ctx
+        assert "[RUNTIME] KiroCrew dashboard" not in ctx
+
+    def test_follow_up_refreshes_runtime_from_current_transport(self, tmp_path):
+        """Warm cross-surface sessions receive authoritative per-turn runtime."""
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        msg, _ = builder.build_message(
+            "where am I talking to you?",
+            is_new_session=False,
+            session_key="dashboard:chat-1",
+            runtime_source="discord",
+        )
+        assert "[RUNTIME] Discord" in msg
+        assert "authoritative for this turn" in msg
+        assert msg.index("[RUNTIME] Discord") < msg.index("[CURRENT USER REQUEST")
+
 
 class TestMultibyteSanitization:
     """Tests for multi-byte UTF-8 sanitization (kiro-cli panic workaround)."""
@@ -704,7 +733,9 @@ class TestMultibyteSanitization:
         """Multi-byte chars in memory/skills context are also sanitized."""
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)
-        store.write("# Memory\n\nUser prefers \u201csmart quotes\u201d and em dashes \u2014 always.")
+        store.write(
+            "# Memory\n\nUser prefers \u201csmart quotes\u201d and em dashes \u2014 always."
+        )
         builder = ContextBuilder(
             memory=store,
             skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
@@ -786,9 +817,10 @@ class TestLoadSteeringResources:
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         import json
-        (agents_dir / "kirocrew.json").write_text(json.dumps({
-            "resources": ["file://.kiro/steering/**/*.md"]
-        }))
+
+        (agents_dir / "kirocrew.json").write_text(
+            json.dumps({"resources": ["file://.kiro/steering/**/*.md"]})
+        )
 
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = _load_steering_resources()
@@ -815,9 +847,8 @@ class TestLoadSteeringResources:
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         import json
-        (agents_dir / "kirocrew.json").write_text(json.dumps({
-            "resources": ["file://.ssh/*.md"]
-        }))
+
+        (agents_dir / "kirocrew.json").write_text(json.dumps({"resources": ["file://.ssh/*.md"]}))
 
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = _load_steering_resources()
@@ -1015,6 +1046,5 @@ class TestAsyncCallSitesUseToThread:
         assert not offenders, (
             "build_message called inline from async coroutine(s) — the episodic "
             "query embed blocks the event loop; wrap in run_in_embed_pool (or "
-            "add '# loop-ok: <reason>' if genuinely safe):\n  "
-            + "\n  ".join(offenders)
+            "add '# loop-ok: <reason>' if genuinely safe):\n  " + "\n  ".join(offenders)
         )

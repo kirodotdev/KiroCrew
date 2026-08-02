@@ -123,6 +123,7 @@ function initMermaid(mermaid: MermaidApi): void {
 }
 
 import { CodeBlock } from './CodeBlock'
+import { ExcalidrawBlock } from './ExcalidrawBlock'
 
 /** Forward the `data-sourcepos` attribute from rehypeSourcepos onto the
  *  rendered element. Used in every MD_COMPONENTS override; returns an
@@ -219,6 +220,7 @@ const MD_COMPONENTS: Components = {
     const codeStr = String(children).replace(/\n$/, '')
 
     if (lang === 'mermaid') return <MermaidBlock code={codeStr} />
+    if (lang === 'excalidraw') return <ExcalidrawBlock code={codeStr} />
 
     if (!className) {
       if (PATH_RE.test(codeStr)) {
@@ -1114,6 +1116,12 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
     }
     case 'mermaid':
       return block.complete ? <MermaidBlock code={block.content} /> : (
+        <div className="my-2 p-3 bg-bg-elevated border border-border rounded-md text-muted text-[12px] italic animate-pulse">{i18nT('components.markdownRenderer.generating_diagram')}</div>
+      )
+    case 'excalidraw':
+      // Held back until the fence closes: a half-streamed scene is invalid JSON,
+      // so attempting to draw it would only flash the raw-source fallback.
+      return block.complete ? <ExcalidrawBlock code={block.content} /> : (
         <div className="my-2 p-3 bg-bg-elevated border border-border rounded-md text-muted text-[12px] italic animate-pulse">{i18nT('components.markdownRenderer.generating_diagram')}</div>
       )
     case 'code': {

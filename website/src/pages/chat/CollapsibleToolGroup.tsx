@@ -2,11 +2,13 @@ import { useState, useEffect, useRef, memo, type ReactNode } from 'react'
 import { CheckCircle, Handshake, Ban, Wrench, AlertTriangle } from 'lucide-react'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { ToolInputText } from '../../components/ToolInputText'
+import { useRowDisclosure } from './rowDisclosure'
 
 import { i18nT } from '../../i18n/t'
 interface CollapsibleToolGroupProps {
   count: number
   autoExpand?: boolean
+  disclosureKey?: string
   hasPermission?: boolean
   isRunning?: boolean
   children: ReactNode
@@ -40,14 +42,14 @@ function extractPreview(meta?: Record<string, unknown>): string {
 }
 
 /** Collapsible row that wraps tool/thinking/permission messages — always collapsed unless autoExpand. */
-const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, hasPermission, isRunning, children, permissionMeta, pendingPermCount, onApprove, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
-  const [expanded, setExpanded] = useState(!!autoExpand)
+const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, pendingPermCount, onApprove, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
+  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, !!autoExpand)
   const userToggled = useRef(false)
   const [submitting, setSubmitting] = useState(false)
   const [localResolved, setLocalResolved] = useState<string | null>(null)
   const needsAttention = !!hasPermission && !localResolved
 
-  useEffect(() => { if (!userToggled.current) setExpanded(!!autoExpand) }, [autoExpand])
+  useEffect(() => { if (!userToggled.current) setExpanded(!!autoExpand) }, [autoExpand, setExpanded])
 
   // Reset approval state when permission props change (new approval arrives)
   useEffect(() => { setLocalResolved(null); setSubmitting(false) }, [hasPermission, pendingPermCount])
@@ -57,7 +59,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
   useEffect(() => {
     if (wasRunning.current && !isRunning && !userToggled.current) setExpanded(false)
     wasRunning.current = !!isRunning
-  }, [isRunning])
+  }, [isRunning, setExpanded])
 
   const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approved')}</>, trust: <><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trusted')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.rejected')}</> }
   const labelNode = localResolved

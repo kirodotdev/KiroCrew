@@ -6,7 +6,7 @@ import { i18nT } from '../i18n/t'
 import { useAppDispatch, useAppSelector } from '../store'
 import { updateSlot } from '../store/dashboardSlice'
 import { addNotification } from '../store/notificationsSlice'
-import type { SessionLink } from '../types'
+import type { ConfiguredChannelTarget, SessionLink } from '../types'
 import { ChannelBrandIcon } from './ChannelBrandIcon'
 import { ContextMenuItem } from './ui/context-menu'
 import { DropdownMenuItem } from './ui/dropdown-menu'
@@ -55,9 +55,12 @@ export default function LinkedSurfacesSection({ slotKey, variant }: {
   const slackLink = links.find(link => link.channel === 'slack')
   const nonSlackLinks = links.filter(link => link.channel !== 'slack')
 
-  const { data: channels } = useQuery({
-    queryKey: ['slack-channels'],
-    queryFn: () => api.slackChannels().then(c => (Array.isArray(c) ? (c as { id: string; name: string }[]) : null)),
+  const { data: targets } = useQuery({
+    queryKey: ['channel-targets'],
+    queryFn: () => api.channelTargets().then(result => (
+      Array.isArray(result) ? result as ConfiguredChannelTarget[] : []
+    )),
+    refetchInterval: 30_000,
   })
 
   const slackLinkMutation = useMutation({
@@ -77,6 +80,35 @@ export default function LinkedSurfacesSection({ slotKey, variant }: {
       slack_thread_ts: undefined,
     })),
     onError: (e) => { console.warn('unlinkSlack failed; session stays linked', e) },
+  })
+  const mirrorLinkMutation = useMutation({
+    mutationFn: (target: ConfiguredChannelTarget) => api.linkMirror(
+      slotKey,
+      target.channel_type,
+      target.target_id,
+    ).then(result => ({ target, result })),
+    onSuccess: ({ target, result }) => {
+      if (!result?.ok) return
+      dispatch(updateSlot({
+        key: slotKey,
+        links: [
+          ...links.filter(link => link.direction === 'origin'),
+          {
+            channel: target.channel_type,
+            label: target.label,
+            target: result.conversation_id || target.target_id,
+            direction: 'out',
+            live: true,
+          },
+        ],
+      }))
+    },
+    onError: (e) => notify(
+      'error',
+      i18nT('components.linkedSurfacesSection.link_failed', {
+        reason: e instanceof Error && e.message ? e.message : 'unknown error',
+      }),
+    ),
   })
   // The reminder fires into ANOTHER app the user may not be watching, and the
   // Radix menu closes on select — so with no feedback a delivery that never
@@ -125,19 +157,25 @@ export default function LinkedSurfacesSection({ slotKey, variant }: {
   const linkSlack = (channel?: string) => {
     if (!slackLinkMutation.isPending) slackLinkMutation.mutate(channel)
   }
+  const linkTarget = (target: ConfiguredChannelTarget) => {
+    if (target.channel_type === 'slack') {
+      linkSlack(target.target_id)
+    } else if (target.available && !mirrorLinkMutation.isPending) {
+      mirrorLinkMutation.mutate(target)
+    }
+  }
   const unlinkSlack = () => {
     if (!slackUnlinkMutation.isPending) slackUnlinkMutation.mutate()
   }
   const remindMirror = (link: SessionLink) => {
     if (!mirrorReminderMutation.isPending) mirrorReminderMutation.mutate(link)
   }
-  // Confirm before stopping: this is one click, sits at identical weight
-  // directly under the safe "Post reminder", and for a NON-Slack channel there
-  // is no dashboard path back — the mirror-link endpoint needs
-  // channel_type+conversation_id and the menu only offers a Slack channel
-  // picker, so a misclick can only be repaired from the other channel. Matches
-  // the window.confirm precedent for destructive actions elsewhere
-  // (HooksPage, ArtifactsPage, WebAppArtifactCard).
+  // Confirm before stopping: this is one click and sits at identical weight
+  // directly under the safe "Post reminder". Re-linking is available from the
+  // configured-target picker, but stopping still severs live delivery and
+  // should not happen on a menu misclick. Matches the window.confirm precedent
+  // for destructive actions elsewhere (HooksPage, ArtifactsPage,
+  // WebAppArtifactCard).
   const unlinkMirror = (link: SessionLink) => {
     if (mirrorUnlinkMutation.isPending) return
     const prompt = link.direction === 'both'
@@ -183,13 +221,41 @@ export default function LinkedSurfacesSection({ slotKey, variant }: {
             <Link2Off size={13} className="shrink-0" /> {i18nT('components.slackLinkSection.unlink_from_slack')}
           </Item>
         </>
-      ) : nonSlackLinks.length === 0 && channels != null ? (
+      ) : nonSlackLinks.length === 0 && targets != null ? (
         <>
-          <Item onSelect={() => linkSlack()}>
-            <MessageSquareShare size={13} className="shrink-0 text-muted" /> {i18nT('components.slackLinkSection.send_to_slack')}
-          </Item>
-          {channels.filter(c => c.id !== 'dm').map(ch => (
-            <Item key={ch.id} onSelect={() => linkSlack(ch.id)}># {ch.name}</Item>
+          {targets.map(target => (
+            <Item
+              key={`${target.channel_type}:${target.target_id}`}
+              aria-disabled={!target.available}
+              className={!target.available ? 'opacity-60' : undefined}
+              onSelect={(event) => {
+                if (!target.available) {
+                  event.preventDefault()
+                  notify(
+                    'error',
+                    target.unavailable_reason
+                      || i18nT('components.linkedSurfacesSection.unavailable'),
+                  )
+                  return
+                }
+                linkTarget(target)
+              }}
+            >
+              <ChannelBrandIcon channel={target.channel_type} size={13} />
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate">
+                  {target.channel_type === 'slack' && target.target_id === 'dm'
+                    ? i18nT('components.slackLinkSection.send_to_slack')
+                    : target.label}
+                </span>
+                {!target.available && (
+                  <span className="truncate text-[11px] text-muted">
+                    {target.unavailable_reason
+                      || i18nT('components.linkedSurfacesSection.unavailable')}
+                  </span>
+                )}
+              </span>
+            </Item>
           ))}
         </>
       ) : null}

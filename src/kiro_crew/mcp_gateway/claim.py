@@ -24,8 +24,12 @@ identity. That is what keeps the caller correct across warm-pool re-claims.
 The stub-side recaller poll is kept as a fallback for gatewayd-restart races,
 but claim-push is the primary, event-driven path.
 
-Stdlib-only on purpose: imported from ``acp/client.py`` and
+Import-light on purpose: imported from ``acp/client.py`` and
 ``acp/session_provider.py`` (hot paths) and must not pull in config loading.
+The only non-stdlib import is ``mcp_gateway.transport``, whose whole chain
+is ``transport -> platform_compat -> executors`` and reaches no config
+loader; it is needed because the endpoint is a unix socket on POSIX and a
+named pipe on Windows, and this module must not know which.
 """
 
 from __future__ import annotations
@@ -35,6 +39,8 @@ import json
 import logging
 import os
 from typing import Optional
+
+from kiro_crew.mcp_gateway import transport
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +87,7 @@ async def _send_claim_inner(
 ) -> bool:
     """Unbounded socket round-trip; ``send_claim`` enforces the time budget."""
     frame = build_claim_frame(pid, session_key, channel_id)
-    reader, writer = await asyncio.open_unix_connection(socket_path)
+    reader, writer = await transport.connect(socket_path)
     try:
         writer.write(json.dumps(frame).encode("utf-8") + b"\n")
         await writer.drain()

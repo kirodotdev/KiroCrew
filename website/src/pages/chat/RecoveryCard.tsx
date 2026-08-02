@@ -1,7 +1,8 @@
-import { memo, useState } from 'react'
+import { memo } from 'react'
 import { ChevronRight, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
+import { useRowDisclosure } from './rowDisclosure'
 
 /**
  * The synthetic-continuation prefixes the gateway prepends when it recovers a
@@ -131,8 +132,8 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
  * virtualized, so a scrolled-away row remounts collapsed. Same behaviour as
  * NudgeCard.
  */
-export default memo(function RecoveryCard({ parsed }: { parsed: ParsedRecovery }) {
-  const [expanded, setExpanded] = useState(false)
+export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: ParsedRecovery; disclosureKey?: string }) {
+  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const { kind, title, detail, chip, body } = parsed
   // Severity split: a refusal or a stall means something was blocked or died and
   // the user may need to act, so it keeps the warning triangle. A transient

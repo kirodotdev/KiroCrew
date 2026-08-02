@@ -108,6 +108,12 @@ async def api_spawn(request: web.Request) -> web.Response:
     silent = body.get("silent", False)
     if not isinstance(silent, bool):
         silent = str(silent).lower() in ("true", "1", "yes")
+    # keep=True marks the run's session as a continuable conversation
+    # (spawn_continue can dispatch follow-up turns into it). Transport-layer
+    # param like silent/approval_mode.
+    keep = body.get("keep", False)
+    if not isinstance(keep, bool):
+        keep = str(keep).lower() in ("true", "1", "yes")
     agent = cleaned.get("agent") or ""
     max_turns = cleaned.get("max_turns") or 0
     cwd = cleaned.get("cwd") or ""
@@ -132,6 +138,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         silent=silent,
         batch_id=batch_id,
         batch_total=batch_total,
+        keep=keep,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
@@ -148,7 +155,137 @@ async def api_spawn(request: web.Request) -> web.Response:
         # (_announce_rejection). "counted" tells spawn_run's client-side
         # reconcile to skip this member.
         return web.json_response({"error": info.error, "counted": True}, status=400)
-    return web.json_response({"id": info.id, "task": task, "status": "spawned"})
+    resp: dict[str, object] = {"id": info.id, "task": task, "status": "spawned"}
+    if keep:
+        # The conversation id is the FIRST run's id: spawn_continue targets it.
+        resp["conversation"] = info.id
+    return web.json_response(resp)
+
+
+async def api_spawn_continue(request: web.Request) -> web.Response:
+    """POST /api/spawn/{agent_id}/continue — follow-up turn on a conversation.
+
+    ``agent_id`` is the conversation id (the first keep=True run's id). Mints
+    a NEW run on the same underlying session (resumed via session/load), so
+    the follow-up executes with the conversation's accumulated context.
+    """
+    state: DashboardState = request.app["state"]
+    if not state.subagents:
+        return web.json_response(
+            {"error": "subagents not available", "code": "subagents_unavailable"},
+            status=503,
+        )
+    conv_id = request.match_info["agent_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"error": "invalid JSON", "code": "invalid_json"}, status=400
+        )
+    task = str(body.get("task", "") or "").strip()
+    if not task:
+        return web.json_response(
+            {"error": "task is required", "code": "task_required"}, status=400
+        )
+    parent_session = str(body.get("parent_session", "") or "")
+    agent = str(body.get("agent", "") or "")
+    model = str(body.get("model", "") or "")
+    try:
+        max_turns = max(0, min(int(body.get("max_turns", 0) or 0), 1000))
+    except (TypeError, ValueError):
+        max_turns = 0
+    info = state.subagents.continue_conversation(
+        conv_id,
+        task,
+        parent_session_key=parent_session,
+        agent=agent,
+        model=model or None,
+        max_turns=max_turns,
+    )
+    if not info:
+        return web.json_response(
+            {
+                "error": f"capacity reached ({state.subagents.max_concurrent})",
+                "code": "capacity_reached",
+            },
+            status=429,
+        )
+    if info.done and info.error:
+        if info.error.startswith("conversation_busy"):
+            return web.json_response(
+                {"error": info.error, "code": "conversation_busy"}, status=409
+            )
+        if info.error.startswith("conversation_gone"):
+            return web.json_response(
+                {"error": info.error, "code": "conversation_gone"}, status=404
+            )
+        return web.json_response(
+            {"error": info.error, "code": "spawn_rejected"}, status=400
+        )
+    return web.json_response(
+        {"id": info.id, "conversation": conv_id, "status": "spawned"}
+    )
+
+
+async def api_spawn_steer(request: web.Request) -> web.Response:
+    """POST /api/spawn/{agent_id}/steer — inject into a RUNNING run's turn."""
+    state: DashboardState = request.app["state"]
+    if not state.subagents:
+        return web.json_response(
+            {"error": "subagents not available", "code": "subagents_unavailable"},
+            status=503,
+        )
+    agent_id = request.match_info["agent_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"error": "invalid JSON", "code": "invalid_json"}, status=400
+        )
+    message = str(body.get("message", "") or "").strip()
+    if not message:
+        return web.json_response(
+            {"error": "message is required", "code": "message_required"}, status=400
+        )
+    ok, detail = await state.subagents.steer_run(agent_id, message)
+    if not ok:
+        if detail == "not_found":
+            return web.json_response(
+                {"error": detail, "code": "not_found"}, status=404
+            )
+        if detail.startswith("not_running"):
+            return web.json_response(
+                {"error": detail, "code": "not_running"}, status=409
+            )
+        return web.json_response(
+            {"error": detail, "code": "steer_failed"}, status=502
+        )
+    return web.json_response({"id": agent_id, "status": "steered"})
+
+
+async def api_spawn_release(request: web.Request) -> web.Response:
+    """POST /api/spawn/{agent_id}/release — end a continuable conversation.
+
+    Deletes the persisted session mapping and the on-disk session files.
+    Refuses while a run is in flight on the conversation.
+    """
+    state: DashboardState = request.app["state"]
+    if not state.subagents:
+        return web.json_response(
+            {"error": "subagents not available", "code": "subagents_unavailable"},
+            status=503,
+        )
+    conv_id = request.match_info["agent_id"]
+    ok, detail = state.subagents.release_conversation(conv_id)
+    if not ok:
+        if detail.startswith("conversation_busy"):
+            return web.json_response(
+                {"error": detail, "code": "conversation_busy"}, status=409
+            )
+        return web.json_response(
+            {"error": detail, "code": "conversation_gone"}, status=404
+        )
+    return web.json_response({"conversation": conv_id, "status": "released"})
 
 
 async def api_spawn_lost(request: web.Request) -> web.Response:

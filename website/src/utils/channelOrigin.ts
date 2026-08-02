@@ -25,6 +25,11 @@ const CHANNEL_LABELS: Record<string, string> = {
   unified: 'Direct message',
 }
 
+/** Mirrors messaging.link.is_legacy_slack_key for pre-namespace history rows. */
+export function isLegacySlackSlotKey(slotKey?: string): boolean {
+  return Boolean(slotKey && /^\d+\.\d+$/.test(slotKey))
+}
+
 /**
  * Return the channel namespace a slot originated from, or `''` for an ordinary
  * dashboard session.
@@ -35,6 +40,7 @@ const CHANNEL_LABELS: Record<string, string> = {
  */
 export function slotChannelNamespace(slotKey?: string): string {
   if (!slotKey) return ''
+  if (isLegacySlackSlotKey(slotKey)) return 'slack'
   for (const ns of Object.keys(CHANNEL_LABELS)) {
     if (slotKey.startsWith(`${ns}:`) || slotKey.startsWith(`${ns}_`)) {
       return ns

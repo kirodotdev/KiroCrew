@@ -25,48 +25,109 @@ import`` note there.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics.recorder import MetricsRecorder
 
+if TYPE_CHECKING:  # real types for annotations; never imported at runtime
+    from opentelemetry.sdk.metrics import MeterProvider as _MeterProviderT
+    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader as _ReaderT
+
 # KiroCrew declares opentelemetry-sdk as a required dependency, so
-# this guard is defense-in-depth — not for a genuinely optional dep, but for a
-# partial / --no-deps / broken env-closure install where the SDK is absent. This
-# module is on the eager boot chain (cli.py -> dashboard -> ... -> history.py ->
-# skills.py -> get_recorder), so an unconditional top-level import here would
-# brick the ENTIRE gateway (and `kirocrew --version`) even though telemetry
-# defaults off. Degrade to the existing no-op MetricsRecorder(None) path instead
-# of crashing at import time.
+# the availability probe below is defense-in-depth — not for a genuinely
+# optional dep, but for a partial / --no-deps / broken env-closure install where
+# the SDK is absent. This module is on the eager boot chain (cli.py -> dashboard
+# -> ... -> history.py -> skills.py -> get_recorder), so an unconditional
+# top-level import here would brick the ENTIRE gateway (and `kirocrew
+# --version`) even though telemetry defaults off. Degrade to the existing no-op
+# MetricsRecorder(None) path instead of crashing at import time.
 #
-# local_exporter is imported INSIDE the guard: its JsonlMetricExporter
+# The SDK is NOT imported at module scope: executing
+# ``opentelemetry.sdk.metrics`` + ``.export`` + ``.view`` + ``.resources`` costs
+# ~57ms and ~120 extra modules on EVERY entry point (CLI invocations, MCP stdio
+# subprocesses, `kirocrew --version`) while telemetry is off by default and the
+# SDK is never used. ``importlib.util.find_spec`` answers the availability
+# question for ~0.9ms without executing the package, so the eager cost is paid
+# only by hosts that actually opt in. The real imports happen in ``_load_otel``,
+# called from ``_build_recorder`` after the consent gate.
+#
+# local_exporter is loaded in the same lazy step: its JsonlMetricExporter
 # subclasses the OTel SDK's MetricExporter base class, so the module itself
-# cannot load without opentelemetry. It is only used on the enabled path
-# (after the _OTEL_AVAILABLE check in _build_recorder), so guarding the
-# import preserves the degrade contract. recorder.py is annotation-only on
+# cannot load without opentelemetry. It is only used on the enabled path, so
+# deferring it preserves the degrade contract. recorder.py is annotation-only on
 # OTel symbols (TYPE_CHECKING import) and stays loadable either way.
-try:
-    from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-    from opentelemetry.sdk.metrics.view import (
-        ExplicitBucketHistogramAggregation,
-        View,
-    )
-    from opentelemetry.sdk.resources import Resource
 
-    from kiro_crew.metrics.local_exporter import JsonlMetricExporter
 
-    _OTEL_AVAILABLE = True
-except ImportError:
-    MeterProvider = PeriodicExportingMetricReader = None  # type: ignore[assignment,misc]
-    ExplicitBucketHistogramAggregation = View = Resource = None  # type: ignore[assignment,misc]
-    JsonlMetricExporter = None  # type: ignore[assignment,misc]
-    _OTEL_AVAILABLE = False
+def _otel_importable() -> bool:
+    """Whether the OTel metrics SDK can be imported, without importing it.
+
+    ``find_spec`` on a dotted name imports the PARENT packages
+    (``opentelemetry``, ``opentelemetry.sdk``) but not the metrics SDK itself,
+    which is where the cost and the module-count blow-up live. It raises
+    (rather than returning ``None``) when a parent is unimportable, so both
+    outcomes are folded into ``False`` here — same contract as the ImportError
+    guard this replaced.
+    """
+    try:
+        return importlib.util.find_spec("opentelemetry.sdk.metrics") is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
+
+
+_OTEL_AVAILABLE = _otel_importable()
+
+# Resolved on first use by ``_load_otel``. Kept as module globals (rather than
+# locals in ``_build_recorder``) because tests substitute them by name —
+# ``_load_otel`` only fills the ones that are still None, so a monkeypatched
+# stand-in is never overwritten by the real class. Typed ``Any`` because they
+# are lazily bound; the TYPE_CHECKING aliases above carry the real types for
+# the annotations that need them.
+MeterProvider: Any = None
+PeriodicExportingMetricReader: Any = None
+ExplicitBucketHistogramAggregation: Any = None
+View: Any = None
+Resource: Any = None
+JsonlMetricExporter: Any = None
+
+
+def _load_otel() -> bool:
+    """Import the OTel metrics SDK into the module globals. True on success."""
+    global MeterProvider, PeriodicExportingMetricReader
+    global ExplicitBucketHistogramAggregation, View, Resource, JsonlMetricExporter
+    try:
+        from opentelemetry.sdk.metrics import MeterProvider as _MeterProvider
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader as _Reader
+        from opentelemetry.sdk.metrics.view import (
+            ExplicitBucketHistogramAggregation as _BucketAggregation,
+        )
+        from opentelemetry.sdk.metrics.view import View as _View
+        from opentelemetry.sdk.resources import Resource as _Resource
+
+        from kiro_crew.metrics.local_exporter import JsonlMetricExporter as _JsonlMetricExporter
+    except ImportError:
+        return False
+    # Fill only what is still unset, so a test's substitute survives.
+    if MeterProvider is None:
+        MeterProvider = _MeterProvider
+    if PeriodicExportingMetricReader is None:
+        PeriodicExportingMetricReader = _Reader
+    if ExplicitBucketHistogramAggregation is None:
+        ExplicitBucketHistogramAggregation = _BucketAggregation
+    if View is None:
+        View = _View
+    if Resource is None:
+        Resource = _Resource
+    if JsonlMetricExporter is None:
+        JsonlMetricExporter = _JsonlMetricExporter
+    return True
+
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +200,7 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
 _lock = threading.Lock()
 _recorder: Optional[MetricsRecorder] = None
 _initialized = False
-_provider: Optional["MeterProvider"] = None
+_provider: Optional["_MeterProviderT"] = None
 
 # Env-var opt-in (rec #14: easy opt-in). ``KIROCREW_TELEMETRY`` lets a host turn
 # LOCAL metrics on (or force them off) without editing ~/.kiro/crew/config.json —
@@ -185,6 +246,12 @@ def _build_recorder() -> MetricsRecorder:
     if not _consent_enabled(cfg):
         return MetricsRecorder(None)
 
+    # Consent granted — now pay for the SDK import (deferred from module scope
+    # so the default-off path never does).
+    if not _load_otel():
+        logger.warning("opentelemetry not importable; telemetry disabled")
+        return MetricsRecorder(None)
+
     # PeriodicExportingMetricReader starts its daemon ticker thread inside
     # __init__, so if any later step (MeterProvider construction, etc.) raises,
     # the reader is already ticking. Hoist it here so the except can reap it —
@@ -211,7 +278,7 @@ def _build_recorder() -> MetricsRecorder:
         otlp_reader = _build_otlp_reader(cfg)
         if otlp_reader is not None:
             readers.append(otlp_reader)
-        _provider = MeterProvider(
+        provider = MeterProvider(
             metric_readers=readers,
             resource=Resource.create({"service.name": _SERVICE_NAME}),
             # One View per instrument, from _HISTOGRAM_BUCKETS_MS. Deliberately
@@ -229,12 +296,13 @@ def _build_recorder() -> MetricsRecorder:
                 for name, bounds in _HISTOGRAM_BUCKETS_MS.items()
             ],
         )
+        _provider = provider
         logger.info(
             "telemetry enabled; local JSONL sink at %s (otlp=%s)",
             directory,
             "on" if len(readers) > 1 else "off",
         )
-        return MetricsRecorder(_provider.get_meter(_SCOPE))
+        return MetricsRecorder(provider.get_meter(_SCOPE))
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
         # Reap the reader's already-started daemon thread if it outlived a
@@ -249,7 +317,7 @@ def _build_recorder() -> MetricsRecorder:
         return MetricsRecorder(None)
 
 
-def _build_otlp_reader(cfg: object) -> Optional["PeriodicExportingMetricReader"]:
+def _build_otlp_reader(cfg: object) -> Optional["_ReaderT"]:
     """Build the opt-in OTLP/HTTP metric reader, or None when not configured.
 
     Egress is OFF by default (rec #1): this returns None unless
@@ -263,6 +331,11 @@ def _build_otlp_reader(cfg: object) -> Optional["PeriodicExportingMetricReader"]
     """
     endpoint = str(getattr(cfg, "otlp_endpoint", "") or "").strip()
     if not endpoint:
+        return None
+    # Callable directly (not only via _build_recorder), so make sure the lazily
+    # imported SDK symbols this needs are bound.
+    if not _load_otel():
+        logger.warning("opentelemetry not importable; OTLP egress disabled")
         return None
     try:
         from opentelemetry.exporter.otlp.proto.http.metric_exporter import (

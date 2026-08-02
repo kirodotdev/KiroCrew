@@ -17,26 +17,64 @@ back to normal dashboard-token + CSRF auth. They must NOT be added to the strict
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
+from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _resolve_mirror_target
+from kiro_crew.dashboard.chat_slack import list_slack_channels
 from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
+from kiro_crew.security import redact_and_truncate
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
 
+async def api_channel_targets(request: web.Request) -> web.Response:
+    """GET /api/chat/channel-targets — list configured outbound destinations."""
+    state: DashboardState = request.app["state"]
+    targets: list[dict] = []
+    if state.slack_client is not None and getattr(state, "owner_id", None):
+        try:
+            for channel in await list_slack_channels(state):
+                channel_id = str(channel.get("id", "") or "")
+                name = str(channel.get("name", "") or channel_id)
+                if channel_id:
+                    targets.append(
+                        {
+                            "channel_type": SLACK_NAMESPACE,
+                            "target_id": channel_id,
+                            "label": f"Slack · {name}",
+                            "available": True,
+                            "unavailable_reason": "",
+                        }
+                    )
+        except Exception:
+            logger.warning("channel-targets: failed to enumerate Slack", exc_info=True)
+    for channel_type, transport in sorted(state.channel_transports.items()):
+        try:
+            targets.extend(
+                target.to_dict(channel_type) for target in transport.configured_targets()
+            )
+        except Exception:
+            logger.warning("channel-targets: failed to enumerate %s", channel_type, exc_info=True)
+    return web.json_response(targets)
+
+
 async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{name}/mirror-link — mirror a session to a channel.
 
-    Body: ``{channel_type, conversation_id, thread_id?}``. Slack is rejected with
-    a hint to use ``slack-link`` (which owns Slack's rich thread + streaming
-    mirror). The target channel's transport must be registered at boot AND
+    Body: ``{channel_type, target_id}``. Slack is rejected with a hint to use
+    ``slack-link`` (which owns Slack's rich thread + streaming mirror).
+    ``target_id`` is REQUIRED and is always resolved through the transport's
+    configured-target allowlist (``resolve_configured_target``): a raw
+    conversation id is never accepted as a send target, so a session's transcript
+    can only be anchored into a channel the user has actually configured. The
+    target channel's transport must be registered at boot AND
     ``supports_proactive_send`` — Telegram qualifies; WeCom, whose replies are
     bound to an inbound token, does not.
     """
@@ -70,7 +108,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "body must be a JSON object"}, status=400)
     channel_type = str(body.get("channel_type", "") or "").strip()
-    conversation_id = str(body.get("conversation_id", "") or "").strip()
+    target_id = str(body.get("target_id", "") or "").strip()
     thread_id = str(body.get("thread_id", "") or "").strip() or None
 
     # An EMPTY body on an existing mirror mirrors Slack's "Post reminder"
@@ -84,7 +122,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     # boundary.
     if not body:
         session_key = _history_key_for(name)
-        target = _resolve_mirror_target(state, session_key)
+        target = await asyncio.to_thread(_resolve_mirror_target, state, session_key)
         if target is None:
             existing = state.sessions.get_mirror_link(session_key)
             if existing is None:
@@ -115,26 +153,124 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         return web.json_response({"error": "channel_type required"}, status=400)
     if channel_type == SLACK_NAMESPACE:
         return web.json_response({"error": "use /slack-link for Slack"}, status=400)
-    if not conversation_id:
-        return web.json_response({"error": "conversation_id required"}, status=400)
-
+    if not target_id:
+        return web.json_response(
+            {"error": "target_id required", "code": "target_id_required"}, status=400
+        )
     transport = state.get_channel_transport(channel_type)
     if transport is None:
         return web.json_response(
-            {"error": f"channel '{channel_type}' not connected"}, status=503
+            {"error": f"channel '{channel_type}' not connected", "code": "channel_not_connected"},
+            status=503,
         )
     if not transport.capabilities.supports_proactive_send:
         return web.json_response(
             {"error": f"channel '{channel_type}' cannot mirror (no proactive send)"},
             status=400,
         )
-
     session_key = _history_key_for(name)
+    # Resolving an opaque configured target can itself open a remote
+    # conversation (for example, Discord creates a DM channel). Re-enter the
+    # shared fail-closed governance ladder before that network side effect,
+    # including when a profile changed after the transport connected.
+    provisional_link = ChannelLink(
+        channel_type=channel_type,
+        channel_id=target_id,
+        thread_id=thread_id,
+    )
+    governed = await asyncio.to_thread(
+        _resolve_channel_target, state, session_key, provisional_link
+    )
+    if governed is None:
+        return web.json_response(
+            {"error": "channel is not permitted", "code": "channel_not_permitted"}, status=403
+        )
+    _, transport = governed
+    # target_id is required and opaque: ALWAYS resolve it through the transport's
+    # configured-target allowlist. A raw conversation_id is never accepted as a
+    # send target — that would let a caller anchor a session's transcript into an
+    # arbitrary, non-allowlisted channel of a governance-permitted type.
+    resolved = await transport.resolve_configured_target(target_id)
+    # Audit the allowlist decision (allowed/denied) BEFORE branching: a
+    # stale/tampered target id that the resolver rejects is an authorization
+    # outcome and must land in the SEL trail, not just return a bare 409.
+    sel().log_api_access(
+        caller="dashboard",
+        operation="chat.mirror_target_resolve",
+        outcome="allowed" if resolved is not None else "denied",
+        source="dashboard",
+        resources=f"{slot.key} -> {channel_type}:{target_id}",
+    )
+    if resolved is None:
+        return web.json_response(
+            {
+                "error": "configured target is unavailable",
+                "code": "configured_target_unavailable",
+            },
+            status=409,
+        )
+    conversation_id, thread_id = resolved
+
+    link = ChannelLink(
+        channel_type=channel_type,
+        channel_id=conversation_id,
+        thread_id=thread_id,
+    )
+
+    try:
+        # Recheck at the actual send boundary as well: target resolution can
+        # yield while governance is updated.
+        governed = await asyncio.to_thread(_resolve_channel_target, state, session_key, link)
+        if governed is None:
+            return web.json_response(
+                {"error": "channel is not permitted", "code": "channel_not_permitted"}, status=403
+            )
+        _, live_transport = governed
+        await live_transport.send_message(
+            conversation_id,
+            "Session linked from dashboard — continuing here.",
+            thread_id=thread_id,
+        )
+    except Exception:
+        logger.debug("mirror-link initial delivery failed", exc_info=True)
+        return web.json_response(
+            {"error": "failed to create channel link", "code": "channel_link_failed"}, status=502
+        )
+
+    for message in slot.messages[-5:]:
+        role = str(message.get("role", "") or "")
+        content = redact_and_truncate(message.get("content") or "", max_chars=2000)
+        if role in ("user", "assistant") and content:
+            speaker = "You" if role == "user" else "KiroCrew"
+            try:
+                # Historical context is a sequence of separate egress actions.
+                # Stop immediately if policy narrows while the loop is yielding.
+                governed = await asyncio.to_thread(
+                    _resolve_channel_target, state, session_key, link
+                )
+                if governed is None:
+                    # Policy narrowed mid-delivery: fail closed. Do NOT fall
+                    # through to set_mirror_link (which would persist a link the
+                    # latest governance decision denied) and do NOT report
+                    # success. The denial is already SEL-audited inside
+                    # _resolve_channel_target via vet_and_audit.
+                    return web.json_response(
+                        {"error": "channel is not permitted", "code": "channel_not_permitted"},
+                        status=403,
+                    )
+                _, live_transport = governed
+                await live_transport.send_message(
+                    conversation_id,
+                    f"{speaker}: {content}",
+                    thread_id=thread_id,
+                )
+            except Exception:
+                logger.debug("mirror-link context delivery failed", exc_info=True)
+
     state.sessions.set_mirror_link(
         session_key,
-        ChannelLink(channel_type=channel_type, channel_id=conversation_id, thread_id=thread_id),
+        link,
     )
-    state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",
         operation="chat.mirror_link",
@@ -142,9 +278,8 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"{slot.key} -> {channel_type}",
     )
-    logger.info(
-        "mirror-link: %s -> %s:%s", slot.key, channel_type, conversation_id
-    )
+    state.push_slots_update()
+    logger.info("mirror-link: %s -> %s:%s", slot.key, channel_type, conversation_id)
     return web.json_response(
         {"ok": True, "channel_type": channel_type, "conversation_id": conversation_id}
     )

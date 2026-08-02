@@ -6,17 +6,17 @@
 #   curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel nightly
 #
 # Installs the prebuilt `kirocrew` wheel for a release channel. It resolves the
-# channel feed, downloads the wheel over HTTPS from CloudFront, verifies its
-# SHA-256 against the feed manifest, then installs it (pipx if available, else a
-# managed venv). No Brazil workspace, no Node, no build step. Unlike install.sh
-# (which builds from a git clone), this pulls the published wheel.
+# channel feed, verifies its RSA-SHA256 signature against the public key pinned
+# below, downloads the wheel over HTTPS from CloudFront, verifies its SHA-256
+# against the signed digest, then installs it (pipx if available, else a managed
+# venv). No unsigned/checksum-only fallback exists. Unlike install.sh (which
+# builds from a git clone), this pulls the published wheel.
 #
 # Options / env:
 #   --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
-#   --version <X.Y.Z>                     pin an exact version instead of the
-#                                         channel's latest (verified against the
-#                                         version's published SHA256SUMS)
-#   --cdn <base-url>                      (default CloudFront; env KIROCREW_CDN_BASE)
+#   --version <X.Y.Z>                    pin an exact version, verified against
+#                                        its immutable signed CLI manifest
+#   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
 # ──────────────────────────────────────────────────────────────────────
 set -eu
 
@@ -36,6 +36,14 @@ ARTIFACT_BASE="${KIROCREW_CDN_BASE:-https://download.crew.kiro.dev}"
 CHANNEL="${KIROCREW_CHANNEL:-stable}"
 PIN_VERSION=""
 
+# Offline trust root for CLI artifact manifests. These two values are replaced
+# together during the operational KMS-key enablement documented in
+# packaging/signing/README.md. They deliberately ship unconfigured in the
+# repository contract: until a non-exportable signing key is provisioned and
+# its public half is pinned here, the installer refuses before any network I/O.
+CLI_MANIFEST_KEY_ID="UNCONFIGURED"
+CLI_MANIFEST_PUBLIC_KEY_B64="UNCONFIGURED"
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --channel) CHANNEL="${2:?--channel needs a value}"; shift 2 ;;
@@ -52,15 +60,16 @@ KiroCrew CLI installer (channel / wheel based).
   curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel nightly
 
 Installs the prebuilt `kirocrew` wheel for a release channel: resolves the
-channel feed, downloads the wheel over HTTPS, verifies its SHA-256 against
-the published manifest, then installs it (pipx if available, else a managed
-venv BESIDE the data home — "$KIROCREW_HOME"-venv or ~/.kiro/crew-venv, never
-inside the data home itself). Records the channel in the data home.
+channel feed, verifies its signature against the installer-pinned public key,
+downloads the wheel over HTTPS, verifies its SHA-256 against the signed digest,
+then installs it (pipx if available, else a managed venv BESIDE the data home —
+"$KIROCREW_HOME"-venv or ~/.kiro/crew-venv, never inside the data home itself).
+Records the channel in the data home. There is no unsigned fallback.
 
 Options / env:
   --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
   --version <X.Y.Z>                    pin an exact version, verified against
-                                       that version's published SHA256SUMS
+                                       its immutable signed CLI manifest
   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
   KIROCREW_VENV                        override the managed venv location
 EOF
@@ -105,7 +114,12 @@ _is_within() {
   [ "$_within_rest" != "$1" ]
 }
 
+[ "$CLI_MANIFEST_KEY_ID" != "UNCONFIGURED" ] \
+  && [ "$CLI_MANIFEST_PUBLIC_KEY_B64" != "UNCONFIGURED" ] \
+  || err "manifest signing trust root is not configured; refusing unsigned installation"
+
 command -v curl    >/dev/null 2>&1 || err "curl is required"
+command -v openssl >/dev/null 2>&1 || err "openssl is required to verify the signed manifest"
 # KiroCrew needs Python >=3.10 at runtime (contextlib.aclosing, etc.) even
 # though older published wheels' METADATA claimed >=3.9 -- pip would install
 # fine on 3.9 and then crash on first run. Pick the best interpreter, newest
@@ -135,35 +149,159 @@ else err "need sha256sum or shasum to verify the download"; fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
-if [ -n "$PIN_VERSION" ]; then
-  # Pinned install: skip the feed; fetch the exact version's wheel and verify
-  # against the SHA256SUMS published beside it at release time.
-  VER="$PIN_VERSION"
-  WHEEL_NAME="kirocrew-${VER}-py3-none-any.whl"
-  WHEEL_URL="$ARTIFACT_BASE/cli/$CHANNEL_PATH/$VER/$WHEEL_NAME"
-  echo "Resolving KiroCrew $VER ($CHANNEL channel, pinned) ..."
-  curl -fsSL "$ARTIFACT_BASE/cli/$CHANNEL_PATH/$VER/SHA256SUMS" -o "$TMP/SHA256SUMS" \
-    || err "version '$VER' not found on the $CHANNEL channel (no $ARTIFACT_BASE/cli/$CHANNEL_PATH/$VER/SHA256SUMS)"
-  SHA="$(awk -v w="$WHEEL_NAME" '$2==w{print $1}' "$TMP/SHA256SUMS")"
-  [ -n "$SHA" ] || err "SHA256SUMS for $VER does not list $WHEEL_NAME"
-else
-  FEED="$FEED_BASE/feed/$CHANNEL_PATH/latest-cli.json"
-  echo "Resolving KiroCrew ($CHANNEL channel) ..."
-  curl -fsSL "$FEED" -o "$TMP/feed.json" \
-    || err "channel '$CHANNEL' has no feed at $FEED (try: --channel nightly)"
+# Materialize and self-check the embedded trust root. The key id is the SHA-256
+# fingerprint of SubjectPublicKeyInfo DER, so an accidental edit to either
+# pinned value fails before the network is consulted.
+if ! printf '%s' "$CLI_MANIFEST_PUBLIC_KEY_B64" \
+    | "$PY" -c 'import base64,sys; open(sys.argv[1], "xb").write(base64.b64decode(sys.stdin.buffer.read(), validate=True))' \
+        "$TMP/cli-manifest-public.pem" 2>/dev/null; then
+  err "embedded CLI manifest public key is malformed"
+fi
+if ! openssl pkey -pubin -in "$TMP/cli-manifest-public.pem" \
+    -outform DER -out "$TMP/cli-manifest-public.der" 2>/dev/null; then
+  err "embedded CLI manifest public key is invalid"
+fi
+PINNED_KEY_SHA="$($SHA_CMD "$TMP/cli-manifest-public.der" | awk '{print $1}')"
+[ "$CLI_MANIFEST_KEY_ID" = "sha256:$PINNED_KEY_SHA" ] \
+  || err "embedded CLI manifest public key fingerprint mismatch"
 
-  # Parse the manifest with python3 (portable; no jq dependency). Read the path
-  # from argv so no shell value is interpolated into the program text.
-  read_field() { "$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$TMP/feed.json" "$1"; }
-  WHEEL_URL="$(read_field wheel_url)"
-  SHA="$(read_field sha256)"
-  VER="$(read_field version)"
-  [ -n "$WHEEL_URL" ] && [ -n "$SHA" ] || err "malformed feed manifest"
+if [ -n "$PIN_VERSION" ]; then
+  case "$PIN_VERSION" in
+    *[!A-Za-z0-9._+]*) err "invalid pinned version '$PIN_VERSION'" ;;
+  esac
+  MANIFEST_URL="$ARTIFACT_BASE/cli/$CHANNEL_PATH/$PIN_VERSION/cli-manifest.json"
+  echo "Resolving KiroCrew $PIN_VERSION ($CHANNEL channel, pinned) ..."
+else
+  MANIFEST_URL="$FEED_BASE/feed/$CHANNEL_PATH/latest-cli.json"
+  echo "Resolving KiroCrew ($CHANNEL channel) ..."
+fi
+# Bound unauthenticated metadata before it reaches disk. curl 7.58+ enforces
+# --max-filesize against received bytes even without a Content-Length header.
+curl -fsS --proto '=https' --max-filesize 65536 "$MANIFEST_URL" \
+  -o "$TMP/cli-manifest.json" \
+  || err "signed CLI manifest not found at $MANIFEST_URL"
+
+# The signature covers canonical JSON containing every field except the
+# signature itself. Reject duplicate/extra/missing keys, decode into bounded
+# files, and only parse artifact metadata AFTER OpenSSL authenticates those
+# canonical bytes against the offline key above.
+if ! "$PY" - "$TMP/cli-manifest.json" "$TMP/signed-payload.json" \
+    "$TMP/manifest-signature.bin" "$CLI_MANIFEST_KEY_ID" <<'PY'
+import base64
+import json
+import sys
+
+manifest_path, payload_path, signature_path, pinned_key_id = sys.argv[1:]
+expected = {
+    "algorithm", "channel", "key_id", "pub_date", "python_requires",
+    "schema", "sha256", "signature", "version", "wheel_url",
+}
+
+def no_duplicates(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
+
+try:
+    raw = open(manifest_path, "rb").read(65537)
+    if len(raw) > 65536:
+        raise ValueError("oversized manifest")
+    manifest = json.loads(raw.decode("utf-8"), object_pairs_hook=no_duplicates)
+    if not isinstance(manifest, dict) or set(manifest) != expected:
+        raise ValueError("unexpected fields")
+    if not all(isinstance(value, str) and value for value in manifest.values()):
+        raise ValueError("invalid field type")
+    if manifest["schema"] != "kirocrew-cli-artifact-manifest-v1":
+        raise ValueError("unsupported schema")
+    if manifest["algorithm"] != "RSASSA_PKCS1_V1_5_SHA_256":
+        raise ValueError("unsupported algorithm")
+    if manifest["key_id"] != pinned_key_id:
+        raise ValueError("untrusted key id")
+    signature = base64.b64decode(manifest.pop("signature"), validate=True)
+    if not signature or len(signature) > 1024:
+        raise ValueError("invalid signature size")
+    canonical = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        + "\n"
+    ).encode("ascii")
+    if len(canonical) > 16384:
+        raise ValueError("oversized payload")
+    open(payload_path, "xb").write(canonical)
+    open(signature_path, "xb").write(signature)
+except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+PY
+then
+  err "malformed signed manifest — refusing to install"
 fi
 
-WHL="$TMP/$(basename "$WHEEL_URL")"
+if ! openssl dgst -sha256 -verify "$TMP/cli-manifest-public.pem" \
+    -signature "$TMP/manifest-signature.bin" "$TMP/signed-payload.json" \
+    >/dev/null 2>&1; then
+  err "manifest signature verification failed — refusing to install"
+fi
+echo "Verified signed manifest."
+
+# Validate the authenticated fields against the request. In particular, the
+# wheel URL must be the one canonical URL implied by the selected byte host,
+# channel, and signed version; a valid signer cannot redirect this installer to
+# an unrelated origin by accident.
+if ! "$PY" - "$TMP/signed-payload.json" "$CHANNEL" "$PIN_VERSION" \
+    "$ARTIFACT_BASE" <<'PY'
+import json
+import re
+import sys
+
+path, expected_channel, pinned_version, artifact_base = sys.argv[1:]
+payload = json.load(open(path, encoding="ascii"))
+expected_fields = {
+    "algorithm", "channel", "key_id", "pub_date", "python_requires",
+    "schema", "sha256", "version", "wheel_url",
+}
+try:
+    if set(payload) != expected_fields:
+        raise ValueError
+    if payload["channel"] != expected_channel:
+        raise ValueError
+    version = payload["version"]
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+]{0,127}", version) is None:
+        raise ValueError
+    if pinned_version and version != pinned_version:
+        raise ValueError
+    if re.fullmatch(r"[0-9a-f]{64}", payload["sha256"]) is None:
+        raise ValueError
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", payload["pub_date"]) is None:
+        raise ValueError
+    if len(payload["python_requires"]) > 128 or any(
+        ord(char) < 0x20 or ord(char) > 0x7E for char in payload["python_requires"]
+    ):
+        raise ValueError
+    wheel_name = f"kirocrew-{version}-py3-none-any.whl"
+    expected_url = f"{artifact_base}/cli/{expected_channel}/{version}/{wheel_name}"
+    if payload["wheel_url"] != expected_url:
+        raise ValueError
+except (KeyError, TypeError, ValueError):
+    raise SystemExit(1)
+PY
+then
+  err "signed manifest does not match the requested channel/version/artifact host"
+fi
+
+read_field() {
+  "$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
+    "$TMP/signed-payload.json" "$1"
+}
+WHEEL_URL="$(read_field wheel_url)"
+SHA="$(read_field sha256)"
+VER="$(read_field version)"
+WHEEL_NAME="kirocrew-${VER}-py3-none-any.whl"
+WHL="$TMP/$WHEEL_NAME"
+
 echo "Downloading kirocrew $VER ..."
-curl -fsSL "$WHEEL_URL" -o "$WHL" || err "failed to download wheel from $WHEEL_URL"
+curl -fsS --proto '=https' "$WHEEL_URL" -o "$WHL" || err "failed to download wheel from $WHEEL_URL"
 
 GOT="$($SHA_CMD "$WHL" | awk '{print $1}')"
 [ "$GOT" = "$SHA" ] || err "SHA-256 mismatch (expected $SHA, got $GOT) — refusing to install"

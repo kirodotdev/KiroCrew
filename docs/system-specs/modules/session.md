@@ -1,6 +1,6 @@
 # Session Manager Module
 
-Last Updated: 2026-07-24 (Empty-response recovery ladder documented — silent same-message re-queue → ONE synthetic continue nudge (gated by session.empty_response_auto_continue, default ON) → terminal notice; bounded per user message. Prior — 2026-07-14 cross-platform process management via platform_compat; warm pool / model precedence / orphan-sweep companion runtimes; DM channel session-key model + dm_scope + generation reset + mid-turn steer/queue; Slack thread linking, bidirectional dashboard-Slack sync, slash commands)
+Last Updated: 2026-07-30 (dashboard sessions can link to validated user-configured destinations across all registered messaging transports; channel-owned sessions surface immediately after their first persisted turn; prior: empty-response recovery ladder, cross-platform process management, DM session keys, and Slack thread linking)
 
 ## Overview
 
@@ -468,14 +468,14 @@ inbound request, so a queued-then-drained reply can't be delivered later
 
 ## Cross-Surface Reply Mirror
 
-The same conversation can appear on a channel (Telegram/WeCom) and in the
+The same conversation can appear on a channel and in the
 dashboard. Two models relate the surfaces:
 
 - **Slack — one session, two surfaces (fold-in).** A linked Slack thread folds
   into the dashboard session: the handler swaps the session key to the linked
   dashboard session via `get_session_for_thread`, so there is a single backing
   sid and Slack is a projection of it (see *Slack Thread Linking*).
-- **Telegram / WeCom — two sessions, bridged by a mirror.** The channel message
+- **Discord / Telegram / Webex / Teams / WeCom / Weixin — two sessions, bridged by a mirror.** The channel message
   runs under its own channel session (`{channel}:…:genN` → its own sid); the
   dashboard surfaces it as a separate slot with its own sid. One logical
   conversation therefore has two backing sids, bridged by the mirror.
@@ -492,7 +492,7 @@ the dashboard rehydrates as a slot. Outbound (dashboard → channel echo) fires
 only when a `mirror` `ChannelLink` exists on the dashboard-side key:
 
 ```
-   Telegram / WeCom                              Dashboard tab
+   Messaging channel                            Dashboard tab
   ┌────────────────────┐   inbound: ALWAYS ON   ┌────────────────────┐
   │ channel session    │ ═════════════════════▶ │ dashboard slot     │
   │ …:genN  (sid A)    │                        │ dashboard:…_genN   │
@@ -507,6 +507,17 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
 - `POST /api/chat/slots/{name}/mirror-link` | `mirror-unlink` — dashboard-side
   endpoints (auth posture matches `slack-link`: under the `/api/chat`
   `mixed_internal_paths` prefix, never the strict `internal_paths` set).
+  New links use `{channel_type, target_id}` and resolve the opaque configured
+  target server-side; the legacy `{conversation_id, thread_id?}` body remains
+  accepted for compatibility. A successful new link posts an anchor plus the
+  last five redacted messages before persisting the mirror.
+- `GET /api/chat/channel-targets` — owner-authenticated union of Slack
+  destinations and every registered transport's configured targets. The
+  dashboard session menu renders this list with per-channel brand icons.
+  Unavailable configured destinations are returned with a reason rather than
+  silently omitted (Teams before first inbound; WeCom proactive send); the menu
+  keeps those rows keyboard-focusable, shows the reason inline, and announces
+  the same reason instead of presenting an unexplained disabled action.
 - In-channel `/link` / `/unlink` — write/clear the link on the current
   conversation's `dashboard_mirror_key`. `/link` does not control display,
   history, or the inbound direction — only the outbound echo; `/unlink` changes
@@ -524,7 +535,7 @@ canonical `redact_via_context` shim so a loaded companion's extra
 credential/token regexes apply.
 
 **Known asymmetry / future work.** Slack already runs the unified one-session
-model; Telegram/WeCom run two sessions bridged by the mirror. Folding the
+model; the other transports run two sessions bridged by the mirror. Folding the
 dashboard channel tab into the channel session (as Slack does) would remove the
 second sid and the live render-duplication it can cause, at the cost of a
 dashboard-turn-loop refactor.

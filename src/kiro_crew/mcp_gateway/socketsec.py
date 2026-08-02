@@ -1,32 +1,47 @@
-"""Defense-in-depth helpers for the gatewayd unix socket (Mesh 81785a39).
+"""Defense-in-depth helpers for the gatewayd local endpoint (Mesh 81785a39).
 
-Two narrow, self-contained primitives:
+The endpoint carries every tool call and every tool result for every pooled
+session, so two questions have to be answerable at accept time:
 
-* :func:`chmod_socket_0600` — best-effort tighten of the bound socket
-  file's permissions to ``0600`` so only the owning UID can ``connect()``.
-  The default ``umask`` already produces ``0755`` / ``0775`` which is
-  more permissive than necessary for a per-user IPC endpoint.
+* **Is the peer the same principal as us?** :func:`check_peer_is_self` answers
+  it deny-by-default -- ``MATCH`` only on positive confirmation, never as a
+  consequence of a failed lookup.
+* **Which process is on the other end?** :func:`get_peer_pid` answers it, and
+  gatewayd uses the PID two ways: to walk the peer's real ancestry for a
+  session-key file when a stub registers without one, and to index the
+  connection under the peer's *host* PID chain so a later ``claim`` frame
+  (which carries a host PID) lands on the right connection even when the
+  stub's self-reported PIDs are namespace-local.
 
-* :func:`check_peer_uid` — read the connecting peer's UID from
-  ``SO_PEERCRED`` and return a tri-state :class:`PeerCredResult`
-  (``MATCH`` / ``MISMATCH`` / ``UNVERIFIABLE``). Deny-by-default: it
-  returns ``MATCH`` only when the kernel positively confirms the peer
-  uid equals ``expected_uid``. When the uid cannot be read (no
-  ``SO_PEERCRED``, non-``AF_UNIX`` socket, ``getsockopt`` error) it
-  returns ``UNVERIFIABLE`` rather than silently granting access — the
-  caller decides policy for that case. Used inside the connection
-  handler as a belt-and-braces check after the directory-permission
-  gate.
+Both are per-platform mechanisms rather than one portable call:
 
-Stdlib-only (``socket``, ``struct``, ``os``, ``logging``) plus the
-``platform_compat`` leaf (itself stdlib-only); no asyncio imports so this
-module is safe to call from synchronous setup paths
-(:func:`run_gatewayd` startup) as well as from async connection
-handlers.
+===========  ====================================  =========================
+Platform     Peer principal                        Peer PID
+===========  ====================================  =========================
+Linux        ``SO_PEERCRED`` uid                   ``SO_PEERCRED`` pid
+Windows      owning-process token SID              ``GetNamedPipeClientProcessId``
+macOS        not implemented -> UNVERIFIABLE       ``LOCAL_PEERPID``
+===========  ====================================  =========================
+
+macOS is deliberately asymmetric. ``LOCAL_PEERPID`` is additive -- a failure
+returns ``None``, exactly today's behaviour -- so wiring it can only add the
+identity-resolution channel, never take one away. A macOS *principal* check
+would gate connection admission, and there is no macOS CI job here to verify it
+against; a wrong implementation would return ``MISMATCH`` and lock every macOS
+user out of their own gateway. So macOS keeps reporting ``UNVERIFIABLE`` and
+falls through to :func:`socket_owner_only`, the filesystem gate that already
+works there. Implementing ``LOCAL_PEERCRED`` is follow-on work that needs a
+real Mac to sign off.
+
+Stdlib-only (``socket``, ``struct``, ``ctypes``, ``os``, ``logging``) plus the
+``platform_compat`` leaf; no asyncio imports, so this module is safe to call
+from synchronous setup paths (:func:`run_gatewayd` startup) as well as from
+async connection handlers.
 """
 
 from __future__ import annotations
 
+import ctypes
 import enum
 import logging
 import os
@@ -40,6 +55,11 @@ from kiro_crew import platform_compat
 
 logger = logging.getLogger(__name__)
 
+# ``ctypes.WinDLL`` exists only in the Windows ctypes stubs; reach it through an
+# Any-typed alias so a POSIX mypy run does not flag call sites that are already
+# inside Windows-only code paths.
+_ct: Any = ctypes
+
 # ``struct ucred`` on Linux is three native unsigned ints: pid, uid, gid.
 # ``@`` keeps the platform's native byte order and alignment so the size
 # matches what the kernel hands back via ``getsockopt``.
@@ -50,38 +70,50 @@ _UCRED_SIZE = struct.calcsize(_UCRED_FMT)
 # Windows. Detect once at import time so callers can branch cheaply.
 _SO_PEERCRED: int | None = getattr(_socket, "SO_PEERCRED", None)
 
-# Public capability flag: ``True`` when this platform can read peer
-# credentials via ``SO_PEERCRED`` (Linux). Callers use it as an explicit,
-# documented platform guard to decide policy for the "cannot verify" case —
-# deny-by-default where verification is possible, and a deliberate fallback
-# to filesystem permissions where it is structurally impossible (macOS) —
-# rather than silently treating ``UNVERIFIABLE`` as allow.
-PEERCRED_SUPPORTED: bool = _SO_PEERCRED is not None
+# macOS peer-pid option. ``SOL_LOCAL`` is 0 and ``LOCAL_PEERPID`` is 2 in
+# ``<sys/un.h>``; Python does not export either, so they are literals. Guarded
+# by a darwin check at every use, and any failure degrades to ``None``.
+_SOL_LOCAL = 0
+_LOCAL_PEERPID = 2
+
+# Windows token constants.
+_TOKEN_QUERY = 0x0008  # noqa: N806 - Windows API constant
+_TOKEN_USER_CLASS = 1  # TokenUser  # noqa: N806 - Windows API constant
+
+#: ``True`` when this platform can positively confirm the peer's principal, so
+#: callers can fail closed on ``UNVERIFIABLE`` instead of treating it as allow.
+#: Where it is ``False`` (macOS) the caller falls back to the filesystem gate;
+#: see the module docstring for why macOS is not in this set.
+PEER_IDENTITY_SUPPORTED: bool = _SO_PEERCRED is not None or platform_compat.IS_WINDOWS
 
 
 class PeerCredResult(enum.Enum):
-    """Outcome of a SO_PEERCRED peer-uid check.
+    """Outcome of a peer-principal check.
 
     Deny-by-default authorization primitive: ``MATCH`` is returned ONLY when
-    the kernel positively confirms the peer uid equals the expected uid. A
-    failure to verify is never conflated with permission — it surfaces as
+    the OS positively confirms the peer is the same principal as this process.
+    A failure to verify is never conflated with permission -- it surfaces as
     ``UNVERIFIABLE`` so the *caller* makes an explicit policy decision instead
     of the primitive silently failing open.
     """
 
-    MATCH = "match"            # peer uid positively confirmed == expected
-    MISMATCH = "mismatch"      # peer uid positively confirmed != expected (DENY)
-    UNVERIFIABLE = "unverifiable"  # uid could not be read (see check_peer_uid)
+    MATCH = "match"            # peer principal positively confirmed == ours
+    MISMATCH = "mismatch"      # peer principal positively confirmed != ours (DENY)
+    UNVERIFIABLE = "unverifiable"  # could not be read (see check_peer_is_self)
 
 
 def chmod_socket_0600(path: Path) -> None:
     """Best-effort tighten of ``path`` to mode ``0600``.
 
-    Logs and swallows ``OSError`` — a chmod failure on the gatewayd
+    Logs and swallows ``OSError`` -- a chmod failure on the gatewayd
     socket is worth surfacing in the log but must not abort daemon
     startup. The directory-permission gate (``$KIROCREW_HOME`` defaults
     to ``0700``) is the primary access boundary; this is defense in
     depth.
+
+    POSIX only in effect. On Windows the endpoint is a named pipe with no
+    filesystem entry and mode bits carry no access meaning; its owner-only
+    DACL is applied at creation instead (see ``transport``).
     """
     # chmod_safe already logs + swallows OSError internally (and is a no-op on
     # Windows), so no try/except wrapper here — this is best-effort defense in
@@ -93,11 +125,16 @@ def socket_owner_only(path: Path) -> bool:
     """Return ``True`` iff the socket file at ``path`` is owner-only (no group
     or other permission bits set).
 
-    This is the filesystem access gate the gateway falls back to where
-    ``SO_PEERCRED`` is unavailable (e.g. macOS): a 0600 socket already prevents
-    any other uid from ``connect()``-ing. Returns ``False`` (deny) when the
-    file is missing or any group/other bit is set, so the caller can fail
-    closed instead of allowing an unverifiable connection through.
+    This is the filesystem access gate the gateway falls back to where the
+    peer's principal cannot be confirmed -- in practice macOS only, since Linux
+    reads ``SO_PEERCRED`` and Windows compares SIDs. A 0600 socket already
+    prevents any other uid from ``connect()``-ing. Returns ``False`` (deny)
+    when the file is missing or any group/other bit is set, so the caller can
+    fail closed instead of allowing an unverifiable connection through.
+
+    Never reached on Windows (``PEER_IDENTITY_SUPPORTED`` is ``True`` there),
+    which matters because ``st_mode`` is synthetic on Windows and this test
+    would be meaningless.
     """
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
@@ -107,86 +144,303 @@ def socket_owner_only(path: Path) -> bool:
     return mode & 0o077 == 0
 
 
+# --- Peer PID ----------------------------------------------------------------
+
+
 def get_peer_pid(transport_or_sock: Any) -> int | None:
-    """Extract the peer's PID from ``SO_PEERCRED``.
+    """Extract the peer's PID, or ``None`` when it cannot be read.
 
-    Returns the peer process ID as seen in the receiver's PID namespace (the
-    REAL pid when gatewayd runs on the host), or ``None`` when the pid cannot
-    be read (non-Linux, non-AF_UNIX, getsockopt failure).
+    The PID is as seen in *this* process's namespace -- the real host PID when
+    gatewayd runs on the host -- which is what makes it usable for claim-frame
+    indexing where a stub's self-reported PIDs may be namespace-local.
 
-    Used by the server-side peer-identity path: when a stub registers with an
-    empty session_key, gatewayd walks the peer's real /proc ancestry to find
-    the gateway-written session_pid file AND to index the connection under its
-    host ancestor chain so a later ``claim`` frame (which carries a host pid)
-    matches even if the stub's self-reported pids are namespace-local.
+    Dispatches per platform (see the module docstring). Returns ``None`` rather
+    than raising on every failure path, so a caller that cannot get a PID
+    simply loses the identity-resolution channel instead of dropping the
+    connection.
     """
+    if platform_compat.IS_WINDOWS:
+        handle = _resolve_pipe_handle(transport_or_sock)
+        if handle is None:
+            return None
+        return _windows_peer_pid(handle)
+
     sock = _resolve_socket(transport_or_sock)
     if sock is None:
-        return None
-    if _SO_PEERCRED is None:
         return None
     if sock.family != _socket.AF_UNIX:
         return None
+
+    if _SO_PEERCRED is not None:
+        try:
+            raw = sock.getsockopt(_socket.SOL_SOCKET, _SO_PEERCRED, _UCRED_SIZE)
+        except OSError:
+            return None
+        try:
+            pid, _uid, _gid = struct.unpack(_UCRED_FMT, raw)
+        except struct.error:  # pragma: no cover
+            return None
+        return pid if pid > 0 else None
+
+    if platform_compat.IS_MACOS:
+        # LOCAL_PEERPID yields a single native int. Additive: any failure falls
+        # through to None, which is what this function returned on macOS before.
+        try:
+            raw = sock.getsockopt(_SOL_LOCAL, _LOCAL_PEERPID, struct.calcsize("@i"))
+        except OSError as exc:
+            logger.debug("get_peer_pid: getsockopt(LOCAL_PEERPID) failed: %s", exc)
+            return None
+        try:
+            (pid,) = struct.unpack("@i", raw)
+        except struct.error as exc:  # pragma: no cover
+            logger.debug("get_peer_pid: LOCAL_PEERPID unpack failed: %s", exc)
+            return None
+        return pid if pid > 0 else None
+
+    return None
+
+
+def _windows_peer_pid(pipe_handle: int) -> int | None:
+    """Peer PID of a connected server pipe handle, or ``None``."""
+    from ctypes import wintypes
+
     try:
-        raw = sock.getsockopt(_socket.SOL_SOCKET, _SO_PEERCRED, _UCRED_SIZE)
-    except OSError:
+        kernel32 = _ct.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetNamedPipeClientProcessId.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.ULONG),
+        ]
+        kernel32.GetNamedPipeClientProcessId.restype = wintypes.BOOL
+        out = wintypes.ULONG()
+        if not kernel32.GetNamedPipeClientProcessId(
+            wintypes.HANDLE(pipe_handle), ctypes.byref(out)
+        ):
+            logger.debug(
+                "get_peer_pid: GetNamedPipeClientProcessId failed: %s",
+                _ct.get_last_error(),
+            )
+            return None
+        pid = int(out.value)
+        return pid if pid > 0 else None
+    except Exception as exc:  # noqa: BLE001 - a probe failure must not drop the peer
+        logger.debug("get_peer_pid: Windows lookup raised: %s", exc)
         return None
-    try:
-        pid, _uid, _gid = struct.unpack(_UCRED_FMT, raw)
-    except struct.error:  # pragma: no cover
-        return None
-    return pid if pid > 0 else None
 
 
-def check_peer_uid(transport_or_sock: Any, expected_uid: int) -> PeerCredResult:
-    """Positively verify the connecting peer's uid via ``SO_PEERCRED``.
+# --- Peer principal ----------------------------------------------------------
 
-    ``transport_or_sock`` may be a raw :class:`socket.socket` (the test path
-    and any synchronous caller) or an asyncio transport / stream writer, from
-    which the underlying socket is extracted via ``get_extra_info("socket")``.
 
-    Returns (deny-by-default — never ``MATCH`` unless positively confirmed):
+def check_peer_is_self(transport_or_sock: Any) -> PeerCredResult:
+    """Positively verify the peer runs as the same principal as this process.
 
-    * :attr:`PeerCredResult.MATCH` -- the kernel reports the peer uid and it
-      equals ``expected_uid``.
-    * :attr:`PeerCredResult.MISMATCH` -- the kernel reports the peer uid and it
-      does NOT equal ``expected_uid``. Callers MUST reject.
-    * :attr:`PeerCredResult.UNVERIFIABLE` -- the uid could not be read: no
-      underlying socket, the platform lacks ``SO_PEERCRED`` (macOS/Windows),
-      the socket is not ``AF_UNIX``, ``getsockopt`` raised, or the ``ucred``
-      was malformed. The primitive does NOT decide policy for this case — the
-      caller does (see ``gatewayd._handle_connection``), so a non-Linux
-      platform never silently grants access here.
+    ``transport_or_sock`` may be a raw :class:`socket.socket` (the test path and
+    any synchronous caller) or an asyncio transport / stream writer, from which
+    the underlying socket -- or, on Windows, the pipe handle -- is extracted via
+    ``get_extra_info``.
+
+    Returns (deny-by-default -- never ``MATCH`` unless positively confirmed):
+
+    * :attr:`PeerCredResult.MATCH` -- the OS reports the peer principal and it
+      is ours.
+    * :attr:`PeerCredResult.MISMATCH` -- the OS reports the peer principal and
+      it is NOT ours. Callers MUST reject.
+    * :attr:`PeerCredResult.UNVERIFIABLE` -- it could not be read: no
+      underlying socket or pipe, the platform has no mechanism (macOS), the
+      socket is not ``AF_UNIX``, the syscall failed, or the payload was
+      malformed. The primitive does NOT decide policy for this case -- the
+      caller does (see ``gatewayd._handle_connection``), so a platform without
+      a mechanism never silently grants access here.
     """
+    if platform_compat.IS_WINDOWS:
+        return _windows_check_peer_is_self(transport_or_sock)
+
     sock = _resolve_socket(transport_or_sock)
     if sock is None:
         logger.debug(
-            "check_peer_uid: no underlying socket on %r",
+            "check_peer_is_self: no underlying socket on %r",
             type(transport_or_sock).__name__,
         )
         return PeerCredResult.UNVERIFIABLE
     if _SO_PEERCRED is None:
-        logger.debug("check_peer_uid: SO_PEERCRED unavailable on this platform")
+        # macOS: no principal mechanism wired. The caller falls back to
+        # socket_owner_only; see the module docstring.
+        logger.debug("check_peer_is_self: no peer-principal mechanism on this platform")
         return PeerCredResult.UNVERIFIABLE
     if sock.family != _socket.AF_UNIX:
-        logger.debug("check_peer_uid: socket family=%r is not AF_UNIX", sock.family)
+        logger.debug("check_peer_is_self: socket family=%r is not AF_UNIX", sock.family)
         return PeerCredResult.UNVERIFIABLE
     try:
         raw = sock.getsockopt(_socket.SOL_SOCKET, _SO_PEERCRED, _UCRED_SIZE)
     except OSError as exc:
-        logger.debug("check_peer_uid: getsockopt(SO_PEERCRED) failed: %s", exc)
+        logger.debug("check_peer_is_self: getsockopt(SO_PEERCRED) failed: %s", exc)
         return PeerCredResult.UNVERIFIABLE
     try:
         _pid, peer_uid, _gid = struct.unpack(_UCRED_FMT, raw)
     except struct.error as exc:  # pragma: no cover — kernel ABI guarantees the size
-        logger.debug("check_peer_uid: struct.unpack failed: %s", exc)
+        logger.debug("check_peer_is_self: struct.unpack failed: %s", exc)
         return PeerCredResult.UNVERIFIABLE
+    expected_uid = os.getuid()
     if peer_uid == expected_uid:
         return PeerCredResult.MATCH
     logger.warning(
-        "check_peer_uid: peer_uid=%d != expected_uid=%d", peer_uid, expected_uid,
+        "check_peer_is_self: peer_uid=%d != our uid=%d", peer_uid, expected_uid,
     )
     return PeerCredResult.MISMATCH
+
+
+def _windows_check_peer_is_self(transport_or_sock: Any) -> PeerCredResult:
+    """Compare the pipe client's owning user SID against ours.
+
+    Resolves the peer's PID from the pipe (``GetNamedPipeClientProcessId``) and
+    reads *that process's* access token. Deliberately NOT
+    ``ImpersonateNamedPipeClient``, for two reasons:
+
+    * **Ordering.** Per Microsoft's documentation, impersonation adopts "the
+      security context of the last message read from the pipe". This check runs
+      at connection admission -- before the Register frame is read -- so there
+      is no message to derive a context from, and the call fails (or produces an
+      anonymous token that ``OpenThreadToken`` then refuses). Because the
+      admission gate is deny-by-default, that failure rejected *every* Windows
+      connection. Reading the peer process's own token has no ordering
+      requirement, so the gate can stay where it belongs: before any work.
+    * **Blast radius.** Impersonation attaches the peer's token to *our* thread
+      -- here the event loop thread -- and correctness then depends on
+      ``RevertToSelf`` always succeeding. Inspecting the peer's token borrows
+      nothing, so that entire failure mode is gone rather than guarded.
+
+    Returns UNVERIFIABLE (never MATCH) whenever any step cannot be completed;
+    the caller treats anything short of MATCH as a rejection.
+    """
+    handle = _resolve_pipe_handle(transport_or_sock)
+    if handle is None:
+        logger.debug(
+            "check_peer_is_self: no pipe handle on %r",
+            type(transport_or_sock).__name__,
+        )
+        return PeerCredResult.UNVERIFIABLE
+
+    ours = platform_compat.current_user_sid()
+    if not ours:
+        logger.debug("check_peer_is_self: own SID unavailable")
+        return PeerCredResult.UNVERIFIABLE
+
+    peer_pid = _windows_peer_pid(handle)
+    if peer_pid is None:
+        logger.debug("check_peer_is_self: peer pid unavailable")
+        return PeerCredResult.UNVERIFIABLE
+
+    peer_sid = platform_compat.process_owner_sid(peer_pid)
+    if not peer_sid:
+        logger.debug("check_peer_is_self: peer owner SID unavailable")
+        return PeerCredResult.UNVERIFIABLE
+
+    # Both sides are canonical SID strings (ConvertSidToStringSidW), whose
+    # alphabet is 'S', digits and hyphens -- so no two distinct SIDs can fold
+    # together and this cannot admit a foreign principal. A binary EqualSid
+    # would be equivalent at more ctypes surface.
+    if peer_sid.casefold() == ours.casefold():
+        return PeerCredResult.MATCH
+    logger.warning(
+        "check_peer_is_self: peer sid=%s != our sid=%s", peer_sid, ours,
+    )
+    return PeerCredResult.MISMATCH
+
+
+def _windows_server_pid(pipe_handle: int) -> int | None:
+    """PID of the process serving a connected client pipe handle, or ``None``.
+
+    Mirror of :func:`_windows_peer_pid` for the other direction.
+    """
+    from ctypes import wintypes
+
+    try:
+        kernel32 = _ct.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetNamedPipeServerProcessId.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.ULONG),
+        ]
+        kernel32.GetNamedPipeServerProcessId.restype = wintypes.BOOL
+        out = wintypes.ULONG()
+        if not kernel32.GetNamedPipeServerProcessId(
+            wintypes.HANDLE(pipe_handle), ctypes.byref(out)
+        ):
+            logger.debug(
+                "check_server_is_self: GetNamedPipeServerProcessId failed: %s",
+                _ct.get_last_error(),
+            )
+            return None
+        pid = int(out.value)
+        return pid if pid > 0 else None
+    except Exception as exc:  # noqa: BLE001 - deny-by-default on any surprise
+        logger.debug("check_server_is_self: Windows lookup raised: %s", exc)
+        return None
+
+
+def check_server_is_self(transport_or_pipe: Any) -> PeerCredResult:
+    """Verify the pipe we just connected to is served by our own principal.
+
+    The client-side counterpart of :func:`check_peer_is_self`, and Windows-only
+    by necessity rather than by choice. On POSIX the endpoint lives in a 0700
+    directory, so no other principal can create a socket at that path and the
+    question cannot arise. The Windows pipe namespace is machine-global and the
+    name is derived from a hash of a well-known path, so a local principal can
+    pre-create ``\\\\.\\pipe\\kirocrew-mcp-<hash>`` before the daemon binds and
+    receive whatever connects.
+
+    ``FILE_FLAG_FIRST_PIPE_INSTANCE`` already stops a squatter from *joining* a
+    daemon that is already listening -- our own bind fails loudly instead of
+    silently sharing. What it cannot do is protect a *client* that connects
+    while the squatter holds the name: the stub would hand over its ``register``
+    and ``claim`` frames, which carry session keys.
+
+    Checked BEFORE the first write, which also closes the impersonation angle:
+    ``ImpersonateNamedPipeClient`` adopts the context of "the last message read
+    from the pipe", so a server that never receives a message has nothing to
+    impersonate us from. That is why this is preferred over passing
+    ``SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`` on the client handle --
+    those flags would only limit what a squatter could do with our token, while
+    this refuses to talk to it at all, and reaching them would mean replacing
+    asyncio's private ``connect_pipe`` on the connect path.
+
+    Returns UNVERIFIABLE (never MATCH) when any step fails; the caller refuses
+    the connection, which degrades to a per-session MCP server rather than
+    trusting an unattributable endpoint.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return PeerCredResult.MATCH
+
+    handle = _resolve_pipe_handle(transport_or_pipe)
+    if handle is None:
+        logger.debug(
+            "check_server_is_self: no pipe handle on %r",
+            type(transport_or_pipe).__name__,
+        )
+        return PeerCredResult.UNVERIFIABLE
+
+    ours = platform_compat.current_user_sid()
+    if not ours:
+        logger.debug("check_server_is_self: own SID unavailable")
+        return PeerCredResult.UNVERIFIABLE
+
+    server_pid = _windows_server_pid(handle)
+    if server_pid is None:
+        return PeerCredResult.UNVERIFIABLE
+
+    server_sid = platform_compat.process_owner_sid(server_pid)
+    if not server_sid:
+        logger.debug("check_server_is_self: server owner SID unavailable")
+        return PeerCredResult.UNVERIFIABLE
+
+    if server_sid.casefold() == ours.casefold():
+        return PeerCredResult.MATCH
+    logger.warning(
+        "check_server_is_self: pipe server sid=%s != our sid=%s -- refusing",
+        server_sid, ours,
+    )
+    return PeerCredResult.MISMATCH
+
+
+# --- Handle / socket resolution ----------------------------------------------
 
 
 def _has_sock_api(obj: Any) -> bool:
@@ -220,4 +474,29 @@ def _resolve_socket(transport_or_sock: Any) -> Any:
         sock = get_extra_info("socket")
         if _has_sock_api(sock):
             return sock
+    return None
+
+
+def _resolve_pipe_handle(transport_or_pipe: Any) -> int | None:
+    """Raw Win32 HANDLE of a connected named pipe, or ``None``.
+
+    The Windows counterpart of :func:`_resolve_socket`. asyncio's proactor
+    transports publish the ``PipeHandle`` under ``get_extra_info("pipe")``, a
+    public seam, so peer identity on Windows costs no private-API surface. An
+    integer or an object exposing ``.handle`` is also accepted so tests can
+    pass either.
+    """
+    if isinstance(transport_or_pipe, int):
+        return transport_or_pipe
+    handle = getattr(transport_or_pipe, "handle", None)
+    if isinstance(handle, int):
+        return handle
+    get_extra_info = getattr(transport_or_pipe, "get_extra_info", None)
+    if callable(get_extra_info):
+        pipe = get_extra_info("pipe")
+        if isinstance(pipe, int):
+            return pipe
+        handle = getattr(pipe, "handle", None)
+        if isinstance(handle, int):
+            return handle
     return None

@@ -128,8 +128,9 @@ jobs:
 
   # ── CLI channel publish ───────────────────────────────────────────────
   # Publishes the built wheel to the nightly CLI channel (cli/ + latest-cli.json).
-  # Depends only on the wheel (not build-desktop or the signing service), so a macOS signing
-  # failure never blocks the CLI release. See docs/release-automation.md.
+  # Depends only on the wheel and its CLI-specific KMS manifest signer (not
+  # build-desktop, Apple notarization, or CDSigner), so a macOS signing failure
+  # never blocks the CLI release. See docs/release-automation.md.
   publish-cli:
     name: Publish CLI (nightly channel)
     needs: [version, build-wheel]

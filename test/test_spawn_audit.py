@@ -308,7 +308,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "instances/ssh_tunnel_manager.py::start",
         "instances/token_mint.py::mint_remote_token",
         "instances/token_mint.py::run_remote_kirocrew",
-        "mcp_caller.py::_parent_pid",
         "mcp_core.py::_get_ppid",
         "mcp_discovery.py::sync_to_agent_config",
         "mcp_gateway/backend.py::spawn_backend",

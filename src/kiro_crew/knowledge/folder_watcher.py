@@ -28,6 +28,13 @@ HARD_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
                   "dist", "build", "out", "target"}
 DEFAULT_MAX_FILES = 5000
 
+# How many discovered files a scan processes between ``scan_paused`` re-reads.
+# The check used to run per file, i.e. one on-loop sqlite SELECT against
+# ``sources`` for every discovered file (up to ``max_files``). Re-reading on this
+# interval keeps a mid-scan pause responsive while bounding the query count at
+# ceil(files / _PAUSE_RECHECK_FILES) + 1.
+_PAUSE_RECHECK_FILES = 100
+
 # Extra skip dirs per source type
 SOURCE_TYPE_SKIP_DIRS: dict[str, set[str]] = {
     "obsidian_vault": {".obsidian", ".trash"},
@@ -118,9 +125,24 @@ class FolderWatcher:
 
         # 5. Process discovered files
         namespace = props.get("namespace", "default")
-        for file_path, mtime in discovered:
-            # Check pause between files
-            if self._is_paused(source_id):
+        # Pause is a user-driven cancel, so it must still land mid-scan — but
+        # re-reading ``sources.properties`` once per file cost one on-loop sqlite
+        # SELECT per discovered file (up to max_files, 10,000 by default). Check
+        # once up front, then only every _PAUSE_RECHECK_FILES files: a pause
+        # still takes effect within a bounded number of files instead of costing
+        # a query per file.
+        paused = self._is_paused(source_id)
+        # ``last_seen`` touches for unchanged files are accumulated and flushed
+        # as a single executemany instead of one UPDATE per file. They carry no
+        # per-row logic and were already committed in the batch commit below, so
+        # deferring them to the flush changes nothing an in-scan reader can see.
+        last_seen_batch: list[tuple[str, str, str]] = []
+        for idx, (file_path, mtime) in enumerate(discovered):
+            if idx and idx % _PAUSE_RECHECK_FILES == 0:
+                paused = self._is_paused(source_id)
+            if paused:
+                self._flush_last_seen(last_seen_batch)
+                self.store.db.commit()
                 return {**stats, "status": "paused"}
 
             state = existing.get(file_path)
@@ -133,7 +155,7 @@ class FolderWatcher:
 
             if state and state.get("status") == "done" and mtime <= state.get("mtime", 0):
                 # Unchanged — just update last_seen
-                self._update_last_seen(source_id, file_path, now)
+                last_seen_batch.append((now, source_id, file_path))
                 continue
 
             # mtime changed or new/interrupted file — check content hash
@@ -167,6 +189,7 @@ class FolderWatcher:
                 self._update_state(source_id, file_path, content_hash, mtime, json.dumps(item_ids), now, "done", commit=False)
                 ingested_paths.append(file_path)
 
+        self._flush_last_seen(last_seen_batch)
         self.store.db.commit()  # Batch commit for all non-crash-recovery updates
         # Targeted cross-source dedup for each newly ingested/changed file, so a folder
         # copy collapses any matching one-shot upload. O(k*n) over the k changed files
@@ -236,6 +259,20 @@ class FolderWatcher:
         self.store.db.execute(
             "UPDATE folder_file_state SET last_seen = ? WHERE source_id = ? AND file_path = ?",
             (now, source_id, file_path))
+
+    def _flush_last_seen(self, batch: list[tuple[str, str, str]]):
+        """Apply accumulated ``(now, source_id, file_path)`` last_seen touches.
+
+        One executemany instead of one execute per unchanged file. Clears
+        *batch* so a caller can flush more than once in a scan (the pause
+        early-return does).
+        """
+        if not batch:
+            return
+        self.store.db.executemany(
+            "UPDATE folder_file_state SET last_seen = ? WHERE source_id = ? AND file_path = ?",
+            batch)
+        batch.clear()
 
     def _is_paused(self, source_id: str) -> bool:
         """Check if source has scan_paused flag set."""

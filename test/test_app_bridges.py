@@ -84,7 +84,14 @@ def app_env(tmp_path, monkeypatch):
     kiro_agents.mkdir()
     # Patch the KIRO_AGENTS_DIR in bridges module
     import kiro_crew.apps.bridges as bridges_mod
+    import kiro_crew.apps.execution as execution_mod
+
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
+    monkeypatch.setattr(
+        execution_mod,
+        "third_party_execution_allowed",
+        lambda: True,
+    )
 
     # Patch _MCP_JSON_PATH to avoid file descriptor errors in tests
     mcp_path = tmp_path / "mcp.json"
@@ -348,6 +355,34 @@ class TestTopLevel:
         assert len(result.skills) == 1
         assert len(result.crons) == 1
         assert result.errors == []
+
+    def test_install_while_execution_denied_registers_nothing(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        import kiro_crew.apps.execution as execution_mod
+
+        src = _make_app_source(
+            tmp_path,
+            mcpServers={"stdio": {"command": "python", "args": ["server.py"]}},
+        )
+        install_app(src)
+        monkeypatch.setattr(
+            execution_mod,
+            "third_party_execution_allowed",
+            lambda: False,
+        )
+
+        result = register_app("test-app")
+
+        assert result.agents == []
+        assert result.skills == []
+        assert result.crons == []
+        assert result.mcp_servers == []
+        assert any("blocked by execution policy" in error for error in result.errors)
+        assert not any(app_env["kiro_agents"].iterdir())
+        assert not (app_env["home"] / "skills" / "test-app").exists()
+        assert load_app_cron_defs("test-app") == []
+        assert not (tmp_path / "mcp.json").exists()
 
     def test_register_nonexistent_app(self, app_env):
         result = register_app("nonexistent")
@@ -871,6 +906,242 @@ class TestCronServiceBridge:
         app_dir = tmp_path / "kirocrew-home" / "apps" / app_name
         app_dir.mkdir(parents=True, exist_ok=True)
         (app_dir / "app-crons.json").write_text(json.dumps(cron_defs, indent=2))
+
+    def test_boot_default_off_registers_no_third_party_crons(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        from unittest.mock import MagicMock, patch
+
+        import kiro_crew.apps.execution as execution_mod
+
+        self._write_app_crons(
+            tmp_path,
+            "test-app",
+            [{"name": "test-app/refresh", "every": 60, "message": "go"}],
+        )
+        monkeypatch.setattr(
+            execution_mod,
+            "third_party_execution_allowed",
+            lambda: False,
+        )
+        mock_sdk = MagicMock()
+
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
+            result = _run(register_app_crons_with_service("test-app", MagicMock()))
+
+        assert result == []
+        mock_sdk.add_job_async.assert_not_called()
+
+    def test_boot_explicit_allow_registers_third_party_crons(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        from unittest.mock import MagicMock, patch
+
+        import kiro_crew.apps.execution as execution_mod
+
+        self._write_app_crons(
+            tmp_path,
+            "test-app",
+            [{"name": "test-app/refresh", "every": 60, "message": "go"}],
+        )
+        monkeypatch.setattr(
+            execution_mod,
+            "third_party_execution_allowed",
+            lambda: True,
+        )
+        mock_sdk = MagicMock()
+        mock_sdk.list_jobs.return_value = []
+        mock_sdk.add_job_async = AsyncMock(return_value=MagicMock(id="job-id"))
+
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
+            result = _run(register_app_crons_with_service("test-app", MagicMock()))
+
+        assert result == ["test-app/refresh"]
+        mock_sdk.add_job_async.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_boot_disarms_persisted_denied_app_crons_before_timer_start(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        import kiro_crew.apps.bridges as bridges_mod
+        import kiro_crew.apps.execution as execution_mod
+
+        app_root = app_env["home"] / "apps" / "test-app"
+        app_root.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            bridges_mod,
+            "list_apps",
+            lambda: [{"name": "test-app", "enabled": True}],
+        )
+        monkeypatch.setattr(
+            execution_mod,
+            "third_party_execution_allowed",
+            lambda: False,
+        )
+        mock_service = MagicMock()
+        mock_service.list_jobs.return_value = []
+        mock_service.remove_jobs_by_owner = AsyncMock(return_value=["job-id"])
+
+        disarmed = await bridges_mod.reconcile_app_crons_for_execution(
+            mock_service
+        )
+
+        assert disarmed == ["test-app"]
+        mock_service.list_jobs.assert_called_once_with(include_disabled=True)
+        mock_service.remove_jobs_by_owner.assert_awaited_once_with("app:test-app")
+
+    @pytest.mark.asyncio
+    async def test_boot_disarms_orphaned_app_cron_owner(
+        self, app_env, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        import kiro_crew.apps.bridges as bridges_mod
+        import kiro_crew.apps.execution as execution_mod
+
+        events = []
+        monkeypatch.setattr(bridges_mod, "list_apps", lambda: [])
+        monkeypatch.setattr(
+            execution_mod,
+            "third_party_execution_allowed",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            bridges_mod,
+            "sel",
+            lambda: SimpleNamespace(
+                log_api_access=lambda **kwargs: events.append(kwargs)
+            ),
+        )
+        mock_service = MagicMock()
+        mock_service.list_jobs.return_value = [
+            SimpleNamespace(created_by="app:ghost-app")
+        ]
+        mock_service.remove_jobs_by_owner = AsyncMock(return_value=["ghost-job"])
+
+        disarmed = await bridges_mod.reconcile_app_crons_for_execution(
+            mock_service
+        )
+
+        assert disarmed == ["ghost-app"]
+        mock_service.list_jobs.assert_called_once_with(include_disabled=True)
+        mock_service.remove_jobs_by_owner.assert_awaited_once_with(
+            "app:ghost-app"
+        )
+        denial = [event for event in events if event.get("outcome") == "denied"]
+        assert denial == [{
+            "caller": "app_bridge",
+            "operation": "app_execution_admission",
+            "outcome": "denied",
+            "resources": (
+                "app=ghost-app action=cron_boot_restore provenance=unverified"
+            ),
+            "error": "orphaned app cron owner has no installed app",
+        }]
+
+    @pytest.mark.asyncio
+    async def test_boot_keeps_shipped_builtin_app_cron_armed(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        import kiro_crew.apps.bridges as bridges_mod
+        import kiro_crew.apps.execution as execution_mod
+
+        shipped = tmp_path / "shipped-builtins"
+        shipped_app = shipped / "builtin-app"
+        shipped_app.mkdir(parents=True)
+        (shipped_app / "app.json").write_text(json.dumps({
+            "name": "builtin-app",
+            "version": "1.0.0",
+            "displayName": "Builtin App",
+            "description": "A test builtin app",
+            "author": "kirocrew",
+        }))
+        monkeypatch.setattr(execution_mod, "_BUILTINS_DIR", shipped)
+        monkeypatch.setattr(
+            execution_mod,
+            "third_party_execution_allowed",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            bridges_mod,
+            "list_apps",
+            lambda: [{"name": "builtin-app", "enabled": True}],
+        )
+        mock_service = MagicMock()
+        mock_service.list_jobs.return_value = [
+            SimpleNamespace(created_by="app:builtin-app")
+        ]
+        mock_service.remove_jobs_by_owner = AsyncMock(return_value=[])
+
+        disarmed = await bridges_mod.reconcile_app_crons_for_execution(
+            mock_service
+        )
+
+        assert disarmed == []
+        mock_service.remove_jobs_by_owner.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_boot_keeps_explicitly_admitted_third_party_cron_armed(
+        self, app_env, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        import kiro_crew.apps.bridges as bridges_mod
+        import kiro_crew.apps.execution as execution_mod
+
+        app_root = app_env["home"] / "apps" / "third-party-app"
+        app_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            bridges_mod,
+            "list_apps",
+            lambda: [{"name": "third-party-app", "enabled": True}],
+        )
+        monkeypatch.setattr(
+            execution_mod,
+            "third_party_execution_allowed",
+            lambda: True,
+        )
+        mock_service = MagicMock()
+        mock_service.list_jobs.return_value = [
+            SimpleNamespace(created_by="app:third-party-app")
+        ]
+        mock_service.remove_jobs_by_owner = AsyncMock(return_value=[])
+
+        disarmed = await bridges_mod.reconcile_app_crons_for_execution(
+            mock_service
+        )
+
+        assert disarmed == []
+        mock_service.remove_jobs_by_owner.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_execution_disarm_audit_failure_is_best_effort(
+        self, monkeypatch
+    ):
+        import kiro_crew.apps.bridges as bridges_mod
+
+        def _audit_failure(**kwargs):
+            raise OSError("audit unavailable")
+
+        monkeypatch.setattr(
+            bridges_mod,
+            "sel",
+            lambda: SimpleNamespace(log_api_access=_audit_failure),
+        )
+        mock_service = SimpleNamespace(
+            remove_jobs_by_owner=AsyncMock(return_value=["job-id"])
+        )
+
+        removed = await bridges_mod.disarm_app_crons_for_execution(
+            "test-app",
+            mock_service,
+        )
+
+        assert removed == 1
 
     def test_registers_cron_with_all_fields(self, tmp_path, app_env, monkeypatch):
         from unittest.mock import MagicMock, patch

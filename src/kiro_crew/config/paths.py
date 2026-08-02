@@ -145,6 +145,20 @@ _WORKSPACE_DIR_NAME = "kirocrew-workspace"
 # ``None`` means "not yet resolved this process".
 _resolved_home: Path | None = None
 
+# Memo for ``config_dir()``: ``(raw KIROCREW_HOME, _resolved_home at the time,
+# result)``. ``config_dir()`` is called from 323 sites and each uncached call
+# does a ``Path.resolve()`` + ``mkdir`` and, on the default path, a breadcrumb
+# read/write plus the leftover-archive sweep — measured 94.9us per call. Keying
+# on the RAW env value keeps the override honoured the moment it changes
+# (``KIROCREW_HOME`` is repointed per test by the suite's isolation fixture, and
+# by pods/worktrees at runtime), and keying on ``_resolved_home`` by identity
+# ties the default-path entry to the resolution cache below — so clearing
+# ``_resolved_home`` (which the test suite does per test) invalidates this memo
+# too instead of pinning a stale home. In a real process both keys are stable
+# after the first call, which is what makes the breadcrumb write and the archive
+# sweep effectively once-per-process rather than once-per-call.
+_config_dir_memo: tuple[str | None, Path | None, Path] | None = None
+
 
 def _default_home() -> Path:
     """Resolve the default (non-override) data root: ``~/.kiro/crew``."""
@@ -458,9 +472,15 @@ def _valid_override_home() -> Path | None:
 
 
 def config_dir() -> Path:
+    global _config_dir_memo
+    override_raw = os.environ.get("KIROCREW_HOME")
+    memo = _config_dir_memo
+    if memo is not None and memo[0] == override_raw and memo[1] is _resolved_home:
+        return memo[2]
     p = _valid_override_home()
     if p is not None:
         p.mkdir(parents=True, exist_ok=True)
+        _config_dir_memo = (override_raw, _resolved_home, p)
         return p
     if os.environ.get("KIROCREW_HOME"):
         logger.warning(
@@ -473,11 +493,11 @@ def config_dir() -> Path:
     # Best-effort + idempotent; guarded so a breadcrumb failure never blocks the
     # data-home resolution the whole app depends on.
     _write_recovery_breadcrumb(d)
-    # One-shot (but re-checked every call, so a leftover created or missed
-    # between starts is still caught) removal of an ungated archive/backup an
-    # earlier release of this migration could have left behind. Default path
-    # only — see _sweep_ungated_archive_leftovers.
+    # Removal of an ungated archive/backup an earlier release of this migration
+    # could have left behind. Default path only — see
+    # _sweep_ungated_archive_leftovers.
     _sweep_ungated_archive_leftovers()
+    _config_dir_memo = (override_raw, _resolved_home, d)
     return d
 
 

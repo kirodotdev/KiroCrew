@@ -31,6 +31,14 @@ def _create_app_module(app_dir: Path, module_path: str, content: str) -> None:
     file_path.write_text(content, encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def _explicit_third_party_execution_admission(monkeypatch) -> None:
+    """Most loader tests exercise isolation, so opt them in explicitly."""
+    monkeypatch.setattr(
+        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
+    )
+
+
 # ---------------------------------------------------------------------------
 # CSE SEC-012: third-party app code runs in-process — make the boundary loud
 # ---------------------------------------------------------------------------
@@ -107,7 +115,9 @@ def register_routes(ctx):
     def test_third_party_denied_when_gate_off(self, tmp_path: Path, monkeypatch) -> None:
         import kiro_crew.apps.module_loader as ml
 
-        monkeypatch.setattr(ml, "_third_party_apps_allowed", lambda: False)
+        monkeypatch.setattr(
+            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
+        )
         ml._warned_third_party_apps.discard("evil-app")
         app_dir = self._make_app(tmp_path)
         unique_name = ml._module_namespace("evil-app", "backend.routes")
@@ -118,12 +128,12 @@ def register_routes(ctx):
         assert unique_name not in sys.modules
         unload_app_modules("evil-app")
 
-    def test_third_party_allowed_by_default(self, tmp_path: Path) -> None:
+    def test_third_party_allowed_with_explicit_admission(self, tmp_path: Path) -> None:
         import kiro_crew.apps.module_loader as ml
 
         ml._warned_third_party_apps.discard("evil-app")
         app_dir = self._make_app(tmp_path)
-        # Default config leaves the gate open — the load succeeds.
+        # The autouse fixture explicitly admits execution — the load succeeds.
         func = load_app_module("evil-app", app_dir, "backend.routes:register_routes")
         assert func(None) == "ok"
         unload_app_modules("evil-app")
@@ -132,7 +142,9 @@ def register_routes(ctx):
         import kiro_crew.apps.module_loader as ml
 
         # Gate closed, but builtins are trusted — they must still load.
-        monkeypatch.setattr(ml, "_third_party_apps_allowed", lambda: False)
+        monkeypatch.setattr(
+            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
+        )
         app_dir = ml._BUILTINS_DIR / "deploy_web"
         if not (app_dir / "handlers.py").is_file():
             pytest.skip("deploy_web builtin layout changed")

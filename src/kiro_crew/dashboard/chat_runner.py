@@ -157,7 +157,6 @@ from kiro_crew.security import (
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
-from kiro_crew.stats import Stats
 from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_user_question
 from kiro_crew.widget_artifacts import register_widgets_off_loop
 
@@ -1296,19 +1295,26 @@ def _resolve_channel_target(state: Any, session_key: str, link: Any) -> Any:
         return None
     try:
         from kiro_crew.platform.context import PlatformCompositionError
-        from kiro_crew.platform.governance_profiles import governance_permits
+        from kiro_crew.platform.governance_profiles import vet_and_audit
 
-        decision = governance_permits(
+        # vet_and_audit == governance_permits + a SEL governance-decision record
+        # for BOTH grant and denial. Every call here is a real send/link
+        # decision (the read-only links[].live projection uses the in-memory
+        # state._channel_link_is_live instead), so a governance decision at this
+        # egress chokepoint MUST land in the SEL trail — the security contract
+        # requires every permission decision to be audited.
+        decision = vet_and_audit(
             "channels",
             link.channel_type,
             session_key=session_key,
+            tool_name="chat.channel_mirror",
             # fail_closed=True: this is an EGRESS chokepoint on a network
             # surface, so a degraded governance evaluation must DENY rather than
-            # degrade-to-permit. governance_permits swallows its own internal
-            # errors and returns a permissive Decision by default, which the
-            # outer except below can never observe. Matches the other
-            # "channels"-scope gates: messaging/identity.py, slack/gateway.py,
-            # dashboard/handlers_system.py.
+            # degrade-to-permit. vet_and_audit forwards this to
+            # governance_permits, which swallows its own internal errors and
+            # returns a non-permissive Decision under fail_closed. Matches the
+            # other "channels"-scope gates: messaging/identity.py,
+            # slack/gateway.py, dashboard/handlers_system.py.
             fail_closed=True,
         )
         # Default False, not True: a Decision without ``permitted`` is an
@@ -2823,6 +2829,7 @@ async def _run_chat(
                 mode=slot.mode,
                 blocks_reads=slot.blocks_reads,
                 provider_type=cfg.agent.provider,
+                runtime_source="dashboard",
                 exclude_last_n=1,
                 folder_path=folder_path,
                 model_window=model_window,
@@ -4339,19 +4346,6 @@ async def _run_chat(
                 except (TypeError, ValueError):
                     _turn_elapsed_ms = int((time.monotonic() - _turn_t0) * 1000)
                 if _u.input_tokens or _u.output_tokens or _u.credits:
-                    stats = Stats()
-                    stats.inc_input_tokens(_u.input_tokens)
-                    stats.inc_output_tokens(_u.output_tokens)
-                    if _u.cache_creation_tokens:
-                        stats.inc_cache_creation_tokens(_u.cache_creation_tokens)
-                    if _u.cache_read_tokens:
-                        stats.inc_cache_read_tokens(_u.cache_read_tokens)
-                    if _u.cost_usd:
-                        stats.inc_cost_usd(_u.cost_usd)
-                    if _u.num_turns:
-                        stats.inc_turns(_u.num_turns)
-                    if _u.duration_ms:
-                        stats.inc_duration_ms(_u.duration_ms)
                     try:
                         _provider_name = cfg.agent.provider  # type: ignore[possibly-undefined]
                     except (NameError, AttributeError):
@@ -4384,6 +4378,10 @@ async def _run_chat(
                         agent=read_effective_agent(client) or slot.agent or "",
                         context_used=_ctx_used,
                         context_window=_ctx_window,
+                        # Same wall clock the turn-duration histogram below is
+                        # given, so the row store and the histogram can never
+                        # disagree about one turn. acp reports 0 here.
+                        elapsed_ms=_turn_elapsed_ms,
                         model_source=client,
                     )
                 # ── Turn-completion histogram (OTel M2) ──

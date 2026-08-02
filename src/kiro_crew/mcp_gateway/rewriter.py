@@ -12,15 +12,18 @@ to ``KIROCREW_SESSION_KEY`` and cannot be safely shared across sessions.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import shlex
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_gateway.hashing import hash_command
@@ -47,10 +50,17 @@ _WRAPPER_MARKER = "_mc_mcp_gateway_wrapped"
 # ``--target-args-sep`` flag (not used here; not a problem in practice).
 _TARGET_ARGS_SEP = "|"
 
+#: The stub is launched as a module by the interpreter running KiroCrew.
+#: ``sys.executable`` is baked into the overlay rather than resolved at
+#: launch time because kiro-cli strips env when it spawns MCP
+#: subprocesses, so neither a propagated var nor a ``python3`` on PATH
+#: that can import ``kiro_crew`` is guaranteed.
+_STUB_MODULE = "kiro_crew.mcp_gateway.stub"
+
 
 def _build_stub_entry(
     *,
-    stub_wrapper: Path,
+    stubs_dir: Path,
     server_name: str,
     agent_name: str,
     original: dict[str, Any],
@@ -135,12 +145,13 @@ def _build_stub_entry(
         # (see env_target_resolver). A server that depends on a distinct
         # declared env block should stay non-poolable until per-server env
         # forwarding lands (documented as a known limitation in the PR).
-        env_dir = stub_wrapper.parent / "env"
-        env_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            env_dir.chmod(0o700)
-        except OSError:
-            pass
+        env_dir = stubs_dir / "env"
+        # make_owner_only_dir, not mkdir + chmod(0o700): the mode argument is
+        # inert on Windows, where the DACL is the only carrier of access, so a
+        # bare chmod left the directory holding credential sidecars readable by
+        # every local principal. Also tightens a directory created before this
+        # guarantee existed.
+        platform_compat.make_owner_only_dir(env_dir)
         # Sanitize each component separately (dropping any '.') and join with a
         # single '.', so agent-a + server-b.c and agent-a.b + server-c cannot
         # collide onto the same a.b.c.json sidecar.
@@ -151,15 +162,56 @@ def _build_stub_entry(
         env_file = env_dir / f"{safe}.json"
         if sidecars_written is not None:
             sidecars_written.add(env_file.name)
+        wrote_sidecar = False
         try:
-            # Atomic + 0600: temp-file + os.replace (via atomic_write) so a
-            # concurrent reader — the stub reads this sidecar to fold env into
-            # its PoolKey hash — never observes a truncated file, and the
-            # secret bytes are never world-readable even for a sub-ms window.
-            atomic_write(env_file, json.dumps(env_pairs, sort_keys=True), mode=0o600)
+            # Protection BEFORE content, not after. The previous order wrote the
+            # credentials with atomic_write(mode=0o600) -- inert on Windows --
+            # and only then applied the DACL, so an icacls failure left a
+            # readable file full of API keys on disk while the except clause
+            # merely warned and the stub was still pointed at it. Applying the
+            # descriptor to the temp file first means the secret never exists in
+            # a readable file at all, and a failure happens before any secret
+            # byte is written. os.replace preserves an explicit
+            # (non-inherited) descriptor across the rename.
+            fd, tmp = tempfile.mkstemp(
+                prefix=f".{safe}-", suffix=".json", dir=str(env_dir)
+            )
+            fd_owned = True
+            try:
+                platform_compat.fchmod_safe(fd, 0o600)
+                if not platform_compat.IS_POSIX:
+                    platform_compat.restrict_to_owner(tmp)
+                with os.fdopen(fd, "w") as fh:
+                    # fdopen took ownership of the descriptor; its context
+                    # manager closes it. Tracked so the finally below does not
+                    # double-close (and does close it when an earlier step
+                    # raised).
+                    fd_owned = False
+                    fh.write(json.dumps(env_pairs, sort_keys=True))
+                os.replace(tmp, env_file)
+                wrote_sidecar = True
+            finally:
+                if fd_owned:
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+                if not wrote_sidecar:
+                    with contextlib.suppress(OSError):
+                        os.unlink(tmp)
         except OSError:
             logger.warning("rewriter: failed to write env sidecar %s", env_file)
-        stub_args.extend(["--env-file", str(env_file)])
+        if wrote_sidecar:
+            stub_args.extend(["--env-file", str(env_file)])
+        else:
+            # No protected sidecar, so nothing to point the stub at. In the
+            # pooled path this only changes the PoolKey hash (the declared env
+            # is never applied to a shared backend anyway -- see the warning
+            # above), so the server simply gets its own partition. Passing a
+            # path we failed to protect, or one that does not exist, would be
+            # worse.
+            logger.warning(
+                "rewriter: pooling %r for agent %r without an env sidecar",
+                server_name, agent_name,
+            )
     if auto_approve:
         # JSON (not CSV): a tool identifier containing a ',' would split into
         # two names under CSV, changing the permission surface hashed into
@@ -179,13 +231,13 @@ def _build_stub_entry(
     }
     wrapped.update({
         _WRAPPER_MARKER: True,
-        "command": str(stub_wrapper),
-        # Wrapper walks PPID /proc/<pid>/environ chain to recover
-        # KIROCREW_CHANNEL_ID (kiro-cli strips env when spawning MCP
-        # subprocesses). Wrapper prepends the recovered value as
-        # --channel-id before exec'ing ``python -m
-        # kiro_crew.mcp_gateway.stub``. See stub_wrapper.sh.
-        "args": stub_args,
+        "command": sys.executable,
+        # ``-m kiro_crew.mcp_gateway.stub`` leads; the stub's own flags follow.
+        # channel_id is NOT here: the overlay is written once at startup and is
+        # session-agnostic, so it is appended per session by
+        # ``session_servers.pooled_session_servers`` at ACP injection time,
+        # where the value is in scope.
+        "args": ["-m", _STUB_MODULE, *stub_args],
         # autoApprove must stay on the wrapper — kiro-cli reads it at the
         # permission-prompt UI layer, separately from the backend.
         "autoApprove": auto_approve,
@@ -214,7 +266,7 @@ def _hashable_args(args_val: Any) -> tuple[str, ...]:
 def _rewrite_single_spec(
     spec: dict[str, Any],
     *,
-    stub_wrapper: Path,
+    stubs_dir: Path,
     socket_path: Path,
     work_dir: Path,
     sandbox_mode: str,
@@ -291,7 +343,7 @@ def _rewrite_single_spec(
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
         new_servers[name] = _build_stub_entry(
-            stub_wrapper=stub_wrapper,
+            stubs_dir=stubs_dir,
             server_name=name,
             agent_name=agent_name,
             original=entry,
@@ -360,7 +412,7 @@ def _rewrite_single_spec(
                     )
                     continue
         new_servers[alias] = _build_stub_entry(
-            stub_wrapper=stub_wrapper,
+            stubs_dir=stubs_dir,
             server_name=alias,
             agent_name=agent_name,
             original=entry,
@@ -467,60 +519,18 @@ def rewrite_agents(
         logger.warning("agent source dir missing: %s", source_dir)
         return {}, {}
 
-    overlay_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        overlay_dir.chmod(0o700)
-    except OSError:
-        pass
+    platform_compat.make_owner_only_dir(overlay_dir)
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         logger.warning("failed to create work_dir %s: %s", work_dir, exc)
 
-    # Install the stub wrapper script into the overlay tree (idempotent).
-    # Wrapper walks PPID /proc/<pid>/environ to recover KIROCREW_CHANNEL_ID
-    # (kiro-cli strips env when spawning MCP subprocesses, so the Python
-    # stub module would otherwise register with channel_id=None). See
-    # stub_wrapper.sh for the walk logic and the eventual
-    # ``python -m kiro_crew.mcp_gateway.stub`` exec.
+    # Per-agent stub scaffolding lives here: the env sidecars written by
+    # _build_stub_entry. There is no launcher script -- the overlay entry runs
+    # the interpreter directly (see _STUB_MODULE), and channel_id, the one value
+    # that used to require a launcher, is injected per session over ACP instead.
     stubs_dir = overlay_dir.parent / "stubs"
-    stubs_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        # chmod too: mkdir's mode is masked by umask, and an already-existing
-        # dir keeps its old perms. The directory listing exposes agent/server
-        # names (the secret sidecar files themselves are written 0600), so
-        # keep it owner-only for consistency with env_dir / overlay_dir.
-        stubs_dir.chmod(0o700)
-    except OSError:
-        pass
-    stub_wrapper = stubs_dir / "mc-mcp-stub-wrapper.sh"
-    wrapper_src = Path(__file__).parent / "stub_wrapper.sh"
-    try:
-        # Bake the interpreter running KiroCrew into the wrapper. kiro-cli
-        # strips env when it spawns MCP subprocesses, so the wrapper cannot
-        # rely on MC_MCP_PY_BIN propagating from the parent environment or
-        # on a python3 on PATH that can import ``kiro_crew``. Substituting
-        # ``sys.executable`` at install time guarantees the wrapper runs
-        # the same venv interpreter that loaded the rewriter.
-        wrapper_src_text = wrapper_src.read_text()
-        wrapper_rendered = wrapper_src_text.replace(
-            'PY_BIN="${MC_MCP_PY_BIN:-python3}"',
-            f'PY_BIN="${{MC_MCP_PY_BIN:-{sys.executable}}}"',
-        )
-        wrapper_src_bytes = wrapper_rendered.encode()
-        needs_update = (
-            not stub_wrapper.exists()
-            or stub_wrapper.read_bytes() != wrapper_src_bytes
-        )
-        if needs_update:
-            # Atomic: temp-file + os.replace (via atomic_write) so a concurrent
-            # kiro-cli session reading the wrapper through the bind-mount never
-            # execs a truncated script. 0755 — the wrapper is exec'd. Matches
-            # the env sidecar / overlay writers in this module.
-            atomic_write(stub_wrapper, wrapper_rendered, mode=0o755)
-    except OSError as exc:
-        logger.warning("failed to install stub wrapper: %s", exc)
-
+    platform_compat.make_owner_only_dir(stubs_dir)
     written: set[str] = set()
     written_sidecars: set[str] = set()
     results: dict[str, int] = {}
@@ -573,7 +583,7 @@ def rewrite_agents(
             spec["name"] = path.stem
         new_spec, wrapped = _rewrite_single_spec(
             spec,
-            stub_wrapper=stub_wrapper,
+            stubs_dir=stubs_dir,
             socket_path=socket_path,
             work_dir=work_dir,
             sandbox_mode=sandbox_mode,
@@ -593,6 +603,8 @@ def rewrite_agents(
             # env blocks (tokens / API keys) are never world-readable. Matches
             # the env sidecar and settings overlay.
             atomic_write(target, json.dumps(new_spec, indent=2) + "\n", mode=0o600)
+            if not platform_compat.IS_POSIX:
+                platform_compat.restrict_to_owner(target)
         except OSError as exc:
             logger.warning("failed to write overlay %s: %s", target, exc)
             continue
@@ -631,11 +643,7 @@ def rewrite_agents(
     settings_overlay_dir = overlay_dir.parent / "settings"
     settings_overlay_file = settings_overlay_dir / "mcp.json"
     if settings_src_spec is not None:
-        settings_overlay_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            settings_overlay_dir.chmod(0o700)
-        except OSError:
-            pass
+        platform_compat.make_owner_only_dir(settings_overlay_dir)
         settings_overlay_path = settings_overlay_file
         try:
             src_servers = settings_src_spec.get("mcpServers")
@@ -670,6 +678,8 @@ def rewrite_agents(
                 json.dumps(new_settings, indent=2) + "\n",
                 mode=0o600,
             )
+            if not platform_compat.IS_POSIX:
+                platform_compat.restrict_to_owner(settings_overlay_path)
             logger.info(
                 "mcp-gateway rewriter: global mcp.json overlay written, "
                 "%d poolable server(s) relocated to per-agent overlays (overlay=%s)",

@@ -77,6 +77,7 @@ from kiro_crew.subagent_persistence import (
     list_orphans,
     mark_delivered,
     prune_stale_tombstones,
+    read_state,
     record_slow_command,
     update_state,
     write_result_chunk,
@@ -208,6 +209,10 @@ def _done_result(text: str) -> str:
 _TIMEOUT_SECS = 1800  # 30 minutes
 _TURN_LIMIT = 100
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
+# Idle TTL for continuable conversations (keep=True): a conversation with no
+# run for this long has its session files + map entry deleted by the reaper.
+# Hibernated conversations cost a JSON file, not RSS, so this is generous.
+_CONVERSATION_TTL_SECS = 6 * 3600
 # Wave liveness backstop: a wave with lost submissions (submitted < expected,
 # all registered members terminal, nothing queued) is force-reconciled after
 # this many seconds without submission progress, so held digest results can
@@ -857,6 +862,16 @@ class SubagentInfo:
     model: str = ""
     allowed_tools: list[str] = field(default_factory=list)
     bare: bool = False
+    # Continuable conversations (spawn_run keep=True / spawn_continue):
+    # keep=True forces a dedicated (non-shared) session, persists the sid via
+    # SessionManager.mark_continuable, and skips session-file deletion at
+    # teardown so the conversation can be resumed by a later run.
+    keep: bool = False
+    # Session key override for continuation runs: a spawn_continue run reuses
+    # the ORIGINAL run's session key (``subagent:<conv-id>``) so get_or_create
+    # finds the persisted sid and arms session/load. Empty ⇒ the default
+    # ``subagent:{id}``.
+    conversation_key: str = ""
     # Optional subprocess cwd override. When set, the subagent kiro-cli/claude-code
     # process launches here instead of the default ``subagent_<id>`` sandbox, so
     # cwd-relative resource globs (``.kiro/steering/**/*.md``, ``AGENTS.md``,
@@ -1006,6 +1021,11 @@ class SubagentManager:
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
+        # Continuable conversations: session_key ("subagent:<conv-id>") →
+        # last-used unix ts. Drives the reaper's idle-TTL sweep. Rebuilt
+        # lazily after a gateway restart: a spawn_continue on an unknown key
+        # re-registers it when SessionManager still holds a resumable sid.
+        self._conversations: dict[str, float] = {}
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         # Queued spawns store the FULL spawn() kwarg set (not just a 5-tuple), so a
         # drained spawn preserves approval_mode / silent / model / allowed_tools / bare —
@@ -1192,17 +1212,11 @@ class SubagentManager:
                     except Exception:
                         logger.debug("Failed to tombstone orphan %s", agent_id, exc_info=True)
 
-                    # Clean up session files for the orphaned agent
-                    session_id = state.get("session_id", "")
-                    if session_id:
-                        try:
-                            provider = state.get("provider", "acp")
-                            cwd = state.get("cwd", "")
-                            _cleanup_session_files_sync(session_id, provider, cwd=cwd)
-                        except Exception:
-                            logger.debug(
-                                "Session cleanup failed for orphan %s", agent_id, exc_info=True
-                            )
+                    # Retain-by-default: session files are deliberately NOT
+                    # deleted here — an orphaned run's transcript is still
+                    # spawn_continue resume material after the restart. The
+                    # tombstone pruner owns deletion (with the keep guard for
+                    # promoted conversations).
 
                     logger.info(
                         "Reconciled orphan %s: recovery=%s, pid=%s, has_result=%s",
@@ -1470,6 +1484,10 @@ class SubagentManager:
                 self._sweep_stuck_waves(now)
             except Exception:
                 logger.debug("Reaper: stuck-wave sweep failed", exc_info=True)
+            try:
+                self._sweep_conversations(now)
+            except Exception:
+                logger.debug("Reaper: conversation sweep failed", exc_info=True)
             try:
                 compact_cost_log()  # periodic FIFO trim (also bounds a long-running gateway)
             except Exception:
@@ -2041,7 +2059,11 @@ class SubagentManager:
             logger.exception("Reaper: SEL audit failed for %s", agent_id)
 
         try:
-            self._sessions.release(session_key, cleanup=True)
+            # Retain-by-default: the reaped run's session files stay on disk
+            # (spawn_continue resume material); the tombstone pruner owns
+            # their deletion. A force-reaped long run is exactly the case
+            # retention exists for.
+            self._sessions.release(session_key, cleanup=False)
         except Exception:
             logger.warning("Reaper: release failed for %s", agent_id, exc_info=True)
 
@@ -2273,6 +2295,8 @@ class SubagentManager:
         silent: bool = False,
         batch_id: str = "",
         batch_total: int = 0,
+        keep: bool = False,
+        conversation_key: str = "",
         _from_queue: bool = False,
         _preassigned_id: str = "",
     ) -> SubagentInfo | None:
@@ -2500,6 +2524,8 @@ class SubagentManager:
                     "silent": silent,
                     "batch_id": batch_id,
                     "batch_total": batch_total,
+                    "keep": keep,
+                    "conversation_key": conversation_key,
                     "_preassigned_id": agent_id,
                 }
             )
@@ -2553,6 +2579,8 @@ class SubagentManager:
             cwd=resolved_cwd,
             batch_id=batch_id,
             batch_total=max(0, int(batch_total)),
+            keep=keep,
+            conversation_key=conversation_key,
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         self._agents[agent_id] = info
@@ -2704,6 +2732,201 @@ class SubagentManager:
         slot_free = self._running_count < self._max_concurrent
         too_soon = (now - self._last_spawn_ts) < self._spawn_stagger_secs
         return (not slot_free or too_soon, slot_free)
+
+    # ── Continuable conversations (keep=True) ─────────────────────────────
+
+    def _conversation_busy(self, conv_key: str) -> SubagentInfo | None:
+        """Return the live or QUEUED run on *conv_key*, or None.
+
+        Queued members matter (GPT review, PR #1023): a continuation waiting
+        in the spawn queue is not in ``_agents`` yet — missing it would let
+        ``spawn_release`` delete the session files it needs (the accepted run
+        would then die with ``resume_failed``), or let a second continue race
+        the same conversation.
+        """
+        for a in self._agents.values():
+            if not a.done and (a.conversation_key or f"subagent:{a.id}") == conv_key:
+                return a
+        for p in self._queue:
+            pkey = str(p.get("conversation_key") or "") or (
+                f"subagent:{p.get('_preassigned_id', '')}"
+            )
+            if pkey == conv_key:
+                return SubagentInfo(
+                    id=str(p.get("_preassigned_id") or "queued"),
+                    task="", queued=True,
+                )
+        return None
+
+    def continue_conversation(
+        self,
+        conv_id: str,
+        task: str,
+        parent_session_key: str = "",
+        agent: str = "",
+        model: str | None = None,
+        max_turns: int = 0,
+    ) -> SubagentInfo | None:
+        """Dispatch a follow-up *task* into conversation *conv_id*.
+
+        Retain-by-default: works on ANY completed run whose session files are
+        still on disk — no keep flag needed at spawn time. Every run's sid /
+        provider / cwd are already recorded in its ``state.json``; this seeds
+        the session map on demand, so ``get_or_create`` finds the sid and arms
+        ``session/load``. Continuing a run PROMOTES it: retention extends from
+        the tombstone-prune window (~1h) to the conversation TTL, until
+        ``spawn_release``.
+
+        Mints a NEW run (new id, own state.json / result.txt / completion
+        event) on the SAME session key, so the follow-up executes with the
+        conversation's accumulated context.
+
+        Typed failures (returned as a done SubagentInfo with ``error``):
+        - ``conversation_busy`` — a run is in flight; use spawn_steer.
+        - ``conversation_gone`` — no resumable session files remain.
+        """
+        conv_key = f"subagent:{conv_id}"
+        busy = self._conversation_busy(conv_key)
+        if busy is not None:
+            info = SubagentInfo(
+                id=uuid.uuid4().hex[:8], task=_redact(task), done=True,
+                parent_session_key=parent_session_key,
+                error=(
+                    f"conversation_busy: run {busy.id} is in flight on this "
+                    "conversation — use spawn_steer to inject into it, or wait "
+                    "for its completion event"
+                ),
+            )
+            return info
+        # Seed the session map from the run's state.json when no mapping
+        # exists yet (default runs never write one at spawn; the map is also
+        # in-memory-lost across gateway restarts while state.json persists).
+        if not self._sessions.resumable_sid(conv_key):
+            state = read_state(conv_id) or {}
+            sid = str(state.get("session_id") or "")
+            if sid:
+                self._sessions.seed_conversation(
+                    conv_key,
+                    sid,
+                    provider=str(state.get("provider") or "acp"),
+                    cwd=str(state.get("cwd") or ""),
+                )
+        # Re-check: SessionMap.get self-prunes entries whose session files
+        # are missing, so a surviving mapping == resumable files on disk.
+        if not self._sessions.resumable_sid(conv_key):
+            # Point the caller at the prior result if the run folder survives
+            # (result.txt outlives the session under the tombstone TTL).
+            result_hint = ""
+            try:
+                _rp = _agent_dir(conv_id) / "result.txt"
+                if _rp.exists():
+                    result_hint = f" Prior result still readable at: {_rp}"
+            except Exception:
+                pass
+            info = SubagentInfo(
+                id=uuid.uuid4().hex[:8], task=_redact(task), done=True,
+                parent_session_key=parent_session_key,
+                error=(
+                    "conversation_gone: no resumable session remains for "
+                    f"{conv_id} (expired, released, or files pruned)."
+                    + result_hint
+                    + " Re-spawn with a fresh task carrying a summary."
+                ),
+            )
+            return info
+        self._sessions.mark_continuable(conv_key)
+        self._conversations[conv_key] = time.time()
+        # Promote the ORIGINAL run's retention: the tombstone pruner reads
+        # keep from state.json and skips session-file deletion for it. The
+        # conversation TTL sweep / spawn_release owns deletion from here.
+        try:
+            update_state(conv_id, keep=True)
+        except Exception:
+            logger.debug("continue: failed to promote state for %s", conv_id, exc_info=True)
+        return self.spawn(
+            task,
+            parent_session_key=parent_session_key,
+            agent=agent,
+            model=model,
+            max_turns=max_turns,
+            keep=True,
+            conversation_key=conv_key,
+        )
+
+    async def steer_run(self, agent_id: str, message: str) -> tuple[bool, str]:
+        """Inject *message* into the RUNNING turn of run *agent_id*.
+
+        Returns ``(ok, detail)``. Typed detail values on refusal:
+        ``not_found`` (unknown id), ``not_running`` (run finished — use
+        spawn_continue), ``no_session`` (session not reachable), or the
+        provider's failure reason.
+        """
+        info = self._agents.get(agent_id)
+        if info is None:
+            return False, "not_found"
+        if info.done:
+            return False, "not_running: run finished — use spawn_continue"
+        provider: Any = None
+        if info._session_sharing and info._shared_provider is not None:
+            provider = info._shared_provider
+        else:
+            session_key = info.conversation_key or f"subagent:{info.id}"
+            provider = self._sessions.get_provider(session_key)
+        if provider is None or not hasattr(provider, "steer"):
+            return False, "no_session"
+        try:
+            ok = await provider.steer(message)
+        except Exception as exc:  # pragma: no cover - provider-specific
+            logger.warning("steer_run %s failed", agent_id, exc_info=True)
+            return False, f"steer failed: {exc}"
+        if ok:
+            try:
+                sel().log_tool_invocation(
+                    session_key=info.parent_session_key or "",
+                    source="subagent",
+                    tool_name="spawn_steer",
+                    outcome="ok",
+                    metadata={"subagent_id": agent_id},
+                )
+            except Exception:
+                logger.debug("steer_run: SEL audit failed", exc_info=True)
+        return ok, "ok" if ok else "steer rejected by provider"
+
+    def release_conversation(self, conv_id: str) -> tuple[bool, str]:
+        """Release conversation *conv_id*: forget the sid and delete files.
+
+        Refuses (``conversation_busy``) while a run is in flight. Returns
+        ``(ok, detail)``.
+        """
+        conv_key = f"subagent:{conv_id}"
+        busy = self._conversation_busy(conv_key)
+        if busy is not None:
+            return False, f"conversation_busy: run {busy.id} is in flight"
+        provider_label = self._sessions.conversation_provider(conv_key) or "acp"
+        sid = self._sessions.forget_conversation(conv_key)
+        self._conversations.pop(conv_key, None)
+        if not sid:
+            return False, "conversation_gone: nothing to release"
+        try:
+            _cleanup_session_files_sync(sid, provider_label)
+        except Exception:
+            logger.debug("release_conversation: file cleanup failed", exc_info=True)
+        return True, "released"
+
+    def _sweep_conversations(self, now: float) -> None:
+        """Reaper hook: expire continuable conversations idle past TTL."""
+        for conv_key, last_used in list(self._conversations.items()):
+            if now - last_used < _CONVERSATION_TTL_SECS:
+                continue
+            if self._conversation_busy(conv_key) is not None:
+                self._conversations[conv_key] = now  # active — refresh
+                continue
+            conv_id = conv_key[len("subagent:"):]
+            ok, detail = self.release_conversation(conv_id)
+            logger.info(
+                "Conversation %s expired after %ds idle: %s",
+                conv_id, _CONVERSATION_TTL_SECS, detail,
+            )
 
     def _drain_queue(self) -> None:
         """Spawn the next queued task if a slot is available and the stagger
@@ -3019,10 +3242,23 @@ class SubagentManager:
                 # Session-sharing subagents: destroy the session handle
                 # (unregister from shared runtime). Don't kill the runtime.
                 # Skip when the reaper already tore it down (info.reaped).
+                # Retain-by-default: keep the transcript files — they are
+                # spawn_continue's resume material. The tombstone pruner
+                # deletes them with the run folder (~1h after delivery)
+                # unless the conversation is promoted (continued / keep).
                 if info._shared_provider and not info.reaped:
+                    try:
+                        info._shared_provider.set_keep_transcript(True)
+                    except Exception:
+                        logger.debug("set_keep_transcript failed", exc_info=True)
                     await info._shared_provider.shutdown()
             else:
-                self._sessions.release(session_key, cleanup=True)
+                # Retain-by-default: never delete session files at teardown.
+                # The reset() below still expires the process, so an idle
+                # conversation costs a JSON file, not RSS. Deletion is owned
+                # by the tombstone pruner (default runs, ~1h) or the
+                # conversation TTL sweep / spawn_release (promoted runs).
+                self._sessions.release(session_key, cleanup=False)
         except Exception:
             logger.warning("Subagent %s: release failed", info.id, exc_info=True)
         if not info._session_sharing:
@@ -3048,7 +3284,7 @@ class SubagentManager:
 
     async def _run(self, info: SubagentInfo) -> None:
         """Execute a subagent task in its own session."""
-        session_key = f"subagent:{info.id}"
+        session_key = info.conversation_key or f"subagent:{info.id}"
         try:
             await asyncio.wait_for(self._run_inner(info, session_key), timeout=self._default_timeout)
         except asyncio.TimeoutError:
@@ -3522,7 +3758,19 @@ class SubagentManager:
         # When enabled and eligible, subagents get a session on the parent's
         # companion AcpRuntime (~200ms startup, ~0 memory) instead of spawning
         # a fresh kiro-cli process (~3-5s, ~400MB).
-        use_session_sharing = self._should_use_session_sharing(info)
+        #
+        # Retain-by-default: EVERY run keeps its session files (teardown skips
+        # deletion on both arms), so any completed run is continuable while
+        # its files survive. keep=True / continuation runs additionally take
+        # the dedicated arm: their resume path is the proven dashboard
+        # expire-and-session/load lifecycle, which owns its process. Whether a
+        # SHARED-runtime sid is loadable is the open Phase 0 question — until
+        # proven, a continue on a shared-arm run relies on the fail-closed
+        # resume guard below rather than a spawn-time guarantee.
+        if info.keep:
+            self._sessions.mark_continuable(session_key)
+            self._conversations[session_key] = time.time()
+        use_session_sharing = (not info.keep) and self._should_use_session_sharing(info)
         if use_session_sharing:
             try:
                 client = await self._create_shared_session(info, session_key, agent)
@@ -3550,6 +3798,21 @@ class SubagentManager:
                 session_key, agent=agent or None, approval_policy=parent_policy,
                 **extra_kwargs,
             )
+            # Fail CLOSED on a continuation that did not actually resume:
+            # get_or_create silently falls back to a FRESH session when
+            # session/load fails (lock held, corrupt files, backend refusal).
+            # Executing the follow-up on that fresh session would silently run
+            # it context-free — worse than an honest error the parent can react
+            # to (re-spawn with a summary). conversation_key is only set by
+            # continue_conversation, so first spawns are unaffected.
+            if info.conversation_key and not _resumed:
+                raise RuntimeError(
+                    "resume_failed: session/load did not restore conversation "
+                    f"{info.conversation_key} — refusing to execute the "
+                    "follow-up without its prior context. The conversation "
+                    "may be locked by a live process or its files corrupt; "
+                    "re-spawn with a fresh task carrying a summary."
+                )
             # Detect CC provider to skip permission event loop
             is_cc = self._is_cc_provider(client)
         # Intentionally check info.agent (not resolved `agent`) so only
@@ -3608,6 +3871,11 @@ class SubagentManager:
             state_update: dict[str, object] = {
                 "session_id": session_id,
                 "provider": provider_type,
+                # keep marks this run's session files as resume material: the
+                # orphan reconciler and tombstone pruner skip file deletion
+                # for keep runs (restart-safe — read from disk, not memory).
+                "keep": info.keep,
+                "conversation_key": session_key if info.keep else "",
             }
             # Store CWD for CC cleanup (needed to derive project-key path).
             # info.cwd is only set when a caller passes an explicit cwd
@@ -3709,6 +3977,14 @@ class SubagentManager:
                     msg = _TRANSIENT_CONTINUE_MSG if _had_activity else full_message
 
         _complete_event: LLMEvent | None = None
+        # Wall clock for THIS subagent's own turn. Deliberately started here,
+        # at the subagent's own stream, not on the parent side: under session
+        # sharing this subagent reuses the parent's runtime, so a parent-side
+        # clock would charge the child for the parent's elapsed time. acp
+        # leaves TurnUsage.duration_ms at 0, so the row needs this.
+        # Includes transient-retry backoff, which is real wall time the caller
+        # waited for this turn.
+        _turn_t0 = time.monotonic()
         async for event in _stream_with_transient_retry():
             # Refresh the activity clock for EVERY event kind (thinking chunks,
             # tool-call updates, etc.) before dispatch, so idle-stall detection
@@ -3970,6 +4246,7 @@ class SubagentManager:
                 agent=agent or read_effective_agent(client) or "",
                 context_used=_used,
                 context_window=_window,
+                elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
                 model_source=client,
             )
         except Exception:

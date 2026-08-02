@@ -1,6 +1,6 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — re-snapshot with `node scripts/check-i18n-strings.mjs --update`. These are CEILINGS, not current counts: the gate fails only when a file gains strings, so a number here may sit above reality until someone re-snapshots. Also the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 1860,
+  "_total": 1854,
   "files": {
     "api/client.ts": {
       "total": 35,
@@ -246,9 +246,9 @@
       "template": 1
     },
     "components/AppIcon.tsx": {
-      "total": 4,
+      "total": 2,
       "prose": 1,
-      "template": 3
+      "template": 1
     },
     "components/ApprovalCard.tsx": {
       "total": 2,
@@ -466,10 +466,6 @@
     "components/McpCustomServerModal.tsx": {
       "total": 4,
       "template": 4
-    },
-    "components/notifications/NotificationDetailPanel.tsx": {
-      "total": 1,
-      "template": 1
     },
     "components/notifications/NotificationFeed.tsx": {
       "total": 8,
@@ -841,11 +837,11 @@
       "template": 3
     },
     "pages/ChatPage.tsx": {
-      "total": 25,
+      "total": 23,
       "expression": 3,
       "object-prop": 1,
       "prose": 2,
-      "template": 19
+      "template": 17
     },
     "pages/ChatSidebar.tsx": {
       "total": 47,
@@ -1242,8 +1238,8 @@
       "prose": 2
     },
     "utils/fileTokens.ts": {
-      "total": 5,
-      "template": 5
+      "total": 4,
+      "template": 4
     },
     "utils/offline.ts": {
       "total": 2,

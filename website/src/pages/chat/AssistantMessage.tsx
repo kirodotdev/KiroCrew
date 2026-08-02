@@ -210,7 +210,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
       {!isStreaming && selectionActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={selectionActions} />}
     </div>
     {fileChanges && fileChanges.length > 0 && !isStreaming && (
-      <FileChangeChips fileChanges={fileChanges} onOpenDiff={onOpenDiff} style={fileChipStyle} artifactPaths={artifactPaths} />
+      <FileChangeChips fileChanges={fileChanges} onOpenDiff={onOpenDiff} style={fileChipStyle} artifactPaths={artifactPaths} disclosureKey={messageTs ? `fcc-${messageTs}` : undefined} />
     )}
     {!isStreaming && showFooter && turnStats && turnStats.elapsed_ms > 0 && (
       <div className="flex items-center gap-1 mt-1 text-[11px] text-muted/60 font-mono tabular-nums" data-testid="turn-stats" title={`Turn took ${fmtTurnElapsed(turnStats.elapsed_ms)}${(turnStats.credits ?? 0) > 0 ? ` and used ${fmtCredits(turnStats.credits!)} credits` : ''}${(turnStats.cost_usd ?? 0) > 0 ? ` ($${turnStats.cost_usd!.toFixed(4)} API cost)` : ''}`}>
@@ -257,7 +257,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     )}
     {planSteps && onApplyPlan && !applied && !isRegenerating && (
       <button className="mt-1 px-3 py-1.5 rounded-md text-[13px] font-medium border border-accent text-accent bg-transparent cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={async () => { const ok = await onApplyPlan(planSteps); if (ok) setApplied(true) }}>
-        <ClipboardList className="lucide-inline" /> {i18nT('pages.chat.assistantMessage.use_as_plan')}{planSteps.length} {i18nT('pages.chat.assistantMessage.steps')}
+        <ClipboardList className="lucide-inline" /> {i18nT('pages.chat.assistantMessage.use_as_plan_count', { count: planSteps.length })}
       </button>
     )}
     {applied && <div className="mt-1 text-[13px] text-ok"><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.assistantMessage.applied_to_tasks')}</div>}

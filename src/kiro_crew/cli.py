@@ -49,8 +49,8 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import _default_home, _legacy_home
 from kiro_crew.constants import BANNER, env_flag_enabled
 from kiro_crew.crash_guard import install as _install_crash_guard
-from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.dashboard.state import set_build_info
+from kiro_crew.dashboard.urls import parse_dashboard_url
 from kiro_crew.env import git_build_info
 from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator

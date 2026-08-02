@@ -22,7 +22,11 @@ from urllib.parse import urlparse, urlunparse
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.cron_sdk import CronSDK
-from kiro_crew.apps.manager import app_dir, get_app, get_app_manifest
+from kiro_crew.apps.execution import (
+    app_execution_denied,
+    shipped_builtin_app_root,
+)
+from kiro_crew.apps.manager import app_dir, get_app, get_app_manifest, list_apps
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
@@ -64,6 +68,54 @@ def _namespace(app_name: str, resource_name: str) -> str:
 def _safe_link_name(namespaced: str) -> str:
     """Convert ``app/resource`` to a safe filename for symlinks: ``app--resource``."""
     return namespaced.replace("/", "--")
+
+
+def _registration_source(app_name: str) -> tuple[AppManifest | None, Path]:
+    """Return the authoritative manifest and root for executable resources.
+
+    A shipped builtin is always read from its immutable package root. This
+    prevents mutable installed metadata from borrowing a builtin name and then
+    registering attacker-controlled agents, skills, crons, or MCP servers.
+    Third-party apps continue to use their installed snapshot.
+    """
+    shipped_root = shipped_builtin_app_root(app_name)
+    if shipped_root is not None:
+        try:
+            return (
+                AppManifest.from_json_file(shipped_root / "app.json"),
+                shipped_root,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "App %s: shipped resource manifest is unreadable: %s",
+                app_name,
+                exc,
+            )
+            return None, shipped_root
+    return get_app_manifest(app_name), app_dir(app_name)
+
+
+def _registration_denied(
+    app_name: str,
+    *,
+    action: str,
+    app_root: Path,
+) -> str | None:
+    """Apply the shared execution decision to an executable-resource bridge."""
+    denied = app_execution_denied(
+        app_name,
+        action=action,
+        app_root=app_root,
+        caller="app_bridge",
+    )
+    if denied:
+        logger.warning(
+            "App %s: skipping executable resource registration (%s): %s",
+            app_name,
+            action,
+            denied,
+        )
+    return denied
 
 
 # ---------------------------------------------------------------------------
@@ -277,13 +329,21 @@ def reconcile_app_skills(app_name: str) -> list[str]:
         # (dynamically managed skills are not manifest-declared).
         return []
 
-    manifest = get_app_manifest(app_name)
+    manifest, app_root = _registration_source(app_name)
+    if _registration_denied(
+        app_name,
+        action="skill_reconcile",
+        app_root=app_root,
+    ):
+        # A policy tightened after a prior registration must revoke stale links,
+        # not merely decline to create new ones.
+        _deregister_skills(app_name)
+        return []
+
     if not manifest or not manifest.skills:
         # No skills declared — remove any stale symlinks left from a prior version
         _deregister_skills(app_name)
         return []
-
-    app_root = app_dir(app_name)
 
     # _register_skills is already idempotent (overwrites existing symlinks)
     registered = _register_skills(app_name, manifest, app_root)
@@ -326,18 +386,11 @@ def _app_crons_path(app_name: str) -> Path:
     return app_dir(app_name) / _CRON_MANIFEST_NAME
 
 
-def _register_crons(app_name: str, manifest: AppManifest) -> list[str]:
-    """Write app cron definitions to a manifest file for later CronService pickup.
-
-    The actual CronService registration happens at enable time via
-    ``register_app_crons_with_service()``.  This just persists the
-    definitions so they survive restarts.
-
-    Returns list of namespaced cron names.
-    """
-    if not manifest.crons:
-        return []
-
+def _cron_defs_from_manifest(
+    app_name: str,
+    manifest: AppManifest,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build scheduler definitions from an authoritative app manifest."""
     cron_defs: list[dict[str, Any]] = []
     registered: list[str] = []
     for cron in manifest.crons:
@@ -358,6 +411,21 @@ def _register_crons(app_name: str, manifest: AppManifest) -> list[str]:
             "enabled": cron.enabled,
         })
         registered.append(namespaced)
+    return cron_defs, registered
+
+
+def _register_crons(app_name: str, manifest: AppManifest) -> list[str]:
+    """Write app cron definitions to a manifest file for later CronService pickup.
+
+    The actual CronService registration happens at enable time via
+    ``register_app_crons_with_service()``. This just persists the definitions
+    so they survive restarts.
+
+    Returns list of namespaced cron names.
+    """
+    cron_defs, registered = _cron_defs_from_manifest(app_name, manifest)
+    if not cron_defs:
+        return []
 
     path = _app_crons_path(app_name)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -388,10 +456,12 @@ def load_app_cron_defs(app_name: str) -> list[dict[str, Any]]:
 
 
 async def register_app_crons_with_service(app_name: str, cron_service: Any) -> list[str]:
-    """Promote persisted app cron defs into the running CronService.
+    """Promote admitted app cron definitions into the running CronService.
 
-    Reads ``app-crons.json`` and registers each job via :class:`CronSDK`,
-    which tags ownership as ``created_by="app:{app_name}"``.
+    Third-party definitions come from the installed ``app-crons.json`` only
+    after the central execution decision admits them. Shipped builtin jobs are
+    rebuilt from their immutable package manifest so a mutable derivative cannot
+    forge a trusted command.
 
     ASYNC: awaits ``CronSDK.add_job_async``, which offloads each store-lock spin
     to a worker thread — so this can be awaited directly on the gateway event
@@ -403,7 +473,20 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
     if cron_service is None:
         return []
 
-    defs = load_app_cron_defs(app_name)
+    manifest, app_root = _registration_source(app_name)
+    if _registration_denied(
+        app_name,
+        action="cron_register",
+        app_root=app_root,
+    ):
+        return []
+
+    if shipped_builtin_app_root(app_name) is not None:
+        if manifest is None:
+            return []
+        defs, _ = _cron_defs_from_manifest(app_name, manifest)
+    else:
+        defs = load_app_cron_defs(app_name)
     if not defs:
         return []
 
@@ -564,6 +647,108 @@ async def deregister_app_crons_from_service(app_name: str, cron_service: Any) ->
             error=str(exc),
         )
         return 0
+
+
+async def disarm_app_crons_for_execution(
+    app_name: str,
+    cron_service: Any,
+) -> int:
+    """Atomically remove app-owned jobs with best-effort audit logging."""
+    if cron_service is None:
+        return 0
+    removed = await cron_service.remove_jobs_by_owner(f"app:{app_name}")
+    try:
+        sel().log_api_access(
+            caller="app_bridge",
+            operation="app_crons_execution_disarm",
+            outcome="completed",
+            resources=f"app={app_name} removed={len(removed)}",
+        )
+    except Exception:  # noqa: BLE001 - cleanup verdict must survive audit failure
+        logger.debug("app cron execution-disarm audit failed", exc_info=True)
+    return len(removed)
+
+
+async def reconcile_app_crons_for_execution(cron_service: Any) -> list[str]:
+    """Disarm persisted app jobs before the gateway starts cron timers.
+
+    ``CronService.create`` has loaded the durable store but has not armed its
+    timer yet when this runs. Any cleanup failure propagates so the caller can
+    leave the scheduler stopped rather than execute a denied job.
+    """
+    if cron_service is None:
+        return []
+
+    app_infos = list_apps()
+    installed_names = {
+        app_name
+        for app_info in app_infos
+        if (app_name := app_info.get("name", ""))
+    }
+    cron_owner_names: set[str] = set()
+    for job in cron_service.list_jobs(include_disabled=True):
+        owner = str(getattr(job, "created_by", ""))
+        if owner.startswith("app:") and owner != "app:":
+            cron_owner_names.add(owner.removeprefix("app:"))
+
+    disarmed: list[str] = []
+    for app_name in sorted(cron_owner_names - installed_names):
+        reason = "orphaned app cron owner has no installed app"
+        logger.warning(
+            "App %s: denying persisted cron restore (cron_boot_restore): %s",
+            app_name,
+            reason,
+        )
+        try:
+            sel().log_api_access(
+                caller="app_bridge",
+                operation="app_execution_admission",
+                outcome="denied",
+                resources=(
+                    f"app={app_name} action=cron_boot_restore "
+                    "provenance=unverified"
+                ),
+                error=reason,
+            )
+        except Exception:  # noqa: BLE001 - denial must survive audit unavailability
+            logger.debug("app execution denial audit failed", exc_info=True)
+
+        removed = await disarm_app_crons_for_execution(app_name, cron_service)
+        if removed:
+            disarmed.append(app_name)
+            logger.warning(
+                "Boot: disarmed %d persisted cron(s) for orphaned app %s",
+                removed,
+                app_name,
+            )
+
+    for app_info in app_infos:
+        app_name = app_info.get("name", "")
+        if not app_name:
+            continue
+
+        should_disarm = not bool(app_info.get("enabled"))
+        if not should_disarm:
+            _, app_root = _registration_source(app_name)
+            should_disarm = bool(
+                _registration_denied(
+                    app_name,
+                    action="cron_boot_restore",
+                    app_root=app_root,
+                )
+            )
+        if not should_disarm:
+            continue
+
+        removed = await disarm_app_crons_for_execution(app_name, cron_service)
+        if removed:
+            disarmed.append(app_name)
+            logger.warning(
+                "Boot: disarmed %d persisted cron(s) for inactive app %s",
+                removed,
+                app_name,
+            )
+    return disarmed
 
 
 # ---------------------------------------------------------------------------
@@ -734,14 +919,20 @@ def _register_mcp_servers(app_name: str, manifest: AppManifest, live_port: int |
 
 
 def reregister_app_mcp_servers(app_name: str, live_port: int | None = None) -> list[str]:
-    """Re-register an app's MCP servers AFTER its backend has started, so an HTTP MCP
-    url with ``backend.port:"auto"`` is rewritten to the live allocated port. Called
-    from the enable + boot paths once the backend is up (the first register_app ran
-    before the port was known). ``live_port`` should be the just-allocated port from the
-    spawn result — at boot the backend isn't marked *healthy* yet, so the health-gated
-    tracked-port lookup would return None and the rewrite would be skipped. Safe to call
-    repeatedly — it overwrites the namespaced entries. No-op for apps with no MCP servers."""
-    manifest = get_app_manifest(app_name)
+    """Re-register admitted MCP servers after an app backend has started.
+
+    HTTP URLs are rewritten to the live allocated port. Shipped definitions are
+    sourced from their immutable package manifest; denied apps have any stale
+    global entries scrubbed instead of being made reachable.
+    """
+    manifest, app_root = _registration_source(app_name)
+    if _registration_denied(
+        app_name,
+        action="mcp_register",
+        app_root=app_root,
+    ):
+        _deregister_mcp_servers(app_name)
+        return []
     if not manifest or not manifest.mcpServers:
         return []
     return _register_mcp_servers(app_name, manifest, live_port=live_port)
@@ -788,18 +979,17 @@ class RegistrationResult:
 
 
 def register_app(app_name: str) -> RegistrationResult:
-    """Register all resources for an installed app.
+    """Register all executable resources for an admitted installed app.
 
-    Reads the app's manifest from its install directory and creates
-    symlinks/manifests for agents, skills, crons, and MCP servers.
+    Third-party resources come from the installed app snapshot. Shipped builtin
+    resources come from the immutable manifest root that proves their provenance.
 
     Apps with ``resources="app"`` manage their own resource registration
-    (agents, skills, MCP servers via SDK).  Bridge registration is skipped
+    (agents, skills, MCP servers via SDK). Bridge registration is skipped
     entirely to avoid creating duplicates that confuse kiro-cli.
     """
     result = RegistrationResult()
-    manifest = get_app_manifest(app_name)
-    if not manifest:
+    if not get_app_manifest(app_name):
         result.errors.append(f"app {app_name!r} not found or has invalid manifest")
         return result
 
@@ -811,7 +1001,25 @@ def register_app(app_name: str) -> RegistrationResult:
         )
         return result
 
-    app_root = app_dir(app_name)
+    manifest, app_root = _registration_source(app_name)
+    if manifest is None:
+        result.errors.append(f"app {app_name!r} has no authoritative resource manifest")
+        return result
+
+    denied = _registration_denied(
+        app_name,
+        action="resource_register",
+        app_root=app_root,
+    )
+    if denied:
+        # Re-registration can happen after an operator tightens policy. Scrub
+        # derivative links/config from a prior admitted run as well as skipping
+        # every new side effect. Running cron jobs are removed by the scheduler
+        # reconciliation boundary, which owns the CronService instance.
+        cleanup = deregister_app(app_name)
+        result.errors.extend(cleanup.errors)
+        result.errors.append(f"registration blocked by execution policy: {denied}")
+        return result
 
     try:
         result.agents = _register_agents(app_name, manifest, app_root)

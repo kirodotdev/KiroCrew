@@ -1696,3 +1696,58 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 @media (prefers-contrast: more){
   .glass-surface,.topbar-glass{ background:var(--bg) !important; border:1px solid var(--text) !important }
 }
+
+/* ── Mono-family compensation ─────────────────────────────────────────────
+   JetBrains Mono is ~20% wider than Space Grotesk at the same size, so chrome
+   sized against the default family can overflow once a user picks Mono in
+   Settings -> Display (or lands in CLI mode, which auto-resolves to mono).
+   `useZoom` publishes the RESOLVED family as html[data-font-family].
+
+   The nav rail's community row is the tight case: it has to fit two links, a
+   GitHub mark and the Discord icon inside a 236px rail. Measured label widths
+   for "Star us" + "Report issue" at 12px against its budget:
+
+     tracking      mono labels   slack
+     normal            136.8     -9.0  (truncates: "Report is…")
+     -0.03em           130.0     -1.8
+     -0.05em           125.4     +6.0  <- this rule, with the spacing below
+     -0.06em           123.1          (visibly condensed)
+
+   Two spacing overrides ride along, because mono and sans want OPPOSITE
+   treatment and a single set of numbers cannot serve both.
+
+   MEASURED glyph metrics at 12px (fontTools, the shipped Google Fonts files):
+
+                        advance   ink    sidebearing
+     Space Grotesk  S    7.36     6.19      0.58
+     JetBrains Mono S    7.20     5.47      0.86
+     Space Grotesk  ·    2.24     1.63      0.30
+     JetBrains Mono ·    7.20     1.99      2.60
+
+   The two capitals are effectively identical, so the mark gap is the SAME for
+   both families (ml-1.5 = 6px on the element) — an earlier version of this rule
+   tightened sans to 2px on the false premise that its "S" had more sidebearing
+   than mono's. It does not; it has slightly less.
+
+   The middot is where they genuinely differ, and it is the only gap this rule
+   still overrides:
+
+   * gap 3px on mono vs 5px on sans. Mono's middot carries 2.6px of built-in
+     space either side, sans's carries 0.3px, so equal CSS values would render
+     as very unequal optical gaps. Targeting ~5.5px of visible space either side
+     of the dot ink yields 2.9px for mono and 5.2px for sans.
+   * word-spacing -2.5px (mono only) — fixes "Star us" looking looser than it
+     should. Mono's space character is a full 7.2px cell, over 3x Space
+     Grotesk's 2.24px, so the gap INSIDE each label dominated the gaps BETWEEN
+     the labels and the row read as four floating words. Pulling it to 4.7px
+     restores the hierarchy (space inside a label < gap around the separator)
+     while staying wider than sans.
+
+   word-spacing is also what PAYS for the wider gaps on mono: it recovers 5px
+   across the pair's two spaces, leaving ~6px of slack.
+
+   Scoped to mono ON PURPOSE: sans has ~13px of slack and needs no tightening,
+   and applying letter/word-spacing there would make this row inconsistent with
+   every other label in the app (everything else inherits letter-spacing:normal
+   from body). Do not promote any of this to an unscoped rule. */
+html[data-font-family="mono"] .rail-community-links{ letter-spacing:-0.05em; word-spacing:-2.5px; gap:3px }

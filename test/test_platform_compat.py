@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import errno
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -936,6 +937,11 @@ class TestRestrictToOwnerArgvOnLinux:
         monkeypatch.setattr(pc, "IS_POSIX", False)
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_USER_SID_CACHE", [])
+        # Force the whoami fallback, which is what this test covers. On a real
+        # Windows host the non-spawn primary (the process token) succeeds, so
+        # without this the flaky_run below is never reached and the first
+        # assertion sees a genuine SID instead of the simulated failure.
+        monkeypatch.setattr(pc, "_process_token_sid", lambda: None)
         attempts = []
 
         def flaky_run(argv, **_kw):
@@ -1492,3 +1498,171 @@ class TestKillAsyncVariants:
         loop = _asyncio.new_event_loop()
         with pytest.raises(ProcessLookupError):
             loop.run_until_complete(_driver())
+
+
+class TestProcessTokenSid:
+    """The non-spawn SID lookup.
+
+    ``whoami`` is the fallback, not the primary, because the primary sits on
+    the gateway's bind path: a Windows CI run showed the spawn returning
+    nothing under parallel test load, which made every named pipe refuse to be
+    created (the DACL cannot be built without a SID).
+    """
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows access tokens")
+    def test_reads_a_real_sid_from_our_own_token(self) -> None:
+        # The unguarded body on purpose: a ctypes prototype mistake surfaces as
+        # a traceback naming the failing call instead of collapsing to None.
+        sid = pc._process_token_sid_unguarded()
+        assert sid is not None
+        assert sid.startswith("S-1-")
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows SID lookup")
+    def test_some_path_always_resolves_our_sid(self) -> None:
+        """The property the gateway depends on: without a SID it cannot build
+        the pipe DACL and refuses to bind at all."""
+        assert pc.current_user_sid()
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows access tokens")
+    def test_agrees_with_the_public_accessor(self) -> None:
+        assert pc.current_user_sid() == pc._process_token_sid()
+
+    @pytest.mark.skipif(pc.IS_WINDOWS, reason="the off-Windows guard")
+    def test_returns_none_off_windows(self) -> None:
+        assert pc._process_token_sid() is None
+
+
+class TestLocalUserId:
+    """The pool-partitioning identity. Must stay an int on every platform."""
+
+    def test_matches_getuid_on_posix(self) -> None:
+        if pc.IS_WINDOWS:
+            pytest.skip("POSIX uid")
+        assert pc.local_user_id() == os.getuid()
+
+    def test_is_an_int_not_a_bool(self) -> None:
+        """PoolKey type-checks this dimension and refuses to coerce, because
+        bool is a subclass of int and would slip into the wrong partition."""
+        value = pc.local_user_id()
+        assert isinstance(value, int) and not isinstance(value, bool)
+
+    def test_windows_derives_a_stable_int_from_the_sid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "current_user_sid", lambda: "S-1-5-21-9-8-7-1001")
+        first = pc.local_user_id()
+        assert isinstance(first, int) and not isinstance(first, bool)
+        assert pc.local_user_id() == first  # stable across calls
+        monkeypatch.setattr(pc, "current_user_sid", lambda: "S-1-5-21-9-8-7-1002")
+        assert pc.local_user_id() != first  # and distinct per user
+
+    def test_windows_without_a_sid_collapses_to_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A partition collapse, not a privilege change: the endpoint is already
+        per-user, so two users cannot reach the same pool regardless."""
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "current_user_sid", lambda: None)
+        assert pc.local_user_id() == 0
+
+
+class TestMakeOwnerOnlyDir:
+    def test_creates_nested_directory_owner_only_on_posix(self, tmp_path) -> None:
+        if pc.IS_WINDOWS:
+            pytest.skip("POSIX mode bits")
+        target = tmp_path / "a" / "b" / "c"
+        pc.make_owner_only_dir(target)
+        assert target.is_dir()
+        assert stat.S_IMODE(target.stat().st_mode) == 0o700
+
+    def test_tightens_a_preexisting_loose_directory_on_posix(self, tmp_path) -> None:
+        """The case a bare mkdir(mode=...) cannot cover: the mode argument is
+        ignored entirely when the directory already exists."""
+        if pc.IS_WINDOWS:
+            pytest.skip("POSIX mode bits")
+        loose = tmp_path / "loose"
+        loose.mkdir(mode=0o755)
+        pc.make_owner_only_dir(loose)
+        assert stat.S_IMODE(loose.stat().st_mode) == 0o700
+
+    def test_uses_the_dacl_helper_on_windows(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows derives access from the DACL, so the mode argument is inert
+        and restrict_to_owner is the only thing that protects the directory."""
+        calls: list[str] = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "restrict_to_owner", lambda p: calls.append(str(p)))
+        target = tmp_path / "win"
+        pc.make_owner_only_dir(target)
+        assert target.is_dir()
+        assert calls == [str(target)]
+
+    def test_directory_still_exists_when_tightening_fails(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Best-effort on the tightening step: the caller decides whether an
+        un-tightened directory is fatal, so creation must not be rolled back."""
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc, "restrict_to_owner", lambda p: (_ for _ in ()).throw(OSError("nope"))
+        )
+        target = tmp_path / "partial"
+        pc.make_owner_only_dir(target)
+        assert target.is_dir()
+
+
+class TestCurrentUserSidNeverSpawns:
+    """``current_user_sid`` is called from three event-loop paths: the gatewayd
+    admission check, the client-side server check, and the pipe DACL builder --
+    which runs once per pipe instance and so sits on the accept path.
+
+    It used to delegate to ``_current_user_sid``, whose fallback is a ``whoami``
+    subprocess with a 5 s timeout. A token-lookup failure therefore stalled
+    accepts for seconds at a time, repeatedly. ``restrict_to_owner`` keeps that
+    fallback because it always runs through ``asyncio.to_thread``.
+    """
+
+    @staticmethod
+    def _forbid_spawn(*_a, **_kw):
+        raise AssertionError(
+            "current_user_sid must not spawn -- it runs on the event loop"
+        )
+
+    def test_returns_none_without_spawning_when_the_token_read_fails(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(pc, "_TOKEN_SID_CACHE", [])
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "_process_token_sid", lambda: None)
+        monkeypatch.setattr(pc.subprocess, "run", self._forbid_spawn)
+
+        # Fails closed: every caller treats None as "principal unverifiable".
+        assert pc.current_user_sid() is None
+
+    def test_returns_the_bare_token_sid_and_memoises_it(self, monkeypatch):
+        monkeypatch.setattr(pc, "_TOKEN_SID_CACHE", [])
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        calls: list[int] = []
+
+        def _token():
+            calls.append(1)
+            return "S-1-5-21-1-2-3-1001"
+
+        monkeypatch.setattr(pc, "_process_token_sid", _token)
+        monkeypatch.setattr(pc.subprocess, "run", self._forbid_spawn)
+
+        assert pc.current_user_sid() == "S-1-5-21-1-2-3-1001"
+        assert pc.current_user_sid() == "S-1-5-21-1-2-3-1001"
+        assert len(calls) == 1, "the SID is constant for the process lifetime"
+
+    def test_strips_the_icacls_star_prefix(self, monkeypatch):
+        """The icacls form carries a leading ``*``; SDDL and the Win32 security
+        APIs want the bare SID."""
+        monkeypatch.setattr(pc, "_TOKEN_SID_CACHE", [])
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "_process_token_sid", lambda: "*S-1-5-21-9-9-9-500")
+        monkeypatch.setattr(pc.subprocess, "run", self._forbid_spawn)
+
+        assert pc.current_user_sid() == "S-1-5-21-9-9-9-500"

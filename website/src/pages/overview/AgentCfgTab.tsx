@@ -24,7 +24,7 @@ export default function AgentCfgTab() {
   })
 
   return (
-    <Card><CardTitle>{i18nT('pages.overview.agentCfgTab.agent_config')}{provider.labels.configFile}) <InfoTip text={`The ${provider.labels.sessionProcess} agent definition — prompt, tools, MCP servers, model settings. This is the execution layer config, separate from KiroCrew's operational bindings.`} /> <Btn onClick={() => {
+    <Card><CardTitle>{i18nT('pages.overview.agentCfgTab.agent_config_file', { file: provider.labels.configFile })} <InfoTip text={i18nT('pages.overview.agentCfgTab.agent_config_tip', { process: provider.labels.sessionProcess })} /> <Btn onClick={() => {
       try { const config = JSON.parse(cfg); saveMut.mutate(config) } catch { alert(i18nT('pages.overview.agentCfgTab.invalid_json')) }
     }}>{saveMut.isSuccess ? <><Check className="lucide-inline" /> {i18nT('pages.overview.agentCfgTab.saved')}</> : 'Save'}</Btn></CardTitle>
       <p className="text-muted text-[13px] mb-3">{i18nT('pages.overview.agentCfgTab.after_saving_use')} <Zap className="lucide-inline" /> {i18nT('pages.overview.agentCfgTab.apply_restart_sessions_at_the_top_to_apply_chang')}</p>

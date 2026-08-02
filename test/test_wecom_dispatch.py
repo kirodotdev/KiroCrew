@@ -129,7 +129,8 @@ class FakeCtx:
     def __init__(self) -> None:
         self.hooks = FakeHooks()
 
-    def build_message(self, text, is_new, key, *, channel_id, agent, resumed):
+    def build_message(self, text, is_new, key, *, channel_id, agent, resumed, runtime_source):
+        assert runtime_source == "wecom"
         return (text, None)
 
 

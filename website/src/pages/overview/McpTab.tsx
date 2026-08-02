@@ -280,7 +280,7 @@ export default function McpTab() {
 
   return (<>
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
-      {i18nT('pages.overview.mcpTab.mcp_servers')}{servers.length})
+      {i18nT('pages.overview.mcpTab.mcp_servers_count', { count: servers.length })}
       <InfoTip text={`MCP servers across KiroCrew and your interactive ${provider.displayName}/Kiro globals. The KiroCrew badge shows if it'll load in KiroCrew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply.`} />
       <span className="ml-auto flex items-center gap-2">
         <Btn onClick={() => setCustomOpen(true)}><Braces size={14} /> {i18nT('pages.overview.mcpTab.add_custom')}</Btn>
@@ -386,7 +386,7 @@ export default function McpTab() {
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-[13px] w-full">
                   {s.status === 'error' && s.error ? <span className="text-danger text-[12px]"><AlertTriangle className="lucide-inline" /> {s.error}</span> : s.tools?.length ? (<div>
-                    <button className="flex items-center gap-1 text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors mb-1" onClick={() => setExpandedTools(prev => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next })}>{s.tools.length} {i18nT('pages.overview.mcpTab.tools_2')}{!expandedTools.has(s.name) && (s.disabledTools?.length || 0) > 0 && <span className="text-muted ml-1">({s.disabledTools!.length} {i18nT('pages.overview.mcpTab.off')}</span>}<ChevronRight size={14} className={`transition-transform duration-200 ${expandedTools.has(s.name) ? 'rotate-90' : ''}`} /></button>
+                    <button className="flex items-center gap-1 text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors mb-1" onClick={() => setExpandedTools(prev => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next })}>{s.tools.length} {i18nT('pages.overview.mcpTab.tools_2')}{!expandedTools.has(s.name) && (s.disabledTools?.length || 0) > 0 && <span className="text-muted ml-1">{i18nT('pages.overview.mcpTab.off_count', { count: s.disabledTools!.length })}</span>}<ChevronRight size={14} className={`transition-transform duration-200 ${expandedTools.has(s.name) ? 'rotate-90' : ''}`} /></button>
                     <AnimatePresence>{expandedTools.has(s.name) && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden"><div className="space-y-0.5">{s.tools.map(t => {
                       const currentlyDisabled = (s.disabledTools || []).includes(t)
                       const toolOverride = pendingTools[s.name]?.[t]

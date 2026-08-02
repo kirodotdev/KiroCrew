@@ -532,6 +532,32 @@ always matches and the suppression would never fire (a real bug caught by
 payload and never materializes an id (`install_id(create=False)`); `disable`
 persists to `config.json` so the choice survives a new shell.
 
+### In-product privacy disclosure
+
+The dashboard discloses the default-on beacon without turning disclosure into a
+consent flow:
+
+- On first use, it renders a labelled, passive region in normal document flow
+  above the routed main content. It is never a modal or dialog, never traps or
+  moves focus, and never pauses, gates, or blocks the application. Its dismiss
+  button and the link to the durable privacy details are keyboard-operable.
+- Dismissal is remembered with the local-storage marker
+  `mc-privacy-notice-v1`. Storage access is fail-open: a failed read shows the
+  notice, and dismissal hides it for the current session even when persisting
+  the marker fails.
+- **Settings → Privacy** remains available after dismissal. It explains the
+  default-on, at-most-daily beacon and its exact nine fields: random
+  installation id, app version, release channel, operating system, CPU
+  architecture, Python minor version, installation channel, governance posture,
+  and first-run flag.
+  It also states the excluded data and exposes the status and disable commands.
+- The durable surface distinguishes local usage/context records from optional
+  performance metrics. Performance metrics are off by default and remain local
+  when enabled, with one explicit exception: they egress only when the operator
+  configures an OTLP endpoint.
+- These surfaces add no tracking and do not alter, enable, or delay any telemetry
+  path. They only explain behavior and controls that already exist.
+
 ### Cross-machine identity hazard
 
 A snapshot restored onto a second machine must not clone the id — two hosts

@@ -417,6 +417,7 @@ def _build_token_record(
     agent: str = "",
     context_used: int = 0,
     context_window: int = 0,
+    elapsed_ms: int = 0,
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O).
 
@@ -425,6 +426,18 @@ def _build_token_record(
     ``context_window`` record context-window occupancy (read from the provider
     via :func:`read_context_tokens` at the call site). All four are additive and
     default to empty/0, so pre-existing shards and existing callers stay valid.
+
+    ``elapsed_ms`` is the caller's locally measured wall clock for the turn and
+    is the FALLBACK for ``duration_ms``: the provider-reported value wins when
+    non-zero, otherwise the local measurement is recorded. Both are needed
+    because the acp provider always reports ``TurnUsage.duration_ms == 0``
+    (nothing assigns it — only claude_code filled it in, and that provider is
+    gone), so a provider-only read wrote a literal 0 into every real row and
+    left the row store unable to answer "how long did this turn take".
+
+    This mirrors the precedence the OTEL emit path already uses
+    (``chat_runner._attach_turn_stats``: ``value = duration_ms or elapsed_ms``),
+    so the histogram and the row store cannot disagree about one turn.
     """
     # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
     # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
@@ -448,7 +461,7 @@ def _build_token_record(
         "cost": getattr(u, "cost_usd", 0.0),
         "credits": credits,
         "turns": getattr(u, "num_turns", 0),
-        "duration_ms": getattr(u, "duration_ms", 0),
+        "duration_ms": getattr(u, "duration_ms", 0) or _coerce_int(elapsed_ms),
         # Additive per-turn fields (issue #647): context occupancy + dispatch
         # origin. Old shards lack these keys; readers must tolerate their
         # absence. context_* are int-coerced so a bad value can't break json.dumps.
@@ -480,6 +493,7 @@ def persist_token_record(
     agent: str = "",
     context_used: int = 0,
     context_window: int = 0,
+    elapsed_ms: int = 0,
     model_source: object = None,
 ) -> None:
     """Append a token usage record to today's shard under
@@ -490,6 +504,10 @@ def persist_token_record(
     ``surface`` / ``agent`` tag the dispatch origin and resolved agent, and
     ``context_used`` / ``context_window`` record context-window occupancy — all
     additive and defaulted so existing callers stay valid.
+
+    ``elapsed_ms`` is the caller's locally measured turn wall clock, used only
+    when the provider reports no duration. Every dispatch surface owns its own
+    measurement because there is no global turn boundary to hang one clock on.
 
     ``model_source`` is a provider/client used ONLY to fill ``model`` when the
     caller could not resolve one (several dispatch surfaces never pick a model
@@ -513,6 +531,7 @@ def persist_token_record(
                 agent=agent,
                 context_used=context_used,
                 context_window=context_window,
+                elapsed_ms=elapsed_ms,
             ),
             now,
         )
@@ -530,6 +549,7 @@ async def persist_token_record_async(
     agent: str = "",
     context_used: int = 0,
     context_window: int = 0,
+    elapsed_ms: int = 0,
     model_source: object = None,
 ) -> None:
     """Async variant: builds the record on-loop, offloads the file write.
@@ -539,7 +559,8 @@ async def persist_token_record_async(
     co-resident coroutines for the IO window. These are best-effort analytics
     (no fsync, exceptions swallowed), so off-loop write loses no durability.
     See :func:`persist_token_record` for the ``surface`` / ``agent`` /
-    ``context_used`` / ``context_window`` / ``model_source`` fields.
+    ``context_used`` / ``context_window`` / ``elapsed_ms`` / ``model_source``
+    fields.
     """
     try:
         model = _resolve_model(model, model_source)
@@ -554,6 +575,7 @@ async def persist_token_record_async(
             agent=agent,
             context_used=context_used,
             context_window=context_window,
+            elapsed_ms=elapsed_ms,
         )
         await asyncio.to_thread(_write_token_record, record, now)
     except Exception:

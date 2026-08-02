@@ -189,7 +189,7 @@ export default function SteeringTab() {
     </Modal>
 
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
-      {i18nT('pages.overview.steeringTab.steering')}{files.length})
+      {i18nT('pages.overview.steeringTab.steering_count', { count: files.length })}
       <InfoTip text="Always-on markdown conventions injected into every session. Global files live in ~/.kiro/steering and apply everywhere; workspace files live in <project>/.kiro/steering and apply to that project only." />
       <span className="ml-auto">
         <Btn primary onClick={() => setCreating(true)}>{i18nT('pages.overview.steeringTab.new_steering_file_2')}</Btn>
@@ -237,7 +237,7 @@ export default function SteeringTab() {
         <div className="flex gap-3 h-[calc(100vh-260px)] min-h-[420px]">
           <div className="w-[240px] shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2" role="listbox" aria-label={i18nT('pages.overview.steeringTab.steering_files')}>
             {filtered.map(renderRow)}
-            {filtered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.steeringTab.no_files_match')}{filter}”.</div>}
+            {filtered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.steeringTab.no_files_match_query', { query: filter })}</div>}
           </div>
 
           <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md bg-card overflow-hidden">

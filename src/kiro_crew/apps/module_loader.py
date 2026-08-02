@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from kiro_crew.apps.execution import app_execution_denied, is_builtin_app
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -25,12 +26,9 @@ _BUILTINS_DIR = (Path(__file__).resolve().parent / "builtins")
 _warned_third_party_apps: set[str] = set()
 
 
-def _is_builtin_app(app_resolved: Path) -> bool:
-    """Return True if the resolved app dir lives under the shipped builtins dir."""
-    try:
-        return app_resolved.is_relative_to(_BUILTINS_DIR)
-    except ValueError:
-        return False
+def _is_builtin_app(app_name: str, app_resolved: Path) -> bool:
+    """Return True when this app name owns the resolved shipped package path."""
+    return is_builtin_app(app_name=app_name, app_root=app_resolved)
 
 
 def _warn_third_party_execution(app_name: str) -> None:
@@ -51,38 +49,6 @@ def _warn_third_party_execution(app_name: str) -> None:
         "surface, not arbitrary code. Only enable apps you trust.",
         app_name,
     )
-
-
-def _third_party_apps_allowed() -> bool:
-    """Whether the operator permits running third-party (non-builtin) app Python.
-    Defaults to True (apps are operator-installed and consented); set
-    ``agent.apps_allow_third_party=false`` to refuse third-party app code
-    entirely — both in-process module loads (here) and out-of-process backend
-    spawns (see backend._start_app_backend_body) consult this switch (CSE
-    SEC-012 interim hardening — a hard off switch until out-of-process isolation
-    lands).
-
-    Read lazily from config to avoid an import cycle with the config loader.
-    On a config-load failure this fails CLOSED (returns False, deny): this is a
-    security off-switch, so an unreadable policy must not silently re-enable
-    third-party code the operator disabled. Failing closed is safe because only
-    third-party apps consult this gate — builtins skip it entirely (see
-    load_app_module and backend._start_app_backend_body), so a config error
-    declines untrusted app code without bricking first-party apps.
-    """
-    try:
-        # circular import: config.loader imports module_loader indirectly, so the
-        # import is deferred to call time rather than module top.
-        from kiro_crew.config.loader import KiroCrewConfig
-
-        return bool(getattr(KiroCrewConfig.load().agent, "apps_allow_third_party", True))
-    except Exception as exc:  # noqa: BLE001 — config load must never hard-fail app loading
-        logger.error(
-            "apps_allow_third_party: config load failed (%s); failing closed "
-            "(refusing third-party app code)",
-            exc,
-        )
-        return False
 
 
 def _module_namespace(app_name: str, dotted_path: str) -> str:
@@ -147,26 +113,21 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> Callable[
     # Unique module name to avoid sys.modules collisions
     unique_name = _module_namespace(app_name, dotted_path)
 
-    # CSE SEC-012: third-party (operator-installed) app code executes unsandboxed
-    # in the gateway process. Surface that trust boundary explicitly + auditably,
-    # and let the operator refuse it entirely via config.
-    third_party = not _is_builtin_app(app_resolved)
+    # CSE SEC-012: third-party Python runs in-process. Use the same central
+    # decision as every other execution surface before emitting the trust warning.
+    third_party = not _is_builtin_app(app_name, app_resolved)
     if third_party:
-        # Check the off-switch BEFORE warning, so a denied load does not emit a
-        # log line asserting execution is happening right before the denial.
-        if not _third_party_apps_allowed():
-            sel().log_api_access(
-                caller="gateway",
-                operation="app_module_load",
-                outcome="denied",
-                resources=f"{app_name}:{module_path} (third_party)",
-            )
+        denied = app_execution_denied(
+            app_name,
+            action="module_load",
+            app_root=app_resolved,
+            caller="gateway",
+        )
+        if denied:
             raise ImportError(
                 f"Refusing to load third-party app {app_name!r} module "
-                f"{module_path!r}: in-process execution of untrusted app code is "
-                f"disabled by agent.apps_allow_third_party=false. Set it to true in "
-                f"~/.kiro/crew/config.json to re-enable (accepting that app code runs "
-                f"with full gateway privileges)."
+                f"{module_path!r}: {denied}. App code would run in-process with "
+                "full gateway privileges."
             )
         _warn_third_party_execution(app_name)
 

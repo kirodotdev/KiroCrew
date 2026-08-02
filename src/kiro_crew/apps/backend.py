@@ -22,9 +22,13 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.apps import module_loader as _module_loader
 from kiro_crew.apps.admission import app_admission_denied
-from kiro_crew.apps.manager import _read_installed, app_dir, get_app_manifest, list_apps
+from kiro_crew.apps.execution import (
+    app_execution_denied,
+    shipped_builtin_app_root,
+    shipped_builtin_module_path,
+)
+from kiro_crew.apps.manager import app_dir, get_app_manifest, list_apps
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
@@ -521,35 +525,23 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         and not (root / entry_point).exists()
     )
 
-    # Security hardening: the same operator off-switch that blocks
-    # in-process third-party module loading (module_loader.load_app_module) must
-    # also block spawning a third-party app's out-of-process backend, or the
-    # `agent.apps_allow_third_party=false` promise ("refuse third-party app code
-    # entirely") is only half-honored. Gate on the TRUSTED provenance signal — the
-    # installed record's ``origin`` (stamped "builtin" by register_builtin_apps for
-    # shipped apps) — NOT the ``is_module_entry`` heuristic derived from the
-    # attacker-controlled manifest entryPoint. A third-party app under
-    # ~/.kiro/crew/apps/<x>/ could otherwise declare a dotted module-style entryPoint
-    # (e.g. "kiro_crew.cli_server") to flip is_module_entry True and bypass both this
-    # off-switch AND the entryPoint path-containment backstop. Fail-safe: if
-    # provenance can't be read, treat as third-party (gated).
-    meta = _read_installed(app_name)
-    is_builtin_origin = meta is not None and meta.origin == "builtin"
-    if not is_builtin_origin and not _module_loader._third_party_apps_allowed():
-        try:
-            sel().log_api_access(
-                caller="gateway",
-                operation="app_backend_spawn",
-                outcome="denied",
-                resources=f"{app_name} (third_party)",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("SEL audit failed for app %s backend deny: %s", app_name, exc)
-        logger.warning(
-            "Refusing to spawn third-party app %s backend: out-of-process execution of "
-            "untrusted app code is disabled by agent.apps_allow_third_party=false.",
-            app_name,
-        )
+    # Bind the exemption to the code this spawn will actually execute.  A
+    # module-style builtin is trusted only when its real package manifest names
+    # this app and the ``python -m`` target exists under that package.  File
+    # backends execute from the mutable installed-app tree and remain third-party.
+    execution_path = (
+        shipped_builtin_module_path(app_name, entry_point)
+        if is_module_entry
+        else root / entry_point
+    )
+    denied = app_execution_denied(
+        app_name,
+        action="backend_spawn",
+        app_root=execution_path,
+        caller="gateway",
+    )
+    if denied:
+        logger.warning("Refusing to spawn third-party app %s backend: %s", app_name, denied)
         return None
 
     if is_module_entry:
@@ -1555,61 +1547,82 @@ def start_enabled_app_backends() -> list[str]:
         except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
             logger.warning("Boot MCP reconcile failed for disabled app %s: %s", name, exc)
 
-    # Skill reconcile: ensure manifest-declared skills for enabled apps have
-    # their symlinks in place. An in-place upgrade (new app version adding skills)
-    # would otherwise never get symlinks until a disable/enable cycle. Runs for
-    # EVERY enabled gateway-managed app -- an upgrade that removes the last
-    # declared skill still needs the cleanup branch to scrub stale symlinks.
-    # Governance/admission are re-vetted FIRST: a now-banned or now-unsigned
-    # app must have its skills DEREGISTERED, never freshly installed.
+    # Executable-resource reconcile: restore agents, skills, cron definitions,
+    # and MCP config only for apps admitted by every activation boundary. A
+    # policy tightened after install must revoke stale derivative resources,
+    # not merely decline to start the backend.
     for app_info in apps:
         if not app_info.get("enabled"):
             continue
         name = app_info.get("name", "")
         try:
             from kiro_crew.apps.bridges import (
+                _deregister_agents,
+                _deregister_mcp_servers,
                 _deregister_skills,
                 reconcile_app_skills,
+                register_app,
             )
         except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
-            logger.warning("Boot skill reconcile unavailable: %s", exc)
+            logger.warning("Boot resource reconcile unavailable: %s", exc)
             break
-        # Governance/admission vetting is deny-by-default: an app that cannot
-        # be POSITIVELY admitted (including when the vetting itself raises,
-        # e.g. a malformed admission policy) must have its skills
-        # deregistered, never left active or freshly installed.
+
+        # Governance/admission/execution vetting is deny-by-default. Builtins
+        # remain exempt from signature/allowlist admission, but their execution
+        # exemption still requires immutable shipped name + path provenance.
         try:
             gov_denied = _app_activation_denied(name)
-            # Builtins are exempt from admission (signature/allowlist) checks,
-            # mirroring the backend-start loop and enable_app -- otherwise a
-            # require_signature policy would strip every core app's skills
-            # while the backend itself still boots under the exemption.
             adm_denied = None
             if not gov_denied and app_info.get("origin") != "builtin":
                 adm_denied = app_admission_denied(
                     name, manifest=get_app_manifest(name), action="boot"
                 )
+            execution_denied = None
+            if not gov_denied and not adm_denied:
+                execution_denied = app_execution_denied(
+                    name,
+                    action="resource_boot_reconcile",
+                    app_root=shipped_builtin_app_root(name),
+                    caller="gateway",
+                )
         except Exception as exc:  # noqa: BLE001 — vetting error == denial
-            gov_denied = f"governance/admission vetting raised: {exc}"
+            gov_denied = f"governance/admission/execution vetting raised: {exc}"
             adm_denied = None
-        if gov_denied or adm_denied:
+            execution_denied = None
+
+        denied = gov_denied or adm_denied or execution_denied
+        if denied:
             try:
+                _deregister_agents(name)
                 _deregister_skills(name)
+                _deregister_mcp_servers(name)
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    "Boot skill reconcile: FAILED to deregister skills for "
-                    "denied app %s: %s", name, exc,
+                    "Boot resource reconcile: FAILED to revoke resources for "
+                    "denied app %s: %s",
+                    name,
+                    exc,
                 )
             else:
                 logger.warning(
-                    "Boot skill reconcile: deregistered skills for denied app %s: %s",
-                    name, gov_denied or adm_denied,
+                    "Boot resource reconcile: revoked executable resources for "
+                    "denied app %s: %s",
+                    name,
+                    denied,
                 )
             continue
+
         try:
+            registration = register_app(name)
+            if registration.errors:
+                logger.warning(
+                    "Boot resource reconcile for app %s completed with errors: %s",
+                    name,
+                    registration.errors,
+                )
             reconcile_app_skills(name)
         except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
-            logger.warning("Boot skill reconcile failed for app %s: %s", name, exc)
+            logger.warning("Boot resource reconcile failed for app %s: %s", name, exc)
 
     # Vet first, then spawn the admitted set CONCURRENTLY. Vetting is cheap and
     # order-dependent bookkeeping; spawning is the slow part (each child is polled

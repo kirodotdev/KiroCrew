@@ -104,6 +104,12 @@ export function useZoom() {
       const effective: FontFamily =
         (ui === 'cli' && isDefaultFamily) ? 'mono' : family
       html.style.setProperty('--font-body', FAMILY_MAP[effective])
+      // Publish the RESOLVED family (after the CLI-mode override) as a data
+      // attribute so CSS can react to it. Needed because some tight chrome has
+      // to compensate for how much wider JetBrains Mono is than Space Grotesk —
+      // see the `[data-font-family="mono"]` rule in index.css. Reads the
+      // effective value, not `family`, so CLI mode's auto-mono is covered too.
+      html.dataset.fontFamily = effective
     }
     apply()
     // Re-apply on data-ui changes (e.g. user toggles Interface in Settings).

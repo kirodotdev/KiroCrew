@@ -263,6 +263,12 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "boundary cannot split and hide a credential).",
     ),
     (
+        "Configured-channel session mirror",
+        "dashboard/chat_mirror.py",
+        "Recent dashboard context posted while linking a configured non-Slack "
+        "destination, via redact_and_truncate before transport dispatch.",
+    ),
+    (
         "Slack Block Kit views",
         "slack/blocks.py",
         "Message text rendered into Block Kit payloads (Home Tab, session views).",

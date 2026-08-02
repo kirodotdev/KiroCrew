@@ -151,11 +151,11 @@ export default function PromptsTab() {
       {error && <p className="text-red-400 text-sm px-3 py-4">{error.message || 'Failed to load prompts'}</p>}
     </Card>
     {filteredUser.length > 0 && <Card>
-      <CardTitle>{i18nT('pages.overview.promptsTab.user_prompts')}{filter ? `${filteredUser.length} of ${userPrompts.length}` : userPrompts.length})</CardTitle>
+      <CardTitle>{filter ? i18nT('pages.overview.promptsTab.user_prompts_filtered_count', { count: filteredUser.length, total: userPrompts.length }) : i18nT('pages.overview.promptsTab.user_prompts_count', { count: userPrompts.length })}</CardTitle>
       {filteredUser.map(renderPrompt)}
     </Card>}
     {grouped.length > 0 && <Card>
-      <CardTitle>{provider.labels.pluginRegistryName} {i18nT('pages.overview.promptsTab.prompts_2')}{filter ? `${filteredPackage.length} of ${packagePrompts.length}` : packagePrompts.length})</CardTitle>
+      <CardTitle>{provider.labels.pluginRegistryName} {filter ? i18nT('pages.overview.promptsTab.prompts_filtered_count', { count: filteredPackage.length, total: packagePrompts.length }) : i18nT('pages.overview.promptsTab.prompts_count', { count: packagePrompts.length })}</CardTitle>
       {grouped.map(([pkg, items]) => (
           <div key={pkg} className="mb-3">
             <div className="text-muted text-[12px] uppercase tracking-[.06em] font-semibold px-3 py-1.5 bg-bg-hover rounded-t-md">{pkg}</div>

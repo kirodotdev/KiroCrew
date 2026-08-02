@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -157,7 +158,11 @@ def maybe_spill_response(
         if spill_dir.is_symlink():
             logger.warning("spill dir is a symlink — refusing to spill")
             return line
-        spill_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Not a bare mkdir(mode=0o700): that is umask-masked, is ignored for
+        # an already-existing directory, and is inert on Windows -- yet this
+        # directory holds spilled tool responses, which are exactly the
+        # payloads that may carry secrets.
+        platform_compat.make_owner_only_dir(spill_dir)
         spill_path = spill_dir / filename
 
         # Exclusive, no-follow write: O_EXCL refuses ANY pre-existing entry

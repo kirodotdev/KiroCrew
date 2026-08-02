@@ -668,15 +668,33 @@ class TestNoCronsFlag:
             svc.start.assert_not_called()
             assert gw.cron_svc is svc  # still instantiated, just not started
 
-    def test_default_starts_crons(self) -> None:
+    def test_default_starts_crons_after_app_reconcile(self) -> None:
         gw = self._make_gateway(no_crons=False)
-        with patch("kiro_crew.slack.gateway.CronService") as mock_cls:
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cls, patch(
+            "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+            new_callable=AsyncMock,
+        ) as reconcile:
             svc = MagicMock()
             svc.start = AsyncMock()
             mock_cls.return_value = svc
             mock_cls.create = AsyncMock(return_value=svc)
             asyncio.run(gw._init_cron())
-            svc.start.assert_called_once()
+            reconcile.assert_awaited_once_with(svc)
+            svc.start.assert_awaited_once()
+
+    def test_reconcile_failure_leaves_cron_scheduler_stopped(self) -> None:
+        gw = self._make_gateway(no_crons=False)
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cls, patch(
+            "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+            new_callable=AsyncMock,
+            side_effect=OSError("cron store unavailable"),
+        ):
+            svc = MagicMock()
+            svc.start = AsyncMock()
+            mock_cls.return_value = svc
+            mock_cls.create = AsyncMock(return_value=svc)
+            asyncio.run(gw._init_cron())
+            svc.start.assert_not_awaited()
 
     def test_init_stores_no_crons(self) -> None:
         """GatewayOrchestrator.__init__ stores _no_crons attribute."""

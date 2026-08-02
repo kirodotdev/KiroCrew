@@ -635,7 +635,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // straight in source mode and the View Preview toggle is hidden for them.
   const [editing, setEditing] = useState(() => {
     if (MD_EXTS.has(extOf(filePath))) return false
-    return !['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf'].includes(detectFileType(filePath))
+    return !['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw'].includes(detectFileType(filePath))
   })
   const [diffMode, setDiffMode] = useState(initialDiffMode ?? false)
   const toggleDiffMode = useCallback(() => {
@@ -743,7 +743,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const ext = extOf(filePath)
   const fileType = detectFileType(filePath)
   const isMarkdown = MD_EXTS.has(ext)
-  const isRichType = fileType === 'image' || fileType === 'csv' || fileType === 'json' || fileType === 'jsonl' || fileType === 'html' || fileType === 'pdf'
+  const isRichType = fileType === 'image' || fileType === 'csv' || fileType === 'json' || fileType === 'jsonl' || fileType === 'html' || fileType === 'pdf' || fileType === 'excalidraw'
   useEffect(() => { if (isRichType) setDiffMode(false) }, [isRichType])
   // ── Preview-mode find (Cmd+F) ─────────────────────────────────────────────
   // Three surfaces compete for Cmd+F: Monaco owns it while editing (it stops

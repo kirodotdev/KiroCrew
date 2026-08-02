@@ -37,7 +37,7 @@ export function KnowledgePicker({ results, query, loading, onInject, onSkip }: P
     return (
       <div className="border border-border rounded-lg p-4 mb-3 animate-pulse">
         <div className="flex items-center gap-2 text-muted text-sm">
-          <Loader2 size={14} className="animate-spin" /> {i18nT('pages.chat.knowledgePicker.searching_knowledge_for')}{query}{"\u201d\u2026"}
+          <Loader2 size={14} className="animate-spin" /> {i18nT('pages.chat.knowledgePicker.searching_knowledge_for_query', { query })}
         </div>
       </div>
     )
@@ -47,7 +47,7 @@ export function KnowledgePicker({ results, query, loading, onInject, onSkip }: P
     return (
       <div className="border border-border rounded-lg p-4 mb-3">
         <div className="flex items-center justify-between">
-          <span className="text-sm text-muted">{i18nT('pages.chat.knowledgePicker.no_knowledge_found_for')}{query}{"\u201d"}</span>
+          <span className="text-sm text-muted">{i18nT('pages.chat.knowledgePicker.no_knowledge_found_for_query', { query })}</span>
           <button onClick={onSkip} className="text-[13px] text-accent bg-transparent border-none cursor-pointer">{i18nT('pages.chat.knowledgePicker.dismiss')}</button>
         </div>
       </div>
@@ -61,7 +61,7 @@ export function KnowledgePicker({ results, query, loading, onInject, onSkip }: P
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 text-sm font-medium text-text">
           <Brain size={14} className="text-accent" />
-          {i18nT('pages.chat.knowledgePicker.knowledge_results_for')}{query}{"\u201d"}
+          {i18nT('pages.chat.knowledgePicker.knowledge_results_for_query', { query })}
         </div>
         <button onClick={onSkip} className="text-muted hover:text-text bg-transparent border-none cursor-pointer" aria-label={i18nT('pages.chat.knowledgePicker.dismiss_knowledge_results')}>
           <X size={14} />

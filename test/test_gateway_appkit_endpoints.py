@@ -625,6 +625,78 @@ class TestReverseProxy:
         assert "invalid path" in data["error"]
 
     @pytest.mark.asyncio
+    async def test_disabled_app_proxy_rejected(self):
+        """An app that is NOT enabled cannot be proxied to, even with a valid secret.
+
+        The other guards here prove WHO is calling; this one proves the app is allowed
+        to run at all. Every builtin ships ``defaultEnabled: false``, and a builtin
+        whose backend is derived from ``mcpServers`` is issued an ``.app_secret`` at
+        registration — so without this gate an app the user never turned on still had
+        an authenticated, secret-signed proxy to its local backend, and a mutation
+        could reach a process that was never activated.
+
+        403, not 502: refusing an unauthorized caller is a different answer from
+        "there is no backend there".
+        """
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.apps.routes import handle_app_api_proxy
+
+        # Flip the fixture's app to disabled; everything else stays valid.
+        installed_path = self._home / "apps" / "proxy-app" / "installed.json"
+        meta = json.loads(installed_path.read_text())
+        assert meta["enabled"] is True, "fixture should start enabled"
+        meta["enabled"] = False
+        installed_path.write_text(json.dumps(meta))
+
+        request = MagicMock()
+        request.match_info = {"name": "proxy-app", "path": "health"}
+        request.get = lambda key, default="": default   # dashboard caller, not an app
+
+        with patch("kiro_crew.apps.routes.sel") as mock_sel:
+            resp = await handle_app_api_proxy(request)
+
+        assert resp.status == 403, f"expected 403, got {resp.status}"
+        body = json.loads(resp.body)
+        assert "not enabled" in body["error"]
+        # Machine-readable identifier, per test_error_code_contract.py: the
+        # dashboard renders `error` verbatim into a localized page, so the code is
+        # what a client switches on.
+        assert body["code"] == "app_not_enabled"
+
+        # The denial must be AUDITED. An authorization decision that leaves no
+        # trail makes a repeated probe against a disabled app unobservable, which
+        # is most of the value of having the gate at all.
+        mock_sel.return_value.log_api_access.assert_called_once()
+        audit = mock_sel.return_value.log_api_access.call_args.kwargs
+        assert audit["outcome"] == "denied"
+        assert audit["operation"] == "app_proxy_disabled_app"
+        assert "proxy-app" in audit["resources"]
+
+    @pytest.mark.asyncio
+    async def test_enabled_app_passes_the_gate(self):
+        """The gate must not block a legitimately enabled app.
+
+        Proves the 403 above comes from the enablement check specifically and not from
+        some unrelated refusal: the same request on an ENABLED app gets past it and
+        fails later, on the backend not existing (502), never 403.
+        """
+        from unittest.mock import MagicMock
+
+        from kiro_crew.apps.routes import handle_app_api_proxy
+
+        meta = json.loads((self._home / "apps" / "proxy-app" / "installed.json").read_text())
+        assert meta["enabled"] is True
+
+        request = MagicMock()
+        request.match_info = {"name": "proxy-app", "path": "health"}
+        request.get = lambda key, default="": default
+
+        resp = await handle_app_api_proxy(request)
+        assert resp.status != 403, "an enabled app must not be refused by the gate"
+        assert resp.status == 502, f"expected the no-backend 502, got {resp.status}"
+
+    @pytest.mark.asyncio
     async def test_cross_app_token_rejected(self):
         """An APP token (request['app']) may only proxy into its OWN backend.
         A token for app 'other-app' hitting /apps/proxy-app/api/... is 403

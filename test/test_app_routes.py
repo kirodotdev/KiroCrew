@@ -35,6 +35,10 @@ def _setup_env(tmp_path, monkeypatch):
     home = tmp_path / "kirocrew-home"
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
+    # General route tests explicitly admit their synthetic third-party apps.
+    (home / "config.json").write_text(
+        json.dumps({"agent": {"apps_allow_third_party": True}}), encoding="utf-8"
+    )
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     import kiro_crew.apps.bridges as bridges_mod
