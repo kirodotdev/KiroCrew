@@ -938,6 +938,11 @@ class TestClientParity(unittest.TestCase):
         "enrich_pulls_by_number", "enrichment_complete", "search_pulls", "add_issue_labels",
         "remove_issue_label", "set_issue_state", "create_label", "probe_open_list",
         "build_pr_search_query", "get_ref_summary",
+        # Pull-request actions.
+        "set_pr_state", "submit_pr_review", "add_issue_comment", "add_pr_comment",
+        "merge_pull_request", "enable_auto_merge", "disable_auto_merge",
+        "list_pr_workflow_runs",
+        "cancel_workflow_run", "rerun_workflow_run",
     )
 
     def test_both_modules_implement_the_whole_surface(self):

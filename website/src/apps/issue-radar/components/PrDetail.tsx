@@ -29,6 +29,8 @@ import LabelChip from './LabelChip'
 import MemberBadge from './MemberBadge'
 import AiSummaryCard from './AiSummaryCard'
 import ReviewButton from './ReviewButton'
+import PrActionsBar from './PrActionsBar'
+import PrRunActions from './PrRunActions'
 import { useIssueRadar } from '../context'
 import { relativeTimeOrDate, asArray, detailPollMs } from '../lib/format'
 import {
@@ -405,7 +407,12 @@ function checkKey(c: PrCheck, i: number): string {
 }
 
 function AutoReviewChecks(
-  { checks, loading, failed }: { checks: PrCheck[]; loading: boolean; failed: boolean },
+  { checks, loading, failed, children }: {
+    checks: PrCheck[]; loading: boolean; failed: boolean
+    /** The CI run controls (PrRunActions), rendered under the rows — the remedy
+     * belongs with the status it acts on. */
+    children?: React.ReactNode
+  },
 ) {
   const [showPassed, setShowPassed] = useState(false)
   const failing = checks.filter((c) => c.bucket === 'failure')
@@ -475,12 +482,13 @@ function AutoReviewChecks(
           )}
         </div>
       )}
+      {children}
     </Section>
   )
 }
 
 export default function PrDetail({ pull }: { pull: PullRequest }) {
-  const { active, colorByName, memberRoleByLogin } = useIssueRadar()
+  const { active, colorByName, memberRoleByLogin, canWrite } = useIssueRadar()
   const scopeKey = repoScopeKey(active)
   // GitLab calls these merge requests; the whole pane's copy follows the ref.
   const terms = providerTerms(active)
@@ -707,6 +715,20 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
             </button>
           </div>
         </div>
+
+        {/* Actions on their own row rather than beside Review: the review/comment
+            composer needs the full header width, and a row that grows in place
+            keeps the title from reflowing when it opens. */}
+        {!awaitingFirstPaint && (
+          <div className="mt-3">
+            <PrActionsBar
+              repoRef={active}
+              pull={actionPull}
+              detail={detail}
+              canWrite={canWrite}
+            />
+          </div>
+        )}
       </header>
 
       {/* ── Scroll area: main column + sidebar ── */}
@@ -822,7 +844,18 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               checks={checks}
               loading={detailQuery.isLoading}
               failed={Boolean(detailQuery.error)}
-            />
+            >
+              {/* Cancel / re-run controls live INSIDE the Auto review block: they
+                  act on the same CI the rows above report, so splitting them into
+                  their own section would separate the status from its remedy. */}
+              <PrRunActions
+                repoRef={active}
+                number={pull.number}
+                headSha={detail?.head_sha ?? null}
+                canWrite={canWrite}
+                live={!lifecycleMergedAt && lifecycleState !== 'closed'}
+              />
+            </AutoReviewChecks>
 
             <Section title={i18nT('apps.issueRadar.components.prDetail.reviewers')} icon={<Users size={12} />}>
               {reviewers.length > 0 ? (

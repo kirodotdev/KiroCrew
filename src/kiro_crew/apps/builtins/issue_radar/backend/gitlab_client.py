@@ -1400,6 +1400,10 @@ def _norm_pull(raw: dict) -> dict:
         "requested_reviewers": _usernames(raw.get("reviewers")),
         "base": raw.get("target_branch"),
         "head": raw.get("source_branch"),
+        # The head COMMIT, for the same reason github_client's list JQ carries it: a
+        # bulk approve has to name the revision the row was rendered at. GitLab's list
+        # payload gives ``sha`` directly; ``diff_refs`` is the detail-only richer form.
+        "head_sha": (_obj(raw.get("diff_refs")).get("head_sha") or raw.get("sha")),
         "body": raw.get("description") or "",
     }
     # The card enrichment GitHub needs a second round trip for is already in this
@@ -1467,13 +1471,38 @@ def get_pr_detail(
             "mergeable": _mergeable(raw),
             "mergeable_state": str(raw.get("detailed_merge_status") or raw.get("merge_status") or "unknown"),
             "merged_by": _username(raw.get("merged_by")),
-            "head_sha": (_obj(raw.get("diff_refs")).get("head_sha") or raw.get("sha")),
+            # ``head_sha`` is NOT re-derived here: ``_norm_pull`` already set it from
+            # the same expression, and two copies of a value a merge is pinned to is
+            # one copy too many.
+            # "Merge when pipeline succeeds" is GitLab's auto-merge. Normalized to
+            # the same optional object the GitHub path reports, so the pane's
+            # control reads one shape.
+            "auto_merge": (
+                {
+                    "method": "SQUASH" if raw.get("squash") else None,
+                    # NOT falling back to the assignee: GitLab populates
+                    # ``merge_user`` only AFTER the merge, so for an armed-but-
+                    # unmerged MR it is reliably null and the fallback would name
+                    # whoever happens to be assigned as the person who armed it.
+                    # None means "we do not know", which is the truth.
+                    "enabled_by": _username(raw.get("merge_user")),
+                }
+                if raw.get("merge_when_pipeline_succeeds")
+                else None
+            ),
         }
     )
     return detail
 
 
-# GitLab's detailed_merge_status values that mean "can be merged right now".
+# Statuses that map onto GitHub's ``mergeable`` — i.e. "the branches do not
+# conflict". Deliberately the SAME weak claim GitHub's field makes, no stronger:
+# ``can_be_merged`` is the legacy ``merge_status`` value and speaks only to conflicts,
+# while ``mergeable`` is the modern ``detailed_merge_status`` and does imply the
+# approval/discussion/pipeline rules are met. Folding them together is correct HERE
+# (the reader wants a conflict signal) and would be wrong for a merge gate — which is
+# why ``routes._MERGE_ALLOWED_STATES`` keys off the raw status instead and admits only
+# the modern value.
 _MERGEABLE_STATUSES = frozenset({"mergeable", "can_be_merged"})
 # Values that mean "GitLab has not finished computing it yet" — reported as
 # unknown (None) rather than as not-mergeable, so the UI does not flash a false
@@ -1826,3 +1855,417 @@ def search_pulls(
         # being merged, matching the GitHub path.
         out = [row for row in out if not row.get("merged_at")]
     return out
+
+
+# ── merge-request actions (parity with github_client's PR action surface) ─────
+#
+# GitLab's vocabulary differs from GitHub's at every one of these, so each
+# function maps the app's provider-neutral request onto GitLab's own concept:
+#
+#   close/reopen        -> a ``state_event`` on the MR (same shape as an issue)
+#   approve             -> the dedicated /approve endpoint, NOT a review object;
+#                          GitLab has no REQUEST_CHANGES verb at all
+#   comment             -> a note
+#   auto-merge          -> "merge when pipeline succeeds" (MWPS), the closest
+#                          native equivalent, and likewise not an immediate merge
+#   cancel / retry CI   -> a pipeline, not a workflow run
+#
+# Where GitLab genuinely has no equivalent (requesting changes; re-running only
+# the failed jobs) the function REFUSES rather than approximating — silently
+# turning "request changes" into a plain comment would tell the user a verdict was
+# recorded when none was.
+
+
+def set_pr_state(
+    owner: str, repo: str, number: int, state: str, *, host: str = "",
+    timeout: float = GL_TIMEOUT_SEC,
+) -> dict:
+    """Close or reopen a merge request. ``state`` is ``"open"`` or ``"closed"``."""
+    if state not in ("open", "closed"):
+        raise ProviderCliError(f"invalid MR state: {state!r}")
+    event = "close" if state == "closed" else "reopen"
+    data = _obj(
+        _glab_api(
+            f"projects/{project_path(owner, repo)}/merge_requests/{int(number)}",
+            host=host,
+            timeout=timeout,
+            method="PUT",
+            body={"state_event": event},
+        )
+    )
+    return {
+        "state": _norm_state(data.get("state")) or state,
+        "merged": str(data.get("state") or "") == "merged",
+        "draft": bool(data.get("draft") or data.get("work_in_progress") or False),
+    }
+
+
+# GitLab records approval as its own resource and has NO "request changes" verb —
+# the closest thing is unapproving, which is not a verdict on a revision. So only
+# the two GitLab can honour are accepted, and REQUEST_CHANGES is refused loudly.
+PR_REVIEW_EVENTS = ("APPROVE", "COMMENT")
+
+
+def submit_pr_review(
+    owner: str, repo: str, number: int, event: str, body: str = "", head_sha: str = "",
+    *, host: str = "", timeout: float = GL_TIMEOUT_SEC,
+) -> dict:
+    """Approve a merge request, or leave review prose on it.
+
+    ``APPROVE`` calls GitLab's ``/approve`` endpoint, then posts any accompanying
+    ``body`` as a separate note (GitLab's approval carries no text of its own). That
+    ORDER is load-bearing — see the comment at the call site: the two calls are not
+    atomic, and approving first is what keeps a retry from duplicating the note.
+    ``COMMENT`` is just a note.
+
+    ``head_sha`` is REQUIRED and rides as GitLab's ``sha`` precondition on
+    ``/approve``, which is the same guarantee GitHub's ``commit_id`` gives: a push
+    landing between the render and the click makes GitLab refuse (409) rather than
+    record an approval of code the reviewer never saw. A ``COMMENT`` has no such
+    parameter — a note is not a verdict and GitLab anchors it to the MR, not to a
+    revision — but the sha is still required of the CALLER so the two verbs cannot
+    diverge into "one of them checks and the other does not".
+
+    ``REQUEST_CHANGES`` is REFUSED: GitLab has no such verb, and mapping it to an
+    unapproval or a bare comment would report a verdict the platform never
+    recorded.
+    """
+    verb = (event or "").strip().upper()
+    if verb == "REQUEST_CHANGES":
+        raise ProviderCliError(
+            "GitLab has no 'request changes' review verb — leave a comment, or "
+            "unapprove the merge request on GitLab"
+        )
+    if verb not in PR_REVIEW_EVENTS:
+        raise ProviderCliError(f"invalid review event: {event!r}")
+    text = (body or "").strip()
+    if verb == "COMMENT" and not text:
+        raise ProviderCliError("a COMMENT review requires a comment body")
+    sha = (head_sha or "").strip()
+    if not _SHA_RE.match(sha):
+        raise ProviderCliError(
+            "refusing to review without the head commit it was read at "
+            f"(got {head_sha!r})"
+        )
+    base = f"projects/{project_path(owner, repo)}/merge_requests/{int(number)}"
+    if verb == "COMMENT":
+        add_pr_comment(owner, repo, number, text, host=host, timeout=timeout)
+        return {"id": None, "state": "COMMENTED", "submitted_at": None}
+
+    # APPROVE. The approval goes FIRST and the optional note second, which is the
+    # opposite of what reads naturally — and is deliberate.
+    #
+    # These are two non-atomic calls, so one of them can fail after the other
+    # succeeded, and the caller's only recovery is to retry the pair. Posting the note
+    # first meant a retry after a failed /approve posted the note AGAIN, so the user
+    # accumulated duplicate comments on the merge request while still not having
+    # approved it. Approving first makes the retry safe in the direction that matters:
+    # GitLab's /approve is idempotent (re-approving an already-approved MR is a no-op),
+    # so a retry after a failed NOTE re-approves harmlessly and then posts the note
+    # once. The residual failure mode is an approval with no note attached, which is
+    # visible on the MR and recoverable by commenting — strictly better than silently
+    # duplicating prose.
+    data = _obj(
+        _glab_api(
+            f"{base}/approve", host=host, timeout=timeout, method="POST", body={"sha": sha}
+        )
+    )
+    if text:
+        add_pr_comment(owner, repo, number, text, host=host, timeout=timeout)
+    return {
+        "id": data.get("id"),
+        "state": "APPROVED",
+        "submitted_at": data.get("updated_at") or data.get("created_at"),
+    }
+
+
+def _add_note(
+    owner: str, repo: str, number: int, body: str, collection: str, *, host: str, timeout: float
+) -> dict:
+    """Post a note on an issue or a merge request.
+
+    ``collection`` is required and explicit because GitLab keeps issues and merge
+    requests in SEPARATE number sequences — unlike GitHub, where one issues
+    endpoint serves both — so the number alone does not identify the item and
+    posting to the wrong collection would comment on an unrelated one. That is
+    also why the public surface is two named functions rather than one with a mode
+    flag: a defaulted target is a silent way to comment on the wrong thing.
+    """
+    text = (body or "").strip()
+    if not text:
+        raise ProviderCliError("a comment needs a body")
+    data = _obj(
+        _glab_api(
+            f"projects/{project_path(owner, repo)}/{collection}/{int(number)}/notes",
+            host=host,
+            timeout=timeout,
+            method="POST",
+            body={"body": text},
+        )
+    )
+    return {
+        "id": data.get("id"),
+        # GitLab's note response carries no direct web URL, so the caller links to
+        # the MR/issue itself rather than fabricating an anchor.
+        "url": None,
+        "created_at": data.get("created_at"),
+    }
+
+
+def add_issue_comment(
+    owner: str, repo: str, number: int, body: str, *, host: str = "",
+    timeout: float = GL_TIMEOUT_SEC,
+) -> dict:
+    """Post a note on an ISSUE."""
+    return _add_note(owner, repo, number, body, "issues", host=host, timeout=timeout)
+
+
+def add_pr_comment(
+    owner: str, repo: str, number: int, body: str, *, host: str = "",
+    timeout: float = GL_TIMEOUT_SEC,
+) -> dict:
+    """Post a note on a MERGE REQUEST.
+
+    A separate function from :func:`add_issue_comment` because on GitLab these are
+    different collections with independent numbering; on GitHub they are the same
+    endpoint, and ``github_client.add_pr_comment`` is an alias for exactly that
+    reason. Routes always call the PR one for a PR, so the two providers cannot
+    disagree about which item got the comment.
+    """
+    return _add_note(owner, repo, number, body, "merge_requests", host=host, timeout=timeout)
+
+
+# GitLab's merge-method vocabulary maps onto the project's own merge-method
+# setting rather than a per-request choice; the app keeps GitHub's names so one
+# request shape serves both providers, and translates here.
+#
+# ``REBASE`` is deliberately ABSENT, and this tuple is deliberately shorter than
+# GitHub's. GitLab's ``/merge`` endpoint has no rebase option at all — merge-commit
+# vs. semi-linear vs. fast-forward is the PROJECT's ``merge_method`` setting, and the
+# only per-request lever is ``squash``. So accepting ``REBASE`` here meant the request
+# translated to ``squash: false`` and GitLab produced a MERGE COMMIT: the caller named
+# one history shape and silently got another, on the one operation that is
+# irreversible. A method the provider cannot honour is refused rather than
+# approximated — the same rule the rest of this module follows for "request changes"
+# and a full CI re-run. (Rebasing an MR is a separate ``/rebase`` endpoint that does
+# not merge, so it is not a substitute.)
+#
+# ``routes._pr_merge_method_field`` reads this tuple off the KEY's own client, so the
+# divergence needs no route change — which is exactly why it reads it per-provider
+# instead of reaching for github_client's copy.
+PR_MERGE_METHODS = ("MERGE", "SQUASH")
+
+
+def merge_pull_request(
+    owner: str, repo: str, number: int, method: str = "SQUASH", head_sha: str = "",
+    *, host: str = "", timeout: float = GL_TIMEOUT_SEC,
+) -> dict:
+    """Merge a merge request now (``PUT .../merge_requests/{iid}/merge``).
+
+    Like the GitHub path, this cannot bypass a gate: GitLab enforces the project's
+    approval rules and pipeline requirements on this endpoint and answers **405**
+    for an MR that has not satisfied them, or **406** when it cannot be merged
+    (conflicts). Both surface as errors.
+
+    ``method`` only decides ``squash`` — GitLab's merge-vs-rebase behaviour is a
+    PROJECT setting rather than a per-request flag, which is why ``REBASE`` is not in
+    :data:`PR_MERGE_METHODS` here even though it is on GitHub: this endpoint cannot
+    honour it, and translating it to ``squash: false`` would hand back a merge commit
+    under a rebase label. ``squash`` is sent EXPLICITLY either way: GitLab reads a
+    missing ``squash`` as "leave as-is", so omitting it would inherit whatever the MR
+    was last armed with instead of what this call asked for.
+
+    ``head_sha`` is REQUIRED and rides as GitLab's ``sha`` precondition — the same
+    guarantee as the GitHub path: the merge is pinned to the commit the caller looked
+    at, so a push landing in between answers 409 instead of merging unreviewed code.
+
+    Returns ``{merged, sha, message}`` in the GitHub-shaped vocabulary the route
+    and the UI speak.
+    """
+    verb = (method or "").strip().upper()
+    if verb not in PR_MERGE_METHODS:
+        raise ProviderCliError(f"invalid merge method: {method!r}")
+    sha = (head_sha or "").strip()
+    if not re.match(r"^[0-9a-fA-F]{7,64}$", sha):
+        raise ProviderCliError(
+            "refusing to merge without the head commit it was reviewed at "
+            f"(got {head_sha!r})"
+        )
+    payload: dict[str, object] = {"squash": verb == "SQUASH", "sha": sha}
+    data = _obj(
+        _glab_api(
+            f"projects/{project_path(owner, repo)}/merge_requests/{int(number)}/merge",
+            host=host,
+            timeout=timeout,
+            method="PUT",
+            body=payload,
+        )
+    )
+    state = str(data.get("state") or "")
+    return {
+        # GitLab reports the resulting STATE rather than a boolean; "merged" is the
+        # only value that means the merge happened.
+        "merged": state == "merged",
+        "sha": data.get("merge_commit_sha") or data.get("sha"),
+        "message": data.get("merge_error") or "",
+    }
+
+
+def enable_auto_merge(
+    owner: str, repo: str, number: int, method: str = "SQUASH", *, host: str = "",
+    timeout: float = GL_TIMEOUT_SEC,
+) -> dict:
+    """REFUSED on GitLab. Arming a deferred merge cannot be made safe here.
+
+    GitLab has no independent "arm auto-merge" verb.
+    ``merge_when_pipeline_succeeds`` is a *modifier on the merge endpoint*
+    (``PUT .../merge_requests/{iid}/merge``), and it defers only while a pipeline is
+    genuinely in flight — with no running pipeline GitLab merges the MR **then and
+    there**.
+
+    An earlier revision tried to contain that by reading the head pipeline first and
+    only calling ``/merge`` when a run was live. That check is **not atomic**: a
+    pipeline that finishes in the window between the read and the call turns the same
+    request into an immediate merge. Since arming is offered as a BULK action with no
+    typed confirmation (it is advertised as reversible), losing that race would merge
+    a whole selection irreversibly — so the honest answer is to not offer it at all
+    rather than to narrow the window and hope.
+
+    The capability is not lost, it is relocated to the affordance that is safe:
+    :func:`merge_pull_request` merges when the caller means now, and GitLab's own web
+    UI owns the deferred case. Raising here — rather than returning a falsy result —
+    means the route surfaces a real error and the user is never told a deferral is
+    pending when none is.
+    """
+    del owner, repo, number, method, host, timeout
+    raise ProviderCliError(
+        "GitLab has no separate auto-merge to arm: the flag rides on the merge "
+        "endpoint and merges immediately when no pipeline is running, which cannot "
+        "be made safe from here. Merge the merge request directly, or set "
+        "\"merge when pipeline succeeds\" on GitLab."
+    )
+
+
+def disable_auto_merge(
+    owner: str, repo: str, number: int, *, host: str = "", timeout: float = GL_TIMEOUT_SEC
+) -> dict:
+    """REFUSED on GitLab, for symmetry with :func:`enable_auto_merge`.
+
+    Nothing can be armed from this app on GitLab, so there is nothing here to cancel.
+    An MR armed on GitLab's own web UI is cancelled there; calling
+    ``/cancel_merge_when_pipeline_succeeds`` on an unarmed MR answers 406 anyway, so
+    offering the control would only ever produce an error.
+    """
+    del owner, repo, number, host, timeout
+    raise ProviderCliError(
+        "GitLab auto-merge is not managed from this app — cancel \"merge when "
+        "pipeline succeeds\" on GitLab."
+    )
+
+
+# GitLab pipeline statuses that mean "not finished", so cancelling is meaningful.
+_PIPELINE_CANCELLABLE_STATES = frozenset({
+    "created", "waiting_for_resource", "preparing", "pending", "running", "scheduled",
+})
+
+# A pipeline in one of these has finished AND has something for /retry to do.
+#
+# GitLab's ``/retry`` retries only the failed and canceled jobs, so a fully successful
+# or skipped pipeline has nothing to retry — offering the control there produced a
+# button that reported success while performing no work, which is worse than not
+# offering it. ``success`` and ``skipped`` are therefore absent: those pipelines are
+# still shown, just without a re-run affordance.
+_PIPELINE_RETRYABLE_STATES = frozenset({"failed", "canceled", "cancelled"})
+
+# Statuses that mean the pipeline has FINISHED, regardless of whether it can be
+# retried. This is what decides `status: "completed"` and whether `conclusion` is
+# populated -- a successful pipeline is finished even though it is not retryable.
+_PIPELINE_FINISHED_STATES = frozenset({"failed", "success", "canceled", "cancelled", "skipped"})
+
+# GitLab pipeline status -> the GitHub CONCLUSION vocabulary the shared UI reads.
+# Only the spellings that actually differ need an entry; the rest pass through.
+_PIPELINE_CONCLUSION = {"canceled": "cancelled"}
+
+
+def list_pr_workflow_runs(
+    owner: str, repo: str, sha: str, *, host: str = "", timeout: float = GL_TIMEOUT_SEC
+) -> list[dict]:
+    """The CI pipelines for an MR's head commit — GitLab's analogue of a workflow
+    run (see github_client for why checks and runs are separate surfaces).
+
+    ``sha`` is charset-validated before it reaches the query, as on the GitHub
+    path. Rows carry ``cancellable``/``rerunnable`` so the UI never offers an
+    action GitLab will refuse.
+    """
+    if not re.match(r"^[0-9a-fA-F]{7,64}$", sha or ""):
+        raise ProviderCliError(f"invalid commit sha: {sha!r}")
+    rows = _rows(
+        _glab_api(
+            f"projects/{project_path(owner, repo)}/pipelines?sha={sha}",
+            host=host,
+            timeout=timeout,
+            paginate=False,
+        )
+    )
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("id"):
+            continue
+        status = str(row.get("status") or "")
+        out.append({
+            "id": row.get("id"),
+            "name": row.get("name") or f"pipeline #{row.get('iid') or row.get('id')}",
+            # Normalized to the same two fields the GitHub rows use, so the UI
+            # reads one shape: GitLab reports a single status where GitHub splits
+            # status from conclusion.
+            "status": "completed" if status in _PIPELINE_FINISHED_STATES else status,
+            # Normalized to GITHUB's conclusion vocabulary, which is what the shared
+            # UI compares against: GitLab spells it "canceled" (one l) where GitHub
+            # uses "cancelled", so passing it through would leave a consumer keying
+            # on the GitHub spelling silently unable to see a cancelled pipeline.
+            "conclusion": (
+                _PIPELINE_CONCLUSION.get(status, status)
+                if status in _PIPELINE_FINISHED_STATES else None
+            ),
+            "url": row.get("web_url"),
+            "event": row.get("source"),
+            "created_at": row.get("created_at"),
+            "cancellable": status in _PIPELINE_CANCELLABLE_STATES,
+            "rerunnable": status in _PIPELINE_RETRYABLE_STATES,
+        })
+    return out
+
+
+def cancel_workflow_run(
+    owner: str, repo: str, run_id: int, *, host: str = "", timeout: float = GL_TIMEOUT_SEC
+) -> dict:
+    """Cancel one running pipeline."""
+    _glab_api(
+        f"projects/{project_path(owner, repo)}/pipelines/{int(run_id)}/cancel",
+        host=host,
+        timeout=timeout,
+        method="POST",
+    )
+    return {"run_id": int(run_id), "cancelled": True}
+
+
+def rerun_workflow_run(
+    owner: str, repo: str, run_id: int, *, failed_only: bool = False, host: str = "",
+    timeout: float = GL_TIMEOUT_SEC,
+) -> dict:
+    """Retry a finished pipeline.
+
+    GitLab's ``/retry`` already retries only the failed and canceled jobs, so
+    ``failed_only`` is accepted for signature parity and is a no-op — there is no
+    "retry everything from scratch" verb to distinguish it from. The returned
+    ``failed_only`` reports what GitLab actually did, not what was asked, so a
+    caller is never told a full re-run happened.
+    """
+    del failed_only
+    _glab_api(
+        f"projects/{project_path(owner, repo)}/pipelines/{int(run_id)}/retry",
+        host=host,
+        timeout=timeout,
+        method="POST",
+    )
+    return {"run_id": int(run_id), "rerun": True, "failed_only": True}

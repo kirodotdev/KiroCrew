@@ -1,6 +1,6 @@
 # Issue Radar Module
 
-Last Updated: 2026-07-28
+Last Updated: 2026-08-01
 
 ## Overview
 
@@ -11,8 +11,11 @@ workbench: browse/filter issues, view AI-summarized detail + timeline, apply
 triage actions (label, close/reopen), and record per-issue investigation findings
 in a local ledger. A parallel PULL REQUESTS section reuses the same shape —
 filter by lifecycle (open / merged / closed-unmerged), person, draft and label;
-read an AI summary of the description plus the whole review conversation; and see
-the automated checks ("auto review") on the head commit. A background watcher
+read an AI summary of the description plus the whole review conversation; see
+the automated checks ("auto review") on the head commit; and ACT on a PR without
+leaving for the provider's web UI — approve / request changes, comment, close or
+reopen, merge or arm the provider's own auto-merge, and cancel or re-run CI, per-PR
+or in bulk across a selection (see Pull-Request Actions). A background watcher
 optionally notifies on new issues.
 
 ## Routes
@@ -48,6 +51,14 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET | `/tagging` | The untagged queue (also serves `bulk_max`, the bulk-apply cap, so the client chunks on the server's real limit; and `titles` bounded to the slice a recommendation's examples can cite) (open issues with ZERO labels) plus any cached per-issue label suggestions for it. Never runs the model, so opening the Tagging dashboard costs nothing; suggestions for issues that have since been labelled elsewhere are filtered out |
 | POST | `/tagging` | Generate per-issue label suggestions with ONE batched model call (`_TAG_BATCH_MAX` = 50 issues). Without `numbers` it takes the next un-analysed slice, so repeated calls walk a long backlog without re-paying; with `numbers` it re-analyses specific issues. Proposals are intersected with the repo's real label set AND with the batch that was shown, so injected issue text can neither invent a label nor reach an issue outside the batch |
 | POST | `/labels/apply-bulk` | Apply label ADDITIONS to many issues at once (add-only — removal stays a per-issue action). Unknown labels are rejected before any write, so a typo cannot half-apply the batch; per-issue failures are reported rather than swallowed, and only the issues that actually got labelled leave the queue |
+| POST | `/pull/state` | Close or reopen a PR. Routed through the provider's PULL endpoint, not the issue endpoint — a merged PR's un-reopenability then comes from the provider instead of silently succeeding against the issue shadow |
+| POST | `/pull/review` | Submit a review (`approve` / `request_changes` / `comment`). Requires `head_sha` — a review is a verdict on a REVISION, so it rides as GitHub's `commit_id` / GitLab's `sha` and a force-push between render and click is refused rather than recorded. A body is required for the latter two (the provider rejects them bodyless). GitLab has no "request changes" verb and the client REFUSES rather than degrading it to a comment |
+| POST | `/pull/comment` | Post a conversation comment on a PR |
+| POST | `/pull/merge` | Merge a PR now. Per-PR only — never bulk. Requires `head_sha`, sent as the provider's `sha` precondition so the merge is pinned to the reviewed commit. Cannot bypass a gate: the provider enforces branch protection on its own endpoint, and a 405 refusal is mapped to a readable message |
+| POST | `/pull/auto-merge` | Arm or disarm the PROVIDER's own auto-merge, for a PR that is not mergeable yet. **GitHub only** — REFUSED on GitLab, where `merge_when_pipeline_succeeds` is a deferral modifier on the merge endpoint rather than an arm verb (see "GitLab auto-merge is REFUSED outright" below); the UI hides both controls there |
+| GET | `/pull/runs` | The CI runs on a PR's head commit, each with its id plus server-computed `cancellable`/`rerunnable`, so the UI never offers an action the provider will refuse |
+| POST | `/pull/run` | Cancel or re-run one CI run (`failed_only` re-runs just the failed jobs) |
+| POST | `/pulls/bulk` | Apply ONE action to many PRs (`_BULK_PR_ACTIONS`: close, reopen, approve, comment, auto_merge, cancel_auto_merge; max `_BULK_PR_MAX` = 50). `approve` additionally requires a `head_shas` map keyed by PR number, covering EVERY number in the request (see rule 2). Sequential, because the PRs share one provider rate limit. Partial failure is reported per PR rather than failing the batch |
 
 ## Recording findings
 
@@ -128,9 +139,225 @@ would return the same unlabelable issues forever.
 ## Permissions
 
 Write routes (`/labels/apply`, `/labels/apply-bulk`, `/issue/state`,
-`/labels/create`) are gated on
+`/labels/create`, and every MUTATING `/pull/*` + `/pulls/bulk` action) are gated on
 confirmed `triage` or `push` access (`_repo_can_write` returns `True` — unknown
-permission is denied, not allowed). Read-only repos degrade to suggest-only.
+permission is denied, not allowed). Read-only repos degrade to suggest-only. Every PR
+*mutation* goes through one `_pr_action_preamble` helper for the
+JSON/owner/connected/permission checks, so the gate is not re-implemented per handler.
+`GET /pull/runs` is a READ and is gated on the connected-repo check only, like the
+other reads — it returns run metadata the PR's own `checks` already imply.
+
+## Pull-Request Actions
+
+The write half of the PR pane — approve / request changes, comment, close / reopen,
+merge or arm auto-merge, cancel or re-run CI — available per-PR from the detail header
+and,
+for the actions that are safe to repeat, in bulk from the list. Six rules, each a
+deliberate narrowing:
+
+1. **Merging is offered in two forms, and the app refuses an unsatisfied PR itself
+   rather than relying on the provider to.** `/pull/merge` lands a PR that is ready
+   now; `/pull/auto-merge` hands one that is not yet ready to the provider to land once
+   its checks pass. An earlier revision shipped only the second, reasoning that a direct
+   merge could land unreviewed code — which left a repository with **no branch rule**
+   (where auto-merge is unavailable) with no merge path at all.
+   **Why the app has to do the checking.** It is tempting to say "the provider
+   adjudicates": branch protection is enforced on its merge endpoint, and an unsatisfied
+   PR comes back 405. That is true for an ordinary user and false for the account that
+   matters most — a repository admin holding bypass-branch-protection, for whom the
+   provider *honours* the merge. And `mergeable` alone does not mean "ready": it means
+   only "no merge CONFLICTS", so a PR with unsatisfied required reviews is
+   `mergeable: true` with `mergeable_state: "blocked"`. Gating on it therefore offered
+   the most privileged account a one-click way to land a PR its own rules had rejected.
+   So the route re-reads the PR and refuses anything outside `_MERGE_ALLOWED_STATES`
+   (`clean` / `has_hooks` on GitHub, `mergeable` on GitLab) with a
+   **409 `merge_not_ready`**, and the UI mirrors the same set so the button never appears
+   where it would only be refused. Two exclusions are load-bearing:
+   - `unstable` is often described as "only non-required checks are failing", but the
+     state does not actually distinguish a failing *required* check from an optional one,
+     so it cannot be read as "protections satisfied".
+   - GitLab's **legacy `can_be_merged`** is the subtler one. `_norm_pull` falls back to
+     the old `merge_status` field when `detailed_merge_status` is absent (a pre-16.x
+     server, or a payload that omits it), and `merge_status` reports *only* whether the
+     branches conflict — it is GitLab's exact analogue of GitHub's `mergeable` and knows
+     nothing about unmet approvals, unresolved blocking discussions or a red required
+     pipeline. Admitting it reproduced the very hole this set exists to close, on the
+     servers least likely to be watched. Its modern replacement
+     (`detailed_merge_status: "mergeable"`) *does* imply those rules are met, and is the
+     one GitLab value in the set. Note the read side still reports `can_be_merged` as
+     `mergeable: true` — "no conflicts" is a true, useful signal for the pane's warning;
+     the merge *gate* keys off the raw status instead, which is why
+     `gitlab_client._MERGEABLE_STATUSES` and `routes._MERGE_ALLOWED_STATES` deliberately
+     differ.
+
+   A gate that cannot tell must refuse — and such a PR is still one click from
+   `auto_merge`, which lets the provider decide once the checks finish. A provider 405 is
+   still mapped to a readable refusal, since *Method Not Allowed* on a merge button reads
+   like an app bug.
+   **The merge is PINNED to the reviewed head commit.** `head_sha` is required by the
+   route (400 `head_sha_required`) and by both clients, and rides as the provider's own
+   `sha` precondition — so a push landing between the read and the click answers 409
+   instead of merging. The route also refuses when the live head has moved since its own
+   state read: that state describes the commit it was read for, not a newer one. The UI
+   does not offer the button until it knows the sha.
+   **The merge METHOD is per-provider, and the tuples deliberately differ.**
+   `_pr_merge_method_field` reads `PR_MERGE_METHODS` off the *key's own* client rather
+   than `github_client`'s copy — which an earlier revision did, and which worked only
+   because the two happened to match. They no longer do: GitHub's `/merge` accepts
+   `MERGE` / `SQUASH` / `REBASE`, but GitLab's has **no rebase option at all** —
+   merge-commit vs. semi-linear vs. fast-forward is the *project's* `merge_method`
+   setting, and the only per-request lever is `squash`. Accepting `REBASE` there
+   translated it to `squash: false`, so GitLab produced a **merge commit**: the caller
+   named one history shape and silently got another, on the one operation that cannot
+   be undone. `REBASE` is therefore absent from `gitlab_client.PR_MERGE_METHODS` and a
+   request for it is a 400 `invalid_merge_method` — the same refuse-rather-than-
+   approximate rule the client follows for "request changes" and a full CI re-run.
+   (GitLab's separate `/rebase` endpoint does not merge, so it is not a substitute.)
+   There is deliberately **no "override and merge"**: an override is a governance
+   decision recorded ON the provider (this repo does it with a reviewed
+   `/ai-review override` comment plus the `defer-longterm` label), and shedding a
+   required check is the one thing no automatic gate should do quietly.
+   `test_pr_actions.py::TestMergeBoundaries` and `TestMergePrimitive` pin all of it.
+2. **A REVIEW is pinned to a commit too, for the same reason a merge is.** Approving is
+   a verdict on a *revision*, not on a pull request. Left unpinned, the review attaches
+   to whatever the head is when the request lands — so a force-push between the render
+   and the click records an **approval of code the reviewer never saw**, and on GitHub
+   that approval can then satisfy a required-review rule. So `head_sha` is required by
+   `/pull/review` (400 `head_sha_required`, via the same `_pr_head_sha_field` the merge
+   route uses) and by both clients, and rides to the provider as GitHub's `commit_id` on
+   `POST .../reviews` and GitLab's `sha` on `/approve`.
+   **The provider parameters are not equivalent, and only one of them refuses.**
+   GitLab's `sha` is a real precondition. GitHub's `commit_id` is only *attribution*:
+   GitHub accepts a review naming a commit that is no longer the head, records it
+   against that commit, and whether the resulting stale approval still counts toward
+   branch protection depends on the repository's "dismiss stale pull request approvals"
+   setting — so wherever that is off, an unchecked approval satisfies protection on code
+   nobody read. The pin therefore makes the verdict *honest* but cannot by itself make a
+   stale one fail. The refusal is the ROUTE's job, and it is the same shape as the merge
+   gate: `_refuse_if_head_moved` re-reads the PR's live head and answers **409
+   `review_conflict`** before the provider call, for both verdict verbs and for every
+   pinned row of `/pulls/bulk` (there, as that row's `failed` entry, so the batch still
+   applies and the row stays ticked for a retry). A plain `comment` review skips the
+   check — it records no verdict, so it stays valid prose whatever the head does. An
+   *unknown* live head is deliberately not a refusal: fail-closed on a read gap would
+   cost the feature on a provider that reports no head without buying any safety, since
+   the sha still rides to the provider. The UI does not
+   offer the two verdict buttons until the detail read has told it the head commit;
+   commenting is not a verdict and needs no pin.
+   **In bulk this is per PR.** A bulk approve is N verdicts, so `/pulls/bulk` takes a
+   `head_shas` map keyed by **number** (not a parallel array — a client that reorders or
+   filters its selection would otherwise pair a sha with the wrong PR) and requires an
+   entry for *every* number in the request. A partial map is a 400 rather than being
+   honoured for the subset that has one: approving fewer PRs than the button's own count
+   claims is its own defect. `_PINNED_BULK_PR_ACTIONS` names the verbs this applies to —
+   close, comment and the auto-merge pair act on the pull request itself and mean the
+   same thing after a push, so they take no sha. To make this possible without an extra
+   round trip per row, the **list** payload carries `head_sha` on both providers
+   (`github_client._PR_JQ`, `gitlab_client._norm_pull`), and the client builds the map
+   from the rendered rows — the sha the user saw is the sha the approval applies to.
+   **The client must snapshot that sha, not re-read it at submit time.** Both the
+   detail and the pulls queries POLL, so reading the live value when the button is
+   pressed let a force-push landing in the window re-point the verdict at the new head
+   — and the server-side pin cannot catch that, because the request would carry the
+   *new* sha and there would be nothing to refuse. So `PrActionsBar` freezes the sha
+   when the composer OPENS (one `openComposer` helper, so the snapshot cannot be
+   forgotten at one of three call sites) and `PrBulkBar` records each row's sha when it
+   is TICKED (first observation wins; a row leaving the selection forgets it, so a
+   re-tick picks up what is showing then). The snapshot is seeded during render rather
+   than in an effect — a bar mounting with rows already ticked would otherwise have an
+   empty map on its first pass and offer no approve at all. The freeze is
+   per-composer/per-tick, not permanent: reopening after a real refresh names the new
+   head. Three frontend tests pin the retarget cases.
+   **The person-filtered view needed a second source.** That list is served by
+   `/pulls/search`, and GitHub's search API does not expose the head commit — so the
+   "assigned to me" view could not be bulk-approved even though the plain list could.
+   Rather than a call per row, the sha rides on the by-number card enrichment
+   (`_PR_SUMMARY_SELECTION` gained `commit{oid}`), which already walks the head commit
+   for its check rollup; `_apply_summaries` fills the field **only when the row does
+   not already have one**, so the list row's own sha — the one the user saw — is never
+   replaced by a newer one the enrichment happened to read, and a failed enrichment
+   leaves it alone rather than blanking it. `_PR_SEARCH_JQ` carries the key as `null`
+   for row-shape parity. GitLab needs none of this: its search rows go through
+   `_norm_pull` like every other row.
+   `test_pr_actions.py::TestReviewIsPinnedToACommit` and `TestReviewRoutePinning` pin it.
+3. **Bulk is a fixed allowlist, not a generic fan-out.** `_BULK_PR_ACTIONS` names the
+   six verbs the bulk endpoint accepts. `request_changes` is per-PR only (a mass
+   change-request carries no per-PR reasoning) and so is `merge` — irreversible, and
+   50 from one click is a blast radius no confirmation makes reasonable; arming
+   auto-merge is the bulk-safe equivalent. The batch runs SEQUENTIALLY — the PRs share
+   one provider rate limit, and a 50-wide parallel fan-out is how a bulk click becomes
+   a secondary-rate-limit block that fails rows for no reason of their own.
+   The cap (`_BULK_PR_MAX` = 50) is **published** on every `/pulls` and
+   `/pulls/search` response as `bulk_max`, and the client CHUNKS on it. Neither is
+   optional: the server rejects an over-cap batch outright, so an unchunked "select
+   all" on a repo with more open PRs than the cap was a flat 400 with nothing applied
+   — and a hardcoded client copy of the number breaks silently the day the cap moves
+   (the same reasoning `/tagging`'s `bulk_max` already documents).
+4. **Partial failure is reported, never swallowed** — the same contract as
+   `/labels/apply-bulk`: per-PR `applied` / `failed` lists, so one locked or
+   already-merged PR does not discard the rows that succeeded, and the caller is never
+   told about a write that did not happen. In the UI the SUCCEEDED rows are unticked
+   and the failures stay selected, so a retry hits exactly the rows that still need it
+   — keeping the whole selection would re-apply to the ones that already worked, which
+   for `comment` posts a visible second copy.
+   Relatedly, a refusal is **not an exception on every provider**: GitLab answers 200
+   with a non-merged state and a `merge_error` when its approval rules say no, so the
+   merge path checks `merged` before touching any cache. Trusting the return value
+   would evict a still-open PR from the open list and report success.
+5. **Every action is permission-gated and SEL-audited**, and a per-PR authorization
+   refusal inside a bulk run is audited as `denied`, not `failure` — collapsing the two
+   (they share an exception base) would make a refused mutation indistinguishable from
+   a network timeout, so a query for `outcome=denied` returned nothing for the whole
+   bulk surface.
+6. **Every action drops the caches it invalidated.** A close/reopen — **and a
+   merge**, which also closes the PR — removes the row from the list it left
+   (`apply_pr_state_change_to_caches`) and drops the PR's detail entry; everything
+   else drops just the detail (`drop_pr_detail_cache`). The merge path applies that
+   change only after confirming the provider actually merged (see rule 4). Without
+   this, `PR_DETAIL_CACHE_TTL_SEC` is long enough for a user to click a button and
+   watch nothing happen.
+
+**Provider divergence is refused, not approximated.** GitLab has no "request changes"
+verb (the closest thing, unapproving, is not a verdict on a revision) and its
+`/retry` only retries failed and canceled jobs — so `submit_pr_review` raises for
+`REQUEST_CHANGES` and `rerun_workflow_run` reports `failed_only: true` regardless of
+what was asked. Reporting a verdict the platform never recorded, or a full re-run
+that did not happen, would be worse than the error.
+
+**The sharpest instance, because it is a security property rather than a cosmetic
+one: GitLab auto-merge is REFUSED outright.** GitLab has no independent "arm" verb —
+`merge_when_pipeline_succeeds` is a *modifier on the merge endpoint*, and with no
+pipeline in flight GitLab merges the MR immediately. A revision of this change tried
+to contain that by reading the head pipeline first and arming only when a run was
+live, but that check is **not atomic**: a pipeline finishing between the read and the
+call turns the same request into an immediate merge. Since arming is offered as a BULK
+action with no typed confirmation (it is advertised as reversible), losing that race
+would merge a whole selection irreversibly — so `enable_auto_merge` /
+`disable_auto_merge` raise on GitLab and the UI hides both controls there rather than
+narrowing the window and hoping. The capability is relocated, not lost:
+`merge_pull_request` covers "merge now", and GitLab's own web UI owns the deferred
+case. An MR armed on GitLab still *displays* as armed, since the read-side
+`auto_merge` detail field is unaffected.
+On GitHub, where `enablePullRequestAutoMerge` is a real, separate mutation, arming is
+offered normally — and `auto_merge` is derived from the returned `autoMergeRequest`
+rather than asserted, because a hardcoded `True` is a claim rather than an observation.
+
+`add_pr_comment` is a separate function from `add_issue_comment` even though the two
+coincide on GitHub (one number sequence per repo): GitLab numbers issues and merge
+requests INDEPENDENTLY, so a single shared entry point would be a silent way to
+comment on an unrelated item. The `ProviderClient` protocol and the
+`TestClientParity` surface list both.
+
+The UI reads the PR detail's `auto_merge` field to decide whether it offers "enable"
+or "cancel", which is why `PR_DETAIL_CACHE_SCHEMA` is at **v5** — a v4 entry has no
+such key, and defaulting it to absent would show "enable" on an already-armed PR.
+`PULLS_CACHE_SCHEMA` moved to **v6** for the same reason: the list row now carries
+`head_sha`, and a v5 row served as-is would silently disable bulk approve for every
+already-cached repo until its TTL expired — a broken-looking button rather than a
+visibly stale list.
+CI runs are fetched separately from `/pull`'s `checks`, because a check is a per-job
+RESULT (and may come from a service with no runs at all) while cancel/re-run acts on
+the parent RUN and needs its id.
 
 ## Security Controls
 

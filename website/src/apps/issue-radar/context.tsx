@@ -19,6 +19,7 @@ import type {
   ActiveRepo, DashboardTab, ExpandedSection, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter,
 } from './lib/types'
 import { repoScopeKey } from './lib/links'
+import { DEFAULT_BULK_CHUNK } from './lib/prActions'
 import {
   asArray, coerceDashboardTab, coerceSortKey, consumeAutoSelectFirstIssue, LIST_POLL_MS, loadUiState, saveUiState,
 } from './lib/format'
@@ -158,6 +159,22 @@ export interface IssueRadarContextValue {
   filteredPulls: PullRequest[]
   sortedPulls: PullRequest[]
   activePull: PullRequest | null
+
+  // ── bulk PR selection (transient) ──
+  /** The PR numbers ticked for a mass action. Deliberately NOT persisted: a
+   * restored selection would let a later visit apply an action to rows the user
+   * ticked in a different sitting and has since forgotten. */
+  checkedPulls: Set<number>
+  /** Tick/untick one PR. */
+  togglePullChecked: (n: number) => void
+  /** Tick every PR currently RENDERED (the filtered+sorted set), or clear them
+   * all when they are already ticked. Scoped to what is on screen so "select all"
+   * can never reach a row the active filter is hiding. */
+  toggleAllPullsChecked: () => void
+  /** Drop the whole selection — after a bulk action, a repo switch, or Escape. */
+  clearCheckedPulls: () => void
+  /** The server's bulk-action cap, so the bulk bar chunks on the real limit. */
+  prBulkMax: number
 
   // ── cross-reference sheet ──
   /** The open stack of same-repo issue/PR references, innermost LAST. Empty when
@@ -677,6 +694,46 @@ export function IssueRadarProvider({
   // never outlives the row that opened it.
   const activePull = sortedPulls.find((p) => p.number === selectedPull) ?? null
 
+  // ── bulk PR selection (transient, never persisted) ──
+  // A selection is an in-the-moment intent, so restoring one on the next visit
+  // would arm a mass action over rows the user no longer remembers ticking.
+  const [checkedPulls, setCheckedPulls] = useState<Set<number>>(() => new Set())
+  const togglePullChecked = useCallback((n: number) => {
+    setCheckedPulls((prev) => {
+      const next = new Set(prev)
+      if (next.has(n)) next.delete(n)
+      else next.add(n)
+      return next
+    })
+  }, [])
+  const clearCheckedPulls = useCallback(() => setCheckedPulls(new Set()), [])
+  // Scoped to the RENDERED rows, so "select all" can never reach a PR the active
+  // filter or search is hiding — the user can only mass-act on what they can see.
+  const toggleAllPullsChecked = useCallback(() => {
+    setCheckedPulls((prev) => {
+      const visible = sortedPulls.map((p) => p.number)
+      const allTicked = visible.length > 0 && visible.every((n) => prev.has(n))
+      return allTicked ? new Set() : new Set(visible)
+    })
+  }, [sortedPulls])
+  // Drop the selection when the repo changes or the PR set is refiltered.
+  //
+  // Two reasons, both correctness rather than tidiness: a number ticked in the open
+  // list means a DIFFERENT item in the closed one (so carrying it over would act on
+  // the wrong PR), and a row that leaves the view is no longer something the user
+  // can see they have selected. PrBulkBar also intersects its selection with the
+  // rendered rows, so a tick can never reach a hidden PR even between renders —
+  // this effect is what stops a stale tick reappearing when the filter is undone.
+  // Keyed on `scopeKey`, not `owner, repo`: the slug alone does NOT identify a repo
+  // (`acme/widget` exists on GitHub and on every GitLab instance), so switching
+  // between two same-slug repos left the ticks in place and pointed an armed bulk
+  // action at unrelated items. scopeKey carries provider + host, which is exactly why
+  // it exists — see repoScopeKey.
+  useEffect(() => { setCheckedPulls(new Set()) }, [
+    scopeKey, prStateFilter, prQuery, prDraftOnly, prCreatedByMember,
+    prSelectedLabels, prAuthoredByMe, prAssignedToMe, prReviewRequestedByMe,
+  ])
+
   const switchRepo = (r: ActiveRepo) => {
     setSelectedIssue(null)
     setQuery('')
@@ -761,6 +818,11 @@ export function IssueRadarProvider({
     prSearchTruncatedAt: prPersonFilterActive && pullsSearchQuery.data?.truncated
       ? (pullsSearchQuery.data.limit ?? pullsSearchQuery.data.pulls.length)
       : null,
+    // The server's own bulk cap, from whichever pulls source is rendered. Read from
+    // the response so the client chunks on the real limit rather than a hardcoded
+    // copy that breaks the day the cap changes.
+    prBulkMax: (prPersonFilterActive ? pullsSearchQuery.data?.bulk_max : pullsQuery.data?.bulk_max)
+      ?? DEFAULT_BULK_CHUNK,
     countByPrLabel,
     prQuery, setPrQuery,
     prSelectedLabels, togglePrLabel,
@@ -774,6 +836,7 @@ export function IssueRadarProvider({
     prSortKey, prSortDir, cyclePrSort,
     selectedPull, setSelectedPull,
     filteredPulls, sortedPulls, activePull,
+    checkedPulls, togglePullChecked, toggleAllPullsChecked, clearCheckedPulls,
     refStack, openRef, popRef, closeRefs,
     mainView, dashboardTab, openDashboard, openIssues, openPulls, openSettings, settingsTarget,
     expanded, setExpanded,

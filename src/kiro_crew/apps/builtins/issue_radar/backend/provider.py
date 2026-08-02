@@ -230,6 +230,64 @@ class ProviderClient(Protocol):
         self, owner: str, repo: str, name: str, color: str = ..., description: str = ..., **kwargs: object
     ) -> dict: ...
 
+    # Pull-request actions. Every one is a WRITE and is gated on the same
+    # triage/push access as the issue writes above. The providers differ in what
+    # they can express (GitLab has no "request changes" verb; its auto-merge is
+    # "merge when pipeline succeeds"), and each client REFUSES what it cannot
+    # honour rather than approximating it -- see the sections in both clients.
+    def set_pr_state(
+        self, owner: str, repo: str, number: int, state: str, **kwargs: object
+    ) -> dict: ...
+
+    # ``head_sha`` is REQUIRED in practice (both clients refuse an empty one) for the
+    # same reason merge_pull_request needs it: a verdict must name the revision it
+    # was formed on. It has a default only so the two module signatures stay
+    # identical for the parity gate.
+    def submit_pr_review(
+        self, owner: str, repo: str, number: int, event: str, body: str = ...,
+        head_sha: str = ..., **kwargs: object
+    ) -> dict: ...
+
+    def add_issue_comment(
+        self, owner: str, repo: str, number: int, body: str, **kwargs: object
+    ) -> dict: ...
+
+    # Separate from add_issue_comment because GitLab numbers issues and merge
+    # requests independently -- see both clients' add_pr_comment.
+    def add_pr_comment(
+        self, owner: str, repo: str, number: int, body: str, **kwargs: object
+    ) -> dict: ...
+
+    # Merging comes in two forms and NEITHER can bypass a gate: the provider
+    # adjudicates branch protection / approval rules on both endpoints. See
+    # github_client.merge_pull_request.
+    # ``head_sha`` is REQUIRED in practice (both clients refuse an empty one); it has
+    # a default only so the two module signatures stay identical for the parity gate.
+    def merge_pull_request(
+        self, owner: str, repo: str, number: int, method: str = ..., head_sha: str = ...,
+        **kwargs: object
+    ) -> dict: ...
+
+    def enable_auto_merge(
+        self, owner: str, repo: str, number: int, method: str = ..., **kwargs: object
+    ) -> dict: ...
+
+    def disable_auto_merge(
+        self, owner: str, repo: str, number: int, **kwargs: object
+    ) -> dict: ...
+
+    def list_pr_workflow_runs(
+        self, owner: str, repo: str, sha: str, **kwargs: object
+    ) -> list[dict]: ...
+
+    def cancel_workflow_run(
+        self, owner: str, repo: str, run_id: int, **kwargs: object
+    ) -> dict: ...
+
+    def rerun_workflow_run(
+        self, owner: str, repo: str, run_id: int, **kwargs: object
+    ) -> dict: ...
+
 
 _CLIENTS: dict[str, ProviderClient] = {
     GITHUB: cast(ProviderClient, github_client),

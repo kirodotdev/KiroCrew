@@ -174,6 +174,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # The jq filters are hardcoded module constants, and `gh api` is bounded
         # to api.github.com, so no binary/cwd/host is agent-selected.
         "apps/builtins/issue_radar/backend/github_client.py::_gh_run",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``). This is a TEST helper that drives one
+        # in-process aiohttp handler coroutine to completion so the PR-action routes
+        # can be exercised without a running loop. No child process is created and
+        # nothing is agent-influenced — the payloads are literals in the test file.
+        # Same classification as the other ``asyncio.run`` sites in this list
+        # (cli_doctor.py::_doctor, cli_commands.py::_cleanup_app_crons_from_scheduler).
+        "apps/builtins/issue_radar/tests/test_pr_actions.py::_await",
         # Issue Radar GitLab access — the glab counterpart of _gh_run, and benign
         # for the same reasons, with ONE extra agent-reachable input that gh does
         # not have: the HOST.

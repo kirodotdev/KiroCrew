@@ -11,6 +11,7 @@ import type { PullRequest } from '../api'
 import LabelChip from './LabelChip'
 import ListSkeleton from './ListSkeleton'
 import ListEmptyState from './ListEmptyState'
+import PrBulkBar from './PrBulkBar'
 import { providerTerms } from '../lib/links'
 
 import { i18nT } from '../../../i18n/t'
@@ -123,7 +124,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
     prStateFilter, colorByName,
     selectedPull, setSelectedPull, refreshPulls, pullsRefreshing,
     prQuery, setPrQuery, pullsUpdatedAt, prPersonFilterActive, prSearchTruncatedAt,
-    active,
+    active, canWrite, checkedPulls, togglePullChecked, clearCheckedPulls,
   } = useIssueRadar()
   // Provider vocabulary: GitLab calls these merge requests, and calling them
   // pull requests in a GitLab workspace is simply wrong copy.
@@ -138,10 +139,45 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
     return () => clearInterval(id)
   }, [])
 
+  // Escape clears a bulk selection — the standard way out of a multi-select, and
+  // the fastest way to disarm an accidental "select all" before touching anything.
+  useEffect(() => {
+    if (checkedPulls.size === 0) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') clearCheckedPulls()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [checkedPulls.size, clearCheckedPulls])
+
   const cardClass = (isSel: boolean) =>
     `w-full text-left rounded-lg border p-2.5 cursor-pointer bg-card hover:bg-bg-hover transition-colors ${
       isSel ? 'border-accent' : 'border-border'
     }`
+
+  /** One row: the select checkbox beside the card, not inside it.
+   *
+   * A checkbox nested in the card's `<button>` would be invalid HTML (interactive
+   * content inside a button) and unreachable by keyboard, so the row is a flex
+   * container holding two siblings. The checkbox only renders on a writable repo —
+   * on a read-only one every bulk action would 403, so offering the selection at
+   * all would be a dead end.
+   */
+  const row = (pr: PullRequest, children: React.ReactNode) => {
+    if (!canWrite) return children
+    return (
+      <div className="flex items-start gap-1.5">
+        <input
+          type="checkbox"
+          checked={checkedPulls.has(pr.number)}
+          onChange={() => togglePullChecked(pr.number)}
+          aria-label={i18nT('apps.issueRadar.components.prList.select_for_bulk', { subject: terms.changeRequestShort, number: pr.number })}
+          className="mt-3 flex-shrink-0 cursor-pointer accent-[var(--accent)]"
+        />
+        <div className="min-w-0 flex-1">{children}</div>
+      </div>
+    )
+  }
 
   const cardInner = (pr: PullRequest) => {
     const { Icon, color } = prStateVisual(pr)
@@ -226,6 +262,8 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
         </div>
       </div>
 
+      <PrBulkBar />
+
       <div className="relative flex-1 min-h-0">
         <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
           {pullsLoading && <ListSkeleton />}
@@ -236,7 +274,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           {animate ? (
             <AnimatePresence initial={false} mode="popLayout">
               {sortedPulls.map((pr) => (
-                <motion.button
+                <motion.div
                   key={pr.number}
                   // 'position' (not the default size+position): a size-animating
                   // layout pass distorts the card's text with a scale transform
@@ -250,22 +288,30 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
                     duration: 0.18,
                     ease: [0.16, 1, 0.3, 1],
                   }}
-                  onClick={() => setSelectedPull(pr.number)}
-                  className={cardClass(selectedPull === pr.number)}
                 >
-                  {cardInner(pr)}
-                </motion.button>
+                  {row(pr, (
+                    <button
+                      onClick={() => setSelectedPull(pr.number)}
+                      className={cardClass(selectedPull === pr.number)}
+                    >
+                      {cardInner(pr)}
+                    </button>
+                  ))}
+                </motion.div>
               ))}
             </AnimatePresence>
           ) : (
             sortedPulls.map((pr) => (
-              <button
-                key={pr.number}
-                onClick={() => setSelectedPull(pr.number)}
-                className={cardClass(selectedPull === pr.number)}
-              >
-                {cardInner(pr)}
-              </button>
+              <div key={pr.number}>
+                {row(pr, (
+                  <button
+                    onClick={() => setSelectedPull(pr.number)}
+                    className={cardClass(selectedPull === pr.number)}
+                  >
+                    {cardInner(pr)}
+                  </button>
+                ))}
+              </div>
             ))
           )}
         </div>

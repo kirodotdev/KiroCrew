@@ -1543,7 +1543,11 @@ def write_investigation(
 #   v4: checks_counts now collapses same-name runs, so v3 tallies are inflated
 #   v5: unavailable enrichment is now null (unknown) instead of 0/empty, and rows
 #       carry checks_truncated; v4 rows cannot express either
-PULLS_CACHE_SCHEMA = 5
+#   v6: rows carry head_sha. A bulk approve pins each verdict to the commit its row
+#       was rendered at, and a v5 row has no such field — served as-is it would
+#       silently disable bulk approve for every cached repo until the TTL expired,
+#       which reads as a broken button rather than as a stale cache
+PULLS_CACHE_SCHEMA = 6
 
 
 def pulls_cache_path(owner: str, repo: str, root: Path | None = None, state: str = "open") -> Path:
@@ -1664,6 +1668,63 @@ def apply_pr_checks_to_list_cache(
                 atomic_write(path, json.dumps(data, indent=2))
 
 
+def apply_pr_state_change_to_caches(
+    owner: str, repo: str, number: int, state: str, *, root: Path | None = None
+) -> None:
+    """Make the caches agree after a PR was closed or reopened in-app.
+
+    Two things have to happen, and doing only the first is the bug this exists to
+    prevent: a closed PR must LEAVE the open list (otherwise the card sits there
+    until the next full refresh, and clicking it reopens a pane that disagrees
+    with it), and its DETAIL entry must be dropped so the pane's next read is a
+    real fetch rather than the pre-change payload.
+
+    The stale row is removed rather than patched in place, and the closed list is
+    NOT synthesized: this function knows the PR's new state but not its
+    ``merged_at``, ``updated_at`` or check tally, so inventing a row there would
+    put a half-populated card in the closed list. Dropping it from the list it
+    left is honest — the next fetch of the destination list builds a real row.
+    """
+    target = int(number)
+    # A PR that just closed leaves the OPEN list; one that just reopened leaves
+    # the CLOSED list. Only the list it departed is touched.
+    leaving = "open" if state == "closed" else "closed"
+    path = pulls_cache_path(owner, repo, root, leaving)
+    if path.is_file():
+        with _pulls_cache_lock(owner, repo, root, leaving):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, FileNotFoundError):
+                data = None
+            if isinstance(data, dict) and data.get("schema") == PULLS_CACHE_SCHEMA:
+                rows = data.get("pulls") or []
+                kept = [
+                    row for row in rows
+                    if not (isinstance(row, dict) and row.get("number") == target)
+                ]
+                if len(kept) != len(rows):
+                    data["pulls"] = kept
+                    atomic_write(path, json.dumps(data, indent=2))
+    # The detail cache now describes the pre-change PR (state, mergeability, and
+    # the auto-merge arming a close silently clears), so it must not be served.
+    with contextlib.suppress(OSError):
+        pr_detail_cache_path(owner, repo, target, root).unlink(missing_ok=True)
+
+
+def drop_pr_detail_cache(owner: str, repo: str, number: int, *, root: Path | None = None) -> None:
+    """Drop ONE PR's detail cache entry.
+
+    Used after any action that changes what a detail read would return without
+    moving the PR between lists — a review, a comment, an auto-merge arm, a
+    cancelled CI run. The pane refetches on its next poll and shows the real
+    state, rather than serving the up-to-30s-old payload from before the action
+    (which is exactly long enough for a user to click a button and watch nothing
+    happen).
+    """
+    with contextlib.suppress(OSError):
+        pr_detail_cache_path(owner, repo, int(number), root).unlink(missing_ok=True)
+
+
 def drop_pulls_cache(owner: str, repo: str, state: str = "open", *, root: Path | None = None) -> None:
     """Delete a PR list cache file.
 
@@ -1703,7 +1764,11 @@ def pr_detail_cache_path(owner: str, repo: str, number: int, root: Path | None =
 #       written earlier hold a permanent ``mergeable_state: "unknown"``
 #   v4: checks are de-duplicated per (publisher, name) rather than by name alone,
 #       so v3 entries can be missing a same-named check from another app
-PR_DETAIL_CACHE_SCHEMA = 4
+#   v5: the detail carries ``auto_merge``, which the actions bar reads to decide
+#       whether it offers "enable auto-merge" or "cancel" — a v4 entry has no such
+#       key, and defaulting it to absent would show "enable" on a PR that is
+#       already armed
+PR_DETAIL_CACHE_SCHEMA = 5
 
 # How long a cached PR detail may be served to a plain (non-``refresh=1``) read.
 # Freshness belongs to the cache, not to the caller: this is what lets the detail

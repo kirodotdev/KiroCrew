@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest'
 import { CATALOGS } from './index'
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE } from './languages'
 import { BULK_DELETE_TOKEN } from '../pages/SchedulePage'
+import { BULK_PR_CLOSE_TOKEN } from '../apps/issue-radar/components/PrBulkBar'
 
 function flatten(obj: unknown, prefix = ''): Record<string, string> {
   const out: Record<string, string> = {}
@@ -52,6 +53,26 @@ describe('bulk-delete confirmation token', () => {
         .filter(([k, v]) => k.startsWith('pages.schedulePage.') && v.trim() === BULK_DELETE_TOKEN)
         .map(([k]) => k)
       expect(offenders, `${code} exposes the safety token as copy: ${offenders.join(', ')}`)
+        .toEqual([])
+    }
+  })
+
+  it('the PR bulk-close token is a code constant, never a catalog value', () => {
+    // Same rule, second call site: Issue Radar's bulk close gates on a typed
+    // token. The hazard is identical — a translated token locks every non-English
+    // user out of the action — but the guard has to name this token explicitly,
+    // because the assertion above only scans the `pages.schedulePage.` prefix.
+    expect(BULK_PR_CLOSE_TOKEN).toBe('close prs')
+    // It must not collide with ANY label in the bar, in any language: a token equal
+    // to the button the user just pressed can be satisfied by copying that button,
+    // which is not the deliberate second act a confirmation is for.
+    for (const { code } of AUTHORED) {
+      const offenders = Object.entries(FLAT[code])
+        .filter(([k, v]) =>
+          k.startsWith('apps.issueRadar.components.prBulkBar.')
+          && v.trim().toLowerCase() === BULK_PR_CLOSE_TOKEN)
+        .map(([k]) => k)
+      expect(offenders, `${code} exposes the PR close token as copy: ${offenders.join(', ')}`)
         .toEqual([])
     }
   })

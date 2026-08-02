@@ -69,6 +69,11 @@ export interface PullRequest {
   requested_reviewers?: string[]
   base?: string | null
   head?: string | null
+  /** Head COMMIT sha (not the branch name). Carried on the list row so a bulk
+   * review can pin each verdict to the revision its row was rendered at; `null`
+   * when the provider did not report one, in which case that row is not
+   * approvable in bulk. */
+  head_sha?: string | null
   /** Lines added — from the GraphQL list enrichment. `null` means UNKNOWN (the
    * enrichment call failed); it is deliberately not 0, which would claim the PR
    * changes nothing. */
@@ -93,6 +98,10 @@ export interface PullRequest {
 export interface PullsResponse {
   owner: string
   repo: string
+  /** The server's own bulk-action cap. Read from the response rather than
+   * hardcoded: a client-side copy silently turns every large selection into a 400
+   * the day the backend cap changes (same reasoning as `/tagging`'s `bulk_max`). */
+  bulk_max?: number
   state?: string
   pulls: PullRequest[]
   from_cache: boolean
@@ -138,6 +147,11 @@ export interface PrDetailData {
   assignees: string[]
   requested_reviewers: string[]
   milestone: Milestone | null
+  /** Set when the PROVIDER's own auto-merge is already armed (GitHub auto-merge /
+   * GitLab "merge when pipeline succeeds"), null when it is off. The actions bar
+   * reads this to decide whether it offers "enable" or "cancel", so it cannot
+   * offer to arm a PR that is already armed. */
+  auto_merge?: { method: string | null; enabled_by: string | null } | null
 }
 
 /** One automated check on a PR's head commit — a CI job, a Checks-API review
@@ -357,6 +371,114 @@ export interface IssueStateResponse {
   number: number
   state: string
   state_reason: string | null
+}
+
+/** The pull-request actions the UI can invoke on ONE PR.
+ *
+ * Merging comes in two forms and neither can land code the repo's rules have not
+ * cleared: `merge` is for a PR the provider already reports ready (and the server
+ * re-checks its merge state and pins it to the reviewed `head_sha` before issuing
+ * it), while `auto_merge` hands one that is NOT ready yet to the provider to land by
+ * itself once its checks pass. */
+export type PrAction =
+  | 'close' | 'reopen' | 'approve' | 'request_changes' | 'comment'
+  | 'merge' | 'auto_merge' | 'cancel_auto_merge'
+
+/** The subset of {@link PrAction} the BULK endpoint accepts. Mirrors the server's
+ * `_BULK_PR_ACTIONS` allowlist. `request_changes` is per-PR only (a mass
+ * change-request needs per-PR reasoning to be worth anything), and so is `merge`
+ * (irreversible — 50 from one click is a blast radius no confirmation makes
+ * reasonable; arming auto-merge is the bulk-safe equivalent). */
+export type BulkPrAction = Exclude<PrAction, 'request_changes' | 'merge'>
+
+export interface PrMergeResponse {
+  owner: string
+  repo: string
+  number: number
+  merged: boolean
+  sha: string | null
+  message: string
+}
+
+export interface PrStateResponse {
+  owner: string
+  repo: string
+  number: number
+  state: string
+  merged: boolean
+  draft: boolean
+}
+
+export interface PrReviewResponse {
+  owner: string
+  repo: string
+  number: number
+  id: number | null
+  state: string | null
+  submitted_at: string | null
+}
+
+export interface PrCommentResponse {
+  owner: string
+  repo: string
+  number: number
+  id: number | null
+  url: string | null
+  created_at: string | null
+}
+
+export interface PrAutoMergeResponse {
+  owner: string
+  repo: string
+  number: number
+  auto_merge: boolean
+  method: string | null
+  enabled_at: string | null
+}
+
+/** One CI run on a PR's head commit. Distinct from {@link PrCheck}: a check is a
+ * per-job RESULT, while cancel/re-run acts on the parent RUN and needs its id.
+ * `cancellable`/`rerunnable` are server-computed so the UI never offers an action
+ * the provider will refuse. */
+export interface PrWorkflowRun {
+  id: number
+  name: string
+  status: string
+  conclusion: string | null
+  url: string | null
+  event: string | null
+  created_at: string | null
+  cancellable: boolean
+  rerunnable: boolean
+}
+
+export interface PrRunsResponse {
+  owner: string
+  repo: string
+  number: number
+  runs: PrWorkflowRun[]
+}
+
+export interface PrRunActionResponse {
+  owner: string
+  repo: string
+  number: number
+  run_id: number
+  cancelled?: boolean
+  rerun?: boolean
+  failed_only?: boolean
+}
+
+/** A bulk action's per-PR outcome. Partial failure is EXPECTED (a locked or
+ * already-merged PR fails on its own), so the response reports both lists rather
+ * than one status code — the caller is never told about a write that did not
+ * happen, and the rows that succeeded stay applied. */
+export interface BulkPrResponse {
+  owner: string
+  repo: string
+  action: string
+  applied: Array<{ number: number } & Record<string, unknown>>
+  failed: Array<{ number: number; error: string }>
 }
 
 export interface RepoLabel {
@@ -852,6 +974,174 @@ export const issueRadarApi = {
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...repoBody(ref), number, state, state_reason: stateReason }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  // ── pull-request actions ───────────────────────────────────────────────────
+  //
+  // All of these require triage/push access on the repo (403 otherwise) and are
+  // SEL-audited server-side.
+  //
+  // Two merge affordances, and neither bypasses a gate. `mergePr` merges a PR the
+  // provider already reports ready — the server re-reads its merge state, refuses
+  // anything outside `_MERGE_ALLOWED_STATES`, and pins the merge to the `head_sha`
+  // this client rendered, so a push landing mid-review is a 409 rather than a merge.
+  // `setPrAutoMerge` is the complement for a PR that is not ready yet: it arms the
+  // PROVIDER's own auto-merge, which merges only once its required reviews and checks
+  // pass (GitHub only — refused on GitLab; see gitlab_client.enable_auto_merge).
+  // There is deliberately no "override and merge".
+
+  /** Close or reopen a pull request. */
+  setPrState: async (
+    ref: RepoRef, number: number, state: 'open' | 'closed',
+  ): Promise<PrStateResponse> => {
+    const r = await fetch(`${API}/pull/state`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...repoBody(ref), number, state }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Submit a review. `body` is required for 'request_changes' and 'comment'
+   * (the provider rejects them bodyless). GitLab has no 'request_changes' verb
+   * and the server refuses rather than recording a weaker verdict. */
+  submitPrReview: async (
+    ref: RepoRef, number: number,
+    event: 'approve' | 'request_changes' | 'comment', body?: string, headSha?: string,
+  ): Promise<PrReviewResponse> => {
+    const r = await fetch(`${API}/pull/review`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      // `head_sha` is REQUIRED, for the same reason `mergePr` requires it: a review is
+      // a verdict on a REVISION. It rides to the provider as GitHub's `commit_id` /
+      // GitLab's `sha`, but only GitLab's is a real precondition — GitHub's is
+      // attribution and would accept a stale approval — so for a VERDICT the server
+      // also re-reads the live head and answers 409 `review_conflict` on a moved one.
+      // Callers must submit the sha they SHOWED, not a fresh read (see PrActionsBar).
+      body: JSON.stringify({
+        ...repoBody(ref), number, event, body: body ?? '', head_sha: headSha ?? '',
+      }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Post a conversation comment on a pull request. */
+  addPrComment: async (
+    ref: RepoRef, number: number, body: string,
+  ): Promise<PrCommentResponse> => {
+    const r = await fetch(`${API}/pull/comment`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...repoBody(ref), number, body }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Merge a pull request NOW. Per-PR only — there is no bulk merge.
+   *
+   * This cannot bypass a gate: branch protection, required reviews and required
+   * checks are enforced by the PROVIDER on its own merge endpoint, so a PR that has
+   * not satisfied them is refused (409 `merge_not_allowed`) and nothing merges.
+   * `setPrAutoMerge` is the complement, for a PR that is not mergeable yet.
+   * `headSha` is required and pins the merge to the reviewed commit. */
+  mergePr: async (
+    ref: RepoRef, number: number, headSha: string,
+    method: 'MERGE' | 'SQUASH' | 'REBASE' = 'SQUASH',
+  ): Promise<PrMergeResponse> => {
+    const r = await fetch(`${API}/pull/merge`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      // `head_sha` is REQUIRED: the merge is pinned to the commit this client
+      // rendered, so a push landing between the read and the click is refused rather
+      // than merging code nobody reviewed.
+      body: JSON.stringify({ ...repoBody(ref), number, method, head_sha: headSha }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Arm or disarm the provider's own auto-merge — for a PR that is not mergeable
+   * YET: the provider merges it once ITS required reviews and checks pass. Fails
+   * when the repo has no auto-merge rule (or the PR is already clean, with nothing
+   * to wait for), and that error surfaces rather than being reported as a false
+   * success. */
+  setPrAutoMerge: async (
+    ref: RepoRef, number: number, enabled: boolean,
+    method: 'MERGE' | 'SQUASH' | 'REBASE' = 'SQUASH',
+  ): Promise<PrAutoMergeResponse> => {
+    const r = await fetch(`${API}/pull/auto-merge`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...repoBody(ref), number, enabled, method }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** The CI runs on a PR's head commit, each carrying the id and the
+   * cancellable/rerunnable flags the run actions need. */
+  pullRuns: async (
+    ref: RepoRef, number: number, sha: string,
+  ): Promise<PrRunsResponse> => {
+    const q = new URLSearchParams({ ...repoQuery(ref), number: String(number), sha })
+    const r = await fetch(`${API}/pull/runs?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Cancel or re-run one CI run on a PR. `failedOnly` re-runs just the failed
+   * jobs (the common intent after a flake). */
+  pullRunAction: async (
+    ref: RepoRef, number: number, runId: number,
+    action: 'cancel' | 'rerun', failedOnly = false,
+  ): Promise<PrRunActionResponse> => {
+    const r = await fetch(`${API}/pull/run`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...repoBody(ref), number, run_id: runId, action, failed_only: failedOnly,
+      }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Apply ONE action to many pull requests. Resolves even when some PRs failed
+   * — read `failed` — because a batch is never abandoned over one locked or
+   * already-merged PR. */
+  bulkPrAction: async (
+    ref: RepoRef, numbers: number[], action: BulkPrAction,
+    opts?: {
+      body?: string
+      method?: 'MERGE' | 'SQUASH' | 'REBASE'
+      /** `{ "<number>": "<sha>" }` — REQUIRED for `approve`, which is N verdicts and
+       * so pins each one to the commit its row was rendered at. Keyed by NUMBER, not
+       * a parallel array, so a reordered selection cannot pair a sha with the wrong
+       * PR. The server rejects a missing or partial map. */
+      headShas?: Record<string, string>
+    },
+  ): Promise<BulkPrResponse> => {
+    const r = await fetch(`${API}/pulls/bulk`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...repoBody(ref), numbers, action,
+        body: opts?.body ?? '', method: opts?.method ?? 'SQUASH',
+        head_shas: opts?.headShas ?? {},
+      }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
