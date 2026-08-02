@@ -25,9 +25,12 @@ function makeDeps({ appVersion = "1.0.0", withNative = true } = {}) {
   const calls = { quitAndInstall: [], exit: 0 };
   const handlers = {};
   const nativeHandlers = {};
+  let stagedVersion = null;
   const autoUpdater = {
     setFeedURL: () => {},
-    checkForUpdates: async () => {},
+    checkForUpdates: async () => {
+      if (stagedVersion) handlers["update-available"]?.({ version: stagedVersion });
+    },
     downloadUpdate: async () => {},
     quitAndInstall: (...a) => calls.quitAndInstall.push(a),
     on: (ev, fn) => { handlers[ev] = fn; },
@@ -60,7 +63,10 @@ function makeDeps({ appVersion = "1.0.0", withNative = true } = {}) {
   return {
     deps,
     calls,
-    emit: (ev, p) => handlers[ev] && handlers[ev](p),
+    emit: (ev, p) => {
+      if (ev === "update-downloaded") stagedVersion = p.version;
+      return handlers[ev] && handlers[ev](p);
+    },
     fireNative: (ev) => nativeHandlers[ev] && nativeHandlers[ev](),
     hasNativeListener: (ev) => typeof nativeHandlers[ev] === "function",
   };

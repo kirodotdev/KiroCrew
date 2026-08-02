@@ -14,13 +14,18 @@ on:
 permissions:
   contents: read
 
-# Single-flight nightly runs. cancel-in-progress also protects the channel
-# feeds (feed/nightly/latest-mac.yml + latest-linux.yml, last-writer-wins):
-# an overlapping older run is cancelled rather than finishing last and
-# rolling a feed back to an older build for every client.
+# Single-flight nightly runs, serialized by queueing. The group is shared
+# with release-emergency-controls.yml (nightly channel), so this workflow
+# must never cancel-in-progress: an emergency freeze/withdraw run in this
+# group has to finish even if the nightly schedule fires mid-run. Queueing
+# still protects the channel feeds (feed/nightly/latest-mac.yml +
+# latest-linux.yml, last-writer-wins): overlapping runs execute in order
+# instead of an older run finishing last and rolling a feed back to an
+# older build for every client. Emergency runs hold cancel-in-progress:
+# true on their side, so they preempt a nightly rather than queue behind it.
 concurrency:
   group: nightly-build
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   version:

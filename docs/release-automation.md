@@ -43,8 +43,14 @@ this — it only reacts to a pushed tag, which is why there is no
 `beta-cut.yml`, `beta-hotfix.yml`, or `promote-stable.yml`. See
 CONTRIBUTING.md → "Releasing New Versions" for the process itself.
 
-There is no `rollback.yml` and no rollback mechanism: **we roll forward by
-cutting a new version.**
+There is no production `rollback.yml` yet. Normal incident recovery remains a
+roll-forward release. The launch-readiness emergency-control contract is now
+implemented and tested in `scripts/release_feed_control.py`. Desktop clients that
+contain this implementation honor its `minimumSupportedVersion` /
+`withdrawnVersions` feed metadata; already-deployed older clients do not enforce
+those fields and cannot be retrofitted by changing a feed. The contract is **not
+an operational control until the CDN publisher integration listed under
+"Emergency release controls" below is deployed and bootstrapped**.
 
 **Buckets (as built) — two, not one:**
 
@@ -138,10 +144,103 @@ other escape.
    electron-builder DMG)
 
 **Feed-ordering protection (as built):** workflow-level `concurrency`
-groups (nightly: `cancel-in-progress: true`; release: queued) prevent an
-older run finishing last from rolling a channel feed backward. There is no
-`blocked-versions.json` and no rollback workflow: the recovery path is to
-**roll forward** — cut a new version and let the feed advance to it.
+groups (nightly and release: both queued/serialized) prevent an older run
+finishing last from rolling a channel feed backward; only emergency-control
+runs carry cancellation rights in those groups. Production still has no
+deployed guard on the publishers; the contract and dependency are below.
+
+### Emergency release controls (fail-closed contract; deployment dependency)
+
+`scripts/release_feed_control.py` is the stdlib-only contract shared by normal
+publishers and the break-glass workflow
+(`.github/workflows/release-emergency-controls.yml`). Per channel it validates this
+bounded public document at `feed/{channel}/release-control.json`:
+
+```json
+{
+  "schema_version": 1,
+  "channel": "stable",
+  "frozen": true,
+  "minimum_supported_version": "1.2.3",
+  "withdrawn_versions": ["1.2.2"],
+  "generation": 4,
+  "updated_at": "2026-08-01T00:00:00Z",
+  "reason": "incident reference and operator rationale"
+}
+```
+
+The contract is fail-closed in both directions:
+
+- `guard` refuses a pointer write when the document is missing, unreachable,
+  oversized, malformed, channel-mismatched, frozen, or when the candidate is
+  withdrawn/below the floor. It exports only newline-free validated values.
+- `snapshot` validates the currently served feed before it can become
+  `feed/{channel}/recovery/latest-*`; a same-version retry never rotates away
+  the prior last-known-good snapshot.
+- `rewrite` preserves artifact URLs and digests while applying the floor and
+  withdrawal list. It refuses a recovery target that is withdrawn, below the
+  floor, malformed, or outside the configured HTTPS byte host.
+- `bootstrap` starts **frozen**. Restore/withdraw operations also stay frozen;
+  returning to service is a separate reviewed `unfreeze` generation.
+- Immutable versioned artifacts are never deleted. Withdrawal rewinds mutable
+  feeds and human-download aliases to validated recovery metadata; normal
+  recovery remains roll-forward when that is faster/safer.
+
+Desktop clients containing this implementation consume the two extra
+electron-updater metadata fields. A build below `minimumSupportedVersion` or
+named in `withdrawnVersions` starts the sha512-verified download without ordinary
+download consent; this active floor/withdrawal policy is the explicit emergency
+exception to the normal consent-first flow. Once staged, its modal has no Later,
+close, Escape, or backdrop dismissal. Malformed policy, a withdrawn target, or a
+target below the floor is rejected before download. Older deployed clients lack
+this enforcement and cannot be made mandatory retroactively through feed data.
+
+This feed-served floor is deliberately distinct from the enterprise-governance
+`updates.min_version` in `security_policy.json`
+(`src/kiro_crew/platform/update_governance.py`): that value is an
+administrator's policy for gateway installs they already manage and reaches
+only machines carrying that local file, while `minimum_supported_version` is a
+release-operator action on the public CDN that reaches every desktop install.
+They intentionally share no source, plumbing, or precedence; an install
+subject to both simply satisfies each independently.
+
+**Exact operational dependency (item 1 ships in this repository; items 2–5
+remain outstanding):**
+
+1. **Implemented in this change:**
+   `.github/workflows/release-emergency-controls.yml` is the protected,
+   `main`-only `workflow_dispatch` using the `prod` environment and a typed
+   confirmation (`<channel>:<operation>`). Emergency runs serialize in their
+   own queued group; only the validated, approved execute job enters the
+   publishers' groups (`nightly-build` for nightly; `release-publish`, which
+   insider and stable share, so an emergency run on either preempts an
+   in-flight release publish of either) with
+   emergency runs allowed to cancel a publisher and publishers forbidden from
+   cancelling emergency work.
+2. Wire **every** mutable writer in `sign-and-notarize.yml`,
+   `publish-linux.yml`, and `publish-cli.yml` to call `guard` immediately before
+   its first feed/index/alias write, snapshot the previous valid live pointer,
+   and inject both control fields. A failed guard must stop the pointer chain.
+   For CLI publishing, `guard --candidate-version` must receive the release's
+   human-readable canonical SemVer label, not the PEP 440 wheel version stored in
+   `latest-cli.json`; the latter remains the installer-facing package version.
+3. Bootstrap `nightly`, `insider`, and `stable` before enabling that guard:
+   create generation 1 with `frozen=true`, seed all current feeds as recovery,
+   verify bytes through the public CDN, then separately unfreeze. Otherwise the
+   deliberately missing-control failure will stop the next release.
+4. The external KiroCrewPublishCDK OIDC role must continue to grant only
+   `s3:PutObject` on the distribution bucket's `feed/*` and mutable
+   `desktop/*/latest/*` keys. No `s3:GetObject`, object deletion, CloudFront
+   invalidation, signing-bucket access, or secret reads are needed: bounded
+   reads and verification use the public HTTPS CDN. Protect the `prod`
+   environment with required reviewers because its OIDC subject can publish.
+5. Run one non-production bucket/CDN rehearsal covering bootstrap → unfreeze →
+   publish → freeze → withdraw/restore → unfreeze, then record the production
+   object/version evidence. This repository has no production CDN/signing
+   credentials, so that deployment/rehearsal cannot be truthfully claimed here.
+
+Until all five items are complete, operators must treat the helper as a tested
+contract, **not** as evidence that production feeds are frozen or recoverable.
 
 **CLI channel (repository implementation; external enablement pending):**
 `publish-cli.yml` is wired to publish the wheel +

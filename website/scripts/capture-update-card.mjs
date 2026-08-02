@@ -46,6 +46,12 @@ const SCENES = [
     note: 'staged + manual reinstall escape hatch',
   },
   {
+    scene: 'mandatory-downloaded',
+    marker: '[role="dialog"]',
+    forbiddenButtonNames: ['later', 'dismiss'],
+    note: 'mandatory stage has no Later or close/dismiss control',
+  },
+  {
     scene: 'download-failed',
     marker: '[data-testid="update-download-error"]',
     note: 'card SURVIVES with a retry (#735/#736)',
@@ -66,7 +72,7 @@ const run = async () => {
   const browser = await chromium.launch()
   let failed = 0
   for (const theme of ['dark', 'light']) {
-    for (const { scene, marker, note } of SCENES) {
+    for (const { scene, marker, forbiddenButtonNames = [], note } of SCENES) {
       const ctx = await browser.newContext({
         viewport: { width: 820, height: 620 },
         deviceScaleFactor: 2,
@@ -89,10 +95,25 @@ const run = async () => {
         await ctx.close()
         continue
       }
-      // Prefer the card itself; the check-failure scene has no card, so fall
-      // back to the padded root so the status line is still framed.
+      let forbiddenRendered = false
+      for (const name of forbiddenButtonNames) {
+        const count = await page.getByRole('button', { name: new RegExp(name, 'i') }).count()
+        if (count > 0) {
+          console.error(`  FAIL ${theme}/${scene}: forbidden ${name} button rendered`)
+          failed += 1
+          forbiddenRendered = true
+        }
+      }
+      if (forbiddenRendered) {
+        await ctx.close()
+        continue
+      }
+      // Prefer the card, then a modal dialog. The check-failure scene has
+      // neither, so fall back to the padded root to frame its status line.
       const target =
-        (await page.$('[data-testid="update-card"]')) || (await page.$('[data-capture-root]'))
+        (await page.$('[data-testid="update-card"]')) ||
+        (await page.$('[role="dialog"]')) ||
+        (await page.$('[data-capture-root]'))
       await target.screenshot({ path: `${OUT}/${theme}-${scene}.png` })
       console.log(`  ${theme}/${scene} -> ${note}`)
       await ctx.close()

@@ -6,6 +6,7 @@ const {
   channelForVersion,
   resolveChannel,
   buildFeedBase,
+  evaluateReleasePolicy,
   configureUpdater,
   DEFAULT_FEED_BASE,
   SUPPORTED_PLATFORMS,
@@ -124,6 +125,87 @@ test("buildFeedBase ALLOWS plain http on loopback (local update harness)", () =>
 });
 
 // ---------------------------------------------------------------------------
+// Emergency feed policy: malformed/withdrawn targets fail closed; a running
+// build below the floor or explicitly withdrawn is mandatory.
+// ---------------------------------------------------------------------------
+
+test("evaluateReleasePolicy marks a build below minimumSupportedVersion mandatory", () => {
+  const policy = evaluateReleasePolicy(
+    { version: "1.2.3", minimumSupportedVersion: "1.2.0", withdrawnVersions: [] },
+    "1.1.9",
+  );
+  assert.strictEqual(policy.mandatory, true);
+  assert.strictEqual(policy.minimumSupportedVersion, "1.2.0");
+});
+
+test("evaluateReleasePolicy marks the running withdrawn version mandatory", () => {
+  const policy = evaluateReleasePolicy(
+    { version: "1.2.2", minimumSupportedVersion: "", withdrawnVersions: ["1.2.1"] },
+    "1.2.1",
+  );
+  assert.strictEqual(policy.mandatory, true);
+});
+
+test("evaluateReleasePolicy rejects a withdrawn or below-floor target", () => {
+  assert.throws(
+    () => evaluateReleasePolicy(
+      { version: "1.2.3", minimumSupportedVersion: "", withdrawnVersions: ["1.2.3"] },
+      "1.2.2",
+    ),
+    /withdrawn target/,
+  );
+  assert.throws(
+    () => evaluateReleasePolicy(
+      { version: "1.2.2", minimumSupportedVersion: "1.2.3", withdrawnVersions: [] },
+      "1.2.1",
+    ),
+    /does not satisfy minimum/,
+  );
+});
+
+test("evaluateReleasePolicy rejects malformed control metadata", () => {
+  assert.throws(
+    () => evaluateReleasePolicy(
+      { version: "1.2.3", minimumSupportedVersion: "latest", withdrawnVersions: [] },
+      "1.2.2",
+    ),
+    /invalid minimum/,
+  );
+  assert.throws(
+    () => evaluateReleasePolicy(
+      { version: "1.2.3", minimumSupportedVersion: "", withdrawnVersions: ["1.2.2", "1.2.2"] },
+      "1.2.1",
+    ),
+    /invalid withdrawnVersions/,
+  );
+  assert.throws(
+    () => evaluateReleasePolicy(
+      { version: "1.2.3", minimumSupportedVersion: "1.2.0" },
+      "1.2.1",
+    ),
+    /incomplete emergency policy/,
+  );
+  assert.throws(
+    () => evaluateReleasePolicy(
+      {
+        version: "1.2.3",
+        minimumSupportedVersion: "",
+        withdrawnVersions: Array.from({ length: 101 }, (_, i) => `1.0.${i}`),
+      },
+      "1.2.1",
+    ),
+    /invalid withdrawnVersions/,
+  );
+  assert.throws(
+    () => evaluateReleasePolicy(
+      { version: "v1.2.3", minimumSupportedVersion: "", withdrawnVersions: [] },
+      "1.2.1",
+    ),
+    /invalid version/,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // configureUpdater: the four policy flags this app depends on. EVERY one
 // differs from the electron-updater default; a regression on any of them
 // re-introduces a bug class we already fixed.
@@ -198,6 +280,22 @@ test("CONTRACT: relative channel-file names resolve under the feed base director
   );
 });
 
+test("CONTRACT: electron-updater preserves emergency metadata from channel YAML", () => {
+  const { parseUpdateInfo } = require("electron-updater/out/providers/Provider");
+  const parsed = parseUpdateInfo(
+    [
+      "version: 1.2.3",
+      "minimumSupportedVersion: 1.2.0",
+      "withdrawnVersions: [1.1.9]",
+      "files: []",
+    ].join("\n"),
+    "latest-mac.yml",
+    new URL("https://updates.crew.kiro.dev/feed/stable/latest-mac.yml"),
+  );
+  assert.strictEqual(parsed.minimumSupportedVersion, "1.2.0");
+  assert.deepStrictEqual(parsed.withdrawnVersions, ["1.1.9"]);
+});
+
 // ---------------------------------------------------------------------------
 // initAutoUpdate fixture: fake electron-updater AppUpdater (EventEmitter-like,
 // recording setFeedURL / checkForUpdates / downloadUpdate / quitAndInstall)
@@ -255,7 +353,23 @@ function makeDeps(opts = {}) {
   };
   const emit = (ev, payload) => handlers[ev] && handlers[ev](payload);
   const stateNames = () => states.map((s) => s.state);
-  return { deps, calls, handlers, emit, states, stateNames, appOnce, appRemoved };
+  const revalidateAs = (version, extra = {}) => {
+    deps.autoUpdater.checkForUpdates = async () => {
+      calls.checkForUpdates += 1;
+      emit("update-available", { version, ...extra });
+    };
+  };
+  return {
+    deps,
+    calls,
+    handlers,
+    emit,
+    states,
+    stateNames,
+    appOnce,
+    appRemoved,
+    revalidateAs,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -502,7 +616,112 @@ test("'update-available' surfaces 'found' and does NOT call downloadUpdate (disc
   assert.strictEqual(found.pubDate, "2026-07-28T00:00:00Z");
 });
 
-test("download() is the consent gate: it alone calls downloadUpdate", async () => {
+test("minimum-supported build auto-starts the verified download and marks every state mandatory", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.1.9" });
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", {
+    version: "1.2.3",
+    minimumSupportedVersion: "1.2.0",
+    withdrawnVersions: [],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(calls.downloadUpdate, 1, "the floor overrides ordinary download consent");
+  const found = states.find((state) => state.state === "found");
+  const downloading = states.find((state) => state.state === "downloading");
+  assert.strictEqual(found.mandatory, true);
+  assert.strictEqual(found.minimumSupportedVersion, "1.2.0");
+  assert.strictEqual(downloading.mandatory, true);
+});
+
+test("periodic checks cannot replace a staged mandatory update", async () => {
+  const realSetInterval = global.setInterval;
+  let periodicCheck = null;
+  global.setInterval = (fn, ms, ...args) => {
+    if (ms === 4 * 60 * 60 * 1000) {
+      periodicCheck = fn;
+      return { unref: () => {} };
+    }
+    return realSetInterval(fn, ms, ...args);
+  };
+
+  try {
+    const { deps, calls, emit, states } = makeDeps({ appVersion: "1.1.9" });
+    const updater = initAutoUpdate(deps);
+    emit("update-available", {
+      version: "1.2.3",
+      minimumSupportedVersion: "1.2.0",
+      withdrawnVersions: [],
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    emit("update-downloaded", { version: "1.2.3" });
+
+    assert.ok(periodicCheck, "periodic update callback must be registered");
+    assert.strictEqual(updater.isReady(), true);
+    assert.strictEqual(states.at(-1).state, "downloaded");
+    assert.strictEqual(states.at(-1).mandatory, true);
+    const checksBeforePoll = calls.checkForUpdates;
+
+    periodicCheck();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(
+      calls.checkForUpdates,
+      checksBeforePoll,
+      "a background poll must not re-enter the updater while mandatory bytes are staged",
+    );
+    assert.strictEqual(states.at(-1).state, "downloaded");
+    assert.strictEqual(states.at(-1).mandatory, true);
+  } finally {
+    global.setInterval = realSetInterval;
+  }
+});
+
+test("renderer re-subscribe replays a staged mandatory update without re-entering the updater", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.1.9" });
+  const updater = initAutoUpdate(deps);
+  emit("update-available", {
+    version: "1.2.3",
+    minimumSupportedVersion: "1.2.0",
+    withdrawnVersions: [],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  emit("update-downloaded", { version: "1.2.3", releaseNotes: "Required fixes" });
+
+  const checksBeforeSubscribe = calls.checkForUpdates;
+  states.length = 0; // Cmd/Ctrl+R discarded the renderer's prior cache.
+  assert.strictEqual(updater.replayState(), true);
+
+  assert.strictEqual(
+    calls.checkForUpdates,
+    checksBeforeSubscribe,
+    "renderer attachment must not re-enter electron-updater while mandatory bytes are staged",
+  );
+  assert.deepStrictEqual(states.at(-1), {
+    state: "downloaded",
+    channel: "stable",
+    version: "1.2.3",
+    notes: "Required fixes",
+    mandatory: true,
+    minimumSupportedVersion: "1.2.0",
+  });
+});
+
+test("malformed emergency metadata fails closed without downloading", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.1.9" });
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", {
+    version: "1.2.3",
+    minimumSupportedVersion: "latest",
+    withdrawnVersions: [],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(calls.downloadUpdate, 0);
+  assert.ok(states.some((state) => state.state === "error" && state.phase === "check"));
+});
+
+test("download() is the ordinary consent gate: it alone calls downloadUpdate", async () => {
   const { deps, calls, emit, stateNames } = makeDeps({ appVersion: "1.0.0" });
   const u = initAutoUpdate(deps);
   await u.check();
@@ -566,8 +785,21 @@ test("'update-not-available' surfaces 'not-available'", async () => {
   const { deps, emit, stateNames } = makeDeps();
   const u = initAutoUpdate(deps);
   await u.check();
-  emit("update-not-available");
+  emit("update-not-available", { version: "1.0.0" });
   assert.ok(stateNames().includes("not-available"));
+});
+
+test("an unsupported running build is never reported up to date without a compliant target", async () => {
+  const { deps, emit, states } = makeDeps({ appVersion: "1.1.9" });
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-not-available", {
+    version: "1.1.9",
+    minimumSupportedVersion: "1.2.0",
+    withdrawnVersions: [],
+  });
+  assert.ok(states.some((state) => state.state === "error" && state.mandatory === true));
+  assert.ok(!states.some((state) => state.state === "not-available"));
 });
 
 // ---------------------------------------------------------------------------
@@ -667,13 +899,138 @@ test("updater 'error' clears the in-flight download so consent can retry", async
   await Promise.all([dl1, dl2]);
 });
 
+test("install revalidates the staged version and refuses a newly withdrawn target", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.0.0" });
+  let gatewayStops = 0;
+  deps.stopGateway = async () => { gatewayStops += 1; };
+  deps.autoUpdater.checkForUpdates = async () => {
+    calls.checkForUpdates += 1;
+    emit("update-available", {
+      version: "1.1.0",
+      minimumSupportedVersion: "",
+      withdrawnVersions: ["1.1.0"],
+    });
+  };
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+
+  await u.install();
+
+  assert.strictEqual(calls.checkForUpdates, 1, "install must consult the live feed");
+  assert.strictEqual(u.isReady(), false, "the withdrawn stage must be disarmed");
+  assert.strictEqual(gatewayStops, 0, "revalidation happens before gateway shutdown");
+  assert.strictEqual(calls.quitAndInstall.length, 0);
+  assert.ok(states.some((state) => state.state === "error" && state.phase === "check"));
+});
+
+test("install fails closed when the staged version cannot be revalidated", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.0.0" });
+  let gatewayStops = 0;
+  deps.stopGateway = async () => { gatewayStops += 1; };
+  deps.autoUpdater.checkForUpdates = async () => {
+    calls.checkForUpdates += 1;
+    throw new Error("release feed unavailable");
+  };
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+
+  await u.install();
+
+  assert.strictEqual(calls.checkForUpdates, 1);
+  assert.strictEqual(u.isReady(), true, "a network failure must not corrupt the local stage");
+  assert.strictEqual(gatewayStops, 0);
+  assert.strictEqual(calls.quitAndInstall.length, 0);
+  assert.ok(states.some((state) => state.state === "error" && state.phase === "check"));
+});
+
+test("failed revalidation restores the staged mandatory modal instead of dismissing it", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.1.9" });
+  const u = initAutoUpdate(deps);
+  // Stage a MANDATORY update (running build is below the feed floor).
+  emit("update-available", {
+    version: "1.2.3",
+    minimumSupportedVersion: "1.2.0",
+    withdrawnVersions: [],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  emit("update-downloaded", { version: "1.2.3" });
+  assert.strictEqual(states.at(-1).state, "downloaded");
+  assert.strictEqual(states.at(-1).mandatory, true);
+
+  // Install revalidation hits a feed outage: checking/error states replace
+  // the downloaded card mid-flight.
+  deps.autoUpdater.checkForUpdates = async () => {
+    calls.checkForUpdates += 1;
+    throw new Error("release feed unavailable");
+  };
+
+  await u.install();
+
+  assert.strictEqual(calls.quitAndInstall.length, 0, "outage must refuse the install");
+  assert.strictEqual(u.isReady(), true, "the local stage must survive the outage");
+  assert.ok(
+    states.some((state) => state.state === "error" && state.phase === "check"),
+    "the outage itself is still surfaced",
+  );
+  assert.strictEqual(
+    states.at(-1).state,
+    "downloaded",
+    "the staged state must be re-emitted so the modal is not dismissed",
+  );
+  assert.strictEqual(states.at(-1).mandatory, true);
+  assert.strictEqual(states.at(-1).version, "1.2.3");
+});
+
+test("install fails closed when a provider resolves without a validated feed event", async () => {
+  const { deps, calls, emit } = makeDeps({ appVersion: "1.0.0" });
+  let gatewayStops = 0;
+  deps.stopGateway = async () => { gatewayStops += 1; };
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+
+  await u.install();
+
+  assert.strictEqual(calls.checkForUpdates, 1);
+  assert.strictEqual(gatewayStops, 0);
+  assert.strictEqual(calls.quitAndInstall.length, 0);
+  assert.strictEqual(u.isReady(), true, "silent checks must not corrupt the local stage");
+});
+
+test("deferred install quits without applying a stage withdrawn before natural quit", async () => {
+  const { deps, calls, emit, appOnce } = makeDeps({ appVersion: "1.0.0" });
+  let cleanQuits = 0;
+  let prevented = false;
+  deps.app.quit = () => { cleanQuits += 1; };
+  deps.autoUpdater.checkForUpdates = async () => {
+    calls.checkForUpdates += 1;
+    emit("update-available", {
+      version: "1.1.0",
+      minimumSupportedVersion: "",
+      withdrawnVersions: ["1.1.0"],
+    });
+  };
+  initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  const quitHook = appOnce.find((entry) => entry.ev === "before-quit");
+  assert.ok(quitHook, "staging must arm deferred installation");
+
+  quitHook.fn({ preventDefault: () => { prevented = true; } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.strictEqual(prevented, true);
+  assert.strictEqual(calls.checkForUpdates, 1);
+  assert.strictEqual(calls.quitAndInstall.length, 0);
+  assert.strictEqual(cleanQuits, 1, "the original quit request must still complete");
+});
+
 // ---------------------------------------------------------------------------
 // install(): STRICT ORDER -- stopGateway must complete BEFORE quitAndInstall.
 // A live gateway child during the bundle swap can leave a half-replaced app.
 // ---------------------------------------------------------------------------
 
 test("install() awaits stopGateway BEFORE quitAndInstall (strict order)", async () => {
-  const { deps, emit } = makeDeps();
+  const { deps, emit, revalidateAs } = makeDeps();
+  revalidateAs("1.1.0");
   const events = [];
   deps.stopGateway = async () => {
     events.push("stopGateway:begin");
@@ -698,7 +1055,8 @@ test("install() awaits stopGateway BEFORE quitAndInstall (strict order)", async 
 });
 
 test("install() proceeds to quitAndInstall even when stopGateway errors (still in order)", async () => {
-  const { deps, emit } = makeDeps();
+  const { deps, emit, revalidateAs } = makeDeps();
+  revalidateAs("1.1.0");
   const events = [];
   deps.stopGateway = async () => {
     events.push("stopGateway:threw");
@@ -715,7 +1073,8 @@ test("install() proceeds to quitAndInstall even when stopGateway errors (still i
 });
 
 test("install path arms a force-exit failsafe after quitAndInstall (app-still-running guard)", async () => {
-  const { deps, emit } = makeDeps();
+  const { deps, emit, revalidateAs } = makeDeps();
+  revalidateAs("1.1.0");
   const events = [];
   deps.app.exit = (code) => events.push(`exit:${code}`);
   deps.autoUpdater.quitAndInstall = () => events.push("quitAndInstall");
@@ -873,7 +1232,8 @@ test("install() with nothing staged is refused, so the force-exit failsafe is ne
 });
 
 test("install() proceeds once an update IS staged", async () => {
-  const { deps, calls, emit } = makeDeps({ appVersion: "1.0.0" });
+  const { deps, calls, emit, revalidateAs } = makeDeps({ appVersion: "1.0.0" });
+  revalidateAs("1.1.0");
   const u = initAutoUpdate(deps);
   emit("update-downloaded", { version: "1.1.0" });
   await u.install();

@@ -28,6 +28,9 @@ type UpdateState = {
   /** Download progress, 0-100. Absent until the first progress event arrives. */
   percent?: number
   bytesPerSecond?: number
+  /** True when the running build is withdrawn or below the feed floor. */
+  mandatory?: boolean
+  minimumSupportedVersion?: string
 }
 
 /** Human-readable transfer rate for the progress label. */

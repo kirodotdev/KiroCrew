@@ -26,6 +26,7 @@ import { Provider } from 'react-redux'
 import { initI18n } from '../src/i18n'
 import { store } from '../src/store'
 import { AboutPanel } from '../src/pages/settings/AboutPanel'
+import UpdateModal from '../src/components/UpdateModal'
 import '../src/index.css'
 
 const VERSION = '0.1.3-nightly.20260730t061200'
@@ -65,6 +66,15 @@ const SCENES: Record<string, Record<string, unknown>> = {
     channel: 'nightly',
     pubDate: '2026-07-30T06:12:00Z',
     notes: NOTES,
+  },
+  'mandatory-downloaded': {
+    state: 'downloaded',
+    version: VERSION,
+    channel: 'nightly',
+    pubDate: '2026-07-30T06:12:00Z',
+    notes: NOTES,
+    mandatory: true,
+    minimumSupportedVersion: VERSION,
   },
   'download-failed': {
     state: 'error',
@@ -128,9 +138,13 @@ createRoot(document.getElementById('root')!).render(
         style={{ background: 'var(--bg)', color: 'var(--text)', padding: 24, minHeight: '100vh' }}
         data-capture-root
       >
-        <div style={{ maxWidth: 720 }}>
-          <AboutPanel />
-        </div>
+        {scene === 'mandatory-downloaded' ? (
+          <UpdateModal />
+        ) : (
+          <div style={{ maxWidth: 720 }}>
+            <AboutPanel />
+          </div>
+        )}
       </div>
     </QueryClientProvider>
   </Provider>,

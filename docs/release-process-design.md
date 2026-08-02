@@ -46,9 +46,9 @@ the strongest quotes are cited so the provenance is checkable.
 |---|---|---|---|
 | P1 | The user gets an easy-to-install, packaged, signed and notarized native application, for macOS and Linux and in the future Windows, without needing a terminal or a Python setup | macOS: done, all Macs (Developer-ID-signed universal DMG, "ready for distribution" per `syspolicy_check`). Linux: packaged (AppImage) with signed SLSA provenance; not code-signed by design, since Linux has no Gatekeeper equivalent. Windows: source install only | #108 ("DMG for the first install, zip feed for every update after"), #137/#139/#144 (the DMG must survive Gatekeeper on a real user machine), #152 ("Every Intel-Mac user is locked out", which led to the universal app), #162 ("a link a human can click or paste into docs"), #63 (install must fail closed or auto-provision, never produce a broken install) |
 | P2 | Multiple release channels, so contributors get the latest build while normal users get a stable, tested build | Done: nightly, insider, and stable all live (insider 2026-07-22 18:47 UTC, stable v0.1.0 2026-07-22 19:36 UTC, each with 7 verified public surfaces). Nightly ships as a separate side-by-side app; insider/stable are two update lanes of one app | #132 ("pip/cli.sh users could never track insider or stable"), #176 (tag releases must be able to publish), #193 ("a nightly and the production app can be installed together"), #224 (in-place channel opt-in, "the Slack-beta model") |
-| P3 | Users self-update directly from the app, without ever touching the CLI or terminal, and nothing downloads or installs without explicit consent | macOS: done, macOS Software Update semantics (a check only discovers; update card with explicit Download & Install; nudge is inform-only). Linux: done — the desktop AppImage self-updates through the electron-updater feed (`latest-linux.yml`), and the CLI lane self-updates (channel-sticky, sha256-verified via `latest-cli.json`) | #98 (close the gaps so auto-update "actually delivers bytes publicly"), #125 ("explicit user consent… Nothing downloads automatically"), #241 ("inform only — download and install stay in Settings > About"), #224 ("Switching never downloads or installs by itself") |
-| P4 | A bad release can be pulled back quickly, so users are not stranded on a broken build | Partial: pullback exercised once for real (#137 withdrew the Gatekeeper-broken DMG from every public surface); the pointer mechanics exist (mutable latest aliases + immutable versioned keys), but rollback automation and force-update (`blocked-versions`) remain unbuilt | #137 (the one live pullback event), #162/#132/#133 (mutable-pointer + never-republish discipline a rollback would flip) |
-| P5 | Users behind a minimum required version can be forced to update: a critical security patch must have a guaranteed propagation path | Designed, not built: pairs with P4's rollback design (the feed serves a minimum-version floor; clients below it force-trigger the update flow) | Design articulated alongside rollback and the update nudge; no dedicated PR yet |
+| P3 | Users self-update directly from the app without touching the CLI or terminal. Ordinary updates require explicit download/install consent; a valid active minimum-version floor or withdrawal is the explicit emergency exception | macOS: done for the ordinary consent flow (a check only discovers; update card with explicit Download & Install; nudge is inform-only). Linux: done — the desktop AppImage self-updates through the electron-updater feed (`latest-linux.yml`), and the CLI lane self-updates (channel-sticky, sha256-verified via `latest-cli.json`). Clients containing the emergency implementation automatically download a compliant verified desktop target and remove staged-update dismissal while the emergency policy applies | #98 (close the gaps so auto-update "actually delivers bytes publicly"), #125 ("explicit user consent… Nothing downloads automatically"), #241 ("inform only — download and install stay in Settings > About"), #224 ("Switching never downloads or installs by itself"); emergency exception: Electron updater tests |
+| P4 | A bad release can be pulled back quickly, so users are not stranded on a broken build | Contract + upgraded-client behavior built, production wiring pending: fail-closed freeze/withdraw/last-known-good helpers and tests exist, but the protected CDN writer and per-channel bootstrap are the exact remaining operational dependency. Older deployed clients cannot gain this behavior from feed changes alone | `scripts/release_feed_control.py`, `test/test_release_feed_control.py`, and the dependency checklist in `release-automation.md` |
+| P5 | Users behind a minimum required version can be forced to update: a critical security patch must have a guaranteed propagation path | Upgraded-client + feed contract built, production wiring pending: `minimumSupportedVersion` is validated fail-closed and forces the verified download/non-dismissible staged flow only in clients containing this implementation; publishers must still be wired and bootstrapped before operators can set the floor | Electron updater tests + `test/test_release_feed_control.py`; operational dependency in `release-automation.md` |
 
 ### Engineering requirements
 
@@ -106,8 +106,9 @@ separate installable app (KiroCrew Nightly.app, its own icon, shared
 bundle id) so a nightly and the production app can be installed side by
 side; insider and stable are two update lanes of one production app, with
 an in-place Stable/Insider switcher in Settings, the Slack-beta model.
-Switching channels never downloads or installs by itself; the consent
-flow (section 6) is unchanged.
+Switching channels never downloads or installs by itself; the ordinary consent
+flow (section 6) is unchanged unless a valid active floor/withdrawal policy makes
+the emergency exception apply.
 
 ## 3. Versioning
 
@@ -235,7 +236,9 @@ Rules that make the scheme work:
    date, schema, algorithm, and key id. The installer verifies that signature
    against its offline pin before consuming artifact metadata, then verifies
    the downloaded wheel against the authenticated digest. Both checks fail
-   closed.
+   closed. Future CLI publisher guard calls must separately pass the
+   human-readable canonical SemVer release label; the PEP 440 wheel version
+   is not the control-policy key.
 5. pip installs use `--extra-index-url` against the channel's simple
    index, keeping PyPI available for dependency resolution.
 
@@ -465,9 +468,11 @@ hold. These are the invariants; the per-OS mechanics are free.
    working publish lane (`SUPPORTED_PLATFORMS` in `auto-update.js`);
    adding the lane means adding the platform there.
 9. Roll-forward: a new version published to the lane MUST reach clients
-   through the same feed + updater path, since **rolling forward is the only
-   recovery mechanism** — there is no rollback. A lane whose updater cannot
-   pick up a newer version has no recovery story and is not supported.
+   through the same feed + updater path; this remains the normal recovery path.
+   Emergency pointer restore is a break-glass exception and is not operational
+   until the protected CDN wiring in `release-automation.md` is deployed. A lane
+   whose updater cannot pick up the roll-forward or a restored pointer has no
+   recovery story and is not supported.
 10. Retention: the lane's artifacts follow the channel lifecycle (nightly
     expiring, stable pinned), so no lane accumulates unbounded nightly
     artifacts.
@@ -478,8 +483,8 @@ Open as of 2026-07-28:
 
 | Item | Type | Notes |
 |---|---|---|
-| Rollback automation (P4) | **dropped** | Superseded by process decision: **there is no rollback — we roll forward by cutting a new version.** The `rollback.yml` + `blocked-versions` design described in P4/P5 above is not being built. The client-side capability remains (`allowDowngrade=true`, so a repointed feed *would* be offered), but the operational answer to a bad release is a new version cut from the release branch, not a feed rewind |
-| Forced minimum version (P5) | roadmap | Unbuilt and independent of rollback: a feed-served minimum-version floor that force-triggers the update flow for a critical security patch |
+| Emergency restore (P4) | integration pending | The fail-closed freeze/withdraw/recovery contract and tests are built. Production still needs the protected per-channel writer lock, publisher guard/snapshot wiring, and bootstrap rehearsal listed in `release-automation.md`; until then roll-forward remains the only operational recovery |
+| Forced minimum version (P5) | integration pending | Desktop enforcement and strict feed metadata validation are built. The floor cannot be operated until every publisher preserves it and the production control object is bootstrapped |
 | S3 lifecycle rules | roadmap | Designed (intermediates 7d, nightly 30d, insider 180d, stable forever); unmanaged growth is ~1 TB/year |
 | Windows lane | roadmap | CI builds a Squirrel.Windows `Setup.exe` (installer-only, unpublished); win32 auto-update stays disabled in the client until the NSIS migration (#598); the supported install path is still source |
 | Update-consent nudge polish, custom icon setting | roadmap | Nudge dots shipped; Settings card for custom icons deliberately deferred |

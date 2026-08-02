@@ -33,6 +33,7 @@
 // fileUrl is absolute. That behaviour is structural but undocumented, so
 // test/auto-update.test.js pins it against the real installed library — a
 // version bump that changes it must fail CI, not strand installs in the field.
+const semver = require("semver");
 const {
   classifyBundleLocation,
   containingDirForBundle,
@@ -66,6 +67,7 @@ const DEFAULT_FEED_BASE = "https://updates.crew.kiro.dev/feed";
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h while running
 const LAUNCH_CHECK_DELAY_MS = 30 * 1000; // let startup settle first
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
+const MAX_WITHDRAWN_VERSIONS = 100;
 
 /** Platforms with a working publish lane + updater. win32 lands with NSIS (#598). */
 const SUPPORTED_PLATFORMS = new Set(["darwin", "linux"]);
@@ -160,6 +162,72 @@ function buildFeedBase({ base, channel }) {
     throw new Error(`feed base must be https (or http on loopback): ${parsed.protocol}//${parsed.hostname}`);
   }
   return url;
+}
+
+/**
+ * Evaluate emergency policy carried in the signed update-feed metadata.
+ *
+ * A malformed floor/list or a feed whose advertised target is itself
+ * withdrawn/below the floor is rejected rather than downloaded. A running
+ * build below the floor (or explicitly withdrawn) is mandatory: discovery
+ * starts the verified download immediately and the renderer removes every
+ * dismissal path once it is staged.
+ *
+ * @param {object|null|undefined} info electron-updater UpdateInfo
+ * @param {string} currentVersion app.getVersion()
+ * @returns {{mandatory:boolean, minimumSupportedVersion:string, withdrawnVersions:string[]}}
+ */
+function evaluateReleasePolicy(info, currentVersion) {
+  const metadata = info && typeof info === "object" ? info : {};
+  const hasMinimum = Object.prototype.hasOwnProperty.call(
+    metadata,
+    "minimumSupportedVersion",
+  );
+  const hasWithdrawn = Object.prototype.hasOwnProperty.call(
+    metadata,
+    "withdrawnVersions",
+  );
+  // Pre-control feeds carry neither field. Once a publisher opts in it must
+  // carry BOTH: accepting a partial document would let one broken writer strip
+  // the floor or withdrawal list while still looking policy-aware.
+  if (hasMinimum !== hasWithdrawn) {
+    throw new Error("release feed has incomplete emergency policy metadata");
+  }
+  const minimum = hasMinimum ? metadata.minimumSupportedVersion : "";
+  const withdrawn = hasWithdrawn ? metadata.withdrawnVersions : [];
+
+  const canonicalSemver = (value) => (
+    typeof value === "string"
+    && /^[0-9]/.test(value)
+    && semver.valid(value) !== null
+  );
+  if (typeof minimum !== "string" || (minimum && !canonicalSemver(minimum))) {
+    throw new Error("release feed has an invalid minimumSupportedVersion");
+  }
+  if (!Array.isArray(withdrawn)
+      || withdrawn.length > MAX_WITHDRAWN_VERSIONS
+      || withdrawn.some((version) => !canonicalSemver(version))
+      || new Set(withdrawn).size !== withdrawn.length) {
+    throw new Error("release feed has an invalid withdrawnVersions list");
+  }
+
+  const targetVersion = metadata.version;
+  if (!canonicalSemver(targetVersion) || !canonicalSemver(currentVersion)) {
+    throw new Error("release feed or running build has an invalid version");
+  }
+  if (withdrawn.includes(targetVersion)) {
+    throw new Error(`release feed advertises withdrawn target ${targetVersion}`);
+  }
+  if (minimum && semver.lt(targetVersion, minimum)) {
+    throw new Error(`release feed target does not satisfy minimum ${minimum}`);
+  }
+
+  const currentIsBelowMinimum = !!minimum && semver.lt(currentVersion, minimum);
+  return {
+    mandatory: currentIsBelowMinimum || withdrawn.includes(currentVersion),
+    minimumSupportedVersion: minimum,
+    withdrawnVersions: [...withdrawn],
+  };
 }
 
 /**
@@ -471,9 +539,13 @@ function initAutoUpdate(deps) {
   let stagedVersion = null; // version electron-updater has downloaded + staged
   let stagedNotes = "";
   let foundVersion = null; // last version surfaced to the user, awaiting consent
+  let mandatoryUpdate = false; // current build is withdrawn or below the feed floor
+  let minimumSupportedVersion = "";
   let installing = false;
   let quitHandled = false;
   let checking = false;
+  let checkFailed = false;
+  let validatedCheckGeneration = 0;
 
   /**
    * Version of the update currently being fetched/held -- NOT the running
@@ -497,6 +569,13 @@ function initAutoUpdate(deps) {
    * @param {"check"|"download"|"install"} phase
    * @param {unknown} err
    */
+  function policyFields() {
+    return {
+      mandatory: mandatoryUpdate,
+      minimumSupportedVersion,
+    };
+  }
+
   function emitError(phase, err) {
     const { code, detail, httpStatus } = classifyError(err);
     log.error(`[update] ${phase} failed (${code})`, err);
@@ -504,6 +583,7 @@ function initAutoUpdate(deps) {
       phase,
       code,
       message: detail,
+      ...policyFields(),
       ...(httpStatus === undefined ? {} : { httpStatus }),
       ...(phase === "download" ? { version: pendingVersion() } : {}),
     });
@@ -528,14 +608,14 @@ function initAutoUpdate(deps) {
    * download requires the explicit download() consent call below.
    */
   async function safeCheck() {
-    if (checking) return;
+    if (checking) return false;
     if (downloading) {
       // A download is in flight. Re-entering the check would restart the
       // updater's flow underneath the running download; report progress
       // instead. update-downloaded/error clears the flag.
       log.info("[update] check requested while download in flight — reporting progress");
-      emit("downloading", { version: pendingVersion() });
-      return;
+      emit("downloading", { version: pendingVersion(), ...policyFields() });
+      return false;
     }
     if (updateReady && stagedVersion) {
       // NOTE: deliberately NOT a short-circuit. A check must ALWAYS consult
@@ -547,25 +627,33 @@ function initAutoUpdate(deps) {
       log.info(`[update] ${stagedVersion} staged — checking whether it is still latest`);
     }
     checking = true;
+    checkFailed = false;
+    const validationBefore = validatedCheckGeneration;
     try {
       configureFeed(); // re-read flavor/channel each check
       emit("checking");
       await autoUpdater.checkForUpdates();
+      // A resolved promise alone is not evidence: installation needs a valid
+      // update-available/not-available event from THIS check. A buggy provider
+      // that resolves silently must therefore block the staged install.
+      return !checkFailed && validatedCheckGeneration > validationBefore;
     } catch (err) {
+      checkFailed = true;
       emitError("check", err);
+      return false;
     } finally {
       checking = false;
     }
   }
 
   /**
-   * Explicit user consent: download the version last surfaced by safeCheck.
-   * Never called automatically — this is the whole point of autoDownload=false.
+   * Download the version last surfaced by safeCheck. Ordinary updates require
+   * explicit user consent; unsupported running builds enter the mandatory path.
    */
   async function startDownload() {
-    if (downloading) { emit("downloading", { version: pendingVersion() }); return; }
+    if (downloading) { emit("downloading", { version: pendingVersion(), ...policyFields() }); return; }
     if (updateReady && stagedVersion) {
-      emit("downloaded", { version: stagedVersion, notes: stagedNotes });
+      emit("downloaded", { version: stagedVersion, notes: stagedNotes, ...policyFields() });
       return;
     }
     if (!foundVersion) {
@@ -577,7 +665,7 @@ function initAutoUpdate(deps) {
     }
     log.info(`[update] user consented — downloading ${foundVersion}`);
     downloading = true;
-    emit("downloading", { version: pendingVersion() });
+    emit("downloading", { version: pendingVersion(), ...policyFields() });
     try {
       await autoUpdater.downloadUpdate();
     } catch (err) {
@@ -644,6 +732,30 @@ function initAutoUpdate(deps) {
     autoUpdater.quitAndInstall(false, true);
   }
 
+  async function revalidateStagedUpdate(reason) {
+    const expectedVersion = stagedVersion;
+    if (!updateReady || !expectedVersion) return false;
+    log.info(`[update] revalidating staged ${expectedVersion} before ${reason}`);
+    const checked = await safeCheck();
+    if (!checked) {
+      log.warn(`[update] refusing ${reason}: release feed could not be revalidated`);
+      // A feed outage says nothing about the already-staged bytes. safeCheck
+      // emitted checking/error states that replaced the downloaded card, so
+      // without this re-emit a MANDATORY modal silently disappears (and, with
+      // polling stopped while staged, never comes back). Restore the staged
+      // state so the modal survives the failed revalidation.
+      if (updateReady && stagedVersion === expectedVersion) {
+        emit("downloaded", { version: stagedVersion, notes: stagedNotes, ...policyFields() });
+      }
+      return false;
+    }
+    if (!updateReady || stagedVersion !== expectedVersion) {
+      log.warn(`[update] refusing ${reason}: staged ${expectedVersion} is no longer current`);
+      return false;
+    }
+    return true;
+  }
+
   async function applyUpdateAndRestart() {
     if (installing) return;
     // REQUIRE a staged update. Without this guard an install() dispatched
@@ -659,6 +771,7 @@ function initAutoUpdate(deps) {
       emit(foundVersion ? "found" : "not-available", foundVersion ? { version: foundVersion } : {});
       return;
     }
+    if (!(await revalidateStagedUpdate("install"))) return;
     installing = true;
     // BEFORE stopGateway, or the watchdog can win the race and respawn the
     // gateway into the middle of the bundle swap.
@@ -689,25 +802,41 @@ function initAutoUpdate(deps) {
       // No onInstallDispatched here: this handler only runs from before-quit,
       // where main.js has already set isQuitting -- the watchdog is covered.
       log.info("[update] deferred install on quit");
+      if (!(await revalidateStagedUpdate("deferred install"))) {
+        // before-quit was already prevented. Resume the user's requested quit
+        // without installing bytes whose current feed policy is unknown/stale.
+        log.warn("[update] deferred install blocked — quitting without the staged update");
+        app.removeListener("before-quit", deferredInstallOnQuit);
+        try {
+          if (typeof app.quit === "function") app.quit();
+          else app.exit(0);
+        } catch (err) {
+          log.error("[update] clean quit after blocked deferred install failed", err);
+          try { app.exit(0); } catch { /* last-resort shutdown */ }
+        }
+        return;
+      }
       try { await stopGateway(); } catch (err) { log.error("[update] stop on quit errored", err); }
       quitAndInstall();
       forceExitFailsafe("deferred install on quit");
     })();
   }
 
-  async function promptInstall(versionName, notes) {
+  async function promptInstall(versionName, notes, mandatory = false) {
+    const buttons = mandatory ? ["Restart & Update"] : ["Restart & Update", "Later"];
     const { response } = await dialog.showMessageBox({
       type: "info",
-      buttons: ["Restart & Update", "Later"],
+      buttons,
       defaultId: 0,
-      cancelId: 1,
+      cancelId: mandatory ? 0 : 1,
+      noLink: true,
       title: "Kiro Crew update ready",
       message: `Kiro Crew ${versionName || ""} is ready to install.`.trim(),
       detail:
         (notes || "").slice(0, 500) +
         "\n\nKiro Crew will stop the local gateway, install the update, and relaunch.",
     });
-    if (response === 0) {
+    if (mandatory || response === 0) {
       await applyUpdateAndRestart();
     } else {
       app.once("before-quit", deferredInstallOnQuit);
@@ -733,6 +862,7 @@ function initAutoUpdate(deps) {
     // from what we were doing. Read the flags BEFORE clearing `downloading`, or
     // a mid-download failure would be reported as a check failure.
     const phase = downloading ? "download" : installing ? "install" : "check";
+    if (phase === "check") checkFailed = true;
     downloading = false;
     if (phase === "install") {
       // The dispatch is over: allow a retry (updateReady is still true -- the
@@ -745,7 +875,16 @@ function initAutoUpdate(deps) {
     emitError(phase, err);
   });
   autoUpdater.on("checking-for-update", () => { log.info("[update] checking…"); emit("checking"); });
-  autoUpdater.on("update-not-available", () => {
+  autoUpdater.on("update-not-available", (info) => {
+    let policyFailure = null;
+    try {
+      const policy = evaluateReleasePolicy(info, app.getVersion());
+      if (policy.mandatory) {
+        policyFailure = new Error("running version is unsupported but the feed has no compliant target");
+      }
+    } catch (err) {
+      policyFailure = err;
+    }
     downloading = false;
     foundVersion = null;
     // Clear the STAGED state too, not just the found state. The feed reporting
@@ -763,12 +902,40 @@ function initAutoUpdate(deps) {
     stagedNotes = "";
     quitHandled = false;
     app.removeListener("before-quit", deferredInstallOnQuit);
+    if (policyFailure) {
+      checkFailed = true;
+      mandatoryUpdate = true;
+      minimumSupportedVersion = (info && info.minimumSupportedVersion) || "";
+      emitError("check", policyFailure);
+      return;
+    }
+    validatedCheckGeneration += 1;
+    mandatoryUpdate = false;
+    minimumSupportedVersion = "";
     log.info("[update] up to date");
     emit("not-available");
   });
   // CONSENT GATE: with autoDownload=false this fires on DISCOVERY, before any
   // bytes move. Surface what was found and wait for an explicit download().
   autoUpdater.on("update-available", (info) => {
+    let policy;
+    try {
+      policy = evaluateReleasePolicy(info, app.getVersion());
+    } catch (err) {
+      checkFailed = true;
+      mandatoryUpdate = false;
+      minimumSupportedVersion = "";
+      foundVersion = null;
+      updateReady = false;
+      stagedVersion = null;
+      stagedNotes = "";
+      app.removeListener("before-quit", deferredInstallOnQuit);
+      emitError("check", err);
+      return;
+    }
+    validatedCheckGeneration += 1;
+    mandatoryUpdate = policy.mandatory;
+    minimumSupportedVersion = policy.minimumSupportedVersion;
     foundVersion = (info && info.version) || null;
     // A stage is only useful if it is still the latest thing on the feed.
     // Because the RUNNING version never changes mid-session, the updater
@@ -777,7 +944,7 @@ function initAutoUpdate(deps) {
     if (updateReady && stagedVersion) {
       if (foundVersion === stagedVersion) {
         log.info(`[update] ${stagedVersion} already downloaded — awaiting install`);
-        emit("downloaded", { version: stagedVersion, notes: stagedNotes });
+        emit("downloaded", { version: stagedVersion, notes: stagedNotes, ...policyFields() });
         return;
       }
       // Superseded: drop the stale stage so consent re-downloads the NEWEST
@@ -799,7 +966,12 @@ function initAutoUpdate(deps) {
       version: foundVersion,
       notes: notesFrom(info),
       pubDate: (info && info.releaseDate) || "",
+      ...policyFields(),
     });
+    if (mandatoryUpdate) {
+      log.warn(`[update] ${app.getVersion()} is below the supported floor or withdrawn — starting mandatory download`);
+      setImmediate(() => { void startDownload(); });
+    }
   });
   autoUpdater.on("download-progress", (p) => {
     // New capability vs. the hand-rolled updater: real progress, so the card
@@ -808,6 +980,7 @@ function initAutoUpdate(deps) {
       version: pendingVersion(),
       percent: p && typeof p.percent === "number" ? p.percent : undefined,
       bytesPerSecond: p && p.bytesPerSecond,
+      ...policyFields(),
     });
   });
   autoUpdater.on("update-downloaded", (info) => {
@@ -816,30 +989,53 @@ function initAutoUpdate(deps) {
     stagedVersion = (info && info.version) || null;
     stagedNotes = notesFrom(info);
     log.info(`[update] downloaded ${stagedVersion} — ${uiDriven ? "notifying UI" : "prompting"}`);
-    emit("downloaded", { version: stagedVersion || app.getVersion(), notes: stagedNotes });
+    emit("downloaded", {
+      version: stagedVersion || app.getVersion(),
+      notes: stagedNotes,
+      ...policyFields(),
+    });
     if (uiDriven) {
       // In-app UI owns the prompt. Still install on a natural quit if the user
       // dismisses the modal with "Later" (mirrors the native dialog's deferral).
       app.once("before-quit", deferredInstallOnQuit);
     } else {
-      promptInstall(stagedVersion, stagedNotes);
+      promptInstall(stagedVersion, stagedNotes, mandatoryUpdate);
     }
   });
 
   configureFeed();
   const launchTimer = setTimeout(safeCheck, LAUNCH_CHECK_DELAY_MS);
-  const pollTimer = setInterval(() => { if (!updateReady) safeCheck(); }, CHECK_INTERVAL_MS);
+  const pollTimer = setInterval(() => {
+    // A staged update owns the install prompt until install or an explicit
+    // check revalidates it; a background poll must never replace that state.
+    if (!updateReady) void safeCheck();
+  }, CHECK_INTERVAL_MS);
   // Timers must never hold the process open (Electron quit, tests).
   if (typeof launchTimer.unref === "function") launchTimer.unref();
   if (typeof pollTimer.unref === "function") pollTimer.unref();
 
   // Renderer-callable triggers (wired to ipcMain in main.js). Background
-  // timers only ever DISCOVER (safeCheck emits "found") — downloading
-  // requires the explicit download() consent call.
+  // timers refresh feed policy and discover updates. Ordinary downloading
+  // requires consent; only minimum-version/withdrawal policy may force it.
+  // A renderer reload loses its in-memory React Query cache while the main
+  // process keeps the staged bytes. Replay that authoritative staged state on
+  // subscription without consulting the feed: background/reconnect activity
+  // must not replace a staged mandatory update or re-enter electron-updater.
+  function replayState() {
+    if (!updateReady || !stagedVersion) return false;
+    emit("downloaded", {
+      version: stagedVersion,
+      notes: stagedNotes,
+      ...policyFields(),
+    });
+    return true;
+  }
+
   return {
     check: () => safeCheck(),
     download: () => startDownload(),
     install: () => applyUpdateAndRestart(),
+    replayState,
     getInfo,
     isReady: () => updateReady,
   };
@@ -851,6 +1047,7 @@ module.exports = {
   channelForVersion,
   resolveChannel,
   buildFeedBase,
+  evaluateReleasePolicy,
   configureUpdater,
   classifyError,
   manualDownloadUrl,

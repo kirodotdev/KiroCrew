@@ -29,6 +29,7 @@ const SRC = readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
 const BOOT_AWAITS = ["await startGateway();", "await showLoadingThenConnect(win);"];
 const UPDATE_HANDLERS = [
   'ipcMain.handle("update:get-info"',
+  'ipcMain.handle("update:replay-state"',
   'ipcMain.handle("update:check"',
   'ipcMain.handle("update:download"',
   'ipcMain.handle("update:install"',

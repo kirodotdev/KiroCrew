@@ -9,6 +9,8 @@ export type UpdateState = {
   notes?: string
   channel?: string
   message?: string
+  mandatory?: boolean
+  minimumSupportedVersion?: string
 }
 
 type UpdateAPI = {

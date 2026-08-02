@@ -23,6 +23,8 @@ type UpdateState = {
   notes?: string
   channel?: string
   message?: string
+  mandatory?: boolean
+  minimumSupportedVersion?: string
 }
 
 type UpdateAPI = {
@@ -51,37 +53,46 @@ export default function UpdateModal() {
 
   const installMutation = useMutation({ mutationFn: () => getUpdateApi()!.install() })
   const installing = installMutation.isPending
+  const mandatory = update?.mandatory === true
 
-  const open = !!update && update.state === 'downloaded' && !dismissed
+  const open = !!update && update.state === 'downloaded' && (mandatory || !dismissed)
 
   // Escape dismisses the modal (unless an install is in flight), matching the
   // backdrop-click affordance and keeping the overlay keyboard-accessible.
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !installing) setDismissed(true)
+      if (e.key === 'Escape' && !installing && !mandatory) setDismissed(true)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [open, installing])
+  }, [open, installing, mandatory])
 
   if (!open) return null
 
   const version = update!.version || ''
   const notes = (update!.notes || '').trim()
-  const dismiss = () => { if (!installing) setDismissed(true) }
+  const dismiss = () => { if (!installing && !mandatory) setDismissed(true) }
 
   return (
     <div
       className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-sm flex items-center justify-center animate-rise"
-      role="button"
-      tabIndex={-1}
-      aria-label={i18nT('components.updateModal.dismiss_update_dialog')}
-      // Only dismiss when the click lands on the backdrop itself, not when it
-      // bubbles up from the dialog — avoids needing a stopPropagation handler
-      // (and its a11y warning) on the non-interactive dialog element.
-      onClick={e => { if (e.target === e.currentTarget) dismiss() }}
-      onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); dismiss() } }}
+      {...(mandatory ? {} : {
+        role: 'button',
+        tabIndex: -1,
+        'aria-label': i18nT('components.updateModal.dismiss_update_dialog'),
+        // Only dismiss when the click lands on the backdrop itself, not when it
+        // bubbles up from the dialog.
+        onClick: (e: React.MouseEvent<HTMLDivElement>) => {
+          if (e.target === e.currentTarget) dismiss()
+        },
+        onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
+          if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault()
+            dismiss()
+          }
+        },
+      })}
     >
       <div
         className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden"
@@ -94,15 +105,17 @@ export default function UpdateModal() {
             <Download className="lucide-inline text-accent" size={16} />
             <span className="text-sm font-semibold text-text">{i18nT('components.updateModal.update_ready')}</span>
           </div>
-          <button
-            type="button"
-            className="text-muted hover:text-text cursor-pointer bg-transparent border-none disabled:opacity-50"
-            onClick={dismiss}
-            disabled={installing}
-            aria-label={i18nT('components.updateModal.dismiss')}
-          >
-            <X size={16} />
-          </button>
+          {!mandatory && (
+            <button
+              type="button"
+              className="text-muted hover:text-text cursor-pointer bg-transparent border-none disabled:opacity-50"
+              onClick={dismiss}
+              disabled={installing}
+              aria-label={i18nT('components.updateModal.dismiss')}
+            >
+              <X size={16} />
+            </button>
+          )}
         </div>
 
         <div className="px-4 py-3 text-sm text-text">
@@ -116,14 +129,16 @@ export default function UpdateModal() {
         </div>
 
         <div className="flex items-center justify-end gap-2 px-4 py-2.5 border-t border-border bg-bg-elevated">
-          <button
-            type="button"
-            className="px-3 py-1.5 text-sm text-muted hover:text-text bg-transparent border-none cursor-pointer disabled:opacity-50"
-            onClick={dismiss}
-            disabled={installing}
-          >
-            {i18nT('components.updateModal.later')}
-          </button>
+          {!mandatory && (
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm text-muted hover:text-text bg-transparent border-none cursor-pointer disabled:opacity-50"
+              onClick={dismiss}
+              disabled={installing}
+            >
+              {i18nT('components.updateModal.later')}
+            </button>
+          )}
           <button
             type="button"
             className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-50"

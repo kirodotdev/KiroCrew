@@ -63,6 +63,9 @@ contextBridge.exposeInMainWorld("updateAPI", {
   onState: (cb) => {
     const handler = (_e, payload) => cb(payload);
     ipcRenderer.on("update-state", handler);
+    // Main survives Cmd/Ctrl+R while the renderer's state cache does not.
+    // Attach first, then ask main to replay any staged update into this listener.
+    ipcRenderer.invoke("update:replay-state").catch(() => {});
     return () => ipcRenderer.removeListener("update-state", handler);
   },
   check: () => ipcRenderer.invoke("update:check"),

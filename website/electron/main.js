@@ -2088,6 +2088,10 @@ app.whenReady().then(async () => {
   // silently does nothing. undefined on the armed path, which reads as falsy.
   const updaterInfo = () => ({ ...updater.getInfo(), disabled: updater.disabled });
   ipcMain.handle("update:get-info", () => updaterInfo());
+  ipcMain.handle("update:replay-state", () => {
+    updater.replayState?.();
+    return { ok: true };
+  });
   ipcMain.handle("update:check", () => { updater.check(); return { ok: true }; });
   ipcMain.handle("update:download", () => { updater.download(); return { ok: true }; });
   ipcMain.handle("update:install", async () => { await updater.install(); return { ok: true }; });

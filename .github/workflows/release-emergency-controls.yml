@@ -1,0 +1,326 @@
+# Break-glass operator workflow for the per-channel release control
+# document at feed/{channel}/release-control.json (the fail-closed
+# contract in scripts/release_feed_control.py and
+# docs/release-automation.md "Emergency release controls").
+#
+# Scope: this workflow manages the control DOCUMENT lifecycle only --
+# bootstrap a channel, freeze/unfreeze, withdraw a version, set/clear the
+# minimum supported version, or mark a restore generation. It does NOT
+# rewind feeds to recovery snapshots and the publishers do not yet call
+# `guard`; that wiring ships separately (see the runbook's operational
+# dependency list) because enabling the guard before every channel is
+# bootstrapped and unfrozen would fail-close all publishing.
+#
+# Controls, per the documented contract:
+#   - main-only: the validate job hard-fails on any other ref, and the
+#     execute job (which holds the prod environment + OIDC role) is
+#     additionally gated on refs/heads/main.
+#   - typed confirmation: the `confirm` input must be exactly
+#     "<channel>:<operation>".
+#   - prod environment: same required-reviewer approval gate and
+#     write-only OIDC publishing role as the release publishers. The role
+#     needs only s3:PutObject on feed/*; every read/verification goes
+#     through the public CDN (the read plane).
+#   - two-scope concurrency: all emergency runs serialize in one queued
+#     workflow-level group (a dispatch cancels nothing at queue time),
+#     and only the validated, approved `execute` job enters the
+#     publishers' groups -- `nightly-build` for nightly, `release-publish`
+#     shared by insider AND stable -- with cancel-in-progress: true to
+#     preempt an in-flight publish. The publishers queue rather than
+#     cancel in those groups, so they can never cancel emergency work.
+#
+# Every run ends by re-reading the document through the public CDN and
+# byte-comparing it to what was written, so success means the emergency
+# state is actually being served (CloudFront max-age=300 bounds the wait).
+
+name: Release Emergency Controls
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        required: true
+        type: choice
+        options: [nightly, insider, stable]
+      operation:
+        description: "Control-document operation"
+        required: true
+        type: choice
+        options:
+          - bootstrap
+          - freeze
+          - unfreeze
+          - withdraw
+          - set-minimum
+          - clear-minimum
+          - restore
+      version:
+        description: "SemVer (required for withdraw / set-minimum; must be empty otherwise)"
+        required: false
+        type: string
+        default: ""
+      reason:
+        description: "Incident reference and operator rationale (recorded in the document)"
+        required: true
+        type: string
+      confirm:
+        description: "Type '<channel>:<operation>' to confirm (e.g. stable:freeze)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Concurrency is split across two scopes so that nothing is ever cancelled
+# by an unvalidated or unapproved dispatch:
+#
+#   - Workflow level (here): ALL emergency runs serialize in one queued
+#     group. `queue: max` keeps every pending dispatch (FIFO, up to 100)
+#     instead of GitHub's default single-slot queue, where a newer
+#     dispatch -- even one that would fail validation -- silently replaces
+#     a pending freeze/withdraw. A second dispatch waits; it can never
+#     cancel a control mutation mid-flight, and entering this group
+#     cancels nothing. Known property, shared with the publishers (which
+#     hold their groups while awaiting the same prod approval): a
+#     dispatch left unapproved holds this queue until it is approved,
+#     rejected, or cancelled from the Actions tab -- cancel stale
+#     dispatches rather than stacking new ones.
+#   - Job level (on `execute`): only the execute job -- which runs strictly
+#     after input/ref validation has passed and the `prod` environment
+#     approval has been granted -- enters the publishers' group
+#     (`nightly-build` for the nightly channel; `release-publish`, which
+#     insider and stable releases share) with cancel-in-progress: true,
+#     preempting an in-flight publish. The publishers queue rather than
+#     cancel in those groups, so they can never cancel emergency work.
+#
+# A dispatch from a non-main ref, with a failed typed confirmation, or
+# left unapproved therefore skips the execute job entirely and never
+# touches the publisher groups.
+concurrency:
+  group: release-emergency-controls
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate dispatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CHANNEL: ${{ inputs.channel }}
+      OPERATION: ${{ inputs.operation }}
+      VERSION: ${{ inputs.version }}
+      REASON: ${{ inputs.reason }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Enforce main-only dispatch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Emergency controls must be dispatched from main (got ${GITHUB_REF})."
+          exit 1
+
+      - name: Validate typed confirmation and inputs
+        run: |
+          set -euo pipefail
+          EXPECTED="${CHANNEL}:${OPERATION}"
+          if [ "${CONFIRM}" != "${EXPECTED}" ]; then
+            echo "::error::Confirmation mismatch: expected '${EXPECTED}'."
+            exit 1
+          fi
+          if [ -z "${REASON// /}" ]; then
+            echo "::error::A non-empty reason is required."
+            exit 1
+          fi
+          case "${OPERATION}" in
+            withdraw|set-minimum)
+              if [ -z "${VERSION}" ]; then
+                echo "::error::Operation '${OPERATION}' requires the version input."
+                exit 1
+              fi
+              ;;
+            *)
+              if [ -n "${VERSION}" ]; then
+                echo "::error::Operation '${OPERATION}' does not take a version; leave it empty."
+                exit 1
+              fi
+              ;;
+          esac
+          echo "Validated: ${EXPECTED}"
+
+      - name: Require distribution configuration
+        env:
+          DIST_BUCKET: ${{ vars.CLI_DIST_BUCKET }}
+          CDN_BASE: ${{ vars.CLI_CDN_BASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DIST_BUCKET}" ] || [ -z "${CDN_BASE}" ]; then
+            echo "::error::CLI_DIST_BUCKET / CLI_CDN_BASE repository variables are not configured."
+            exit 1
+          fi
+
+  execute:
+    name: Apply ${{ inputs.operation }} to ${{ inputs.channel }}
+    needs: validate
+    # Redundant with the validate gate by design: this job holds the prod
+    # environment and the OIDC subject, so it must independently refuse
+    # any ref that is not main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: prod
+    # Publisher preemption lives HERE, not at the workflow level: this job
+    # is reached only after validate has passed and the prod approval has
+    # been granted, so only a validated, approved emergency operation can
+    # cancel an in-flight publish. Insider and stable share the
+    # release-publish group (mirroring release.yml, which serializes both
+    # channels), so an approved emergency run on either of those channels
+    # preempts an in-flight release publish of either.
+    concurrency:
+      group: ${{ inputs.channel == 'nightly' && 'nightly-build' || 'release-publish' }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CHANNEL: ${{ inputs.channel }}
+      OPERATION: ${{ inputs.operation }}
+      VERSION: ${{ inputs.version }}
+      REASON: ${{ inputs.reason }}
+      CDN_BASE: ${{ vars.CLI_CDN_BASE }}
+      DIST_BUCKET: ${{ vars.CLI_DIST_BUCKET }}
+      CONTROL_KEY: feed/${{ inputs.channel }}/release-control.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/release_feed_control.py
+          sparse-checkout-cone-mode: false
+
+      - name: Require publishing role
+        env:
+          HAS_ROLE: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HAS_ROLE}" ]; then
+            echo "::error::AWS_SIGNING_ROLE_ARN is not configured for the prod environment."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Produce control document (bootstrap)
+        if: inputs.operation == 'bootstrap'
+        run: |
+          set -euo pipefail
+          # Existence is NOT probed through the CDN here: a 403 cannot
+          # distinguish "absent" from "present but unreadable", and
+          # guessing wrong would overwrite live control state. The upload
+          # step below enforces create-only at the origin instead.
+          python3 scripts/release_feed_control.py bootstrap \
+            --channel "${CHANNEL}" \
+            --reason "${REASON}" \
+            --output /tmp/control.json
+
+      - name: Produce control document (mutate)
+        if: inputs.operation != 'bootstrap'
+        run: |
+          set -euo pipefail
+          # fetch applies the full fail-closed validation (size cap,
+          # schema, channel match, HTTPS origin) before any mutation. A
+          # missing or malformed document therefore stops here: bootstrap
+          # handles the missing case, and a corrupted document is an
+          # operator-recovery scenario this workflow refuses to paper over.
+          python3 scripts/release_feed_control.py fetch \
+            --url "${CDN_BASE}/${CONTROL_KEY}" \
+            --channel "${CHANNEL}" \
+            --output /tmp/current.json
+          python3 scripts/release_feed_control.py mutate \
+            --input /tmp/current.json \
+            --channel "${CHANNEL}" \
+            --operation "${OPERATION}" \
+            --version "${VERSION}" \
+            --reason "${REASON}" \
+            --output /tmp/control.json
+
+      - name: Upload control document (create-only bootstrap)
+        if: inputs.operation == 'bootstrap'
+        run: |
+          set -euo pipefail
+          # S3 conditional write: If-None-Match: * makes the origin itself
+          # refuse the PUT when any object already exists at the key
+          # (412 PreconditionFailed), atomically -- no read access or CDN
+          # inference needed, so bootstrap can never reset an active
+          # freeze, withdrawal list, or generation history. Requires
+          # s3api put-object; the high-level `aws s3 cp` has no
+          # conditional-write support.
+          if ! ERR=$(aws s3api put-object \
+              --bucket "${DIST_BUCKET}" \
+              --key "${CONTROL_KEY}" \
+              --body /tmp/control.json \
+              --content-type application/json \
+              --cache-control "public, max-age=300" \
+              --if-none-match '*' 2>&1); then
+            if printf '%s' "${ERR}" | grep -q 'PreconditionFailed'; then
+              echo "::error::A control document already exists for ${CHANNEL}; use a mutate operation."
+            else
+              echo "::error::Bootstrap upload failed: ${ERR}"
+            fi
+            exit 1
+          fi
+          echo "Created s3://${DIST_BUCKET}/${CONTROL_KEY}"
+
+      - name: Upload control document (mutate)
+        if: inputs.operation != 'bootstrap'
+        run: |
+          set -euo pipefail
+          aws s3 cp /tmp/control.json "s3://${DIST_BUCKET}/${CONTROL_KEY}" \
+            --content-type application/json \
+            --cache-control "public, max-age=300"
+          echo "Wrote s3://${DIST_BUCKET}/${CONTROL_KEY}"
+
+      - name: Verify served control state
+        run: |
+          set -euo pipefail
+          # The CDN is the read plane guard() consumes, so success is
+          # defined as the CDN serving exactly what was written. Overwrites
+          # propagate within the feed norm max-age=300; poll past one full
+          # TTL before failing.
+          CONTROL_URL="${CDN_BASE}/${CONTROL_KEY}"
+          for attempt in $(seq 1 16); do
+            if python3 scripts/release_feed_control.py fetch \
+                 --url "${CONTROL_URL}" \
+                 --channel "${CHANNEL}" \
+                 --output /tmp/served.json \
+               && cmp -s /tmp/control.json /tmp/served.json; then
+              echo "CDN serves the new control document (attempt ${attempt})."
+              exit 0
+            fi
+            echo "Attempt ${attempt}/16: CDN not yet serving the new document; retrying in 30s."
+            sleep 30
+          done
+          echo "::error::CDN never served the written control document within the polling window."
+          exit 1
+
+      - name: Record audit summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Emergency control: ${OPERATION} on ${CHANNEL}"
+            echo ""
+            echo "- Reason: ${REASON}"
+            echo "- Object: \`s3://${DIST_BUCKET}/${CONTROL_KEY}\`"
+            echo "- Read plane: ${CDN_BASE}/${CONTROL_KEY}"
+            echo ""
+            if [ -f /tmp/control.json ]; then
+              echo '```json'
+              cat /tmp/control.json
+              echo '```'
+            else
+              echo "_No control document was produced (validation or fetch failed)._"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

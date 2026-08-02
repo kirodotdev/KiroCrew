@@ -49,8 +49,14 @@ human process; the pipeline only reacts to the tag.
 
 Each build ships a signed and notarized macOS app, a Linux AppImage, a CLI
 installer, a pip wheel, and a Docker image. The update feed for a channel is
-repointed last, after the artifacts are verified downloadable, and clients only
-install with the user's consent. Windows builds but is not yet signed or
-published.
+repointed last, after the artifacts are verified downloadable. Ordinary updates
+install only with the user's consent; a valid active minimum-version floor or
+withdrawal is the explicit emergency exception for clients containing that
+implementation. Windows builds but is not yet signed or published.
 
-There is no rollback: we roll forward by cutting a new version.
+Normal recovery is roll-forward: cut a new version. A tested emergency-feed
+contract now defines freeze, withdrawal, last-known-good restore, and a
+minimum-supported-version floor, but it is not operational until the protected
+publisher/CDN wiring and per-channel bootstrap in `release-automation.md` are
+completed. Already-deployed older clients do not enforce this metadata and cannot
+be retrofitted through a feed change.
