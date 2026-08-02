@@ -7,15 +7,21 @@ the same code path also runs on Windows.
 
 ## Desktop installer (preview, CI-built)
 
-CI's desktop lane (`build-desktop.yml`) also builds a Windows desktop app:
+CI's Windows lane (`build-windows.yml`) also builds a Windows desktop app:
 `KiroCrew Setup.exe` plus the Squirrel.Windows `RELEASES`/`.nupkg` pair, with
-the backend bundled (no separate Python install needed). Current status:
+the backend bundled (no separate Python install needed). It has its own
+workflow rather than being a leg of `build-desktop.yml` because Authenticode
+signing has to happen *during* the build — a Squirrel `Setup.exe` embeds its
+own already-signed executables — so that job needs AWS credentials the shared
+build workflow deliberately does not hold. Current status:
 
 - **CI artifact only** — produced on nightly/release runs and the manual
   `workflow_dispatch` probe; not yet published to the download CDN (that is
   the upcoming `publish-windows.yml` lane).
-- **Unsigned** — SmartScreen shows an "unrecognized app" interstitial
-  (More info > Run anyway). Authenticode signing is a tracked follow-up.
+- **Signing wired but not yet active** — the AWS Signer path is in place and
+  skips cleanly until the signing profiles are provisioned, so today's
+  installers are still unsigned and SmartScreen shows an "unrecognized app"
+  interstitial (More info > Run anyway).
 - **No auto-update yet** — the macOS/Linux client moved to
   electron-updater (`latest-mac.yml` / `latest-linux.yml` feeds), but its
   win32 path drives NSIS installers, not Squirrel.Windows, so win32 stays

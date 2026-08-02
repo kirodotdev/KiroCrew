@@ -109,7 +109,10 @@
       "icon": "icon.png",
       "target": [
         "squirrel"
-      ]
+      ],
+      "signtoolOptions": {
+        "sign": "./scripts/sign-windows.js"
+      }
     },
     "squirrelWindows": {
       "name": "KiroCrew",

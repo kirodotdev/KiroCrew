@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 
@@ -34,6 +36,12 @@ def _permission_block(lines: list[str], marker: str) -> dict[str, str] | None:
             permission_indent = len(permission_line) - len(permission_line.lstrip())
             if permission_indent <= indent:
                 break
+            # Comments are annotation, not grants. Skipping them keeps a
+            # documented permissions block readable as a dict; without this the
+            # split below raises ValueError and an ordinary assertion failure
+            # arrives as an unpackaging crash that names no workflow.
+            if permission_line.strip().startswith("#"):
+                continue
             key, value = permission_line.strip().split(":", 1)
             permissions[key] = value.strip()
         return permissions
@@ -50,6 +58,9 @@ def _workflow_permissions(name: str) -> dict[str, str]:
             continue
         if not line.startswith("  "):
             break
+        # See _permission_block: comments must not be parsed as grants.
+        if line.strip().startswith("#"):
+            continue
         key, value = line.strip().split(":", 1)
         permissions[key] = value.strip()
     return permissions
@@ -65,6 +76,13 @@ class TestNightlyPermissions:
         # reusable build workflows request nothing more.
         assert _permission_block(lines, "  build-wheel:") is None
         assert _permission_block(lines, "  build-desktop:") is None
+        # The Windows build signs during the build, so unlike build-desktop it
+        # must be granted OIDC explicitly (a callee can never exceed its
+        # caller). Never contents:write: it holds a signing identity.
+        assert _permission_block(lines, "  build-windows:") == {
+            "contents": "read",
+            "id-token": "write",
+        }
         assert _permission_block(lines, "  publish-cli:") == {
             "contents": "read",
             "id-token": "write",
@@ -115,6 +133,11 @@ class TestReleasePermissions:
         assert _permission_block(lines, "  version:") is None
         assert _permission_block(lines, "  build-wheel:") is None
         assert _permission_block(lines, "  build-desktop:") is None
+        # Windows build: OIDC for signing, never contents:write (see nightly).
+        assert _permission_block(lines, "  build-windows:") == {
+            "contents": "read",
+            "id-token": "write",
+        }
         assert _permission_block(lines, "  publish-cli:") == {
             "contents": "read",
             "id-token": "write",
@@ -147,9 +170,57 @@ class TestReleasePermissions:
 class TestReusableWorkflowPermissions:
     def test_build_workflows_are_read_only(self) -> None:
         """The shared build workflows compile source into artifacts; they
-        must never hold OIDC or write capabilities."""
+        must never hold OIDC or write capabilities.
+
+        build-windows.yml is deliberately NOT in this list: it Authenticode-signs
+        during the build (a Squirrel installer embeds its own already-signed
+        executables, so signing cannot be a downstream job) and therefore needs
+        OIDC. Keeping it a separate workflow is what lets these two stay
+        credential-free -- putting the Windows leg back into build-desktop.yml
+        would hand OIDC to the mac and Linux legs as well. See
+        test_build_windows_isolates_the_signing_capability.
+        """
         assert _workflow_permissions("build-wheel.yml") == {"contents": "read"}
         assert _workflow_permissions("build-desktop.yml") == {"contents": "read"}
+
+    def test_build_desktop_has_no_windows_leg(self) -> None:
+        """The credential-free build workflow must not build Windows.
+
+        This is the structural half of the least-privilege split: if a Windows
+        leg reappears here it would need OIDC in this workflow, and the
+        assertion above would have to be weakened to allow it. Pinning the
+        matrix keeps that pressure visible in review instead of arriving as a
+        one-line permissions edit.
+        """
+        # Assert on the resolved matrix, not on the text: the word "windows"
+        # legitimately appears in prose, and a substring check would either
+        # fire on a comment or be silently defeated by one.
+        workflow = yaml.safe_load(
+            (WORKFLOWS / "build-desktop.yml").read_text(encoding="utf-8")
+        )
+        runners = {
+            entry["os"]
+            for entry in workflow["jobs"]["build-desktop"]["strategy"]["matrix"]["include"]
+        }
+        assert not any("windows" in runner for runner in runners), (
+            f"build-desktop.yml grew a Windows leg (matrix: {sorted(runners)}). "
+            "Windows signs during its build and needs OIDC; it belongs in "
+            "build-windows.yml so this workflow can stay contents:read only."
+        )
+
+    def test_build_windows_isolates_the_signing_capability(self) -> None:
+        """The Windows build needs OIDC and nothing more.
+
+        contents:write in particular must never appear: this job holds a
+        production signing identity, which is precisely why it is not allowed to
+        also mutate the repository.
+        """
+        assert _workflow_permissions("build-windows.yml") == {"contents": "read"}
+        lines = _lines("build-windows.yml")
+        assert _permission_block(lines, "  build-windows:") == {
+            "contents": "read",
+            "id-token": "write",
+        }
 
     def test_sign_and_notarize_declares_exact_capabilities(self) -> None:
         """The shared sign/notarize workflow needs OIDC (AWS signing role)

@@ -1,0 +1,263 @@
+name: Build Windows Desktop (reusable)
+
+# Reusable workflow: build the Windows desktop installer (Squirrel.Windows
+# Setup.exe) and Authenticode-sign it through AWS Signer during the build.
+# Called by nightly.yml and release.yml beside build-desktop.yml.
+#
+# WHY THIS IS NOT A LEG OF build-desktop.yml
+#
+# Signing has to happen INSIDE the build here. Squirrel nests its outputs:
+# electron-builder signs KiroCrew.exe and Update.exe, packs them into the
+# .nupkg, embeds that .nupkg into Setup.exe (WriteZipToSetup.exe), then signs
+# Setup.exe last. Signing afterwards would mean unpacking and rebuilding that
+# structure by hand, so website/electron/scripts/sign-windows.js hooks
+# electron-builder wherever it would have called signtool. macOS can do the
+# opposite -- ship an unsigned .app to sign-and-notarize.yml -- because a .app
+# is a directory, not a self-extracting archive of signed parts.
+#
+# The consequence is that this job holds a production signing identity, and
+# build-desktop.yml deliberately holds NO credentials at all
+# (contents:read only, pinned by test/test_workflow_permissions.py). Adding
+# id-token to the shared workflow would have handed OIDC to the mac and Linux
+# legs too, and dragged them under the prod environment's branch policy --
+# widening the blast radius of a build workflow for one platform's benefit.
+# A separate workflow keeps the credentialed surface to exactly the platform
+# that cannot avoid it.
+#
+# INSTALLER-ONLY LANE for now: auto-update.js does not consume the Squirrel
+# feed on win32 yet -- RELEASES/.nupkg are produced dormant so the upcoming
+# publish+updater lane needs no packaging change. Unattested for now too: no
+# publish lane consumes these artifacts, so SLSA provenance lands in-lane with
+# publish-windows.yml (same pattern as publish-linux.yml).
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Semver version to stamp (electron package.json + __init__.py)"
+        required: true
+        type: string
+      soft_fail:
+        description: >-
+          Mark the build job continue-on-error. Publishing callers
+          (nightly/release) pass true so a Windows-only packaging or signing
+          failure never fails this reusable workflow -- which would skip every
+          dependent job and block the mac/Linux release for a platform that
+          publishes nothing yet (per-platform release independence). Default
+          false: any caller that omits it -- and the workflow_dispatch probe
+          path, where hard failure IS the validation signal -- keeps the job
+          blocking.
+        required: false
+        type: boolean
+        default: false
+      use_prod_environment:
+        description: >-
+          Run the job in the `prod` deployment environment. Publishing callers
+          MUST pass true: the signing role's OIDC trust accepts only
+          ref:refs/heads/main and environment:prod, and release runs are
+          tag-triggered (ref:refs/tags/v*, untrusted), so without the
+          environment they cannot assume the role.
+
+          Cannot be derived from github.event_name: inside a called reusable
+          workflow the github context "is always associated with the caller
+          workflow", so event_name reports the caller's trigger (schedule,
+          push, ...) and never workflow_call -- an event_name test would leave
+          the environment unset on exactly the paths that need it.
+
+          Left false by the dispatch probe: the prod environment's deployment
+          branch policy allows only main and v* tags, so requesting it would
+          make the any-ref packaging probe fail at job start on a feature
+          branch, defeating the one mechanism for validating a packaging change
+          before merge. The probe needs no credentials -- without the signing
+          secret the steps below skip and it builds unsigned, which is the
+          point of a packaging probe.
+        required: false
+        type: boolean
+        default: false
+  # Manual build-only probe: builds the installer from any ref WITHOUT
+  # publishing anything. Used to validate packaging changes before merge.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Semver version to stamp. Use a REALISTIC channel-shaped stamp
+          (e.g. 0.1.0-nightly.20260727t181500), not 0.0.0-probe.N: Squirrel
+          Int32-parses digit runs in the nupkg filename, and electron-builder
+          concatenates dot-separated identifiers into that filename, so a
+          probe with a single-digit identifier cannot exercise the stamp shape
+          that real nightlies produce. That gap let an Int32 overflow reach a
+          nightly. Note the "t": a DOTTED example like
+          0.1.0-nightly.20260727.181500 concatenates back to 14 digits and
+          reproduces the overflow (proven: run 30293292843).
+        required: true
+        type: string
+      soft_fail:
+        description: >-
+          Mark the build job continue-on-error (default false: a probe SHOULD
+          fail loudly -- hard failure is the validation signal). Declared on
+          BOTH triggers because the continue-on-error expression below reads
+          it on both paths; an input a trigger does not declare evaluates to
+          empty, making the key non-boolean, and GitHub then rejects the whole
+          workflow at startup with ZERO jobs and no log. That is exactly how
+          the dispatch probe path died unnoticed once already.
+        required: false
+        type: boolean
+        default: false
+      use_prod_environment:
+        description: >-
+          Run the job in the `prod` deployment environment (default false: the
+          environment's branch policy allows only main and v* tags, so
+          requesting it would break the any-ref probe -- see the
+          workflow_call description). Declared on BOTH triggers because the
+          job-level `environment` expression reads it on both paths.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windows Desktop
+    # See the soft_fail input: `== true` is load-bearing, not noise. A bare
+    # `inputs.soft_fail` yields the raw value, which is non-boolean when a
+    # trigger does not declare the input, and GitHub rejects the workflow at
+    # startup. Comparing to true always produces a boolean.
+    continue-on-error: ${{ inputs.soft_fail == true }}
+    runs-on: windows-latest
+    # Publishing callers pass use_prod_environment: true -- REQUIRED, because
+    # the signing role's OIDC trust accepts exactly two subjects
+    # (ref:refs/heads/main and environment:prod) and tag-triggered release runs
+    # present ref:refs/tags/v*, which is NOT trusted. The environment switches
+    # the claim to environment:prod, the same alignment every job in
+    # sign-and-notarize.yml documents.
+    #
+    # An empty string applies NO environment, which is how the dispatch probe
+    # escapes the prod branch policy. See the input's description for why this
+    # is an explicit input rather than a github.event_name test.
+    environment: ${{ inputs.use_prod_environment == true && 'prod' || '' }}
+    permissions:
+      contents: read
+      # The signing hook assumes the signing role via OIDC. Scoped to this
+      # workflow because only Windows signs during its build.
+      id-token: write
+    env:
+      # Gate for the signing steps, mirroring sign-and-notarize.yml:
+      # `secrets.*` is not available in a step-level `if`, so it is hoisted
+      # into env here and tested as env.HAS_WINDOWS_SIGNING. Empty on a fork or
+      # any repo without the secret.
+      #
+      # This single flag drives BOTH the credential step AND the five
+      # WINDOWS_SIGNING_* values below. That coupling is the point: the values
+      # are inline literals (bucket/role names, not secrets), so if they were
+      # set unconditionally the hook could never take its "not configured"
+      # skip path -- it would find a full env, call the AWS CLI with no
+      # credentials, and fail the build instead of shipping unsigned.
+      #
+      # It ALSO requires use_prod_environment, because signing needs both the
+      # secret and the prod environment: the role trusts only
+      # ref:refs/heads/main and environment:prod. Without this second term, once
+      # the secret exists the any-ref dispatch probe would try to assume the
+      # role from an untrusted feature-branch ref and die at the credential step
+      # -- exactly the probe the conditional environment above exists to keep
+      # alive. A probe deliberately builds unsigned; that is what it is for.
+      HAS_WINDOWS_SIGNING: ${{ secrets.AWS_WINDOWS_SIGNING_ROLE_ARN != '' && inputs.use_prod_environment == true && 'true' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        # The build script provisions python-build-standalone interpreters
+        # through uv; windows-latest does not ship it, and the script's
+        # curl|sh fallback is POSIX-shaped.
+
+      - name: Stamp version
+        env:
+          STAMP_VERSION: ${{ inputs.version }}
+        # bash (Git Bash) rather than the windows-latest default pwsh:
+        # sed -i.bak / rm -f are bash-isms.
+        shell: bash
+        run: |
+          sed -i.bak "s/__version__ = \".*\"/__version__ = \"${STAMP_VERSION}\"/" src/kiro_crew/__init__.py
+          rm -f src/kiro_crew/__init__.py.bak
+          # Stamp the Electron app: app.getVersion() (from package.json via
+          # electron-builder) must equal the feed version for the
+          # auto-updater's compare gate.
+          node -e "const fs=require('fs');const f='website/electron/package.json';const p=JSON.parse(fs.readFileSync(f));p.version=process.env.STAMP_VERSION;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+          echo "Building Windows desktop: ${STAMP_VERSION}"
+
+      # Scoped as tightly as the role allows: 1-hour session, assumable only
+      # from main / environment:prod, and its only permission is sts:AssumeRole
+      # onto the artifact role behind an ExternalId gate. Declared in
+      # KiroCrewPublishCDK lib/windows-signer-stack.ts.
+      #
+      # Skips on a fork or when the secret is absent, which -- together with
+      # the env gate on the WINDOWS_SIGNING_* values below -- leaves the
+      # installer unsigned rather than failing the build.
+      - name: Configure AWS credentials for Windows signing
+        if: env.HAS_WINDOWS_SIGNING
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ secrets.AWS_WINDOWS_SIGNING_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Build desktop app
+        # bash (Git Bash): the build script is bash, and `make` is not on the
+        # Windows runner image -- the Makefile target only adds a local-dev
+        # node-bin-dir PATH nicety that CI's setup-node already covers.
+        shell: bash
+        run: bash packaging/build-desktop.sh
+        env:
+          # There is no certificate on the runner: the private key lives in the
+          # signing service. Signing goes through the custom hook
+          # (website/electron/scripts/sign-windows.js, wired as
+          # win.signtoolOptions.sign), so local certificate discovery must stay
+          # off -- otherwise electron-builder may pick up something unexpected
+          # instead of calling the hook.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          # Consumed by the sign hook. Gated as ONE unit on HAS_WINDOWS_SIGNING:
+          # the hook enables signing only when all five are present, so an
+          # ungated partial set would make it try to sign without credentials
+          # and fail the build instead of skipping. The values themselves are
+          # not secret (bucket and role names); only the role ARN is a secret.
+          WINDOWS_SIGNING_UNSIGNED_BUCKET: ${{ env.HAS_WINDOWS_SIGNING && 'kirocrew-windows-unsigned-116101834266' || '' }}
+          WINDOWS_SIGNING_SIGNED_BUCKET: ${{ env.HAS_WINDOWS_SIGNING && 'kirocrew-windows-signed-116101834266' || '' }}
+          WINDOWS_SIGNING_PROFILE_ID: ${{ env.HAS_WINDOWS_SIGNING && 'KiroCrewWindowsExe' || '' }}
+          WINDOWS_SIGNING_ARTIFACT_ROLE: ${{ env.HAS_WINDOWS_SIGNING && 'arn:aws:iam::116101834266:role/KiroCrewWindows-ArtifactAccessRole' || '' }}
+          # Equals the Signer application name; ArtifactAccessRole's trust
+          # policy requires it as sts:ExternalId.
+          WINDOWS_SIGNING_EXTERNAL_ID: ${{ env.HAS_WINDOWS_SIGNING && 'KiroCrewWindows' || '' }}
+
+      # Squirrel.Windows output: electron-builder 25.x emits into
+      # dist/squirrel-windows/ (proven live: probe run 30150819154 uploaded
+      # Setup.exe + .nupkg + RELEASES from exactly these paths). The flat dist/
+      # set guards against the output dir moving across electron-builder
+      # versions -- upload-artifact errors only when NO pattern matches
+      # anything.
+      #
+      # These comments sit ABOVE the step, not inside `path:`. In a `|` block
+      # scalar every line is literal text, so a '#' line there is not a comment
+      # -- it becomes a glob pattern that matches nothing.
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-windows-x64
+          path: |
+            website/electron/dist/squirrel-windows/*.exe
+            website/electron/dist/squirrel-windows/*.nupkg
+            website/electron/dist/squirrel-windows/RELEASES
+            website/electron/dist/*.nupkg
+            website/electron/dist/RELEASES
+          if-no-files-found: error
+          retention-days: 14

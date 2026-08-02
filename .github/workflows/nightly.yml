@@ -122,9 +122,25 @@ jobs:
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
-      # Windows is installer-only (publishes nothing): its failure must not
-      # skip publish-linux / sign-and-notarize via this workflow's result.
-      windows_soft_fail: true
+
+  # Windows builds in its own workflow because it Authenticode-signs during the
+  # build (the Squirrel installer embeds already-signed executables), so unlike
+  # build-desktop.yml it needs OIDC. Keeping it separate is what lets
+  # build-desktop.yml stay credential-free. Installer-only (publishes nothing):
+  # soft_fail keeps a Windows failure from skipping publish-linux /
+  # sign-and-notarize via this caller's result.
+  build-windows:
+    name: Build Windows Desktop
+    needs: [version, dependency-vulnerability-gate]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      version: ${{ needs.version.outputs.nightly_version }}
+      soft_fail: true
+      use_prod_environment: true
+    secrets: inherit
 
   # ── CLI channel publish ───────────────────────────────────────────────
   # Publishes the built wheel to the nightly CLI channel (cli/ + latest-cli.json).

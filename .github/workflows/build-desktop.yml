@@ -11,7 +11,14 @@ name: Build Desktop (reusable)
 #   - macOS universal (arm64 + x86_64): shipped (one desktop DMG)
 #   - Linux x64:    shipped (AppImage)
 #   - Linux arm64:  TODO (Graviton, Raspberry Pi)
-#   - Windows x64:  shipped (Squirrel.Windows Setup.exe, installer-only lane)
+#
+# Windows lives in build-windows.yml, NOT here. Its Squirrel installer embeds
+# its own already-signed executables, so Authenticode signing has to happen
+# during the build rather than in a downstream job -- which means that job
+# holds a production signing identity. This workflow must stay credential-free
+# (contents:read only, pinned by test_workflow_permissions.py), so the
+# credentialed platform gets its own reusable workflow instead of widening the
+# blast radius of the shared one to the mac and Linux legs.
 
 on:
   workflow_call:
@@ -20,19 +27,6 @@ on:
         description: "Semver version to stamp (electron package.json + __init__.py)"
         required: true
         type: string
-      windows_soft_fail:
-        description: >-
-          Mark the Windows matrix leg continue-on-error. Publishing callers
-          (nightly/release) pass true so a Windows-only packaging failure
-          never fails this reusable workflow -- which would skip every
-          dependent job (publish-linux, sign-and-notarize) and block the
-          mac/Linux release for a platform that publishes nothing yet
-          (per-platform release independence). Default false: any caller
-          that omits it -- and the workflow_dispatch probe path, where hard
-          failure IS the validation signal -- keeps the leg blocking.
-        required: false
-        type: boolean
-        default: false
   # Manual build-only probe: builds every platform's artifacts from any ref
   # WITHOUT publishing anything (no callers, no S3, no feeds). Used to
   # validate packaging changes (e.g. a new platform lane) before merge.
@@ -51,18 +45,6 @@ on:
           reproduces the overflow (proven: run 30293292843).
         required: true
         type: string
-      windows_soft_fail:
-        description: >-
-          Mark the Windows matrix leg continue-on-error (default false: a
-          probe SHOULD fail loudly -- hard failure is the validation signal).
-          Declared here as well as under workflow_call because the
-          continue-on-error expression below reads inputs on BOTH trigger
-          paths; when it was workflow_call-only, the expression evaluated to
-          a non-boolean on dispatch and GitHub rejected the workflow at
-          startup, silently killing the probe trigger entirely.
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -70,15 +52,6 @@ permissions:
 jobs:
   build-desktop:
     name: Build Desktop (${{ matrix.os }})
-    # Windows leg only, and only when the caller opts in (see the
-    # windows_soft_fail input): failures still annotate the run but do not
-    # fail the workflow call. The `== true` is load-bearing, not noise: a bare
-    # `&& inputs.windows_soft_fail` yields the input's raw value, which is
-    # empty on any trigger that does not declare the input -- a non-boolean
-    # continue-on-error makes GitHub reject the workflow at startup with ZERO
-    # jobs, which is how the dispatch probe path died unnoticed. Comparing to
-    # true always produces a boolean.
-    continue-on-error: ${{ matrix.os == 'windows-latest' && inputs.windows_soft_fail == true }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -97,20 +70,6 @@ jobs:
             # which GitHub's arm64 macOS runners (macos-14) ship preinstalled.
           - os: ubuntu-22.04
             artifact-name: build-linux-x64
-          - os: windows-latest
-            # Squirrel.Windows output: Setup.exe (human installer) +
-            # RELEASES + full .nupkg (the built-in autoUpdater's native
-            # feed format on win32). INSTALLER-ONLY LANE for now:
-            # auto-update.js does not consume the Squirrel feed on win32
-            # yet -- RELEASES/.nupkg are produced dormant so the upcoming
-            # publish+updater lane needs no packaging change. Unsigned AND
-            # unattested for now: no publish lane consumes these artifacts,
-            # so nothing attests them yet -- SLSA provenance lands in-lane
-            # with the upcoming publish-windows.yml (same pattern as
-            # publish-linux.yml). Authenticode signing is a tracked
-            # follow-up (SmartScreen is a dismissable gate, unlike macOS
-            # Gatekeeper).
-            artifact-name: build-windows-x64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -130,8 +89,7 @@ jobs:
       - name: Stamp version
         env:
           STAMP_VERSION: ${{ inputs.version }}
-        # bash on every OS: sed -i.bak / rm -f are bash-isms and
-        # windows-latest defaults run steps to pwsh.
+        # Explicit bash on both legs: sed -i.bak / rm -f are bash-isms.
         shell: bash
         run: |
           # BSD-sed-compatible -i.bak form: this step runs on macos-14 too.
@@ -145,14 +103,13 @@ jobs:
 
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         # The build script provisions python-build-standalone interpreters
-        # through uv; the runner images don't all ship it (windows-latest
-        # doesn't), and the script's curl|sh fallback is POSIX-shaped.
+        # through uv; not every runner image ships it, and the script's
+        # curl|sh fallback is POSIX-shaped.
 
       - name: Build desktop app
-        # bash on every OS (Git Bash on windows-latest): the build script is
-        # bash, and `make` is not on the Windows runner image -- the Makefile
-        # target only adds a local-dev node-bin-dir PATH nicety that CI's
-        # setup-node already covers.
+        # The build script is bash. Invoked directly rather than through the
+        # Makefile target, which only adds a local-dev node-bin-dir PATH
+        # nicety that CI's setup-node already covers.
         shell: bash
         run: bash packaging/build-desktop.sh
         env:
@@ -168,16 +125,5 @@ jobs:
             website/electron/dist/*.dmg
             website/electron/dist/*.zip
             website/electron/dist/*.AppImage
-            # Squirrel.Windows output: electron-builder 25.x emits into
-            # dist/squirrel-windows/ (proven live: probe run 30150819154
-            # uploaded Setup.exe + .nupkg + RELEASES from exactly these
-            # paths). The flat dist/ set below guards against the output
-            # dir moving across electron-builder versions -- upload-artifact
-            # errors only when NO pattern matches anything.
-            website/electron/dist/squirrel-windows/*.exe
-            website/electron/dist/squirrel-windows/*.nupkg
-            website/electron/dist/squirrel-windows/RELEASES
-            website/electron/dist/*.nupkg
-            website/electron/dist/RELEASES
           if-no-files-found: error
           retention-days: 14

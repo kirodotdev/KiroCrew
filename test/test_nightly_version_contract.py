@@ -175,6 +175,9 @@ def test_wheel_version_stays_pep440_and_separate() -> None:
 
 
 DESKTOP_WORKFLOW = ROOT / ".github" / "workflows" / "build-desktop.yml"
+# Windows builds separately: it Authenticode-signs during the build, so it needs
+# OIDC that the shared desktop workflow deliberately does not hold.
+WINDOWS_WORKFLOW = ROOT / ".github" / "workflows" / "build-windows.yml"
 
 
 def test_stamp_components_come_from_a_single_clock_read() -> None:
@@ -205,25 +208,30 @@ def test_documented_probe_example_satisfies_the_same_rules() -> None:
     overflow teaches the exact failure this PR fixes. Every semver-looking
     example is held to the same digit-run rule as the real stamp.
     """
-    text = DESKTOP_WORKFLOW.read_text(encoding="utf-8")
-    examples = re.findall(r"\b\d+\.\d+\.\d+-[0-9A-Za-z.\-]+", text)
-    assert examples, "no version examples found in build-desktop.yml"
-    for example in examples:
-        _, _, prerelease = example.partition("-")
-        joined = prerelease.replace(".", "")
-        for run in re.findall(r"\d+", joined):
-            if int(run) > INT32_MAX:
-                # Only fail when the example is being RECOMMENDED, not when it
-                # is cited as a known-bad counterexample.
-                context = text[max(0, text.index(example) - 200) : text.index(example) + 60]
-                recommended = not re.search(
-                    r"(?i)(dotted|reproduces|FAIL|counterexample|overflow)", context
-                )
-                assert not recommended, (
-                    f"documented example {example!r} has digit run {run!r} above "
-                    f"Int32 ({INT32_MAX}) and is presented as a recommendation; "
-                    "it would fail releasify. Use a letter-separated stamp."
-                )
+    # Both workflows document a probe stamp, and the Int32 hazard is Squirrel's
+    # -- so it is the WINDOWS workflow that actually releasifies. Checking only
+    # build-desktop.yml would leave the example that matters unguarded.
+    for workflow in (DESKTOP_WORKFLOW, WINDOWS_WORKFLOW):
+        text = workflow.read_text(encoding="utf-8")
+        examples = re.findall(r"\b\d+\.\d+\.\d+-[0-9A-Za-z.\-]+", text)
+        assert examples, f"no version examples found in {workflow.name}"
+        for example in examples:
+            _, _, prerelease = example.partition("-")
+            joined = prerelease.replace(".", "")
+            for run in re.findall(r"\d+", joined):
+                if int(run) > INT32_MAX:
+                    # Only fail when the example is being RECOMMENDED, not when
+                    # it is cited as a known-bad counterexample.
+                    context = text[max(0, text.index(example) - 200) : text.index(example) + 60]
+                    recommended = not re.search(
+                        r"(?i)(dotted|reproduces|FAIL|counterexample|overflow)", context
+                    )
+                    assert not recommended, (
+                        f"documented example {example!r} in {workflow.name} has digit "
+                        f"run {run!r} above Int32 ({INT32_MAX}) and is presented as a "
+                        "recommendation; it would fail releasify. Use a "
+                        "letter-separated stamp."
+                    )
 
 
 def test_job_level_inputs_are_declared_on_every_trigger() -> None:
@@ -239,37 +247,51 @@ def test_job_level_inputs_are_declared_on_every_trigger() -> None:
 
     YAML linters and actionlint both pass such a file, so pin it here.
     """
-    text = DESKTOP_WORKFLOW.read_text(encoding="utf-8")
-    referenced = set(re.findall(r"inputs\.([A-Za-z_][A-Za-z0-9_]*)", text))
-    assert referenced, "build-desktop.yml no longer references any inputs"
+    # Both reusable build workflows are exposed on workflow_call AND
+    # workflow_dispatch, and both carry job-level expressions, so both can be
+    # killed at startup this way.
+    for workflow in (DESKTOP_WORKFLOW, WINDOWS_WORKFLOW):
+        text = workflow.read_text(encoding="utf-8")
+        referenced = set(re.findall(r"inputs\.([A-Za-z_][A-Za-z0-9_]*)", text))
+        assert referenced, f"{workflow.name} no longer references any inputs"
 
-    # Split the trigger block per trigger and collect each one's declared inputs.
-    for trigger in ("workflow_call", "workflow_dispatch"):
-        block = re.search(
-            rf"^  {trigger}:\n(.*?)(?=^  [a-z_]+:\n|^permissions:|^jobs:)",
-            text,
-            re.MULTILINE | re.DOTALL,
-        )
-        assert block, f"build-desktop.yml no longer declares a {trigger} trigger"
-        declared = set(
-            re.findall(r"^      ([A-Za-z_][A-Za-z0-9_]*):$", block.group(1), re.MULTILINE)
-        )
-        missing = referenced - declared
-        assert not missing, (
-            f"{trigger} does not declare input(s) {sorted(missing)} that the "
-            "workflow references. If a job-level key (continue-on-error, if, "
-            "timeout-minutes) reads one of them, GitHub rejects the workflow at "
-            "startup on this trigger and the run produces zero jobs."
-        )
+        # Split the trigger block per trigger and collect each one's inputs.
+        for trigger in ("workflow_call", "workflow_dispatch"):
+            block = re.search(
+                rf"^  {trigger}:\n(.*?)(?=^  [a-z_]+:\n|^permissions:|^jobs:)",
+                text,
+                re.MULTILINE | re.DOTALL,
+            )
+            assert block, f"{workflow.name} no longer declares a {trigger} trigger"
+            declared = set(
+                re.findall(r"^      ([A-Za-z_][A-Za-z0-9_]*):$", block.group(1), re.MULTILINE)
+            )
+            missing = referenced - declared
+            assert not missing, (
+                f"{workflow.name}: {trigger} does not declare input(s) "
+                f"{sorted(missing)} that the workflow references. If a job-level "
+                "key (continue-on-error, if, timeout-minutes, environment) reads "
+                "one of them, GitHub rejects the workflow at startup on this "
+                "trigger and the run produces zero jobs."
+            )
 
 
 def test_windows_soft_fail_expression_is_boolean_safe() -> None:
-    """continue-on-error must coerce to a boolean even for an absent input."""
-    text = DESKTOP_WORKFLOW.read_text(encoding="utf-8")
+    """continue-on-error must coerce to a boolean even for an absent input.
+
+    The soft-fail switch moved to build-windows.yml when Windows split out of
+    the shared desktop matrix (it signs during its build and so needs OIDC,
+    which build-desktop.yml must not hold). The hazard travelled with it, so
+    the assertion follows the expression rather than the filename. Duplicated in
+    test_windows_signing_contract.py, which owns that workflow's contract; kept
+    here too because this file is where the zero-jobs startup rejection was
+    diagnosed and documented.
+    """
+    text = WINDOWS_WORKFLOW.read_text(encoding="utf-8")
     match = re.search(r"^    continue-on-error: (.+)$", text, re.MULTILINE)
-    assert match, "build-desktop.yml no longer sets continue-on-error on the build job"
+    assert match, "build-windows.yml no longer sets continue-on-error on the build job"
     expr = match.group(1)
-    assert "windows_soft_fail == true" in expr or "fromJSON" in expr, (
+    assert "soft_fail == true" in expr or "fromJSON" in expr, (
         f"continue-on-error expression {expr!r} yields the input's raw value; an "
         "absent input then makes it non-boolean and GitHub rejects the workflow "
         "at startup. Compare explicitly (`== true`) or coerce with fromJSON."
