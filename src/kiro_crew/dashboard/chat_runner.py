@@ -902,6 +902,11 @@ def _mask_quoted_separators(text: str) -> tuple[str, dict[str, str]]:
 
 _NATIVE_SUBAGENT_STALE_SECS = 120.0  # auto-close cards with no progress after 2 min
 
+# Maximum seconds to wait for a deferred compaction result from kiro-cli after
+# the /compact prompt is acknowledged. Must be bounded so the UI never hangs
+# indefinitely if kiro-cli never emits a terminal compaction status.
+_COMPACT_WAIT_TIMEOUT_SECS = 120.0
+
 
 def _native_done_result(chunks: "list[str] | None") -> str:
     """Return the newest bounded native-card output with a truncation marker."""
@@ -4564,7 +4569,9 @@ async def _run_chat(
                 )
                 # kiro-cli fires compaction asynchronously after EVENT_COMPLETE —
                 # just wait for the result without sending another prompt.
-                compaction_result = await client.wait_for_compaction(timeout=120.0)
+                compaction_result = await client.wait_for_compaction(
+                    timeout=_COMPACT_WAIT_TIMEOUT_SECS
+                )
                 logger.info("Deferred compaction result: %s", compaction_result)
                 if compaction_result["type"] == "completed":
                     summary, _ = redact_credentials(compaction_result.get("summary", ""))
@@ -4575,9 +4582,23 @@ async def _run_chat(
                         else "✅ Conversation compacted."
                     )
                 elif compaction_result["type"] == "failed":
-                    msg = "❌ Compaction failed."
+                    reason, _ = redact_credentials(compaction_result.get("summary", "") or "")
+                    reason, _ = redact_exfiltration_urls(reason)
+                    logger.warning("Manual /compact failed: %s", reason or "unknown error")
+                    msg = (
+                        f"❌ Compaction failed: {reason}"
+                        if reason
+                        else "❌ Compaction failed (no detail from runtime)."
+                    )
                 else:
-                    msg = "⚠️ Compaction timed out."
+                    logger.warning(
+                        "Manual /compact timed out after %.0fs",
+                        _COMPACT_WAIT_TIMEOUT_SECS,
+                    )
+                    msg = (
+                        "⚠️ Compaction timed out — the runtime did not "
+                        "respond. Try again or start a new chat."
+                    )
                 _append_compaction_notice(state, slot, msg)
                 # Update context usage after compaction. On success the
                 # provider dropped its stale counts when the completed status
