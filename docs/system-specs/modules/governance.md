@@ -980,9 +980,12 @@ the messaging chokepoint AND at non-Slack transport startup), `apps` (app
 activation), `sandbox.min_level` (ordinal
 floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
 gate — `capabilities.spawn`, `capabilities.messaging`, `capabilities.cron`,
-`capabilities.memory_writes`, `capabilities.script_hooks`, and
-`capabilities.publish` (artifact publish chokepoint — see below). Only the live
-`approval_mode` clamp remains reserved.
+`capabilities.memory_writes`, `capabilities.script_hooks`,
+`capabilities.publish` (artifact publish chokepoint — see below),
+`capabilities.theme_persona` / `capabilities.theme_install`, and
+`capabilities.telemetry` (the anonymous beacon: send gate + both write
+chokepoints — **policy layer only**, see below). Only the live `approval_mode`
+clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
 denied-command rules. A deny-mode `commands` ScopedRuleset's `deny` patterns are
@@ -1112,6 +1115,99 @@ contract (a stricter server is backward-compatible with consenting clients).
 **Revisit trigger:** #312 MUST be revisited before any persona-scope
 expansion (longer length bound, per-turn injection, or richer pack tiers) —
 scope growth without server-recorded grants is not covered by this decision.
+
+### Anonymous telemetry — `capabilities.telemetry`
+
+The anonymous usage beacon (`beacon.py`; full spec in
+[metrics.md](metrics.md) → "Anonymous usage beacon") is the repo's **only
+default-on egress**: one at-most-daily HTTP GET carrying a five-field anonymous
+payload. It is governed by the `capabilities.telemetry` `SCOPE_CATALOG` capability
+row (`capability_default=True`, data-only shape — no `CONTRACT_VERSION` or
+evaluator change, mirroring the theme rows above).
+
+**Why a governance row when a Settings toggle already exists.** The toggle, the CLI
+and the `KIROCREW_TELEMETRY_DISABLED` env var are all *operator* controls: anyone on
+the machine can flip them, and the agent can reach the first two. A managed fleet
+frequently may not egress to a vendor endpoint at all, which needs a control the
+running app cannot undo. Because the row is read from the trust-root
+`security_policy.json` — inside `security._SENSITIVE_HOME_DIRS`, so the agent can
+neither read nor rewrite its own ceiling — this is genuinely un-opt-out-able where a
+`config.json` field would only be a suggestion.
+
+Consulted at **four** chokepoints — the send gate plus EVERY write path to
+`telemetry.beacon_enabled`; any one alone would be a half-control:
+
+| Chokepoint | Pinned-off behavior |
+|---|---|
+| `beacon.should_send()` | Refuses the send. Ranked **above** the config flag so the reported reason names the policy, not the (now irrelevant) local value |
+| `PATCH /api/config/kirocrew` (`handlers/core.py`) | **403** on `telemetry.beacon_enabled=true` |
+| `kirocrew telemetry enable` (`cli_commands.py`) | Exits **1** without writing config.json |
+| `kirocrew config set [--local] …` (`cli_config.py`) | Exits **1** without writing. The *generic* setter reaches the same key, and `--local` writes the overlay that takes PRECEDENCE over the base file |
+
+Writing `false` is **always** permitted at both write chokepoints. The ceiling is a
+floor on privacy, so a narrower local choice composes with it (tightest-wins), and
+refusing it would leave a user unable to record a stricter preference they already
+have in effect — and strand them if the policy were later lifted.
+
+The write refusals exist so a pinned host cannot sit storing `beacon_enabled: true`
+behind a control that does nothing: `should_send` already blocks the egress, so
+without them the config file and the UI would both claim "on" while nothing is sent.
+
+**Fails CLOSED** (`fail_closed=True`), joining `capabilities.theme_install` /
+`capabilities.publish` rather than diverging from them. An earlier revision of this
+row failed open on the reasoning that "a wrong deny only loses a heartbeat"; that
+reasoning describes the wrong-DENY and quietly ignores the wrong-PERMIT, which is
+an **egress on a fleet that explicitly forbade egress** — the one thing this scope
+exists to prevent, on a payload that leaves the machine. `fail_closed` also
+promotes the degrade to a critical SEL event, so an unevaluable ceiling is visible
+rather than silently permissive.
+
+**Audited at the enforcement call, not on the probe.** `should_send` (the decision
+that actually stops an egress) routes through `vet_and_audit` — the existing
+audited seam — so a suppressed heartbeat lands a `governance_decision` SEL record
+with the same shape as the messaging chokepoints, grant or deny. The **read-only**
+path (`status()` → `GET /api/telemetry/beacon`, which the Privacy panel refetches)
+passes `audit=False`: auditing an *inspection* would append HMAC-chained rows at a
+multiple of the one decision per boot that governs anything. This is the same
+disposition the channels gate applies to its hot-path default-permit — audit the
+decision that does something, not the question.
+
+The probe is `beacon.is_governance_pinned_off()`, surfaced as
+`governance_override` on `GET /api/telemetry/beacon`; the Privacy panel shows it as
+the strongest of three pinned-notes (it outranks the env-var and overlay notes,
+which would otherwise suggest remedies the ceiling makes pointless).
+
+**POLICY LAYER ONLY — this row is Level-1 in a way the others are not.** The probe
+requires `layer == "policy"`, so a **Level-2 profile** setting
+`capabilities.telemetry.enabled: false` does **not** suppress the beacon, even
+though the read-only viewer will render that row as governed with a `profile`
+source. Two reasons, and the narrowing is what makes the control trustworthy
+rather than weaker:
+
+- The probe is **process-wide and carries no session**. It runs from the beacon's
+  detached boot thread, so `_infer_surface("")` classifies to `unknown` and matches
+  no bind — a per-surface ceiling is simply not the question "should this
+  installation send a daily heartbeat" asks.
+- A bare not-permitted test is **wrong in a way no `except` can catch**:
+  `resolve_active_scope` returns a synthetic deny-all *profile*
+  (`_deny_all_unloaded:…`) when the profile store is unprimed and another thread
+  holds its non-blocking reload lock. That is a transient race on a host with **no
+  policy at all**, and it arrives as an ordinary `Decision`, not an exception — so
+  reading it as a pin would make the CLI, the 403, and the UI note all blame an
+  administrator who does not exist. `TestGovernancePin` pins both directions.
+
+So the probe reads **three** outcomes, not two: a policy-layer deny is a pin, a
+degrade (`reason` prefixed `GOVERNANCE_ERROR_REASON`) is a pin (fail-closed), and a
+profile-layer deny is not.
+
+This mirrors the policy-only treatment `ScopedMap.posture` and the Slack posture
+check already get. A profile-layer telemetry suppression would need its own
+session-bearing chokepoint, not this probe.
+
+The Security panel picks the row up automatically — `api_governance_policy` iterates
+`SCOPE_CATALOG` — and labels it **"Anonymous telemetry"** rather than the leaf's
+bare "Telemetry", because this scope governs only the outbound heartbeat and NOT the
+unrelated local-only `telemetry.enabled` OTEL collection.
 
 ### Computer use is NOT governed (deliberately)
 

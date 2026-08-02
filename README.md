@@ -129,19 +129,21 @@ The toggle and `kirocrew telemetry disable` write the same setting, so either
 one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` overrides
 both — when it is set, the dashboard toggle is disabled and says so.
 
-**Exactly these nine fields are sent, at most once per day, and nothing else:**
+**Exactly these five fields are sent, at most once per day, and nothing else:**
 
 | Field | Example | Why |
 |-------|---------|-----|
 | Random instance id | `9c75560d…` (UUID4) | Lets us count how many copies ran on a given day. Generated once on first run and derived from nothing — not your hostname, username, MAC, IP, or any account. It identifies an installed copy, never a person. |
 | App version | `0.1.2` | Which releases are still in use. **Release number only** — build stamps like `-nightly.20260731t065756` are stripped before sending, because a per-build timestamp is near-unique and would help identify a specific machine. |
-| Release channel | `stable` | One of `stable`, `insider`, `nightly` — whether pre-release builds are being adopted. Both nightly build stamps (desktop and wheel) report `nightly`. |
-| OS | `darwin` | Which platforms to support |
-| CPU architecture | `arm64` | Which architectures to build for |
 | Python minor version | `3.12` | When the minimum can move up |
 | Install channel | `dmg` | Which install path people actually use |
-| Governance posture | `none` | One of `none`, `unsigned`, `signed`, `verified` — whether an enterprise security ceiling is in force, and whether its signature verifies. A state, never an identity: it never includes your profile name or the organization that signed it. |
 | First-run flag | `1` / `0` | New installs vs returning |
+
+This list used to be nine fields. Release channel, OS, CPU architecture and
+governance posture were **removed** — each was coarse on its own, but the
+instance id is stable, so those attributes all describe the *same* copy and
+together they narrowed the group any one install blends into far more than any
+single field suggests.
 
 We report this as **Daily Active Instances** rather than "users": with no account
 system there is no way to resolve a copy to a person, so one person running
@@ -154,6 +156,18 @@ log delivery does not include that field, so no IP is stored at all.
 
 **Automatically off** in CI, and whenever `KIROCREW_HOME` points somewhere other
 than `~/.kiro/crew` (dev instances and pods are never counted).
+
+**Enterprise administrators can pin it off entirely.** A `capabilities.telemetry`
+entry in the security policy blocks the heartbeat regardless of the local
+setting, and the dashboard toggle then says so instead of offering a change that
+would not take effect:
+
+```json
+{"version": 1, "boot": {"fail_closed": true},
+ "capabilities": {"telemetry": {"enabled": false}}}
+```
+
+See [docs/system-specs/modules/governance.md](docs/system-specs/modules/governance.md).
 
 This is separate from `telemetry.enabled`, which controls **local-only**
 performance metrics that never leave your machine. See

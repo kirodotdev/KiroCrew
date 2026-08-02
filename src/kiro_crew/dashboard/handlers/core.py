@@ -20,7 +20,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
-from kiro_crew import platform_compat
+from kiro_crew import beacon, platform_compat
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
@@ -1247,6 +1247,27 @@ _EDITABLE_CONFIG: dict[str, dict] = {
 }
 
 
+def _beacon_governance_pinned_off() -> bool:
+    """Return whether a ceiling pins ``capabilities.telemetry`` off (blocking).
+
+    Delegates to ``beacon.is_governance_pinned_off`` rather than re-resolving, so
+    the PATCH gate and the send gate can never disagree about whether a host is
+    pinned — two independent resolutions would be two things to keep in sync.
+
+    Runs in a worker thread (see the call site): the resolution reads the
+    trust-root policy file and the active profile from disk.
+
+    ``audit_tool``: this is an ENFORCEMENT decision (it refuses the write with a
+    403), so it routes through the audited seam and lands a
+    ``governance_decision`` SEL record — matching the send gate and both CLI
+    refusals. The name is distinct per call site so the trail says which control
+    refused. The dashboard route additionally logs its own ``config.patch`` denial
+    via ``_log_sel``; that records the API call, while this records the governance
+    decision behind it.
+    """
+    return beacon.is_governance_pinned_off(audit_tool="config_patch_dashboard")
+
+
 async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     """PATCH /api/config/kirocrew — update a single config field."""
     from kiro_crew.agent import _atomic_json_write  # noqa: F811
@@ -1324,6 +1345,27 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return _deny(f"invalid value for {path_key}", f"{path_key}={value}")
     else:
         return _deny("unsupported config type", f"{path_key}={value}", 500)
+
+    # ── Governance: refuse a write an enterprise ceiling has pinned ──
+    # Only re-ENABLING is refused. Writing `false` is always allowed even under a
+    # ceiling that already forbids the beacon: the ceiling is a floor on privacy,
+    # so a narrower local choice composes with it (tightest-wins), and refusing it
+    # would leave a user unable to record the stricter preference they already have
+    # in effect — which would also strand them if the policy were later lifted.
+    #
+    # The 403 exists so a pinned host cannot be left storing `true` behind a toggle
+    # that does nothing: `should_send` already blocks the egress, so without this
+    # the config file and the UI would both claim "on" while nothing is ever sent.
+    if path_key == "telemetry.beacon_enabled" and value is True:
+        # to_thread: resolving the ceiling reads the trust-root policy file and
+        # the active profile from disk, which must not block the event loop.
+        pinned = await asyncio.to_thread(_beacon_governance_pinned_off)
+        if pinned:
+            return _deny(
+                "telemetry is disabled by your administrator's security policy",
+                f"{path_key}={value}",
+                403,
+            )
 
     # Read, update, write
     cfg_path = config_path()

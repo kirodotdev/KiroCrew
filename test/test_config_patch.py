@@ -241,6 +241,53 @@ class TestBoolValidator:
             resp = await _patch(c, "telemetry.beacon_endpoint", "https://evil.example")
             assert resp.status == 400
 
+    @pytest.mark.asyncio
+    async def test_governance_pin_refuses_a_re_enable(self, tmp_config, monkeypatch) -> None:
+        """An enterprise ceiling pinning capabilities.telemetry off wins here too.
+
+        ``should_send`` already blocks the egress, so without this 403 a pinned
+        host could sit storing ``beacon_enabled: true`` behind a toggle that does
+        nothing — the same false-promise-on-a-privacy-control failure the overlay
+        check guards against.
+        """
+        from kiro_crew.dashboard.handlers import core as core_mod
+
+        monkeypatch.setattr(core_mod, "_beacon_governance_pinned_off", lambda: True)
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "telemetry.beacon_enabled", True)
+            assert resp.status == 403
+            assert "administrator" in (await resp.json())["error"]
+        # Nothing written: the refusal precedes the read-modify-write entirely.
+        assert not tmp_config.exists() or "beacon_enabled" not in tmp_config.read_text(
+            encoding="utf-8"
+        )
+
+    @pytest.mark.asyncio
+    async def test_governance_pin_still_allows_opting_OUT(self, tmp_config, monkeypatch) -> None:
+        """Tightest-wins: a narrower local choice composes with the ceiling.
+
+        Refusing this would leave a user unable to record the stricter preference
+        they already have in effect, and strand them if the policy were lifted.
+        """
+        from kiro_crew.dashboard.handlers import core as core_mod
+
+        monkeypatch.setattr(core_mod, "_beacon_governance_pinned_off", lambda: True)
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "telemetry.beacon_enabled", False)).status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert written["telemetry"]["beacon_enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_unpinned_host_can_still_re_enable(self, tmp_config, monkeypatch) -> None:
+        """The gate must not fire on an ordinary standalone install."""
+        from kiro_crew.dashboard.handlers import core as core_mod
+
+        monkeypatch.setattr(core_mod, "_beacon_governance_pinned_off", lambda: False)
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "telemetry.beacon_enabled", True)).status == 200
+        written = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert written["telemetry"]["beacon_enabled"] is True
+
 
 # ── Str validator (pool_agent) ───────────────────────────────────────────
 

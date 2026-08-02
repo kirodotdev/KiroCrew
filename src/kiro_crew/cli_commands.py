@@ -1618,6 +1618,27 @@ def _telemetry(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     want = action == "enable"
+    # Refuse a re-enable an enterprise ceiling has pinned off, mirroring the
+    # dashboard PATCH route's 403. Without this the CLI would write
+    # beacon_enabled: true and print "ENABLED" on a host where should_send()
+    # blocks every heartbeat — the exact false-promise-on-a-privacy-control this
+    # command's overlay check below already exists to prevent. Only the ENABLE
+    # direction is gated: writing false is always allowed (tightest-wins).
+    # audit_tool: this is an ENFORCEMENT decision (it refuses a write), so it
+    # routes through the audited seam and lands a governance_decision SEL record —
+    # same disposition as the send gate. A distinct tool name per call site keeps
+    # the trail readable about WHICH control refused.
+    if want and beacon.is_governance_pinned_off(audit_tool="telemetry_enable_cli"):
+        print(
+            "❌ The anonymous beacon is pinned OFF by your administrator's "
+            "security policy (capabilities.telemetry).",
+            file=sys.stderr,
+        )
+        print(
+            "   Not writing config.json — the setting would have no effect.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     path = config_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}

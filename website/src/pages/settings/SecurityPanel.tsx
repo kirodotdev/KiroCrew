@@ -293,6 +293,11 @@ function scopeLabel(scope: string): string {
     'capabilities.script_hooks': 'Script hooks',
     'capabilities.theme_persona': 'Theme persona',
     'capabilities.theme_install': 'Theme install',
+    // Named "Anonymous telemetry", not the leaf's bare "Telemetry": this scope
+    // governs ONLY the outbound anonymous heartbeat. The unrelated
+    // `telemetry.enabled` config field is local-only OTEL collection, and a row
+    // reading just "Telemetry" would imply this ceiling governs that too.
+    'capabilities.telemetry': 'Anonymous telemetry',
   }
   if (SPECIAL[scope]) return SPECIAL[scope]
   const leaf = scope.includes('.') ? scope.slice(scope.indexOf('.') + 1) : scope

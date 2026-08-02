@@ -566,8 +566,12 @@ async def api_beacon_status(request: web.Request) -> web.Response:
     ``config.local.json`` entry, which deep-merges OVER ``config.json`` at load —
     the toggle writes the base file, so an overlay entry would otherwise let the
     switch snap back with no explanation (the CLI reports this same case; see
-    ``cli_commands._telemetry``). Read-only, and never materializes an install id
-    (``beacon.status`` uses ``create=False``).
+    ``cli_commands._telemetry``). ``governance_override`` reports the third and
+    strongest case: an enterprise ceiling pinning ``capabilities.telemetry`` off,
+    where the PATCH route itself returns 403 — so the panel must disable the
+    control AND say who pinned it, since this is the one the user cannot lift.
+    Read-only, and never materializes an install id (``beacon.status`` uses
+    ``create=False``).
     """
     overlay_override = False
     try:
@@ -599,5 +603,9 @@ async def api_beacon_status(request: web.Request) -> web.Response:
             "env_override": beacon.is_env_opted_out(),
             "env_var": beacon.DISABLE_ENV,
             "overlay_override": overlay_override,
+            # Resolved inside beacon.status (already on a worker thread) rather
+            # than re-evaluated here, so this reports the same verdict that
+            # should_send and the PATCH gate act on.
+            "governance_override": bool(info.get("governance_pinned_off", False)),
         }
     )

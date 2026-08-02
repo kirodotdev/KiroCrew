@@ -30,21 +30,29 @@ const ON = {
   overlay_override: false,
 }
 
-const HEARTBEAT_DISCLOSURE = "Random installation ID · app version · release channel · operating system · CPU architecture · Python minor version · install channel · governance posture · first-run flag"
+const HEARTBEAT_DISCLOSURE = "Random installation ID · app version · Python minor version · install channel · first-run flag"
 
 const HEARTBEAT_FIELDS = [
   'Random installation ID',
   'app version',
-  'release channel',
-  'operating system',
-  'CPU architecture',
   'Python minor version',
   'install channel',
-  'governance posture',
   'first-run flag',
 ] as const
 
-const EXCLUSION_DISCLOSURE = "Prompts, responses, file contents or paths, repository names, credentials, hostnames, usernames. Your IP is not stored."
+// Fields the payload once carried and no longer does. Asserted ABSENT, not just
+// omitted from the list above: this text is the product's transparency
+// commitment, so a re-added wire field that nobody documented — or documentation
+// that outlives the field — is the failure this pins. Mirrors the key-set
+// assertion on `beacon._fields` in test/test_beacon.py.
+const REMOVED_FIELDS = [
+  'release channel',
+  'operating system',
+  'CPU architecture',
+  'governance posture',
+] as const
+
+const EXCLUSION_DISCLOSURE = "Prompts, responses, files, credentials, hostnames, usernames, or your operating system. Your IP is not stored."
 
 const CONTROL_COMMANDS = [
   'kirocrew telemetry status',
@@ -84,14 +92,27 @@ describe('PrivacyPanel', () => {
     ])
   })
 
-  it('discloses exactly the fixed nine-field heartbeat payload', () => {
+  it('discloses exactly the fixed five-field heartbeat payload', () => {
     renderWithProviders(<PrivacyPanel />)
 
     const disclosure = screen.getByText(HEARTBEAT_DISCLOSURE)
-    expect(HEARTBEAT_FIELDS).toHaveLength(9)
+    expect(HEARTBEAT_FIELDS).toHaveLength(5)
     for (const field of HEARTBEAT_FIELDS) {
       expect(disclosure).toHaveTextContent(field)
     }
+  })
+
+  it('no longer claims to send the four removed fields', () => {
+    renderWithProviders(<PrivacyPanel />)
+
+    const panel = screen.getByLabelText('Privacy')
+    for (const field of REMOVED_FIELDS) {
+      // Scoped to the heartbeat disclosure line, not the whole panel: the
+      // never-sent copy legitimately NAMES "operating system" as excluded, so a
+      // panel-wide absence assertion would contradict the improvement it states.
+      expect(screen.getByText(HEARTBEAT_DISCLOSURE)).not.toHaveTextContent(field)
+    }
+    expect(panel).toBeInTheDocument()
   })
 
   it('pins the excluded data and IP-retention disclosure', () => {
@@ -181,6 +202,52 @@ describe('PrivacyPanel', () => {
     const toggle = screen.getByRole('switch', { name: TOGGLE_LABEL })
     await userEvent.click(toggle)
     expect(patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('disables the switch and names the administrator when policy pins it off', async () => {
+    // An enterprise ceiling (capabilities.telemetry). Unlike the env var and the
+    // overlay, the user cannot lift this one, and the PATCH route answers 403 —
+    // so the control must be inert rather than merely annotated.
+    beaconStatus.mockResolvedValue({
+      ...ON,
+      enabled: false,
+      would_send: false,
+      reason: 'disabled by governance policy (capabilities.telemetry)',
+      governance_override: true,
+    })
+    renderWithProviders(<PrivacyPanel />)
+
+    expect(
+      await screen.findByText(/administrator's security policy turns this off/),
+    ).toBeInTheDocument()
+
+    const toggle = screen.getByRole('switch', { name: TOGGLE_LABEL })
+    await userEvent.click(toggle)
+    expect(patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('shows only the policy note when policy and the env var both pin it', async () => {
+    // Strongest-first: stacking remedies would tell the user to unset an env var
+    // that would change nothing while the ceiling stands.
+    beaconStatus.mockResolvedValue({
+      ...ON,
+      enabled: false,
+      would_send: false,
+      governance_override: true,
+      env_override: true,
+      overlay_override: true,
+    })
+    renderWithProviders(<PrivacyPanel />)
+
+    expect(
+      await screen.findByText(/administrator's security policy turns this off/),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(/is set in this environment/),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/config\.local\.json overrides this setting/),
+    ).not.toBeInTheDocument()
   })
 
   it('warns when the stored flag is on but nothing is actually being sent', async () => {

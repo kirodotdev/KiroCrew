@@ -6,8 +6,8 @@ import PrivacyNotice, { PRIVACY_NOTICE_STORAGE_KEY } from '../components/Privacy
 
 // The first-run banner is a GLANCE-level notice: it states the one-a-day
 // cadence and the never-sent categories, and links to Settings → Privacy, where
-// the full nine-field payload is enumerated (asserted in PrivacyPanel.test.tsx).
-// It deliberately does NOT restate all nine fields — a 371-character paragraph
+// the full five-field payload is enumerated (asserted in PrivacyPanel.test.tsx).
+// It deliberately does NOT restate all five fields — a 371-character paragraph
 // above the dashboard is a wall of text a normal user skips, which defeats the
 // disclosure. The link is what carries the reader to the detail.
 const GLANCE_CLAIMS = ['one anonymous ping a day', 'prompts', 'files', 'credentials'] as const

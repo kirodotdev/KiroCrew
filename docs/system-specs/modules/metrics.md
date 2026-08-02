@@ -409,7 +409,7 @@ The metric is **`DailyActiveInstances`** — deliberately not "DAU" and not
 `Instance` is the honest middle: it names a *running thing* (not the act of
 installing) without claiming to have resolved it to a human.
 
-### The nine fields (a fixed allowlist)
+### The five fields (a fixed allowlist)
 
 `payload()` is the only producer; there is no caller-supplied field, so the
 shape cannot be widened from a call site.
@@ -418,15 +418,50 @@ shape cannot be widened from a call site.
 |-------|---------|-----|
 | `id` | 32-char hex | Random UUID4. Dedup key for `COUNT(DISTINCT)`. |
 | `v` | `0.1.2` | Version adoption. **Release only** — every build stamp is stripped by `release()`. |
-| `chan` | `stable` | Release channel; one of `stable`/`insider`/`nightly`. Follows `auto-update.js::channelForVersion`, plus the PEP 440 `.dev` stamp that helper never sees (see below). |
-| `os` | `darwin` | Platform mix. |
-| `arch` | `arm64` | Architecture mix. |
 | `py` | `3.12` | **Minor only.** Answers "when can the floor move off 3.10". |
 | `dist` | `dmg` | Which install path users take. Clamped to a fixed set. |
-| `gov` | `verified` | Governance posture: `none` / `unsigned` / `signed` / `verified`. What share of DAU run under a Level-1 ceiling, and how many verify its signature. A STATE, never an identity — deliberately not the profile name (free-form stems) nor `identity.issuer` (names the signing org). |
 | `first_seen` | `1`/`0` | One bit → new-install and "launched once, never again" rate. |
 
-#### Why `v` is clamped, and why the channel is its own field
+#### Four fields were REMOVED — do not re-add them
+
+`chan` (release channel), `os`, `arch` and `gov` (governance posture) were part of
+this payload and are gone. Each was individually low-cardinality and individually
+defensible; the problem was **collective**. The install id is stable, so every
+attribute on the request is correlated with every other, and channel + OS +
+architecture + governance posture together partition the population far more
+finely than any one of them suggests — a nightly, ARM, governed-and-verified
+install is a small crowd to hide in even though no single field is identifying.
+
+So the rule for this payload is not "is this value low-cardinality?" but **"how
+much smaller does this make the crowd this install hides in?"** For all four the
+answer was "too much for what it bought":
+
+- **`chan`** — a nightly install is a small population by definition, which is
+  exactly what makes it identifying when paired with a stable id. **This one is a
+  real capability loss, not a relocation:** `release()` strips the prerelease label,
+  so a nightly `0.1.2-nightly.<stamp>` and a stable `0.1.2` both send `v=0.1.2` and
+  are indistinguishable on the wire. Channel-split adoption is no longer answerable
+  from the beacon. It remains observable from the release feeds / CDN fetch counts
+  (`feed/<channel>/latest-cli.json`), which are per-artifact and carry no install
+  id — a better source for that question anyway.
+- **`os` / `arch`** — the platform mix is answerable from download/CDN telemetry,
+  which is per-artifact and carries no install id at all: a strictly better source
+  for the same question.
+- **`gov`** — governance adoption is an enterprise-fleet question, and a fleet
+  operator knows their own posture. Correlating it with a stable id bought a
+  number nobody was blocked on.
+
+The client is authoritative: `beacon._fields()` returns exactly four keys (plus
+`id`) and `test/test_beacon.py` asserts the key set, so a re-addition fails a test
+rather than shipping quietly. `website/src/test/PrivacyPanel.test.tsx` asserts the
+four names are **absent** from the user-facing disclosure for the same reason.
+
+**Historical rows keep the old params.** Log lines already in S3 carry
+`chan`/`os`/`arch`/`gov` forever, and un-upgraded clients keep sending them until
+they update. That is harmless — the aggregator simply no longer reads them, so the
+fields age out of the analysis without a migration.
+
+#### Why `v` is clamped
 
 `__version__` is **not** low-cardinality in the field. Dev and nightly builds
 carry a per-build timestamp (`0.1.2-nightly.20260731t065756`,
@@ -445,27 +480,16 @@ carry a per-build timestamp (`0.1.2-nightly.20260731t065756`,
   install id picks out individual machines, which is precisely the correlated-
   attribute hazard the rest of the allowlist is designed to avoid.
 
-The channel is genuinely wanted ("is nightly adoption growing?"), so it moves to
-its own three-value `chan` field rather than being discarded.
+The channel is **discarded**, not moved to a field of its own (see "Four fields
+were REMOVED" above). `beacon.channel()` and its markers are deleted along with
+it, so there is no dormant helper for a future call site to re-wire.
 
-**`chan` must recognize BOTH nightly stamps.** `nightly.yml` emits two spellings
-from a single run — `<base>-nightly.<date>t<time>` (semver) for the desktop app
-and `<base>.dev<date><time>` (PEP 440) for the pip wheel — and both are published
-nightlies (`publish-cli.yml` writes `feed/nightly/latest-cli.json`).
-`auto-update.js::channelForVersion` only ever reads the semver form, so mirroring
-it literally reported `stable` for every nightly *wheel* install, folding the
-nightly CLI lane into stable and undercounting exactly what the field was added
-to measure. `channel()` therefore treats a `.dev` segment as nightly too. A
-`+local` build tag is stripped first: it is metadata and carries no channel
-meaning.
-
-**Normalized on both sides.** `release()`/`channel()` clamp at the client, but a
-client only stops sending raw stamps once it **upgrades**, and rows already in S3
-keep them forever. So the aggregator derives `v` and `chan` from the raw `v`
-param in SQL (`_VERSION_EXPR` / `_CHANNEL_EXPR`) as well. That makes the metric
-correct for pre-clamp clients, backfills `chan` for clients that never sent it,
-and means re-aggregating a historical day yields the clean value. An unparseable
-stamp becomes the single bounded bucket `unknown`, never a new metric.
+**Normalized on both sides.** `release()` clamps at the client, but a client only
+stops sending raw stamps once it **upgrades**, and rows already in S3 keep them
+forever. So the aggregator derives `v` from the raw `v` param in SQL
+(`_VERSION_EXPR`) as well. That makes the metric correct for pre-clamp clients and
+means re-aggregating a historical day yields the clean value. An unparseable stamp
+becomes the single bounded bucket `unknown`, never a new metric.
 
 **Anti-fingerprinting is a design constraint, not a side effect.** Every value
 is a low-cardinality constant or coarse bucket, because the id is stable and
@@ -515,13 +539,89 @@ The one thing deliberately *not* swallowed is a stamp-write failure's
 consequence: `_mark_sent()` runs only after a delivered request, so a failed send
 retries later rather than silently losing the day.
 
-### Default-ON with three suppressions
+### Default-ON with four suppressions
 
 `telemetry.beacon_enabled` defaults **true** (the only default-on egress in the
 repo). `should_send()` suppresses when: `KIROCREW_TELEMETRY_DISABLED` is truthy,
-the config toggle is false, the process looks like **CI**, or `KIROCREW_HOME` is
+an enterprise **governance ceiling** pins `capabilities.telemetry` off, the config
+toggle is false, the process looks like **CI**, or `KIROCREW_HOME` is
 **non-default** (dev home / pod / worktree preview — one operator's own extra
 instances would inflate the count).
+
+### Enterprise opt-out: the `capabilities.telemetry` governance scope
+
+The Settings toggle, the CLI and the env var are all **operator** controls: a user
+on the machine can flip any of them, and so can the agent for the first two. A
+managed fleet often may not egress to a vendor endpoint at all, which needs a
+control the running app **cannot** undo. That is the `capabilities.telemetry`
+`SCOPE_CATALOG` capability row (`capability_default=True`, so policy-absence keeps
+the documented default-on behavior for standalone users).
+
+It is read from the trust-root `security_policy.json`, which lives in
+`security._SENSITIVE_HOME_DIRS` — the agent can neither read nor rewrite its own
+ceiling, which is what makes this enterprise-*pinnable* where a `config.json` field
+would only be a suggestion. Authoring is a normal capability block:
+
+```json
+{"version": 1, "boot": {"fail_closed": true},
+ "capabilities": {"telemetry": {"enabled": false}}}
+```
+
+Enforced at **four** chokepoints — one send gate plus **every** write path to
+`telemetry.beacon_enabled`, because any one alone is a half-control:
+
+| Chokepoint | Behavior when pinned |
+|---|---|
+| `beacon.should_send()` | Refuses the send, reason `disabled by governance policy (capabilities.telemetry)` — ranked **above** the config flag so a managed host reports the policy, not the local value |
+| `PATCH /api/config/kirocrew` | **403** on `telemetry.beacon_enabled=true`; writing `false` is always allowed (tightest-wins — a narrower local choice composes with the ceiling) |
+| `kirocrew telemetry enable` | Exits **1** without writing config.json; `disable` still works |
+| `kirocrew config set [--local] telemetry.beacon_enabled true` | Exits **1** without writing. Easy to miss: the *generic* setter reaches the same key, and `--local` writes `config.local.json`, which takes **precedence** over the base file — so leaving it ungated would make it the one remaining way to store `true` on a pinned host |
+
+**Adding a fifth write path means adding a fifth gate.** The rule is that no path
+may leave a pinned host storing `true`; `test_beacon.py::TestGenericConfigSetterIsGated`
+and `test_config_patch.py` pin the existing ones.
+
+Without the write refusals a pinned host could sit storing `beacon_enabled: true`
+behind a toggle that does nothing — the same false-promise-on-a-privacy-control
+failure the overlay check already guards against.
+
+**Level-1 POLICY only.** The probe requires `layer == "policy"`, so a Level-2
+*profile* pinning `capabilities.telemetry` does not suppress the beacon: the probe
+runs from the boot thread with no session, and a bare not-permitted test would read
+a transient deny-all-profile race as an administrator pin on an ungoverned host.
+Full rationale in [governance.md](governance.md) → "Anonymous telemetry".
+
+`beacon.is_governance_pinned_off()` is the public probe, surfaced as
+`governance_override` on `GET /api/telemetry/beacon` and as the strongest of the
+three "pinned" notes in the Privacy panel (it outranks the env-var and overlay
+notes, which would otherwise offer remedies the ceiling makes pointless).
+
+**It fails CLOSED** (`fail_closed=True`), like `capabilities.theme_install` and
+`capabilities.publish`. The two dispositions look symmetric and are not: a wrong
+DENY loses one heartbeat, but a wrong PERMIT **egresses from a fleet that
+explicitly forbade egress** — breaking the exact promise the administrator was
+given, on a payload that leaves the machine. `fail_closed` also makes
+`governance_permits` audit the degrade as a critical SEL event, which is precisely
+the condition under which a silent degrade-to-permit would be indefensible.
+
+The probe distinguishes **two** failure sources, because conflating them produces a
+different bug in each direction:
+
+| Source | Identified by | Disposition |
+|---|---|---|
+| Evaluator could not answer (degrade, or the call/import itself died) | `reason` starts with `GOVERNANCE_ERROR_REASON` | **pinned** — fail closed |
+| Evaluator answered, but from Level 2 | `layer == "profile"` | **not** a pin (see the policy-only note above) |
+
+The second row is load-bearing: a transient deny-all-profile race on a host with no
+policy at all arrives as an ordinary `Decision`, so no `except` can catch it, and
+reading it as a pin would blame an administrator who does not exist.
+`TestGovernancePin` pins all three outcomes.
+
+**The enforcement decision is SEL-audited; the probe is not.** `should_send` passes
+`audit_tool="beacon_send"`, routing through `vet_and_audit` so a suppressed
+heartbeat lands a `governance_decision` record. `status()` passes `audit=False`
+because it backs `GET /api/telemetry/beacon`, which the Privacy panel refetches —
+auditing an inspection would flood the trail.
 
 `is_default_home()` compares against `~/.kiro/crew` **directly, never against
 `config_dir()`** — `config_dir()` *honors* `KIROCREW_HOME`, so comparing the two
@@ -586,10 +686,11 @@ consent flow:
   notice, and dismissal hides it for the current session even when persisting
   the marker fails.
 - **Settings → Privacy** remains available after dismissal. It explains the
-  default-on, at-most-daily beacon and its exact nine fields: random
-  installation id, app version, release channel, operating system, CPU
-  architecture, Python minor version, installation channel, governance posture,
-  and first-run flag.
+  default-on, at-most-daily beacon and its exact five fields: random
+  installation id, app version, Python minor version, installation channel, and
+  first-run flag. `PrivacyPanel.test.tsx` asserts both that all five are named and
+  that the four **removed** fields are absent, so this copy cannot drift from
+  `beacon.payload()` in either direction.
   It also states the excluded data, carries the **opt-out toggle** (above), and
   keeps the status/disable commands beneath it — the CLI remains documented
   because it is the only way to override a `config.local.json` overlay and the
@@ -656,7 +757,7 @@ absent/corrupt — so the id regenerates rather than merely not crashing. The
 Zero application code — the access log **is** the data product:
 
 ```
-client ─GET /b/1/<id>?v&chan&os&arch&py&dist&gov&first_seen─> CloudFront E1YM983XX3ASBM
+client ─GET /b/1/<id>?v&py&dist&first_seen─> CloudFront E1YM983XX3ASBM
                                      │ CloudFront Function returns 204 at the edge
                                      ▼
         standard logging v2 → s3://kirocrew-beacon-logs (PERMANENT, tiered)
@@ -667,6 +768,23 @@ client ─GET /b/1/<id>?v&chan&os&arch&py&dist&gov&first_seen─> CloudFront E1Y
                     ├── CloudWatch KiroCrew/Product  → dashboard (~15-month view)
                     └── kirocrew_analytics.beacon_daily → PERMANENT record
 ```
+
+**Metrics published.** `DailyActiveInstances`, `BeaconPings`, `NewInstallations`,
+`ActiveByVersion`, `ActiveByPython`, `ActiveByDistribution`, and `ActiveByCountry`.
+`ActiveByChannel` / `ActiveByOS` / `ActiveByArch` were removed with their source
+fields; their historical CloudWatch points and rollup rows are left in place (the
+data is real for the days it covers — deleting it would be rewriting history to
+match a current schema).
+
+**`country` is retained, and is the one field the client does not send.** It is
+derived at the CloudFront edge and is coarse (a 2-letter code); the IP it comes
+from is never written to storage, since the log delivery does not select `c-ip` at
+all. Dropping it would mean removing `c-country` from the delivery's
+`recordFields`, which shifts every column in the TSV — the Glue table's six columns
+are positional, so new log lines would silently misparse (the `status = '204'`
+filter would match nothing) until the table was migrated. Keeping the least
+identifying field in the set was the better trade than a schema migration on a live
+pipeline.
 
 ### Retention: S3/Athena is permanent, CloudWatch is a 15-month view
 

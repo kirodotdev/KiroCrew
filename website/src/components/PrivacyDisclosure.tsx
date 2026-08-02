@@ -40,6 +40,11 @@ export interface BeaconStatus {
   env_override?: boolean
   env_var?: string
   overlay_override?: boolean
+  /** An enterprise ceiling pins `capabilities.telemetry` off. Unlike the other
+   *  two overrides this one the user cannot lift, and the config PATCH route
+   *  returns 403 for a re-enable — so the toggle must be disabled, not just
+   *  annotated. */
+  governance_override?: boolean
 }
 
 /**
@@ -47,12 +52,13 @@ export interface BeaconStatus {
  *
  * The toggle writes `telemetry.beacon_enabled` (the same key
  * `kirocrew telemetry disable` persists), so the choice survives restarts and
- * upgrades. It reports the EFFECTIVE state, not just the stored flag: the env
- * var, a CI host, a non-default data home, or a `config.local.json` overlay can
- * all suppress sending independently, and a privacy control that claims "on"
- * while something else silences the beacon — or claims "off" while it still
- * sends — is worse than no control. When the env var pins the state the toggle
- * is disabled rather than offering a write that cannot take effect.
+ * upgrades. It reports the EFFECTIVE state, not just the stored flag: an
+ * enterprise governance ceiling, the env var, a CI host, a non-default data
+ * home, or a `config.local.json` overlay can all suppress sending
+ * independently, and a privacy control that claims "on" while something else
+ * silences the beacon — or claims "off" while it still sends — is worse than no
+ * control. When any of those pins the state the toggle is disabled rather than
+ * offering a write that cannot take effect.
  */
 export function TelemetryToggle() {
   const qc = useQueryClient()
@@ -67,7 +73,11 @@ export function TelemetryToggle() {
   // the switch would snap back after a successful save. Disable it and say why
   // rather than offering a write the overlay silently undoes.
   const overlayOverride = statusQ.data?.overlay_override ?? false
-  const pinned = envOverride || overlayOverride
+  // An enterprise ceiling. Listed FIRST in the note precedence below because it
+  // is the only one the user has no way to lift — telling them to unset an env
+  // var when their administrator pinned the policy would be a dead end.
+  const govOverride = statusQ.data?.governance_override ?? false
+  const pinned = govOverride || envOverride || overlayOverride
 
   const toggleMut = useMutation({
     mutationFn: (value: boolean) => api.patchConfig('telemetry.beacon_enabled', value),
@@ -115,14 +125,22 @@ export function TelemetryToggle() {
           {i18nT('privacyDisclosure.toggleSaveFailed')}
         </p>
       )}
-      {envOverride && (
+      {/* One note only, strongest-first: an admin pin outranks an env var, which
+          outranks an overlay. Stacking all three would offer remedies that the
+          outer pin makes pointless. */}
+      {govOverride && (
+        <p className="text-[12px] text-muted mt-1">
+          {i18nT('privacyDisclosure.governanceOverrideNote')}
+        </p>
+      )}
+      {!govOverride && envOverride && (
         <p className="text-[12px] text-muted mt-1">
           {i18nT('privacyDisclosure.envOverrideNote', {
             envVar: statusQ.data?.env_var ?? 'KIROCREW_TELEMETRY_DISABLED',
           })}
         </p>
       )}
-      {!envOverride && overlayOverride && (
+      {!govOverride && !envOverride && overlayOverride && (
         <p className="text-[12px] text-muted mt-1">
           {i18nT('privacyDisclosure.overlayOverrideNote')}
         </p>
@@ -158,10 +176,15 @@ function DisclosureSection({
 }
 
 /**
- * The disclosure copy itself — the nine-field payload, the never-sent list, and
+ * The disclosure copy itself — the five-field payload, the never-sent list, and
  * the local-data boundary. Shared verbatim by Settings → Privacy and the
  * onboarding privacy step so the two can never drift; only the surrounding
  * chrome differs.
+ *
+ * `payloadFields` must stay an exhaustive list of what `beacon.payload()`
+ * actually sends. It is the transparency commitment, so a field added to the
+ * wire without a line here would make this text a false statement — the
+ * `PrivacyNotice.test.tsx` field-count assertion is what keeps them in step.
  */
 export function PrivacyDisclosureSections() {
   return (

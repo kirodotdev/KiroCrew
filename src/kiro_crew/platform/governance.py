@@ -987,6 +987,33 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # single-user owner; a governing policy can pin it off. Data row only —
     # CONTRACT_VERSION and the evaluator are untouched (mirrors theme_persona).
     "capabilities.theme_install": ScopeSpec(CAPABILITY, capability_default=True),
+    # The anonymous usage beacon (``beacon.py``) is the repo's ONLY default-on
+    # egress: one at-most-daily HTTP GET carrying a five-field anonymous payload.
+    # A managed fleet frequently may not egress to a vendor endpoint at all — so
+    # unlike the user-facing Settings toggle (which the agent and the operator can
+    # both flip), an enterprise POLICY needs to pin it off in a way the running app
+    # cannot undo. This row is what makes that possible: it is read from the
+    # trust-root ``security_policy.json``, which sits in
+    # ``security._SENSITIVE_HOME_DIRS``, so the agent can neither read nor rewrite
+    # its own ceiling.
+    #
+    # Default True: policy-absence keeps the documented default-on behavior for the
+    # standalone user, who still has the toggle, the CLI, and the env var. Consulted
+    # at THREE chokepoints, because any one alone would be a half-control:
+    #   * ``beacon.should_send`` — blocks the send itself (the actual egress);
+    #   * the dashboard config PATCH allowlist — refuses a re-enable write with 403,
+    #     so a pinned host cannot be left storing ``beacon_enabled: true`` and
+    #     showing a toggle that does nothing;
+    #   * ``kirocrew telemetry enable`` — exits 1 without writing, for the same
+    #     reason as the PATCH refusal on a headless host.
+    # Writing ``false`` stays allowed at both write chokepoints (tightest-wins).
+    # POLICY LAYER ONLY: ``beacon.is_governance_pinned_off`` requires
+    # ``layer == "policy"``, so a Level-2 profile pinning this row does NOT suppress
+    # the beacon — the probe is process-wide and carries no session, so a
+    # per-surface profile is not the question it answers.
+    # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
+    # theme_install).
+    "capabilities.telemetry": ScopeSpec(CAPABILITY, capability_default=True),
 }
 
 

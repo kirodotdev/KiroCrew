@@ -1,12 +1,22 @@
 """Anonymous daily-heartbeat beacon — product analytics, stdlib-only.
 
 Answers questions no local signal can: how many installations are actually
-RUNNING (Daily Active Instances), which VERSIONS they run, which
-OS/ARCH/Python they run on, which DISTRIBUTION CHANNEL they came from, what share
-run under a governance ceiling (and how many of those verify its signature), and
-what share of installs are launched only once. Download counts cannot answer
-these — an install downloaded and never launched is indistinguishable from an
-active one, and self-hosted distribution links have no download telemetry.
+RUNNING (Daily Active Instances), which VERSIONS they run, which PYTHON minor
+version they run on, which DISTRIBUTION CHANNEL they came from, and what share of
+installs are launched only once. Download counts cannot answer these — an install
+downloaded and never launched is indistinguishable from an active one, and
+self-hosted distribution links have no download telemetry.
+
+DATA MINIMIZATION IS THE DESIGN CONSTRAINT. The payload is FIVE fields, and it
+is deliberately smaller than what this module once sent. ``chan`` (release
+channel), ``os``, ``arch`` and ``gov`` (governance posture) were removed: each
+was individually low-cardinality and defensible, but *collectively* they made the
+row narrower — a stable id plus OS plus architecture plus channel plus governance
+posture partitions the population far more finely than any one field suggests,
+and correlated attributes on a stable id are exactly the fingerprinting hazard
+this allowlist exists to prevent. When adding a field, the question is not "is
+this value low-cardinality?" but "how much smaller does this make the crowd this
+install hides in?" The answer for all four was "too much for what it bought".
 
 DELIBERATELY SEPARATE FROM ``kiro_crew.metrics`` (the OTEL trunk). Four reasons,
 each independently disqualifying:
@@ -44,15 +54,15 @@ PRIVACY:
   * Deliberately NOT ``handlers_system._get_owner_hash()``: that is
     ``HMAC(salt, hostname + ":" + username)``. It never leaves the host today,
     and sending it would change its character entirely.
-  * The payload is a fixed nine-key ALLOWLIST built by :func:`payload`. There
+  * The payload is a fixed FIVE-key ALLOWLIST built by :func:`payload`. There
     is no free-form field and no caller-supplied pass-through, so no prompt,
     path, repo name, credential, or model output can reach the wire — not by
     accident and not via a future call site.
   * Every value is a low-cardinality constant or coarse bucket. ``py`` is
     minor-only (``3.12``, never ``3.12.13``), ``v`` is release-only (``0.1.2``,
-    never the ``-nightly.20260731t065756`` build stamp), ``chan`` is one of
-    three values, and ``first_seen`` is a single bit — specifically so the field
-    set cannot become a fingerprint when combined. A per-build timestamp is the
+    never the ``-nightly.20260731t065756`` build stamp), ``dist`` is one of five
+    values, and ``first_seen`` is a single bit — specifically so the field set
+    cannot become a fingerprint when combined. A per-build timestamp is the
     clearest example of why: it is near-unique, so combined with a stable id it
     would pick out individual machines.
   * The server persists NO client IP: the beacon distribution's log delivery
@@ -60,9 +70,10 @@ PRIVACY:
     ``c-country``/``sc-status``. ``c-ip`` is never among the delivered fields,
     so it is not written to storage at all.
 
-DEFAULT-ON, with three suppressions and a one-command opt-out. Off entirely
-when: ``KIROCREW_TELEMETRY_DISABLED`` is truthy, ``telemetry.beacon_enabled``
-is false, the process looks like CI, or ``KIROCREW_HOME`` is non-default (dev
+DEFAULT-ON, with four suppressions and a one-command opt-out. Off entirely
+when: an enterprise governance ceiling pins ``capabilities.telemetry`` off,
+``KIROCREW_TELEMETRY_DISABLED`` is truthy, ``telemetry.beacon_enabled`` is
+false, the process looks like CI, or ``KIROCREW_HOME`` is non-default (dev
 homes, pods, worktree previews — one operator's own extra instances, which
 would inflate the count).
 """
@@ -74,7 +85,6 @@ import http.client
 import json
 import logging
 import os
-import platform
 import re
 import stat
 import sys
@@ -89,6 +99,11 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import CONFIG_DIR_LEAF, KIRO_BASE_DIR_NAME, config_dir
+from kiro_crew.platform.governance_profiles import (
+    GOVERNANCE_ERROR_REASON,
+    governance_permits,
+    vet_and_audit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -139,40 +154,6 @@ _CI_ENV_VARS = (
 DIST_ENV = "KIROCREW_DISTRIBUTION"
 KNOWN_DISTRIBUTIONS = frozenset({"dmg", "appimage", "wheel", "source", "docker"})
 DEFAULT_DISTRIBUTION = "source"
-
-# Governance posture — a STATE, never an identity. Derived from the composed
-# ceiling (see :func:`governance_posture`), not from the environment, so unlike
-# ``dist`` there is nothing for a host to spoof. Four constants, so the field
-# stays low-cardinality by construction.
-POSTURE_NONE = "none"  # no Level-1 ceiling loaded
-POSTURE_UNSIGNED = "unsigned"  # ceiling enforced, integrity rests on file modes
-POSTURE_SIGNED = "signed"  # signature present but unproven / unchecked
-POSTURE_VERIFIED = "verified"  # signature verified against a trust key
-KNOWN_POSTURES = frozenset({POSTURE_NONE, POSTURE_UNSIGNED, POSTURE_SIGNED, POSTURE_VERIFIED})
-
-# Release channel markers. Every release lane stamps ``__version__`` in TWO
-# spellings — semver for the Electron app, PEP 440 for the pip wheel — so
-# :func:`channel` has to read both or a whole install channel misreports.
-#
-#   lane     semver (desktop)          PEP 440 (wheel)   stamped by
-#   nightly  <base>-nightly.<d>t<t>    <base>.dev<dt>    nightly.yml:103-104
-#   insider  <base>-insider.N / -rc.N  <base>rcN         release.yml:56
-#   stable   <base>                    <base>            release.yml
-#
-# ``_NIGHTLY_MARKER`` / ``_DEV_MARKER`` catch the nightly pair. The insider pair
-# needs the PEP 440 form matched by SHAPE, not a literal: ``release.yml`` maps any
-# semver prerelease to ``rcN``, and setuptools also emits ``aN``/``bN`` for
-# alpha/beta, none of which contain a hyphen.
-_NIGHTLY_MARKER = "-nightly."
-_DEV_MARKER = ".dev"
-# A PEP 440 pre-release segment on the END of the release number: a1, b2, rc4
-# (with optional separators). Anchored so a release number alone cannot match,
-# and ``.post``/``.dev`` are deliberately NOT here — post-releases ship on the
-# release's own channel, and ``.dev`` is already nightly above.
-_PRERELEASE_RE = re.compile(r"\d+(?:[._-]?(?:a|b|c|rc|alpha|beta|pre|preview))\d*$")
-CHANNEL_NIGHTLY = "nightly"
-CHANNEL_INSIDER = "insider"
-CHANNEL_STABLE = "stable"
 
 # Fallback when a version string carries no parseable release number.
 UNKNOWN_VERSION = "unknown"
@@ -256,9 +237,19 @@ def release(app_version: str) -> str:
     is reported. A long-tail release is exactly what drops first, and that is
     the one you most need to know is still running.
 
-    The channel moves to its own :func:`channel` field rather than being
-    discarded: it is genuinely wanted ("is nightly adoption growing?") but it
-    belongs in a three-value bucket, not smuggled into the version string.
+    The channel is DISCARDED rather than moved to a field of its own. It was once
+    its own three-value ``chan`` key; the data-minimization pass removed it,
+    because release channel is one of the attributes that most sharply narrows the
+    crowd a stable id hides in — a nightly install is a small population by
+    definition, which is precisely what makes it identifying.
+
+    Be honest about the cost: this function strips the prerelease label too, so a
+    nightly ``0.1.2-nightly.<stamp>`` and a stable ``0.1.2`` both send ``v=0.1.2``
+    and are **indistinguishable on the wire**. Channel-split adoption is therefore
+    NOT recoverable from the beacon at all — it is a capability that was given up,
+    not relocated. The pre-release population is observable from the release feeds
+    and CDN fetch counts (`feed/<channel>/latest-cli.json`), which are per-artifact
+    and carry no install id, so the question has a home; it just is not this one.
 
     Returns ``UNKNOWN_VERSION`` when no release number can be parsed, so a
     malformed stamp becomes one bounded bucket instead of a new metric.
@@ -268,46 +259,6 @@ def release(app_version: str) -> str:
         return UNKNOWN_VERSION
     major, minor, patch = match.group(1), match.group(2), match.group(3)
     return f"{major}.{minor}.{patch or '0'}"
-
-
-def channel(app_version: str) -> str:
-    """Return the release channel: ``nightly``, ``insider``, or ``stable``.
-
-    Follows ``auto-update.js::channelForVersion``, but cannot simply mirror it.
-    That helper only ever reads an ELECTRON semver stamp; this reads
-    ``kiro_crew.__version__``, and EVERY release lane also stamps a PEP 440
-    spelling for the pip wheel — a form containing no hyphen at all, so a
-    hyphen-only test reports ``stable`` for it:
-
-      * nightly: ``<base>-nightly.<d>t<t>`` (desktop) / ``<base>.dev<dt>`` (wheel)
-      * insider: ``<base>-insider.N``       (desktop) / ``<base>rcN``      (wheel)
-      * stable:  ``<base>``                 (both)
-
-    Both wheel forms are published channels (``publish-cli.yml`` writes
-    ``feed/<channel>/latest-cli.json``), so each must report its own channel.
-    Mirroring the JS literally folded every nightly AND insider *wheel* install
-    into ``stable`` — silently undercounting exactly the pre-release adoption
-    this field exists to measure.
-
-    ``+local`` is stripped first: a local build tag is metadata and carries no
-    channel meaning, so such a build reports the release's own channel.
-    ``.post`` releases likewise ship on the channel of the release they follow.
-
-    Three values by construction, so this recovers the channel signal that
-    :func:`release` strips without reintroducing per-build cardinality.
-    """
-    version = (app_version or "").strip()
-    if _NIGHTLY_MARKER in version:
-        return CHANNEL_NIGHTLY
-    # Strip a local build tag first: it is metadata, never a channel.
-    base = version.split("+", 1)[0]
-    if _DEV_MARKER in base:
-        return CHANNEL_NIGHTLY
-    # A semver prerelease label, or its PEP 440 equivalent (rcN/aN/bN) which
-    # carries no hyphen for the "-" test to find.
-    if "-" in base or _PRERELEASE_RE.search(base):
-        return CHANNEL_INSIDER
-    return CHANNEL_STABLE
 
 
 def python_minor() -> str:
@@ -467,61 +418,6 @@ def _mark_sent() -> None:
         logger.debug("beacon stamp write failed: %s", exc)
 
 
-def governance_posture() -> str:
-    """Return this install's governance POSTURE, clamped to a fixed vocabulary.
-
-    Answers a question ``dist`` cannot: what share of Daily Active Instances run
-    under a Level-1 security ceiling at all, and of those, how many have a ceiling
-    whose signature actually VERIFIES. Today a governed enterprise fleet and an
-    ungoverned laptop are one undifferentiated number, so "is governance being
-    adopted, and is it being adopted correctly" has no answer.
-
-    Reports the POSTURE, never the identity. Deliberately NOT:
-
-      * the active PROFILE NAME — profile names are free-form file stems
-        (``governance_profiles`` derives them from ``path.stem``), so they are
-        unbounded operator-authored strings: exactly the cardinality bomb the
-        payload contract forbids, and they routinely encode an internal team,
-        app, or surface name.
-      * the ``identity.issuer`` — that names the ORGANIZATION that signed the
-        ceiling. Correlated with a stable install id it de-anonymizes the whole
-        row, which is the one thing this payload is built to prevent.
-
-    So the values are four constants that describe a STATE, and an outside
-    observer learns "some ceiling is present and verified", never whose:
-
-      * ``none``      — no ceiling loaded (the default standalone posture)
-      * ``unsigned``  — a ceiling is enforced, integrity rests on file permissions
-      * ``signed``    — a ceiling carries a signature that did NOT verify (or was
-                        never checked against a trust root) — advisory only
-      * ``verified``  — a ceiling whose signature verified against a trust key
-
-    Best-effort and import-cycle-safe: the context is read lazily inside the
-    function (``platform.context`` is a leaf that must not import this module's
-    dependents), and ANY failure reports ``none``. That fail direction is the
-    honest one — an install whose posture cannot be established is not evidence
-    of governance.
-    """
-    try:
-        from kiro_crew.platform.context import current_context
-
-        ceiling = getattr(current_context(), "governance", None)
-        if ceiling is None:
-            return POSTURE_NONE
-        state = getattr(ceiling, "signature_state", "")
-        if state == "verified":
-            return POSTURE_VERIFIED
-        if state == "unsigned":
-            return POSTURE_UNSIGNED
-        # "unverified" (present but unproven) and "unchecked" (parsed with no
-        # trust root) collapse to one bucket: both mean "a signature exists but
-        # nothing established it", and splitting them would report a distinction
-        # that carries no adoption meaning.
-        return POSTURE_SIGNED
-    except Exception:  # pragma: no cover - defensive; posture is never load-bearing
-        return POSTURE_NONE
-
-
 def _fields(app_version: str) -> dict[str, str]:
     """Build every payload field EXCEPT the install id.
 
@@ -530,42 +426,148 @@ def _fields(app_version: str) -> dict[str, str]:
     shape than the one actually sent is worse than no status command. The id is
     excluded because the two callers resolve it differently — ``payload`` mints
     one, ``status`` must not (``create=False``).
+
+    FOUR fields, and adding a fifth is a privacy decision, not a plumbing one.
+    ``chan``, ``os``, ``arch`` and ``gov`` were deliberately removed (see the
+    module docstring): the test suite pins this exact key set, so a re-addition
+    fails a test rather than shipping silently.
     """
     return {
         "v": release(app_version),
-        "chan": channel(app_version),
-        "os": platform.system().lower(),
-        "arch": platform.machine().lower(),
         "py": python_minor(),
         "dist": distribution(),
-        "gov": governance_posture(),
         "first_seen": "1" if is_first_send() else "0",
     }
 
 
 def payload(app_version: str) -> dict[str, str]:
-    """Build the exact nine-key allowlist that goes on the wire.
+    """Build the exact five-key allowlist that goes on the wire.
 
     Every value is a random id, a low-cardinality platform constant, a coarse
     bucket, or a single bit. There is no caller-supplied field, so the payload
     shape is fixed here and cannot be widened from a call site.
 
-    ``v`` is CLAMPED by :func:`release` and the channel split out into ``chan``
-    (three values). Together these send strictly LESS information than the raw
-    ``__version__`` they replace — a per-build timestamp is dropped — so this is
-    a narrowing of the wire format, not a widening.
+    ``v`` is CLAMPED by :func:`release`, and the release channel, OS,
+    architecture and governance posture are not sent at all. Together these send
+    strictly LESS information than the nine-key version they replace, which in
+    turn sent less than the raw ``__version__`` before it — every revision of
+    this payload has been a narrowing.
     """
     return {"id": install_id(), **_fields(app_version)}
 
 
-def should_send(*, enabled: bool) -> tuple[bool, str]:
+def is_governance_pinned_off(*, audit_tool: str = "") -> bool:
+    """Return whether an enterprise ceiling pins ``capabilities.telemetry`` off.
+
+    Pass ``audit_tool`` (a tool name) from an ENFORCEMENT call site to route the
+    decision through the audited ``vet_and_audit`` seam, which writes a
+    ``governance_decision`` SEL record for the grant or the denial. ``should_send``
+    does this, so a suppressed heartbeat leaves a forensic record.
+
+    It is deliberately NOT the default. This probe is also a pure READ from
+    ``status()`` → ``GET /api/telemetry/beacon``, which the Privacy panel refetches;
+    auditing there would append HMAC-chained SEL rows on mere inspection, at a
+    multiple of the one decision per boot that actually governs anything. Same
+    reasoning the channels gate uses to skip its ungoverned default-permit on a hot
+    path (see ``governance.md`` → Audit disposition): audit the decision that
+    *does* something, not the question.
+
+    The Level-1 POLICY answer, resolved through the standard chokepoint helper so
+    this decision comes from the same evaluator as every other governed surface.
+    Public because the dashboard's privacy panel must distinguish "off because the
+    user flipped the toggle" (flippable) from "off because an administrator pinned
+    it" (not flippable, and a config write would be refused) — see
+    :func:`is_env_opted_out` for the same reasoning applied to the env var.
+
+    FAIL-CLOSED on an evaluation error, and audited. This reverses an earlier
+    revision of this function, and the reasoning matters because the two
+    dispositions look symmetric and are not:
+
+    * The wrong-permit is an **egress on a fleet that explicitly forbade egress**.
+      "It only loses a heartbeat" describes the wrong-DENY; the wrong-PERMIT
+      breaks the exact promise the administrator was given, on a payload that
+      leaves the machine. That asymmetry is what puts this with
+      ``capabilities.theme_install`` / ``capabilities.publish``
+      (``fail_closed=True``) rather than with the advisory probes.
+    * ``fail_closed=True`` also makes ``governance_permits`` audit the degrade as
+      a critical SEL event, so an operator can see that a ceiling stopped being
+      evaluable — which is precisely the condition under which a silent
+      degrade-to-permit would be indefensible.
+
+    Two failure sources are distinguished, because conflating them produces a
+    different bug in each direction:
+
+    * A **degrade** (``rule == "default"``) means the evaluator could not answer.
+      Treated as pinned — fail closed, per above.
+    * A **profile-layer deny** means the evaluator answered, but from Level 2.
+      NOT treated as a pin: ``resolve_active_scope`` returns a synthetic deny-all
+      profile (``_deny_all_unloaded:…``) when the profile store is unprimed and
+      another thread holds its non-blocking reload lock, so on a host with **no
+      policy at all** that transient race would otherwise make the CLI, the 403,
+      and ``governanceOverrideNote`` all blame an administrator who does not
+      exist. It arrives as an ordinary ``Decision``, so no ``except`` can catch
+      it. Level-2 profiles are also per-surface and narrow-only, while this probe
+      is process-wide and carries no session — so a profile denial is not the
+      question being asked either way.
+
+    ``TestGovernancePin`` pins all three: a real policy pin, the transient
+    profile race, and the fail-closed degrade.
+    """
+    try:
+        if audit_tool:
+            # The audited seam: evaluate + write the governance_decision SEL row
+            # from ONE code path, so this chokepoint's audit shape cannot drift
+            # from the messaging chokepoints that already use it.
+            decision = vet_and_audit(
+                "capabilities.telemetry",
+                "",
+                session_key="",
+                tool_name=audit_tool,
+                log_warning=False,
+                fail_closed=True,
+            )
+        else:
+            decision = governance_permits(
+                "capabilities.telemetry", "", log_warning=False, fail_closed=True
+            )
+    except Exception:
+        # governance_permits swallows its own errors, so reaching here means the
+        # import or the call itself failed — the ceiling is unevaluable, which is
+        # the same condition as a degrade. Fail closed for the same reason.
+        logger.debug("telemetry governance probe failed; treating as pinned", exc_info=True)
+        return True
+    if getattr(decision, "permitted", True):
+        return False
+    # The fail-closed degrade above is identified by its own reason prefix, NOT by
+    # rule="default" alone: ``_PERMIT_NOT_GOVERNED`` also carries that rule, so a
+    # rule-only test would be ambiguous. A degrade means no level decided, which is
+    # the unevaluable case — pinned, per the fail-closed rationale.
+    if str(getattr(decision, "reason", "")).startswith(GOVERNANCE_ERROR_REASON):
+        return True
+    return getattr(decision, "layer", "") == "policy"
+
+
+def should_send(*, enabled: bool, audit: bool = True) -> tuple[bool, str]:
     """Return ``(send, reason)``; *reason* explains a skip, for the CLI.
 
     Ordered cheapest-and-most-authoritative first: an opted-out host must not
     even stat the data home.
+
+    The governance check sits ABOVE the config flag deliberately. It is the one
+    suppression the user cannot undo, so when a fleet is pinned off the reported
+    reason must name the policy rather than whatever the local flag happens to
+    say — an admin debugging a managed host needs to see "policy", not
+    "beacon_enabled is false".
     """
     if _env_truthy(DISABLE_ENV):
         return False, f"opted out via {DISABLE_ENV}"
+    # ``audit`` distinguishes the ENFORCEMENT call (from ``send``, whose verdict
+    # decides whether a heartbeat leaves the machine — routed through the audited
+    # seam so it lands a governance_decision SEL record either way) from the
+    # read-only diagnostic call (from ``status``, which the Privacy panel refetches;
+    # auditing an inspection would flood the SEL trail).
+    if is_governance_pinned_off(audit_tool="beacon_send" if audit else ""):
+        return False, "disabled by governance policy (capabilities.telemetry)"
     if not enabled:
         return False, "disabled (telemetry.beacon_enabled is false)"
     if is_ci():
@@ -621,7 +623,7 @@ def send(endpoint: str, app_version: str, *, enabled: bool) -> bool:
         return False
     try:
         req = urllib.request.Request(url, method="GET")
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- beacon_url enforces https:// and the payload is a fixed nine-key allowlist
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- beacon_url enforces https:// and the payload is a fixed five-key allowlist
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECS):
             pass
         # Stamp only after a delivered request, so a failed send retries later
@@ -654,9 +656,14 @@ def status(endpoint: str, *, enabled: bool, app_version: str) -> dict[str, objec
     A diagnostic command must never traceback: on an unwritable data home the
     filesystem probes raise, and the whole point of `telemetry status` is to be
     readable exactly when something is wrong.
+
+    ``audit=False``: this is a pure READ, reached from ``GET /api/telemetry/beacon``
+    (which the Privacy panel refetches) and from ``kirocrew telemetry status``.
+    Auditing here would write a governance SEL row per inspection; the enforcement
+    call in ``send`` is the one that carries the audit.
     """
     try:
-        ok, reason = should_send(enabled=enabled)
+        ok, reason = should_send(enabled=enabled, audit=False)
     except (OSError, RuntimeError) as exc:
         ok, reason = False, f"could not read the data home ({exc.__class__.__name__})"
     # send() returns early on an empty endpoint, so reporting would_send=True
@@ -673,12 +680,21 @@ def status(endpoint: str, *, enabled: bool, app_version: str) -> dict[str, objec
     # actually sent. The id is filled in separately from the create=False lookup
     # above, so merely inspecting status never materializes one.
     preview = {"id": ident or "(generated on first send)", **_fields(app_version)}
+    # Probed separately from should_send()'s verdict so the CLI can say WHY the
+    # local flag is irrelevant on a managed host: with a ceiling pinned off,
+    # ``beacon_enabled: true`` is a stored value with no effect, and a status
+    # command that showed only the flag would read as a contradiction.
+    try:
+        pinned = is_governance_pinned_off()
+    except Exception:  # pragma: no cover - is_governance_pinned_off is itself guarded
+        pinned = False
     return {
         "beacon_enabled": enabled,
         "endpoint_configured": bool(endpoint),
         "install_id": ident or "(not yet generated)",
         "would_send": ok,
         "reason": reason,
+        "governance_pinned_off": pinned,
         "payload_preview": preview,
     }
 
@@ -688,22 +704,30 @@ def format_status(info: dict[str, object]) -> str:
     enabled = "yes" if info["beacon_enabled"] else "no"
     endpoint = "configured" if info["endpoint_configured"] else "not set"
     verdict = "will send" if info["would_send"] else "will NOT send"
-    return "\n".join(
-        [
-            "Anonymous usage beacon (Daily Active Instances)",
+    lines = [
+        "Anonymous usage beacon (Daily Active Instances)",
+        "",
+        f"  Enabled:     {enabled}",
+        f"  Endpoint:    {endpoint}",
+        f"  Install ID:  {info['install_id']}",
+        f"  Next start:  {verdict} — {info['reason']}",
+    ]
+    if info.get("governance_pinned_off"):
+        lines += [
             "",
-            f"  Enabled:     {enabled}",
-            f"  Endpoint:    {endpoint}",
-            f"  Install ID:  {info['install_id']}",
-            f"  Next start:  {verdict} — {info['reason']}",
-            "",
-            "  Exactly these fields are sent, and nothing else:",
-            f"    {json.dumps(info['payload_preview'], sort_keys=True)}",
-            "",
-            "  Never sent: prompts, model output, file contents, paths, repo",
-            "  names, credentials, hostname, username, or IP address.",
-            "",
-            f"  To opt out:  export {DISABLE_ENV}=1",
-            "               (or set telemetry.beacon_enabled false in config)",
+            "  Pinned OFF by your administrator's security policy",
+            "  (capabilities.telemetry). The setting above cannot re-enable it.",
         ]
-    )
+    lines += [
+        "",
+        "  Exactly these fields are sent, and nothing else:",
+        f"    {json.dumps(info['payload_preview'], sort_keys=True)}",
+        "",
+        "  Never sent: prompts, model output, file contents, paths, repo names,",
+        "  credentials, hostname, username, IP address, operating system, CPU",
+        "  architecture, release channel, or governance posture.",
+        "",
+        f"  To opt out:  export {DISABLE_ENV}=1",
+        "               (or set telemetry.beacon_enabled false in config)",
+    ]
+    return "\n".join(lines)

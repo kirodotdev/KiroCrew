@@ -145,17 +145,43 @@ class TestPayloadAllowlist:
     EXPECTED_KEYS = {
         "id",
         "v",
-        "chan",
-        "os",
-        "arch",
         "py",
         "dist",
-        "gov",
         "first_seen",
     }
 
-    def test_exactly_nine_keys(self, _isolated_home):
+    # Keys the payload once carried. Asserted ABSENT rather than merely omitted
+    # above, because an EQUALITY check alone would pass if a future change both
+    # added a field and updated EXPECTED_KEYS in one edit — which is exactly how a
+    # field silently returns. A named absence set makes the re-addition of any of
+    # these four a deliberate, visible act: the test names them, the module
+    # docstring explains why they went, and the user-facing disclosure
+    # (website/src/test/PrivacyPanel.test.tsx) asserts the same four are absent.
+    REMOVED_KEYS = {"chan", "os", "arch", "gov"}
+
+    def test_exactly_five_keys(self, _isolated_home):
         assert set(beacon.payload("1.2.3")) == self.EXPECTED_KEYS
+
+    def test_removed_fields_are_not_on_the_wire(self, _isolated_home):
+        """The four minimized-away fields must not reappear in payload or URL."""
+        fields = beacon.payload("0.1.2-nightly.20260731t065756")
+        assert self.REMOVED_KEYS.isdisjoint(fields)
+        # Also check the composed URL: a field could be re-added at the URL layer
+        # (a query param appended in beacon_url) without touching _fields.
+        url = beacon.beacon_url("https://example.invalid", fields)
+        for key in self.REMOVED_KEYS:
+            assert f"{key}=" not in url
+
+    def test_removed_helpers_are_gone(self, _isolated_home):
+        """The producers are deleted, not merely unwired.
+
+        A dormant ``channel()``/``governance_posture()`` left in the module is one
+        call site away from being back on the wire, and would keep the removal
+        looking reversible-by-accident. Deleting them makes a re-add a real code
+        change that has to pass review.
+        """
+        for name in ("channel", "governance_posture"):
+            assert not hasattr(beacon, name), f"beacon.{name} should be deleted"
 
     def test_no_value_leaks_identity_or_paths(self, _isolated_home, monkeypatch):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", "/Users/secret/my-private-repo")
@@ -213,94 +239,30 @@ class TestVersionClamp:
         stamps = [f"0.1.2-nightly.20260731t0657{n:02d}" for n in range(50)]
         assert len({beacon.release(s) for s in stamps}) == 1
 
-    @pytest.mark.parametrize(
-        "raw, expected",
-        [
-            ("0.1.2", beacon.CHANNEL_STABLE),
-            ("10.20.30", beacon.CHANNEL_STABLE),
-            # A post-release ships on the channel of the release it follows.
-            ("0.1.2.post1", beacon.CHANNEL_STABLE),
-            ("0.1.2-insider.4", beacon.CHANNEL_INSIDER),
-            ("0.1.2-rc.1", beacon.CHANNEL_INSIDER),
-            # PEP 440 pre-release forms carry NO hyphen, so a hyphen-only test
-            # reported `stable` for every insider WHEEL install: release.yml maps
-            # any semver prerelease to rcN for the wheel (1.2.3-insider.4 ->
-            # 1.2.3rc4), and setuptools also emits aN/bN.
-            ("0.1.2rc4", beacon.CHANNEL_INSIDER),
-            ("0.1.2b1", beacon.CHANNEL_INSIDER),
-            ("0.1.2a2", beacon.CHANNEL_INSIDER),
-            # BOTH nightly stamps nightly.yml emits from one run: semver for the
-            # desktop app, PEP 440 for the pip wheel. Both are published
-            # nightlies, so both must report `nightly` — mirroring
-            # auto-update.js literally (it only ever sees the semver form) folded
-            # every nightly WHEEL install into `stable` and undercounted the
-            # nightly CLI lane, which is the question this field answers.
-            ("0.1.2-nightly.20260731t065756", beacon.CHANNEL_NIGHTLY),
-            ("0.1.2.dev20260731065756", beacon.CHANNEL_NIGHTLY),
-            # A local build tag carries no channel meaning, so it reports the
-            # release's own channel rather than being treated as a pre-release.
-            ("0.1.2+local.abcdef", beacon.CHANNEL_STABLE),
-            ("0.1.2.dev20260731065756+local.abcdef", beacon.CHANNEL_NIGHTLY),
-        ],
-    )
-    def test_channel_mirrors_the_updater(self, _isolated_home, raw, expected):
-        assert beacon.channel(raw) == expected
-
-    @pytest.mark.parametrize(
-        "desktop, wheel, expected",
-        [
-            # nightly.yml:103-104 — one run, two stamps.
-            (
-                "0.1.2-nightly.20260731t065756",
-                "0.1.2.dev20260731065756",
-                beacon.CHANNEL_NIGHTLY,
-            ),
-            # release.yml:56 — a semver prerelease tag maps to rcN for the wheel.
-            ("1.2.3-insider.4", "1.2.3rc4", beacon.CHANNEL_INSIDER),
-            ("1.2.3", "1.2.3", beacon.CHANNEL_STABLE),
-        ],
-    )
-    def test_desktop_and_wheel_lanes_agree(self, _isolated_home, desktop, wheel, expected):
-        """Both stamps a release lane emits must report the SAME channel.
-
-        Regression test for two real defects of one shape: every lane stamps
-        semver for the Electron app and PEP 440 for the pip wheel, and the PEP
-        440 form has no hyphen. A hyphen-only test therefore reported `stable`
-        for nightly AND insider wheel installs, so one release looked like two
-        different channels depending on how it was installed.
-        """
-        assert beacon.channel(desktop) == expected
-        assert beacon.channel(wheel) == expected
-
-    def test_release_number_alone_is_never_a_prerelease(self, _isolated_home):
-        """The prerelease shape must not misfire on an ordinary version.
-
-        The PEP 440 check matches a trailing `a`/`b`/`rc` segment, so it has to
-        be anchored: a bare release number (or one with many digits) must stay
-        `stable`, or every install would report `insider`.
-        """
-        for plain in ("0.1.2", "1.2.3", "10.20.30", "2.0.0", "0.0.1"):
-            assert beacon.channel(plain) == beacon.CHANNEL_STABLE, plain
-
-    def test_channel_is_a_three_value_bucket(self, _isolated_home):
-        # Both spellings of every lane, so the bucket count is proven against
-        # the real stamp shapes rather than the semver ones alone.
-        stamps = [f"0.1.{n}-nightly.2026073{n}t0657{n:02d}" for n in range(20)]
-        stamps += [f"0.1.{n}.dev2026073{n}0657{n:02d}" for n in range(20)]
-        stamps += [f"0.1.{n}" for n in range(20)]
-        stamps += [f"0.1.{n}-insider.{n}" for n in range(20)]
-        stamps += [f"0.1.{n}rc{n}" for n in range(20)]
-        assert {beacon.channel(s) for s in stamps} == {
-            beacon.CHANNEL_STABLE,
-            beacon.CHANNEL_NIGHTLY,
-            beacon.CHANNEL_INSIDER,
-        }
-
     def test_payload_sends_the_clamped_version_not_the_raw_one(self, _isolated_home):
         fields = beacon.payload("0.1.2-nightly.20260731t065756")
         assert fields["v"] == "0.1.2"
-        assert fields["chan"] == beacon.CHANNEL_NIGHTLY
         assert "20260731" not in json.dumps(fields), "build stamp must not reach the wire"
+
+    def test_prerelease_lanes_collapse_into_the_release_number(self, _isolated_home):
+        """A nightly and a stable build of one release report the SAME `v`.
+
+        With ``chan`` removed, ``release()`` is the ONLY thing standing between a
+        per-build stamp and the wire — so the clamp is load-bearing for both
+        cardinality and anonymity. Both spellings of every lane collapse to the
+        release number, which is also what makes the channel recoverable from `v`
+        for a genuinely pre-release version without sending a channel field.
+        """
+        one_release = [
+            "0.1.2",
+            "0.1.2-nightly.20260731t065756",
+            "0.1.2.dev20260731065756",
+            "0.1.2-insider.4",
+            "0.1.2rc4",
+            "0.1.2b1",
+            "0.1.2+local.abcdef",
+        ]
+        assert {beacon.release(v) for v in one_release} == {"0.1.2"}
 
     def test_build_stamp_is_absent_from_the_url(self, _isolated_home):
         url = beacon.beacon_url(
@@ -444,7 +406,7 @@ class TestUrlAndTransport:
         head, _, query = url.partition("?")
         assert head.startswith(f"https://e.invalid/b/{beacon.BEACON_SCHEMA}/")
         assert "id=" not in query, "id belongs in the path (clean dedup key)"
-        for key in ("v=", "os=", "arch=", "py=", "dist=", "first_seen="):
+        for key in ("v=", "py=", "dist=", "first_seen="):
             assert key in query
 
     def test_non_https_endpoint_rejected(self, _isolated_home):
@@ -854,6 +816,37 @@ class TestConfigDefaults:
         assert cfg.beacon_enabled is True
         assert cfg.beacon_endpoint.startswith("https://")
 
+    def test_a_default_install_actually_sends(self, _isolated_home):
+        """DEFAULT-ON, end to end — the whole suppression chain, not just the flag.
+
+        The stored flag being True is necessary but not sufficient: this change
+        added a governance suppression ABOVE the flag in ``should_send``, so a
+        wrong ``capability_default`` (or a probe that failed closed) would silence
+        every install in the field while ``beacon_enabled`` still read True. That
+        failure is invisible in a flag assertion and would look like a collapse in
+        Daily Active Instances, so assert the actual verdict.
+
+        The fixture already neutralizes the CI and data-home suppressions (both
+        fire in the test environment for reasons unrelated to defaults).
+        """
+        from kiro_crew.config.loader import TelemetryConfig
+
+        cfg = TelemetryConfig()
+        ok, reason = beacon.should_send(enabled=cfg.beacon_enabled)
+        assert ok is True, f"a default install must send, got: {reason}"
+        assert reason == "ready"
+
+    def test_ungoverned_default_is_not_pinned_off(self, _isolated_home):
+        """``capabilities.telemetry`` has capability_default=True.
+
+        A standalone install has no ceiling at all, and a fleet policy that
+        governs OTHER scopes but says nothing about telemetry must also leave the
+        documented default-on behavior intact — that is what the capability
+        default buys, and getting it backwards would turn any governed fleet into
+        a silent opt-out.
+        """
+        assert beacon.is_governance_pinned_off() is False
+
     def test_non_https_endpoint_is_cleared(self):
         from kiro_crew.config.loader import TelemetryConfig
 
@@ -902,107 +895,424 @@ def _fake_urlopen(calls: list | None = None):
     return _open
 
 
-class TestGovernancePosture:
-    """``gov`` answers an adoption question, without leaking who is governed.
+class TestGovernancePin:
+    """``capabilities.telemetry`` is the enterprise opt-out the app cannot undo.
 
-    A governed enterprise fleet and an ungoverned laptop were previously one
-    undifferentiated DAU number, so "is governance being adopted, and correctly"
-    had no answer. The field reports a STATE from a four-value vocabulary.
+    The Settings toggle, the CLI and the env var are all operator controls (and
+    the agent can reach the first two). A managed fleet needs one the running app
+    cannot lift, so the ceiling is read from the trust-root ``security_policy.json``
+    and enforced here at the send gate. These tests drive
+    ``governance_permits`` through the real evaluator rather than stubbing the
+    probe, so a change to the scope catalog or the composition algebra fails here.
     """
 
-    def _ceiling(self, signature_state):
-        class _C:
-            pass
+    def _install_policy(self, monkeypatch, doc):
+        """Install ``doc`` as the boot-frozen ceiling for the duration of a test."""
+        from kiro_crew.platform import context as pc
+        from kiro_crew.platform.governance import parse_policy
 
-        c = _C()
-        c.signature_state = signature_state
-        return c
+        ceiling = parse_policy(doc) if doc is not None else None
 
-    def _with_context(self, monkeypatch, governance):
         class _Ctx:
-            pass
+            governance = ceiling
 
-        ctx = _Ctx()
-        ctx.governance = governance
-        import kiro_crew.platform.context as pc
+        monkeypatch.setattr(pc, "current_context", lambda: _Ctx())
 
-        monkeypatch.setattr(pc, "current_context", lambda: ctx)
+    def test_ungoverned_host_is_not_pinned(self, _isolated_home, monkeypatch):
+        self._install_policy(monkeypatch, None)
+        assert beacon.is_governance_pinned_off() is False
+        assert beacon.should_send(enabled=True)[0] is True
 
-    def test_no_ceiling_reports_none(self, _isolated_home, monkeypatch):
-        self._with_context(monkeypatch, None)
-        assert beacon.governance_posture() == beacon.POSTURE_NONE
+    def test_policy_silent_about_telemetry_still_permits(self, _isolated_home, monkeypatch):
+        """capability_default=True — a ceiling that governs other scopes must not
+        incidentally disable a documented default-on behavior."""
+        self._install_policy(
+            monkeypatch,
+            {"version": 1, "boot": {"fail_closed": True}, "apps": {"mode": "deny", "deny": ["x"]}},
+        )
+        assert beacon.is_governance_pinned_off() is False
+        assert beacon.should_send(enabled=True)[0] is True
 
-    @pytest.mark.parametrize(
-        "state,expected",
-        [
-            ("verified", beacon.POSTURE_VERIFIED),
-            ("unsigned", beacon.POSTURE_UNSIGNED),
-            # Both "present but unproven" states collapse to one bucket: the
-            # distinction carries no adoption meaning.
-            ("unverified", beacon.POSTURE_SIGNED),
-            ("unchecked", beacon.POSTURE_SIGNED),
-        ],
-    )
-    def test_signature_state_maps_to_posture(self, _isolated_home, monkeypatch, state, expected):
-        self._with_context(monkeypatch, self._ceiling(state))
-        assert beacon.governance_posture() == expected
+    def test_policy_pin_blocks_the_send(self, _isolated_home, monkeypatch):
+        self._install_policy(
+            monkeypatch,
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"telemetry": {"enabled": False}},
+            },
+        )
+        assert beacon.is_governance_pinned_off() is True
+        ok, reason = beacon.should_send(enabled=True)
+        assert ok is False
+        assert "governance" in reason and "capabilities.telemetry" in reason
 
-    def test_posture_is_always_in_the_known_set(self, _isolated_home, monkeypatch):
-        """Low cardinality by construction — an unexpected state cannot widen it."""
-        for state in ("verified", "unsigned", "unverified", "unchecked", "", "wat", None):
-            self._with_context(monkeypatch, self._ceiling(state))
-            assert beacon.governance_posture() in beacon.KNOWN_POSTURES
+    def test_pin_beats_the_config_flag_and_reaches_send(self, _isolated_home, monkeypatch):
+        """The whole point: enabled=True in config must not produce a request.
 
-    def test_never_leaks_the_issuer(self, _isolated_home, monkeypatch):
-        """The issuer names the signing ORGANIZATION.
-
-        Correlated with a stable install id it de-anonymizes the row, which is the
-        one thing this payload exists to prevent — so a ceiling carrying an issuer
-        must contribute only the state word.
+        Asserts at the ``send`` boundary, not just ``should_send``, because the
+        gate only matters if the HTTP call never happens.
         """
-        ceiling = self._ceiling("verified")
-        ceiling.identity_issuer = "Acme Corp Security Engineering"
-        ceiling.identity_signature = "deadbeefcafe" * 8
-        self._with_context(monkeypatch, ceiling)
+        self._install_policy(
+            monkeypatch,
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"telemetry": {"enabled": False}},
+            },
+        )
+        calls: list[str] = []
 
-        blob = json.dumps(beacon.payload("1.2.3"))
-        assert "Acme" not in blob and "deadbeef" not in blob
-        assert beacon.payload("1.2.3")["gov"] == "verified"
+        def _explode(req, timeout=None):  # pragma: no cover - must never run
+            calls.append(getattr(req, "full_url", "?"))
+            raise AssertionError("a pinned host must not open a connection")
 
-    def test_never_leaks_a_profile_name(self, _isolated_home, monkeypatch):
-        """Profile names are free-form file stems — unbounded, often internal.
+        monkeypatch.setattr(beacon.urllib.request, "urlopen", _explode)
+        assert beacon.send("https://example.invalid", "1.2.3", enabled=True) is False
+        assert calls == []
 
-        Guards the deliberate choice not to report the ACTIVE PROFILE: stems are
-        operator-authored (``path.stem``) and routinely encode a team, app, or
-        surface name.
+    def test_pin_is_ranked_above_the_config_flag(self, _isolated_home, monkeypatch):
+        """With BOTH the pin and a false flag, the reason names the policy.
+
+        An admin debugging a managed host needs to see why they cannot change it,
+        not the local value that is now irrelevant.
         """
-        ceiling = self._ceiling("verified")
-        ceiling.profile_name = "internal-oncall-tier1"
-        ceiling.all_profiles = lambda: ["internal-oncall-tier1"]
-        self._with_context(monkeypatch, ceiling)
-        assert "oncall" not in json.dumps(beacon.payload("1.2.3"))
+        self._install_policy(
+            monkeypatch,
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"telemetry": {"enabled": False}},
+            },
+        )
+        _ok, reason = beacon.should_send(enabled=False)
+        assert "governance" in reason
+        assert "beacon_enabled" not in reason
 
-    def test_broken_context_reports_none_not_a_crash(self, _isolated_home, monkeypatch):
-        """Fail direction is the honest one: unestablished posture is not governance.
+    def test_env_var_still_outranks_the_pin(self, _isolated_home, monkeypatch):
+        """The env var is checked first and needs no policy resolution at all.
 
-        The beacon runs in a detached boot thread, so a raising context must never
-        propagate — and must not be optimistically reported as governed either.
+        An opted-out host must not even resolve the ceiling (which touches disk).
         """
-        import kiro_crew.platform.context as pc
+        monkeypatch.setenv(beacon.DISABLE_ENV, "1")
+        monkeypatch.setattr(
+            beacon,
+            "is_governance_pinned_off",
+            lambda: (_ for _ in ()).throw(AssertionError("must not be consulted")),
+        )
+        ok, reason = beacon.should_send(enabled=True)
+        assert ok is False
+        assert beacon.DISABLE_ENV in reason
 
-        def boom():
-            raise RuntimeError("no context installed")
+    def test_a_transient_profile_race_is_not_an_admin_pin(self, _isolated_home, monkeypatch):
+        """A deny-all PROFILE on an UNGOVERNED host must not read as a policy pin.
 
-        monkeypatch.setattr(pc, "current_context", boom)
-        assert beacon.governance_posture() == beacon.POSTURE_NONE
+        ``resolve_active_scope`` hands back a synthetic ``_deny_all_unloaded:…``
+        profile when the profile store is unprimed and another thread holds its
+        non-blocking reload lock. There is no policy on such a host, so reporting
+        a pin would make the CLI, the PATCH 403 and ``governanceOverrideNote`` all
+        blame an administrator who does not exist.
 
-    def test_posture_is_not_environment_spoofable(self, _isolated_home, monkeypatch):
-        """Unlike ``dist``, posture is derived from the composed ceiling.
-
-        A host cannot claim to be governed by exporting a variable, so the field
-        cannot be inflated the way a build-stamped channel could.
+        This is the failure the fail-open ``except`` CANNOT catch: it arrives as an
+        ordinary permitted=False ``Decision``, not an exception — which is why the
+        probe keys on ``layer``, not on ``permitted`` alone.
         """
-        monkeypatch.setenv("KIROCREW_GOVERNANCE_POSTURE", "verified")
-        monkeypatch.setenv("KIROCREW_GOV", "verified")
-        self._with_context(monkeypatch, None)
-        assert beacon.governance_posture() == beacon.POSTURE_NONE
+        from kiro_crew.platform import governance_profiles as gp
+
+        monkeypatch.setattr(
+            gp, "resolve_active_scope", lambda *a, **k: gp.deny_all_profile("_deny_all_unloaded:x")
+        )
+        from kiro_crew.platform import context as pc
+
+        class _Ctx:
+            governance = None
+
+        monkeypatch.setattr(pc, "current_context", lambda: _Ctx())
+        assert beacon.is_governance_pinned_off() is False
+        # ...and the beacon still sends, since nothing legitimately suppresses it.
+        assert beacon.should_send(enabled=True)[0] is True
+
+    def test_a_real_policy_pin_is_still_detected(self, _isolated_home, monkeypatch):
+        """The layer check must not weaken the control it guards.
+
+        Paired with the test above: narrowing to ``layer == "policy"`` is only
+        correct if a genuine Level-1 pin still reports ``policy``. ``resolve``
+        wraps the CapabilityGate's own ``layer="both"`` into a policy-layer
+        Decision, so this asserts the wrapping rather than assuming it.
+        """
+        self._install_policy(
+            monkeypatch,
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"telemetry": {"enabled": False}},
+            },
+        )
+        from kiro_crew.platform.governance import parse_policy, resolve
+
+        decision = resolve(
+            parse_policy(
+                {
+                    "version": 1,
+                    "boot": {"fail_closed": True},
+                    "capabilities": {"telemetry": {"enabled": False}},
+                }
+            ),
+            None,
+            "capabilities.telemetry",
+            "",
+        )
+        assert decision.permitted is False
+        assert decision.layer == "policy", "the probe's layer check depends on this"
+        assert beacon.is_governance_pinned_off() is True
+
+    def test_evaluation_error_fails_CLOSED(self, _isolated_home, monkeypatch):
+        """An unevaluable ceiling must NOT permit the egress.
+
+        Caught by the CI GPT reviewer, which was right and reversed an earlier
+        fail-open revision of this probe. The two dispositions look symmetric and
+        are not: a wrong DENY loses one heartbeat, but a wrong PERMIT egresses from
+        a fleet that explicitly forbade egress — breaking the exact promise the
+        administrator was given. That puts this with ``capabilities.publish`` /
+        ``theme_install`` (fail_closed=True), and ``fail_closed`` additionally makes
+        ``governance_permits`` audit the degrade as a critical SEL event.
+
+        Asserted at the ``should_send`` boundary too, since the probe only matters
+        if it actually suppresses.
+        """
+        from kiro_crew.platform import governance_profiles as gp
+        from kiro_crew.platform.governance import parse_policy
+
+        # A governed fleet whose profile resolution breaks mid-evaluation.
+        monkeypatch.setattr(
+            gp,
+            "resolve_active_scope",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        from kiro_crew.platform import context as pc
+
+        class _Ctx:
+            governance = parse_policy({"version": 1, "boot": {"fail_closed": True}})
+
+        monkeypatch.setattr(pc, "current_context", lambda: _Ctx())
+        monkeypatch.setattr(beacon, "already_sent_today", lambda: False)
+        assert beacon.is_governance_pinned_off() is True
+        ok, reason = beacon.should_send(enabled=True)
+        assert ok is False
+        assert "governance" in reason
+
+    def test_an_unexpected_probe_error_also_fails_closed(self, _isolated_home, monkeypatch):
+        """The probe's own ``except`` takes the same disposition as a degrade.
+
+        ``governance_permits`` converts its internal errors into a Decision, so this
+        handler is only reached when something outside that contract raises (e.g.
+        ``vet_and_audit``'s evaluation, or a ``PlatformCompositionError``, which is
+        documented to propagate). That is still an unevaluable ceiling, so it must
+        not permit the egress.
+        """
+        from kiro_crew.platform import governance_profiles as gp
+
+        monkeypatch.setattr(
+            beacon,
+            "governance_permits",
+            lambda *a, **k: (_ for _ in ()).throw(gp.PlatformCompositionError("boom")),
+        )
+        assert beacon.is_governance_pinned_off() is True
+
+    def test_the_enforcement_decision_is_SEL_audited(self, _isolated_home, monkeypatch):
+        """A suppressed heartbeat must leave a forensic record.
+
+        Raised by the CI GPT reviewer: the decision that stops an egress on a
+        governed fleet is exactly the one an operator needs in the audit trail.
+        Routed through ``vet_and_audit`` — the existing audited seam — rather than a
+        hand-rolled SEL write, so this chokepoint's record shape cannot drift from
+        the messaging chokepoints that already use it.
+        """
+        from unittest.mock import MagicMock
+
+        self._install_policy(
+            monkeypatch,
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"telemetry": {"enabled": False}},
+            },
+        )
+        monkeypatch.setattr(beacon, "already_sent_today", lambda: False)
+        fake = MagicMock()
+        import kiro_crew.sel as sel_mod
+
+        monkeypatch.setattr(sel_mod, "sel", lambda: fake)
+
+        beacon.send("https://e.invalid", "1.2.3", enabled=True)
+
+        calls = fake.log_governance_decision.call_args_list
+        assert len(calls) == 1, "the enforcement decision must be audited exactly once"
+        kwargs = calls[0][1]
+        assert kwargs["scope"] == "capabilities.telemetry"
+        assert kwargs["outcome"] == "denied"
+        assert kwargs["tool_name"] == "beacon_send"
+
+    def test_every_enforcement_site_audits_with_its_own_tool_name(
+        self, _isolated_home, monkeypatch
+    ):
+        """All FOUR enforcement sites audit, each identifiably.
+
+        The CI reviewer caught two unaudited CLI refusals after the send gate was
+        wired; there were in fact three (the dashboard PATCH too). A per-site
+        ``tool_name`` is what makes the trail answer "which control refused",
+        rather than just "something did".
+        """
+        import argparse
+        from unittest.mock import MagicMock
+
+        self._install_policy(
+            monkeypatch,
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"telemetry": {"enabled": False}},
+            },
+        )
+        monkeypatch.setattr(beacon, "already_sent_today", lambda: False)
+        import kiro_crew.sel as sel_mod
+
+        def _tools_for(action):
+            fake = MagicMock()
+            monkeypatch.setattr(sel_mod, "sel", lambda: fake)
+            try:
+                action()
+            except SystemExit:
+                pass  # the CLI refusals exit(1) by design
+            return [c[1].get("tool_name") for c in fake.log_governance_decision.call_args_list]
+
+        from kiro_crew.cli_commands import _telemetry
+        from kiro_crew.cli_config import _config_cmd
+        from kiro_crew.dashboard.handlers.core import _beacon_governance_pinned_off
+
+        assert _tools_for(
+            lambda: beacon.send("https://e.invalid", "1.2.3", enabled=True)
+        ) == ["beacon_send"]
+        assert _tools_for(
+            lambda: _telemetry(argparse.Namespace(telemetry_action="enable"))
+        ) == ["telemetry_enable_cli"]
+        assert _tools_for(
+            lambda: _config_cmd(
+                argparse.Namespace(
+                    config_action="set",
+                    key="telemetry.beacon_enabled",
+                    value="true",
+                    local=False,
+                    file=None,
+                )
+            )
+        ) == ["config_set_cli"]
+        assert _tools_for(_beacon_governance_pinned_off) == ["config_patch_dashboard"]
+
+    def test_the_read_only_probe_is_NOT_audited(self, _isolated_home, monkeypatch):
+        """...but merely INSPECTING status must not write to the SEL trail.
+
+        ``status`` backs ``GET /api/telemetry/beacon``, which the Privacy panel
+        refetches, so auditing it would append HMAC-chained rows per inspection at a
+        multiple of the one decision per boot that actually governs anything. Same
+        disposition the channels gate uses for its hot-path default-permit.
+        """
+        from unittest.mock import MagicMock
+
+        self._install_policy(
+            monkeypatch,
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"telemetry": {"enabled": False}},
+            },
+        )
+        fake = MagicMock()
+        import kiro_crew.sel as sel_mod
+
+        monkeypatch.setattr(sel_mod, "sel", lambda: fake)
+
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
+
+        assert info["governance_pinned_off"] is True, "still reports the pin"
+        assert fake.log_governance_decision.call_args_list == []
+
+    def test_status_reports_the_pin_for_the_cli(self, _isolated_home, monkeypatch):
+        self._install_policy(
+            monkeypatch,
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"telemetry": {"enabled": False}},
+            },
+        )
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
+        assert info["governance_pinned_off"] is True
+        rendered = beacon.format_status(info)
+        assert "administrator" in rendered
+        assert "capabilities.telemetry" in rendered
+
+    def test_status_omits_the_pin_notice_when_ungoverned(self, _isolated_home, monkeypatch):
+        self._install_policy(monkeypatch, None)
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
+        assert info["governance_pinned_off"] is False
+        assert "administrator" not in beacon.format_status(info)
+
+
+class TestGenericConfigSetterIsGated:
+    """`kirocrew config set` is a FOURTH write path to telemetry.beacon_enabled.
+
+    The dashboard PATCH and `telemetry enable` are the obvious two, but the
+    generic setter reaches the same key — and `--local` writes config.local.json,
+    which takes PRECEDENCE over the base file. Leaving it ungated would make it
+    the one remaining way to store `true` on a pinned host, which is exactly the
+    false-promise-on-a-privacy-control failure the 403 exists to prevent.
+    """
+
+    def _args(self, key, value, local=False):
+        import argparse
+
+        return argparse.Namespace(
+            config_action="set", key=key, value=value, local=local, file=None
+        )
+
+    def _pin(self, monkeypatch, pinned):
+        from kiro_crew import beacon as beacon_mod
+
+        # **kwargs, not a bare lambda: the enforcement call sites pass
+        # ``audit_tool=`` so the decision is SEL-audited, and a fixed-arity stub
+        # would fail with a TypeError that looks like a production bug.
+        monkeypatch.setattr(
+            beacon_mod, "is_governance_pinned_off", lambda **_kwargs: pinned
+        )
+
+    @pytest.mark.parametrize("local", [False, True])
+    def test_enable_is_refused_under_a_pin(self, _isolated_home, monkeypatch, local):
+        from kiro_crew.cli_config import _config_cmd
+
+        self._pin(monkeypatch, True)
+        with pytest.raises(SystemExit) as exc:
+            _config_cmd(self._args("telemetry.beacon_enabled", "true", local=local))
+        assert exc.value.code == 1
+        # Nothing persisted, in EITHER file — the refusal precedes both writes.
+        for name in ("config.json", "config.local.json"):
+            path = _isolated_home / name
+            if path.exists():
+                assert "beacon_enabled" not in path.read_text(encoding="utf-8")
+
+    def test_disable_is_still_allowed_under_a_pin(self, _isolated_home, monkeypatch):
+        """Tightest-wins: a narrower local choice composes with the ceiling."""
+        from kiro_crew.cli_config import _config_cmd
+
+        self._pin(monkeypatch, True)
+        _config_cmd(self._args("telemetry.beacon_enabled", "false"))
+        data = json.loads((_isolated_home / "config.json").read_text(encoding="utf-8"))
+        assert data["telemetry"]["beacon_enabled"] is False
+
+    def test_unpinned_host_can_still_enable(self, _isolated_home, monkeypatch):
+        from kiro_crew.cli_config import _config_cmd
+
+        self._pin(monkeypatch, False)
+        _config_cmd(self._args("telemetry.beacon_enabled", "true"))
+        data = json.loads((_isolated_home / "config.json").read_text(encoding="utf-8"))
+        assert data["telemetry"]["beacon_enabled"] is True

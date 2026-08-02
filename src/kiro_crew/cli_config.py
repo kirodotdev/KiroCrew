@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 
+from kiro_crew import beacon
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     _subtract_overlay,
@@ -81,6 +82,28 @@ def _config_cmd(args: argparse.Namespace) -> None:
                 print("       kirocrew config set --file <path.json>", file=sys.stderr)
                 sys.exit(1)
             parsed = _parse_value(value)
+            # Fourth write path to telemetry.beacon_enabled, after the dashboard
+            # PATCH and `telemetry enable`. Gated here too, and BEFORE the
+            # local/base split so it covers both: `--local` writes the overlay,
+            # which takes precedence over the base file, so leaving it ungated
+            # would make the generic setter the one way to store `true` on a
+            # pinned host — the same false-promise-on-a-privacy-control failure
+            # the 403 exists to prevent. Only the enable direction is refused
+            # (tightest-wins), matching the other two chokepoints.
+            if key == "telemetry.beacon_enabled" and parsed is True:
+                # Audited for the same reason as the other enforcement calls, with
+                # its own tool name so the trail says which control refused.
+                if beacon.is_governance_pinned_off(audit_tool="config_set_cli"):
+                    print(
+                        "❌ The anonymous beacon is pinned OFF by your "
+                        "administrator's security policy (capabilities.telemetry).",
+                        file=sys.stderr,
+                    )
+                    print(
+                        "   Not writing config — the setting would have no effect.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             if use_local:
                 top_key = key.split(".")[0]
                 _known_sections = {f.name for f in dataclasses.fields(KiroCrewConfig)}
