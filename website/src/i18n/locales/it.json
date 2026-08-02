@@ -3992,6 +3992,7 @@
       "toggle_sessions": "Attiva/disattiva le sessioni",
       "tokens": "token",
       "too_many_files_max_20": "Troppi file (max 20)",
+      "folder_drop_desktop_only": "Trascinare una cartella ne inserisce il percorso - disponibile solo nell'app desktop.",
       "tool_search_deferred": "Ricerca strumenti · Differita",
       "tool_search_deferred_hint": "Le specifiche degli strumenti vengono caricate su richiesta, non inviate al modello a ogni turno.",
       "tool_search_full": "Ricerca strumenti · Caricamento completo",

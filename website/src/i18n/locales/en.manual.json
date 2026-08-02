@@ -1294,6 +1294,7 @@
       "error_reading_file": "_Error reading file_",
       "expand_knowledge_context": "Expand knowledge context",
       "file_not_found_on_disk_it_may_have_been_moved_or": "_File not found on disk. It may have been moved or deleted._",
+      "folder_drop_desktop_only": "Dropping a folder inserts its path - only available in the desktop app.",
       "fork_failed_error": "Fork failed: {{error}}",
       "hide_sessions": "Hide sessions",
       "hide_sessions_sidebar": "Hide sessions sidebar",

@@ -3992,6 +3992,7 @@
       "toggle_sessions": "Afficher/masquer les sessions",
       "tokens": "jetons",
       "too_many_files_max_20": "Trop de fichiers (max 20)",
+      "folder_drop_desktop_only": "Déposer un dossier insère son chemin - disponible uniquement dans l'application de bureau.",
       "tool_search_deferred": "Recherche d'outils · Différée",
       "tool_search_deferred_hint": "Les spécifications des outils sont chargées à la demande, pas envoyées au modèle à chaque tour.",
       "tool_search_full": "Recherche d'outils · Entièrement chargée",

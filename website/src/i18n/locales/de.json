@@ -3942,6 +3942,7 @@
       "toggle_sessions": "Sitzungen umschalten",
       "tokens": "Tokens",
       "too_many_files_max_20": "Zu viele Dateien (max. 20)",
+      "folder_drop_desktop_only": "Beim Ablegen eines Ordners wird sein Pfad eingefügt - nur in der Desktop-App verfügbar.",
       "tool_search_deferred": "Tool-Suche · Zurückgestellt",
       "tool_search_deferred_hint": "Tool-Spezifikationen werden bei Bedarf geladen – nicht in jeder Runde an das Modell gesendet.",
       "tool_search_full": "Tool-Suche · Vollständig geladen",

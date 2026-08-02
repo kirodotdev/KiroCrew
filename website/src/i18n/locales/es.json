@@ -3992,6 +3992,7 @@
       "toggle_sessions": "Mostrar u ocultar sesiones",
       "tokens": "tokens",
       "too_many_files_max_20": "Demasiados archivos (máx. 20)",
+      "folder_drop_desktop_only": "Al soltar una carpeta se inserta su ruta - solo disponible en la aplicación de escritorio.",
       "tool_search_deferred": "Búsqueda de herramientas · Diferida",
       "tool_search_deferred_hint": "Las especificaciones de las herramientas se cargan bajo demanda, no se envían al modelo en cada turno.",
       "tool_search_full": "Búsqueda de herramientas · Totalmente cargada",
