@@ -2333,14 +2333,18 @@ class CronService:
             # the user's perspective, timeouts are silent (log + dashboard
             # status update only). Adding a timeout Slack alert is a separate
             # feature and is intentionally out of scope for failure dedup.
-            # Clear failure dedup state so a subsequent real error isn't
-            # suppressed as a dup of the pre-timeout failure.
+            # Clear failure *dedup* state (hash/at) so a subsequent real error
+            # isn't suppressed as a dup of the pre-timeout failure, but count
+            # the timeout as a failure via record_failure so a job that times
+            # out on every run still accumulates toward _AUTO_PAUSE_THRESHOLD
+            # and eventually auto-pauses — the safety net that a hard reset to
+            # zero silently defeated (#424).
             job.last_status = "error"
             job.last_error = f"Timed out after {timeout}s"
             job.last_run_ts = time.time()
             job.last_failure_hash = ""
             job.last_failure_at = 0.0
-            job.consecutive_failures = 0
+            job.record_failure()
             logger.error("Cron job '%s' timed out after %ds", job.name, timeout)
 
     async def _execute(self, job: CronJob) -> None:

@@ -64,9 +64,10 @@ def _run_callback(gw, job, stream_result="done"):
     async def fake_stream(client, msg, **kwargs):
         return stream_result
 
-    with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
-        "kiro_crew.slack.gateway.CronService"
-    ) as mock_cron_cls:
+    with (
+        patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream),
+        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+    ):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -268,9 +269,11 @@ def _run_callback_raising(gw, job, exc):
     async def fake_stream(client, msg, **kwargs):
         raise exc
 
-    with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
-        "kiro_crew.slack.gateway.CronService"
-    ) as mock_cron_cls, patch("kiro_crew.sel.sel"):
+    with (
+        patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream),
+        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+        patch("kiro_crew.sel.sel"),
+    ):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -325,9 +328,7 @@ class TestCronFailureDedup:
         assert gw.slack.post_message.await_count == 1  # no new Slack post
         assert job.consecutive_failures == 2
         # Dashboard still gets notified (with dup marker)
-        dup_calls = [
-            c for c in gw.dashboard_state.notify.call_args_list if "dup failure" in str(c)
-        ]
+        dup_calls = [c for c in gw.dashboard_state.notify.call_args_list if "dup failure" in str(c)]
         assert dup_calls, "Expected a dup failure dashboard notification"
 
     def test_different_failure_re_alerts(self) -> None:
@@ -413,7 +414,8 @@ class TestCronFailurePersistence:
 
     def test_timeout_clears_failure_dedup_state(self, tmp_path) -> None:
         """Timeout handler must clear failure dedup state so a subsequent real
-        error isn't silently suppressed as a dup of the pre-timeout failure."""
+        error isn't silently suppressed as a dup of the pre-timeout failure,
+        while still counting the timeout as a failure (#424)."""
         import asyncio
 
         from kiro_crew.cron import CronService
@@ -432,8 +434,9 @@ class TestCronFailurePersistence:
             timeout_secs=0,
         )
         # Pretend _execute hangs so _execute_with_timeout triggers the timeout.
-        with patch.object(svc, "_execute", side_effect=_hang), patch(
-            "kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05
+        with (
+            patch.object(svc, "_execute", side_effect=_hang),
+            patch("kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05),
         ):
             asyncio.run(svc._execute_with_timeout(job))
         assert job.last_status == "error"
@@ -441,10 +444,13 @@ class TestCronFailurePersistence:
         # Failure dedup state cleared — next real error will trigger fresh alert
         assert job.last_failure_hash == ""
         assert job.last_failure_at == 0.0
-        assert job.consecutive_failures == 0
+        # ...but the timeout still counts toward the auto-pause net (#424): the
+        # counter increments rather than resetting to zero.
+        assert job.consecutive_failures == 4
 
     def test_timeout_persists_cleared_state(self, tmp_path) -> None:
-        """Verify _run_job_isolated persists the cleared failure state to disk."""
+        """Verify _run_job_isolated persists the timeout failure state to disk:
+        dedup hash/at cleared, but the failure count incremented (#424)."""
         import asyncio
 
         from kiro_crew.cron import CronService
@@ -465,15 +471,62 @@ class TestCronFailurePersistence:
         )
         svc._jobs = [job]
         svc._save()
-        with patch.object(svc, "_execute", side_effect=_hang), patch(
-            "kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05
+        with (
+            patch.object(svc, "_execute", side_effect=_hang),
+            patch("kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05),
         ):
             asyncio.run(svc._run_job_isolated(job))
         svc2 = CronService(base_dir=tmp_path)
         svc2._load()
         assert svc2._jobs[0].last_failure_hash == ""
         assert svc2._jobs[0].last_failure_at == 0.0
-        assert svc2._jobs[0].consecutive_failures == 0
+        assert svc2._jobs[0].consecutive_failures == 4
+
+    def test_timeout_counts_as_failure_for_auto_pause(self, tmp_path) -> None:
+        """A timeout must count toward the auto-pause safety net.
+
+        Regression for #424: the timeout handler used to hard-reset
+        ``consecutive_failures`` to 0, so a job that timed out on every run
+        never accumulated toward ``_AUTO_PAUSE_THRESHOLD`` and ran forever with
+        no auto-pause and no user signal. A timeout is now recorded as a failure
+        (via ``record_failure``), while the failure *dedup* state is still
+        cleared so a later distinct error is not suppressed.
+        """
+        import asyncio
+
+        from kiro_crew.cron import _AUTO_PAUSE_THRESHOLD, CronService
+
+        async def _hang(*args, **kwargs):
+            await asyncio.sleep(9999)  # simulate hang; timeout will cancel
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="test",
+            message="go",
+            schedule=CronSchedule(kind="every", every_secs=60),
+            last_failure_hash="stale-hash-from-prior-failure",
+            last_failure_at=1776400000.0,
+            consecutive_failures=0,
+            timeout_secs=0,
+        )
+        with (
+            patch.object(svc, "_execute", side_effect=_hang),
+            patch("kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05),
+        ):
+            # One short of the threshold: increments but does not yet pause.
+            for i in range(_AUTO_PAUSE_THRESHOLD - 1):
+                asyncio.run(svc._execute_with_timeout(job))
+                assert job.consecutive_failures == i + 1
+                assert job.auto_paused is False
+                # Dedup state cleared on every timeout, counter still climbs.
+                assert job.last_failure_hash == ""
+                assert job.last_failure_at == 0.0
+            # The threshold-th consecutive timeout trips the auto-pause net.
+            asyncio.run(svc._execute_with_timeout(job))
+            assert job.consecutive_failures == _AUTO_PAUSE_THRESHOLD
+            assert job.auto_paused is True
+            assert job.enabled is False
 
     def test_save_load_round_trip(self, tmp_path) -> None:
         from kiro_crew.cron import CronService
@@ -570,8 +623,7 @@ class TestCronFailureRespectsSilent:
         _run_callback_raising(gw, job, RuntimeError("boom"))
         gw.slack.post_message.assert_awaited_once()
         alert_calls = [
-            c for c in gw.dashboard_state.notify.call_args_list
-            if "❌ Job failed" in str(c)
+            c for c in gw.dashboard_state.notify.call_args_list if "❌ Job failed" in str(c)
         ]
         assert alert_calls, "Non-silent cron failure must still ring the dashboard bell"
 
