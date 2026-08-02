@@ -342,7 +342,10 @@ def _list_tools() -> list[dict[str, Any]]:
                 "Inject a message into a RUNNING subagent's in-flight turn "
                 "(course-correct without restarting it) — like steering a chat "
                 "session. Only works while the run is executing; for a finished "
-                "continuable run use spawn_continue instead."
+                "continuable run use spawn_continue instead. A steer issued in "
+                "the same breath as spawn_run briefly waits for the run's "
+                "session to come up; if it reports 'session_starting' the "
+                "session is not registered yet — retry in a few seconds."
             ),
             "inputSchema": {
                 "type": "object",

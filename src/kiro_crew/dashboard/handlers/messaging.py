@@ -257,6 +257,10 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": detail, "code": "not_running"}, status=409
             )
+        if detail.startswith("session_starting"):
+            # Transient: the run's session has not registered yet. 503 is the
+            # retryable status — the caller (or LLM) should retry shortly.
+            return web.json_response({"error": detail, "code": "session_starting"}, status=503)
         return web.json_response(
             {"error": detail, "code": "steer_failed"}, status=502
         )
