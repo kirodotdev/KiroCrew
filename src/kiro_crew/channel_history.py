@@ -106,7 +106,14 @@ class ChannelHistory:
             except OSError:
                 logger.warning("Failed to remove history file %s", path, exc_info=True)
 
-    def push(self, channel_id: str, user: str, text: str, thread_ts: str | None = None, msg_ts: str | None = None) -> None:
+    def push(
+        self,
+        channel_id: str,
+        user: str,
+        text: str,
+        thread_ts: str | None = None,
+        msg_ts: str | None = None,
+    ) -> None:
         """Record a message in the channel buffer.
 
         Called on every message event in the gateway, not just @mentions.
@@ -128,7 +135,9 @@ class ChannelHistory:
 
         # Build entry — observe channels use wall clock for persistence
         wall_ts = time.time() if is_observe else None
-        entry = HistoryEntry(user=user, text=text, thread_ts=thread_ts, msg_ts=msg_ts, wall_ts=wall_ts)
+        entry = HistoryEntry(
+            user=user, text=text, thread_ts=thread_ts, msg_ts=msg_ts, wall_ts=wall_ts
+        )
         buf.append(entry)
 
         # Persist to disk for observe channels
@@ -209,8 +218,9 @@ class ChannelHistory:
             return None
         from kiro_crew.hooks import is_sensitive_path
 
+        history_root = self._history_dir.resolve()
         path = (self._history_dir / f"{channel_id}.jsonl").resolve()
-        if not str(path).startswith(str(self._history_dir.resolve())):
+        if not path.is_relative_to(history_root):
             logger.warning("Refusing unsafe history path for channel %s", channel_id)
             return None
         if is_sensitive_path(str(path)):

@@ -358,3 +358,59 @@ class TestChannelHistoryContext:
         msg, _ = builder.build_message("hello", False, channel_id="C123")
 
         assert msg.startswith("hello")
+
+
+class TestObservePathContainment:
+    """Tests that _observe_path rejects path-traversal attacks."""
+
+    def test_normal_channel_id_accepted(self, tmp_path):
+        """A plain channel ID resolves inside history_dir."""
+        h = ChannelHistory(history_dir=tmp_path)
+        result = h._observe_path("C0VALID")
+        assert result is not None
+        assert result.parent == tmp_path
+
+    def test_sibling_prefix_rejected(self, tmp_path, monkeypatch):
+        """A channel_id that resolves to a sibling dir sharing the name prefix is refused.
+
+        This is the exact bug: /a/hist vs /a/hist-evil passes startswith but
+        must NOT pass is_relative_to.
+        """
+        # Create a sibling directory whose name starts with the history_dir name
+        evil_dir = tmp_path / "history-evil"
+        evil_dir.mkdir()
+        evil_file = evil_dir / "payload.jsonl"
+        evil_file.touch()
+
+        history_dir = tmp_path / "history"
+        history_dir.mkdir()
+
+        h = ChannelHistory(history_dir=history_dir)
+        # Craft a channel_id that after joining resolves outside history_dir
+        # Using relative traversal: go up, then into sibling
+        result = h._observe_path("../history-evil/payload")
+        assert result is None
+
+    def test_dot_dot_traversal_rejected(self, tmp_path):
+        """A channel_id with ../ components is rejected."""
+        history_dir = tmp_path / "channels"
+        history_dir.mkdir()
+
+        h = ChannelHistory(history_dir=history_dir)
+        result = h._observe_path("../../etc/passwd")
+        assert result is None
+
+    def test_symlink_escape_rejected(self, tmp_path):
+        """A symlinked history_dir still guards against escape after resolve."""
+        real_dir = tmp_path / "real_history"
+        real_dir.mkdir()
+        link_dir = tmp_path / "link_history"
+        link_dir.symlink_to(real_dir)
+
+        h = ChannelHistory(history_dir=link_dir)
+        # A normal ID works fine (resolved path is under the resolved root)
+        assert h._observe_path("C0NORMAL") is not None
+
+        # Traversal out of the resolved root is still blocked
+        result = h._observe_path("../secret")
+        assert result is None
