@@ -142,6 +142,7 @@ class TestSourceDetection:
         assert api.SOURCE_IDS == (
             "codex",
             "claude_code",
+            "gemini",
             "meshclaw",
             "openclaw",
             "hermes",
@@ -160,6 +161,7 @@ class TestSourceDetection:
         roots = {
             "CODEX_HOME": tmp_path / "codex-data",
             "CLAUDE_CONFIG_DIR": tmp_path / "claude-data",
+            "GEMINI_HOME": tmp_path / "gemini-data",
             "MESHCLAW_HOME": tmp_path / "mesh-data",
             "OPENCLAW_STATE_DIR": tmp_path / "open-data",
             "HERMES_HOME": tmp_path / "hermes-data",
@@ -175,6 +177,7 @@ class TestSourceDetection:
         assert {source["id"] for source in result["sources"]} == set(_api().SOURCE_IDS)
         assert _source(result, "codex")["root"] == str(roots["CODEX_HOME"])
         assert _source(result, "claude_code")["root"] == str(roots["CLAUDE_CONFIG_DIR"])
+        assert _source(result, "gemini")["root"] == str(roots["GEMINI_HOME"])
         assert _source(result, "meshclaw")["root"] == str(roots["MESHCLAW_HOME"])
         assert _source(result, "openclaw")["root"] == str(roots["OPENCLAW_STATE_DIR"])
         assert _source(result, "hermes")["root"] == str(roots["HERMES_HOME"])
@@ -312,6 +315,227 @@ class TestSourceDetection:
         )
 
         assert _source(result, "hermes")["root"] == str(hermes)
+
+
+class TestGeminiSource:
+    """Gemini CLI and its Antigravity successor share the ``~/.gemini`` home."""
+
+    def test_one_home_covers_both_gemini_cli_and_antigravity(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        root = home / ".gemini"
+        workspace = tmp_path / "work" / "proj"
+        workspace.mkdir(parents=True)
+        (root / "antigravity").mkdir(parents=True)
+        (root / "settings.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "notes": {"command": "npx", "args": ["-y", "notes-mcp"]},
+                        "remote": {"httpUrl": "https://mcp.example.com/mcp/"},
+                    },
+                    "projects": {str(workspace): {}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (root / "antigravity" / "mcp_config.json").write_text(
+            json.dumps({"mcpServers": {"tickets": {"command": "tickets-mcp"}}}),
+            encoding="utf-8",
+        )
+        (root / _api()._GEMINI_CONTEXT_FILENAME).write_text(
+            "Always run the linter before committing.\n", encoding="utf-8"
+        )
+
+        result = _api().detect_sources(home=home, env={})
+
+        source = _source(result, "gemini")
+        assert source["name"] == "Gemini CLI / Antigravity"
+        assert source["root"] == str(root)
+        counts = _categories(result, "gemini")
+        # Two stdio servers plus the httpUrl endpoint normalized to ``url``.
+        assert counts["mcp_servers"] == 3
+        assert counts["instructions"] == 1
+        assert counts["workspaces"] == 1
+
+    def test_http_url_rename_does_not_widen_credentials(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        root = home / ".gemini"
+        root.mkdir(parents=True)
+        (root / "settings.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "guarded": {
+                            "httpUrl": "https://api.example.com/mcp/",
+                            "headers": {"Authorization": "token-value"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = _api().detect_sources(home=home, env={})
+
+        assert _categories(result, "gemini").get("mcp_servers", 0) == 0
+
+    def test_antigravity_home_override_wins_over_the_default_root(self, tmp_path: Path) -> None:
+        root = tmp_path / "agy-data"
+        root.mkdir()
+
+        result = _api().detect_sources(
+            home=tmp_path / "unused-home",
+            env={"ANTIGRAVITY_HOME": str(root)},
+        )
+
+        assert _source(result, "gemini")["root"] == str(root)
+
+    def test_declared_workspace_fan_out_is_capped(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        root = home / ".gemini"
+        root.mkdir(parents=True)
+        over_limit = _api()._MAX_WORKSPACES + 1
+        (root / "settings.json").write_text(
+            json.dumps(
+                {"projects": {str(tmp_path / f"proj-{index}"): {} for index in range(over_limit)}}
+            ),
+            encoding="utf-8",
+        )
+
+        result = _api().detect_sources(home=home, env={})
+
+        assert any(
+            item["source_id"] == "gemini"
+            and item["category_id"] == "workspaces"
+            and item["reason"] == "item_count_limit"
+            and item["count"] == over_limit
+            for item in result["skipped"]
+        )
+
+    def test_relative_declared_workspace_is_refused(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        root = home / ".gemini"
+        root.mkdir(parents=True)
+        (root / "settings.json").write_text(
+            json.dumps({"projects": {"relative/not/absolute": {}}}),
+            encoding="utf-8",
+        )
+
+        result = _api().detect_sources(home=home, env={})
+
+        assert _categories(result, "gemini").get("workspaces", 0) == 0
+        assert any(
+            item["source_id"] == "gemini"
+            and item["category_id"] == "workspaces"
+            and item["reason"] == "workspace_not_absolute"
+            for item in result["skipped"]
+        )
+
+    def test_real_antigravity_mcp_shape_crosses_and_secrets_do_not(self, tmp_path: Path) -> None:
+        """Pin the shapes a real ``~/.gemini/config/mcp_config.json`` writes.
+
+        Captured from an actual Antigravity install: stdio entries carry a
+        ``$typeName`` protobuf discriminator plus ``env`` (often empty), and
+        remote entries use ``serverUrl`` rather than ``httpUrl``. Before these
+        were handled, a real install imported ZERO of its servers.
+        """
+        home = tmp_path / "home"
+        root = home / ".gemini"
+        (root / "config").mkdir(parents=True)
+        (root / "config" / "mcp_config.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        # stdio: protobuf marker + empty env -> both dropped
+                        "chrome-devtools-mcp": {
+                            "$typeName": "exa.cascade_plugins_pb.CascadePluginCommandTemplate",
+                            "command": "npx",
+                            "args": ["-y", "chrome-devtools-mcp"],
+                            "env": {},
+                        },
+                        # remote: serverUrl -> url
+                        "antimetal": {"serverUrl": "https://mcp.antimetal.com/mcp"},
+                        # populated env -> refused, credentials never cross
+                        "github-mcp-server": {
+                            "$typeName": "exa.cascade_plugins_pb.CascadePluginCommandTemplate",
+                            "command": "docker",
+                            "args": ["run", "-i", "--rm", "ghcr.io/github/github-mcp-server"],
+                            "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_examplevalue"},
+                        },
+                        # unsupported auth mode -> refused rather than reshaped
+                        "lovable": {
+                            "serverUrl": "https://mcp.lovable.dev/mcp",
+                            "authProviderType": "dynamic_discovery",
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = _api().detect_sources(home=home, env={})
+        scan = _api()._scan_source("gemini", root, home)
+        accepted = sorted(item.payload["name"] for item in scan.items["mcp_servers"])
+
+        assert accepted == ["antimetal", "chrome-devtools-mcp"]
+        assert _categories(result, "gemini")["mcp_servers"] == 2
+        # The protobuf marker and the empty env must not survive onto the spec.
+        by_name = {item.payload["name"]: item.payload["spec"] for item in scan.items["mcp_servers"]}
+        # ``disabled`` is added by the importer — servers arrive switched off.
+        assert by_name["chrome-devtools-mcp"] == {
+            "command": "npx",
+            "args": ["-y", "chrome-devtools-mcp"],
+            "disabled": True,
+        }
+        assert by_name["antimetal"] == {
+            "url": "https://mcp.antimetal.com/mcp",
+            "disabled": True,
+        }
+        # No credential value may appear anywhere in the projected payloads.
+        assert "ghp_examplevalue" not in json.dumps(
+            [item.payload for item in scan.items["mcp_servers"]]
+        )
+
+    def test_antigravity_project_files_become_workspaces(self, tmp_path: Path) -> None:
+        """Antigravity stores one project per file, as a percent-encoded file:// URI."""
+        home = tmp_path / "home"
+        root = home / ".gemini"
+        (root / "config" / "projects").mkdir(parents=True)
+        workspace = tmp_path / "Project" / "AWS Blocks"
+        workspace.mkdir(parents=True)
+        (root / "config" / "projects" / "bddafe2d-4682.json").write_text(
+            json.dumps(
+                {
+                    "id": "bddafe2d-4682",
+                    "name": "AWS Blocks",
+                    "projectResources": {
+                        "resources": [
+                            {"folderUri": "file://" + str(workspace).replace(" ", "%20")}
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = _api().detect_sources(home=home, env={})
+        scan = _api()._scan_source("gemini", root, home)
+
+        assert _categories(result, "gemini")["workspaces"] == 1
+        assert [item.payload for item in scan.items["workspaces"]] == [str(workspace)]
+
+    def test_empty_and_malformed_configs_degrade_quietly(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        root = home / ".gemini"
+        (root / "antigravity").mkdir(parents=True)
+        (root / "settings.json").write_text("{ not json at all", encoding="utf-8")
+        (root / "antigravity" / "mcp_config.json").write_text("{}", encoding="utf-8")
+
+        result = _api().detect_sources(home=home, env={})
+
+        source = _source(result, "gemini")
+        assert source["root"] == str(root)
+        assert _categories(result, "gemini") == {}
 
 
 class TestPreview:

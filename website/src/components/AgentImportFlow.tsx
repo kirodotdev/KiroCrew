@@ -31,6 +31,7 @@ const STAGE_LABELS = ['Sources', 'Categories', 'Review', 'Results']
 const SUPPORTED_SOURCE_IDS = new Set([
   'codex',
   'claude_code',
+  'gemini',
   'meshclaw',
   'openclaw',
   'hermes',

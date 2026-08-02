@@ -27,7 +27,13 @@ Three phases, always in this order:
 | Dry run (preview) | `preview_import()` | **no — never touches disk** |
 | Apply | `apply_import()` | yes, merge-only |
 
-**Sources:** `codex`, `claude_code`, `meshclaw`, `openclaw`, `hermes`.
+**Sources:** `codex`, `claude_code`, `gemini`, `meshclaw`, `openclaw`, `hermes`.
+
+`gemini` covers Google's whole terminal-agent lineage under one id, because
+Antigravity CLI reuses `~/.gemini` rather than claiming a directory of its own.
+Gemini CLI stopped serving Pro/Ultra/free individual accounts on 2026-06-18 and
+Antigravity replaced it, so that one root holds both a displaced Gemini CLI
+user's config and a current Antigravity install.
 
 ## Scope: what is migrated
 
@@ -397,6 +403,7 @@ MUST be covered by a fixture-based regression test.
 |--------|------------------------------|--------------------|
 | `codex` | `CODEX_HOME` → `~/.codex` | `config.toml`; `AGENTS.md` (instructions); `memories/*.md`; `skills/` (excl. `.system`); `memories*.sqlite*` reported unsupported |
 | `claude_code` | `CLAUDE_CONFIG_DIR`/`CLAUDE_HOME` → `~/.claude`; also `~/.claude.json` | `CLAUDE.md`; `rules/*.md`; `settings.json`/`settings.local.json` (`permissions.deny`); `memory/`; `skills/`; per-workspace `.claude/` |
+| `gemini` | `GEMINI_HOME`/`ANTIGRAVITY_HOME` → `~/.gemini` | Four probed config layouts, because Antigravity is closed-source and its subpath has moved between releases: `config/mcp_config.json` (**the live Antigravity path**, confirmed against a real install), `settings.json` (legacy Gemini CLI), `antigravity/mcp_config.json` and `antigravity-cli/settings.json` (older/absent layouts — kept as cheap hedges; `antigravity/` is runtime state, not config). `GEMINI.md` (instructions, hierarchical: root + per workspace); `skills/` only if it is a `SKILL.md` package; per-workspace `.gemini/settings.json` and `.agents/mcp_config.json`. Workspaces come from `config/projects/*.json` — one file per project, folder held as a percent-encoded `file://` URI under `projectResources.resources[].folderUri` — NOT from a `projects` map. **MCP shape normalization (all three verified against a real install, and required: without them a real Antigravity install imports ZERO of its servers):** `httpUrl`/`serverUrl` → canonical `url`; drop the inert `$typeName` protobuf discriminator (`exa.cascade_plugins_pb.CascadePluginCommandTemplate`) that Antigravity stamps on every stdio entry; drop `env` **only when empty** (the key name matches `_SECRET_KEY_RE`, so an empty map would otherwise score as a credential and refuse the server). A populated `env` is deliberately left untouched and still refused — stripping it would both change how the server runs and hide that secrets were present. `userSettings.themeMode` is not mapped |
 | `meshclaw` | `MESHCLAW_HOME` → `~/.meshclaw` | SQLite memory DB (`memory.db`: `semantic_memory` + `episodic_memories`; `workspace_id` holds the sentinel `default`, and `kind='directive'` marks a rule — see the two sections above); skills; config; `workspace/AGENTS.md` + `workspace/CLAUDE.md` and the same two per configured workspace. Only those canonical filenames are read — the MeshClaw workspace holds arbitrary user documents, so a blind `*.md` sweep there is wrong |
 | `openclaw` | `OPENCLAW_STATE_DIR` → `OPENCLAW_HOME`/`<state>` → `~/.openclaw-<profile>` → `~/.openclaw` → `~/.clawdbot` | `openclaw.json` (+ legacy `clawdbot.json`); `SOUL.md`, `MEMORY.md`, `USER.md`, `memory/*.md` under `workspace/` \| `workspace-main/` \| `workspace-<agentId>/`; `skills/`, `.agents/skills/`; `exec-approvals.json` |
 | `hermes` | `HERMES_HOME`/`HERMES_AGENT_HOME`/`HERMES_CONFIG_DIR` → `%LOCALAPPDATA%/hermes` (Windows) → `~/.hermes` | `config.yaml`/`.yml`; `memories/MEMORY.md`, `memories/USER.md`; `SOUL.md`; `skills/` (excl. managed + re-import dirs); `cron/jobs.json`; `memory_store.db` reported unsupported |
@@ -427,6 +434,22 @@ evil (see the dedupe limitation above).
 
 All three endpoints are dashboard-owner-only and audited. `request["app"]` MUST
 be `""` — an app token is never a dashboard user.
+
+### Adding a source touches THREE allowlists, not one
+
+The source id is enumerated independently in three places, and missing any one
+of them fails in a different way:
+
+| Layer | Symbol | Failure mode if omitted |
+|-------|--------|-------------------------|
+| Backend registry | `onboarding_import.SOURCE_IDS` (+ `_SOURCE_NAMES`, `_SOURCE_ROOTS`, `scanners`) | The source is never scanned |
+| Handler projection | `dashboard/handlers/onboarding_import._SOURCE_IDS` + `_SOURCE_NAMES` | **`_scan_response` raises and the endpoint 500s — breaking the wizard for EVERY source**, on any machine where the new source's home merely exists. `_SOURCE_NAMES` is indexed with `[source_id]`, so it `KeyError`s even once `_SOURCE_IDS` is fixed |
+| Frontend filter | `AgentImportFlow.tsx` `SUPPORTED_SOURCE_IDS` | `eligibleSources()` silently drops the source — it never renders, even with a working backend |
+
+The handler duplication is load-bearing (it is the content-free projection
+boundary), so it is pinned by `test_handler_source_tables_match_the_backend` in
+`test/test_api_onboarding_import.py`: the omission fails loudly in CI instead of
+as a production 500.
 
 | Endpoint | Phase | Body |
 |----------|-------|------|
