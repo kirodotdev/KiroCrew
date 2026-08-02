@@ -8,12 +8,13 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 
 import { i18nT } from '../i18n/t'
+import { fmtDateFields } from '../i18n/format'
 /** Short relative-ish timestamp for a comment row. */
 function fmtTs(ts: string): string {
   if (!ts) return ''
   const d = new Date(ts)
   if (isNaN(d.getTime())) return ts
-  return d.toLocaleString(undefined, {
+  return fmtDateFields(d, {
     month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit',
   })
 }

@@ -7,6 +7,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { useBrowserFrame } from '../hooks/useBrowserFrame'
 
 import { i18nT } from '../i18n/t'
+import { fmtTimeNumeric } from '../i18n/format'
 /**
  * WebPreviewPanel — a docked, session-scoped **live web preview** of a URL the
  * user is serving locally (a dev server / static server for the project they're
@@ -567,7 +568,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         </div>
         <div className="px-3 py-1.5 border-t border-border text-[11px] text-muted flex items-center justify-between gap-2">
           <span className="truncate">{i18nT('components.webPreviewPanel.view_only_clicks_here_don_t_reach_the_page')}</span>
-          {lastTs && <span className="shrink-0">{i18nT('components.webPreviewPanel.updated')} {new Date(lastTs).toLocaleTimeString()}</span>}
+          {lastTs && <span className="shrink-0">{i18nT('components.webPreviewPanel.updated')} {fmtTimeNumeric(lastTs)}</span>}
         </div>
       </div>
   )

@@ -6,6 +6,7 @@ import { Badge, Btn, Skeleton } from './ui'
 import { useAppSelector } from '../store'
 
 import { i18nT } from '../i18n/t'
+import { fmtDateTimeNumeric } from '../i18n/format'
 interface HistoryEntry {
   job_id: string
   job_name: string
@@ -26,7 +27,7 @@ const fmtDuration = (ms: number) => {
   return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`
 }
 
-const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleString()
+const fmtTime = (ts: number) => fmtDateTimeNumeric(ts)
 
 export default function ExecutionsView({ selectedJobId }: { selectedJobId?: string }) {
   const [page, setPage] = useState(0)

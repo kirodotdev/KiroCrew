@@ -563,7 +563,27 @@ jobs:
 
       - name: Unit tests
         working-directory: website
-        run: npx vitest run --coverage
+        env:
+          # Two vitest gates are DIFF-SCOPED rather than baseline-scoped —
+          # `localeFormatting.test.ts`'s `[added-lines]` / `[vs-base]`. They read the
+          # base ref out of git instead of storing a count, and they skip themselves
+          # when this is empty. Without it they would skip on every PR, which is the
+          # "gate nobody watched go red" failure mode their own docs warn about.
+          # Same expression as `frontend-lint`: the base branch on a PR, empty on a
+          # push to main, where there is no branch to diff.
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        # `actions/checkout` fetches depth 1, so the base branch is not present and
+        # `git diff`/`git show` against it would fail. Fetch just that one ref, and
+        # fail the step if it cannot be fetched — the gates throw on an unresolvable
+        # configured ref rather than skipping green, and this keeps the two consistent.
+        run: |
+          if [ -n "$I18N_BASE_REF" ]; then
+            git fetch --depth=1 origin "${I18N_BASE_REF#origin/}" \
+              || { echo "::error::could not fetch base ref ${I18N_BASE_REF#origin/}; the diff-scoped i18n test gates cannot run"; exit 1; }
+            git update-ref "refs/remotes/$I18N_BASE_REF" FETCH_HEAD \
+              || { echo "::error::could not update $I18N_BASE_REF; the diff-scoped i18n test gates cannot run"; exit 1; }
+          fi
+          npx vitest run --coverage
 
       - name: Upload coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -5,6 +5,7 @@ import { loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDraft
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 import { i18nT } from '../i18n/t'
+import { fmtTimeNumeric } from '../i18n/format'
 export interface AutoNudgeLoop {
   id: string
   slot_key: string
@@ -227,7 +228,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
         {loop && (
           <div className="text-muted text-[11px] mb-3">
-            {i18nT('components.autoNudgePopover.last_fire')} {loop.last_fire_ts ? new Date(loop.last_fire_ts * 1000).toLocaleTimeString() : i18nT('components.autoNudgePopover.never')}
+            {i18nT('components.autoNudgePopover.last_fire')} {loop.last_fire_ts ? fmtTimeNumeric(loop.last_fire_ts) : i18nT('components.autoNudgePopover.never')}
           </div>
         )}
 

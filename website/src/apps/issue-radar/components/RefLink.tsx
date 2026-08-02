@@ -21,6 +21,7 @@ import type { RepoRef } from '../lib/refLinks'
 import ShimmerLine from './ShimmerLine'
 
 import { i18nT } from '../../../i18n/t'
+import { fmtDateTimeNumeric } from '../../../i18n/format'
 /** Delay before a hover opens the preview, so sweeping the pointer across a
  * paragraph of references doesn't flash a card per link (or spend a request per
  * link — the fetch is gated on the same flag). */
@@ -236,7 +237,7 @@ export default function RefLink({
               <div className="mt-1.5 text-muted">
                 {data.author ? <span className="text-text">{data.author}</span> : 'someone'}
                 {' opened '}
-                <span title={new Date(data.created_at).toLocaleString()}>
+                <span title={fmtDateTimeNumeric(data.created_at)}>
                   {relativeTimeOrDate(data.created_at)}
                 </span>
               </div>

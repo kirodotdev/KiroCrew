@@ -20,6 +20,7 @@ import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 
 import { i18nT } from '../i18n/t'
+import { fmtDateNumeric } from '../i18n/format'
 type AppInfo = {
   name: string
   displayName: string
@@ -808,7 +809,7 @@ export default function AppDetailPage() {
             <div className="grid gap-1.5 mt-2 text-[13px] text-muted">
               {app.repo && <div>{i18nT('pages.appDetailPage.repository')} {app.repo}</div>}
               {app.author && <div>{i18nT('pages.appDetailPage.author')} {app.author}</div>}
-              {app.installedAt && <div>{i18nT('pages.appDetailPage.installed')} {new Date(app.installedAt).toLocaleDateString()}</div>}
+              {app.installedAt && <div>{i18nT('pages.appDetailPage.installed')} {fmtDateNumeric(app.installedAt)}</div>}
               {app.origin && <div>{i18nT('pages.appDetailPage.origin')} {app.origin} {i18nT('pages.appDetailPage.resources_2')} {app.resources || 'gateway'} {i18nT('pages.appDetailPage.lifecycle')} {app.lifecycle || 'gateway'}</div>}
               {app.manifest?.minKiroCrewVersion && <div>{i18nT('pages.appDetailPage.min_kirocrew_v')}{app.manifest.minKiroCrewVersion}</div>}
               {app.platform?.os && <div>{i18nT('pages.appDetailPage.platform')} {app.platform.os.join(', ')}</div>}

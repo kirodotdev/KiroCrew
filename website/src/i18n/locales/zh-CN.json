@@ -467,6 +467,8 @@
           "ai_summary": "AI 摘要",
           "couldn_t_generate_a_summary": "无法生成摘要。",
           "couldn_t_regenerate_showing_the_previous_summary": "无法重新生成 — 显示上一次的摘要。",
+          "generated": "生成于 {{generated}}",
+          "generated_stale": "生成于 {{generated}} — 之后又有新活动（{{since}}）。刷新以重新生成。",
           "generating_ai_summary": "正在生成 AI 摘要",
           "no_summary_available_for_this": "没有可用摘要，针对",
           "reading_summarizing": "正在阅读与总结…",
@@ -728,6 +730,7 @@
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar 通过你自己的",
+        "last_contribution": "你上次的贡献：{{when}}",
         "let_s_connect_a_repo": "先连接一个仓库",
         "loading_your_repos": "正在加载你的仓库…",
         "most_recent_activity": "最近的活动",
@@ -1530,7 +1533,8 @@
       "read_only_relayed_from_the_agent_s_own_screensho": "只读 — 由代理自己的截图转发而来",
       "show_live_desktop_view": "显示实时桌面视图",
       "shrink": "缩小",
-      "shrink_live_desktop_view": "缩小实时桌面视图"
+      "shrink_live_desktop_view": "缩小实时桌面视图",
+      "updated": "已更新"
     },
     "contentRenderer": {
       "loading_editor": "正在加载编辑器…"
@@ -5306,6 +5310,7 @@
         "no_changelog_available": "无可用更新日志。",
         "open_source_under_the_apache_2_0_license": "基于 Apache 2.0 许可证开源",
         "platform": "平台",
+        "published": "发布于 {{when}}",
         "restart_update": "重启并更新",
         "restarting": "正在重启…",
         "retry": "重试",

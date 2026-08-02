@@ -1,5 +1,6 @@
 import { safeSetItem } from '../../utils/safeStorage'
 import { STORAGE_KEY } from './constants'
+import { fmtDateTimeNumeric } from '../../i18n/format'
 
 export const extOf = (p: string) => {
   const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
@@ -44,8 +45,12 @@ export const formatBytes = (n: number | null | undefined) => {
 
 export const formatTime = (sec: number | null | undefined) => {
   if (!sec) return ''
-  const d = new Date(sec * 1000)
-  return d.toLocaleString()
+  // Convert here rather than handing `toDate` a bare number: a filesystem mtime
+  // can legitimately be NEGATIVE (a pre-epoch file, `st_mtime = -1`), and the
+  // seam treats `<= 0` as unparseable and renders an em dash. The cron and
+  // session timestamps elsewhere come from `time.time()` and cannot be negative,
+  // which is why they pass their seconds straight through.
+  return fmtDateTimeNumeric(new Date(sec * 1000))
 }
 
 export const isShortcut = (e: KeyboardEvent) => e.metaKey || e.ctrlKey

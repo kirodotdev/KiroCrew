@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { fmtDateFields } from '../../i18n/format'
 
 export function typeBadgeVariant(t: string): 'ok' | 'warn' | 'err' | 'aim' {
   if (['design_doc', 'code_doc'].includes(t)) return 'aim'
@@ -8,7 +9,7 @@ export function typeBadgeVariant(t: string): 'ok' | 'warn' | 'err' | 'aim' {
 }
 
 export function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+  return fmtDateFields(iso, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 export function formatRelativeDate(iso: string): string {

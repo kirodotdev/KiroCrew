@@ -399,6 +399,8 @@
           "ai_summary": "AI সারসংক্ষেপ",
           "couldn_t_generate_a_summary": "সারসংক্ষেপ তৈরি করা যায়নি।",
           "couldn_t_regenerate_showing_the_previous_summary": "আবার তৈরি করা যায়নি — আগের সারসংক্ষেপ দেখানো হচ্ছে।",
+          "generated": "তৈরি হয়েছে {{generated}}",
+          "generated_stale": "তৈরি হয়েছে {{generated}} — এরপর কার্যকলাপ হয়েছে ({{since}})। নতুন করে তৈরি করতে রিফ্রেশ করো।",
           "generating_ai_summary": "AI সারসংক্ষেপ তৈরি হচ্ছে",
           "no_summary_available_for_this": "কোনো সারসংক্ষেপ উপলব্ধ নেই এই",
           "reading_summarizing": "পড়া ও সারসংক্ষেপ তৈরি হচ্ছে…",
@@ -662,6 +664,7 @@
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar পড়ে",
+        "last_contribution": "তোমার সর্বশেষ অবদান: {{when}}",
         "let_s_connect_a_repo": "চলুন একটি রিপো সংযুক্ত করি",
         "loading_your_repos": "আপনার রিপোগুলো লোড হচ্ছে…",
         "most_recent_activity": "সর্বশেষ অ্যাক্টিভিটি",
@@ -1549,7 +1552,8 @@
       "read_only_relayed_from_the_agent_s_own_screensho": "রিড-অনলি — এজেন্টের নিজের স্ক্রিনশট থেকে পাঠানো",
       "show_live_desktop_view": "লাইভ ডেস্কটপ ভিউ দেখাও",
       "shrink": "ছোট করো",
-      "shrink_live_desktop_view": "লাইভ ডেস্কটপ ভিউ ছোট করো"
+      "shrink_live_desktop_view": "লাইভ ডেস্কটপ ভিউ ছোট করো",
+      "updated": "সর্বশেষ আপডেট"
     },
     "contentRenderer": {
       "loading_editor": "এডিটর লোড হচ্ছে…"
@@ -5364,6 +5368,7 @@
         "no_changelog_available": "কোনো চেঞ্জলগ নেই।",
         "open_source_under_the_apache_2_0_license": "Apache 2.0 লাইসেন্সের অধীনে ওপেন সোর্স",
         "platform": "প্ল্যাটফর্ম",
+        "published": "প্রকাশিত {{when}}",
         "restart_update": "রিস্টার্ট ও আপডেট",
         "restarting": "রিস্টার্ট হচ্ছে...",
         "retry": "আবার চেষ্টা করুন",

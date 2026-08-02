@@ -243,6 +243,42 @@ export function fmtDateTime(value: Date | string | number | null | undefined, op
 }
 
 /**
+ * The three ALL-NUMERIC widths, which are what `Date.prototype.toLocale*String()`
+ * renders when called with no options.
+ *
+ * These exist so the migration off the host locale can be *exactly* that and
+ * nothing else. A bare `d.toLocaleString()` is not a neutral call: it picks the
+ * locale's own default width, which is all-numeric and includes the second.
+ * Reaching for `fmtDateTime` instead would have quietly restyled 21 call sites
+ * from `7/30/2026, 3:04:05 PM` to `Jul 30, 2026, 3:04 PM` — a different date
+ * width AND a dropped second — inside a PR whose subject is which locale the
+ * formatter reads. `format.test.ts` pins each one against the platform call it
+ * replaced, in all ten shipped locales, so "English is byte-identical" is
+ * asserted rather than asserted-about.
+ *
+ * Prefer `fmtDate` / `fmtTime` / `fmtDateTime` for NEW code: `Jul 30, 2026` is
+ * unambiguous where `30/07/2026` is not. These three are for faithfully porting
+ * a call site that was already rendering the numeric width.
+ */
+const NUMERIC_DATE = { year: 'numeric', month: 'numeric', day: 'numeric' } as const
+const NUMERIC_TIME = { hour: 'numeric', minute: '2-digit', second: '2-digit' } as const
+
+/** What `d.toLocaleDateString()` rendered — en `7/30/2026`, de `30.7.2026`. */
+export function fmtDateNumeric(value: Date | string | number | null | undefined): string {
+  return dateTime(value, NUMERIC_DATE)
+}
+
+/** What `d.toLocaleTimeString()` rendered, second included — en `3:04:05 PM`. */
+export function fmtTimeNumeric(value: Date | string | number | null | undefined): string {
+  return dateTime(value, NUMERIC_TIME)
+}
+
+/** What `d.toLocaleString()` rendered — en `7/30/2026, 3:04:05 PM`. */
+export function fmtDateTimeNumeric(value: Date | string | number | null | undefined): string {
+  return dateTime(value, { ...NUMERIC_DATE, ...NUMERIC_TIME })
+}
+
+/**
  * A date built from explicit COMPONENTS rather than a style preset.
  *
  * `Intl.DateTimeFormat` throws if `dateStyle`/`timeStyle` is combined with a

@@ -471,6 +471,8 @@
           "ai_summary": "Resumo por IA",
           "couldn_t_generate_a_summary": "Não foi possível gerar um resumo.",
           "couldn_t_regenerate_showing_the_previous_summary": "Não foi possível gerar novamente — exibindo o resumo anterior.",
+          "generated": "Gerado {{generated}}",
+          "generated_stale": "Gerado {{generated}} — houve atividade desde então ({{since}}). Atualize para gerar de novo.",
           "generating_ai_summary": "Gerando resumo por IA",
           "no_summary_available_for_this": "Nenhum resumo disponível para este",
           "reading_summarizing": "Lendo e resumindo…",
@@ -736,6 +738,7 @@
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "O Issue Radar lê o",
+        "last_contribution": "Sua última contribuição: {{when}}",
         "let_s_connect_a_repo": "Vamos conectar um repo",
         "loading_your_repos": "Carregando seus repos…",
         "most_recent_activity": "atividade mais recente",
@@ -1568,7 +1571,8 @@
       "read_only_relayed_from_the_agent_s_own_screensho": "Somente leitura — retransmitido das próprias capturas de tela do agente",
       "show_live_desktop_view": "Mostrar a visualização ao vivo da área de trabalho",
       "shrink": "Reduzir",
-      "shrink_live_desktop_view": "Reduzir a visualização ao vivo da área de trabalho"
+      "shrink_live_desktop_view": "Reduzir a visualização ao vivo da área de trabalho",
+      "updated": "atualizado"
     },
     "contentRenderer": {
       "loading_editor": "Carregando editor…"
@@ -5422,6 +5426,7 @@
         "no_changelog_available": "Nenhum changelog disponível.",
         "open_source_under_the_apache_2_0_license": "Código aberto sob a licença Apache 2.0",
         "platform": "Plataforma",
+        "published": "publicado {{when}}",
         "restart_update": "Reiniciar e atualizar",
         "restarting": "Reiniciando...",
         "retry": "Tentar novamente",

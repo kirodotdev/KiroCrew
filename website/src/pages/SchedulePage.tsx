@@ -25,6 +25,7 @@ import { sanitizeLlmOutput } from '../utils/sanitize'
 import { SCHEDULE_PRESETS, type CronPrefill } from '../utils/schedulePresets'
 
 import { i18nT } from '../i18n/t'
+import { fmtDateTimeNumeric } from '../i18n/format'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 
 /**
@@ -395,7 +396,7 @@ export default function SchedulePage() {
                 <td className="px-2.5 py-2 border-b border-border align-top max-w-[360px]"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></td>
                 <td className="px-2.5 py-2 border-b border-border text-sm" title={j.last_error || j.last_result || ''}>{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtAgo(j.last_run_ts)}</td>
-                <td className="px-2.5 py-2 border-b border-border text-sm text-muted" title={j.next_run_ts ? new Date(j.next_run_ts * 1000).toLocaleString() : ''}>{fmtIn(j.next_run_ts)}</td>
+                <td className="px-2.5 py-2 border-b border-border text-sm text-muted" title={j.next_run_ts ? fmtDateTimeNumeric(j.next_run_ts) : ''}>{fmtIn(j.next_run_ts)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap" onClick={e => e.stopPropagation()}>
                   <span title={j.strict_schedule ? i18nT('pages.schedulePage.disable_strict_schedule_allow_jitter') : i18nT('pages.schedulePage.enable_strict_schedule_no_jitter')}><Btn onClick={async () => { try { await api.updateCron(j.id, { strict_schedule: !j.strict_schedule }); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') }) } }}>{j.strict_schedule ? <><Check className="lucide-inline" /> {i18nT('pages.schedulePage.strict')}</> : i18nT('pages.schedulePage.strict')}</Btn></span>{' '}
                   {j.is_running
@@ -603,7 +604,7 @@ function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }
             {job?.last_run_ts && (
               <div className="flex flex-col gap-1.5">
                 <div className="text-[12px] text-muted font-medium">{i18nT('pages.schedulePage.last_run')}</div>
-                <span className="text-sm text-text">{new Date(job.last_run_ts * 1000).toLocaleString()}</span>
+                <span className="text-sm text-text">{fmtDateTimeNumeric(job.last_run_ts)}</span>
               </div>
             )}
           </>

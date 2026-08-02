@@ -37,6 +37,7 @@ import GithubLogo from '../../components/icons/GithubLogo'
 import GitlabLogo from '../../components/icons/GitlabLogo'
 
 import { i18nT } from '../../i18n/t'
+import { fmtDateTimeNumeric } from '../../i18n/format'
 export type ProviderId = 'github' | 'gitlab'
 
 /** Tailwind classes for the host card in each state — exported so the carousel
@@ -796,7 +797,7 @@ function RepoRow({ repo, checked, onToggle, disabled }: {
       <span
         className="flex-shrink-0 text-[10.5px] text-muted"
         title={repo.last_contributed_at
-          ? `Your last contribution: ${new Date(repo.last_contributed_at).toLocaleString()}`
+          ? i18nT('apps.issueRadar.connectPanel.last_contribution', { when: fmtDateTimeNumeric(repo.last_contributed_at) })
           : undefined}
       >
         {when}

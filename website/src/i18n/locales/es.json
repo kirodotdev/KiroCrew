@@ -471,6 +471,8 @@
           "ai_summary": "Resumen de IA",
           "couldn_t_generate_a_summary": "No se pudo generar un resumen.",
           "couldn_t_regenerate_showing_the_previous_summary": "No se pudo regenerar — se muestra el resumen anterior.",
+          "generated": "Generado {{generated}}",
+          "generated_stale": "Generado {{generated}} — ha habido actividad desde entonces ({{since}}). Actualiza para regenerarlo.",
           "generating_ai_summary": "Generando el resumen de IA",
           "no_summary_available_for_this": "No hay resumen disponible para este",
           "reading_summarizing": "Leyendo y resumiendo…",
@@ -736,6 +738,7 @@
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar lee",
+        "last_contribution": "Tu última contribución: {{when}}",
         "let_s_connect_a_repo": "Vamos a conectar un repositorio",
         "loading_your_repos": "Cargando tus repositorios…",
         "most_recent_activity": "actividad más reciente",
@@ -1568,7 +1571,8 @@
       "read_only_relayed_from_the_agent_s_own_screensho": "Solo lectura — transmitido desde las capturas de pantalla del propio agente",
       "show_live_desktop_view": "Mostrar la vista del escritorio en directo",
       "shrink": "Reducir",
-      "shrink_live_desktop_view": "Reducir la vista del escritorio en directo"
+      "shrink_live_desktop_view": "Reducir la vista del escritorio en directo",
+      "updated": "actualizado"
     },
     "contentRenderer": {
       "loading_editor": "Cargando el editor…"
@@ -5422,6 +5426,7 @@
         "no_changelog_available": "No hay registro de cambios disponible.",
         "open_source_under_the_apache_2_0_license": "Código abierto con licencia Apache 2.0",
         "platform": "Plataforma",
+        "published": "publicado {{when}}",
         "restart_update": "Reiniciar y actualizar",
         "restarting": "Reiniciando...",
         "retry": "Reintentar",

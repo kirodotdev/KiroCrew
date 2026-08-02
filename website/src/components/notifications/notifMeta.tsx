@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { i18nT } from '../../i18n/t'
 // Aliased: this module exports its own `fmtTime`/`fmtFull` wrappers that add the
 // unknown-date fallback on top of these.
-import { fmtTime as fmtClockTime, fmtDateTime } from '../../i18n/format'
+import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields } from '../../i18n/format'
 
 /**
  * Shared notification metadata + helpers. Extracted verbatim from the former
@@ -85,7 +85,7 @@ export function dateGroup(d: Date): string {
   if (d >= today) return i18nT('components.notifications.notifMeta.today')
   if (d >= yesterday) return i18nT('components.notifications.notifMeta.yesterday')
   if (d >= weekAgo) return i18nT('components.notifications.notifMeta.this_week')
-  return d.toLocaleDateString([], { year: 'numeric', month: 'short' })
+  return fmtDateFields(d, { year: 'numeric', month: 'short' })
 }
 
 export const KIND_META: Record<string, { icon: ReactNode; color: string; label: string; borderColor: string }> = {

@@ -51,6 +51,7 @@ import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
 import { providerTerms } from '../lib/links'
 
 import { i18nT } from '../../../i18n/t'
+import { fmtDateTime, fmtDateTimeNumeric } from '../../../i18n/format'
 /** A relative timestamp that flips to the absolute local date-time when
  * clicked (and always shows it on hover). Within the last 24h it reads
  * "just now / 12m ago / 3h ago"; older it reads "Yesterday / 5 days ago / …".
@@ -60,7 +61,7 @@ function RelTime({ iso, className = '' }: { iso?: string | null; className?: str
   if (!iso) return null
   const d = new Date(iso)
   if (isNaN(d.getTime())) return null
-  const absolute = d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+  const absolute = fmtDateTime(d)
   const toggle = () => setAbs((v) => !v)
   return (
     <span
@@ -459,7 +460,7 @@ function RelatedLinks({ items }: { items: RelatedRef[] }) {
                   {r.state && <span>· {r.state}</span>}
                   {r.actor && <span>{i18nT('apps.issueRadar.components.issueDetail.by')} {r.actor}</span>}
                   {r.created_at && (
-                    <span title={new Date(r.created_at).toLocaleString()}>· {relativeTimeOrDate(r.created_at)}</span>
+                    <span title={fmtDateTimeNumeric(r.created_at)}>· {relativeTimeOrDate(r.created_at)}</span>
                   )}
                 </span>
               </span>

@@ -10,6 +10,7 @@ import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
 
 import { i18nT } from '../../i18n/t'
+import { fmtDateTimeNumeric } from '../../i18n/format'
 export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }) {
   const [pref, setPref] = useState(''); const [proj, setProj] = useState(''); const [hist, setHist] = useState('')
   const [prefSaved, setPrefSaved] = useState(false); const [projSaved, setProjSaved] = useState(false); const [histSaved, setHistSaved] = useState(false)
@@ -111,7 +112,7 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
       </div>
       <table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
         <tbody>{lessons.length === 0 ? <tr><td colSpan={4} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.memoryTab.no_lessons')}</td></tr> : sortedLessons.map((l) => (
-          <tr key={`${l.rule}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{new Date(l.ts).toLocaleString()}</td>
+          <tr key={`${l.rule}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{fmtDateTimeNumeric(l.ts)}</td>
             <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { await api.deleteLesson(l.rule); loadLessons() }}>{i18nT('pages.overview.memoryTab.delete')}</Btn></td></tr>
         ))}</tbody></table></Card>
     )}

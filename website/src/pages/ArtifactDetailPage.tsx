@@ -36,6 +36,7 @@ import { PublishHub } from '../components/PublishHub'
 import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor, ChatSlot } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { fmtDateFields } from '../i18n/format'
 /**
  * The artifact's active companion session: the bound slot for `slug`, or the most
  * recently active one if a race or a History-page resume left more than one.
@@ -107,7 +108,7 @@ function formatEventTs(ts: string): string {
   if (!ts) return '?'
   const d = new Date(ts)
   if (isNaN(d.getTime())) return ts
-  return d.toLocaleString(undefined, {
+  return fmtDateFields(d, {
     year: '2-digit', month: 'numeric', day: 'numeric',
     hour: 'numeric', minute: '2-digit',
   })

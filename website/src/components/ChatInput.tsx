@@ -74,6 +74,7 @@ import { matchFileToken, matchSkillToken, replaceTokenAtCaret } from './composer
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 
 import { i18nT } from '../i18n/t'
+import { fmtDateFields } from '../i18n/format'
 const INPUT_MIN_H = 44
 const INPUT_DEFAULT_MAX_H = 140
 const INPUT_PREFILL_MAX_H = 320
@@ -1998,7 +1999,7 @@ function ChatInput({
                                   pending={true}
                                   ts={approvalTs}
                                   hasEntry={!!approvalToolInput}
-                                  fmtTime={t => t ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                                  fmtTime={t => t ? fmtDateFields(t, { hour: '2-digit', minute: '2-digit' }) : ''}
                                   barColor="color-mix(in srgb, var(--warn) 70%, transparent)"
                                   layoutId={`ghost-tool-detail-${approvalToolCallId || approvalId}`}
                                   compact

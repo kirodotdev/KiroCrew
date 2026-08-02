@@ -6,6 +6,7 @@ import InfoTip from '../../components/InfoTip'
 import { esc } from '../../api/helpers'
 
 import { i18nT } from '../../i18n/t'
+import { fmtDateNumeric, fmtDateTimeNumeric } from '../../i18n/format'
 const extractError = (err: unknown): string => {
   if (err != null && typeof err === 'object' && !(err instanceof Error)) {
     const obj = err as Record<string, unknown>;
@@ -487,7 +488,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
                 <td className="px-2.5 py-2 border-b border-border text-sm"><div className="flex gap-1 flex-wrap">{tags.map((t: string) => <Badge key={t} variant="ok">{t}</Badge>)}</div></td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">{confidenceBadge(e.importance)}</td>
                 {epQuery && <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-[12px]">{e.score != null ? e.score.toFixed(3) : '—'}</td>}
-                <td className="px-2.5 py-2 border-b border-border text-sm text-muted whitespace-nowrap">{(() => { const m = e.text?.match(/^\[(\d{4}-\d{2}-\d{2})/); if (m) return m[1]; const raw = e.created_at || e.ts || ''; const d = new Date(raw.replace(' ', 'T') + (raw.includes('+') || raw.includes('Z') ? '' : 'Z')); return isNaN(d.getTime()) ? '—' : d.toLocaleDateString() })()}</td>
+                <td className="px-2.5 py-2 border-b border-border text-sm text-muted whitespace-nowrap">{(() => { const m = e.text?.match(/^\[(\d{4}-\d{2}-\d{2})/); if (m) return m[1]; const raw = e.created_at || e.ts || ''; const d = new Date(raw.replace(' ', 'T') + (raw.includes('+') || raw.includes('Z') ? '' : 'Z')); return isNaN(d.getTime()) ? '—' : fmtDateNumeric(d) })()}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { await api.vectorEpisodicDelete(e.id); setEpisodic(prev => prev.filter(x => x.id !== e.id)) }}>{i18nT('pages.overview.vectorMemoryCard.delete')}</Btn></td>
               </tr>
             )
@@ -519,7 +520,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
               </td>
               <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-[12px]">{esc(e.memory_type === 'episodic' ? `episodic` : (e.memory_key || e.memory_type || ''))}</td>
               <td className="px-2.5 py-2 border-b border-border text-sm max-w-[350px]"><span className="break-words whitespace-pre-wrap">{esc(e.new_value || e.old_value || '')}</span></td>
-              <td className="px-2.5 py-2 border-b border-border text-sm text-muted whitespace-nowrap">{e.created_at ? new Date(e.created_at.replace(' ', 'T') + (e.created_at.includes('+') || e.created_at.includes('Z') ? '' : 'Z')).toLocaleString() : '—'}</td>
+              <td className="px-2.5 py-2 border-b border-border text-sm text-muted whitespace-nowrap">{e.created_at ? fmtDateTimeNumeric(e.created_at.replace(' ', 'T') + (e.created_at.includes('+') || e.created_at.includes('Z') ? '' : 'Z')) : '—'}</td>
             </tr>
           ))}
         </tbody></table>

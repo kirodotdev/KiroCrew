@@ -40,6 +40,9 @@ import {
   fmtDate,
   fmtDateFields,
   fmtDateTime,
+  fmtDateNumeric,
+  fmtDateTimeNumeric,
+  fmtTimeNumeric,
   fmtList,
   fmtNumber,
   fmtPercent,
@@ -162,7 +165,7 @@ describe('fmtUnit', () => {
   })
 })
 
-describe('fmtDate / fmtTime / fmtDateTime', () => {
+describe('fmtDate / fmtTime / fmtDateTime / the numeric widths', () => {
   it('renders the phase gate\'s named example for zh-CN', async () => {
     // Golden, and the literal the Phase 4 acceptance gate names: "a zh-CN UI on
     // an en-US browser renders 2026年7月30日".
@@ -188,6 +191,47 @@ describe('fmtDate / fmtTime / fmtDateTime', () => {
   it('combines date and time', () => {
     expect(fmtDateTime(INSTANT, UTC)).toContain('Jul 30, 2026')
     expect(fmtDateTime(INSTANT, UTC)).toContain('3:04')
+  })
+
+  it('reproduces every bare toLocale* default byte for byte, in every shipped locale', async () => {
+    // The contract that makes the Phase 4 batch-3 migration reviewable: the 21
+    // call sites that passed NO options rendered the locale's own all-numeric
+    // width, seconds included. These three helpers are that width, so swapping
+    // `d.toLocaleString()` for `fmtDateTimeNumeric(d)` changes WHICH locale is
+    // read and nothing else — English output is unchanged, which is why this is a
+    // formatting-source fix and not a restyle.
+    //
+    // Asserted against the platform call itself rather than a golden literal, so
+    // a CLDR data change moves both sides together instead of turning this red.
+    for (const code of ['en', 'zh-CN', 'de', 'es', 'fr', 'it', 'pt', 'ru', 'hi', 'bn']) {
+      await withLanguage(code, () => {
+        const tag = activeLocale()
+        expect(fmtDateNumeric(INSTANT), `${code} date`)
+          .toBe(INSTANT.toLocaleDateString(tag, UTC))
+        expect(fmtTimeNumeric(INSTANT), `${code} time`)
+          .toBe(INSTANT.toLocaleTimeString(tag, UTC))
+        expect(fmtDateTimeNumeric(INSTANT), `${code} date+time`)
+          .toBe(INSTANT.toLocaleString(tag, UTC))
+      })
+      __resetFormatterCache()
+    }
+  })
+
+  it('keeps the second that the numeric widths carry and the style presets drop', () => {
+    // `fmtTime`/`fmtDateTime` use `timeStyle: 'short'`, which has no second. Log
+    // rows, cron execution lists and the next-run tooltip came off a bare
+    // `toLocale*String()` and use the second to tell two runs apart, so they
+    // migrated to the numeric helpers rather than the presets.
+    expect(fmtTimeNumeric(INSTANT)).toMatch(/:05/)
+    expect(fmtDateTimeNumeric(INSTANT)).toMatch(/:05/)
+    expect(fmtTime(INSTANT, UTC)).not.toMatch(/:05/)
+    expect(fmtDateTime(INSTANT, UTC)).not.toMatch(/:05/)
+  })
+
+  it('renders a missing value as an em dash in the numeric widths too', () => {
+    expect(fmtDateNumeric(null)).toBe('—')
+    expect(fmtTimeNumeric(undefined)).toBe('—')
+    expect(fmtDateTimeNumeric('')).toBe('—')
   })
 
   it('renders a missing date as an em dash', () => {

@@ -5,6 +5,7 @@ import DetailPanel from '../../components/DetailPanel';
 import type { TaskDetail } from '../../types';
 
 import { i18nT } from '../../i18n/t'
+import { fmtDateFields } from '../../i18n/format'
 interface Props {
   task: TaskDetail;
   allTasks?: TaskDetail[];
@@ -21,7 +22,7 @@ interface Props {
 function fmtTime(ts?: number) {
   if (!ts) return '—';
   const d = new Date(ts * 1000);
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return fmtDateFields(d, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function fmtDuration(start?: number, end?: number) {

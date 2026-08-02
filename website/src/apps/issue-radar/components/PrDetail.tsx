@@ -41,6 +41,7 @@ import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
 import { providerTerms } from '../lib/links'
 
 import { i18nT } from '../../../i18n/t'
+import { fmtDateTime } from '../../../i18n/format'
 /** A relative timestamp that flips to the absolute local date-time on click
  * (and shows it on hover). Renders nothing for a missing/unparseable value. */
 function RelTime({ iso, className = '' }: { iso?: string | null; className?: string }) {
@@ -48,7 +49,7 @@ function RelTime({ iso, className = '' }: { iso?: string | null; className?: str
   if (!iso) return null
   const d = new Date(iso)
   if (isNaN(d.getTime())) return null
-  const absolute = d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+  const absolute = fmtDateTime(d)
   return (
     <span
       role="button"

@@ -471,6 +471,8 @@
           "ai_summary": "Riepilogo IA",
           "couldn_t_generate_a_summary": "Non è stato possibile generare un riepilogo.",
           "couldn_t_regenerate_showing_the_previous_summary": "Rigenerazione non riuscita — viene mostrato il riepilogo precedente.",
+          "generated": "Generato {{generated}}",
+          "generated_stale": "Generato {{generated}} — c’è stata attività da allora ({{since}}). Aggiorna per rigenerarlo.",
           "generating_ai_summary": "Generazione del riepilogo IA",
           "no_summary_available_for_this": "Nessun riepilogo disponibile per questo",
           "reading_summarizing": "Lettura e riepilogo…",
@@ -736,6 +738,7 @@
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar legge",
+        "last_contribution": "Il tuo ultimo contributo: {{when}}",
         "let_s_connect_a_repo": "Colleghiamo un repo",
         "loading_your_repos": "Caricamento dei tuoi repo…",
         "most_recent_activity": "attività più recente",
@@ -1568,7 +1571,8 @@
       "read_only_relayed_from_the_agent_s_own_screensho": "Sola lettura — trasmessa dagli screenshot dell'agente",
       "show_live_desktop_view": "Mostra la vista live del desktop",
       "shrink": "Rimpicciolisci",
-      "shrink_live_desktop_view": "Rimpicciolisci la vista live del desktop"
+      "shrink_live_desktop_view": "Rimpicciolisci la vista live del desktop",
+      "updated": "aggiornata"
     },
     "contentRenderer": {
       "loading_editor": "Caricamento dell'editor…"
@@ -5422,6 +5426,7 @@
         "no_changelog_available": "Nessun changelog disponibile.",
         "open_source_under_the_apache_2_0_license": "Open source con licenza Apache 2.0",
         "platform": "Piattaforma",
+        "published": "pubblicato {{when}}",
         "restart_update": "Riavvia e aggiorna",
         "restarting": "Riavvio in corso...",
         "retry": "Riprova",

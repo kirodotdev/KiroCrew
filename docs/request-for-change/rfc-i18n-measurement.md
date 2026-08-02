@@ -151,11 +151,13 @@ sidecar, where `contextSidecar.test.ts` catches a key *rename* but not a key who
 
 ### Critical
 
-**97 of 109 locale-API call sites pass no locale**, so dates, times, numbers and
-sort order follow the *browser*, not `dashboard.language`. AST-verified; matches
-the repo's own `BASELINE = 97` (`website/src/i18n/localeFormatting.test.ts:73`).
-Split: 39 `localeCompare` · 37 `toLocaleString` · 12 `toLocaleDateString` ·
-9 `toLocaleTimeString`. `compareText`/`collator` (`website/src/i18n/format.ts:399-418`)
+**97 of 109 locale-API call sites pass no locale** *as measured when this RFC was
+written*, so dates, times, numbers and sort order follow the *browser*, not
+`dashboard.language`. AST-verified. Split at that time: 39 `localeCompare` ·
+37 `toLocaleString` · 12 `toLocaleDateString` · 9 `toLocaleTimeString`. The live
+figure is the `BASELINE` ceiling in `website/src/i18n/localeFormatting.test.ts`,
+now **62** after the Phase 4 date/time batch migrated the 35 `toLocale*` date and
+time sites; what remains is 39 `localeCompare` plus 23 number/date sites. `compareText`/`collator` (`website/src/i18n/format.ts:399-418`)
 are built, tested, and have **zero consumers**.
 
 This is load-bearing for any future RTL locale, not cosmetic: an `Intl` call
@@ -252,7 +254,7 @@ update notifications (`website/electron/main.js:2040-2042`) are hardcoded.
 | Surface | State | Evidence |
 |---|---|---|
 | Dashboard React UI | **Partially localized** — 10 catalogs at exact parity, but 1,860 hardcoded literals remain | catalogs, `catalogParity.test.ts`, `untranslated-baseline.json` |
-| Dashboard formatting | **Partial** — 97/109 sites follow the browser | `localeFormatting.test.ts:73` |
+| Dashboard formatting | **Partial** — 62 sites still follow the browser, down from 97/109 | `localeFormatting.test.ts` (`BASELINE`) |
 | Electron chrome | **English-only** | `app-menu.js`, `main.js` |
 | Backend (notifications, channels, API errors) | **English-only** | no `gettext`/`babel`/`Accept-Language` |
 | CLI | **English-only** | same |

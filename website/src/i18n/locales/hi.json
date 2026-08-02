@@ -399,6 +399,8 @@
           "ai_summary": "AI सारांश",
           "couldn_t_generate_a_summary": "सारांश तैयार नहीं किया जा सका।",
           "couldn_t_regenerate_showing_the_previous_summary": "फिर से तैयार नहीं किया जा सका — पिछला सारांश दिखाया जा रहा है।",
+          "generated": "बनाया गया {{generated}}",
+          "generated_stale": "बनाया गया {{generated}} — उसके बाद गतिविधि हुई है ({{since}})। नए सिरे से बनाने के लिए रिफ़्रेश करो।",
           "generating_ai_summary": "AI सारांश तैयार किया जा रहा है",
           "no_summary_available_for_this": "इसके लिए कोई सारांश उपलब्ध नहीं है",
           "reading_summarizing": "पढ़कर सारांश बनाया जा रहा है…",
@@ -662,6 +664,7 @@
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar पढ़ता है",
+        "last_contribution": "तुम्हारा पिछला योगदान: {{when}}",
         "let_s_connect_a_repo": "चलिए एक रिपो कनेक्ट करें",
         "loading_your_repos": "आपके रिपो लोड हो रहे हैं…",
         "most_recent_activity": "सबसे हाल की गतिविधि",
@@ -1549,7 +1552,8 @@
       "read_only_relayed_from_the_agent_s_own_screensho": "केवल-पठनीय — एजेंट के अपने स्क्रीनशॉट से रिले किया गया",
       "show_live_desktop_view": "लाइव डेस्कटॉप व्यू दिखाएँ",
       "shrink": "छोटा करें",
-      "shrink_live_desktop_view": "लाइव डेस्कटॉप व्यू छोटा करें"
+      "shrink_live_desktop_view": "लाइव डेस्कटॉप व्यू छोटा करें",
+      "updated": "अपडेट किया गया"
     },
     "contentRenderer": {
       "loading_editor": "एडिटर लोड हो रहा है…"
@@ -5364,6 +5368,7 @@
         "no_changelog_available": "कोई चेंजलॉग उपलब्ध नहीं है।",
         "open_source_under_the_apache_2_0_license": "Apache 2.0 लाइसेंस के अंतर्गत ओपन सोर्स",
         "platform": "प्लैटफ़ॉर्म",
+        "published": "प्रकाशित {{when}}",
         "restart_update": "पुनः आरंभ और अपडेट",
         "restarting": "पुनः आरंभ हो रहा है...",
         "retry": "पुनः प्रयास",

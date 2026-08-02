@@ -20,6 +20,7 @@ import PastedChip from '../components/PastedChip'
 import { type PasteBlock, findTokenRanges, recollapsePastes } from '../utils/pasteTokens'
 import type { ChatMessage } from '../types'
 import type { TurnItem, DisplayItem } from '../pages/chat/types'
+import { fmtDateFields } from '../i18n/format'
 
 // ── Types ──
 
@@ -80,7 +81,7 @@ const GROUPABLE = new Set(['thinking', 'permission'])
 
 function formatTs(ts?: string): string | undefined {
   if (!ts) return undefined
-  return new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return fmtDateFields(ts, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
 function msgKey(m: ChatMessage, i: number): string {

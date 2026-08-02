@@ -112,6 +112,11 @@
         "agentSessionButton": {
           "resume": "Resume"
         },
+        "aiSummaryCard": {
+          "outdated": "outdated",
+          "generated": "Generated {{generated}}",
+          "generated_stale": "Generated {{generated}} — there has been activity since ({{since}}). Refresh to regenerate."
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "Sign in with the gh CLI to use this filter"
         },
@@ -163,15 +168,13 @@
           "merged": "Merged",
           "open": "Open"
         },
-        "aiSummaryCard": {
-          "outdated": "outdated"
-        },
         "refSheet": {
           "issue": "Issue"
         }
       },
       "connectPanel": {
         "couldn_t_read_far_enough_back_through_your_activ": "Couldn’t read far enough back through your activity — paste a URL below instead.",
+        "last_contribution": "Your last contribution: {{when}}",
         "most_recent_activity": "most recent activity",
         "no_contributions_in_the_last_month_paste_a_url_b": "No contributions in the last month — paste a URL below instead."
       },
@@ -506,7 +509,8 @@
       "read_only_relayed_from_the_agent_s_own_screensho": "Read-only — relayed from the agent’s own screenshots",
       "show_live_desktop_view": "Show live desktop view",
       "shrink": "Shrink",
-      "shrink_live_desktop_view": "Shrink live desktop view"
+      "shrink_live_desktop_view": "Shrink live desktop view",
+      "updated": "updated"
     },
     "diffBlock": {
       "copied": "Copied!",
@@ -1824,6 +1828,7 @@
         "install_failed": "Couldn’t install the update",
         "installing_quiet_note": "Installing — KiroCrew will go quiet for a minute or two, then restart itself.",
         "manual_install_fallback": "If updating doesn't work, you can {{link}} and reinstall over this copy. Your settings, chats, and files are kept.",
+        "published": "published {{when}}",
         "restarting": "Restarting...",
         "retry": "Retry",
         "update_error_integrity": "The download failed its integrity check and was discarded.",

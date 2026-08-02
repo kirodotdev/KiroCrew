@@ -12,6 +12,7 @@ import { api, ApiError } from '../../api/client'
 import { sanitize } from '../../api/helpers'
 
 import { i18nT } from '../../i18n/t'
+import { fmtDateTimeNumeric } from '../../i18n/format'
 type UpdateState = {
   state: 'checking' | 'found' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
   version?: string
@@ -248,7 +249,7 @@ export function AboutPanel() {
           </span>
           <span className="text-[12px] text-muted">
             {channel ? `${channel} channel` : i18nT('pages.settings.aboutPanel.update_noun')}
-            {cardPubDate && !isNaN(cardPubDate.getTime()) ? ` · published ${cardPubDate.toLocaleString()}` : ''}
+            {cardPubDate && !isNaN(cardPubDate.getTime()) ? ` · ${i18nT('pages.settings.aboutPanel.published', { when: fmtDateTimeNumeric(cardPubDate) })}` : ''}
           </span>
         </div>
         <div className="shrink-0">

@@ -372,24 +372,31 @@ committed number can always be re-snapshotted past.
 | untranslated strings, per file | `src/i18n/untranslated-baseline.json` | `check-i18n-strings.mjs` **[added-lines]** — a literal on a line you wrote |
 | catalog QA violations, per check | `CEILINGS` in `src/i18n/qa.test.ts` | `check-source-strings.mjs` **[changed-values]** — QA on any value you added or changed |
 | unextracted JSX strings | `--baseline=N` in `package.json` | **[added-lines]** — same population, no ledger |
+| host-locale calls | `BASELINE` in `src/i18n/localeFormatting.test.ts` | that file's own **[added-lines]** / **[vs-base]** — a `toLocale*`/`localeCompare` on a line you wrote, or a touched file whose count grew vs the base ref |
 
-For these three, a decrease is reported and tolerated: you do not re-snapshot anything,
+For these four, a decrease is reported and tolerated: you do not re-snapshot anything,
 and a change that improves one of these numbers without editing it will pass.
 
 **Still exact in both directions, because nothing diff-scoped covers them:**
-`deadKeys.test.ts`, `glossary.test.ts` (DNT), `localeFormatting.test.ts` (host-locale
-calls), and `check-i18n-keys.mjs`'s dynamic-site counts. Improving one of these *does*
-require lowering its number in the same change. They are single literals touched by
-roughly one PR at a time, so they were never the contention problem, and relaxing them
-would have bought nothing at the cost of real slack. If you add a diff-scoped gate for
-one of them, it may move to the table above.
+`deadKeys.test.ts`, `glossary.test.ts` (DNT), and `check-i18n-keys.mjs`'s dynamic-site
+counts. Improving one of these *does* require lowering its number in the same change.
+They are single literals touched by roughly one PR at a time, so they were never the
+contention problem, and relaxing them would have bought nothing at the cost of real
+slack. If you add a diff-scoped gate for one of them, it may move to the table above.
+
+**Keep a relaxed ceiling TIGHT against its live count.** Upward-only means an improving
+branch never has to edit the number, so tightening costs one line once — and on a push
+to `main` the diff-scoped gates skip (`I18N_BASE_REF` is empty there by design), leaving
+the ceiling as the only guard. Slack in a ceiling is slack that a merge-conflict
+resolution can spend. Each relaxed gate reports its own decrease so the drift is visible
+in CI output rather than discovered later.
 
 **The ultimate goal is zero for every number on either list.** That is what makes an
 upward-only ceiling a convergence rather than a loosening: at 0 there is nothing left to
 decrease, so "only an increase fails" *is* the strict gate. Each phase drives some to
 zero and deletes its ceiling.
 
-Why the relaxed three changed at all: each number lives in a single generated ledger, so
+Why the relaxed ratchets changed at all: each number lives in a single generated ledger, so
 demanding that every improving branch re-snapshot it made the ledger conflict between
 branches whose source edits were disjoint, and made every merge to `main` invalidate the
 number in every other open branch. It also did not achieve what it looked like — the

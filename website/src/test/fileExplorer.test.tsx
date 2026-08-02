@@ -85,6 +85,16 @@ describe('file-explorer/utils', () => {
       expect(result).toBeTruthy()
       expect(result.length).toBeGreaterThan(5)
     })
+    it('still dates a pre-epoch mtime', () => {
+      // `/api/files` forwards `st_mtime` raw, and a restored archive or a bad
+      // clock can make that NEGATIVE. The i18n seam's `toDate` treats `<= 0` as
+      // unparseable and returns an em dash, so `formatTime` converts the seconds
+      // to a `Date` itself rather than passing the number through — without that,
+      // a pre-epoch file silently lost its timestamp in the listing.
+      const result = utils.formatTime(-1)
+      expect(result).not.toBe('—')
+      expect(result).toContain('1969')
+    })
   })
 
   describe('isShortcut', () => {

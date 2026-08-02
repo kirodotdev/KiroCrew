@@ -541,6 +541,8 @@
           "ai_summary": "KI-Zusammenfassung",
           "couldn_t_generate_a_summary": "Es konnte keine Zusammenfassung erstellt werden.",
           "couldn_t_regenerate_showing_the_previous_summary": "Neuerstellung fehlgeschlagen — die vorherige Zusammenfassung wird angezeigt.",
+          "generated": "Erstellt {{generated}}",
+          "generated_stale": "Erstellt {{generated}} — seither gab es Aktivität ({{since}}). Aktualisiere, um neu zu erstellen.",
           "generating_ai_summary": "KI-Zusammenfassung wird erstellt",
           "no_summary_available_for_this": "Keine Zusammenfassung verfügbar für dieses",
           "reading_summarizing": "Wird gelesen & zusammengefasst…",
@@ -804,6 +806,7 @@
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar liest",
+        "last_contribution": "Dein letzter Beitrag: {{when}}",
         "let_s_connect_a_repo": "Verbinden wir ein Repo",
         "loading_your_repos": "Ihre Repos werden geladen…",
         "most_recent_activity": "neueste Aktivität",
@@ -1549,7 +1552,8 @@
       "read_only_relayed_from_the_agent_s_own_screensho": "Nur lesbar — weitergeleitet aus den Screenshots des Agenten",
       "show_live_desktop_view": "Live-Desktop-Ansicht anzeigen",
       "shrink": "Verkleinern",
-      "shrink_live_desktop_view": "Live-Desktop-Ansicht verkleinern"
+      "shrink_live_desktop_view": "Live-Desktop-Ansicht verkleinern",
+      "updated": "aktualisiert"
     },
     "contentRenderer": {
       "loading_editor": "Editor wird geladen…"
@@ -5364,6 +5368,7 @@
         "no_changelog_available": "Kein Änderungsprotokoll verfügbar.",
         "open_source_under_the_apache_2_0_license": "Open Source unter der Apache-2.0-Lizenz",
         "platform": "Plattform",
+        "published": "veröffentlicht {{when}}",
         "restart_update": "Neu starten & aktualisieren",
         "restarting": "Wird neu gestartet…",
         "retry": "Wiederholen",

@@ -12,6 +12,7 @@ import ShimmerLine from './ShimmerLine'
 import { relativeTimeOrDate } from '../lib/format'
 
 import { i18nT } from '../../../i18n/t'
+import { fmtDateTimeNumeric } from '../../../i18n/format'
 /** Fast typewriter reveal for a freshly-generated summary. Returns a growing
  * prefix of `text` plus a `typing` flag. When `enabled` is false (a cached
  * result the user has already seen, or reduced-motion) it returns the full text
@@ -92,10 +93,13 @@ export default function AiSummaryCard({
             }
             title={
               stale
-                ? `Generated ${new Date(generatedAt as string).toLocaleString()} — there has been `
-                  + `activity since (${new Date(staleSince as string).toLocaleString()}). `
-                  + 'Refresh to regenerate.'
-                : `Generated ${new Date(generatedAt as string).toLocaleString()}`
+                ? i18nT('apps.issueRadar.components.aiSummaryCard.generated_stale', {
+                  generated: fmtDateTimeNumeric(generatedAt as string),
+                  since: fmtDateTimeNumeric(staleSince as string),
+                })
+                : i18nT('apps.issueRadar.components.aiSummaryCard.generated', {
+                  generated: fmtDateTimeNumeric(generatedAt as string),
+                })
             }
           >
             {age}{stale ? <> · {i18nT('apps.issueRadar.components.aiSummaryCard.outdated')}</> : ''}

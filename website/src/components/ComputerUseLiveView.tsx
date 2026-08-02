@@ -5,6 +5,7 @@ import { useComputerUseFrame, COMPUTER_USE_FRAME_EVENT } from '../hooks/useCompu
 import { safeSetItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
+import { fmtTimeNumeric } from '../i18n/format'
 
 /**
  * ComputerUseLiveView — floating picture-in-picture view of the desktop the agent
@@ -417,7 +418,7 @@ export default function ComputerUseLiveView() {
             : i18nT('components.computerUseLiveView.read_only')}
         </span>
         {lastTs && (
-          <span className="shrink-0">updated {new Date(lastTs).toLocaleTimeString()}</span>
+          <span className="shrink-0">{i18nT('components.computerUseLiveView.updated')} {fmtTimeNumeric(lastTs)}</span>
         )}
       </footer>
     </div>

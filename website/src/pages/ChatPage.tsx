@@ -156,6 +156,7 @@ import { rewindWithRollback } from '../lib/rewindCall'
 
 
 import { i18nT } from '../i18n/t'
+import { fmtDateFields } from '../i18n/format'
 /**
  * Human-readable reason from a rejected thunk. `unwrap()` rejects with RTK's
  * SERIALIZED error — a plain object, never an `Error` instance — so an
@@ -3876,7 +3877,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // (raised in review). visibleIndexMap is O(1) per row.
     const canFork = !isStreaming && !isInject && !slotHasMore
     const forkIndex = canFork ? visibleIndexMap.get(i) : undefined
-    const msgTime = m.ts ? new Date(m.ts).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
+    const msgTime = m.ts ? fmtDateFields(m.ts, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
     return (
       <MessageSearchScope key={key} messageIdx={i}>
       <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''} ${m.ts && m.ts === highlightTs ? 'animate-msg-highlight rounded-lg' : ''}`}>
@@ -4517,7 +4518,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       >
                         <div className="flex-1 min-w-0">
                           <div className="font-mono text-[13px] text-text truncate">{s.title || s.key}</div>
-                          {s.created && <div className="text-[11px] text-muted font-mono mt-0.5">{new Date(s.created).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })}</div>}
+                          {s.created && <div className="text-[11px] text-muted font-mono mt-0.5">{fmtDateFields(s.created, { year: 'numeric', month: 'short', day: 'numeric' })}</div>}
                         </div>
                         <Undo2 size={14} className="text-accent shrink-0" />
                       </div>

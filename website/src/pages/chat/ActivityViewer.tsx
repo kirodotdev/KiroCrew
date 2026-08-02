@@ -25,6 +25,7 @@ import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
 
 import { i18nT } from '../../i18n/t'
+import { fmtDateFields } from '../../i18n/format'
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
   running: <LoaderIcon size={12} className="text-accent animate-spin" />,
@@ -49,7 +50,7 @@ const resourceTypeLabel = (type: string): string =>
       : i18nT('pages.chat.activityViewer.resource_type_link')
 
 function fmtTime(ts: number) {
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return fmtDateFields(ts, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 /* ── Subagent pane ── */

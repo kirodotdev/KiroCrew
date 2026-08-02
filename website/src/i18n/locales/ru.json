@@ -473,6 +473,8 @@
           "ai_summary": "ИИ-сводка",
           "couldn_t_generate_a_summary": "Не удалось сформировать сводку.",
           "couldn_t_regenerate_showing_the_previous_summary": "Не удалось пересоздать — показана предыдущая сводка.",
+          "generated": "Создано {{generated}}",
+          "generated_stale": "Создано {{generated}} — с тех пор была активность ({{since}}). Обнови, чтобы создать заново.",
           "generating_ai_summary": "Формирование ИИ-сводки",
           "no_summary_available_for_this": "Нет доступной сводки для этого",
           "reading_summarizing": "Чтение и обобщение…",
@@ -740,6 +742,7 @@
         "https_github_com_owner_repo": "https://github.com/<owner>/<repo>",
         "https_gitlab_com_group_project": "https://gitlab.com/<group>/<project>",
         "issue_radar_reads": "Issue Radar читает",
+        "last_contribution": "Твой последний вклад: {{when}}",
         "let_s_connect_a_repo": "Подключим репозиторий",
         "loading_your_repos": "Загрузка ваших репозиториев…",
         "most_recent_activity": "последняя активность",
@@ -1587,7 +1590,8 @@
       "read_only_relayed_from_the_agent_s_own_screensho": "Только чтение — передаётся со снимков экрана самого агента",
       "show_live_desktop_view": "Показать живой вид рабочего стола",
       "shrink": "Уменьшить",
-      "shrink_live_desktop_view": "Уменьшить живой вид рабочего стола"
+      "shrink_live_desktop_view": "Уменьшить живой вид рабочего стола",
+      "updated": "обновлено"
     },
     "contentRenderer": {
       "loading_editor": "Загрузка редактора…"
@@ -5480,6 +5484,7 @@
         "no_changelog_available": "Список изменений недоступен.",
         "open_source_under_the_apache_2_0_license": "Открытый код под лицензией Apache 2.0",
         "platform": "Платформа",
+        "published": "опубликовано {{when}}",
         "restart_update": "Перезапустить и обновить",
         "restarting": "Перезапуск...",
         "retry": "Повторить",

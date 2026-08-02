@@ -5,6 +5,7 @@ import { Badge } from './ui'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
+import { fmtDateTimeNumeric } from '../i18n/format'
 export interface LogEntryData {
   run_id: string
   status: 'success' | 'failure' | 'timeout' | 'cancelled'
@@ -53,7 +54,7 @@ export default function LogEntry({ entry, jobId }: { entry: LogEntryData; jobId:
       >
         <ChevronRight size={14} className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`} />
         {statusBadge}
-        <span className="text-[12px] text-muted shrink-0">{new Date(entry.started_at * 1000).toLocaleString()}</span>
+        <span className="text-[12px] text-muted shrink-0">{fmtDateTimeNumeric(entry.started_at)}</span>
         <span className="text-[12px] text-muted shrink-0">{fmtDuration(entry.duration_ms)}</span>
         {triggerPill}
         <span className="text-sm text-text truncate min-w-0 flex-1">{entry.summary || '—'}</span>

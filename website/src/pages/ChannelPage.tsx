@@ -14,6 +14,7 @@ import { AnimatePresence } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
 
 import { i18nT } from '../i18n/t'
+import { fmtDateFields } from '../i18n/format'
 // ── Types ──
 
 interface ChannelAgent {
@@ -112,7 +113,7 @@ function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
   const approvalMode = useAppSelector((s: RootState) => s.dashboard.approvalMode)
   const agentIdx = agents.findIndex(a => a.id === msg.fromId)
   const c = isHuman ? null : agentColor(agentIdx >= 0 ? agentIdx : 0)
-  const time = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const time = fmtDateFields(msg.timestamp, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
   return (
     <div className={`flex gap-3 py-2 px-3 rounded-lg animate-rise group ${isHuman ? 'bg-accent/10' : 'hover:bg-bg-hover'}`}>

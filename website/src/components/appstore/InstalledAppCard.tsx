@@ -17,6 +17,7 @@ import AppIcon from '../AppIcon'
 import type { InstalledApp } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { fmtDateNumeric } from '../../i18n/format'
 export default function InstalledAppCard({
   app,
   actionLoading,
@@ -215,7 +216,7 @@ export default function InstalledAppCard({
             </div>
           )}
           <div className="text-[11px] text-muted">
-            {i18nT('components.appstore.installedAppCard.installed')} {new Date(app.installedAt).toLocaleDateString()}
+            {i18nT('components.appstore.installedAppCard.installed')} {fmtDateNumeric(app.installedAt)}
             {m?.minKiroCrewVersion && <span className="ml-3">{i18nT('components.appstore.installedAppCard.min_version')} {m.minKiroCrewVersion}</span>}
             {isSelfManaged && <div className="mt-1">{i18nT('components.appstore.installedAppCard.management_app_handles_its_own_agent_skill_mcp_r')}</div>}
             {isBuiltin && <div className="mt-1">{i18nT('components.appstore.installedAppCard.built_in_this_feature_is_part_of_the_kirocrew_da')}</div>}

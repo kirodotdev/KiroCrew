@@ -14,6 +14,7 @@ import { isSafePath } from '../../utils/safePath'
 import { fileReadUrl } from '../../utils/fileReadUrl'
 import McpAppFrame from '../../components/McpAppFrame'
 import { i18nT } from '../../i18n/t'
+import { fmtDateFields } from '../../i18n/format'
 
 // Tool-call ids that have already played their one-shot `.ft-block-reveal`
 // entrance fade. A CSS animation re-fires on every DOM *mount*, and a pill
@@ -274,7 +275,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     setPendingAutoExpand(false)
   }, [hasPendingPerm, expanded, applyExpanded])
 
-  const fmtTime = (t: number) => t ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+  const fmtTime = (t: number) => t ? fmtDateFields(t, { hour: '2-digit', minute: '2-digit' }) : ''
 
   // Pending pills are always expanded — `expanded` state still tracks the
   // user's intent for after the approval resolves, but the rendered panel

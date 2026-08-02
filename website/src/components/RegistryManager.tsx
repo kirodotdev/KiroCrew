@@ -17,6 +17,7 @@ import Clickable from './Clickable'
 import { recordEvent } from '../rum'
 
 import { i18nT } from '../i18n/t'
+import { fmtTimeNumeric } from '../i18n/format'
 type Registry = { name: string; repo: string; branch: string }
 
 // Shell metacharacters / whitespace that must never appear in a repo value.
@@ -294,7 +295,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               </Btn>
               {lastSyncedAt && (
                 <span className="text-[12px] text-muted">
-                  {i18nT('components.registryManager.last_synced')} {new Date(lastSyncedAt).toLocaleTimeString()}
+                  {i18nT('components.registryManager.last_synced')} {fmtTimeNumeric(lastSyncedAt)}
                 </span>
               )}
             </>
