@@ -4517,8 +4517,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}
               <TaskProgressBar slot={activeSlot} />
-              {!activityOpen && <SubagentProgressBar slot={activeSlot} />}
-              {!activityOpen && <WorkflowProgressBar slot={activeSlot} />}
+              {!(activityOpen && activityTab === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
+              {!(activityOpen && activityTab === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
