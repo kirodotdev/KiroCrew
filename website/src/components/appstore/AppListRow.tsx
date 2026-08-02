@@ -9,13 +9,11 @@
  * built-ins), or an Installed check. The row opens the detail page, honoring
  * Cmd/Ctrl-click for a new tab.
  */
-import { ArrowUp, BadgeCheck, Check, Package, Power, Monitor } from 'lucide-react'
+import { ArrowUp, BadgeCheck, Check, Monitor, Power } from 'lucide-react'
 import { Btn } from '../ui'
 import Clickable from '../Clickable'
-import AppIcon from '../AppIcon'
-import { gradientFor } from './gradient'
+import HeroCapsule from './HeroCapsule'
 import { categoryFor } from './categories'
-import { useHeroArt } from './useHeroArt'
 import { sourceLabel, isVerified, type RegistryApp } from './types'
 import { needsDesktopApp } from '../../lib/electron'
 
@@ -29,8 +27,6 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
   onEnable: () => void
 }) {
   const isBuiltin = app.origin === 'builtin' && !!app.installed
-  const hasIcon = !!(app.iconUrl || app.icon)
-  const hero = useHeroArt(app)
 
   return (
     <Clickable
@@ -39,18 +35,7 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
       onClick={onOpen}
     >
       {/* Hero capsule — 16:9 crop of the app's own art, gradient when absent */}
-      <div
-        className="w-24 h-[54px] rounded-lg shrink-0 overflow-hidden grid place-items-center text-white relative"
-        style={hero.src ? { background: 'var(--bg-elevated)' } : { background: gradientFor(app.name) }}
-      >
-        {hero.src ? (
-          <img src={hero.src} alt="" className="absolute inset-0 w-full h-full object-cover" onError={hero.onError} />
-        ) : hasIcon ? (
-          <AppIcon icon={app.icon} iconUrl={app.iconUrl} size={28} />
-        ) : (
-          <Package size={22} />
-        )}
-      </div>
+      <HeroCapsule name={app.name} art={app} icon={app.icon} iconUrl={app.iconUrl} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 text-[14px] font-semibold text-text-strong">
           <span className="truncate">{app.displayName}</span>
