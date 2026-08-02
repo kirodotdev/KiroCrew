@@ -173,6 +173,11 @@ export default [
               '^(css|cx|clsx|twMerge|cva)$',
               // Storage, telemetry and routing take machine keys.
               '(local|session)Storage\\.\\w+', 'navigate', 'track', 'emit',
+              // KiroCrew's own telemetry shim (`src/rum.ts`). Its first argument is
+              // a machine event name (`notifications_open`) and its second a tag
+              // bag (`{ source: 'topbar' }`) — never rendered, so never copy. Sits
+              // beside `track`/`emit` above, which are the same shape.
+              '^recordEvent$',
               // Config PATCH takes a dotted config path (`telemetry.beacon_enabled`),
               // a machine key that must never be translated.
               'patchConfig',

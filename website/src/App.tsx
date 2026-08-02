@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useMemo, createContext, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo, createContext, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -541,6 +541,10 @@ function TasksRedirect() { const { search } = useLocation(); return <Navigate to
 function ChatRedirect() { const { search } = useLocation(); return <Navigate to={'/chat' + search} replace /> }
 function OrchestratedRedirect() { const { slug } = useParams(); const { search } = useLocation(); return <Navigate to={`/chat${slug ? '/' + slug : ''}${search}`} replace /> }
 
+/** How long the notification sheet's exit animation runs before the portal is
+ *  unmounted. MUST match the `nc-slide-out` duration in tailwind.config.js. */
+const NC_CLOSE_MS = 240
+
 /**
  * Topbar Notifications bell. Replaces the former left-rail Notifications item
  * (the surface is now `hiddenFromNav`). Click opens an Activity Feed popover
@@ -555,9 +559,15 @@ function NotificationsBellButton() {
   const items = useAppSelector(s => s.notifications.items)
   const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
+  // Exit animation: the sheet must stay mounted long enough to slide back out,
+  // so dismissal flips `closing` (portal still rendered, sheet plays
+  // nc-slide-out) and a timer does the real unmount. Must match the
+  // animation duration in tailwind.config.js (`nc-slide-out`).
+  const [closing, setClosing] = useState(false)
   const [selectedTs, setSelectedTs] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
+  const bellRef = useRef<HTMLButtonElement>(null)
   // Badge counts attention-worthy rows only (RFC Phase 3): passive and
   // muted-channel (silenced) rows are excluded, mirroring the backend's
   // _unread_count semantics.
@@ -570,14 +580,53 @@ function NotificationsBellButton() {
   }, [unacked.length])
   const selected = selectedTs ? items.find(n => n.ts === selectedTs) || null : null
 
+  // Single dismissal path: every close (bell toggle, outside click, Escape,
+  // navigation, error fallback) goes through here so the sheet always gets its
+  // slide-out instead of being torn down instantly.
+  const closePanel = useCallback(() => {
+    if (open) setClosing(true)
+    setOpen(false)
+    setSelectedTs(null)
+  }, [open])
+
+  const openPanel = useCallback(() => {
+    setClosing(false)
+    setOpen(true)
+    setSelectedTs(null)
+    recordEvent('notifications_open', { source: 'topbar' })
+  }, [])
+
+  // Unmount the portal once the exit animation has played. Reopening mid-flight
+  // clears `closing` first, which cancels this timer via the cleanup.
+  useEffect(() => {
+    if (!closing) return
+    const t = window.setTimeout(() => setClosing(false), NC_CLOSE_MS)
+    return () => window.clearTimeout(t)
+  }, [closing])
+
+  // While the sheet plays its exit animation it is STILL in the DOM, so it must
+  // stop being interactive in every modality — not just the pointer. `inert`
+  // removes it from the tab order and the accessibility tree too, which is what
+  // keeps a leaving panel from stealing a Tab stop or being announced. React 18
+  // has no `inert` prop, so it rides through as a plain string attribute;
+  // pointer-events-none stays as the floor for browsers without `inert`.
+  const leavingProps = (closing
+    ? { inert: '', 'aria-hidden': true }
+    : {}) as HTMLAttributes<HTMLDivElement>
+  // Desktop slides a fixed 400px sheet by px; mobile is full-width, so it needs
+  // the percentage variant (see the keyframe comment in tailwind.config.js).
+  const sheetAnim = closing
+    ? (isMobile ? 'animate-nc-slide-out-full' : 'animate-nc-slide-out')
+    : (isMobile ? 'animate-nc-slide-in-full' : 'animate-nc-slide-in')
+
   // Close popover when navigating (e.g. detail panel's "Go to Chat" buttons)
   const lastPathRef = useRef(location.pathname)
   useEffect(() => {
     if (location.pathname !== lastPathRef.current) {
       lastPathRef.current = location.pathname
-      if (open) { setOpen(false); setSelectedTs(null) }
+      if (open) closePanel()
     }
-  }, [location.pathname, open])
+  }, [location.pathname, open, closePanel])
 
   useEffect(() => {
     if (!open) return
@@ -587,19 +636,23 @@ function NotificationsBellButton() {
       const inButton = containerRef.current?.contains(target) ?? false
       const inPopover = popoverRef.current?.contains(target) ?? false
       if (!inButton && !inPopover) {
-        setOpen(false); setSelectedTs(null)
+        closePanel()
       }
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (selectedTs) setSelectedTs(null)
-        else setOpen(false)
+        // Escape is the keyboard dismissal, so return focus to the trigger.
+        // The pointer paths deliberately do NOT do this: at pointerdown the
+        // click's own focus move hasn't happened yet, so forcing focus here
+        // would steal it from whatever the user just clicked.
+        else { closePanel(); bellRef.current?.focus() }
       }
     }
     document.addEventListener('pointerdown', onPointerDown)
     document.addEventListener('keydown', onKey)
     return () => { document.removeEventListener('pointerdown', onPointerDown); document.removeEventListener('keydown', onKey) }
-  }, [open, selectedTs])
+  }, [open, selectedTs, closePanel])
 
   // Auto-mark-read when opening a notification's detail
   useEffect(() => {
@@ -609,14 +662,9 @@ function NotificationsBellButton() {
   return (
     <div ref={containerRef} className="relative">
       <button
+        ref={bellRef}
         className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 relative ${open ? 'text-accent' : 'text-muted hover:text-text'}`}
-        onClick={() => {
-          setOpen(o => {
-            if (!o) recordEvent('notifications_open', { source: 'topbar' })
-            return !o
-          })
-          setSelectedTs(null)
-        }}
+        onClick={() => { if (open) closePanel(); else openPanel() }}
         title={unacked.length > 0 ? `${unacked.length} notification${unacked.length === 1 ? '' : 's'}` : i18nT('app.notifications')}
         aria-label={i18nT('app.notifications')}
         aria-expanded={open}
@@ -628,7 +676,7 @@ function NotificationsBellButton() {
           </span>
         )}
       </button>
-      {open && createPortal(
+      {(open || closing) && createPortal(
         <div
           ref={popoverRef}
           className="fixed z-[60] pointer-events-none"
@@ -637,10 +685,10 @@ function NotificationsBellButton() {
           <ErrorBoundary
             scope="notifications-bell"
             fallback={
-              <div className={`absolute top-0 right-0 pointer-events-auto ${isMobile ? 'left-0' : 'w-[400px]'} glass-surface glass-static rounded-xl shadow-xl flex flex-col items-center justify-center gap-2 p-6 text-center`} style={{ maxHeight: 240 }}>
+              <div {...leavingProps} className={`absolute top-0 right-0 ${closing ? 'pointer-events-none' : 'pointer-events-auto'} ${isMobile ? 'w-full' : 'w-[400px]'} glass-surface glass-static rounded-xl shadow-xl flex flex-col items-center justify-center gap-2 p-6 text-center`} style={{ maxHeight: 240 }}>
                 <AlertTriangle size={20} className="text-warn" />
                 <div className="text-[13px] font-semibold text-text-strong">{i18nT('app.notifications_failed_to_load')}</div>
-                <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => { setOpen(false); navigate('/notifications') }}>{i18nT('app.open_the_full_inbox')}</button>
+                <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => { closePanel(); navigate('/notifications') }}>{i18nT('app.open_the_full_inbox')}</button>
               </div>
             }
           >
@@ -650,7 +698,8 @@ function NotificationsBellButton() {
               (header, controls, notification rows) is its own floating
               material card instead. */}
           <div
-            className={`absolute top-0 bottom-0 right-0 pointer-events-auto ${isMobile ? 'left-0' : 'w-[400px]'} flex flex-col isolate animate-nc-slide-in`}
+            {...leavingProps}
+            className={`absolute top-0 bottom-0 right-0 ${closing ? 'pointer-events-none' : 'pointer-events-auto'} ${isMobile ? 'w-full' : 'w-[400px]'} flex flex-col isolate ${sheetAnim}`}
           >
             {/* Column scrim — macOS NC dims/blurs only the strip behind the
                 cards and it travels WITH the sheet. The layer extends 80px
@@ -675,7 +724,7 @@ function NotificationsBellButton() {
                   <div className="flex justify-end px-1 pb-1">
                     <button
                       className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer"
-                      onClick={() => { setOpen(false); navigate('/notifications') }}
+                      onClick={() => { closePanel(); navigate('/notifications') }}
                     >
                       {i18nT('app.open_inbox')}
                     </button>
