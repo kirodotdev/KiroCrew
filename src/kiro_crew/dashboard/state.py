@@ -830,6 +830,10 @@ class _ChatSlot:
         "forked_from",
         "_fork_lock",
         "_tab_id",
+        "_channel_mirror_key",
+        "_channel_mirror_len",
+        "_channel_mirror_mtime",
+        "_channel_mirror_checked",
         "_disk_older_count",
         "_disk_window_len",
         "_frozen_prefix_cache",
@@ -1008,6 +1012,14 @@ class _ChatSlot:
         self.forked_from: str | None = None  # parent slot key if this is a fork
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
         self._tab_id: str = ""  # permanent tab identity for cross-restart session chaining
+        # Channel-slot mirroring (see channel_slots.py). While a surfaced
+        # channel slot has NO dashboard-authored turns, the reconciler keeps
+        # copying new channel messages into it so the tab stays current. The
+        # first non-mirror append forks the conversation and stops the mirror.
+        self._channel_mirror_key: str = ""  # channel session key mirrored into this slot
+        self._channel_mirror_len: int = 0  # len(messages) after the last mirror action
+        self._channel_mirror_mtime: float = 0.0  # channel `modified` at the last sync
+        self._channel_mirror_checked: bool = False  # one-time rebind check done
         self._disk_older_count: int = (
             0  # count of disk messages OLDER than in-memory window (stable, set at restore/resume)
         )

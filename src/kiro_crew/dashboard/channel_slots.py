@@ -27,6 +27,14 @@ Design notes:
   never reads — so it would reopen on the next pass. Continuity with the live
   channel session is not worth that; picking the conversation up with its full
   history (which this does) is the point.
+* **Mirror until forked.** A surfaced slot the user has NOT written to from the
+  dashboard is a pure mirror of the channel transcript, and the no-split
+  rationale above does not yet apply — so the reconciler keeps appending new
+  channel turns into it, keeping the tab current instead of freezing it at
+  surface time. The first dashboard-authored turn forks the conversation and
+  disarms the mirror permanently; from then on the two transcripts diverge
+  exactly as the previous note describes. Fork detection is fail-safe: ANY
+  window change the mirror did not make itself disarms it.
 * **Recency-bounded.** Only sessions modified within the dashboard's configured
   ``restore_window_minutes`` become slots, so a long DM history does not turn
   into hundreds of tabs. Pinned and foldered sessions are exempt from the
@@ -96,6 +104,9 @@ class _Transcript(NamedTuple):
     messages: list[dict[str, Any]]
     disk_older: int
     disk_window: int
+    #: True when the slot's own on-disk lines are all copies of channel turns —
+    #: the precondition for arming the mirror (see :func:`is_pure_mirror`).
+    pure_mirror: bool = True
 
 
 def channel_label(session_key: str) -> str:
@@ -127,6 +138,77 @@ def _redact(text: str) -> str:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+def _mirror_identity(msg: dict[str, Any]) -> tuple[str, str, str]:
+    """Cross-file match identity for one transcript message.
+
+    Slot copies of channel turns are stored REDACTED (``surface_channel_session``
+    redacts on seed), while the channel file holds the raw text — comparing raw
+    identities would mis-classify every redacted turn as dashboard-authored.
+    Redacting both sides makes the comparison stable regardless of which side a
+    message is read from (the redactors are idempotent on their own output, and
+    redacting an already-redacted slot line is a no-op either way).
+    """
+    return (
+        str(msg.get("role", "")),
+        _redact(str(msg.get("content", ""))),
+        str(msg.get("ts", "")),
+    )
+
+
+def is_pure_mirror(
+    slot_messages: list[dict[str, Any]],
+    channel_messages: list[dict[str, Any]],
+) -> bool:
+    """True when *slot_messages* holds nothing the channel transcript lacks.
+
+    A pure-mirror slot is one the user has never written to from the dashboard:
+    every turn it carries is a copy of a channel turn. Only such a slot may be
+    kept in sync by :func:`mirror_new_messages` — the moment the slot holds a
+    dashboard-authored turn the conversation has forked, and appending further
+    channel turns would interleave two diverged transcripts.
+
+    Pure and side-effect free so the fork rule is directly testable.
+    """
+    channel = {_mirror_identity(m) for m in channel_messages}
+    return all(_mirror_identity(m) in channel for m in slot_messages)
+
+
+def mirror_new_messages(
+    slot_messages: list[dict[str, Any]],
+    channel_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Channel turns a pure-mirror slot is missing, in append order.
+
+    Only turns at or after the slot's newest ordered timestamp are candidates:
+    the seed window is a capped TAIL of the transcript (:func:`hydrate_window`),
+    so turns older than the window were deliberately not seeded and must not be
+    appended after newer ones — that would scramble the visible order. Turns
+    whose timestamp cannot be parsed to an instant are skipped for the same
+    reason: they cannot be placed. Empty-content lines are dropped to match the
+    seed, and duplicates are dropped on the redaction-stable identity.
+
+    Pure and side-effect free so the ordering rules are directly testable.
+    """
+    have = {_mirror_identity(m) for m in slot_messages}
+    threshold = max(
+        (k for m in slot_messages if (k := _ts_sort_key(m))[0] == 0),
+        default=None,
+    )
+    out: list[dict[str, Any]] = []
+    for m in channel_messages:
+        if not m.get("content"):
+            continue
+        key = _ts_sort_key(m)
+        if key[0] != 0:
+            continue
+        if threshold is not None and key < threshold:
+            continue
+        if _mirror_identity(m) in have:
+            continue
+        out.append(m)
+    return sorted(out, key=_ts_sort_key)
 
 
 def eligible_channel_sessions(
@@ -289,6 +371,7 @@ def surface_channel_session(
     *,
     disk_older: int = 0,
     disk_window: int = 0,
+    mirror: bool = False,
 ) -> "_ChatSlot | None":
     """Create the dashboard slot for one channel session.
 
@@ -300,6 +383,12 @@ def surface_channel_session(
     that caller's split of the slot's OWN on-disk lines into the frozen prefix
     the window does not carry and the region it re-serializes — see
     :func:`frozen_prefix_len` for why a save needs both.
+
+    *mirror* arms mirror-until-forked on the new slot: the reconciler keeps
+    appending new channel turns into it until the first dashboard-authored turn
+    forks the conversation. Pass it only when the slot's own on-disk transcript
+    is a pure mirror (:func:`is_pure_mirror`) — arming it on a forked slot would
+    interleave two diverged transcripts.
     """
     session_key = session_info.get("key", "")
     if not session_key or not is_channel_session_key(session_key):
@@ -357,10 +446,85 @@ def surface_channel_session(
     # Not dirty: a surfaced conversation the user never touches costs no write.
     # The first real dashboard turn is what persists it under the slot key.
     slot._dirty = False
+    if mirror:
+        # Arm mirror-until-forked. The rebind question is settled by
+        # construction (this call just seeded the slot from the transcripts),
+        # so mark the check done too.
+        slot._channel_mirror_key = session_key
+        slot._channel_mirror_len = len(slot.messages)
+        slot._channel_mirror_mtime = float(session_info.get("modified", 0) or 0)
+        slot._channel_mirror_checked = True
     logger.info(
         "Surfaced %s session %s as slot %s", channel_label(session_key), session_key, slot_name
     )
     return slot
+
+
+def _apply_mirror(
+    slot: "_ChatSlot",
+    session_info: dict[str, Any],
+    channel_messages: list[dict[str, Any]],
+) -> int:
+    """Append the channel turns a pure-mirror *slot* is missing. Returns count.
+
+    Runs on the event loop (slot mutation). The appended turns are treated
+    exactly like seeded ones: content is redacted, ``_resumed_count`` counts
+    them as history rather than novel dashboard turns, and the dirty flag is
+    preserved — mirroring alone never persists the slot, matching the seed's
+    "a conversation the user never touches costs no write" rule. When the
+    conversation does get picked up on the dashboard, the ordinary save
+    re-serializes the whole window and the mirrored turns persist with it.
+    """
+    new = mirror_new_messages(slot.messages, channel_messages)
+    dirty_was = slot._dirty
+    had_reader = slot._has_reader
+    for m in new:
+        role = m.get("role", "assistant")
+        slot.append(
+            role,
+            _redact(m.get("content", "")),
+            f"msg msg-{'a' if role != 'user' else 'u'}",
+            ts=m.get("ts", ""),
+            # broadcast=False for the same reason as the seed: these are
+            # copies of channel history, not dashboard-originated turns. An
+            # attached stream reader still receives them via the pending
+            # queue; everyone else gets the sidebar refresh from
+            # push_slots_update.
+            broadcast=False,
+        )
+    if new and not had_reader:
+        # No live stream is consuming the pending queue — drop the copies so
+        # they cannot pile up across passes (the seed drains for the same
+        # reason). With a reader attached the queue is being consumed; leave
+        # it so the open tab shows the new turns live.
+        slot.drain()
+    slot._dirty = dirty_was
+    slot._resumed_count += len(new)
+    slot._channel_mirror_len = len(slot.messages)
+    slot._channel_mirror_mtime = float(session_info.get("modified", 0) or 0)
+    return len(new)
+
+
+def _mirror_intact(slot: "_ChatSlot") -> bool:
+    """True while *slot*'s window shows no sign of a non-mirror mutation.
+
+    Two invariants hold on a slot only the mirror has touched:
+
+    - ``len(messages) == _channel_mirror_len`` — the mirror recorded the length
+      after its last action, so any append since then is someone else's.
+    - ``_resumed_count == len(messages)`` — seed and mirror both count their
+      turns as resumed history. A plain append leaves ``_resumed_count`` behind,
+      and regenerate/rewind reset it to 0 — so a NET-ZERO edit (regenerate
+      replaces a message without changing the count) still breaks this
+      invariant even though the length check alone would miss it.
+
+    Either signal disarms; degrading to the frozen-copy behaviour is always
+    safe, mirroring into a diverged transcript never is.
+    """
+    return (
+        len(slot.messages) == slot._channel_mirror_len
+        and slot._resumed_count == len(slot.messages)
+    )
 
 
 async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) -> int:
@@ -404,7 +568,38 @@ async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) 
     eligible = eligible_channel_sessions(candidates, metadata=metadata, cutoff=cutoff)
     # Skip transcript reads for sessions that already own a slot — the steady state.
     pending = [s for s in eligible if channel_slot_name(s.get("key", "")) not in state._slots]
-    if not pending:
+    # Existing slots that may need a mirror sync. Everything here is a cheap
+    # in-memory check; the transcript read only happens for slots that are
+    # armed AND stale, or restored slots awaiting their one-time rebind check.
+    mirror_pending: list[dict[str, Any]] = []
+    for s in eligible:
+        key = s.get("key", "")
+        slot = state._slots.get(channel_slot_name(key))
+        if slot is None:
+            continue
+        if slot._channel_mirror_key == key:
+            if not _mirror_intact(slot):
+                # A non-mirror mutation happened — an append (the user picked
+                # the conversation up on the dashboard) or an in-place edit
+                # like regenerate. Forked: stop mirroring for good. Fail-safe:
+                # ANY untracked window change (including a trim) disarms,
+                # degrading to the old frozen-copy behaviour rather than
+                # risking an interleave.
+                slot._channel_mirror_key = ""
+                continue
+            if float(s.get("modified", 0) or 0) <= slot._channel_mirror_mtime:
+                continue  # channel file unchanged since the last sync
+            mirror_pending.append(s)
+        elif not slot._channel_mirror_checked:
+            # Restored after a restart — the restore path knows nothing about
+            # mirroring, so settle it once here. Only when the whole file is in
+            # the window can purity be judged from memory; a longer file may
+            # hide dashboard-authored turns in the frozen prefix, so fail safe.
+            if slot._disk_older_count > 0:
+                slot._channel_mirror_checked = True
+                continue
+            mirror_pending.append(s)
+    if not pending and not mirror_pending:
         return 0
 
     def _load_messages() -> dict[str, _Transcript]:
@@ -415,18 +610,46 @@ async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) 
                 slot_msgs = log.read_messages(slot_history_key(key))
             except Exception:
                 slot_msgs = []
+            chan_ok = True
             try:
                 chan_msgs = log.read_messages(key)
             except Exception:
                 chan_msgs = []
+                chan_ok = False
             merged = merge_transcripts(slot_msgs, chan_msgs)
             # Split the slot's own on-disk lines here, in the executor, while
             # both sides are still separable — after the merge they are not.
             older = frozen_prefix_len(slot_msgs, hydrate_window(merged))
-            out[key] = _Transcript(merged, older, max(0, len(slot_msgs) - older))
+            out[key] = _Transcript(
+                merged,
+                older,
+                max(0, len(slot_msgs) - older),
+                # A failed channel read proves nothing about purity — do not
+                # arm the mirror on it. The slot surfaces without a mirror and
+                # unchecked, so the rebind path re-judges it on a later pass.
+                chan_ok and is_pure_mirror(slot_msgs, chan_msgs),
+            )
         return out
 
-    transcripts = await loop.run_in_executor(None, _load_messages)
+    def _load_mirror_transcripts() -> dict[str, list[dict[str, Any]]]:
+        out: dict[str, list[dict[str, Any]]] = {}
+        for s in mirror_pending:
+            key = s.get("key", "")
+            try:
+                out[key] = log.read_messages(key)
+            except Exception:
+                # Omit the key entirely: an empty transcript would look like a
+                # successful sync and advance the watermark having copied
+                # nothing, permanently skipping these messages if the channel
+                # file never changes again. Absent key = untouched state,
+                # retried on the next pass.
+                logger.debug("channel mirror: read failed for %s", key, exc_info=True)
+        return out
+
+    transcripts = await loop.run_in_executor(None, _load_messages) if pending else {}
+    mirror_transcripts = (
+        await loop.run_in_executor(None, _load_mirror_transcripts) if mirror_pending else {}
+    )
 
     surfaced = 0
     for s in pending:
@@ -440,11 +663,41 @@ async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) 
                 transcript.messages,
                 disk_older=transcript.disk_older,
                 disk_window=transcript.disk_window,
+                mirror=transcript.pure_mirror,
             ):
                 surfaced += 1
         except Exception:
             logger.warning("channel reconcile: failed to surface %s", key, exc_info=True)
-    if surfaced:
+
+    mirrored = 0
+    for s in mirror_pending:
+        key = s.get("key", "")
+        slot = state._slots.get(channel_slot_name(key))
+        if slot is None:
+            continue
+        chan_msgs = mirror_transcripts.get(key)
+        if chan_msgs is None:
+            # Read failed in the executor — leave the slot untouched (not
+            # checked, watermark not advanced) so the next pass retries.
+            continue
+        try:
+            if not slot._channel_mirror_checked:
+                # One-time rebind after restore: arm only when nothing in the
+                # window is dashboard-authored. Either way the question is
+                # settled — never re-read this transcript on later passes.
+                slot._channel_mirror_checked = True
+                if not is_pure_mirror(slot.messages, chan_msgs):
+                    continue
+                slot._channel_mirror_key = key
+                slot._channel_mirror_len = len(slot.messages)
+            elif not _mirror_intact(slot):
+                # Forked between the eligibility check and the executor read.
+                slot._channel_mirror_key = ""
+                continue
+            mirrored += _apply_mirror(slot, s, chan_msgs)
+        except Exception:
+            logger.warning("channel reconcile: failed to mirror %s", key, exc_info=True)
+    if surfaced or mirrored:
         state.push_slots_update()
     return surfaced
 

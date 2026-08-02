@@ -640,3 +640,373 @@ class TestImmediateDispatcherSurface:
         asyncio.run(channel_slots.surface_dispatcher_session(dispatcher))
 
         assert not called
+
+
+class TestMirrorHelpers:
+    """Pure-function rules for mirror-until-forked."""
+
+    def test_is_pure_mirror_is_redaction_stable(self) -> None:
+        """Slot copies are stored redacted while the channel file is raw.
+
+        Comparing raw identities would mis-classify every redacted turn as
+        dashboard-authored and permanently disarm the mirror.
+        """
+        raw = "creds AKIAIOSFODNN7EXAMPLE leaked"
+        chan = [{"role": "user", "content": raw, "ts": "2026-07-30T00:00:00Z"}]
+        slot = [
+            {
+                "role": "user",
+                "content": channel_slots._redact(raw),
+                "ts": "2026-07-30T00:00:00Z",
+            }
+        ]
+        assert channel_slots.is_pure_mirror(slot, chan)
+
+    def test_a_dashboard_authored_turn_breaks_purity(self) -> None:
+        chan = [{"role": "user", "content": "on slack", "ts": "2026-07-30T00:00:00Z"}]
+        slot = chan + [
+            {"role": "user", "content": "from the dashboard", "ts": "2026-07-30T00:01:00Z"}
+        ]
+        assert not channel_slots.is_pure_mirror(slot, chan)
+
+    def test_an_empty_slot_is_a_pure_mirror(self) -> None:
+        assert channel_slots.is_pure_mirror([], [{"role": "user", "content": "x", "ts": "t"}])
+
+    def test_new_messages_are_ordered_and_deduped(self) -> None:
+        slot = [{"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"}]
+        chan = [
+            {"role": "assistant", "content": "third", "ts": "2026-07-30T00:02:00Z"},
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"},
+            {"role": "assistant", "content": "second", "ts": "2026-07-30T00:01:00Z"},
+        ]
+        out = channel_slots.mirror_new_messages(slot, chan)
+        assert [m["content"] for m in out] == ["second", "third"]
+
+    def test_pre_window_history_is_not_replayed(self) -> None:
+        """The seed window is a capped tail; older turns must never append
+        AFTER newer ones — that would scramble the visible order."""
+        slot = [{"role": "user", "content": "newest", "ts": "2026-07-30T00:05:00Z"}]
+        chan = [
+            {"role": "user", "content": "ancient", "ts": "2026-07-30T00:00:00Z"},
+            {"role": "user", "content": "newest", "ts": "2026-07-30T00:05:00Z"},
+            {"role": "user", "content": "after", "ts": "2026-07-30T00:06:00Z"},
+        ]
+        assert [m["content"] for m in channel_slots.mirror_new_messages(slot, chan)] == ["after"]
+
+    def test_unplaceable_and_empty_turns_are_skipped(self) -> None:
+        slot = [{"role": "user", "content": "a", "ts": "2026-07-30T00:00:00Z"}]
+        chan = slot + [
+            {"role": "user", "content": "no ts at all"},
+            {"role": "user", "content": "garbled", "ts": "not-a-timestamp"},
+            {"role": "user", "content": "", "ts": "2026-07-30T00:01:00Z"},
+            {"role": "user", "content": "kept", "ts": "2026-07-30T00:02:00Z"},
+        ]
+        assert [m["content"] for m in channel_slots.mirror_new_messages(slot, chan)] == ["kept"]
+
+
+class TestMirrorUntilForked:
+    """End-to-end reconcile behaviour: a surfaced slot stays current until the
+    user picks the conversation up on the dashboard."""
+
+    def _surface(self, dashboard_state: Any, log: _FakeLog) -> Any:
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        return dashboard_state._slots["slack_1.1"]
+
+    def test_new_channel_turns_flow_into_the_surfaced_slot(self, dashboard_state: Any) -> None:
+        sess = _session("slack:1.1", modified=NOW - 60)
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"}
+        ]
+        slot = self._surface(dashboard_state, log)
+        assert [m["content"] for m in slot.messages] == ["first"]
+        assert slot._channel_mirror_key == "slack:1.1"
+
+        log.transcripts["slack:1.1"].append(
+            {"role": "assistant", "content": "second", "ts": "2026-07-30T00:01:00Z"}
+        )
+        sess["modified"] = NOW
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert [m["content"] for m in slot.messages] == ["first", "second"]
+
+    def test_mirroring_alone_never_marks_the_slot_dirty(self, dashboard_state: Any) -> None:
+        """Same rule as the seed: a conversation the user never touches costs
+        no write. The mirrored turns persist with the first real save."""
+        sess = _session("slack:1.1", modified=NOW - 60)
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"}
+        ]
+        slot = self._surface(dashboard_state, log)
+        log.transcripts["slack:1.1"].append(
+            {"role": "assistant", "content": "second", "ts": "2026-07-30T00:01:00Z"}
+        )
+        sess["modified"] = NOW
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert len(slot.messages) == 2
+        assert slot._dirty is False
+        # Counted as history, not novel dashboard turns.
+        assert slot._resumed_count == len(slot.messages)
+
+    def test_mirrored_content_is_redacted(self, dashboard_state: Any) -> None:
+        sess = _session("slack:1.1", modified=NOW - 60)
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "hello", "ts": "2026-07-30T00:00:00Z"}
+        ]
+        slot = self._surface(dashboard_state, log)
+        log.transcripts["slack:1.1"].append(
+            {
+                "role": "assistant",
+                "content": "creds AKIAIOSFODNN7EXAMPLE leaked",
+                "ts": "2026-07-30T00:01:00Z",
+            }
+        )
+        sess["modified"] = NOW
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert len(slot.messages) == 2
+        assert "AKIAIOSFODNN7EXAMPLE" not in slot.messages[1]["content"]
+
+    def test_a_dashboard_turn_forks_and_stops_the_mirror(self, dashboard_state: Any) -> None:
+        sess = _session("slack:1.1", modified=NOW - 60)
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"}
+        ]
+        slot = self._surface(dashboard_state, log)
+
+        # The user picks the conversation up on the dashboard.
+        slot.append("user", "picked up here", "msg msg-u")
+        log.transcripts["slack:1.1"].append(
+            {"role": "user", "content": "meanwhile on slack", "ts": "2026-07-30T00:02:00Z"}
+        )
+        sess["modified"] = NOW
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        contents = [m["content"] for m in slot.messages]
+        assert "meanwhile on slack" not in contents
+        assert slot._channel_mirror_key == ""
+
+        # And it stays off: later passes never re-arm a forked slot.
+        sess["modified"] = NOW + 60
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert "meanwhile on slack" not in [m["content"] for m in slot.messages]
+
+    def test_a_forked_on_disk_transcript_never_arms_the_mirror(
+        self, dashboard_state: Any
+    ) -> None:
+        """A slot re-surfaced from a fork file that holds dashboard replies is
+        already diverged — seeding merges, but mirroring must not arm."""
+        sess = _session("slack:1.1", modified=NOW - 60)
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "on slack", "ts": "2026-07-30T00:00:00Z"}
+        ]
+        log.transcripts["dashboard:slack_1.1"] = [
+            {"role": "user", "content": "on slack", "ts": "2026-07-30T00:00:00Z"},
+            {"role": "user", "content": "from the dashboard", "ts": "2026-07-30T00:01:00Z"},
+        ]
+        slot = self._surface(dashboard_state, log)
+        assert slot._channel_mirror_key == ""
+
+        log.transcripts["slack:1.1"].append(
+            {"role": "user", "content": "later on slack", "ts": "2026-07-30T00:02:00Z"}
+        )
+        sess["modified"] = NOW
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert "later on slack" not in [m["content"] for m in slot.messages]
+
+    def test_restored_pure_slot_rearms_and_catches_up(self, dashboard_state: Any) -> None:
+        """After a gateway restart the restore path rebuilds the slot without
+        mirror state; the reconciler settles it once and catches the tab up."""
+        sess = _session("slack:1.1")
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"},
+            {"role": "assistant", "content": "second", "ts": "2026-07-30T00:01:00Z"},
+        ]
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        slot = dashboard_state.get_or_create_slot(name="slack_1.1")
+        slot.append("user", "first", "msg msg-u", ts="2026-07-30T00:00:00Z", broadcast=False)
+        slot._dirty = False
+
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert [m["content"] for m in slot.messages] == ["first", "second"]
+        assert slot._channel_mirror_key == "slack:1.1"
+        assert slot._channel_mirror_checked is True
+
+    def test_restored_slot_with_a_frozen_prefix_never_arms(self, dashboard_state: Any) -> None:
+        """Purity can only be judged when the whole file is in the window — a
+        frozen prefix may hide dashboard-authored turns, so fail safe."""
+        sess = _session("slack:1.1")
+        log = _FakeLog([sess], {})
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        slot = dashboard_state.get_or_create_slot(name="slack_1.1")
+        slot._disk_older_count = 3
+
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert slot._channel_mirror_key == ""
+        assert slot._channel_mirror_checked is True
+        # Settled without a transcript read, and never re-read on later passes.
+        assert log.message_reads == []
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert log.message_reads == []
+
+    def test_unchanged_channel_file_costs_no_transcript_read(self, dashboard_state: Any) -> None:
+        """Steady state stays cheap: the watermark gates the disk IO."""
+        sess = _session("slack:1.1", modified=NOW - 60)
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"}
+        ]
+        self._surface(dashboard_state, log)
+        reads_after_surface = len(log.message_reads)
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert len(log.message_reads) == reads_after_surface
+
+    def test_mirror_pass_broadcasts_the_slots_update(self, dashboard_state: Any) -> None:
+        sess = _session("slack:1.1", modified=NOW - 60)
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"}
+        ]
+        slot = self._surface(dashboard_state, log)
+        pushes: list[int] = []
+        dashboard_state.push_slots_update = lambda: pushes.append(1)  # type: ignore[method-assign]
+        log.transcripts["slack:1.1"].append(
+            {"role": "assistant", "content": "second", "ts": "2026-07-30T00:01:00Z"}
+        )
+        sess["modified"] = NOW
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert len(slot.messages) == 2
+        assert pushes, "a mirror-only pass must still refresh the sidebar"
+
+
+class TestMirrorForkAndFailureModes:
+    """Regression guards for the two review findings: net-zero edits must fork,
+    and failed reads must not count as successful syncs."""
+
+    def _surface(self, dashboard_state: Any, log: _FakeLog) -> Any:
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        return dashboard_state._slots["slack_1.1"]
+
+    def test_a_net_zero_edit_forks_the_mirror(self, dashboard_state: Any) -> None:
+        """Regenerate replaces a message WITHOUT changing the count and resets
+        _resumed_count to 0 — the length check alone misses it, and mirroring
+        on would interleave channel turns into the diverged branch."""
+        sess = _session("slack:1.1", modified=NOW - 60)
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"},
+            {"role": "assistant", "content": "reply", "ts": "2026-07-30T00:00:30Z"},
+        ]
+        slot = self._surface(dashboard_state, log)
+        assert slot._channel_mirror_key == "slack:1.1"
+
+        # Simulate regenerate: in-place replacement, same count, resumed reset.
+        slot.messages[-1]["content"] = "regenerated reply"
+        slot._resumed_count = 0
+
+        log.transcripts["slack:1.1"].append(
+            {"role": "user", "content": "meanwhile on slack", "ts": "2026-07-30T00:02:00Z"}
+        )
+        sess["modified"] = NOW
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert "meanwhile on slack" not in [m["content"] for m in slot.messages]
+        assert slot._channel_mirror_key == ""
+
+    def test_a_failed_mirror_read_is_retried_not_recorded(self, dashboard_state: Any) -> None:
+        """A transient read failure must not advance the watermark — otherwise
+        an unchanged channel file is never retried and its turns stay missing."""
+        sess = _session("slack:1.1", modified=NOW - 60)
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"}
+        ]
+        slot = self._surface(dashboard_state, log)
+        log.transcripts["slack:1.1"].append(
+            {"role": "assistant", "content": "second", "ts": "2026-07-30T00:01:00Z"}
+        )
+        sess["modified"] = NOW
+
+        fail_once = {"armed": True}
+        orig_read = log.read_messages
+
+        def flaky(key: str) -> list[dict[str, Any]]:
+            if fail_once["armed"] and key == "slack:1.1":
+                fail_once["armed"] = False
+                raise OSError("transient")
+            return orig_read(key)
+
+        log.read_messages = flaky  # type: ignore[method-assign]
+
+        # Failing pass: nothing copied, mirror still armed, watermark untouched.
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert [m["content"] for m in slot.messages] == ["first"]
+        assert slot._channel_mirror_key == "slack:1.1"
+
+        # Next pass with the SAME modified stamp must retry and catch up.
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert [m["content"] for m in slot.messages] == ["first", "second"]
+
+    def test_a_failed_channel_read_at_surface_does_not_arm(self, dashboard_state: Any) -> None:
+        """Purity cannot be judged from a failed read — surface unarmed and let
+        the rebind path settle it once the read succeeds."""
+        sess = _session("slack:1.1", modified=NOW - 60)
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"}
+        ]
+        fail_once = {"armed": True}
+        orig_read = log.read_messages
+
+        def flaky(key: str) -> list[dict[str, Any]]:
+            if fail_once["armed"] and key == "slack:1.1":
+                fail_once["armed"] = False
+                raise OSError("transient")
+            return orig_read(key)
+
+        log.read_messages = flaky  # type: ignore[method-assign]
+        slot = self._surface(dashboard_state, log)
+        assert slot._channel_mirror_key == ""
+        assert slot._channel_mirror_checked is False
+
+        # Rebind pass with a working read arms the mirror and catches up.
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert [m["content"] for m in slot.messages] == ["first"]
+        assert slot._channel_mirror_key == "slack:1.1"
+
+    def test_a_failed_rebind_read_is_retried(self, dashboard_state: Any) -> None:
+        """A restored slot whose rebind read fails must stay unchecked so a
+        later pass can still settle it."""
+        sess = _session("slack:1.1")
+        log = _FakeLog([sess], {})
+        log.transcripts["slack:1.1"] = [
+            {"role": "user", "content": "first", "ts": "2026-07-30T00:00:00Z"}
+        ]
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        slot = dashboard_state.get_or_create_slot(name="slack_1.1")
+
+        fail_once = {"armed": True}
+        orig_read = log.read_messages
+
+        def flaky(key: str) -> list[dict[str, Any]]:
+            if fail_once["armed"] and key == "slack:1.1":
+                fail_once["armed"] = False
+                raise OSError("transient")
+            return orig_read(key)
+
+        log.read_messages = flaky  # type: ignore[method-assign]
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert slot._channel_mirror_checked is False
+
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert slot._channel_mirror_key == "slack:1.1"
+        assert [m["content"] for m in slot.messages] == ["first"]
