@@ -538,8 +538,7 @@ class AcpRuntime:
             # from the windowless gateway (0 on POSIX, so no effect there).
             start_new_session=platform_compat.IS_POSIX,
             creationflags=(
-                platform_compat.CREATE_NEW_PROCESS_GROUP
-                | platform_compat._SUBPROCESS_NO_WINDOW
+                platform_compat.CREATE_NEW_PROCESS_GROUP | platform_compat._SUBPROCESS_NO_WINDOW
             ),
             env=env,
             profile=RLIMIT_PROFILE_SESSION_HOST,
@@ -1102,6 +1101,7 @@ class AcpRuntime:
         cwd: str | Path | None = None,
         agent: str | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
+        channel_id: str | None = None,
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle."""
         if not self._initialized:
@@ -1113,7 +1113,7 @@ class AcpRuntime:
         # is written anywhere. Empty when the gateway is disabled.
         if mcp_servers is None:
             mcp_servers = pooled_session_servers(
-                self._mcp_gateway_overlay, agent or self._agent
+                self._mcp_gateway_overlay, agent or self._agent, channel_id
             )
         params = build_session_new_params(
             cwd if cwd else self._work_dir,

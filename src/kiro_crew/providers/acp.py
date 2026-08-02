@@ -492,6 +492,11 @@ class AcpProvider(LLMProvider):
         )
         mcp_gateway_socket = getattr(self._client, "_mcp_gateway_socket", None)
 
+        # Channel id for pool-key partitioning (so sessions in different channels
+        # do not collapse onto one pooled backend). None for channel-less origins
+        # (CLI, cron) — the pool key's channel component stays absent.
+        channel_id: str | None = getattr(self._client, "_channel_id", None) or None
+
         # Check for session resume
         resume_sid = getattr(self._client, "_resume_session_id", "")
 
@@ -598,6 +603,7 @@ class AcpProvider(LLMProvider):
                     handle = await runtime.create_session(
                         cwd=work_dir,
                         agent=agent or None,
+                        channel_id=channel_id,
                     )
                 except AcpRuntimeError as exc:
                     if runtime.saw_not_logged_in():
