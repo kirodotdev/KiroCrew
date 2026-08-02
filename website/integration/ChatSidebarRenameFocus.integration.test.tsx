@@ -132,16 +132,16 @@ function rowFor(container: HTMLElement): HTMLElement {
   return row as HTMLElement
 }
 
-function renameInput(): HTMLInputElement {
-  const input = Array.from(document.querySelectorAll('input'))
-    .find(i => (i as HTMLInputElement).value === TITLE) as HTMLInputElement
+function renameInput(): HTMLTextAreaElement {
+  const input = Array.from(document.querySelectorAll('textarea'))
+    .find(i => (i as HTMLTextAreaElement).value === TITLE) as HTMLTextAreaElement
   expect(input).toBeTruthy()
   return input
 }
 
-function renameInputWithValue(value: string): HTMLInputElement | undefined {
-  return Array.from(document.querySelectorAll('input'))
-    .find(i => (i as HTMLInputElement).value === value) as HTMLInputElement | undefined
+function renameInputWithValue(value: string): HTMLTextAreaElement | undefined {
+  return Array.from(document.querySelectorAll('textarea'))
+    .find(i => (i as HTMLTextAreaElement).value === value) as HTMLTextAreaElement | undefined
 }
 
 // Flush enough animation frames for both the component's single-rAF focus and

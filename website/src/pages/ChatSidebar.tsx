@@ -33,6 +33,7 @@ import { useSessionPalette } from '../hooks/useSessionPalette'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { useSessionActions } from '../hooks/useSessionActions'
+import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -65,6 +66,11 @@ import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
 import { compareText, fmtDateFields } from '../i18n/format'
+
+/** Max height (px) of the inline session-rename <textarea> before it scrolls.
+ *  ~6 lines at the row's 13px/leading-snug type. Shared by the auto-grow hook
+ *  (grows while typing) and the open effect (sizes on every open). */
+const RENAME_MAX_H = 120
 
 /** Translate a slot's running-status line. The status `text` is stored as a raw
  *  English literal by the websocket layer (a plain `.ts` module the i18n codemod
@@ -610,7 +616,15 @@ function ChatSidebar({
   const [renameScope, setRenameScope] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const cancelRenameRef = useRef(false)
-  const renameInputRef = useRef<HTMLInputElement | null>(null)
+  const renameInputRef = useRef<HTMLTextAreaElement | null>(null)
+  // The rename field is a wrapping, auto-growing <textarea> (not a single-line
+  // <input>) so a long session title is fully visible while editing instead of
+  // being clipped at the right edge — you can see and edit words that a
+  // single-line box would scroll out of view. Enter still commits (bindEnter
+  // preventDefaults it, so no newline is inserted). Caps at ~6 lines, then
+  // scrolls. Only one row renames at a time (renamingSlot), so the single
+  // shared ref always points at the one mounted textarea.
+  useAutoGrowTextarea(renameInputRef, renameValue, RENAME_MAX_H)
   // Set by any menu's Rename item (session rows + folder headers) so the closing
   // menu's onCloseAutoFocus knows to skip Radix's trigger-focus-restore for this
   // one close (see the menu Content handlers below). One-shot: read and cleared
@@ -654,7 +668,18 @@ function ChatSidebar({
     if (!renamingSlot) { setRenameScope(null); return }
     const raf = requestAnimationFrame(() => {
       const el = renameInputRef.current
-      if (el) { el.focus({ preventScroll: true }); el.select() }
+      if (el) {
+        el.focus({ preventScroll: true }); el.select()
+        // Size the box on OPEN too, not only when renameValue changes: after a
+        // save, reopening the same slot sets renameValue to the identical title,
+        // so useAutoGrowTextarea's value-keyed effect never fires and the freshly
+        // mounted textarea would otherwise sit at its 1-line resting height and
+        // clip a long name. Mirror the hook's measure here so every open shows
+        // the full name.
+        el.style.height = 'auto'
+        el.style.height = `${Math.min(el.scrollHeight, RENAME_MAX_H)}px`
+        el.style.overflowY = el.scrollHeight > RENAME_MAX_H ? 'auto' : 'hidden'
+      }
     })
     return () => cancelAnimationFrame(raf)
   }, [renamingSlot, renameScope])
@@ -2154,7 +2179,7 @@ function ChatSidebar({
                 </span>
               ) : null}
             </div>
-            <div className="text-[13px] font-semibold leading-snug line-clamp-2 break-words text-text" title={s.title && s.title !== s.key ? s.title : s.key}>
+            <div className={`text-[13px] font-semibold leading-snug break-words text-text ${renamingSlot === s.key && renameScope === scope ? '' : 'line-clamp-2'}`} title={s.title && s.title !== s.key ? s.title : s.key}>
               {/* No separate fork glyph: forked titles already carry the
                   persisted "↳ " marker (chat_fork.py _FORK_TITLE_MARKER). Keeping
                   the arrow in the title text — rather than as a UI-only glyph —
@@ -2162,7 +2187,7 @@ function ChatSidebar({
                   onRename handler) so users can edit or drop it when they rename.
                   A separate ↳ glyph also double-stacked into "↳↳ Fork of …". */}
               {renamingSlot === s.key && renameScope === scope ? (
-                <Input ref={renameInputRef} className="w-full bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-none text-[13px] select-text" value={renameValue} onChange={e => setRenameValue(e.target.value)} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { (document.activeElement as HTMLInputElement)?.blur() }, onEscape: () => { cancelRenameRef.current = true; setRenamingSlot(null) }, onBlur: () => { if (!cancelRenameRef.current && renameValue.trim()) { dispatch(sseSlotTitle({ key: s.key, title: renameValue.trim() })); api.renameSlot(s.key, renameValue.trim()).catch(() => { queryClient.invalidateQueries({ queryKey: ['chat-slots'] }) }) } cancelRenameRef.current = false; setRenamingSlot(null) } })} onMouseDown={e => e.stopPropagation()} />
+                <textarea ref={renameInputRef} rows={1} className="w-full bg-transparent border border-accent rounded px-1 py-0 leading-snug text-text-strong outline-none text-[13px] select-text resize-none block overflow-hidden" value={renameValue} onChange={e => setRenameValue(e.target.value.replace(/[\r\n]+/g, ' '))} {...ime.bindEnter<HTMLTextAreaElement>({ onEnter: () => { (document.activeElement as HTMLTextAreaElement)?.blur() }, onEscape: () => { cancelRenameRef.current = true; setRenamingSlot(null) }, onBlur: () => { if (!cancelRenameRef.current && renameValue.trim()) { dispatch(sseSlotTitle({ key: s.key, title: renameValue.trim() })); api.renameSlot(s.key, renameValue.trim()).catch(() => { queryClient.invalidateQueries({ queryKey: ['chat-slots'] }) }) } cancelRenameRef.current = false; setRenamingSlot(null) } })} onMouseDown={e => e.stopPropagation()} />
               ) : (s.title && s.title !== s.key ? s.title : s.key)}
             </div>
             {s.pending_approval ? (
@@ -2308,7 +2333,12 @@ function ChatSidebar({
               </div>
             )}
           </div>
-          {isMobile ? (
+          {/* Hide the hover action popup (⋯ / duplicate / close) while THIS slot
+           *  is being renamed: it is absolute-positioned at right-1.5 and reveals
+           *  on focus-within, so the focused rename input would otherwise make it
+           *  pop up and overlap the input's right edge. Mirrors the folder-header
+           *  guard below (!(editingId === folder.id && editScope === 'list')). */}
+          {!(renamingSlot === s.key && renameScope === scope) && (isMobile ? (
             <div className="absolute top-1/2 -translate-y-1/2 right-1.5 flex items-center gap-0.5">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -2332,7 +2362,7 @@ function ChatSidebar({
               <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); sessionActions.duplicate(s.key) }}><Copy size={12} /></IconButton>
               <IconButton variant="danger" title={i18nT('pages.chatSidebar.close')} aria-label={i18nT('pages.chatSidebar.close_session')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); sessionActions.close(s.key) }}><X size={12} /></IconButton>
             </IconButtonGroup>
-          )}
+          ))}
         </div>
           </ContextMenuTrigger>
           <ContextMenuContent className="min-w-[160px]" onCloseAutoFocus={onMenuCloseAutoFocus}>
