@@ -7,20 +7,38 @@ const COMMANDS = [
   'kirocrew telemetry disable',
 ] as const
 
+/**
+ * Catalog key per shell, as a literal map indexed at the `i18nT()` call site.
+ *
+ * The rows below used to carry the key themselves and pass the destructured
+ * `labelKey` into `i18nT()`. `scripts/check-i18n-keys.mjs` resolves only
+ * file-scope bindings, so the call site was unresolvable and the gate failed on
+ * its dynamic-site ratchet. The three keys were still checked even then, via
+ * that gate's `labelKey` data-field rule — what was exempt was the call site,
+ * not the keys. Indexing an `as const` map with a non-literal index resolves to
+ * the union of all three values, so each is verified at the point of use. Same
+ * shape as `STATUS_LABEL_KEY` in `pages/chat/McpToolsPanel.tsx`.
+ */
+const SHELL_LABEL_KEY = {
+  macosLinux: 'privacyDisclosure.shellMacOSLinuxLabel',
+  powerShell: 'privacyDisclosure.shellPowerShellLabel',
+  windowsCmd: 'privacyDisclosure.shellWindowsCmdLabel',
+} as const
+
 const SHELL_COMMANDS = [
   {
-    labelKey: 'privacyDisclosure.shellMacOSLinuxLabel',
+    kind: 'macosLinux',
     command: 'export KIROCREW_TELEMETRY_DISABLED=1',
   },
   {
-    labelKey: 'privacyDisclosure.shellPowerShellLabel',
+    kind: 'powerShell',
     command: "$env:KIROCREW_TELEMETRY_DISABLED = '1'",
   },
   {
-    labelKey: 'privacyDisclosure.shellWindowsCmdLabel',
+    kind: 'windowsCmd',
     command: 'set KIROCREW_TELEMETRY_DISABLED=1',
   },
-] as const
+] as const satisfies readonly { kind: keyof typeof SHELL_LABEL_KEY, command: string }[]
 
 /** Durable disclosure surface. This page explains controls but does not ask for
  * consent or gate use of the application. */
@@ -71,9 +89,9 @@ export function PrivacyPanel() {
               {command}
             </code>
           ))}
-          {SHELL_COMMANDS.map(({ labelKey, command }) => (
+          {SHELL_COMMANDS.map(({ kind, command }) => (
             <div key={command} className="flex max-w-full flex-col items-start gap-1">
-              <span className="text-[12px] font-medium text-muted">{i18nT(labelKey)}</span>
+              <span className="text-[12px] font-medium text-muted">{i18nT(SHELL_LABEL_KEY[kind])}</span>
               <code className="max-w-full overflow-x-auto text-[13px] text-text bg-bg border border-border rounded-md px-2.5 py-1.5 select-all">
                 {command}
               </code>
