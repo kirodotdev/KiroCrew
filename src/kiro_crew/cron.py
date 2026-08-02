@@ -2329,18 +2329,20 @@ class CronService:
             await asyncio.wait_for(self._execute(job), timeout=timeout)
         except asyncio.TimeoutError:
             # NB: Timeout bypasses _cron_callback's except block entirely —
-            # which also means it bypasses all Slack notification logic. From
-            # the user's perspective, timeouts are silent (log + dashboard
-            # status update only). Adding a timeout Slack alert is a separate
-            # feature and is intentionally out of scope for failure dedup.
+            # which also means it bypasses all Slack notification logic. Adding
+            # a timeout Slack alert is a separate feature and is intentionally
+            # out of scope here.
             # Clear failure dedup state so a subsequent real error isn't
-            # suppressed as a dup of the pre-timeout failure.
+            # suppressed as a dup of the pre-timeout failure, but STILL count
+            # the timeout toward the auto-pause threshold: a job that times out
+            # on every run must eventually auto-pause instead of running forever
+            # with zero user signal. (#424)
             job.last_status = "error"
             job.last_error = f"Timed out after {timeout}s"
             job.last_run_ts = time.time()
             job.last_failure_hash = ""
             job.last_failure_at = 0.0
-            job.consecutive_failures = 0
+            job.record_failure()
             logger.error("Cron job '%s' timed out after %ds", job.name, timeout)
 
     async def _execute(self, job: CronJob) -> None:

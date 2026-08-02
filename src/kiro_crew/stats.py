@@ -19,8 +19,15 @@ class Stats:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._init_counters()
+                    # Build into a local and FULLY initialize it before
+                    # publishing to ``cls._instance``. Publishing first would
+                    # let a second thread on the lock-free fast path above
+                    # observe a non-None but half-built instance (no ``_mu`` /
+                    # ``_c`` yet) and raise AttributeError on the next
+                    # ``.inc()`` / ``.snapshot()``. (#427)
+                    inst = super().__new__(cls)
+                    inst._init_counters()
+                    cls._instance = inst
         return cls._instance
 
     def _init_counters(self) -> None:

@@ -209,8 +209,13 @@ class ChannelHistory:
             return None
         from kiro_crew.hooks import is_sensitive_path
 
+        history_root = self._history_dir.resolve()
         path = (self._history_dir / f"{channel_id}.jsonl").resolve()
-        if not str(path).startswith(str(self._history_dir.resolve())):
+        # Boundary-aware containment: a bare str.startswith has no trailing
+        # separator, so a sibling dir sharing the prefix (e.g. ".../hist-evil"
+        # vs ".../hist") would pass. is_relative_to compares path components.
+        # (#428)
+        if not path.is_relative_to(history_root):
             logger.warning("Refusing unsafe history path for channel %s", channel_id)
             return None
         if is_sensitive_path(str(path)):

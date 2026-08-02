@@ -9,6 +9,7 @@ degraded UX. Knowledge and vector memory share one loaded model instance
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import struct
 import time
@@ -155,9 +156,47 @@ def floats_to_bytes(vec: list[float]) -> bytes:
 
 
 def bytes_to_floats(data: bytes) -> list[float]:
-    """Deserialize binary BLOB back to float list."""
-    n = len(data) // 4
-    return list(struct.unpack(f"{n}f", data))
+    """Deserialize a stored embedding blob back to a float list.
+
+    Tolerates both encodings and never raises on a corrupt/legacy row: a
+    legacy JSON-encoded list is decoded first, then the compact binary form
+    (struct-packed floats). A blob whose length is not a multiple of 4, or
+    that is otherwise unparseable, yields ``[]`` rather than a ``struct.error``
+    — so one bad row can't abort a whole dedup sweep. Mirrors the guards in
+    ``knowledge/retrieval._bytes_to_floats``. (#429)
+    """
+    if not data:
+        return []
+    # Legacy JSON-encoded embedding takes precedence: if the blob is valid JSON
+    # it IS a JSON embedding (real packed-float bytes are ~never valid JSON), so
+    # decode it here and NEVER fall through to the binary path — otherwise a
+    # rejected-but-valid JSON blob whose byte length happens to be a multiple of
+    # 4 would be misread as packed floats. Return [] for any malformed JSON
+    # (non-list, non-numeric/boolean elements, or values that overflow float())
+    # so one bad row is skipped instead of aborting the dedup sweep. (#429)
+    try:
+        parsed = json.loads(data)
+    except (json.JSONDecodeError, TypeError, ValueError, UnicodeDecodeError):
+        parsed = None
+    else:
+        if isinstance(parsed, list):
+            try:
+                if all(
+                    isinstance(x, (int, float)) and not isinstance(x, bool) for x in parsed
+                ):
+                    return [float(x) for x in parsed]
+            except (ValueError, OverflowError):
+                pass
+        return []
+    # Not JSON: compact binary form (struct-packed floats). A byte length that is
+    # not a multiple of 4 is the corrupt case that used to raise struct.error.
+    if isinstance(data, (bytes, bytearray)) and len(data) % 4 == 0:
+        try:
+            n = len(data) // 4
+            return list(struct.unpack(f"{n}f", data))
+        except struct.error:
+            pass
+    return []
 
 
 def embed_signature(model: str, content_budget: int = _EMBED_CONTENT_BUDGET) -> str:
