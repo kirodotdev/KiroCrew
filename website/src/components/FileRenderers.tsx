@@ -2,6 +2,7 @@ import { memo, useState, useMemo, useCallback, useRef } from 'react'
 import DOMPurify from 'dompurify'
 
 import { i18nT } from '../i18n/t'
+import { useI18nRevision } from '../i18n/useI18nRevision'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'])
@@ -39,6 +40,7 @@ function extOf(fp: string) { const i = fp.lastIndexOf('.'); return i >= 0 ? fp.s
 
 /* ── Image viewer ── */
 export const ImageViewer = memo(function ImageViewer({ filePath }: { filePath: string }) {
+  useI18nRevision()
   return (
     <div className="flex items-center justify-center h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border">
       <img

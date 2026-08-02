@@ -1,6 +1,7 @@
 import { memo, useState, useCallback, useEffect, useRef } from 'react'
 
 import { i18nT } from '../i18n/t'
+import { useI18nRevision } from '../i18n/useI18nRevision'
 export interface TocEntry { level: number; text: string; index: number }
 
 /** Extract TOC entries from rendered DOM headings — guarantees consistency with what the user sees */
@@ -76,6 +77,7 @@ const tickWidth = (depth: number) => TICK_WIDTH[Math.min(depth, TICK_WIDTH.lengt
  * inside a `position: relative` ancestor that shares that viewport's box.
  */
 const MarkdownOutlineRail = memo(function MarkdownOutlineRail({ containerRef }: { containerRef: React.RefObject<HTMLElement | null> }) {
+  useI18nRevision()
   const [entries, setEntries] = useState<TocEntry[]>([])
   const [active, setActive] = useState(0)
   const [expanded, setExpanded] = useState(false)

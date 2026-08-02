@@ -21,6 +21,7 @@ import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
+import { useI18nRevision } from '../../i18n/useI18nRevision'
 /** The `workflow_run` tool result reads "Started workflow run `wf_NNNNNN`…"
  *  (see the workflow_run handler in mcp_core.py). Matching that phrase both
  *  identifies the call as a launch and captures its run id — and works for
@@ -62,6 +63,7 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
   runId: string
   message: ChatMessage
 }) {
+  useI18nRevision()
   const dispatch = useAppDispatch()
   const run = useAppSelector(s => s.chat.workflowRuns?.[runId])
   const status = run?.status

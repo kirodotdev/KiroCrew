@@ -22,6 +22,7 @@ import type { ChatMessage, SubagentActivity } from '../../types'
 import { SPAWN_LAUNCH_MARKER } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { useI18nRevision } from '../../i18n/useI18nRevision'
 /** The `spawn_run` tool result opens with "Spawned N subagent(s)." followed by
  *  one indented "  <id> (<agent>): <task>" line per accepted agent (see the
  *  spawn_run handler in mcp_core.py). Matching the header identifies the call
@@ -149,6 +150,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
   launch: SpawnRunLaunch
   slot: string
 }) {
+  useI18nRevision()
   const dispatch = useAppDispatch()
   const subagents = useAppSelector(s =>
     slot === s.chat.activeSlot ? s.chat.subagents : s.chat.slotActivity[slot]?.subagents ?? EMPTY_SUBAGENTS,

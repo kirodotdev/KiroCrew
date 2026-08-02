@@ -6,6 +6,7 @@ import RunInTerminalBtn, { SHELL_LANGS } from './RunInTerminalBtn'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
 
 import { i18nT } from '../i18n/t'
+import { useI18nRevision } from '../i18n/useI18nRevision'
 const Editor = lazy(async () => {
   const { ensureMonacoLocal } = await import('../utils/monacoLocal')
   await ensureMonacoLocal()
@@ -45,6 +46,7 @@ export function lineCount(code: string): number {
 const MonacoCodeBlock = memo(function MonacoCodeBlock(
   { code, lang, complete }: { code: string; lang?: string; complete: boolean },
 ) {
+  useI18nRevision()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(code)
   const [copied, setCopied] = useState(false)

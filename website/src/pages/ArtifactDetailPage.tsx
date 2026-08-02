@@ -37,6 +37,7 @@ import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor, ChatSlot 
 
 import { i18nT } from '../i18n/t'
 import { fmtDateFields } from '../i18n/format'
+import { useI18nRevision } from '../i18n/useI18nRevision'
 /**
  * The artifact's active companion session: the bound slot for `slug`, or the most
  * recently active one if a race or a History-page resume left more than one.
@@ -123,6 +124,7 @@ const ActivityTimeline = memo(function ActivityTimeline({
   events: ArtifactEvent[]
   navigateToSlot: (slotKey: string) => void
 }) {
+  useI18nRevision()
   if (!events.length) {
     return (
       <div className="text-[12px] text-muted">{i18nT('pages.artifactDetailPage.no_lifecycle_events_yet')}</div>

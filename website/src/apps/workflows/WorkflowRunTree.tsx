@@ -23,6 +23,7 @@ import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { groupByPhase, latestBudget, type WfEvent } from './runModel'
 
 import { i18nT } from '../../i18n/t'
+import { useI18nRevision } from '../../i18n/useI18nRevision'
 export interface WorkflowRunTreeProps {
   events: WfEvent[]
   /** Terminal status of the run; drives the per-phase fallback when no agents
@@ -73,6 +74,7 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
   error,
   maxLogs = 6,
 }: WorkflowRunTreeProps) {
+  useI18nRevision()
   const phases = useMemo(() => groupByPhase(events), [events])
   const budget = useMemo(() => latestBudget(events), [events])
   const logLines = useMemo(

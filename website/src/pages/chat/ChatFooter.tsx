@@ -3,6 +3,7 @@ import { Hourglass, Search, Lightbulb, Settings, Zap, Check, Sparkles, Brain, Pe
 import { motion } from 'framer-motion'
 
 import { i18nT } from '../../i18n/t'
+import { useI18nRevision } from '../../i18n/useI18nRevision'
 import { GHOST_POSE_ICONS } from '../../components/GhostPoses'
 import { getThemeBranding } from '../../themeBranding'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -209,6 +210,7 @@ export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM
 }
 
 const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0 }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number }) {
+  useI18nRevision()
   const loader = resolveLoader(useThemeSlug())
   // Text is only ACTIVELY streaming while the slot says so AND chunks keep
   // arriving. `lastRole` alone cannot tell the two apart: the trailing

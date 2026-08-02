@@ -4,6 +4,7 @@ import { copyCode } from '../utils/clipboard'
 import { highlightAsync } from '../utils/highlightClient'
 
 import { i18nT } from '../i18n/t'
+import { useI18nRevision } from '../i18n/useI18nRevision'
 export function HighlightedCode({ code, lang, className }: { code: string; lang: string | undefined; className: string }) {
   const [html, setHtml] = useState('')
   // Reset to plain text the instant the code changes, so a stale highlight from
@@ -44,6 +45,7 @@ export const CodeBlock = memo(function CodeBlock(
     code: string; lang?: string; complete: boolean; headerActions?: React.ReactNode
   },
 ) {
+  useI18nRevision()
   const [copied, setCopied] = useState(false)
   const copy = () => { copyCode(code); setCopied(true); setTimeout(() => setCopied(false), 1500) }
 

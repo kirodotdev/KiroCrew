@@ -109,6 +109,13 @@ export interface LanguageContextValue {
    * reconciles it on its own. Showing the failure is what makes that recoverable.
    */
   syncFailed: boolean
+  /**
+   * The i18next catalog language currently active in the runtime. Changes only
+   * AFTER `changeLanguage()` resolves, so reading it guarantees the catalog is
+   * loaded. Exposed so memoized descendants can subscribe to language switches
+   * without migrating every `i18nT()` call to `useTranslation()`.
+   */
+  active: string
 }
 
 const LanguageContext = createContext<LanguageContextValue | null>(null)
@@ -261,9 +268,15 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
 
   // Cross-tab sync: switching language in one tab updates the others without a
   // reload. Same StorageEvent pattern as useUIMode.
+  //
+  // Sets `userChose` so that a delayed boot response cannot overwrite a
+  // cross-tab switch — the storage event represents an explicit user action in
+  // another tab, so it outranks the server value for the same reason a local
+  // picker click does.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key !== LANG_STORAGE_KEY) return
+      userChose.current = true
       setLanguageState(e.newValue ?? AUTO_LANGUAGE)
     }
     window.addEventListener('storage', onStorage)
@@ -292,7 +305,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   )
 
   return (
-    <LanguageContext.Provider value={{ language, resolved, detected, setLanguage, syncFailed }}>
+    <LanguageContext.Provider value={{ language, resolved, detected, setLanguage, syncFailed, active }}>
       {refreshed}
     </LanguageContext.Provider>
   )
@@ -309,11 +322,13 @@ export function useLanguage(): LanguageContextValue {
   const ctx = useContext(LanguageContext)
   if (ctx) return ctx
   const stored = readStoredLanguage()
+  const res = resolveLanguage(stored)
   return {
     language: stored,
-    resolved: resolveLanguage(stored),
+    resolved: res,
     detected: resolveLanguage(AUTO_LANGUAGE),
     setLanguage: () => {},
     syncFailed: false,
+    active: res,
   }
 }

@@ -21,6 +21,7 @@ import { monacoLang, useIsDark } from './MonacoCodeBlock'
 import { kirocrewDark, kirocrewLight } from './monacoTheme'
 
 import { i18nT } from '../i18n/t'
+import { useI18nRevision } from '../i18n/useI18nRevision'
 // Route through ensureMonacoLocal() so Monaco loads from the locally-bundled
 // package instead of the default cdn.jsdelivr.net loader (blocked by CSP
 // connect-src). Mirrors DiffPanel/MarkdownPanel/MonacoCodeBlock.
@@ -158,6 +159,7 @@ export const ContentRenderer = memo(function ContentRenderer({
    *  the host surface (side-panel tab body) already frames the content. */
   flush?: boolean
 }) {
+  useI18nRevision()
   const inner = (
     <>
       {isRichType && fileType === 'image' && filePath && <ImageViewer filePath={filePath} />}
