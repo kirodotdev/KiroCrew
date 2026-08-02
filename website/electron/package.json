@@ -59,6 +59,8 @@
     "files": [
       "main.js",
       "app-menu.js",
+      "windows-menu-model.js",
+      "windows-titlebar.js",
       "badge.js",
       "native-theme.js",
       "zoom.js",

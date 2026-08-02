@@ -6317,6 +6317,14 @@
     "widgetPlaceholder": {
       "generating": "生成中…"
     },
+    "windowsTitlebarMenu": {
+      "connection": "连接",
+      "edit": "编辑",
+      "file": "文件",
+      "help": "帮助",
+      "view": "查看",
+      "window": "窗口"
+    },
     "workspacePicker": {
       "back": "返回",
       "create": "创建",

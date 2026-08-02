@@ -6042,6 +6042,14 @@
     "widgetPlaceholder": {
       "generating": "[ğèñèŕàţìñğ… ··········]"
     },
+    "windowsTitlebarMenu": {
+      "connection": "[Çøññèçţìøñ ···············]",
+      "edit": "[Èðìţ ······]",
+      "file": "[Ƒìĺè ······]",
+      "help": "[Ĥèĺþ ······]",
+      "view": "[Ṽìèẁ ······]",
+      "window": "[Ẁìñðøẁ ·········]"
+    },
     "workspacePicker": {
       "back": "[Ɓàçķ ······]",
       "create_workspace": "[Çŕèàţè Ẁøŕķşþàçè ··············]",

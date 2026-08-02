@@ -6317,6 +6317,14 @@
     "widgetPlaceholder": {
       "generating": "생성 중…"
     },
+    "windowsTitlebarMenu": {
+      "connection": "연결",
+      "edit": "편집",
+      "file": "파일",
+      "help": "도움말",
+      "view": "보기",
+      "window": "창"
+    },
     "workspacePicker": {
       "back": "뒤로",
       "create": "만들기",

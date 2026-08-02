@@ -6491,6 +6491,14 @@
     "widgetPlaceholder": {
       "generating": "gerando…"
     },
+    "windowsTitlebarMenu": {
+      "connection": "Conexão",
+      "edit": "Editar",
+      "file": "Arquivo",
+      "help": "Ajuda",
+      "view": "Exibir",
+      "window": "Janela"
+    },
     "workspacePicker": {
       "back": "Voltar",
       "create": "Criar",

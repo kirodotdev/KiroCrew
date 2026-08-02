@@ -6404,6 +6404,14 @@
     "widgetPlaceholder": {
       "generating": "जनरेट हो रहा है…"
     },
+    "windowsTitlebarMenu": {
+      "connection": "कनेक्शन",
+      "edit": "संपादित करें",
+      "file": "फ़ाइल",
+      "help": "सहायता",
+      "view": "देखें",
+      "window": "विंडो"
+    },
     "workspacePicker": {
       "back": "पीछे",
       "create": "बनाएँ",

@@ -6317,6 +6317,14 @@
     "widgetPlaceholder": {
       "generating": "生成中…"
     },
+    "windowsTitlebarMenu": {
+      "connection": "接続",
+      "edit": "編集",
+      "file": "ファイル",
+      "help": "ヘルプ",
+      "view": "表示",
+      "window": "ウィンドウ"
+    },
     "workspacePicker": {
       "back": "戻る",
       "create": "作成",

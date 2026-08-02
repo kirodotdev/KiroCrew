@@ -6578,6 +6578,14 @@
     "widgetPlaceholder": {
       "generating": "генерация…"
     },
+    "windowsTitlebarMenu": {
+      "connection": "Соединение",
+      "edit": "Правка",
+      "file": "Файл",
+      "help": "Справка",
+      "view": "Вид",
+      "window": "Окно"
+    },
     "workspacePicker": {
       "back": "Назад",
       "create": "Создать",

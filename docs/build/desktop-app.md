@@ -329,6 +329,31 @@ finishes before the gateway permits a retry.
 Hosting setup in the gateway provides one implementation and one UI for the
 desktop app, local browser, remote browser, Linux, and Windows.
 
+### Native window chrome
+
+The dashboard's 42px top bar is also the window titlebar on macOS and Windows.
+macOS insets the native traffic lights on the left. Windows uses Electron's
+title-bar overlay to retain native minimize/maximize/close controls on the right.
+The application menu rests as a compact hamburger on the left. Opening it shows
+the File submenu and expands File/Edit/View/Connection/Window/Help inline;
+hovering another label replaces the submenu without ending the menu session.
+Escape, an outside click, selecting a command, or moving focus to another window
+closes the popup and collapses the labels back to the hamburger. The menu surface
+uses the dashboard theme because native Windows popups capture window input and
+cannot support hover switching; a narrow IPC bridge keeps command execution and
+standard Electron roles in the main process.
+When a remote crew is connected, the instance switcher shares the same bounded
+left region as the menu: it is a single trigger naming the crew on screen (see
+InstanceTabBar's SwitcherMenu), not a row of per-crew tabs, so it costs constant
+width whether the menu is collapsed to a hamburger or expanded to full labels.
+The centered command palette yields that region rather than the reverse — the
+correct priority while the menu is open is labels > instance status > an idle
+search affordance — and the palette remains reachable through its keyboard
+shortcut even while hidden.
+The command-palette trigger is positioned from the window midpoint rather than
+the remaining flex space, so asymmetric menu and status controls do not shift it.
+Linux retains the window manager's native frame and menu bar.
+
 ### `find-bin.js` — locating the binary
 
 `findKirocrewBin()` checks well-known paths in order and returns the first

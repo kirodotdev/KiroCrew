@@ -6404,6 +6404,14 @@
     "widgetPlaceholder": {
       "generating": "তৈরি হচ্ছে…"
     },
+    "windowsTitlebarMenu": {
+      "connection": "সংযোগ",
+      "edit": "সম্পাদনা",
+      "file": "ফাইল",
+      "help": "সহায়তা",
+      "view": "দেখুন",
+      "window": "উইন্ডো"
+    },
     "workspacePicker": {
       "back": "পিছনে",
       "create": "তৈরি করো",

@@ -104,6 +104,7 @@ import CommandPalette from './components/CommandPalette'
 import ReportProblemModal from './components/ReportProblemModal'
 import FeedbackPill from './components/FeedbackPill'
 import KiroAccountModal from './components/KiroAccountModal'
+import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
@@ -1849,6 +1850,12 @@ export default function App() {
           ref={topbarBrandRef}
           className={`relative flex items-center h-full shrink-0 gap-2 ${isMobile ? 'px-2' : ''}`}
         >
+          {/* Windows only: the application menu shares this cluster. It needs no
+              width reservation of its own — the effect above measures this
+              cluster's real right edge, and a ResizeObserver on it re-measures
+              when the menu grows from the hamburger to its six labels, so the
+              centered command palette shrinks (or drops) to keep clear. */}
+          {!isMobile && isWinElectron && <WindowsTitlebarMenu />}
           {isMobile && (
             <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')}>
               <Menu size={20} />

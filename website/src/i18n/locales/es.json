@@ -6491,6 +6491,14 @@
     "widgetPlaceholder": {
       "generating": "generando…"
     },
+    "windowsTitlebarMenu": {
+      "connection": "Conexión",
+      "edit": "Editar",
+      "file": "Archivo",
+      "help": "Ayuda",
+      "view": "Ver",
+      "window": "Ventana"
+    },
     "workspacePicker": {
       "back": "Atrás",
       "create": "Crear",

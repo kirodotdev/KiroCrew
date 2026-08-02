@@ -1571,9 +1571,29 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* ── Frameless Electron window (Windows) ──
    titleBarOverlay places native caption controls (min/max/close) in a 138px
    overlay strip at the top-right of the window. Inset the header's right side
-   so interactive elements (bell, settings, actions) stay clear of the overlay.
-   Keep 138px in sync with WIN_CAPTION_OVERLAY_WIDTH in src/lib/electron.ts. */
-.win-electron header.topbar-glass{padding-right:142px}
+   so interactive elements (bell, settings, actions) stay clear of the overlay,
+   and mark the header as a drag region so the integrated menu row still moves
+   the window — with an explicit no-drag opt-out for every interactive control,
+   including the titlebar app-menu triggers below.
+   Keep 142px in sync with WIN_CAPTION_OVERLAY_WIDTH in src/lib/electron.ts. */
+.win-electron header.topbar-glass{
+  padding-right:142px;
+  -webkit-app-region:drag;
+}
+.win-electron header.topbar-glass button,
+.win-electron header.topbar-glass a,
+.win-electron header.topbar-glass input,
+.win-electron header.topbar-glass [role="button"],
+.win-electron .win-titlebar-menu{
+  -webkit-app-region:no-drag;
+}
+.win-titlebar-menu-item{
+  border:0;
+  background:transparent;
+  font-family:inherit;
+  cursor:default;
+  transition:background-color .12s ease,color .12s ease;
+}
 /* Embedded remote pane (option B): the pane is a separate document loaded in an
    iframe, so its SPA can't see Electron — `isMacElectron` is false inside it and
    the `.mac-electron` rule never applies. The parent relays whether it is a
