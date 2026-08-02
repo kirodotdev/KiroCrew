@@ -138,6 +138,51 @@ _MLX_WHISPER_SEARCH_PATHS = [
     "/usr/local/bin/mlx_whisper",
 ]
 
+# Homebrew installs its ``brew`` shim at a fixed prefix per platform, and none of
+# those prefixes are on the PATH a GUI-launched gateway inherits: the desktop app
+# (Dock / Finder / launchd) starts with ``/usr/bin:/bin:/usr/sbin:/sbin``, so
+# ``shutil.which("brew")`` reports Homebrew MISSING on a machine that has it.
+# Probing the prefixes directly is what keeps the STT prereq list and the install
+# script from telling a Homebrew user to install Homebrew.
+_BREW_CANDIDATE_PATHS = [
+    "/opt/homebrew/bin/brew",  # Apple Silicon macOS
+    "/usr/local/bin/brew",  # Intel macOS
+    "/home/linuxbrew/.linuxbrew/bin/brew",  # Linuxbrew, system install
+    os.path.expanduser("~/.linuxbrew/bin/brew"),  # Linuxbrew, per-user install
+]
+
+#: Directories the STT install script prepends to ``PATH`` before probing for
+#: ``brew`` / ``pipx`` / the binaries it installs. Same reasoning as
+#: ``_BREW_CANDIDATE_PATHS``, expressed for the shell side: ``bash -c`` is
+#: neither a login nor an interactive shell, so the ``brew shellenv`` line in the
+#: user's ``~/.zprofile`` never runs and the inherited PATH is all the script gets.
+#: Expanded here rather than left as ``$HOME/...`` so the script can quote each
+#: entry without a shell-expansion escape hatch. ``~/.local/bin`` is where
+#: ``pipx`` puts ``mlx_whisper``, so the post-install verification needs it too.
+BREW_PATH_DIRS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/home/linuxbrew/.linuxbrew/bin",
+    os.path.expanduser("~/.linuxbrew/bin"),
+    os.path.expanduser("~/.local/bin"),
+]
+
+
+def find_brew() -> str | None:
+    """Return the ``brew`` binary path, or None when Homebrew is not installed.
+
+    Falls back to the well-known install prefixes when ``brew`` is not on PATH
+    (see ``_BREW_CANDIDATE_PATHS``) so a GUI-launched gateway agrees with what
+    the user sees in their terminal.
+    """
+    found = shutil.which("brew")
+    if found:
+        return found
+    for p in _BREW_CANDIDATE_PATHS:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
 
 def _find_mlx_whisper() -> str | None:
     """Return the mlx_whisper binary path or None if not found.

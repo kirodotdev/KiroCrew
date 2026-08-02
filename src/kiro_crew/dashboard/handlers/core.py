@@ -38,7 +38,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
-from kiro_crew.transcribe import ensure_ffmpeg_in_path, is_available
+from kiro_crew.transcribe import BREW_PATH_DIRS, ensure_ffmpeg_in_path, find_brew, is_available
 
 logger = logging.getLogger(__name__)
 
@@ -597,8 +597,11 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
         # The Install button (see _build_stt_install_script) installs ffmpeg,
         # pipx, and mlx-whisper itself. The only thing it cannot bootstrap
         # non-interactively is Homebrew, so that is the sole manual prereq —
-        # listing the others here would duplicate the button.
-        if not shutil.which("brew"):
+        # listing the others here would duplicate the button. ``find_brew``
+        # rather than ``shutil.which``: the desktop app's gateway inherits
+        # PATH=/usr/bin:/bin:/usr/sbin:/sbin, so which() would claim Homebrew is
+        # missing on every DMG install that has it.
+        if not find_brew():
             return [
                 '/bin/bash -c "$(curl -fsSL'
                 ' https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
@@ -612,7 +615,7 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
             subprocess.run(["/usr/bin/xcrun", "--show-sdk-path"], capture_output=True, timeout=5)
         except Exception:
             cmds.append("sudo xcodebuild -license accept")
-        if not shutil.which("brew"):
+        if not find_brew():
             cmds.append(
                 '/bin/bash -c "$(curl -fsSL'
                 ' https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
@@ -816,14 +819,44 @@ async def api_stt_install(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "bash not found"}, status=500)
 
 
+def _stt_install_path_prelude() -> str:
+    """Shell prelude that makes Homebrew (and pipx's bin dir) reachable.
+
+    The install script runs as ``bash -c`` from the gateway process, which is
+    neither a login nor an interactive shell — so the ``eval "$(brew shellenv)"``
+    line in the user's ``~/.zprofile`` never executes. On a desktop-app install
+    the inherited PATH is launchd's ``/usr/bin:/bin:/usr/sbin:/sbin``, which
+    contains no Homebrew prefix at all. Without this prelude the script's first
+    ``command -v brew`` check fails on a machine that HAS Homebrew and the whole
+    install aborts with "ERROR: Homebrew required".
+
+    Prepends the known prefixes (only those that exist), then defers to
+    ``brew shellenv`` for the authoritative prefix once ``brew`` itself resolves.
+    """
+    dirs = " ".join(shlex.quote(d) for d in BREW_PATH_DIRS)
+    return f"""
+for _d in {dirs}; do
+    case ":$PATH:" in
+        *":$_d:"*) ;;
+        *) [ -d "$_d" ] && PATH="$_d:$PATH" ;;
+    esac
+done
+export PATH
+if command -v brew >/dev/null 2>&1; then eval "$(brew shellenv)" 2>/dev/null || true; fi
+"""
+
+
 def _build_stt_install_script(provider: str = "whisper") -> str:
     """Shell script that installs the runtime for the selected STT provider.
 
     - ``mlx``: installs mlx-whisper via pipx (Apple Silicon only) plus ffmpeg.
     - ``whisper`` (default): installs openai-whisper + ffmpeg via brew or pip.
     """
+    prelude = _stt_install_path_prelude()
     if provider == "mlx":
-        return r"""
+        return (
+            prelude
+            + r"""
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
 
 if ! command -v brew >/dev/null 2>&1; then
@@ -844,7 +877,10 @@ pipx install --force mlx-whisper 2>&1 || { echo "ERROR: pipx install mlx-whisper
 
 echo "Done. mlx_whisper=$(command -v mlx_whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
 """
-    return r"""
+        )
+    return (
+        prelude
+        + r"""
 # Pick up ffmpeg from ~/ffmpeg if installed there
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
 
@@ -880,6 +916,7 @@ echo "Installing openai-whisper..."
 
 echo "Done. whisper=$(command -v whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
 """
+    )
 
 
 async def api_stt_transcribe(request: web.Request) -> web.Response:

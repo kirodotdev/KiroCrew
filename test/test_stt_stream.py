@@ -10,6 +10,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import platform_compat as pc
 from kiro_crew.config.loader import KiroCrewConfig, SttConfig
 
 # Upper bound for _wait_for_operation. Generous because it only ever elapses on
@@ -794,7 +795,25 @@ class TestSttProviderGating:
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
         monkeypatch.setattr(core, "ensure_ffmpeg_in_path", lambda: None)
-        monkeypatch.setattr("shutil.which", lambda _name: "/opt/homebrew/bin/brew")
+        monkeypatch.setattr(core, "find_brew", lambda: "/opt/homebrew/bin/brew")
+        assert core._stt_prereq_commands("mlx") == []
+
+    def test_mlx_prereqs_empty_when_brew_off_path(self, monkeypatch):
+        """Homebrew installed but NOT on PATH must not be reported missing.
+
+        A GUI-launched gateway (desktop app / launchd) inherits
+        ``/usr/bin:/bin:/usr/sbin:/sbin``, so ``shutil.which("brew")`` returns
+        None on a machine that has Homebrew. Resolution goes through
+        ``find_brew``, which probes the install prefixes directly — otherwise the
+        UI tells a Homebrew user to install Homebrew.
+        """
+        from kiro_crew.dashboard.handlers import core
+
+        monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
+        monkeypatch.setattr(core, "ensure_ffmpeg_in_path", lambda: None)
+        monkeypatch.setattr("shutil.which", lambda _name, **_kw: None)
+        monkeypatch.setattr("os.path.isfile", lambda p: p == "/opt/homebrew/bin/brew")
+        monkeypatch.setattr("os.access", lambda p, _mode: p == "/opt/homebrew/bin/brew")
         assert core._stt_prereq_commands("mlx") == []
 
     def test_mlx_prereqs_only_homebrew_when_brew_absent(self, monkeypatch):
@@ -803,7 +822,7 @@ class TestSttProviderGating:
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
         monkeypatch.setattr(core, "ensure_ffmpeg_in_path", lambda: None)
-        monkeypatch.setattr("shutil.which", lambda _name: None)
+        monkeypatch.setattr(core, "find_brew", lambda: None)
         cmds = core._stt_prereq_commands("mlx")
         assert len(cmds) == 1
         assert "brew" in cmds[0] and "install.sh" in cmds[0]
@@ -816,3 +835,71 @@ class TestSttProviderGating:
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: False)
         monkeypatch.setattr(core, "ensure_ffmpeg_in_path", lambda: None)
         assert core._stt_prereq_commands("mlx") == []
+
+
+class TestSttInstallScriptPath:
+    """The install script must find Homebrew from a GUI-launched gateway.
+
+    ``bash -c`` is neither a login nor an interactive shell, so the user's
+    ``brew shellenv`` line never runs and the script only gets the inherited
+    PATH — which for a desktop-app gateway is ``/usr/bin:/bin:/usr/sbin:/sbin``.
+    Without a PATH prelude the first ``command -v brew`` check fails and the
+    whole install aborts with "ERROR: Homebrew required" on a machine that has it.
+
+    The two tests below that RUN a shell are POSIX-only. On Windows ``bash``
+    resolves to ``C:\\Windows\\System32\\bash.exe`` — the WSL launcher stub, which
+    exits 1 with "Windows Subsystem for Linux has no installed distributions"
+    rather than running the script. That is the same alias-stub hazard
+    ``platform_compat.find_python_interpreter`` guards against for Python, and it
+    makes the assertion measure the runner's WSL state instead of the prelude.
+    Only the shell-executing tests are skipped; the string assertions below run
+    everywhere, and Homebrew does not exist on Windows so the prelude's dirs are
+    inert there anyway.
+    """
+
+    @pytest.mark.parametrize("provider", ["mlx", "whisper"])
+    def test_script_prepends_brew_prefixes(self, provider):
+        from kiro_crew.dashboard.handlers import core
+
+        script = core._build_stt_install_script(provider)
+        assert "/opt/homebrew/bin" in script  # Apple Silicon prefix
+        assert "brew shellenv" in script
+        # The prelude must run BEFORE the brew probe that gates the install.
+        assert script.index("/opt/homebrew/bin") < script.index("command -v brew")
+
+    @pytest.mark.skipif(pc.IS_WINDOWS, reason="bash resolves to the WSL launcher stub")
+    @pytest.mark.parametrize("provider", ["mlx", "whisper"])
+    def test_script_is_valid_shell(self, provider, tmp_path):
+        """Guard the f-string-composed prelude against a syntax regression."""
+        import subprocess
+
+        from kiro_crew.dashboard.handlers import core
+
+        p = tmp_path / "install.sh"
+        p.write_text(core._build_stt_install_script(provider), encoding="utf-8")
+        assert subprocess.run(["bash", "-n", str(p)]).returncode == 0
+
+    @pytest.mark.skipif(pc.IS_WINDOWS, reason="bash resolves to the WSL launcher stub")
+    def test_prelude_finds_brew_under_launchd_path(self, tmp_path):
+        """End-to-end: the prelude alone recovers brew from a stripped PATH."""
+        import subprocess
+
+        from kiro_crew.dashboard.handlers import core
+
+        fake_prefix = tmp_path / "opt" / "homebrew" / "bin"
+        fake_prefix.mkdir(parents=True)
+        brew = fake_prefix / "brew"
+        brew.write_text("#!/bin/sh\necho 'export PATH=\"$PATH\"'\n", encoding="utf-8")
+        brew.chmod(0o755)
+
+        prelude = core._stt_install_path_prelude().replace(
+            "/opt/homebrew/bin", str(fake_prefix)
+        )
+        script = prelude + '\ncommand -v brew >/dev/null && echo FOUND || echo MISSING\n'
+        out = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(tmp_path)},
+        )
+        assert "FOUND" in out.stdout

@@ -13,9 +13,11 @@ import pytest
 from kiro_crew import platform_compat as _pc
 from kiro_crew.config.loader import SttConfig
 from kiro_crew.transcribe import (
+    BREW_PATH_DIRS,
     _find_mlx_whisper,
     _find_whisper,
     _ProfileCredentialResolver,
+    find_brew,
     is_available,
     transcribe_audio,
 )
@@ -92,6 +94,47 @@ class TestFindMlxWhisper:
                 "kiro_crew.transcribe._MLX_WHISPER_SEARCH_PATHS", [str(binary)]
             )
             assert _find_mlx_whisper() == str(binary)
+
+
+# ---------------------------------------------------------------------------
+# find_brew
+# ---------------------------------------------------------------------------
+class TestFindBrew:
+    """A GUI-launched gateway inherits PATH=/usr/bin:/bin:/usr/sbin:/sbin, so
+    ``shutil.which("brew")`` reports Homebrew MISSING on a machine that has it.
+    ``find_brew`` falls back to the fixed install prefixes."""
+
+    def test_found_on_path(self):
+        with patch(
+            "kiro_crew.transcribe.shutil.which", return_value="/opt/homebrew/bin/brew"
+        ):
+            assert find_brew() == "/opt/homebrew/bin/brew"
+
+    def test_found_off_path_via_prefix(self, tmp_path, monkeypatch):
+        brew = tmp_path / "brew"
+        brew.write_text("#!/bin/sh\n")
+        brew.chmod(0o755)
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr(
+                "kiro_crew.transcribe._BREW_CANDIDATE_PATHS", [str(brew)]
+            )
+            assert find_brew() == str(brew)
+
+    def test_not_installed(self, monkeypatch):
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr(
+                "kiro_crew.transcribe._BREW_CANDIDATE_PATHS", ["/nonexistent/brew"]
+            )
+            assert find_brew() is None
+
+    def test_path_dirs_cover_both_mac_prefixes_and_pipx_bin(self):
+        """The shell-side list must cover Intel + Apple Silicon brew and the
+        ``~/.local/bin`` dir pipx installs ``mlx_whisper`` into."""
+        assert "/opt/homebrew/bin" in BREW_PATH_DIRS
+        assert "/usr/local/bin" in BREW_PATH_DIRS
+        assert os.path.expanduser("~/.local/bin") in BREW_PATH_DIRS
+        # Expanded, not left as a shell variable — the script quotes each entry.
+        assert not any(d.startswith("$") or d.startswith("~") for d in BREW_PATH_DIRS)
 
 
 # ---------------------------------------------------------------------------
