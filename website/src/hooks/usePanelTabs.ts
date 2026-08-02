@@ -6,7 +6,7 @@ import { secureRandomId } from '../utils/secureId'
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
 export type ViewKind = 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side' | 'browser'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
-export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal'
+export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal' | 'folder'
 
 /** Views that are AUTO-managed by content (see `syncPinned`): they appear —
  *  pinned to the front, non-closable, and absent from the + menu — only while
@@ -51,7 +51,10 @@ const VIEW_TITLES: Record<ViewKind, string> = {
  *  openTerminal focuses/reuses the most-recent terminal instead of spawning. */
 export const MAX_TERMINALS_PER_CHAT = 4
 
-const basename = (p: string) => p.split('/').pop() || p
+/** Last path segment. Trailing slashes are stripped first: '/a/b/'.split('/')
+ *  ends in '' which is falsy, so the naive form would fall back to the whole
+ *  path and title a directory tab '/a/b/' instead of 'b'. */
+const basename = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p
 
 type Bucket = { tabs: PanelTab[]; activeId: string | null }
 type BySlot = Record<string, Bucket>
@@ -293,6 +296,13 @@ export function usePanelTabs(slotKey: string | null = null) {
     upsert({ id: `diff:${path}`, kind: 'diff', title: `${basename(path)} - Diff`, path, modified, original })
   }, [upsert])
 
+  /** Open a directory listing as its own tab. Keyed `folder:${path}` so a
+   *  directory and a same-named file never collide on id, and so re-opening the
+   *  same directory focuses the existing tab instead of stacking duplicates. */
+  const openFolder = useCallback((path: string, slot: string | null = null) => {
+    upsert({ id: `folder:${path}`, kind: 'folder', title: basename(path), path, slot })
+  }, [upsert])
+
   const openArtifact = useCallback((art: { slug: string; kind: Artifact['kind'] }, content: string, slot: string | null = null) => {
     upsert({ id: `artifact:${art.slug}`, kind: 'artifact', title: art.slug, artifactSlug: art.slug, artifactKind: art.kind, content, slot })
   }, [upsert])
@@ -371,8 +381,8 @@ export function usePanelTabs(slotKey: string | null = null) {
 
   return useMemo(() => ({
     tabs, activeId, activeTab,
-    openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact,
+    openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact, openFolder,
     patchTab, closeTab, closeAll, setActive, setOrder, syncPinned,
     hasTabs: tabs.length > 0,
-  }), [tabs, activeId, activeTab, openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
+  }), [tabs, activeId, activeTab, openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact, openFolder, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
 }

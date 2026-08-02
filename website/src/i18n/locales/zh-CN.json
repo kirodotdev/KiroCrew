@@ -2141,6 +2141,7 @@
       "failed_to_add_source": "添加来源失败"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_reveal_in_finder": "点击浏览 / Shift+点击在 Finder 中显示",
       "click_to_open_shift_click_to_reveal_in_finder": "点击打开 / Shift+点击在 Finder 中显示",
       "close": "关闭",
       "download_d": "下载（d）",
@@ -3797,6 +3798,14 @@
         "acknowledge": "确认",
         "acknowledged_this_won_t_be_repeated_in_future_no": "已确认 — 后续通知中不会再重复",
         "delete": "删除"
+      },
+      "folderPanel": {
+        "empty_folder": "空目录",
+        "loading": "正在加载…",
+        "parent_folder": "上级目录",
+        "refresh": "刷新",
+        "reveal_in_finder": "在 Finder 中显示",
+        "unable_to_list_folder": "无法列出目录内容"
       },
       "knowledgePicker": {
         "cancel": "取消",

@@ -2209,6 +2209,7 @@
       "failed_to_add_source": "Échec de l’ajout de la source"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_reveal_in_finder": "Cliquer pour parcourir / Shift+clic pour afficher dans le Finder",
       "click_to_open_shift_click_to_reveal_in_finder": "Cliquer pour ouvrir / Shift+clic pour afficher dans le Finder",
       "close": "Fermer",
       "download_d": "Télécharger (d)",
@@ -3901,6 +3902,14 @@
         "acknowledge": "Accuser réception",
         "acknowledged_this_won_t_be_repeated_in_future_no": "Accusé de réception — cela ne sera pas répété dans les prochaines notifications",
         "delete": "Supprimer"
+      },
+      "folderPanel": {
+        "empty_folder": "Dossier vide",
+        "loading": "Chargement…",
+        "parent_folder": "Dossier parent",
+        "refresh": "Actualiser",
+        "reveal_in_finder": "Afficher dans le Finder",
+        "unable_to_list_folder": "Impossible de lister le dossier"
       },
       "knowledgePicker": {
         "cancel": "Annuler",

@@ -196,6 +196,75 @@ class TestFileRead:
             assert parsed["tags"] == payload["tags"]
 
 
+class TestFileReadPathKind:
+    """``X-Path-Kind`` lets a caller tell a directory apart from a missing path.
+
+    Both are 404 (a read has no content to return either way), so the status
+    code alone is ambiguous. The dashboard's markdown path chips need the
+    difference: a directory gets a folder affordance, a path that is not on
+    disk gets no affordance at all.
+    """
+
+    @pytest.mark.asyncio
+    async def test_directory_is_404_with_dir_kind(self, tmp_path, mock_sel, home_patch):
+        d = tmp_path / "somedir"
+        d.mkdir()
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={d}")
+            assert resp.status == 404
+            assert resp.headers["X-Path-Kind"] == "dir"
+            assert "directory" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    async def test_missing_is_404_with_missing_kind(self, mock_sel, home_patch):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={home_patch}/nope.txt")
+            assert resp.status == 404
+            assert resp.headers["X-Path-Kind"] == "missing"
+
+    @pytest.mark.asyncio
+    async def test_head_on_file_reports_file_kind(self, tmp_file, mock_sel, home_patch):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.head(f"/api/file-read?path={tmp_file}")
+            assert resp.status == 200
+            assert resp.headers["X-Path-Kind"] == "file"
+
+    @pytest.mark.asyncio
+    async def test_head_on_directory_reports_dir_kind(self, tmp_path, mock_sel, home_patch):
+        # The isfile() gate precedes the HEAD branch, so HEAD and GET must agree
+        # on kind. The chip probe uses HEAD, so this is the path that matters.
+        d = tmp_path / "headdir"
+        d.mkdir()
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.head(f"/api/file-read?path={d}")
+            assert resp.status == 404
+            assert resp.headers["X-Path-Kind"] == "dir"
+
+    @pytest.mark.asyncio
+    async def test_head_on_missing_reports_missing_kind(self, mock_sel, home_patch):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.head(f"/api/file-read?path={home_patch}/ghost.md")
+            assert resp.status == 404
+            assert resp.headers["X-Path-Kind"] == "missing"
+
+    @pytest.mark.asyncio
+    async def test_forbidden_path_leaks_no_kind(self, mock_sel, home_patch):
+        """A denylisted path must 400 without disclosing whether it exists.
+
+        The chip treats a missing header as "not actionable", so a 400 renders
+        as plain text — the probe must not become an existence oracle for
+        credential stores.
+        """
+        ssh_dir = home_patch / ".ssh"
+        ssh_dir.mkdir()
+        key = ssh_dir / "id_rsa"
+        key.write_text("secret")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={key}")
+            assert resp.status == 400
+            assert "X-Path-Kind" not in resp.headers
+
+
 class TestFileWrite:
     @pytest.mark.asyncio
     async def test_write_success(self, tmp_file, mock_sel, home_patch):

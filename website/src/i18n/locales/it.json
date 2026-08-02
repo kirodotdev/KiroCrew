@@ -2209,6 +2209,7 @@
       "failed_to_add_source": "Impossibile aggiungere l’origine"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_reveal_in_finder": "Clicca per esplorare / Maiusc+clic per mostrare nel Finder",
       "click_to_open_shift_click_to_reveal_in_finder": "Clicca per aprire / Maiusc+clic per mostrare nel Finder",
       "close": "Chiudi",
       "download_d": "Scarica (d)",
@@ -3901,6 +3902,14 @@
         "acknowledge": "Conferma",
         "acknowledged_this_won_t_be_repeated_in_future_no": "Confermato — non verrà ripetuto nelle notifiche future",
         "delete": "Elimina"
+      },
+      "folderPanel": {
+        "empty_folder": "Cartella vuota",
+        "loading": "Caricamento…",
+        "parent_folder": "Cartella superiore",
+        "refresh": "Aggiorna",
+        "reveal_in_finder": "Mostra nel Finder",
+        "unable_to_list_folder": "Impossibile elencare la cartella"
       },
       "knowledgePicker": {
         "cancel": "Annulla",

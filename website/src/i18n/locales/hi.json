@@ -2175,6 +2175,7 @@
       "failed_to_add_source": "स्रोत जोड़ने में विफल"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_reveal_in_finder": "ब्राउज़ करने के लिए क्लिक करें / Finder में दिखाने के लिए Shift+क्लिक करें",
       "click_to_open_shift_click_to_reveal_in_finder": "खोलने के लिए क्लिक करें / Finder में दिखाने के लिए Shift+क्लिक करें",
       "close": "बंद करें",
       "download_d": "डाउनलोड (d)",
@@ -3849,6 +3850,14 @@
         "acknowledge": "स्वीकारें",
         "acknowledged_this_won_t_be_repeated_in_future_no": "स्वीकार किया गया — यह भविष्य की सूचनाओं में दोहराया नहीं जाएगा",
         "delete": "हटाएँ"
+      },
+      "folderPanel": {
+        "empty_folder": "खाली फ़ोल्डर",
+        "loading": "लोड हो रहा है…",
+        "parent_folder": "पैरेंट फ़ोल्डर",
+        "refresh": "रिफ़्रेश करें",
+        "reveal_in_finder": "Finder में दिखाएँ",
+        "unable_to_list_folder": "फ़ोल्डर की सूची नहीं बनाई जा सकी"
       },
       "knowledgePicker": {
         "cancel": "रद्द करें",

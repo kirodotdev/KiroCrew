@@ -2209,6 +2209,7 @@
       "failed_to_add_source": "No se pudo añadir la fuente"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_reveal_in_finder": "Clic para explorar / Shift+clic para mostrar en Finder",
       "click_to_open_shift_click_to_reveal_in_finder": "Clic para abrir / Shift+clic para mostrar en Finder",
       "close": "Cerrar",
       "download_d": "Descargar (d)",
@@ -3901,6 +3902,14 @@
         "acknowledge": "Confirmar",
         "acknowledged_this_won_t_be_repeated_in_future_no": "Confirmado — esto no se repetirá en futuras notificaciones",
         "delete": "Eliminar"
+      },
+      "folderPanel": {
+        "empty_folder": "Carpeta vacía",
+        "loading": "Cargando…",
+        "parent_folder": "Carpeta superior",
+        "refresh": "Actualizar",
+        "reveal_in_finder": "Mostrar en Finder",
+        "unable_to_list_folder": "No se puede listar la carpeta"
       },
       "knowledgePicker": {
         "cancel": "Cancelar",

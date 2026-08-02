@@ -1810,6 +1810,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // not per-chunk.)
   }, [queryClient, tabsCtl, dispatch, search.close, touchedFiles.addFile])
 
+  /** Open a DIRECTORY as a panel tab.
+   *
+   *  The folder twin of handleFileOpen, and deliberately much thinner: there is
+   *  no content to prefetch (FolderPanel owns its own ['browse-files', path]
+   *  query) and nothing to record in touched-files, which tracks files the run
+   *  actually read or wrote. Only reachable for paths the backend already
+   *  confirmed are directories, so there is no not-found branch to handle. */
+  const handleFolderOpen = useCallback((dirPath: string) => {
+    tabsCtl.openFolder(dirPath, activeSlotRef.current ?? null)
+    dispatch(openActivityPanel())
+    search.close()
+  }, [tabsCtl, dispatch, search.close])
+
   // Open an artifact as a side-panel tab — the artifact twin of
   // handleFileOpen, and the single entry point every in-chat artifact
   // affordance routes through (the Artifacts tab's rows and `/artifacts/<slug>`
@@ -4085,7 +4098,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     // An injected workflow completion event renders as a compact status card
     // (with the full result folded away) instead of a wall of raw JSON.
-    if (isWorkflowCompletionMessage(m)) return <WorkflowCompletionCard key={key} message={m} onFileOpen={handleFileOpen} disclosureKey={key} />
+    if (isWorkflowCompletionMessage(m)) return <WorkflowCompletionCard key={key} message={m} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} disclosureKey={key} />
     const isUser = m.role === 'user'
     const isStreaming = m.role === 'streaming'
     const isInject = m.role === 'inject'
@@ -4128,7 +4141,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onArtifactOpen={handleArtifactOpen} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} showFooter={(() => {
+              <AssistantMessage content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming

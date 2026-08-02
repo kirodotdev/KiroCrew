@@ -1,6 +1,6 @@
 import { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
 import Clickable from './Clickable'
-import { Paperclip, X, Download, Plus, Minus, Search } from 'lucide-react'
+import { Paperclip, X, Download, Plus, Minus, Search, Folder } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -26,6 +26,8 @@ function spliceChildren(parent: HastParent, index: number, nodes: Array<HastElem
 import '../utils/hljs'
 import { api } from '../api/client'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
+import { usePathKind, type PathKind } from '../hooks/usePathKind'
+import { fileIcon } from '../utils/fileIcons'
 import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
 import DiffBlock from './DiffBlock'
 import MonacoCodeBlock from './MonacoCodeBlock'
@@ -47,7 +49,46 @@ export function artifactSlugFromHref(href: string | null | undefined): string | 
   try { return decodeURIComponent(m[1]) } catch { return m[1] }
 }
 
-const PATH_RE = /^~?(?:\.{0,2}\/)?[\w.@~\/ -]*\/[\w.@~: -]*[\w.]$/
+/**
+ * Character-level shape of a local filesystem path: word chars, dot, dash, @,
+ * ~, colon and space, separated by slashes. Anchored at both ends, so anything
+ * carrying a URL scheme (`https://…`) or shell punctuation fails outright.
+ *
+ * Shape alone is NOT sufficient to linkify — see `isPathCandidate`.
+ */
+const PATH_SHAPE_RE = /^~?(?:\.{0,2}\/)?[\w.@~/ -]*\/[\w.@~: -]*[\w.]$/
+
+/** A trailing `.ext` on the last segment, 1-8 chars — the only positive path
+ *  signal available to a path that is neither rooted nor explicitly relative. */
+const EXT_RE = /\.[A-Za-z0-9]{1,8}$/
+
+/**
+ * Could this inline-code text denote a local filesystem path?
+ *
+ * Deliberately a PRE-FILTER, not a decision. "Is `refs/heads/fix/foo` a path?"
+ * is not a syntactic question — it is a filesystem question — so this only
+ * decides whether spending a stat probe is worthwhile. The probe
+ * (`usePathKind`) makes the actual call.
+ *
+ * Merely containing a slash is not enough: that matched git refs
+ * (`refs/heads/…`, `origin/main`), repo slugs (`owner/repo`), MIME types
+ * (`text/plain`), npm scopes (`@scope/pkg`) and dates (`2026/08/02`), every one
+ * of which then rendered as a clickable "file" that could only ever 404. So a
+ * candidate must carry a positive signal that it names a location:
+ *
+ *   - rooted (`/x`, `~/x`), or
+ *   - explicitly relative (`./x`, `../x`), or
+ *   - a file extension on the last segment (`src/main.py`).
+ *
+ * A bare two-segment identifier with no extension is rejected. Note the third
+ * rule still admits `origin/feature/x.ts`; that is intentional — syntax cannot
+ * settle it, and the stat probe will.
+ */
+export function isPathCandidate(s: string): boolean {
+  if (!PATH_SHAPE_RE.test(s)) return false
+  if (s.startsWith('/') || s.startsWith('~') || s.startsWith('./') || s.startsWith('../')) return true
+  return EXT_RE.test(s.slice(s.lastIndexOf('/') + 1))
+}
 
 /** Context providing the viewed file's directory path for resolving bare relative image paths. */
 export const BasePathCtx = createContext<string | null>(null)
@@ -222,6 +263,132 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   )
 }
 
+/**
+ * Whether inline-code chips may issue stat probes.
+ *
+ * False while a message streams. Mid-stream a path arrives one chunk at a time,
+ * and the prefixes are themselves valid candidates — `/Users` is a real
+ * directory on the way to `/Users/me/project/file.ts` — so probing every chunk
+ * would burn requests and briefly render the wrong affordance before settling.
+ * Chips stay inert until the text stops moving.
+ */
+const PathProbeCtx = createContext<boolean>(true)
+
+/**
+ * Where a confirmed path chip sends its activation.
+ *
+ * A context because `MD_COMPONENTS` is module-level — the `code` renderer cannot
+ * receive MarkdownRenderer's props directly. Both handlers are optional: most of
+ * the ~30 MarkdownRenderer call sites pass neither, and those fall back to the
+ * OS file manager.
+ */
+type PathActions = { onFileOpen?: (path: string) => void; onFolderOpen?: (path: string) => void }
+const PathActionCtx = createContext<PathActions>({})
+
+/**
+ * Act on a confirmed path chip.
+ *
+ * `reveal` is the shift-modifier / no-handler escape hatch: hand the path to the
+ * OS file manager, which understands both files and directories.
+ */
+function activatePath(path: string, kind: PathKind, reveal: boolean, actions: PathActions): void {
+  if (reveal) { api.revealPath(path); return }
+  if (kind === 'dir') {
+    // No folder handler wired: fall back to the OS file manager rather than
+    // silently doing nothing.
+    if (actions.onFolderOpen) actions.onFolderOpen(path)
+    else api.revealPath(path)
+    return
+  }
+  if (actions.onFileOpen) actions.onFileOpen(path)
+  else api.revealPath(path)
+}
+
+const CHIP_BASE = 'bg-bg-elevated px-1.5 py-0.5 rounded text-accent text-sm font-mono'
+
+/**
+ * Inline `code` span, upgraded to a click-to-open chip only once the backend has
+ * confirmed the text names something that exists.
+ *
+ * The old behaviour linkified on regex match alone, which produced two bad
+ * outcomes: a directory opened the file viewer and rendered "file not found"
+ * (wrong — it exists), and non-paths that merely contain a slash (git refs,
+ * repo slugs) became dead links. So the default is inverted here: plain text
+ * unless proven otherwise.
+ *
+ * Binds its OWN click/key handlers rather than relying on delegation from the
+ * container. That is what makes the affordance honest: the chip is the control
+ * (`role="button"`, focusable, Enter/Space), the wrapper stays presentational,
+ * and a `<code>` that arrives from raw HTML gets no handler at all — so a forged
+ * chip cannot borrow the container's.
+ */
+function InlineCode({ children, ...props }: { children?: React.ReactNode } & Record<string, unknown>) {
+  const codeStr = String(children).replace(/\n$/, '')
+  const probeEnabled = useContext(PathProbeCtx)
+  const actions = useContext(PathActionCtx)
+  const candidate = probeEnabled && isPathCandidate(codeStr)
+  const kind = usePathKind(candidate ? codeStr.trim() : null)
+
+  // `data-path` / `data-path-kind` describe a chip THIS component rendered, so
+  // only it may set them. rehypeSanitize allowlists every `data-*` attribute
+  // (isAllowedAttr: `k.startsWith('data')`), so raw HTML arrives here with a
+  // forged pair intact; spreading it would publish attributes claiming a
+  // backend-confirmed path that was never probed. Drop any inbound copy.
+  const safeProps = Object.fromEntries(
+    Object.entries(props).filter(([k]) => !k.toLowerCase().startsWith('data-path')),
+  )
+
+  if (kind !== 'file' && kind !== 'dir') {
+    return <code className={CHIP_BASE} {...safeProps}>{children}</code>
+  }
+  const isDir = kind === 'dir'
+  const path = codeStr.trim()
+  // A leading glyph is what makes "this is actionable" legible at rest. Without
+  // one, a confirmed chip and an inert one differ only on hover, so a reader
+  // cannot tell which paths the backend actually resolved. Files use the same
+  // per-extension icon set as the Files tab and the folder browser, so a .md and
+  // a .json chip are distinguishable — but rendered monochrome at the folder
+  // glyph's weight, because inline in prose this is an affordance marker, not
+  // decoration. Decorative either way: the path text carries the meaning.
+  //
+  // The glyph is an INLINE atom and the chip stays a plain inline box. Making the
+  // chip `inline-flex` to align the glyph turned it atomic, so a long path could
+  // no longer break across lines and overflowed its container instead — the
+  // render gate caught this as layout/unbreakable-token on the artifacts surface.
+  const Glyph = isDir ? Folder : fileIcon(path)
+  /** stopPropagation keeps the container's artifact-link delegation from also
+   *  firing for a click that this chip has already handled. */
+  const act = (e: { shiftKey: boolean; preventDefault: () => void; stopPropagation: () => void }) => {
+    e.preventDefault()
+    e.stopPropagation()
+    activatePath(path, kind, e.shiftKey, actions)
+  }
+  return (
+    <code
+      className={`${CHIP_BASE} cursor-pointer hover:underline`}
+      role="button"
+      tabIndex={0}
+      onClick={act}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') act(e) }}
+      {...safeProps}
+      data-path={path}
+      data-path-kind={kind}
+      // The resolved path leads the tooltip, not just the instruction. A native
+      // tooltip paints in the browser's own layer, above page content, and any
+      // element overlaying the chip must be pointer-events-none to let the click
+      // reach it — so hovering always discloses the real target even when
+      // surrounding markup visually covers the chip's text. It also shows a long
+      // path in full when layout truncates it.
+      title={`${path}\n${isDir
+        ? i18nT('components.markdownRenderer.click_to_browse_shift_click_to_reveal_in_finder')
+        : i18nT('components.markdownRenderer.click_to_open_shift_click_to_reveal_in_finder')}`}
+    >
+      <Glyph size={12} aria-hidden="true" className="inline align-middle mr-1 opacity-70" />
+      {children}
+    </code>
+  )
+}
+
 const MD_COMPONENTS: Components = {
   code({ className, children, ...props }) {
     const match = /language-(\w+)/.exec(className || '')
@@ -231,12 +398,7 @@ const MD_COMPONENTS: Components = {
     if (lang === 'mermaid') return <MermaidBlock code={codeStr} />
     if (lang === 'excalidraw') return <ExcalidrawBlock code={codeStr} />
 
-    if (!className) {
-      if (PATH_RE.test(codeStr)) {
-        return <code className="bg-bg-elevated px-1.5 py-0.5 rounded text-accent text-sm font-mono cursor-pointer hover:underline" title={i18nT('components.markdownRenderer.click_to_open_shift_click_to_reveal_in_finder')} {...props}>{children}</code>
-      }
-      return <code className="bg-bg-elevated px-1.5 py-0.5 rounded text-accent text-sm font-mono" {...props}>{children}</code>
-    }
+    if (!className) return <InlineCode {...props}>{children}</InlineCode>
 
     return <CodeBlock code={codeStr} lang={lang} complete={true} />
   },
@@ -1157,9 +1319,11 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean }) {
   const blocks = useBlockAssembler(content, streaming)
 
+  /** Chip activation lives on the chip itself (see InlineCode); this handler is
+   *  only the artifact-link delegation it has always been. */
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = e.target as HTMLElement
     // e.target may be an inline child of the `/artifacts/<slug>` anchor (e.g.
@@ -1176,12 +1340,11 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
         }
       }
     }
-    if (el.tagName === 'CODE' && PATH_RE.test(el.textContent || '')) {
-      e.preventDefault()
-      if (onFileOpen && !e.shiftKey) onFileOpen(el.textContent!.trim())
-      else api.revealPath(el.textContent!.trim())
-    }
-  }, [onFileOpen, onArtifactOpen])
+  }, [onArtifactOpen])
+
+  /** Stable identity so every chip in a long transcript doesn't re-render when
+   *  this component does. */
+  const pathActions = useMemo<PathActions>(() => ({ onFileOpen, onFolderOpen }), [onFileOpen, onFolderOpen])
 
   // Pre-compute the widget index for each widget block (0-based ordinal of
   // widgets within this message). WidgetFrame uses (messageTs, widgetIndex)
@@ -1224,11 +1387,18 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
 
   return (
     // Presentational content wrapper for rendered markdown blocks. The onClick is
-    // pure event delegation: it only acts when a rendered inline-code path span is
-    // clicked (open / reveal-in-Finder), so the wrapper itself is not an
-    // interactive control and carries no role.
+    // pure event delegation for `/artifacts/<slug>` links only — path chips bind
+    // their own handlers (see InlineCode), so this wrapper is not an interactive
+    // control and carries no role.
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
     <div className={`group${animClass}${streamClass}`} onClick={handleClick} data-image-scope="">
+      {/* PathProbeCtx: suppress path stat probes while the message is still
+          streaming, so partial paths ('/Users' en route to '/Users/me/x.ts')
+          neither burn requests nor flash the wrong affordance.
+          PathActionCtx: where a confirmed chip sends its click — MD_COMPONENTS is
+          module-level, so the renderer cannot pass these down as props. */}
+      <PathProbeCtx.Provider value={!streaming}>
+      <PathActionCtx.Provider value={pathActions}>
       {/* CompactImagesCtx: user-message ("sent prompt") callers pass compactImages
           so their attached images render as small previews. The provider wraps the
           blocks here (a context Provider renders no DOM node, so data-image-scope /
@@ -1253,6 +1423,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
           />
         ))}
       </CompactImagesCtx.Provider>
+      </PathActionCtx.Provider>
+      </PathProbeCtx.Provider>
     </div>
   )
 })

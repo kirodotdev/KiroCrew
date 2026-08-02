@@ -2175,6 +2175,7 @@
       "failed_to_add_source": "সোর্স যোগ করা যায়নি"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_reveal_in_finder": "ব্রাউজ করতে ক্লিক করুন / Finder-এ দেখাতে Shift+ক্লিক করুন",
       "click_to_open_shift_click_to_reveal_in_finder": "খুলতে ক্লিক করুন / Finder-এ দেখাতে Shift+ক্লিক করুন",
       "close": "বন্ধ করুন",
       "download_d": "ডাউনলোড (d)",
@@ -3849,6 +3850,14 @@
         "acknowledge": "স্বীকৃতি দিন",
         "acknowledged_this_won_t_be_repeated_in_future_no": "স্বীকৃত — ভবিষ্যতের নোটিফিকেশনে এটি আর দেখানো হবে না",
         "delete": "মুছুন"
+      },
+      "folderPanel": {
+        "empty_folder": "খালি ফোল্ডার",
+        "loading": "লোড হচ্ছে…",
+        "parent_folder": "প্যারেন্ট ফোল্ডার",
+        "refresh": "রিফ্রেশ",
+        "reveal_in_finder": "Finder-এ দেখান",
+        "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি"
       },
       "knowledgePicker": {
         "cancel": "বাতিল",

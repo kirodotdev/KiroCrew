@@ -565,6 +565,22 @@ export const handlers = [
 // `/apps/*/api/*`, cross-origin — gets 501.
 const TEST_ORIGIN = 'http://localhost:3000' // vitest happy-dom default document origin
 const STATIC_ASSET_RE = /^\/(vendor|assets|static)\/|^\/[^/]+\.[a-z0-9]+$/i
+
+// Path-kind probe (`usePathKind`): markdown inline-code chips HEAD this endpoint
+// to learn whether a path-shaped string is a file, a directory, or absent, and
+// only become clickable for the first two. Any transcript-rendering test would
+// otherwise hit the 501 fallback below purely as a side effect of rendering
+// prose that mentions a path.
+//
+// The default answer is "missing" — chips stay inert, which is what a test that
+// is not about chips wants. A test that needs `file`/`dir` stubs
+// `globalThis.fetch` directly (see MarkdownRenderer.test.tsx), matching the
+// sibling HEAD probe in DiffBlock.
+handlers.push(
+  http.head('/api/file-read', () =>
+    new HttpResponse(null, { status: 404, headers: { 'X-Path-Kind': 'missing' } })),
+)
+
 handlers.push(
   http.all('*', ({ request }) => {
     const scheme = request.url.slice(0, 5)

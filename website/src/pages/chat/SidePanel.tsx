@@ -2,12 +2,13 @@ import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } fro
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom, Globe, CircleDot } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom, Globe, CircleDot, Folder } from 'lucide-react'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
 import MarkdownPanel from '../../components/MarkdownPanel'
 import ArtifactPanel from '../../components/ArtifactPanel'
+import FolderPanel from './FolderPanel'
 import WebPreviewPanel from '../../components/WebPreviewPanel'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
@@ -28,7 +29,7 @@ import { i18nT } from '../../i18n/t'
 const KIND_ICON: Record<TabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
-  file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Package size={16} />,
+  file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Package size={16} />, folder: <Folder size={16} />,
 }
 
 /** Views offered by the + menu. */
@@ -524,6 +525,7 @@ export default function SidePanel({
                 onClose={() => handleCloseTab(t.id)}
                 onContentChange={(c) => patchTab(t.id, { content: c })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
+                onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
                 onSubmitComments={onSubmitComments}
@@ -546,11 +548,14 @@ export default function SidePanel({
  *  type on every SidePanel render, forcing React to unmount/remount the whole
  *  subtree — which reset editor state and re-fired xterm's focus-on-visible
  *  effect, stealing focus from the chat input on every keystroke. */
-function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onPathChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
   onClose: () => void
   onContentChange: (c: string) => void
   onDiffModeChange: (diffMode: boolean) => void
+  /** Folder tabs navigate internally; lift the new cwd back to the tab record
+   *  so the strip label tracks where the user actually is. */
+  onPathChange: (p: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string) => void
   onSubmitComments?: (m: string) => void
@@ -573,6 +578,16 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
         onClose={onClose}
         liveWatch
         onSubmitComments={onSubmitComments}
+      />
+    )
+  }
+  if (tab.kind === 'folder') {
+    return (
+      <FolderPanel
+        path={tab.path || ''}
+        onClose={onClose}
+        onFileOpen={onFileOpen}
+        onPathChange={onPathChange}
       />
     )
   }

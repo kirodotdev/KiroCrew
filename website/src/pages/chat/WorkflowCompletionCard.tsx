@@ -67,10 +67,12 @@ export function parseWorkflowCompletion(content: string): ParsedCompletion | nul
 const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
   message,
   onFileOpen,
+  onFolderOpen,
   disclosureKey,
 }: {
   message: ChatMessage
   onFileOpen?: (path: string) => void
+  onFolderOpen?: (path: string) => void
   disclosureKey?: string
 }) {
   const dispatch = useAppDispatch()
@@ -132,7 +134,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
         </div>
         {expanded && body && (
           <div className="px-3 pb-2 pt-1 border-t border-accent/10">
-            <MarkdownRenderer content={body} onFileOpen={onFileOpen} />
+            <MarkdownRenderer content={body} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
           </div>
         )}
       </div>

@@ -2209,6 +2209,7 @@
       "failed_to_add_source": "Falha ao adicionar a fonte"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_reveal_in_finder": "Clique para navegar / Shift+clique para mostrar no Finder",
       "click_to_open_shift_click_to_reveal_in_finder": "Clique para abrir / Shift+clique para mostrar no Finder",
       "close": "Fechar",
       "download_d": "Baixar (d)",
@@ -3901,6 +3902,14 @@
         "acknowledge": "Confirmar",
         "acknowledged_this_won_t_be_repeated_in_future_no": "Confirmado — isto não será repetido em notificações futuras",
         "delete": "Excluir"
+      },
+      "folderPanel": {
+        "empty_folder": "Pasta vazia",
+        "loading": "Carregando…",
+        "parent_folder": "Pasta pai",
+        "refresh": "Atualizar",
+        "reveal_in_finder": "Mostrar no Finder",
+        "unable_to_list_folder": "Não foi possível listar a pasta"
       },
       "knowledgePicker": {
         "cancel": "Cancelar",

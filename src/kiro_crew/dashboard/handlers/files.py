@@ -1458,15 +1458,30 @@ async def api_file_read(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid or forbidden path"}, status=400)
     if not os.path.isfile(path):
+        # Both a directory and a missing path are 404 for a READ — there is no
+        # file content to return either way — but the caller needs to tell them
+        # apart. The dashboard renders a markdown path chip as a folder
+        # affordance when the path is a directory and suppresses the chip
+        # entirely when the path is not on disk; without this header both look
+        # like "file not found", which is actively wrong for a directory.
+        #
+        # Sitting ahead of the HEAD branch below, one probe covers GET and HEAD.
+        # `path` is already realpath-canonical and denylist-checked here, so
+        # isdir() discloses nothing that the status code did not already.
+        is_dir = os.path.isdir(path)
         _sel().log_tool_invocation(
             session_key="dashboard", tool_name="file_read", outcome="not_found", resources=path
         )
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response(
+            {"error": "is a directory" if is_dir else "not found"},
+            status=404,
+            headers={"X-Path-Kind": "dir" if is_dir else "missing"},
+        )
     if request.method == "HEAD":
         _sel().log_tool_invocation(
             session_key="dashboard", tool_name="file_read", outcome="success", resources=path
         )
-        return web.Response(status=200)
+        return web.Response(status=200, headers={"X-Path-Kind": "file"})
     try:
         read_cap = 512_000
         with open(path, "r", encoding="utf-8", errors="replace") as f:

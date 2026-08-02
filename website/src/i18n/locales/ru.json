@@ -2243,6 +2243,7 @@
       "failed_to_add_source": "Не удалось добавить источник"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_reveal_in_finder": "Щелчок — просмотреть / Shift+щелчок — показать в Finder",
       "click_to_open_shift_click_to_reveal_in_finder": "Щелчок — открыть / Shift+щелчок — показать в Finder",
       "close": "Закрыть",
       "download_d": "Скачать (d)",
@@ -3953,6 +3954,14 @@
         "acknowledge": "Подтвердить",
         "acknowledged_this_won_t_be_repeated_in_future_no": "Подтверждено — это не будет повторяться в будущих уведомлениях",
         "delete": "Удалить"
+      },
+      "folderPanel": {
+        "empty_folder": "Пустая папка",
+        "loading": "Загрузка…",
+        "parent_folder": "Родительская папка",
+        "refresh": "Обновить",
+        "reveal_in_finder": "Показать в Finder",
+        "unable_to_list_folder": "Не удалось получить список папки"
       },
       "knowledgePicker": {
         "cancel": "Отмена",

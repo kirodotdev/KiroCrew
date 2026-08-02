@@ -2175,6 +2175,7 @@
       "failed_to_add_source": "Quelle konnte nicht hinzugefügt werden"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_reveal_in_finder": "Klicken zum Durchsuchen / Shift+Klick zum Anzeigen im Finder",
       "click_to_open_shift_click_to_reveal_in_finder": "Klicken zum Öffnen / Shift+Klick zum Anzeigen im Finder",
       "close": "Schließen",
       "download_d": "Herunterladen (d)",
@@ -3849,6 +3850,14 @@
         "acknowledge": "Bestätigen",
         "acknowledged_this_won_t_be_repeated_in_future_no": "Bestätigt — dies wird in künftigen Benachrichtigungen nicht wiederholt",
         "delete": "Löschen"
+      },
+      "folderPanel": {
+        "empty_folder": "Leerer Ordner",
+        "loading": "Wird geladen…",
+        "parent_folder": "Übergeordneter Ordner",
+        "refresh": "Aktualisieren",
+        "reveal_in_finder": "Im Finder anzeigen",
+        "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden"
       },
       "knowledgePicker": {
         "cancel": "Abbrechen",

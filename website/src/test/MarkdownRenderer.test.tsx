@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { render, fireEvent, act } from '@testing-library/react'
-import MarkdownRenderer, { Lightbox, dispatchLightbox } from '../components/MarkdownRenderer'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, fireEvent, act, waitFor } from '@testing-library/react'
+import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate } from '../components/MarkdownRenderer'
+import { __resetPathKindCache } from '../hooks/usePathKind'
+import { api } from '../api/client'
 
 type LightboxDetail = { images: { src: string; alt: string }[]; index: number }
 
@@ -177,23 +179,295 @@ describe('MarkdownRenderer GFM task-list checkboxes', () => {
   })
 })
 
-describe('MarkdownRenderer PATH_RE colon support', () => {
-  it('renders path with colon in filename as clickable', () => {
-    const { container } = render(
-      <MarkdownRenderer content={'`/home/user/reports/2026-05-17T05:46.md`'} />
-    )
-    const code = container.querySelector('code')
-    expect(code).not.toBeNull()
-    expect(code!.className).toContain('cursor-pointer')
+/**
+ * Stage 1 of path-chip detection: the syntactic pre-filter.
+ *
+ * Pure and fetch-free. Its job is NOT to decide whether something is a path —
+ * that needs a stat — but to reject strings that cannot be one, so the probe is
+ * never spent on a git ref or a MIME type.
+ */
+describe('isPathCandidate — path chip pre-filter', () => {
+  it('accepts rooted, home-relative and explicitly relative paths', () => {
+    expect(isPathCandidate('/Users/me/project/KiroCrew')).toBe(true)
+    expect(isPathCandidate('/home/user/reports/2026-05-17T05:46.md')).toBe(true)
+    expect(isPathCandidate('~/.kiro/crew/workspace')).toBe(true)
+    expect(isPathCandidate('./src/index.ts')).toBe(true)
+    expect(isPathCandidate('../sibling/file.json')).toBe(true)
   })
 
-  it('does NOT render URL as clickable path', () => {
+  it('accepts a bare relative path when the last segment has an extension', () => {
+    expect(isPathCandidate('src/main.py')).toBe(true)
+    expect(isPathCandidate('website/src/components/MarkdownRenderer.tsx')).toBe(true)
+  })
+
+  it('rejects git refs — the regression that made this gate necessary', () => {
+    // These rendered as clickable "files" and could only ever 404.
+    expect(isPathCandidate('refs/heads/fix/investigation-record-403')).toBe(false)
+    expect(isPathCandidate('origin/main')).toBe(false)
+    expect(isPathCandidate('HEAD')).toBe(false)
+  })
+
+  it('rejects other slash-separated identifiers that are not paths', () => {
+    expect(isPathCandidate('owner/repo')).toBe(false)
+    expect(isPathCandidate('kirodotdev/KiroCrew')).toBe(false)
+    expect(isPathCandidate('text/plain')).toBe(false)
+    expect(isPathCandidate('@scope/pkg')).toBe(false)
+    expect(isPathCandidate('2026/08/02')).toBe(false)
+    expect(isPathCandidate('and/or')).toBe(false)
+  })
+
+  it('rejects URLs and strings with no separator at all', () => {
+    expect(isPathCandidate('https://example.com/path/file.txt')).toBe(false)
+    expect(isPathCandidate('4a72aec5f04d3f44ba8042931226db051242d48a')).toBe(false)
+    expect(isPathCandidate('someIdentifier')).toBe(false)
+  })
+})
+
+/**
+ * Stage 2: the stat gate. A candidate is inert until the backend confirms what
+ * it is, and a directory gets a folder affordance rather than the file viewer's
+ * "not found" placeholder.
+ */
+describe('MarkdownRenderer path chips — stat gate', () => {
+  const realFetch = globalThis.fetch
+
+  /** Stub the HEAD probe with a real Headers instance, so header lookup behaves
+   *  exactly as it does against the live endpoint. */
+  function stubKind(kind: 'file' | 'dir' | null, ok = true) {
+    const headers = new Headers(kind ? { 'X-Path-Kind': kind } : {})
+    globalThis.fetch = vi.fn(() =>
+      Promise.resolve({ ok, status: ok ? 200 : 404, headers } as Response),
+    ) as unknown as typeof fetch
+  }
+
+  beforeEach(() => { __resetPathKindCache() })
+  afterEach(() => { globalThis.fetch = realFetch; vi.restoreAllMocks() })
+
+  it('renders a confirmed file as a clickable chip with a leading glyph', async () => {
+    stubKind('file')
+    const { container } = render(<MarkdownRenderer content={'`/home/user/a.md`'} />)
+    await waitFor(() => {
+      const code = container.querySelector('code')!
+      expect(code.className).toContain('cursor-pointer')
+      expect(code.dataset.pathKind).toBe('file')
+      expect(code.dataset.path).toBe('/home/user/a.md')
+      // The glyph is what distinguishes an actionable chip from an inert one at
+      // rest — without it the two differ only on hover.
+      expect(code.querySelector('svg')).not.toBeNull()
+    })
+  })
+
+  it('leaves an inert chip glyph-free, so the affordance stays meaningful', async () => {
+    stubKind(null, false)
+    const { container } = render(<MarkdownRenderer content={'`/home/user/ghost.md`'} />)
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+    const code = container.querySelector('code')!
+    expect(code.querySelector('svg')).toBeNull()
+    expect(code.className).not.toContain('cursor-pointer')
+  })
+
+  it('renders a confirmed directory as a folder chip, not a broken file link', async () => {
+    stubKind('dir', false)
+    const { container } = render(<MarkdownRenderer content={'`/Users/me/workspace/KiroCrew`'} />)
+    await waitFor(() => {
+      const code = container.querySelector('code')!
+      expect(code.dataset.pathKind).toBe('dir')
+      expect(code.className).toContain('cursor-pointer')
+      // Folder glyph distinguishes it from a file chip at a glance.
+      expect(code.querySelector('svg')).not.toBeNull()
+    })
+  })
+
+  it('leaves a path that is not on disk as plain text', async () => {
+    stubKind(null, false) // 404 + X-Path-Kind: missing (header absent here)
+    const { container } = render(<MarkdownRenderer content={'`/home/user/ghost.md`'} />)
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+    const code = container.querySelector('code')!
+    expect(code.className).not.toContain('cursor-pointer')
+    expect(code.dataset.pathKind).toBeUndefined()
+  })
+
+  it('discloses the resolved path in the tooltip', async () => {
+    // Surrounding markup can visually cover a chip (raw HTML plus absolute
+    // positioning — possible on the base commit too, and there it needs no
+    // probe at all). A native tooltip paints above page content and any overlay
+    // must be pointer-events-none to pass the click through, so hover remains a
+    // trustworthy channel for "what will this actually open?".
+    stubKind('file')
+    const { container } = render(<MarkdownRenderer content={'`/home/user/a.md`'} />)
+    await waitFor(() => {
+      const code = container.querySelector('code[data-path-kind]')!
+      expect(code.getAttribute('title')).toContain('/home/user/a.md')
+    })
+  })
+
+  it('never probes a non-candidate — the pre-filter saves the request', async () => {
+    stubKind('file')
+    render(<MarkdownRenderer content={'`refs/heads/fix/investigation-record-403`'} />)
+    await Promise.resolve()
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+
+  it('does not probe while the message is still streaming', async () => {
+    stubKind('file')
+    // Mid-stream, '/Users' is itself a valid candidate en route to the real
+    // path; probing every chunk would flash the wrong affordance.
+    render(<MarkdownRenderer content={'`/Users/me/pro`'} streaming />)
+    await Promise.resolve()
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+
+  it('probes each distinct path once however many chips mention it', async () => {
+    stubKind('file')
+    render(<MarkdownRenderer content={'`/home/user/a.md` and again `/home/user/a.md`'} />)
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+    expect((globalThis.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(1)
+  })
+})
+
+describe('MarkdownRenderer path chips — activation routing', () => {
+  const realFetch = globalThis.fetch
+
+  function stubKind(kind: 'file' | 'dir', ok: boolean) {
+    globalThis.fetch = vi.fn(() =>
+      Promise.resolve({ ok, status: ok ? 200 : 404, headers: new Headers({ 'X-Path-Kind': kind }) } as Response),
+    ) as unknown as typeof fetch
+  }
+
+  beforeEach(() => { __resetPathKindCache() })
+  afterEach(() => { globalThis.fetch = realFetch; vi.restoreAllMocks() })
+
+  it('routes a file chip to onFileOpen', async () => {
+    stubKind('file', true)
+    const onFileOpen = vi.fn()
     const { container } = render(
-      <MarkdownRenderer content={'`https://example.com/path/file.txt`'} />
+      <MarkdownRenderer content={'`/home/user/a.md`'} onFileOpen={onFileOpen} />,
     )
-    const code = container.querySelector('code')
-    expect(code).not.toBeNull()
-    expect(code!.className).not.toContain('cursor-pointer')
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind]')
+      expect(c).not.toBeNull()
+      return c!
+    })
+    fireEvent.click(chip)
+    expect(onFileOpen).toHaveBeenCalledWith('/home/user/a.md')
+  })
+
+  it('routes a directory chip to onFolderOpen, never onFileOpen', async () => {
+    stubKind('dir', false)
+    const onFileOpen = vi.fn()
+    const onFolderOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`/Users/me/ws`'} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />,
+    )
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind="dir"]')
+      expect(c).not.toBeNull()
+      return c!
+    })
+    fireEvent.click(chip)
+    expect(onFolderOpen).toHaveBeenCalledWith('/Users/me/ws')
+    expect(onFileOpen).not.toHaveBeenCalled()
+  })
+
+  it('falls back to reveal-in-OS for a directory when no folder handler is wired', async () => {
+    stubKind('dir', false)
+    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
+    const { container } = render(<MarkdownRenderer content={'`/Users/me/ws`'} onFileOpen={vi.fn()} />)
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind="dir"]')
+      expect(c).not.toBeNull()
+      return c!
+    })
+    fireEvent.click(chip)
+    expect(reveal).toHaveBeenCalledWith('/Users/me/ws')
+  })
+
+  it('shift-click reveals instead of opening', async () => {
+    stubKind('file', true)
+    const onFileOpen = vi.fn()
+    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
+    const { container } = render(
+      <MarkdownRenderer content={'`/home/user/a.md`'} onFileOpen={onFileOpen} />,
+    )
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind]')
+      expect(c).not.toBeNull()
+      return c!
+    })
+    fireEvent.click(chip, { shiftKey: true })
+    expect(reveal).toHaveBeenCalledWith('/home/user/a.md')
+    expect(onFileOpen).not.toHaveBeenCalled()
+  })
+
+  it('is keyboard reachable: Enter activates a chip', async () => {
+    stubKind('file', true)
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`/home/user/a.md`'} onFileOpen={onFileOpen} />,
+    )
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind]') as HTMLElement | null
+      expect(c).not.toBeNull()
+      return c!
+    })
+    // The chip advertises itself as a button, so it must answer the keyboard.
+    expect(chip.getAttribute('role')).toBe('button')
+    expect(chip.tabIndex).toBe(0)
+    fireEvent.keyDown(chip, { key: 'Enter' })
+    expect(onFileOpen).toHaveBeenCalledWith('/home/user/a.md')
+  })
+})
+
+describe('MarkdownRenderer path chips — forgery resistance', () => {
+  const realFetch = globalThis.fetch
+  beforeEach(() => { __resetPathKindCache() })
+  afterEach(() => { globalThis.fetch = realFetch; vi.restoreAllMocks() })
+
+  /**
+   * The chip's `data-path` / `data-path-kind` attributes ARE the activation
+   * contract for the container's delegated handler. rehypeSanitize allowlists
+   * every `data-*` attribute (isAllowedAttr: `k.startsWith('data')`), so raw
+   * HTML in a message reaches the DOM with them intact — a forged chip could
+   * otherwise open a hidden path that differs from its visible text, which is
+   * strictly worse than the old behaviour (that read textContent, so the user
+   * always opened what they saw).
+   */
+  it('ignores a chip forged via raw HTML with a hidden path', async () => {
+    globalThis.fetch = vi.fn(() =>
+      Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response),
+    ) as unknown as typeof fetch
+    const onFileOpen = vi.fn()
+    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
+    const { container } = render(
+      <MarkdownRenderer
+        content={'<code data-path-kind="file" data-path="/etc/hosts">totally harmless</code>'}
+        onFileOpen={onFileOpen}
+      />,
+    )
+    const code = container.querySelector('code')!
+    // The component must not let an inbound data-path* reach the DOM.
+    expect(code.dataset.path).toBeUndefined()
+    expect(code.dataset.pathKind).toBeUndefined()
+    fireEvent.click(code)
+    expect(onFileOpen).not.toHaveBeenCalled()
+    expect(reveal).not.toHaveBeenCalled()
+  })
+
+  it('ignores a chip whose data-path disagrees with its visible text', async () => {
+    // Defence in depth: even if an attribute reached the DOM by another route,
+    // activation must never act on a path the user cannot read.
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'plain text'} onFileOpen={onFileOpen} />,
+    )
+    const root = container.querySelector('[data-image-scope]')!
+    const forged = document.createElement('code')
+    forged.setAttribute('data-path-kind', 'file')
+    forged.setAttribute('data-path', '/etc/shadow')
+    forged.textContent = '/home/user/innocent.md'
+    root.appendChild(forged)
+    fireEvent.click(forged)
+    expect(onFileOpen).not.toHaveBeenCalled()
   })
 })
 

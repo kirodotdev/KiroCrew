@@ -714,6 +714,7 @@
       "failed_to_add_source": "Failed to add source"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_reveal_in_finder": "Click to browse / Shift+click to reveal in Finder",
       "reset_zoom": "Reset zoom (0)",
       "zoom_in": "Zoom in (+)",
       "zoom_out": "Zoom out (-)"
@@ -1264,6 +1265,14 @@
       "chatSettings": {
         "enter_for_newline": "Enter for newline",
         "shift_enter_for_newline": "Shift+Enter for newline"
+      },
+      "folderPanel": {
+        "empty_folder": "Empty folder",
+        "loading": "Loading…",
+        "parent_folder": "Parent folder",
+        "refresh": "Refresh",
+        "reveal_in_finder": "Reveal in Finder",
+        "unable_to_list_folder": "Unable to list folder"
       },
       "knowledgePicker": {
         "knowledge_results_for_query": "Knowledge results for “{{query}}”",
