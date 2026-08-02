@@ -1159,6 +1159,52 @@ class TestDispatcher:
         assert "!sessions [query]" in cli.sent[-1][0]
 
     @pytest.mark.asyncio
+    async def test_typing_indicator_starts_before_the_session_cold_start(
+        self, monkeypatch
+    ) -> None:
+        """TTFT guard: the typing loop must be STARTED before the ACP cold start.
+
+        ``sessions.get_or_create`` can spend seconds spawning and handshaking an
+        ACP session. ``on_turn_start`` does not send the indicator inline -- it
+        spawns a refresh task -- so it must be called BEFORE the cold start, or
+        the task is not even created until the cold start has finished and the
+        user sees several seconds of dead air. That regressed when attachment
+        ingestion was inserted ahead of ``on_turn_start`` (#1053). The shared
+        skeleton in messaging/dispatch.py documents this order as "typing
+        indicator before cold start"; telegram/transport_dispatch.py follows it.
+
+        Asserting the ORDER of the two calls, not merely that both happened:
+        both happen either way, so order is the entire bug. Deliberately spying
+        on ``on_turn_start`` rather than ``send_typing`` -- the latter runs on a
+        spawned task and cannot fire until the loop next yields, which makes it
+        useless for pinning this ordering.
+        """
+        d, cli, sess = _dispatcher({"u1"})
+        order: list[str] = []
+
+        real_get_or_create = sess.get_or_create
+        real_on_turn_start = DiscordRenderer.on_turn_start
+
+        async def _spy_get_or_create(*args: Any, **kwargs: Any) -> Any:
+            order.append("cold_start")
+            return await real_get_or_create(*args, **kwargs)
+
+        async def _spy_on_turn_start(self_: Any) -> None:
+            order.append("typing_started")
+            await real_on_turn_start(self_)
+
+        monkeypatch.setattr(sess, "get_or_create", _spy_get_or_create)
+        monkeypatch.setattr(DiscordRenderer, "on_turn_start", _spy_on_turn_start)
+
+        await d.handle_message(self._msg("hello world"))
+
+        assert "typing_started" in order, "typing was never started"
+        assert "cold_start" in order, "session was never acquired"
+        assert order.index("typing_started") < order.index("cold_start"), (
+            f"typing must start before the cold start, got {order}"
+        )
+
+    @pytest.mark.asyncio
     async def test_normal_turn_streams_and_releases(self) -> None:
         d, cli, sess = _dispatcher({"u1"})
         await d.handle_message(self._msg("hello world"))

@@ -338,6 +338,17 @@ class DiscordDispatcher:
         # Mirrors telegram/transport_dispatch.py.
         _acquired = False
         try:
+            # Typing indicator BEFORE the cold start. get_or_create can spend
+            # seconds spawning/handshaking an ACP session, and until this runs
+            # Discord shows nothing at all, so the user sees dead air and assumes
+            # the bot missed the message. This is the ordering the shared
+            # skeleton documents ("typing indicator before cold start" in
+            # messaging/dispatch.py) and the one telegram/transport_dispatch.py
+            # still uses. Safe here: on_turn_start only spawns a background
+            # refresh task, is idempotent (the driver calls it again later), and
+            # the enclosing finally always finalizes the renderer, so an early
+            # return below cannot leak a typing loop.
+            await renderer.on_turn_start()
             # Acquire before attachment I/O. A large download yields repeatedly;
             # leaving the session idle in that window lets a later message run
             # first and persist the conversation in reverse order.
@@ -353,7 +364,6 @@ class DiscordDispatcher:
                 text = append_attachment_context(text, attachment_result)
             if not text:
                 return
-            await renderer.on_turn_start()
             # New-session bookkeeping belongs to THIS conversation's own session
             # only. A resumed dashboard session is pre-existing by definition, and
             # `get_or_create` returns is_new whenever its ACP session is merely
