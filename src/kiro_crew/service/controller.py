@@ -37,12 +37,17 @@ def install_service() -> int:
     plat = current_platform()
     if plat == Platform.SYSTEMD:
         try:
-            linux.install()
+            profile = linux.install()
         except linux.ServiceInstallError as exc:
             print(f"❌ {exc}", file=sys.stderr)
             return 1
         print("✅ kirocrew service installed and started.")
         print(f"   unit: {linux.UNIT_PATH}")
+        # Reported here, but performed inside linux.install() before the unit is
+        # started — the directive only applies at service start. Deliberately
+        # non-fatal: a failure warns and leaves the service running.
+        if profile.message:
+            print(f"   {'⚠️ ' if not profile.ok else ''}{profile.message}")
         print()
         print("   Status: kirocrew service status")
         print("   Logs:   kirocrew logs -f")
@@ -70,7 +75,12 @@ def uninstall_service() -> int:
     plat = current_platform()
     if plat == Platform.SYSTEMD:
         linux.uninstall()
+        # Whatever removes the service removes the grant, so a host is left as
+        # it was found rather than carrying an orphaned userns permission.
+        profile = linux.remove_apparmor_profile()
         print("✅ kirocrew service stopped and removed.")
+        if profile.message:
+            print(f"   {'⚠️ ' if not profile.ok else ''}{profile.message}")
         return 0
     if plat == Platform.LAUNCHD:
         macos.uninstall()

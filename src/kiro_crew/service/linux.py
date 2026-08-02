@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from kiro_crew.service import apparmor
 from kiro_crew.service.common import (
     SERVICE_NAME,
     kirocrew_bin,
@@ -115,7 +116,7 @@ def _current_uid(user: str) -> int | None:
         return None
 
 
-def render_unit() -> str:
+def render_unit(apparmor_profile: str = "") -> str:
     """Render the systemd system-unit file contents.
 
     Runs the gateway as the invoking user (``User=``, ``Group=``) so it
@@ -173,6 +174,10 @@ def render_unit() -> str:
         "\n"
         "[Service]\n"
         "Type=simple\n"
+        # "-" = best-effort: a missing or unloaded profile must never stop the
+        # gateway from starting. Without it the sandbox simply cannot be built,
+        # which fails closed per-spawn rather than bricking the service.
+        f"{('AppArmorProfile=-' + apparmor_profile + chr(10)) if apparmor_profile else ''}"
         f"User={user}\n"
         f"Group={group}\n"
         f"WorkingDirectory={home}\n"
@@ -266,7 +271,46 @@ def _write_unit_via_sudo(contents: str) -> subprocess.CompletedProcess[str]:
             pass
 
 
-def install() -> None:
+def _install_file_via_sudo(contents: str, dest: Path, mode: str = "0644") -> None:
+    """Atomically place ``contents`` at ``dest`` as root, like the unit write.
+
+    Same escalation path as the unit file — no second mechanism, and no kirocrew
+    or LLM-influenced code runs under sudo; only ``install`` is invoked.
+    """
+    fd, tmp_path = tempfile.mkstemp(prefix="kirocrew-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(contents)
+        res = _sudo_run("install", "-m", mode, "-o", "root", "-g", "root", tmp_path, str(dest))
+        if res.returncode != 0:
+            raise ServiceInstallError((res.stderr or res.stdout).strip())
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _sudo_capture(*argv: str) -> tuple[int, str]:
+    """Run one privileged command, returning ``(rc, combined output)``.
+
+    Needed for the AppArmor enforcement check: it must run under sudo (an
+    unconfined user cannot aa_change_onexec into a named profile, and aa-exec
+    does not fail loudly when it cannot transition) AND its exit code is the
+    answer rather than an error, so it cannot use the raising helper.
+    """
+    res = _sudo_run(*argv)
+    return (res.returncode, (res.stderr or "") + (res.stdout or ""))
+
+
+def _sudo_run_checked(*argv: str) -> None:
+    """Run one privileged command, raising on a non-zero exit."""
+    res = _sudo_run(*argv)
+    if res.returncode != 0:
+        raise ServiceInstallError((res.stderr or res.stdout).strip())
+
+
+def install() -> apparmor.ProfileOutcome:
     """Write the unit file and enable+start the service. Idempotent.
 
     Calls ``sudo`` to write the unit and to invoke ``systemctl``. Sudo
@@ -278,6 +322,11 @@ def install() -> None:
     Raises :class:`ServiceInstallError` with a human-readable message if
     a step fails. The CLI catches this and prints the message instead
     of letting a CalledProcessError surface.
+
+    Returns the AppArmor profile outcome for the caller to report. The profile is
+    installed BEFORE systemd starts the unit: the directive only takes effect at
+    service start, so loading it afterwards would leave the first gateway process
+    unprofiled and every agent spawn failing closed until the next restart.
     """
     user = _current_user()
     if not user:
@@ -286,13 +335,25 @@ def install() -> None:
             "Set $USER and re-run."
         )
 
-    write_res = _write_unit_via_sudo(render_unit())
+    # Decide before writing the unit: the directive has to be in the unit that
+    # systemd reloads, and the profile must be loaded before the restart.
+    needs_profile, profile_reason = apparmor.should_install()
+    write_res = _write_unit_via_sudo(
+        render_unit(apparmor.PROFILE_NAME if needs_profile else "")
+    )
     if write_res.returncode != 0:
         raise ServiceInstallError(
             "Failed to write the unit file. The sudo step is required because "
             f"{UNIT_PATH} is owned by root.\n"
             f"   sudo install said: {(write_res.stderr or write_res.stdout).strip()}"
         )
+
+    # Before daemon-reload/enable/restart: the AppArmorProfile= directive is
+    # applied by systemd at unit START, so the profile must already be loaded or
+    # the first gateway process comes up unprofiled.
+    profile_outcome = install_apparmor_profile() if needs_profile else apparmor.ProfileOutcome(
+        False, f"AppArmor profile not needed: {profile_reason}"
+    )
 
     reload_res = _systemctl("daemon-reload")
     if reload_res.returncode != 0:
@@ -317,6 +378,28 @@ def install() -> None:
             f"{(restart_res.stderr or restart_res.stdout).strip()}\n"
             f"Run `sudo journalctl -u {SERVICE_NAME}.service -n 50` for details."
         )
+
+    return profile_outcome
+
+
+def install_apparmor_profile() -> apparmor.ProfileOutcome:
+    """Install the userns AppArmor profile when this host needs one.
+
+    Deliberately NOT fatal: a gateway running without the profile is the status
+    quo, whereas aborting a service install because a hardening step failed is a
+    regression. The caller prints the outcome and continues either way.
+    """
+    # uid/gid, not sys.executable: the verification drops privilege back to the
+    # invoking user inside the profile and runs a TRUSTED system python, because
+    # the venv interpreter is user-writable and must never execute under sudo.
+    return apparmor.install(
+        _install_file_via_sudo, _sudo_run_checked, _sudo_capture, os.getuid(), os.getgid()
+    )
+
+
+def remove_apparmor_profile() -> apparmor.ProfileOutcome:
+    """Unload and delete the profile so uninstall leaves the host as it was."""
+    return apparmor.uninstall(_sudo_run_checked)
 
 
 def uninstall() -> None:

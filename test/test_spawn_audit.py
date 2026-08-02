@@ -365,6 +365,18 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # holds to sandboxed_spawn_argv / wrap_argv, and they still appear here
         # individually because _SPAWN_NAMES collects bare-name calls to it.
         "sandbox.py::create_subprocess_limited",
+        # The AppArmor profile installer. All three spawn FIXED, operator-facing
+        # tooling with no agent-influenced input: `apparmor_parser --version`,
+        # `apparmor_parser -Q --skip-cache <temp profile this module generated>`.
+        # (The aa-exec enforcement check is NOT here: it must run under sudo, so
+        # it goes through the caller's privileged runner rather than spawning.)
+        # The binaries are resolved with shutil.which (never a caller-supplied PATH),
+        # the only variable argument is a tempfile path this module just wrote,
+        # and the whole flow runs from `kirocrew service install` on a TTY, not
+        # from an agent turn. Sandboxing them would also be circular: their
+        # purpose is to make the sandbox constructible in the first place.
+        "service/apparmor.py::parser_version",
+        "service/apparmor.py::validate",
         "service/linux.py::_current_group",
         "service/linux.py::_sudo_run",
         "service/linux.py::_systemctl",

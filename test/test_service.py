@@ -1369,3 +1369,570 @@ class TestServiceEnvironment:
         monkeypatch.setenv("KIROCREW_SERVICE_BIN", "/opt/Kiro Crew/kirocrew")
         plist = svc_macos.render_plist()
         assert "<string>/opt/Kiro Crew/kirocrew</string>" in plist
+
+
+class TestAppArmorGate:
+    """The profile must install ONLY where that mechanism is the one in play.
+
+    Gating on the detected mechanism rather than the distro is deliberate:
+    Ubuntu derivatives (Pop!_OS, Mint, Zorin, elementary) inherit the
+    restriction and an ID check would miss them, while Debian 13 ships AppArmor
+    *without* the restriction and must be left completely alone.
+    """
+
+    @staticmethod
+    def _gate(monkeypatch, *, lsm="apparmor,capability", sysctl="1", parser="/usr/sbin/apparmor_parser", version=(5, 0)):
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "apparmor_is_active", lambda: "apparmor" in lsm)
+        monkeypatch.setattr(aa, "userns_restricted", lambda: sysctl == "1")
+        monkeypatch.setattr(aa, "parser_path", lambda: parser)
+        monkeypatch.setattr(aa, "parser_version", lambda _p: version)
+        return aa
+
+    def test_skips_when_apparmor_is_not_an_active_lsm(self, monkeypatch):
+        aa = self._gate(monkeypatch, lsm="selinux,capability")
+        needed, reason = aa.should_install()
+        assert needed is False
+        assert "not an active LSM" in reason
+
+    def test_skips_when_the_sysctl_is_not_one(self, monkeypatch):
+        """Debian 13 has AppArmor loaded and is unaffected — the sysctl decides."""
+        aa = self._gate(monkeypatch, sysctl="0")
+        needed, reason = aa.should_install()
+        assert needed is False
+        assert "apparmor_restrict_unprivileged_userns" in reason
+
+    def test_skips_when_parser_is_missing(self, monkeypatch):
+        aa = self._gate(monkeypatch, parser=None)
+        needed, reason = aa.should_install()
+        assert needed is False
+        assert "apparmor_parser is not installed" in reason
+
+    def test_skips_when_parser_predates_the_userns_rule(self, monkeypatch):
+        """The `userns,` rule needs AppArmor 4.x; on 3.x the profile would not compile."""
+        aa = self._gate(monkeypatch, version=(3, 0))
+        needed, reason = aa.should_install()
+        assert needed is False
+        assert "older than 4.x" in reason
+
+    def test_proceeds_when_every_condition_holds(self, monkeypatch):
+        aa = self._gate(monkeypatch)
+        needed, reason = aa.should_install()
+        assert needed is True
+        assert "userns restricted" in reason
+
+    def test_sysctl_absent_reads_as_unrestricted(self, monkeypatch, tmp_path):
+        """An absent knob (Debian, older kernels) must not look like `1`."""
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "_SYSCTL_PATH", tmp_path / "nope")
+        assert aa.userns_restricted() is False
+
+    def test_lsm_read_failure_reads_as_inactive(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "_LSM_PATH", tmp_path / "nope")
+        assert aa.apparmor_is_active() is False
+
+
+class TestAppArmorProfileRendering:
+    """The rendered profile's shape is load-bearing for security."""
+
+    def test_has_no_attachment_path(self):
+        """A path attachment here would be a privilege leak, not a detail.
+
+        The gateway's interpreter (``~/.kiro/crew-venv/bin/python3``) is a
+        SYMLINK to the system python, and AppArmor matches the resolved path. So
+        attaching to the venv path silently never matches, and attaching to the
+        resolved path grants unprivileged userns to EVERY Python process on the
+        host. The profile is therefore named-only and applied by systemd to the
+        one unit. This test fails if anyone reintroduces an attachment.
+        """
+        from kiro_crew.service import apparmor as aa
+
+        text = aa.render_profile("4.0")
+
+        assert f"profile {aa.PROFILE_NAME} flags=(unconfined) {{" in text
+        # The declaration line must carry no path between the name and the flags.
+        decl = [ln for ln in text.splitlines() if ln.startswith(f"profile {aa.PROFILE_NAME}")]
+        assert decl == [f"profile {aa.PROFILE_NAME} flags=(unconfined) {{"]
+        # And no interpreter path anywhere in the RULES (comments may explain why).
+        body = text.split("{", 1)[1]
+        assert "python" not in body
+        assert "crew-venv" not in body
+
+    def test_grants_only_userns(self):
+        from kiro_crew.service import apparmor as aa
+
+        body = aa.render_profile("4.0").split("{", 1)[1]
+
+        assert "userns," in body
+        # No capability/file grants smuggled in alongside.
+        assert "capability" not in body
+        assert " mr," not in body
+
+    def test_abi_line_matches_the_detected_abi(self):
+        from kiro_crew.service import apparmor as aa
+
+        assert "abi <abi/4.0>," in aa.render_profile("4.0")
+        assert "abi <abi/5.0>," in aa.render_profile("5.0")
+
+    def test_abi_line_is_omitted_when_none_is_available(self):
+        """Declaring an abi file the host lacks makes the profile fail to load."""
+        from kiro_crew.service import apparmor as aa
+
+        assert "abi <" not in aa.render_profile(None)
+
+    def test_detect_abi_picks_the_highest_numeric_file(self, monkeypatch, tmp_path):
+        """Ubuntu 25.10 ships parser 5.x but only abi/3.0 and abi/4.0 on disk."""
+        from kiro_crew.service import apparmor as aa
+
+        for name in ("3.0", "4.0", "4.0-ip", "kernel-5.4-vanilla"):
+            (tmp_path / name).write_text("", encoding="utf-8")
+        monkeypatch.setattr(aa, "_ABI_DIR", tmp_path)
+
+        assert aa.detect_abi() == "4.0"
+
+    def test_detect_abi_returns_none_without_any_numeric_file(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "_ABI_DIR", tmp_path / "missing")
+        assert aa.detect_abi() is None
+
+    def test_documents_that_removal_rebreaks_the_sandbox(self):
+        """The file is the only record a future reader has — it must say why."""
+        from kiro_crew.service import apparmor as aa
+
+        text = aa.render_profile("4.0")
+        assert "Managed by KiroCrew" in text
+        assert "Removing this file" in text
+
+
+class TestAppArmorInstall:
+    """Install must be fail-soft, validate before loading, and verify enforcement."""
+
+    @staticmethod
+    def _writers():
+        writes: list[tuple[str, str]] = []
+        runs: list[tuple[str, ...]] = []
+
+        def write(text, dest):
+            writes.append((text, str(dest)))
+
+        def run(*argv):
+            runs.append(argv)
+
+        return writes, runs, write, run
+
+    def test_skips_cleanly_when_the_host_does_not_need_it(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        writes, runs, write, run = self._writers()
+        monkeypatch.setattr(aa, "should_install", lambda: (False, "no restriction here"))
+
+        outcome = aa.install(write, run, lambda *_a: (0, ""), 1000, 1000)
+
+        assert outcome.changed is False
+        assert outcome.ok is True  # a skip is not a failure
+        assert writes == [] and runs == []
+
+    def test_refuses_to_install_a_profile_that_does_not_compile(self, monkeypatch):
+        """Loading a broken profile is how you get a service that will not start."""
+        from kiro_crew.service import apparmor as aa
+
+        writes, runs, write, run = self._writers()
+        monkeypatch.setattr(aa, "should_install", lambda: (True, "restricted"))
+        monkeypatch.setattr(aa, "parser_path", lambda: "/usr/sbin/apparmor_parser")
+        monkeypatch.setattr(aa, "parser_version", lambda _p: (5, 0))
+        monkeypatch.setattr(aa, "detect_abi", lambda: "5.0")
+        monkeypatch.setattr(aa, "validate", lambda _p, _t: (False, "syntax error at line 9"))
+
+        outcome = aa.install(write, run, lambda *_a: (0, ""), 1000, 1000)
+
+        assert outcome.ok is False
+        assert outcome.changed is False
+        assert "did NOT compile" in outcome.message
+        assert writes == [] and runs == [], "must not touch the host after a failed validate"
+
+    def test_a_sudo_failure_warns_and_never_raises(self, monkeypatch):
+        """An install must never die because a hardening step failed."""
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "should_install", lambda: (True, "restricted"))
+        monkeypatch.setattr(aa, "parser_path", lambda: "/usr/sbin/apparmor_parser")
+        monkeypatch.setattr(aa, "parser_version", lambda _p: (5, 0))
+        monkeypatch.setattr(aa, "detect_abi", lambda: "5.0")
+        monkeypatch.setattr(aa, "validate", lambda _p, _t: (True, ""))
+
+        def boom(*_a, **_k):
+            raise RuntimeError("sudo: a password is required")
+
+        outcome = aa.install(boom, lambda *_a: None, lambda *_a: (0, ""), 1000, 1000)
+
+        assert outcome.ok is False
+        assert outcome.changed is False
+        assert "still start" in outcome.message
+        assert "fail closed" in outcome.message
+
+    def test_does_not_claim_success_when_enforcement_cannot_be_verified(self, monkeypatch):
+        """A profile that loads but does not take effect is worse than none."""
+        from kiro_crew.service import apparmor as aa
+
+        writes, runs, write, run = self._writers()
+        monkeypatch.setattr(aa, "should_install", lambda: (True, "restricted"))
+        monkeypatch.setattr(aa, "parser_path", lambda: "/usr/sbin/apparmor_parser")
+        monkeypatch.setattr(aa, "parser_version", lambda _p: (5, 0))
+        monkeypatch.setattr(aa, "detect_abi", lambda: "5.0")
+        monkeypatch.setattr(aa, "validate", lambda _p, _t: (True, ""))
+        monkeypatch.setattr(aa, "verify_enforcement", lambda _c, _u, _g: (False, "probe still fails"))
+
+        outcome = aa.install(write, run, lambda *_a: (0, ""), 1000, 1000)
+
+        assert outcome.changed is True  # the file WAS written
+        assert outcome.ok is False
+        assert "Not claiming success" in outcome.message
+
+    def test_happy_path_validates_loads_then_verifies(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        writes, runs, write, run = self._writers()
+        order: list[str] = []
+        monkeypatch.setattr(aa, "should_install", lambda: (True, "restricted"))
+        monkeypatch.setattr(aa, "parser_path", lambda: "/usr/sbin/apparmor_parser")
+        monkeypatch.setattr(aa, "parser_version", lambda _p: (5, 0))
+        monkeypatch.setattr(aa, "detect_abi", lambda: "5.0")
+        monkeypatch.setattr(
+            aa, "validate", lambda _p, _t: (order.append("validate"), (True, ""))[1]
+        )
+        monkeypatch.setattr(
+            aa,
+            "verify_enforcement",
+            lambda _c, _u, _g: (order.append("verify"), (True, None))[1],
+        )
+
+        def tracked_write(text, dest):
+            order.append("write")
+            write(text, dest)
+
+        def tracked_run(*argv):
+            order.append("load")
+            run(*argv)
+
+        outcome = aa.install(tracked_write, tracked_run, lambda *_a: (0, ""), 1000, 1000)
+
+        assert outcome.ok is True and outcome.changed is True
+        assert str(aa.PROFILE_PATH) in outcome.message
+        # Validate BEFORE writing, load before verifying.
+        assert order == ["validate", "write", "load", "verify"]
+        assert writes[0][1] == str(aa.PROFILE_PATH)
+        assert runs[0][1:] == ("-r", "-W", str(aa.PROFILE_PATH))
+
+    def test_uninstall_is_a_noop_when_no_profile_is_present(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        _w, runs, _write, run = self._writers()
+        monkeypatch.setattr(aa, "PROFILE_PATH", tmp_path / "absent")
+
+        outcome = aa.uninstall(run)
+
+        assert outcome.changed is False
+        assert runs == []
+
+    def test_uninstall_unloads_then_removes(self, monkeypatch, tmp_path):
+        """Whatever removes the service removes the grant — no orphaned profile."""
+        from kiro_crew.service import apparmor as aa
+
+        profile = tmp_path / aa.PROFILE_NAME
+        profile.write_text("profile", encoding="utf-8")
+        _w, runs, _write, run = self._writers()
+        monkeypatch.setattr(aa, "PROFILE_PATH", profile)
+        monkeypatch.setattr(aa, "parser_path", lambda: "/usr/sbin/apparmor_parser")
+
+        outcome = aa.uninstall(run)
+
+        assert outcome.changed is True
+        assert runs[0][1:] == ("-R", str(profile))
+        assert runs[1] == ("rm", "-f", str(profile))
+
+
+class TestAppArmorUnitDirective:
+    """The unit carries the profile, so it applies to this service only."""
+
+    def test_no_directive_by_default(self, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        gid = MagicMock(returncode=0, stdout="tester\n", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which", return_value="/usr/bin/kirocrew"
+        ), patch("kiro_crew.service.linux.subprocess.run", return_value=gid):
+            unit = svc_linux.render_unit()
+
+        assert "AppArmorProfile" not in unit
+
+    def test_directive_is_best_effort_when_requested(self, monkeypatch):
+        """The "-" prefix matters: a missing profile must not stop the gateway.
+
+        Without it systemd refuses to start the unit when the profile is absent,
+        turning a hardening step into an outage. With it the gateway starts and
+        simply fails closed per-spawn, which is the pre-existing behaviour.
+        """
+        from kiro_crew.service import apparmor as aa
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        gid = MagicMock(returncode=0, stdout="tester\n", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which", return_value="/usr/bin/kirocrew"
+        ), patch("kiro_crew.service.linux.subprocess.run", return_value=gid):
+            unit = svc_linux.render_unit(aa.PROFILE_NAME)
+
+        assert f"AppArmorProfile=-{aa.PROFILE_NAME}" in unit
+        assert "AppArmorProfile=kirocrew" not in unit  # never the hard form
+
+
+class TestAppArmorNeverFailsTheInstall:
+    """A hardening step must not be able to turn a working install into a failure.
+
+    Every other step in ``linux.install()`` is fail-hard; this one deliberately is
+    not. A gateway running without the profile is the pre-existing status quo,
+    whereas aborting the install because a profile could not be loaded would be a
+    regression that leaves the user with no service at all.
+    """
+
+    @staticmethod
+    def _patched(monkeypatch, outcome):
+        from kiro_crew.service import controller
+        from kiro_crew.service.common import Platform
+
+        monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
+        monkeypatch.setattr(controller.linux, "install", lambda: outcome)
+        return controller
+
+    def test_install_still_succeeds_when_the_profile_fails(self, monkeypatch, capsys):
+        from kiro_crew.service.apparmor import ProfileOutcome
+
+        controller = self._patched(
+            monkeypatch,
+            ProfileOutcome(False, "AppArmor profile could not be installed (boom)", ok=False),
+        )
+
+        rc = controller.install_service()
+
+        assert rc == 0, "a failed hardening step must not fail the service install"
+        out = capsys.readouterr().out
+        assert "kirocrew service installed and started" in out
+        assert "⚠️" in out, "the failure must still be surfaced, not swallowed"
+        assert "could not be installed" in out
+
+    def test_install_reports_the_profile_on_success(self, monkeypatch, capsys):
+        from kiro_crew.service.apparmor import ProfileOutcome
+
+        controller = self._patched(
+            monkeypatch, ProfileOutcome(True, "AppArmor profile installed at /etc/apparmor.d/x")
+        )
+
+        rc = controller.install_service()
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "AppArmor profile installed at" in out
+        assert "⚠️" not in out
+
+    def test_a_silent_skip_prints_nothing_extra(self, monkeypatch, capsys):
+        """On Debian/Arch/RHEL the step must be invisible, not chatty."""
+        from kiro_crew.service.apparmor import ProfileOutcome
+
+        controller = self._patched(monkeypatch, ProfileOutcome(False, ""))
+
+        rc = controller.install_service()
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "AppArmor" not in out
+        assert "⚠️" not in out
+
+    def test_uninstall_removes_the_profile_and_still_reports_success(self, monkeypatch, capsys):
+        from kiro_crew.service import controller
+        from kiro_crew.service.apparmor import ProfileOutcome
+        from kiro_crew.service.common import Platform
+
+        removed: list[bool] = []
+
+        def remove():
+            removed.append(True)
+            return ProfileOutcome(True, "AppArmor profile removed from /etc/apparmor.d/x")
+
+        monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
+        monkeypatch.setattr(controller.linux, "uninstall", lambda: None)
+        monkeypatch.setattr(controller.linux, "remove_apparmor_profile", remove)
+
+        rc = controller.uninstall_service()
+
+        assert rc == 0
+        assert removed == [True], "uninstall must not leave an orphaned userns grant"
+        assert "AppArmor profile removed" in capsys.readouterr().out
+
+
+class TestEnforcementVerificationIsSafeAndFaithful:
+    """Verification must be privileged enough to work, and safe enough to trust.
+
+    Three properties, each of which was a real bug or a real vulnerability:
+    it needs privilege to ENTER the profile (bare aa-exec silently execs
+    unconfined and yields a false negative); it must not execute anything
+    user-writable as root (the venv interpreter is user-writable, so running it
+    under sudo is a local privilege escalation); and the probe itself must run
+    UNPRIVILEGED or it proves nothing, since root may create namespaces
+    regardless of the restriction.
+    """
+
+    def test_never_spawns_unprivileged_and_drops_back_to_the_caller(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(
+            aa.subprocess,
+            "run",
+            lambda *_a, **_k: pytest.fail("verification must not spawn unprivileged"),
+        )
+        monkeypatch.setattr(aa, "_resolve_trusted", lambda name: f"/usr/bin/{name}")
+
+        def sudo_capture(*argv):
+            calls.append(argv)
+            return (0, "")
+
+        ok, problem = aa.verify_enforcement(sudo_capture, 1000, 1000)
+
+        assert ok is True and problem is None
+        argv = calls[0]
+        assert argv[:3] == ("/usr/bin/aa-exec", "-p", aa.PROFILE_NAME)
+        # Privilege is dropped back to the invoking user INSIDE the profile.
+        assert "/usr/bin/setpriv" in argv
+        assert "--reuid=1000" in argv and "--regid=1000" in argv
+        assert "--clear-groups" in argv
+
+    def test_uses_a_trusted_python_never_the_user_writable_venv(self, monkeypatch):
+        """sys.executable is user-writable; running it under sudo would be an LPE."""
+        import sys as _sys
+
+        from kiro_crew.service import apparmor as aa
+
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(aa, "_resolve_trusted", lambda name: f"/usr/bin/{name}")
+        aa.verify_enforcement(lambda *argv: (calls.append(argv), (0, ""))[1], 1000, 1000)
+
+        argv = calls[0]
+        assert "/usr/bin/python3" in argv
+        assert _sys.executable not in argv
+        # And the payload must not import our own (user-writable) package.
+        assert "kiro_crew" not in " ".join(argv)
+
+    def test_a_missing_trusted_tool_is_inconclusive_not_a_failure_claim(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "_resolve_trusted", lambda name: None if name == "setpriv" else "/usr/bin/x")
+
+        ok, problem = aa.verify_enforcement(lambda *_a: (0, ""), 1000, 1000)
+
+        assert ok is False
+        assert "could not verify" in problem
+        assert "setpriv" in problem
+
+    def test_a_failing_probe_inside_the_profile_is_surfaced(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "_resolve_trusted", lambda name: f"/usr/bin/{name}")
+
+        ok, problem = aa.verify_enforcement(
+            lambda *_a: (1, "unshare(CLONE_NEWNS) failed with errno 1 (EPERM)"), 1000, 1000
+        )
+
+        assert ok is False
+        assert "CLONE_NEWNS" in problem
+
+
+class TestTrustedToolResolution:
+    """Anything handed to sudo must not be resolvable through the user's $PATH."""
+
+    def test_rejects_a_binary_outside_the_trusted_dirs(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        fake = tmp_path / "apparmor_parser"
+        fake.write_text("#!/bin/sh\n", encoding="utf-8")
+        fake.chmod(0o755)
+        # A PATH-based lookup would find this; a trusted-dir lookup must not.
+        monkeypatch.setenv("PATH", f"{tmp_path}:/usr/sbin:/usr/bin")
+        monkeypatch.setattr(aa, "_TRUSTED_BIN_DIRS", (str(tmp_path),))
+
+        # Present but user-owned -> refused.
+        assert aa._resolve_trusted("apparmor_parser") is None
+
+    def test_rejects_a_group_or_world_writable_binary(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        target = tmp_path / "aa-exec"
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        target.chmod(0o777)
+        monkeypatch.setattr(aa, "_TRUSTED_BIN_DIRS", (str(tmp_path),))
+
+        assert aa._resolve_trusted("aa-exec") is None
+
+    def test_missing_binary_returns_none(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "_TRUSTED_BIN_DIRS", (str(tmp_path),))
+        assert aa._resolve_trusted("nope") is None
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="asserts POSIX ownership/permission semantics on a real system binary; "
+        "Windows has neither /bin/sh nor a root uid, and the AppArmor path is Linux-only",
+    )
+    def test_resolves_a_real_root_owned_system_binary(self):
+        """Against the real filesystem, not a fixture: /bin/sh must resolve."""
+        from kiro_crew.service import apparmor as aa
+
+        resolved = aa._resolve_trusted("sh")
+        assert resolved is not None and resolved.startswith("/")
+
+
+class TestProfileLoadsBeforeTheServiceStarts:
+    """Ordering is load-bearing: the directive only applies at unit START.
+
+    Loading the profile after `systemctl restart` leaves the FIRST gateway process
+    unprofiled, so every agent spawn fails closed until someone restarts again —
+    which is exactly the state this feature exists to prevent.
+    """
+
+    def test_profile_is_installed_before_daemon_reload_and_restart(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+        from kiro_crew.service import linux as svc_linux
+
+        order: list[str] = []
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(svc_linux, "_current_user", lambda: "tester")
+        monkeypatch.setattr(svc_linux, "render_unit", lambda *_a: "unit")
+        monkeypatch.setattr(aa, "should_install", lambda: (True, "restricted"))
+        monkeypatch.setattr(
+            svc_linux,
+            "_write_unit_via_sudo",
+            lambda _c: (order.append("write-unit"), MagicMock(returncode=0))[1],
+        )
+        monkeypatch.setattr(
+            svc_linux,
+            "install_apparmor_profile",
+            lambda: (order.append("load-profile"), aa.ProfileOutcome(True, "installed"))[1],
+        )
+        monkeypatch.setattr(
+            svc_linux,
+            "_systemctl",
+            lambda *args: (order.append(args[0]), MagicMock(returncode=0))[1],
+        )
+
+        outcome = svc_linux.install()
+
+        assert outcome.ok is True
+        assert order == ["write-unit", "load-profile", "daemon-reload", "enable", "restart"], order
+        # The profile must be loaded strictly before the unit is started.
+        assert order.index("load-profile") < order.index("restart")

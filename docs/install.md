@@ -211,6 +211,78 @@ it must exclude `~/.kiro/crew` or prompt explicitly. That release-blocking
 cross-product sign-off is tracked in
 [issue #355](https://github.com/kirodotdev/KiroCrew/issues/355).
 
+## Linux: the agent sandbox and unprivileged user namespaces
+
+On Linux, KiroCrew isolates the agent by entering a **user namespace** and then a
+**mount namespace**, over-mounting credential paths such as `~/.aws` and `~/.ssh`
+so the agent cannot read them. If that sandbox cannot be built, KiroCrew
+**refuses to run the agent** rather than running it without isolation — spawns
+fail closed. This is deliberate and is not something to work around casually.
+
+**Ubuntu 23.10 and newer ship `kernel.apparmor_restrict_unprivileged_userns=1`**,
+which moves any process that creates a user namespace into a restricted AppArmor
+profile with no `CAP_SYS_ADMIN`. The first `unshare` succeeds, the second fails
+with `EPERM`, and you see:
+
+```
+sandbox: unshare(NEWNS) failed: errno 1
+```
+
+### The remedy: let `service install` add an AppArmor profile
+
+```bash
+kirocrew service install
+```
+
+Where — and only where — this mechanism is the one in play, the installer also
+writes `/etc/apparmor.d/kirocrew-userns` and loads it. The profile grants exactly
+one permission (`userns`) and is applied by systemd to the kirocrew service only,
+via `AppArmorProfile=-kirocrew-userns` in the unit. It is the same approach stock
+Ubuntu already uses for `chrome`, `brave`, `bwrap-userns-restrict`, `buildah` and
+others in the same position.
+
+This uses the sudo prompt `service install` already needs for the unit file — no
+additional privilege — and it **cannot fail your install**: if the profile cannot
+be written, loaded, or verified, you get a warning and the install continues.
+`kirocrew service uninstall` unloads and removes it.
+
+On a host where the mechanism is absent (Debian, Arch, RHEL, Amazon Linux) or the
+sysctl is already `0`, the step is skipped silently and nothing changes.
+
+**Running the gateway outside systemd** (e.g. `kirocrew gateway` in a terminal)
+does not pick up the profile, because systemd is what applies it. Use:
+
+```bash
+aa-exec -p kirocrew-userns -- kirocrew gateway
+```
+
+**Please do not "fix" this by setting the sysctl to 0.** That disables a
+kernel-wide protection for every application on the machine to satisfy one
+app-scoped need. The per-application profile exists precisely so you don't have to.
+
+### Other reasons user namespaces can be denied
+
+The AppArmor profile addresses only the Ubuntu restriction. These are different
+mechanisms with different remedies, and they report different errnos — the
+sandbox probe names the failing step so you can tell them apart:
+
+| Symptom | Mechanism | Remedy |
+|---|---|---|
+| `unshare(CLONE_NEWNS)` fails `EPERM`, sysctl is `1` | Ubuntu ≥ 23.10 AppArmor userns restriction | `kirocrew service install` (this page) |
+| `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` | `user.max_user_namespaces=0` (CIS-hardened host) | raise that sysctl |
+| `unshare` fails and `kernel.unprivileged_userns_clone=0` | Debian-family legacy knob (defaults to 1 since Debian 11) | set it to 1 |
+| `unshare` fails `EINVAL` / `ENOSYS` | kernel built without `CONFIG_USER_NS` | none short of a different kernel |
+| Fails inside Docker/Podman | the container's seccomp filter denies `unshare` | container run flags, **not** host config |
+| RHEL/Fedora/Rocky/AL2023 | SELinux, not AppArmor | userns has been enabled since RHEL 8; the profile is inert here |
+
+To see which step is failing on your host:
+
+```bash
+python3 -c "
+import kiro_crew.sandbox as sb
+sb.reset_backend(); print(sb.detect_backend(), sb._last_unshare_failure)"
+```
+
 ## Troubleshooting
 
 For runtime issues (ACP handshake timeouts, embedding/memory search, Slack,
