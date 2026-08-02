@@ -1,3 +1,8 @@
+---
+name: image-authoring
+description: Author images and diagrams as code — SVG, Pillow, Excalidraw, mermaid. Load when asked to draw, illustrate, or make an image, icon, logo, poster, or diagram.
+---
+
 # Image Authoring
 
 Create images by **authoring them as code** — there is no text-to-image model
@@ -38,6 +43,7 @@ the user can correct course before you draw.
 | Texture, gradient art, pixel art, noise, filters, compositing | **Python + Pillow** (raster) |
 | Raster copy of an SVG (user needs .png) | Convert: rsvg-convert → inkscape → magick → Playwright screenshot |
 | Flowchart, architecture, data chart | Prefer mermaid / widgets; else SVG or Pillow |
+| Hand-drawn / whiteboard-style diagram, sketch aesthetic | **Excalidraw scene** — see below |
 
 Check tool availability before relying on it (`python3 -c "import PIL"`,
 `which rsvg-convert`).
@@ -79,6 +85,35 @@ For raster: edit the kept script/HTML and re-run — never hand-patch pixels.
 - "colors feel dull" → adjust gradient stops / palette variables only.
 - "more detail on X" → add children inside X's group, keep siblings intact.
 - Ambiguous region? Ask one short clarifying question instead of guessing.
+
+## Excalidraw scenes
+
+The dashboard renders an ```excalidraw fence (and a saved `.excalidraw` file) as
+inline SVG. Reach for it when the hand-drawn whiteboard look is the point;
+mermaid stays better when you want automatic layout, and a widget when you want
+real HTML. Unlike mermaid, this fence is specific to this dashboard — emit it
+deliberately, it is not a convention a reader will know from elsewhere.
+
+Emit scene JSON: `{"type":"excalidraw","version":2,"elements":[…],"appState":{…}}`.
+The renderer is a **viewer, not the editor**, so author around these differences:
+
+- **Fonts are not bundled.** `fontFamily` 1/5/8 (the hand-drawn ids) resolve to
+  whatever the *viewer's* machine aliases to CSS `cursive`, which varies per box
+  and can be illegible. Use `2` (sans) or `3` (mono) unless the hand-drawn face
+  matters more than legibility. Shapes stay sketchy either way — that comes from
+  rough.js, not the font.
+- **Bound text is approximated.** `containerId` is not resolved to its container.
+  Position each text element absolutely, giving it the container's `x` and
+  `width` with `textAlign: "center"` to centre a label.
+- **Keep `seed` stable** across edits. rough.js derives its jitter from it, so
+  new seeds make the whole diagram wobble on re-render.
+- **Images** need a raster `data:image/*;base64` URL in `files`. SVG data URLs
+  are rejected; `embeddable` / `iframe` elements are skipped.
+- Set `appState.viewBackgroundColor` — the scene is painted on its own canvas
+  rather than composited onto the chat surface, so it does not follow the theme.
+
+Malformed JSON falls back to showing the source, so a broken scene costs the
+reader the picture but never the content.
 
 ## Style hints that raise quality
 
