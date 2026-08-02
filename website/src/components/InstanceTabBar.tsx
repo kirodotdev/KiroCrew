@@ -14,6 +14,11 @@
  * when they overflow a narrow window. A right-aligned cluster reflects the
  * ACTIVE remote pane's tunnel connection state + token auto-refresh countdown
  * (host SSH expiry lives in the title bar, not duplicated here).
+ *
+ * `compact` renders the same tabs icon-only (status dot + icon + unread badge,
+ * name moved to the accessible name and tooltip). It exists so the inline bar
+ * can yield room to the expanded Windows application menu, which shares the
+ * 42px header's left region, WITHOUT being unmounted — see App.tsx.
  */
 import { useCallback, useMemo, type CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -70,9 +75,15 @@ function fmtDuration(secs: number): string {
 // Shared tab pill styling. Selected state uses a tinted background ONLY — no
 // highlighted border — with a transparent border kept on every tab so
 // the 24px height never shifts when selection changes.
-function tabCls(active: boolean): string {
+//
+// `compact` drops the instance name and tightens the padding, taking a tab from
+// ~120px to ~34px. It is what lets the inline bar YIELD horizontal room to the
+// expanded Windows application menu without being unmounted: the tabs stay real
+// `role="tab"` buttons, so focus, tab semantics, status dots and unread badges
+// all survive an interaction that previously destroyed them.
+function tabCls(active: boolean, compact = false): string {
   return (
-    'flex items-center gap-1.5 h-6 px-2.5 rounded-md text-[12px] whitespace-nowrap transition-colors border shrink-0 ' +
+    `flex items-center h-6 rounded-md text-[12px] whitespace-nowrap transition-colors border shrink-0 ${compact ? 'gap-1 px-1.5' : 'gap-1.5 px-2.5'} ` +
     (active
       ? 'bg-accent-subtle text-accent border-transparent font-bold'
       : 'bg-transparent text-muted border-transparent font-medium hover:text-text hover:bg-bg-hover')
@@ -91,17 +102,26 @@ function stateDotCls(state?: string): string {
 }
 
 /** The "Local" tab — native dashboard. Shared by the local and embedded bars. */
-function LocalTab({ active, onClick }: { active: boolean; onClick: () => void }) {
+function LocalTab({
+  active,
+  onClick,
+  compact = false,
+}: { active: boolean; onClick: () => void; compact?: boolean }) {
+  const label = i18nT('components.instanceTabBar.local')
   return (
     <button
       type="button"
       role="tab"
       aria-selected={active}
-      className={tabCls(active)}
+      // Compact hides the visible label, so name the control explicitly rather
+      // than leaning on `title` as the accessible-name fallback.
+      aria-label={compact ? label : undefined}
+      className={tabCls(active, compact)}
       onClick={onClick}
       title={i18nT('components.instanceTabBar.local_dashboard')}
     >
-      <Home size={13} /> {i18nT('components.instanceTabBar.local')}
+      <Home size={13} />
+      {!compact && <span>{label}</span>}
     </button>
   )
 }
@@ -115,6 +135,7 @@ function InstanceTab({
   unread,
   active,
   onClick,
+  compact = false,
 }: {
   name: string
   title: string
@@ -123,6 +144,7 @@ function InstanceTab({
   unread?: number
   active: boolean
   onClick: () => void
+  compact?: boolean
 }) {
   const badge = unread || 0
   return (
@@ -130,13 +152,18 @@ function InstanceTab({
       type="button"
       role="tab"
       aria-selected={active}
-      className={tabCls(active)}
+      // Compact hides the visible name, so name the control explicitly rather
+      // than leaning on `title` as the accessible-name fallback.
+      aria-label={compact ? name : undefined}
+      className={tabCls(active, compact)}
       onClick={onClick}
       title={title}
     >
+      {/* The status dot and the unread badge are the two signals worth keeping
+          at every size — they are the reason this collapses instead of hiding. */}
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotCls(state)}`} aria-hidden />
       {connecting ? <Loader2 size={13} className="animate-spin" /> : <Server size={13} />}
-      <span className="max-w-[160px] truncate">{name}</span>
+      {!compact && <span className="max-w-[160px] truncate">{name}</span>}
       {badge > 0 && (
         <span
           aria-label={`${badge} unread`}
@@ -153,7 +180,7 @@ function InstanceTab({
 // vertically centered in the 42px header.
 function barCls(variant: 'strip' | 'inline'): string {
   return variant === 'inline'
-    ? 'instance-tab-bar-inline flex items-center h-full gap-1 min-w-0 overflow-x-auto no-scrollbar'
+    ? 'instance-tab-bar-inline flex flex-1 items-center h-full gap-1 min-w-0 overflow-hidden'
     : 'topbar-glass instance-tab-bar flex items-center gap-2 h-8 px-2 border-b border-border shrink-0 z-[46]'
 }
 
@@ -163,7 +190,7 @@ function barCls(variant: 'strip' | 'inline'): string {
  * and posts switch requests back up so the parent flips `activeId`. This is what
  * collapses the remote pane's two stacked bars into one consolidated header.
  */
-function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
+function EmbeddedInstanceTabBar({ variant, compact }: { variant: 'strip' | 'inline'; compact: boolean }) {
   const host = useAppSelector(s => s.instances.host)
   const onLocal = useCallback(() => {
     // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
@@ -176,8 +203,8 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
   if (!host || host.tabs.length === 0) return null
   return (
     <div className={barCls(variant)} role="tablist" aria-label={i18nT('components.instanceTabBar.instances')}>
-      <div className={`flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar ${variant === 'strip' ? 'flex-1' : ''}`}>
-        <LocalTab active={host.activeId === null} onClick={onLocal} />
+      <div className="flex flex-1 items-center gap-1 min-w-0 overflow-x-auto no-scrollbar">
+        <LocalTab active={host.activeId === null} onClick={onLocal} compact={compact} />
         {host.tabs.map(t => (
           <InstanceTab
             key={t.id}
@@ -188,6 +215,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
             unread={t.unread}
             active={host.activeId === t.id}
             onClick={() => onSelect(t.id)}
+            compact={compact}
           />
         ))}
       </div>
@@ -198,7 +226,8 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
 export default function InstanceTabBar({
   variant = 'strip',
   style,
-}: { variant?: 'strip' | 'inline'; style?: CSSProperties } = {}) {
+  compact = false,
+}: { variant?: 'strip' | 'inline'; style?: CSSProperties; compact?: boolean } = {}) {
   const activeId = useAppSelector(s => s.instances.activeId)
   const warm = useAppSelector(s => s.instances.warm)
   const unread = useAppSelector(s => s.instances.unread)
@@ -235,7 +264,7 @@ export default function InstanceTabBar({
   // Embedded panes render the parent-relayed switcher. Hooks above
   // still run unconditionally (rules-of-hooks); the instances poll is disabled
   // when embedded, so this is cheap.
-  if (embedded) return <EmbeddedInstanceTabBar variant={variant} />
+  if (embedded) return <EmbeddedInstanceTabBar variant={variant} compact={compact} />
 
   // Single-instance experience is unchanged: no bar until a remote instance is
   // connected or remembered.
@@ -275,8 +304,8 @@ export default function InstanceTabBar({
 
   return (
     <div className={barCls(variant)} style={style} role="tablist" aria-label={i18nT('components.instanceTabBar.instances')}>
-      <div className={`flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar ${variant === 'strip' ? 'flex-1' : ''}`}>
-        <LocalTab active={activeId === null} onClick={onLocal} />
+      <div className="flex flex-1 items-center gap-1 min-w-0 overflow-x-auto no-scrollbar">
+        <LocalTab active={activeId === null} onClick={onLocal} compact={compact} />
         {tabInstances.map(inst => {
           const st = inst.status?.state
           const isConnecting =
@@ -292,6 +321,7 @@ export default function InstanceTabBar({
               unread={unread[inst.id] || 0}
               active={activeId === inst.id}
               onClick={() => onSelectInstance(inst.id)}
+              compact={compact}
             />
           )
         })}

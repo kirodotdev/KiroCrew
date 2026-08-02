@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setThemeMode: (pref) => ipcRenderer.send("theme-mode-changed", String(pref || "")),
   // Dev mode IPC: renderer signals main process to show/hide DevTools menu item.
   setDevMode: (enabled) => ipcRenderer.send("dev-mode-changed", !!enabled),
+  // Windows custom titlebar: menu surfaces render in the dashboard so hover
+  // can switch between them; command execution stays in the main process.
+  getAppMenuItems: (id) => ipcRenderer.invoke("app-menu:items", id),
+  executeAppMenuItem: (id, index) => ipcRenderer.send("app-menu:execute", id, index),
   // App-menu navigation: main.js sends an in-app path ("/settings",
   // "/settings?tab=about") when the user picks Settings…/About from the
   // native application menu; the SPA routes to it (see App.tsx).

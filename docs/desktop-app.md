@@ -293,6 +293,29 @@ finishes before the gateway permits a retry.
 Hosting setup in the gateway provides one implementation and one UI for the
 desktop app, local browser, remote browser, Linux, and Windows.
 
+### Native window chrome
+
+The dashboard's 42px top bar is also the window titlebar on macOS and Windows.
+macOS insets the native traffic lights on the left. Windows uses Electron's
+title-bar overlay to retain native minimize/maximize/close controls on the right.
+The application menu rests as a compact hamburger on the left. Opening it shows
+the File submenu and expands File/Edit/View/Connection/Window/Help inline;
+hovering another label replaces the submenu without ending the menu session.
+Escape, an outside click, selecting a command, or moving focus to another window
+closes the popup, collapses the labels back to the hamburger, and restores the
+instance tabs. The menu surface uses the dashboard theme because native Windows
+popups capture window input and cannot support hover switching; a narrow IPC
+bridge keeps command execution and standard Electron roles in the main process.
+When connected instances add tabs beside the collapsed menu, the tab region is bounded by
+the centered command palette and the right-side status controls. Extra tabs
+scroll horizontally within that region, so every instance remains reachable
+without drawing beneath either control cluster. If the fixed controls cannot
+leave one instance tab visible, the command-palette trigger yields the titlebar
+space and remains available through its keyboard shortcut.
+The command-palette trigger is positioned from the window midpoint rather than
+the remaining flex space, so asymmetric menu and status controls do not shift it.
+Linux retains the window manager's native frame and menu bar.
+
 ### `find-bin.js` — locating the binary
 
 `findKirocrewBin()` checks well-known paths in order and returns the first

@@ -36,7 +36,7 @@ import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_FOCUS_EVENT } from './components/WebPreviewPanel'
 import { motion, AnimatePresence } from 'framer-motion'
 import { usePersistedBool } from './hooks/usePersistedBool'
-import { isMacElectron } from './lib/electron'
+import { isMacElectron, isWindowsElectron } from './lib/electron'
 import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragOverlay, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -95,6 +95,7 @@ import { useAgents } from './hooks/useAgents'
 import ShortcutsModal from './components/ShortcutsModal'
 import CommandPalette from './components/CommandPalette'
 import Modal from './components/Modal'
+import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 
 import { i18nT } from './i18n/t'
 import { fmtCompact, fmtNumber, fmtPercent } from './i18n/format'
@@ -155,10 +156,31 @@ export const memColorClass = metricColor
 
 const TOPBAR_SEARCH_GAP = 12
 const TOPBAR_SEARCH_MIN_WIDTH = 240
+const TOPBAR_SEARCH_WIDTH_OFFSET = 40
+const TOPBAR_INSTANCE_TAB_MIN_WIDTH = 64
 
-export function calculateTopbarSearchLayout(brandWidth: number, actionsWidth: number, viewportWidth: number) {
-  const gutter = Math.ceil(Math.max(brandWidth, actionsWidth)) + TOPBAR_SEARCH_GAP
-  return { gutter, visible: viewportWidth - (gutter * 2) >= TOPBAR_SEARCH_MIN_WIDTH }
+export function calculateTopbarChromeLayout(
+  viewportWidth: number,
+  brandLeft: number,
+  actionsLeft: number,
+  leftRequiredWidth: number,
+) {
+  const searchWidth = Math.max(TOPBAR_SEARCH_MIN_WIDTH, viewportWidth / 3 - TOPBAR_SEARCH_WIDTH_OFFSET)
+  const searchLeft = (viewportWidth - searchWidth) / 2
+  const searchRight = searchLeft + searchWidth
+  const availableWithSearch = Math.max(0, searchLeft - TOPBAR_SEARCH_GAP - brandLeft)
+  const availableWithoutSearch = Math.max(0, actionsLeft - TOPBAR_SEARCH_GAP - brandLeft)
+  const visible =
+    availableWithSearch >= leftRequiredWidth &&
+    searchRight + TOPBAR_SEARCH_GAP <= actionsLeft
+
+  return {
+    leftWidth: Math.floor(
+      leftRequiredWidth > 0 ? (visible ? availableWithSearch : availableWithoutSearch) : 0,
+    ),
+    searchWidth: Math.floor(searchWidth),
+    visible,
+  }
 }
 
 // Apps-nav fetch resilience (see refreshAppNav). The dashboard loads
@@ -1490,26 +1512,68 @@ export default function App() {
   }, [isMobile, effectiveCollapsed])
   const topbarBrandRef = useRef<HTMLDivElement>(null)
   const topbarActionsRef = useRef<HTMLDivElement>(null)
-  const [topbarSearchLayout, setTopbarSearchLayout] = useState({ gutter: 360, visible: true })
+  const [windowsMenuExpanded, setWindowsMenuExpanded] = useState(false)
+  const [topbarChromeLayout, setTopbarChromeLayout] = useState({
+    leftWidth: 360,
+    searchWidth: 360,
+    visible: true,
+  })
   useEffect(() => {
     if (isMobile) return
     const brand = topbarBrandRef.current
     const actions = topbarActionsRef.current
     if (!brand || !actions) return
     const update = () => {
-      const brandWidth = brand.getBoundingClientRect().width
-      const actionsWidth = actions.getBoundingClientRect().width
-      if (brandWidth <= 0 || actionsWidth <= 0) return
-      const next = calculateTopbarSearchLayout(brandWidth, actionsWidth, window.innerWidth)
-      setTopbarSearchLayout(current => current.gutter === next.gutter && current.visible === next.visible ? current : next)
+      const brandRect = brand.getBoundingClientRect()
+      const actionsRect = actions.getBoundingClientRect()
+      if (actionsRect.left <= 0) return
+
+      // Only the fixed Windows application menu and the first instance tab
+      // must fit before the physically centred search. Additional instance
+      // tabs scroll inside the bounded left region instead of growing beneath
+      // the search or status controls.
+      //
+      // This measurement is deliberately live, including while the Windows menu
+      // is expanded (~28px hamburger -> ~280px of labels). Freezing it to keep
+      // the centred search from hiding was tried and is wrong: `leftWidth` would
+      // stay sized for the resting menu, so on a narrow window the expanded
+      // labels overflow this container and paint over the search button. Letting
+      // the budget grow instead yields the search — the correct priority while a
+      // menu is open is labels > instance status > an idle search affordance —
+      // and the tabs survive either way because they collapse rather than
+      // unmount.
+      const menu = brand.querySelector<HTMLElement>('.windows-titlebar-menu')
+      const firstTab = brand.querySelector<HTMLElement>('[role="tab"]')
+      const menuWidth = menu?.getBoundingClientRect().width ?? 0
+      const tabWidth = firstTab
+        ? Math.max(firstTab.getBoundingClientRect().width, TOPBAR_INSTANCE_TAB_MIN_WIDTH)
+        : 0
+      const interGroupGap = menu && firstTab ? 8 : 0
+      const leftRequiredWidth = menuWidth + interGroupGap + tabWidth
+      const next = calculateTopbarChromeLayout(
+        window.innerWidth,
+        brandRect.left,
+        actionsRect.left,
+        leftRequiredWidth,
+      )
+      setTopbarChromeLayout(current =>
+        current.leftWidth === next.leftWidth &&
+        current.searchWidth === next.searchWidth &&
+        current.visible === next.visible
+          ? current
+          : next,
+      )
     }
     update()
     const observer = new ResizeObserver(update)
     observer.observe(brand)
     observer.observe(actions)
+    const mutationObserver = new MutationObserver(update)
+    mutationObserver.observe(brand, { childList: true, subtree: true })
     window.addEventListener('resize', update)
     return () => {
       observer.disconnect()
+      mutationObserver.disconnect()
       window.removeEventListener('resize', update)
     }
   }, [isMobile])
@@ -1576,7 +1640,7 @@ export default function App() {
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
     <div
       data-testid="dashboard-shell"
-      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWindowsElectron ? 'windows-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
       style={{
         gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar topbar" "nav content actbar"',
         ...(!isMobile && {
@@ -1609,22 +1673,33 @@ export default function App() {
             macOS traffic-light clearance remains). */}
         <div
           ref={topbarBrandRef}
-          className={`relative flex items-center h-full shrink-0 gap-2 ${isMobile ? 'px-2' : ''}`}
+          className={`relative flex items-center h-full min-w-0 shrink-0 gap-2 ${isMobile ? 'px-2' : ''}`}
+          style={!isMobile ? { width: topbarChromeLayout.leftWidth } : undefined}
         >
+          {!isMobile && isWindowsElectron && (
+            <WindowsTitlebarMenu onExpandedChange={setWindowsMenuExpanded} />
+          )}
           {isMobile && (
             <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')}>
               <Menu size={20} />
             </button>
           )}
-          {!isMobile && <InstanceTabBar variant="inline" />}
+          {/* Kept MOUNTED while the Windows menu is expanded — it collapses to
+              icon-only tabs instead. Unmounting it used to drop keyboard focus
+              to <body> mid-interaction, tear the role="tablist" out of the
+              accessibility tree, and blank the per-instance connection dots and
+              unread badges for as long as the menu stayed open. */}
+          {!isMobile && (
+            <InstanceTabBar variant="inline" compact={isWindowsElectron && windowsMenuExpanded} />
+          )}
         </div>
-        {!isMobile && topbarSearchLayout.visible && (
+        {!isMobile && topbarChromeLayout.visible && (
           <button
             type="button"
             data-topbar-overlay
             onClick={commandPalette.openPalette}
             className="absolute h-7 px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
-            style={{ left: '50vw', transform: 'translateX(-50%)', width: 'calc(33.3333vw - 40px)', minWidth: TOPBAR_SEARCH_MIN_WIDTH }}
+            style={{ left: '50vw', transform: 'translateX(-50%)', width: topbarChromeLayout.searchWidth }}
             aria-label={i18nT('app.search_sessions_files_and_commands')}
             title={i18nT('app.search_everywhere_k')}
           >
