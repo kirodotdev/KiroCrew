@@ -345,6 +345,11 @@ export function renderUserContent(content: string, meta: Record<string, unknown>
   // Per-message containment (React #290 defense-in-depth): a render crash in a
   // user/inject bubble must degrade to a per-message fallback, not unwind to
   // the root boundary and blank the whole dashboard.
+  //
+  // Sent-prompt images render small: renderFileSegment passes `compactImages`
+  // to MarkdownRenderer, which owns the CompactImagesCtx provider internally.
+  // (Done there, not here, so tests that mock MarkdownRenderer don't need the
+  // context export.)
   return (
     <MessageErrorBoundary rawContent={content}>
       {renderUserContentInner(content, meta, onFileOpen)}
@@ -509,8 +514,9 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
 
   // No attachments — plain markdown (bold, code, links, etc.).
   // softBreaks: preserve Shift+Enter line breaks as <br> (see MarkdownRenderer).
+  // compactImages: this is user-message content, so attached images render small.
   if (!parsedFiles.length) {
-    return <MarkdownRenderer content={content} softBreaks />
+    return <MarkdownRenderer content={content} softBreaks compactImages />
   }
 
   // Pass the ORIGINAL ordered list (images included) so [attached_file N] token
@@ -540,7 +546,7 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
   // No inline @-mentions: caption (if any) is plain markdown, then the cards.
   if (!mentionMap.size) {
     const caption = display.trim()
-    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks /> : null}{cards}</>
+    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages /> : null}{cards}</>
   }
 
   // Inline-mention path: the caption keeps files inline, so render it as a

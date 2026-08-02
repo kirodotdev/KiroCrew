@@ -53,6 +53,15 @@ const PATH_RE = /^~?(?:\.{0,2}\/)?[\w.@~\/ -]*\/[\w.@~: -]*[\w.]$/
 export const BasePathCtx = createContext<string | null>(null)
 
 /**
+ * When true, markdown images render as small previews (a compact thumbnail the
+ * user can still click to open the full-size lightbox) instead of the default
+ * large inline size. User-message ("sent prompt") rendering turns this on so
+ * an attached screenshot doesn't dominate the bubble, while assistant/response
+ * images keep the full inline size. Default false = full size.
+ */
+export const CompactImagesCtx = createContext<boolean>(false)
+
+/**
  * Per-consumer override for rendered markdown LINKS.
  *
  * A provider returns its own element for the hrefs it wants to own, or null to
@@ -295,6 +304,7 @@ function ImgWithFallback({
   const [errored, setErrored] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const basePath = useContext(BasePathCtx)
+  const compact = useContext(CompactImagesCtx)
   if (!src) return null
   const isLocal = src.startsWith('/') || src.startsWith('~') || src.startsWith('.')
     || (basePath && !src.startsWith('http'))
@@ -340,8 +350,14 @@ function ImgWithFallback({
   // derives the height), so they need no placeholder. See
   // MarkdownRenderer.streamingImageShift.test.tsx.
   const imgStyle: React.CSSProperties | undefined = isSvg
-    ? { width: '760px', height: 'auto' }
+    ? { width: compact ? '240px' : '760px', height: 'auto' }
     : (loaded ? undefined : { minHeight: '120px' })
+  // Sent-prompt (user message) images render as a small preview so an attached
+  // screenshot doesn't dominate the bubble; the lightbox still opens full size
+  // on click. Response images keep the large inline size. See CompactImagesCtx.
+  // The className stays inline in the JSX attribute (rather than hoisted to a
+  // variable) so the i18n lint's className exemption still recognizes these as
+  // class strings, not untranslated copy.
   return (
     <span className="block my-2">
       {/* The <img> is the lightbox trigger; dispatchLightbox needs the image
@@ -352,7 +368,9 @@ function ImgWithFallback({
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
       <img
         src={url} alt={alt || ''} loading="lazy"
-        className="max-w-[min(100%,760px)] max-h-[60vh] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity"
+        className={compact
+          ? 'max-w-[min(100%,240px)] max-h-[180px] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'
+          : 'max-w-[min(100%,760px)] max-h-[60vh] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'}
         style={imgStyle}
         onClick={(e) => dispatchLightbox(e.currentTarget)}
         data-lightbox-image=""
@@ -1139,7 +1157,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean }) {
   const blocks = useBlockAssembler(content, streaming)
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -1211,23 +1229,30 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     // interactive control and carries no role.
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
     <div className={`group${animClass}${streamClass}`} onClick={handleClick} data-image-scope="">
-      {blocks.map((block, i) => (
-        // Key on startLine (stable across streaming) instead of block.type, so
-        // a code -> diff reclassification mid-stream doesn't unmount the
-        // in-progress component. Falls back to index for blocks without a
-        // startLine (e.g. extracted widgets). The "idx-" prefix avoids
-        // collision with real startLine numbers.
-        <BlockRenderer
-          key={block.startLine != null ? `line-${block.startLine}` : `idx-${i}`}
-          block={block} prevBlock={blocks[i - 1]} onFileOpen={onFileOpen} sourcePos={sourcePos}
-          messageTs={messageTs}
-          widgetIndex={widgetIndices[i] >= 0 ? widgetIndices[i] : undefined}
-          slotKey={slotKey}
-          glow={glow && i === lastMarkdownIdx}
-          smooth={smooth}
-          softBreaks={softBreaks}
-        />
-      ))}
+      {/* CompactImagesCtx: user-message ("sent prompt") callers pass compactImages
+          so their attached images render as small previews. The provider wraps the
+          blocks here (a context Provider renders no DOM node, so data-image-scope /
+          lightbox scoping on the div above is unaffected) and lives in this module
+          so a caller that mocks it in tests never needs to re-export the context. */}
+      <CompactImagesCtx.Provider value={compactImages}>
+        {blocks.map((block, i) => (
+          // Key on startLine (stable across streaming) instead of block.type, so
+          // a code -> diff reclassification mid-stream doesn't unmount the
+          // in-progress component. Falls back to index for blocks without a
+          // startLine (e.g. extracted widgets). The "idx-" prefix avoids
+          // collision with real startLine numbers.
+          <BlockRenderer
+            key={block.startLine != null ? `line-${block.startLine}` : `idx-${i}`}
+            block={block} prevBlock={blocks[i - 1]} onFileOpen={onFileOpen} sourcePos={sourcePos}
+            messageTs={messageTs}
+            widgetIndex={widgetIndices[i] >= 0 ? widgetIndices[i] : undefined}
+            slotKey={slotKey}
+            glow={glow && i === lastMarkdownIdx}
+            smooth={smooth}
+            softBreaks={softBreaks}
+          />
+        ))}
+      </CompactImagesCtx.Provider>
     </div>
   )
 })
