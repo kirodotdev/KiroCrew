@@ -66,6 +66,17 @@ export default memo(function DiffPanel({ filePath, original, modified, sideBySid
               options={{
                 readOnly: true,
                 renderSideBySide: sideBySide,
+                // Monaco silently overrides renderSideBySide when the editor is
+                // narrower than renderSideBySideInlineBreakpoint (default
+                // 900px) because useInlineViewWhenSpaceIsLimited defaults to
+                // true. The chat side panel is well under 900px at every
+                // usable width, so the split-view toggle appeared to do
+                // nothing — the editor always fell back to the inline view.
+                // Opt out so renderSideBySide is authoritative: the toggle is
+                // an explicit user choice and Monaco should not second-guess
+                // it. Side-by-side in a narrow panel is cramped but it is what
+                // the user asked for, and each side scrolls horizontally.
+                useInlineViewWhenSpaceIsLimited: false,
                 minimap: { enabled: false },
                 scrollBeyondLastLine: false,
                 fontSize: 13,

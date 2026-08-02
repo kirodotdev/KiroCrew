@@ -9,7 +9,7 @@ interface MockDiffEditorProps {
   modified?: string
   language?: string
   theme?: string
-  options?: { renderSideBySide?: boolean; lineNumbers?: string }
+  options?: { renderSideBySide?: boolean; lineNumbers?: string; useInlineViewWhenSpaceIsLimited?: boolean }
 }
 
 vi.mock('@monaco-editor/react', () => ({
@@ -21,6 +21,7 @@ vi.mock('@monaco-editor/react', () => ({
       data-language={language}
       data-theme={theme}
       data-side-by-side={String(options?.renderSideBySide)}
+      data-inline-when-narrow={String(options?.useInlineViewWhenSpaceIsLimited)}
       data-line-numbers={String(options?.lineNumbers)}
     />
   ),
@@ -105,6 +106,16 @@ describe('DiffPanel', () => {
     render(<DiffPanel filePath="/x/a.ts" original="" modified="" sideBySide={false} />)
     const editor = await screen.findByTestId('monaco-diff')
     expect(editor.getAttribute('data-side-by-side')).toBe('false')
+  })
+
+  // Regression: Monaco's useInlineViewWhenSpaceIsLimited defaults to true and
+  // silently forces the inline view below renderSideBySideInlineBreakpoint
+  // (900px). The chat side panel is always narrower than that, so the split
+  // toggle had no visible effect. renderSideBySide must stay authoritative.
+  it('opts out of the narrow-width inline fallback', async () => {
+    render(<DiffPanel filePath="/x/a.ts" original="" modified="" />)
+    const editor = await screen.findByTestId('monaco-diff')
+    expect(editor.getAttribute('data-inline-when-narrow')).toBe('false')
   })
 
   it('lineNumbers default off', async () => {
