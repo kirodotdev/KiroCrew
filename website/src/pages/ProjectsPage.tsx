@@ -351,7 +351,7 @@ export default function ProjectsPage() {
         <aside style={{ width: rail.width }} className="flex-shrink-0 flex flex-col min-h-0 border-r border-border">
           <div className="shrink-0 h-11 px-3 flex items-center gap-2 border-b border-border">
             <ClipboardCheck className="lucide-inline text-accent" />
-            <span className="text-[13px] font-semibold text-text-strong truncate">{i18nT('pages.projectsPage.task_runner')}</span>
+            <span className="text-[13px] font-semibold text-text-strong truncate min-w-0">{i18nT('pages.projectsPage.task_runner')}</span>
           </div>
           <div className="shrink-0 px-3 pt-3">
             <button onClick={() => setSelectedRun(null)} className="w-full px-3 py-2 rounded-lg text-[13px] font-semibold border cursor-pointer transition-all text-accent bg-accent/10 border-accent/30 hover:bg-accent/20"><Plus className="lucide-inline" /> {i18nT('pages.projectsPage.new_task')}</button>

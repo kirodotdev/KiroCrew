@@ -88,6 +88,19 @@ describe('Task Runner — workspace shell', () => {
     expect(screen.getByText('Task Runner')).toBeInTheDocument()
   })
 
+  it('lets the rail title actually truncate instead of pushing the header open', () => {
+    // The title is a flex child asking for `truncate`, but `text-overflow`
+    // cannot apply while a flex child's `min-width` is still `auto`: the label
+    // wins its intrinsic width and shoves the header's other children out
+    // instead of ellipsing. Invisible under the English "Task Runner" and loud
+    // under a longer locale, which is why the en-XA render gate counts this
+    // pairing (`ellipsis-with-flex-parent`) rather than trusting `truncate`.
+    renderWithProviders(<ProjectsPage />)
+    const title = screen.getByText('Task Runner')
+    expect(title.className).toContain('truncate')
+    expect(title.className).toContain('min-w-0')
+  })
+
   it('shows the rail before any run exists', async () => {
     // Previously the rail only appeared once runs existed, so the main column
     // jumped sideways the moment the first run landed.
