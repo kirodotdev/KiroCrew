@@ -2984,6 +2984,11 @@
       "select": "चुनें",
       "workspace_name": "वर्कस्पेस का नाम",
       "workspace_name_2": "workspace-name"
+    },
+    "linkPreview": {
+      "copied": "कॉपी हो गया",
+      "copy_url": "URL कॉपी करें",
+      "copy_url_of": "{{name}} का URL कॉपी करें"
     }
   },
   "hooks": {
@@ -5673,6 +5678,8 @@
         "status_unavailable": "स्थिति उपलब्ध नहीं"
       },
       "chatPanel": {
+        "link_previews": "लिंक प्रीव्यू",
+        "show_a_favicon_and_page_title_instead_of_the_raw": "कच्चे URL की जगह फ़ेविकॉन और पेज का शीर्षक दिखाएँ। चालू करने पर यह मशीन मॉडल के दिए हर लिंक को फ़ेच करती है, इसलिए हर लिंक की गई साइट को तुम्हारे IP पते से एक अनुरोध दिखेगा।",
         "about_you": "आपके बारे में",
         "auto_compact_threshold": "ऑटो-कॉम्पैक्ट थ्रेशोल्ड",
         "combine_follow_up_messages_into_a_single_labeled": "एजेंट व्यस्त रहने के दौरान फ़ॉलो-अप संदेशों को एक ही लेबल किए गए प्रॉम्प्ट में मिला दें",

@@ -2984,6 +2984,11 @@
       "select": "নির্বাচন করুন",
       "workspace_name": "ওয়ার্কস্পেসের নাম",
       "workspace_name_2": "workspace-name"
+    },
+    "linkPreview": {
+      "copied": "কপি করা হয়েছে",
+      "copy_url": "URL কপি করুন",
+      "copy_url_of": "{{name}} এর URL কপি করুন"
     }
   },
   "hooks": {
@@ -5673,6 +5678,8 @@
         "status_unavailable": "অবস্থা জানা যাচ্ছে না"
       },
       "chatPanel": {
+        "link_previews": "লিঙ্ক প্রিভিউ",
+        "show_a_favicon_and_page_title_instead_of_the_raw": "কাঁচা URL-এর বদলে ফেভিকন ও পেজের শিরোনাম দেখান। চালু করলে এই মেশিন মডেলের দেওয়া প্রতিটি লিঙ্ক ফেচ করে, তাই লিঙ্ক করা প্রতিটি সাইট তোমার IP অ্যাড্রেস থেকে একটি রিকোয়েস্ট দেখতে পাবে।",
         "about_you": "আপনার সম্পর্কে",
         "auto_compact_threshold": "অটো-কম্প্যাক্ট থ্রেশহোল্ড",
         "combine_follow_up_messages_into_a_single_labeled": "এজেন্ট ব্যস্ত থাকার সময় ফলো-আপ বার্তাগুলিকে একটি লেবেলযুক্ত প্রম্পটে একত্র করুন",

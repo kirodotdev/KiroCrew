@@ -3023,6 +3023,11 @@
       "select": "Sélectionner",
       "workspace_name": "Nom de l'espace de travail",
       "workspace_name_2": "workspace-name"
+    },
+    "linkPreview": {
+      "copied": "Copié",
+      "copy_url": "Copier l’URL",
+      "copy_url_of": "Copier l’URL de {{name}}"
     }
   },
   "hooks": {
@@ -5739,6 +5744,8 @@
         "status_unavailable": "Statut indisponible"
       },
       "chatPanel": {
+        "link_previews": "Aperçus de liens",
+        "show_a_favicon_and_page_title_instead_of_the_raw": "Affiche le favicon et le titre de la page au lieu de l'URL brute. Cette machine récupère alors chaque lien produit par le modèle, si bien que chaque site lié voit une requête venant de ton adresse IP.",
         "about_you": "À propos de vous",
         "auto_compact_threshold": "Seuil de compactage automatique",
         "combine_follow_up_messages_into_a_single_labeled": "Regrouper les messages de suivi en une seule invite étiquetée pendant que l'agent est occupé",

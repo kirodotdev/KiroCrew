@@ -29,6 +29,9 @@ import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
 import { usePathKind, type PathKind } from '../hooks/usePathKind'
 import { fileIcon } from '../utils/fileIcons'
 import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
+import { safeHttpUrl } from '../lib/safeUrl'
+import { useLinkMeta } from '../lib/linkMeta'
+import { LinkChip, LinkCard } from './LinkPreview'
 import DiffBlock from './DiffBlock'
 import MonacoCodeBlock from './MonacoCodeBlock'
 import { SmoothResize } from './SmoothResize'
@@ -115,6 +118,86 @@ export const CompactImagesCtx = createContext<boolean>(false)
  */
 export type LinkOverride = (link: { href: string; children: React.ReactNode }) => React.ReactNode | null
 export const LinkOverrideCtx = createContext<LinkOverride | null>(null)
+
+/**
+ * Link-unfurl gate for the markdown subtree.
+ *
+ * `enabled` mirrors `cfg.dashboard.link_previews` (default OFF): the user has to
+ * opt in before this machine will fetch a URL the model wrote.
+ *
+ * `live` means the block is STILL STREAMING. It is a hard, independent gate: a
+ * URL in the streaming tail may be half-typed (`https://exa`), and resolving
+ * that would send the model's in-progress text to a host nobody named. Nothing
+ * is fetched while `live` is true — the chip/card simply appears once the block
+ * settles.
+ *
+ * Both default to false, so any markdown rendered outside a provider (file
+ * previews, artifact pages, app-embedded chat) keeps today's plain anchors.
+ */
+export interface LinkUnfurl {
+  enabled: boolean
+  live: boolean
+}
+export const LinkUnfurlCtx = createContext<LinkUnfurl>({ enabled: false, live: false })
+
+/**
+ * The href to unfurl, or null when the link must stay a plain anchor.
+ *
+ * Three exclusions, all deliberate:
+ *  - non-http(s) (and Basic-auth userinfo) — `safeHttpUrl`. `artifact:`,
+ *    `vscode:`, `mailto:`, `javascript:` and relative paths all fail here, so
+ *    only an absolute web URL can ever reach the backend.
+ *  - `/artifacts/<slug>` — an in-app artifact route, handled by the click
+ *    interception below; unfurling it would fetch our own dashboard.
+ *  - anything else same-origin — likewise an in-app dashboard route. There is no
+ *    page title to show that the UI doesn't already know.
+ */
+export function unfurlableHref(href: string | null | undefined): string | null {
+  if (!href || !safeHttpUrl(href)) return null
+  if (artifactSlugFromHref(href)) return null
+  try {
+    if (new URL(href).origin === window.location.origin) return null
+  } catch {
+    return null
+  }
+  return href
+}
+
+/** Resolve the unfurl target for an href under the current gate. A hook (reads
+ *  context), so it is called unconditionally by both link components. */
+function useUnfurlHref(href: string | null | undefined): string | null {
+  const { enabled, live } = useContext(LinkUnfurlCtx)
+  if (!enabled || live) return null
+  return unfurlableHref(href)
+}
+
+/**
+ * The single `<a>` that is a paragraph's ONLY element child, or null.
+ *
+ * Whitespace-only text siblings are ignored (remark leaves a trailing newline
+ * text node on `<p><a>…</a></p>`), but any real text, or a second element,
+ * disqualifies the paragraph — that link is inline prose and gets a chip.
+ * `text` is the anchor's own visible text, used only as the probe argument for a
+ * `LinkOverrideCtx` provider.
+ */
+export function soleLinkInParagraph(node?: HastElement): { href: string; text: string } | null {
+  if (!node?.children) return null
+  let anchor: HastElement | null = null
+  for (const child of node.children) {
+    if (child.type === 'text') {
+      if (child.value.trim()) return null
+      continue
+    }
+    if (child.type !== 'element' || anchor || child.tagName !== 'a') return null
+    anchor = child
+  }
+  const href = anchor?.properties?.href
+  if (!anchor || typeof href !== 'string') return null
+  const text = anchor.children
+    .map((c) => (c.type === 'text' ? c.value : ''))
+    .join('')
+  return { href, text }
+}
 
 function isDarkTheme(): boolean {
   return (document.documentElement.getAttribute('data-theme') || '').includes('dark')
@@ -245,10 +328,15 @@ function slugify(children: React.ReactNode): string | undefined {
  * schemes) keep in-place navigation; everything else opens in a new tab. */
 function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAnchorElement> & ExtraProps) {
   const override = useContext(LinkOverrideCtx)
-  if (href && override) {
-    const claimed = override({ href, children })
-    if (claimed) return <>{claimed}</>
-  }
+  // The override is resolved FIRST and wins outright — Issue Radar's in-app
+  // issue/PR affordance must keep beating a link preview. Feeding `null` into
+  // the unfurl gate for a claimed href also means a claimed link is never
+  // fetched, so the priority holds at the network boundary, not just visually.
+  const claimed = href && override ? override({ href, children }) : null
+  const target = useUnfurlHref(claimed ? null : href)
+  const meta = useLinkMeta(target ?? undefined, target !== null)
+  if (claimed) return <>{claimed}</>
+  if (target && meta) return <LinkChip meta={meta} href={target}>{children}</LinkChip>
   let ext = false
   try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch { /* not a URL */ }
   return (
@@ -389,6 +477,30 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   )
 }
 
+/**
+ * Default markdown paragraph — except when the paragraph IS a single link, in
+ * which case the resolved link renders as a block card instead.
+ *
+ * Position is the whole selection rule: a link surrounded by prose is a chip
+ * (see `MdAnchor`), a link standing alone is a card. `LinkCard` replaces the
+ * `<p>` rather than nesting inside it, so the card is a block-level sibling of
+ * the surrounding paragraphs.
+ */
+function MdParagraph({ node, children }: React.HTMLAttributes<HTMLParagraphElement> & ExtraProps) {
+  const override = useContext(LinkOverrideCtx)
+  const sole = soleLinkInParagraph(node)
+  const target = useUnfurlHref(sole?.href)
+  // Same priority rule as MdAnchor: a link the override owns stays an in-app
+  // affordance inside an ordinary paragraph, never a card. The provider is a
+  // pure render prop (Issue Radar's returns a RefLink element), and the probe
+  // only runs when a card is otherwise on the table.
+  const claimed = !!(target && override && override({ href: target, children: sole?.text }))
+  const unfurl = claimed ? null : target
+  const meta = useLinkMeta(unfurl ?? undefined, unfurl !== null)
+  if (unfurl && meta) return <LinkCard meta={meta} href={unfurl} />
+  return <p {...sp(node)} className="my-1.5 leading-relaxed">{children}</p>
+}
+
 const MD_COMPONENTS: Components = {
   code({ className, children, ...props }) {
     const match = /language-(\w+)/.exec(className || '')
@@ -447,7 +559,7 @@ const MD_COMPONENTS: Components = {
       </li>
     )
   },
-  p({ node, children }) { return <p {...sp(node)} className="my-1.5 leading-relaxed">{children}</p> },
+  p: MdParagraph,
   strong({ node, children }) { return <strong {...sp(node)} className="font-semibold text-text-strong">{children}</strong> },
   em({ node, children }) { return <em {...sp(node)} className="italic">{children}</em> },
   img: ImgWithFallback,
@@ -1217,7 +1329,19 @@ function deferIncompleteStreamingTable(content: string): string {
   return lines.slice(0, start).join('\n')
 }
 
-const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean }) {
+const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, unfurl }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean }) {
+  // Declared before the early return below — Rules of Hooks.
+  //
+  // `sourcePos` force-disables unfurl: the inline-commenting flow maps a DOM
+  // selection back to source coordinates through `data-sourcepos`, and a card
+  // REPLACES the `<p>` that carries it, so a standalone link would become an
+  // uncommentable hole. The two are mutually exclusive in practice today (only
+  // the chat transcript enables previews, and it renders without sourcepos) —
+  // this makes that a guarantee instead of a coincidence.
+  const unfurlCtx = useMemo<LinkUnfurl>(
+    () => ({ enabled: !!unfurl && !sourcePos, live: !!live }),
+    [unfurl, sourcePos, live],
+  )
   // Strip any <mcwidget> or <tool_use> tags that leak through during
   // streaming transitions or when the agent emits protocol markup as text.
   // Both passes preserve mentions inside inline-code spans.
@@ -1246,7 +1370,11 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
       {fixCodeFences(clean)}
     </ReactMarkdown>
   )
-  return sourcePos ? <div data-block-start={startLine ?? 1}>{md}</div> : md
+  const body = sourcePos ? <div data-block-start={startLine ?? 1}>{md}</div> : md
+  // The provider carries no DOM node, so sourcepos / lightbox scoping upstream
+  // is unaffected. It is the only way MdAnchor / MdParagraph — which react-markdown
+  // instantiates deep inside its own tree — can see the gate.
+  return <LinkUnfurlCtx.Provider value={unfurlCtx}>{body}</LinkUnfurlCtx.Provider>
 })
 
 import WidgetFrame from './WidgetFrame'
@@ -1282,7 +1410,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
   return undefined
 }
 
-function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, widgetIndex, slotKey, glow, smooth, softBreaks }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; widgetIndex?: number; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean }) {
+function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, widgetIndex, slotKey, glow, smooth, softBreaks, live, unfurl }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; widgetIndex?: number; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean }) {
   switch (block.type) {
     case 'diff': {
       const pathHint = prevBlock?.type === 'markdown'
@@ -1315,11 +1443,14 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
         ? <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} widgetIndex={widgetIndex} slotKey={slotKey} />
         : <WidgetPlaceholder title={block.language} />
     case 'markdown':
-      return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} />
+      // `live` = this block is the streaming tail (see MarkdownRenderer). ORed
+      // with the block's own `complete` flag so a provisional block is treated
+      // as live too, whatever produced it.
+      return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} live={!block.complete || !!live} unfurl={unfurl} />
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean }) {
   const blocks = useBlockAssembler(content, streaming)
 
   /** Chip activation lives on the chip itself (see InlineCode); this handler is
@@ -1418,6 +1549,13 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             widgetIndex={widgetIndices[i] >= 0 ? widgetIndices[i] : undefined}
             slotKey={slotKey}
             glow={glow && i === lastMarkdownIdx}
+            // Same gate `glow` uses — the last markdown block of a streaming
+            // message IS the live tail. Reusing it means the unfurl suppression
+            // and the shimmer can never disagree about which block is still
+            // being typed. `streaming` rather than `glow` because a caller may
+            // render a streaming transcript without asking for the shimmer.
+            live={streaming && i === lastMarkdownIdx}
+            unfurl={linkPreviews}
             smooth={smooth}
             softBreaks={softBreaks}
           />

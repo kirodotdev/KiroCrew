@@ -100,7 +100,7 @@ function SteerAckChip({ summary }: { summary: string }) {
   )
 }
 
-const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, onFolderOpen, onArtifactOpen, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, showFooter = true, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, onPlanFromHere, forkIndex, onQuote, onAsk, messageTs, slotKey, slotTitle, mode, fileChanges, onOpenDiff, fileChipStyle, artifactPaths, turnStats }: { content: string; isStreaming: boolean; onFileOpen?: (path: string) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: (content: string) => void; timestamp?: string; showFooter?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number) => void | Promise<void>; onPlanFromHere?: (index: number) => void | Promise<void>; forkIndex?: number; onQuote?: (text: string, rect: DOMRect) => void; onAsk?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string>; turnStats?: TurnStats }) {
+const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, onFolderOpen, onArtifactOpen, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, showFooter = true, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, onPlanFromHere, forkIndex, onQuote, onAsk, messageTs, slotKey, slotTitle, mode, fileChanges, onOpenDiff, fileChipStyle, artifactPaths, turnStats, linkPreviews }: { content: string; isStreaming: boolean; onFileOpen?: (path: string) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: (content: string) => void; timestamp?: string; showFooter?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number) => void | Promise<void>; onPlanFromHere?: (index: number) => void | Promise<void>; forkIndex?: number; onQuote?: (text: string, rect: DOMRect) => void; onAsk?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string>; turnStats?: TurnStats; linkPreviews?: boolean }) {
   const [applied, setApplied] = useState(false)
   const [copied, setCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
@@ -132,6 +132,13 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // starved between bursts and read as chunky.
   const speed = 1
   const smoothedText = useSmoothStream(steerCleaned, isStreaming, smooth, speed)
+  // The smooth buffer keeps draining for ~LAG_SECS AFTER isStreaming flips false
+  // (see useSmoothStream's continuation condition), so for a beat the rendered
+  // text is still truncated — possibly mid-URL. MarkdownRenderer's own `live`
+  // gate only covers isStreaming, so suppress unfurl for the drain window too:
+  // a half-revealed `https://exa` must not be fetched just because the turn
+  // ended. Chips/cards appear once the reveal catches up.
+  const draining = smoothedText.length < steerCleaned.length
 
   const planSteps = useMemo<PlanStepInput[] | null>(() => {
     if (isStreaming || !planTaskId || !effectiveContent) return null
@@ -228,7 +235,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
     <div ref={contentRef} className="message-bubble msg-content group/bubble relative text-sm leading-relaxed text-text overflow-hidden" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
       <MessageErrorBoundary rawContent={smoothedText}>
-        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} />
+        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} />
       </MessageErrorBoundary>
       {/* Render the steer ack the moment kiro-cli emits the [STEERING …] marker
           — including mid-stream — so the user sees the agent acknowledge the

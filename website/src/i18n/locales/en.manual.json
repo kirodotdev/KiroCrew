@@ -690,6 +690,11 @@
       "two_way": "Two-way",
       "unavailable": "This destination is unavailable."
     },
+    "linkPreview": {
+      "copied": "Copied",
+      "copy_url": "Copy URL",
+      "copy_url_of": "Copy URL of {{name}}"
+    },
     "markdownPanel": {
       "adding": "Adding…",
       "adding_2": "Adding...",
