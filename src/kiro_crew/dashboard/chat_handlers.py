@@ -997,10 +997,20 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # model believing the session is still in its old folder.
             # Harmless on the new-slot path: that turn is `is_new`, so the
             # breadcrumb fires regardless and the flag is consumed there.
+            previous_folder = slot.folder_id
+            previous_changed = slot._folder_changed
             if folder_id != slot.folder_id:
                 slot._folder_changed = True
             slot.folder_id = folder_id
-            _unhide_folder(state, folder_id)
+            # Existence is only reliable inside the store lock. If the folder
+            # went away, abandon THIS assignment and leave the slot as it was —
+            # `name` can address an already-used slot, so clearing outright would
+            # unfile a conversation that was sitting in a perfectly good folder
+            # of its own. This is a chat turn, so declining the move beats
+            # failing the turn.
+            if not await _unhide_folder(state, folder_id):
+                slot.folder_id = previous_folder
+                slot._folder_changed = previous_changed
         _sync_dashboard_slots(state)
         # Guarantee a frame. get_or_create_slot pushes for a NEW slot, but
         # returns an existing named slot without pushing — and this handler is
@@ -3081,11 +3091,18 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         slot.project = meta["project"]
     if meta.get("mode"):
         slot.mode = meta["mode"]
+    if meta.get("channel_folder_filed"):
+        # Resuming from History must carry the filing marker forward, or the
+        # next save of this slot drops it and the conversation is re-filed.
+        slot._channel_folder_filed = True
     if meta.get("folder_id"):
         slot.folder_id = meta["folder_id"]
         # Re-engaging a hidden empty folder (Model B) un-hides it so it stays
-        # visible until the user hides it again.
-        _unhide_folder(state, meta["folder_id"])
+        # visible until the user hides it again. A folder deleted since this
+        # session was last saved leaves the stored id dangling; drop it so the
+        # resumed session is plainly unfiled instead of pointing at nothing.
+        if not await _unhide_folder(state, meta["folder_id"]):
+            slot.folder_id = ""
     if meta.get("pinned"):
         slot.pinned = True
     if meta.get("color_index") is not None:

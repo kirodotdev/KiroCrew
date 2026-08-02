@@ -9662,7 +9662,11 @@
         "start_the_channel_at_gateway_startup": "Avvia il canale {{channel}} all’avvio del gateway (richiede un token del bot).",
         "verified_with_channel_and_saved": "Verificato con {{channel}} e salvato. Riavvia il gateway per connetterti.",
         "where_to_find_the_bot_token": "Dove trovare il token bot",
-        "where_to_find_the_credential": "Dove trovare {{label}}"
+        "where_to_find_the_credential": "Dove trovare {{label}}",
+        "file_sessions_in_folder": "Archivia le sessioni in una cartella",
+        "file_sessions_in_folder_desc": "Le nuove sessioni {{channel}} finiscono in una cartella della barra laterale invece di restare senza cartella.",
+        "session_folder_name": "Nome della cartella",
+        "session_folder_name_desc": "Viene creata quando salvi queste impostazioni, se non esiste ancora."
       },
       "browserPanel": {
         "attach_to_my_browser": "Collega al mio browser",

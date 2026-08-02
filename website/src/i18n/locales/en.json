@@ -6605,7 +6605,11 @@
         "required": "Required",
         "settings_are_managed_on_the_machine_running_kiro": "settings are managed on the machine running Kiro Crew and are read-only from remote sessions.",
         "setup_guide": "Setup guide",
-        "soft_context_threshold": "Soft context threshold %"
+        "soft_context_threshold": "Soft context threshold %",
+        "file_sessions_in_folder": "File sessions in a folder",
+        "file_sessions_in_folder_desc": "New {{channel}} sessions go into a sidebar folder instead of staying unfiled.",
+        "session_folder_name": "Folder name",
+        "session_folder_name_desc": "Created for you when you save these settings, if it does not exist yet."
       },
       "browserPanel": {
         "attach_to_my_browser": "Attach to my browser",

@@ -9776,7 +9776,11 @@
         "start_the_channel_at_gateway_startup": "Запускать канал {{channel}} при старте шлюза (нужен токен бота).",
         "verified_with_channel_and_saved": "Проверено в {{channel}} и сохранено. Перезапусти шлюз для подключения.",
         "where_to_find_the_bot_token": "Где найти токен бота",
-        "where_to_find_the_credential": "Где найти {{label}}"
+        "where_to_find_the_credential": "Где найти {{label}}",
+        "file_sessions_in_folder": "Складывать сессии в папку",
+        "file_sessions_in_folder_desc": "Новые сессии из {{channel}} попадают в папку на боковой панели, а не остаются без папки.",
+        "session_folder_name": "Название папки",
+        "session_folder_name_desc": "Создаётся при сохранении этих настроек, если её ещё нет."
       },
       "browserPanel": {
         "attach_to_my_browser": "Подключиться к моему браузеру",

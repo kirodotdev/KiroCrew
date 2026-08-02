@@ -9548,7 +9548,11 @@
         "start_the_channel_at_gateway_startup": "গেটওয়ে চালুর সময় {{channel}} চ্যানেল শুরু করো (একটি বট টোকেন প্রয়োজন)।",
         "verified_with_channel_and_saved": "{{channel}} দিয়ে যাচাই হয়েছে ও সেভ হয়েছে। সংযোগ করতে গেটওয়ে রিস্টার্ট করো।",
         "where_to_find_the_bot_token": "বট টোকেন কোথায় পাবে",
-        "where_to_find_the_credential": "{{label}} কোথায় পাবে"
+        "where_to_find_the_credential": "{{label}} কোথায় পাবে",
+        "file_sessions_in_folder": "সেশন একটি ফোল্ডারে রাখুন",
+        "file_sessions_in_folder_desc": "{{channel}}-এর নতুন সেশন সাইডবারের একটি ফোল্ডারে যায়, ফোল্ডার ছাড়া থাকে না।",
+        "session_folder_name": "ফোল্ডারের নাম",
+        "session_folder_name_desc": "এই সেটিংস সেভ করলে এটি তৈরি হয়, যদি আগে থেকে না থাকে।"
       },
       "browserPanel": {
         "attach_to_my_browser": "আমার ব্রাউজারে সংযুক্ত হও",

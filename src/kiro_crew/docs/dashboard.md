@@ -53,6 +53,7 @@ code blocks, Mermaid diagrams, and clickable file paths.
 - **Tool input preview**: expandable tool input display in approval cards
 - **File upload**: drag-and-drop or paperclip upload for images and non-image files (.zip, .csv, .docx)
 - **Folder management**: create, rename, and organize sessions into sidebar folders with indent borders
+- **Per-channel session folders**: optional, off by default — each channel's settings panel (Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat) can file conversations that start there into a named sidebar folder, marked with the channel's brand mark. Config key: `<channel>.session_folder` ("" = off). The folder is created when the setting is saved, so the surfacing path only ever reads the folder store; a configured folder that no longer exists (config.json hand-edited, or the folder deleted) leaves conversations unfiled until the next save recreates it. Filing applies as each conversation is first surfaced; a session moved by hand afterwards stays where it was put.
 - **Session colors**: per-session color picker for visual organization
 
 ### Overview (`/overview`)

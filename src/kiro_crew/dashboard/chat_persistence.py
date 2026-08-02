@@ -554,6 +554,8 @@ def _rehydrate_slot_from_history(
             slot.mode = meta["mode"]
         if meta.get("folder_id"):
             slot.folder_id = meta["folder_id"]
+        if meta.get("channel_folder_filed"):
+            slot._channel_folder_filed = True
         if meta.get("app"):
             slot._app = meta["app"]
         # Re-validate the companion binding against the slug grammar on restore
@@ -905,6 +907,8 @@ def _restore_recent_sessions_steps(
             slot.mode = meta["mode"]
         if meta.get("folder_id"):
             slot.folder_id = meta["folder_id"]
+        if meta.get("channel_folder_filed"):
+            slot._channel_folder_filed = True
         if meta.get("app"):
             slot._app = meta["app"]
         # Same tamper gate as _rehydrate_slot_from_history: re-validate the
@@ -1642,6 +1646,15 @@ def _save_slot_to_history(
                 meta_line["project"] = slot.project
             if slot.folder_id:
                 meta_line["folder_id"] = slot.folder_id
+            if slot._channel_folder_filed or existing_meta.get("channel_folder_filed"):
+                # Sticky, and carried forward from disk rather than only from the
+                # slot: this function rebuilds the metadata line from scratch, so
+                # a restore path that failed to set the in-memory flag would
+                # otherwise ERASE the marker on the next save and the
+                # conversation would be re-filed. Preserving the on-disk value
+                # makes that whole class of omission harmless — same reason
+                # rotation_generation is carried forward above.
+                meta_line["channel_folder_filed"] = True
             if slot._app:
                 meta_line["app"] = slot._app
             # Artifact companion binding — persisted so a bound

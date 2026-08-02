@@ -1881,6 +1881,18 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["slack"],
+        ),
+    )
 
 
 @dataclass
@@ -3929,6 +3941,18 @@ class WeComConfig:
             tags=["wecom"],
         ),
     )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["wecom"],
+        ),
+    )
 
     def __post_init__(self) -> None:
         # Clamp thresholds to [0, 100] and guarantee soft <= hard so a misconfig
@@ -4143,6 +4167,33 @@ def _coerce_int(raw: object, default: int) -> int:
         return default
 
 
+#: Longest accepted channel session-folder name — matches the 100-char cap the
+#: folder CRUD endpoint applies, so a name that round-trips through config can
+#: never be longer than one created in the sidebar.
+SESSION_FOLDER_NAME_MAX = 100
+
+
+def _coerce_session_folder(raw: object) -> str:
+    """Coerce a channel's ``session_folder`` value to a usable folder name.
+
+    Empty string means the feature is off (the default) — sessions from the
+    channel stay unfiled. Anything else is the name of the sidebar folder they
+    are filed into. Non-strings, control characters, path separators, and
+    over-long values all fail closed to off rather than producing a folder the
+    user did not ask for: truncating an over-long hand-edited value would file
+    conversations into a real folder whose name nobody chose, which is worse
+    than leaving them where they already were.
+    """
+    if not isinstance(raw, str):
+        return ""
+    name = raw.strip()
+    if len(name) > SESSION_FOLDER_NAME_MAX:
+        return ""
+    if any(ch in name for ch in ("/", "\\")) or any(ord(ch) < 0x20 for ch in name):
+        return ""
+    return name
+
+
 @dataclass
 class TelegramAccountConfig:
     """A single named Telegram bot account, retained only to preserve config.
@@ -4270,6 +4321,18 @@ class TelegramConfig:
             deprecated=True,
         ),
     )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["telegram"],
+        ),
+    )
 
 
 @dataclass
@@ -4352,6 +4415,18 @@ class WeixinConfig:
             tags=["weixin"],
         ),
     )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["weixin"],
+        ),
+    )
 
 
 @dataclass
@@ -4402,6 +4477,18 @@ class DiscordConfig:
             tags=["discord"],
         ),
     )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["discord"],
+        ),
+    )
 
 
 @dataclass
@@ -4449,6 +4536,18 @@ class WebexConfig:
             "Hard Context Threshold %",
             "Force a compaction when context reaches this, even without a user "
             "decision, so the window never overflows.",
+            tags=["webex"],
+        ),
+    )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
             tags=["webex"],
         ),
     )
@@ -4532,6 +4631,18 @@ class TeamsConfig:
             "Hard Context Threshold %",
             "Force a compaction when context reaches this, even without a user "
             "decision, so the window never overflows.",
+            tags=["teams"],
+        ),
+    )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
             tags=["teams"],
         ),
     )
@@ -5256,6 +5367,7 @@ class KiroCrewConfig:
                     knowledge_data.get("extraction_pool_size", 3), 3))),
             ),
             telegram=TelegramConfig(
+                session_folder=_coerce_session_folder(telegram_data.get("session_folder")),
                 enabled=bool(telegram_data.get("enabled", False)),
                 bot_token=str(telegram_data.get("bot_token", "")),
                 allowed_user_ids=_coerce_int_ids(telegram_data.get("allowed_user_ids")),
@@ -5267,6 +5379,7 @@ class KiroCrewConfig:
                 accounts=_parse_telegram_accounts(telegram_data.get("accounts")),
             ),
             weixin=WeixinConfig(
+                session_folder=_coerce_session_folder(weixin_data.get("session_folder")),
                 enabled=bool(weixin_data.get("enabled", False)),
                 token=str(weixin_data.get("token", "")),
                 account_id=str(weixin_data.get("account_id", "")),
@@ -5281,6 +5394,7 @@ class KiroCrewConfig:
                 ),
             ),
             discord=DiscordConfig(
+                session_folder=_coerce_session_folder(discord_data.get("session_folder")),
                 enabled=bool(discord_data.get("enabled", False)),
                 bot_token=str(discord_data.get("bot_token", "")),
                 # Discord user IDs are numeric snowflakes that exceed 2^53 —
@@ -5293,6 +5407,7 @@ class KiroCrewConfig:
                 ),
             ),
             webex=WebexConfig(
+                session_folder=_coerce_session_folder(webex_data.get("session_folder")),
                 enabled=bool(webex_data.get("enabled", False)),
                 bot_token=str(webex_data.get("bot_token", "")),
                 allowed_emails=(
@@ -5304,6 +5419,7 @@ class KiroCrewConfig:
                 hard_threshold_pct=_coerce_int(webex_data.get("hard_threshold_pct"), 95),
             ),
             teams=TeamsConfig(
+                session_folder=_coerce_session_folder(teams_data.get("session_folder")),
                 enabled=bool(teams_data.get("enabled", False)),
                 app_id=str(teams_data.get("app_id", "")),
                 # Secret is env-only (MICROSOFT_APP_PASSWORD). Never sourced from
@@ -5320,6 +5436,7 @@ class KiroCrewConfig:
                 hard_threshold_pct=_coerce_int(teams_data.get("hard_threshold_pct"), 95),
             ),
             slack=SlackConfig(
+                session_folder=_coerce_session_folder(slack_data.get("session_folder")),
                 allowed_users=[
                     u
                     for u in slack_data.get("allowed_users", [])
@@ -5365,6 +5482,7 @@ class KiroCrewConfig:
                 ],
             ),
             wecom=WeComConfig(
+                session_folder=_coerce_session_folder(wecom_data.get("session_folder")),
                 enabled=bool(wecom_data.get("enabled", False)),
                 allowed_users=[
                     u

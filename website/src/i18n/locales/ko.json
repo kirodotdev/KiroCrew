@@ -9434,7 +9434,11 @@
         "start_the_channel_at_gateway_startup": "게이트웨이 시작 시 {{channel}} 채널을 시작합니다 (봇 토큰 필요).",
         "verified_with_channel_and_saved": "{{channel}}에서 확인되어 저장되었습니다. 연결하려면 게이트웨이를 재시작하세요.",
         "where_to_find_the_bot_token": "봇 토큰을 찾는 위치",
-        "where_to_find_the_credential": "{{label}}을(를) 찾는 위치"
+        "where_to_find_the_credential": "{{label}}을(를) 찾는 위치",
+        "file_sessions_in_folder": "세션을 폴더에 정리",
+        "file_sessions_in_folder_desc": "새 {{channel}} 세션를 정리되지 않은 상태로 두지 않고 사이드바 폴더에 넣습니다.",
+        "session_folder_name": "폴더 이름",
+        "session_folder_name_desc": "이 설정을 저장할 때 폴더가 아직 없으면 새로 만들어집니다."
       },
       "browserPanel": {
         "attach_to_my_browser": "내 브라우저에 연결",

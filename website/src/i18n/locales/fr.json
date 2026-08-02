@@ -9662,7 +9662,11 @@
         "start_the_channel_at_gateway_startup": "Démarrer le canal {{channel}} au lancement de la passerelle (nécessite un jeton de bot).",
         "verified_with_channel_and_saved": "Vérifié avec {{channel}} et enregistré. Redémarre la passerelle pour établir la connexion.",
         "where_to_find_the_bot_token": "Où trouver le jeton de bot",
-        "where_to_find_the_credential": "Où trouver le {{label}}"
+        "where_to_find_the_credential": "Où trouver le {{label}}",
+        "file_sessions_in_folder": "Classer les sessions dans un dossier",
+        "file_sessions_in_folder_desc": "Les nouvelles sessions {{channel}} arrivent dans un dossier de la barre latérale au lieu de rester non classées.",
+        "session_folder_name": "Nom du dossier",
+        "session_folder_name_desc": "Créé lors de l’enregistrement de ces paramètres, s’il n’existe pas encore."
       },
       "browserPanel": {
         "attach_to_my_browser": "Se rattacher à mon navigateur",

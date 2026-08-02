@@ -9434,7 +9434,11 @@
         "start_the_channel_at_gateway_startup": "ゲートウェイ起動時に {{channel}} チャネルを開始します（ボットトークンが必要）。",
         "verified_with_channel_and_saved": "{{channel}} で検証され保存されました。接続するにはゲートウェイを再起動してください。",
         "where_to_find_the_bot_token": "ボットトークンの場所",
-        "where_to_find_the_credential": "{{label}}の確認場所"
+        "where_to_find_the_credential": "{{label}}の確認場所",
+        "file_sessions_in_folder": "セッションをフォルダーに整理する",
+        "file_sessions_in_folder_desc": "新しい{{channel}}のセッションを未整理のままにせず、サイドバーのフォルダーに入れます。",
+        "session_folder_name": "フォルダー名",
+        "session_folder_name_desc": "この設定を保存したときに、まだ存在しなければ作成されます。"
       },
       "browserPanel": {
         "attach_to_my_browser": "自分のブラウザーに接続",

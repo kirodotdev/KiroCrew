@@ -9548,7 +9548,11 @@
         "start_the_channel_at_gateway_startup": "Startet den {{channel}}-Kanal beim Start des Gateways (erfordert einen Bot-Token).",
         "verified_with_channel_and_saved": "Mit {{channel}} verifiziert und gespeichert. Starte das Gateway neu, um eine Verbindung herzustellen.",
         "where_to_find_the_bot_token": "Wo du das Bot-Token findest",
-        "where_to_find_the_credential": "Wo du {{label}} findest"
+        "where_to_find_the_credential": "Wo du {{label}} findest",
+        "file_sessions_in_folder": "Sitzungen in einem Ordner ablegen",
+        "file_sessions_in_folder_desc": "Neue {{channel}}-Sitzungen landen in einem Ordner in der Seitenleiste, statt ohne Ordner zu bleiben.",
+        "session_folder_name": "Ordnername",
+        "session_folder_name_desc": "Wird beim Speichern dieser Einstellungen angelegt, falls er noch nicht existiert."
       },
       "browserPanel": {
         "attach_to_my_browser": "An meinen Browser anhängen",

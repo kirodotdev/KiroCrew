@@ -164,6 +164,8 @@ export interface SlackConfigData {
   allowed_enterprise_ids: string[]
   reactions_enabled: boolean
   show_thinking: boolean
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Slack config fields sent to PUT /api/slack/config. */
@@ -177,6 +179,8 @@ export interface SlackConfigSave {
   allowed_enterprise_ids: string[]
   reactions_enabled: boolean
   show_thinking: boolean
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Discord config as returned by GET /api/discord/config (secret masked). */
@@ -191,6 +195,8 @@ export interface DiscordConfigData {
   allowed_user_ids: string[]
   allowed_thread_ids: string[]
   soft_threshold_pct: number
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Telegram config as returned by GET /api/telegram/config (secret masked). */
@@ -207,6 +213,8 @@ export interface TelegramConfigData {
   // Forum per-topic config. chat_ids are negative supergroup ids as strings.
   allow_forum?: boolean
   allowed_forum_chat_ids?: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Discord config fields sent to PUT /api/discord/config. */
@@ -217,6 +225,8 @@ export interface DiscordConfigSave {
   allowed_user_ids: string[]
   allowed_thread_ids: string[]
   soft_threshold_pct: number
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Telegram config fields sent to PUT /api/telegram/config. */
@@ -228,6 +238,8 @@ export interface TelegramConfigSave {
   soft_threshold_pct: number
   allow_forum?: boolean
   allowed_forum_chat_ids?: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** WeCom config as returned by GET /api/wecom/config (secrets masked). */
@@ -247,6 +259,8 @@ export interface WeComConfigData {
   /** Explicit opt-in: every org member may DM the bot (allow-list bypassed). */
   allow_all_users: boolean
   soft_threshold_pct: number
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable WeCom config fields sent to PUT /api/wecom/config. */
@@ -259,6 +273,8 @@ export interface WeComConfigSave {
   allowed_user_ids: string[]
   allow_all_users: boolean
   soft_threshold_pct: number
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Webex config as returned by GET /api/webex/config (secret masked). */
@@ -271,6 +287,8 @@ export interface WebexConfigData {
   bot_token_preview: string
   enabled: boolean
   allowed_emails: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Webex config fields sent to PUT /api/webex/config. */
@@ -279,6 +297,8 @@ export interface WebexConfigSave {
   bot_token_clear: boolean
   enabled: boolean
   allowed_emails: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Microsoft Teams channel status + config, from GET /api/teams/config. */
@@ -292,6 +312,8 @@ export interface TeamsConfigData {
   enabled: boolean
   tenant_id: string
   allowed_emails: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Weixin (iLink personal WeChat) config from GET /api/weixin/config.
@@ -307,6 +329,8 @@ export interface WeixinConfigData {
   account_id: string
   dm_policy: string
   allowed_user_ids: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Teams config fields sent to PUT /api/teams/config. The secret
@@ -318,6 +342,8 @@ export interface TeamsConfigSave {
   tenant_id: string
   enabled: boolean
   allowed_emails: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Weixin config fields sent to PUT /api/weixin/config. */
@@ -326,6 +352,8 @@ export interface WeixinConfigSave {
   dm_policy: string
   allowed_user_ids: string[]
   disconnect: boolean
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** A built-in denied-command rule as returned by GET /api/security/denied-commands. */
