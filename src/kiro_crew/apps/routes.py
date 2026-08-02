@@ -1795,9 +1795,11 @@ _SAFE_REPO_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SAFE_HTTPS_URL_RE = re.compile(r"^https://[A-Za-z0-9.\-]+(?::[0-9]+)?/[A-Za-z0-9._/\-]+$")
 # scp-style ssh remote: user@host:org/app[.git]
 _SAFE_SCP_URL_RE = re.compile(r"^[A-Za-z0-9._\-]+@[A-Za-z0-9.\-]+:[A-Za-z0-9._/\-]+$")
-# ssh:// URL form: ssh://user@host[:port]/org/app[.git]
+# ssh:// URL form: ssh://[user@]host[:port]/org/app[.git]
+# Userinfo is optional — userless ssh URLs (e.g. ssh://git.example.com/pkg/X) are
+# a standard git form where ~/.ssh/config supplies the user.
 _SAFE_SSH_URL_RE = re.compile(
-    r"^ssh://[A-Za-z0-9._\-]+@[A-Za-z0-9.\-]+(?::[0-9]+)?/[A-Za-z0-9._/\-]+$"
+    r"^ssh://(?:[A-Za-z0-9._\-]+@)?[A-Za-z0-9.\-]+(?::[0-9]+)?/[A-Za-z0-9._/\-]+$"
 )
 _SAFE_REF_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 _SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_./-]+$")

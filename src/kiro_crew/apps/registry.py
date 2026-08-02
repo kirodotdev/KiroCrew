@@ -35,6 +35,7 @@ import re
 import shutil
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -61,7 +62,7 @@ except ImportError:
     _sel_fn = None  # type: ignore[assignment]
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.platform import PlatformCompositionError, current_context
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,10 @@ class StreamingLogLines(list):
 # Timeout limits (seconds)
 _CLONE_TIMEOUT = 60
 _SCRIPT_TIMEOUT = 300
+
+# Number of days to retain moved-aside .stale-* / .partial-* checkouts before
+# the best-effort sweep removes them.
+_STALE_CHECKOUT_RETENTION_DAYS = 7
 
 # Minimal environment for install/uninstall scripts.
 # Only pass through variables needed for git, build tools, and shell operation.
@@ -154,7 +159,9 @@ def minimal_env(**extra: str) -> dict[str, str]:
 # Env keys that let git present the gateway's *ambient* identity to a remote:
 # the SSH agent socket, and any GIT_SSH / GIT_SSH_COMMAND override that could
 # route auth through the owner's keys. Stripped for index-originated clones.
-_GIT_CREDENTIAL_ENV_KEYS = frozenset({"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND"})
+_GIT_CREDENTIAL_ENV_KEYS = frozenset(
+    {"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND"}
+)
 
 
 def anonymous_git_env(**extra: str) -> dict[str, str]:
@@ -238,6 +245,69 @@ def _entry_git_url(entry: dict[str, Any]) -> str:
     """
     url = (entry.get("gitUrl") or entry.get("repo") or "").strip()
     return url
+
+
+def _sel_credential_grant(operation: str, git_url: str) -> None:
+    """SEL-audit an owner-designated credential grant (best-effort).
+
+    The same-repo carve-out escalates a clone from anonymous+strict to
+    owner credentials + context sandbox. That is a security-relevant
+    permission decision and must leave an audit record, mirroring the
+    existing ``fetch_external_registry`` SEL events.
+    """
+    if _sel_fn is None:
+        return
+    try:
+        _sel_fn().log_api_access(
+            caller="registry",
+            operation=operation,
+            outcome="granted",
+            resources=f"owner_designated_clone url={git_url}",
+        )
+    except Exception as exc:
+        logger.debug("SEL audit log failed for %s: %s", operation, exc)
+
+
+def _is_owner_designated_repo(entry: dict[str, Any]) -> bool:
+    """True when an index entry's clone URL is the owner-configured registry repo.
+
+    Same-repo credential carve-out: the confused-deputy defense (anonymous env +
+    strict sandbox) exists because an *untrusted index* can point at a private
+    sibling repo on the owner's trusted forge. When the entry's effective clone
+    URL is **byte-identical** to the owner-typed ``ExternalRegistryConfig.repo``,
+    the confused-deputy argument does not apply — the owner explicitly designated
+    exactly that URL by adding the registry. Such entries may use owner
+    credentials (``minimal_env`` + context sandbox mode) instead of the
+    anonymous+strict posture.
+
+    Security boundary:
+      - Compares against the **config-stored** repo URL, never against
+        index-supplied fields — the index can ``setdefault`` the repo field,
+        but an explicit override by the index will NOT match the config URL.
+      - Exact string equality only; no normalization, no host-level matching
+        (host-granular trust is exactly the confused-deputy hole this defense
+        exists for).
+      - ``subdirectory`` remains untrusted: ``_contained_join`` containment
+        checks are unaffected by this predicate.
+    """
+    registry_name = entry.get("_registry")
+    if not registry_name:
+        # Not from an external index — bundled entries are already
+        # owner-designated via the absence of ``_registry``.
+        return False
+
+    effective_url = _entry_git_url(entry)
+    if not effective_url:
+        return False
+
+    # Look up the owner-configured registry repo URL from config.
+    config = KiroCrewConfig.load()
+    for reg in config.registries or []:
+        reg_key = reg.name or reg.repo
+        if reg_key == registry_name:
+            # Byte-identical comparison — the security contract.
+            return effective_url == reg.repo
+    return False
 
 
 def _looks_like_git_url(url: str) -> bool:
@@ -554,6 +624,8 @@ async def _fetch_app_manifest(
     subdirectory: str = "",
     app_name: str = "",
     git_url: str = "",
+    *,
+    owner_designated: bool = False,
 ) -> dict[str, Any] | None:
     """Fetch app.json for an app from its source repo (lightweight).
 
@@ -568,21 +640,41 @@ async def _fetch_app_manifest(
     listing path on a vanilla machine. *subdirectory* is an untrusted
     index-controlled value; it is joined via :func:`_contained_join` so an
     absolute/``..``/symlink value can never read outside the clone root.
+
+    *owner_designated*: when True (same-repo credential carve-out), the
+    clone uses ``minimal_env()`` + context sandbox mode instead of the
+    default anonymous+strict posture. Only set when the entry's effective
+    clone URL is byte-identical to the owner-configured registry repo URL.
     """
-    # Try persistent clone first (already installed)
+    if not git_url:
+        git_url = repo
+
+    # Try persistent clone first (already installed).
+    #
+    # The persisted clone is keyed on app NAME only, so a registry replacement
+    # can leave a checkout of a DIFFERENT repo sitting here under the same
+    # name. Its app.json must not stand in for the manifest of the repo we are
+    # about to clone: the caller feeds this manifest to the admission gate, and
+    # the install that follows discards a stale checkout and re-clones from
+    # *git_url* (see _git_clone_or_pull). Trusting the stale copy would admit
+    # repo A's manifest and then run repo B's code. So the local copy is only
+    # used when the clone's origin still is git_url; otherwise fall through to
+    # the throwaway clone of git_url, which always describes what gets cloned.
     if app_name:
         clone_dir = app_source_dir(app_name)
         manifest_dir = _contained_join(clone_dir, subdirectory)
         local_manifest = manifest_dir / "app.json" if manifest_dir is not None else None
-        if local_manifest is not None and local_manifest.is_file():
+        if (
+            local_manifest is not None
+            and local_manifest.is_file()
+            and await _clone_origin_matches(clone_dir, git_url)
+        ):
             try:
                 content = await asyncio.to_thread(local_manifest.read_text, "utf-8")
                 return json.loads(content)
             except (json.JSONDecodeError, OSError):
                 pass
 
-    if not git_url:
-        git_url = repo
     if not _looks_like_git_url(git_url):
         # Not a cloneable URL (e.g. empty or a bare name on a public machine).
         return None
@@ -614,17 +706,25 @@ async def _fetch_app_manifest(
             git_url,
             tmp_root,
         ]
-        # Index-originated automatic clone: force strict sandbox (~/.ssh hidden)
-        # and a credential-free env so a trusted-host repo injected by an
-        # untrusted index can't be cloned with the gateway's ambient identity
-        # (confused-deputy defense — see anonymous_git_env).
-        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode="strict")
+        # Credential posture for the manifest clone. Default: anonymous+strict
+        # (confused-deputy defense — see anonymous_git_env). Same-repo
+        # carve-out: when owner_designated is True the clone URL is the
+        # owner-configured registry repo itself, so the confused-deputy
+        # argument does not apply — use owner credentials + context sandbox.
+        if owner_designated:
+            clone_env = minimal_env()
+            sandbox_mode = _context_clone_sandbox_mode(git_url)
+            _sel_credential_grant("fetch_app_manifest", git_url)
+        else:
+            clone_env = anonymous_git_env()
+            sandbox_mode = "strict"
+        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=sandbox_mode)
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=anonymous_git_env(),
+            env=clone_env,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
@@ -676,8 +776,17 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
         return _merge_manifest(entry, cached)
 
     # Fetch from repo
+    # Same-repo credential carve-out: if the entry's clone URL matches the
+    # owner-configured registry repo, use owner credentials for the manifest
+    # fetch (the confused-deputy defense does not apply to the owner's own URL).
+    is_owner_repo = await asyncio.to_thread(_is_owner_designated_repo, entry)
     manifest = await _fetch_app_manifest(
-        repo, branch, subdirectory, app_name=name, git_url=git_url
+        repo,
+        branch,
+        subdirectory,
+        app_name=name,
+        git_url=git_url,
+        owner_designated=is_owner_repo,
     )
     if manifest:
         await asyncio.to_thread(_write_manifest_cache, name, manifest)
@@ -750,7 +859,9 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     # Screenshots dark — convert repo-relative paths to blob proxy URLs
     screenshots_dark = manifest.get("screenshotsDark", [])
     if screenshots_dark and repo:
-        result["screenshotsDark"] = [f"/api/apps/blob?repo={repo}&path={p}" for p in screenshots_dark]
+        result["screenshotsDark"] = [
+            f"/api/apps/blob?repo={repo}&path={p}" for p in screenshots_dark
+        ]
 
     # Hero images — convert repo-relative paths to blob proxy URLs
     hero = manifest.get("heroImage", "")
@@ -957,9 +1068,7 @@ async def _communicate_with_timeout(
         return await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         try:
-            await platform_compat.kill_process_tree_async(
-                proc.pid, platform_compat.SIGKILL
-            )
+            await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
         except OSError:
             proc.kill()
         await proc.wait()
@@ -1298,9 +1407,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
         # Read the (possibly stale) prior index up front so we know which
         # per-app manifest caches this registry contributed, even if the
         # refetch changes/removes some entries.
-        prior = await asyncio.to_thread(
-            _read_external_registry_cache, name, ignore_ttl=True
-        )
+        prior = await asyncio.to_thread(_read_external_registry_cache, name, ignore_ttl=True)
         # Fetch-then-swap: the cache is overwritten only on a successful fetch.
         entries = await _fetch_and_cache_external_registry(reg)
         if entries is None:
@@ -1315,9 +1422,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
             if isinstance(entry_name, str) and entry_name:
                 manifest_names.add(entry_name)
         for entry_name in manifest_names:
-            await asyncio.to_thread(
-                _expire_cache_file, _manifest_cache_path(entry_name)
-            )
+            await asyncio.to_thread(_expire_cache_file, _manifest_cache_path(entry_name))
         refreshed.append(name)
         results.append({"name": name, "ok": True})
 
@@ -1379,9 +1484,7 @@ async def list_registry() -> list[dict[str, Any]]:
         detect_cmd = entry.get("detectInstalled", "")
         if not detect_cmd:
             continue
-        denied = app_execution_denied(
-            name, action="registry_detect_installed", caller="registry"
-        )
+        denied = app_execution_denied(name, action="registry_detect_installed", caller="registry")
         if denied:
             logger.debug("Skipping registry detectInstalled for %s: %s", name, denied)
             continue
@@ -1532,6 +1635,138 @@ def app_source_dir(name: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Stale-checkout sweep — removes .stale-* / .partial-* siblings under
+# app-sources that are older than _STALE_CHECKOUT_RETENTION_DAYS.
+# ---------------------------------------------------------------------------
+
+_STALE_CHECKOUT_PATTERN = re.compile(r"^.+\.(stale|partial)-[0-9a-f]{8}$")
+
+
+def _is_stale_candidate(p: Path) -> bool:
+    """Return True if *p* matches the .stale-*/.partial-* naming convention."""
+    return bool(_STALE_CHECKOUT_PATTERN.match(p.name))
+
+
+def _sweep_stale_checkouts_sync(sources_dir: Path, now_ts: float) -> list[str]:
+    """Synchronous sweep of aged stale/partial dirs (runs in a thread).
+
+    Returns a list of removed directory names (for logging).
+    Only targets immediate children of *sources_dir* whose names match the
+    fixed naming pattern AND whose mtime is older than the retention window.
+    Symlinks pointing outside *sources_dir* are skipped (containment check).
+    """
+    if not sources_dir.is_dir():
+        return []
+    cutoff = now_ts - (_STALE_CHECKOUT_RETENTION_DAYS * 86400)
+    removed: list[str] = []
+    try:
+        children = list(sources_dir.iterdir())
+    except OSError:
+        return []
+    for child in children:
+        if not _is_stale_candidate(child):
+            continue
+        # Containment check: resolve symlinks and verify the target is still
+        # inside sources_dir. This prevents an attacker-placed symlink from
+        # causing rmtree to delete files outside app-sources.
+        try:
+            resolved = child.resolve(strict=True)
+        except OSError:
+            # Cannot resolve — skip rather than delete blindly.
+            continue
+        try:
+            resolved.relative_to(sources_dir.resolve())
+        except ValueError:
+            # Points outside app-sources — do not follow.
+            continue
+        # Age check via mtime.
+        try:
+            mtime = child.stat(follow_symlinks=False).st_mtime
+        except OSError:
+            continue
+        if mtime >= cutoff:
+            continue
+        # Safe to remove — best-effort.
+        try:
+            shutil.rmtree(child, ignore_errors=True)
+            if not child.exists():
+                removed.append(child.name)
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+    return removed
+
+
+async def _sweep_stale_checkouts() -> None:
+    """Best-effort async sweep of aged stale/partial dirs under app-sources.
+
+    Called at the start of each install_from_registry invocation so old
+    checkouts are eventually cleaned up without blocking or failing the
+    install.
+    """
+    sources_dir = _app_sources_dir()
+    now_ts = time.time()
+    try:
+        removed = await asyncio.to_thread(_sweep_stale_checkouts_sync, sources_dir, now_ts)
+        if removed:
+            logger.info(
+                "Swept %d aged stale checkout(s): %s",
+                len(removed),
+                ", ".join(removed),
+            )
+    except Exception:  # noqa: BLE001 — never fail the install
+        logger.debug("Stale checkout sweep failed (best-effort)", exc_info=True)
+
+
+async def _clone_origin_url(dest: Path) -> str | None:
+    """Read *dest*'s ``origin`` remote URL. Returns None when unreadable.
+
+    Local metadata read: no network, and ``anonymous_git_env`` so a credential
+    helper is never invoked just to inspect a checkout. Routed through the
+    sandbox chokepoint + cgroup scope like every other git spawn in this
+    module — the argv is fixed, but *dest* is derived from an index-supplied
+    app name, so the cwd is not ours to trust.
+    """
+    if not (dest / ".git").is_dir():
+        return None
+    origin_cmd, _cleanup = wrap_argv(
+        ["git", "remote", "get-url", "origin"],
+        mode="strict",  # credential-free read; ~/.ssh stays hidden
+    )
+    origin_cmd = cgroup_scope_argv(origin_cmd)
+    try:
+        proc = await create_subprocess_limited(
+            *origin_cmd,
+            cwd=str(dest),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=anonymous_git_env(),
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+        )
+    except OSError:
+        return None
+    try:
+        origin_out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        await _kill_process_group(proc)
+        return None
+    if proc.returncode != 0:
+        return None
+    return origin_out.decode(errors="replace").strip()
+
+
+async def _clone_origin_matches(dest: Path, git_url: str) -> bool:
+    """Whether *dest* is a checkout of *git_url* (byte-identical origin).
+
+    Fails closed: an unreadable origin, a missing remote, or an empty
+    *git_url* to compare against all return False.
+    """
+    if not git_url:
+        return False
+    return await _clone_origin_url(dest) == git_url
+
+
+# ---------------------------------------------------------------------------
 # Git clone + build support for App Store installs
 # ---------------------------------------------------------------------------
 
@@ -1549,18 +1784,14 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
     # The build timeout path never blocks the event loop on taskkill.exe.
     # POSIX branch stays inline (os.killpg is non-blocking).
     try:
-        await platform_compat.kill_process_tree_async(
-            proc.pid, platform_compat.SIGTERM
-        )
+        await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGTERM)
     except OSError:
         pass
     try:
         await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_PERIOD)
     except asyncio.TimeoutError:
         try:
-            await platform_compat.kill_process_tree_async(
-                proc.pid, platform_compat.SIGKILL
-            )
+            await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
         except OSError:
             proc.kill()
         await proc.wait()
@@ -1573,10 +1804,17 @@ async def _git_clone_or_pull(
     log_lines: list[str],
     *,
     index_originated: bool = False,
+    pending_cleanup: list[Path] | None = None,
 ) -> dict[str, Any] | None:
     """Clone *git_url* into *dest*, or fast-forward it if already present.
 
     Returns None on success, or a ``{"ok": False, ...}`` error dict on failure.
+
+    If *pending_cleanup* is provided (a mutable list), any moved-aside directory
+    that should be deleted after the caller's full install transaction succeeds
+    is appended to it. The caller is responsible for cleaning up these paths
+    on the happy path; on failure, the old checkout has already been restored
+    by this function's finally block.
 
     *index_originated* selects the credential posture (confused-deputy defense —
     see :func:`anonymous_git_env`). When ``False`` (the default: a bundled /
@@ -1602,8 +1840,81 @@ async def _git_clone_or_pull(
             "error": "untrusted_clone_host",
             "message": "Refusing to clone from an untrusted host (not a public forge or configured registry).",
         }
+    # Track a moved-aside directory if we need to preserve the old checkout
+    # during origin-mismatch re-clone (delete-after-success pattern).
+    moved_aside: Path | None = None
+
     if dest.is_dir() and (dest / ".git").is_dir():
-        # Already cloned — fetch and fast-forward the target branch.
+        # The credential posture was decided from *git_url* — but a persisted
+        # clone pulls from ITS OWN `origin`, which can be a different URL
+        # (e.g. a registry replaced with the same app name leaves the old
+        # clone behind). Never run a credentialed pull against an unverified
+        # remote: require the existing origin to be byte-identical to the
+        # vetted git_url, otherwise move the stale clone aside and re-clone
+        # from the URL the posture decision was actually made for.
+        #
+        # The same origin check gates the manifest that admission ran on (see
+        # _fetch_app_manifest), so the re-clone below cannot swap in code that
+        # was admitted under a different repo's manifest.
+        #
+        # The mismatched clone is NEVER built from or pulled from — fail-closed.
+        existing_origin = await _clone_origin_url(dest)
+        if existing_origin is None:
+            # Unreadable origin (corrupt .git/config, missing remote, etc.).
+            # Fail-closed WITHOUT destroying the checkout — the user may
+            # have local edits and the checkout might be the correct repo
+            # with a broken config. Never enter the destructive
+            # move-aside/re-clone path on an ambiguous signal.
+            log_lines.append(
+                f"Cannot read origin remote of existing checkout at {dest}; "
+                "refusing to replace it (fix the checkout manually and retry)"
+            )
+            return {
+                "ok": False,
+                "name": dest.name,
+                "error": "unreadable_clone_origin",
+                "message": (
+                    "The existing checkout's origin remote is unreadable. "
+                    "Remove or fix it manually and retry the install."
+                ),
+            }
+        if existing_origin != git_url:
+            log_lines.append(
+                f"Existing clone origin {existing_origin!r} does not match "
+                f"{git_url!r}; moving aside stale clone for re-clone"
+            )
+            # Move aside with an atomic same-filesystem rename into a sibling
+            # temp path under the app-sources root. If rename fails (e.g. locked
+            # files on Windows), return fail-closed without deleting dest.
+            stale_name = f"{dest.name}.stale-{uuid.uuid4().hex[:8]}"
+            moved_aside = dest.with_name(stale_name)
+            try:
+                await asyncio.to_thread(dest.rename, moved_aside)
+            except OSError as exc:
+                log_lines.append(
+                    f"Could not move aside the stale clone at {dest}: {exc}; "
+                    "refusing to build from it"
+                )
+                return {
+                    "ok": False,
+                    "name": dest.name,
+                    "error": "stale_clone_not_removed",
+                    "message": (
+                        "A checkout of a different repository is present and could not be "
+                        f"moved aside: {exc}. Remove it manually and retry the install."
+                    ),
+                }
+            # Refresh mtime so the retention clock starts now, not at the
+            # checkout's last-modified time (which may already exceed the
+            # sweep threshold).  Best-effort — failure here is harmless
+            # (the directory just survives slightly shorter than intended).
+            try:
+                await asyncio.to_thread(os.utime, moved_aside)
+            except OSError:
+                pass
+
+    if dest.is_dir() and (dest / ".git").is_dir():
+        # Already cloned from the verified origin — fetch and fast-forward.
         log_lines.append(f"Updating {git_url} (branch: {branch})...")
         # Route through wrap_argv (OS sandbox) THEN cgroup_scope_argv, matching
         # the fresh-clone path below — the cgroup DoS ceiling is the outermost
@@ -1651,25 +1962,86 @@ async def _git_clone_or_pull(
     ]
     sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=sandbox_mode)
     sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-    proc = await create_subprocess_limited(
-        *sandboxed_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        start_new_session=platform_compat.IS_POSIX,
-        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-        env=clone_env,
-    )
+
+    # If we moved aside a stale clone for re-clone, wrap the entire spawn+wait
+    # in try/finally so that ANY failure path (spawn exception, cancellation,
+    # timeout, nonzero exit) restores the moved-aside checkout. The old checkout
+    # must never disappear permanently due to a transient clone failure.
+    clone_succeeded = False
     try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT)
-        log_lines.append(stdout.decode(errors="replace").strip())
-    except asyncio.TimeoutError:
-        await _kill_process_group(proc)
-        shutil.rmtree(dest, ignore_errors=True)
-        return {"ok": False, "name": dest.name, "error": "git clone timed out"}
-    if proc.returncode != 0:
-        shutil.rmtree(dest, ignore_errors=True)
-        return {"ok": False, "name": dest.name, "error": "git clone failed"}
-    return None
+        proc = await create_subprocess_limited(
+            *sandboxed_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            env=clone_env,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT)
+            log_lines.append(stdout.decode(errors="replace").strip())
+        except asyncio.TimeoutError:
+            await _kill_process_group(proc)
+            await asyncio.to_thread(shutil.rmtree, dest, True)
+            return {"ok": False, "name": dest.name, "error": "git clone timed out"}
+        except asyncio.CancelledError:
+            await _kill_process_group(proc)
+            await asyncio.to_thread(shutil.rmtree, dest, True)
+            raise
+        if proc.returncode != 0:
+            await asyncio.to_thread(shutil.rmtree, dest, True)
+            return {"ok": False, "name": dest.name, "error": "git clone failed"}
+        clone_succeeded = True
+        return None
+    finally:
+        if moved_aside is not None:
+            if clone_succeeded:
+                # Clone verified — but do NOT delete moved_aside yet.
+                # The caller's build/install step has not run; if it fails
+                # the user loses their old (possibly locally modified) code.
+                # Instead, surface the path for the caller to clean up
+                # after the full install transaction succeeds.
+                if pending_cleanup is not None:
+                    pending_cleanup.append(moved_aside)
+            else:
+                # Clone did NOT succeed — remove any partial dest and restore
+                # the old checkout so the user's code is not stranded.
+                await asyncio.to_thread(shutil.rmtree, dest, True)
+                # If dest still exists (rmtree silently failed, e.g. locked
+                # files on Windows), move IT aside so the restore rename
+                # cannot collide. Keep the path inside app-sources.
+                if dest.exists():
+                    partial_name = f"{dest.name}.partial-{uuid.uuid4().hex[:8]}"
+                    partial_aside = dest.with_name(partial_name)
+                    try:
+                        await asyncio.to_thread(dest.rename, partial_aside)
+                        log_lines.append(
+                            f"Undeletable partial clone moved to {partial_aside}; "
+                            "remove it manually when the lock is released"
+                        )
+                    except OSError as move_exc:
+                        log_lines.append(
+                            f"Cannot remove or move partial clone at {dest}: "
+                            f"{move_exc}; old checkout remains at {moved_aside}"
+                        )
+                        # Cannot restore — bail out of the restore attempt.
+                        moved_aside = None  # skip the rename below
+                    else:
+                        # Refresh mtime so the retention clock starts now
+                        # (best-effort — harmless if it fails).
+                        try:
+                            await asyncio.to_thread(os.utime, partial_aside)
+                        except OSError:
+                            pass
+                if moved_aside is not None:
+                    try:
+                        await asyncio.to_thread(moved_aside.rename, dest)
+                    except OSError as exc:
+                        log_lines.append(
+                            f"Cannot restore moved-aside checkout at "
+                            f"{moved_aside}: {exc}; recover your files from "
+                            f"{moved_aside}"
+                        )
 
 
 async def _clone_build_app(
@@ -1719,8 +2091,14 @@ async def _clone_build_app_locked(
         }
 
     pkg_dir = app_source_dir(app_name)
+    pending_cleanup: list[Path] = []
     clone_err = await _git_clone_or_pull(
-        git_url, branch, pkg_dir, log_lines, index_originated=index_originated
+        git_url,
+        branch,
+        pkg_dir,
+        log_lines,
+        index_originated=index_originated,
+        pending_cleanup=pending_cleanup,
     )
     if clone_err is not None:
         return clone_err
@@ -1728,6 +2106,32 @@ async def _clone_build_app_locked(
     result = await _run_app_build(pkg_dir, app_name, log_lines)
     if result["ok"]:
         result["pkg_dir"] = pkg_dir
+        # Do NOT delete moved-aside checkouts — even after a successful
+        # install transaction the user may want to recover local edits from
+        # the old checkout.  Surface the paths so the caller can log them.
+        # The dirs are harmless siblings swept by _sweep_stale_checkouts()
+        # after _STALE_CHECKOUT_RETENTION_DAYS (best-effort, runs at the
+        # start of the next install_from_registry call).
+        if pending_cleanup:
+            result["_pending_stale_cleanup"] = list(pending_cleanup)
+    else:
+        # Build failed — restore the old checkout so the user's local edits
+        # survive. Remove the (successfully cloned but unbuildable) new dest
+        # and rename the moved-aside dir back.
+        for stale_path in pending_cleanup:
+            if stale_path.exists():
+                await asyncio.to_thread(shutil.rmtree, pkg_dir, True)
+                try:
+                    await asyncio.to_thread(stale_path.rename, pkg_dir)
+                    log_lines.append(
+                        "Build failed; previous checkout restored from " f"{stale_path.name}"
+                    )
+                except OSError as exc:
+                    log_lines.append(
+                        f"Build failed; could not restore previous checkout "
+                        f"from {stale_path}: {exc}. Recover your files from "
+                        f"{stale_path}"
+                    )
     return result
 
 
@@ -1883,22 +2287,40 @@ async def install_from_registry(
     # index-originated install clones credential-free + strict-sandboxed too.
     # Bundled (curated, KiroCrew-shipped) entries have no ``_registry`` marker
     # and remain owner-designated → full credentials.
+    #
+    # Same-repo credential carve-out: when the entry's effective clone URL is
+    # byte-identical to the owner-configured registry repo URL, the
+    # confused-deputy argument does not apply — the owner explicitly designated
+    # exactly that URL by adding the registry. The carve-out flips BOTH env
+    # AND sandbox mode together (the strict sandbox hiding ~/.ssh is the
+    # load-bearing enforcement on credential-helper setups, not the env alone).
+    # Sibling repos on the same host remain anonymous+strict.
     index_originated = bool(entry.get("_registry"))
+    if index_originated and await asyncio.to_thread(_is_owner_designated_repo, entry):
+        index_originated = False
+        _sel_credential_grant("install_from_registry", _entry_git_url(entry) or "")
 
     # Fetch the app's manifest for platform info and install script. This is a
     # read-only metadata fetch (git archive of app.json), safe to do before the
     # admission gate so a correctly-signed manifest can be passed to it.
+    # Same-repo carve-out: if the entry is from an external index but its clone
+    # URL matches the owner-configured registry repo (index_originated was
+    # flipped to False above), use owner credentials for the manifest fetch too.
+    manifest_owner_designated = bool(entry.get("_registry")) and not index_originated
     manifest = await _fetch_app_manifest(
-        repo, branch, subdirectory, app_name=name, git_url=git_url
+        repo,
+        branch,
+        subdirectory,
+        app_name=name,
+        git_url=git_url,
+        owner_designated=manifest_owner_designated,
     )
 
     # Admission: gate AFTER the manifest fetch (so a signed manifest is verified)
     # but BEFORE the repo is cloned and setup.onInstall runs, so a banned /
     # non-allowlisted / unsigned app is never cloned nor its install script run.
     admission_manifest = AppManifest.from_dict(manifest) if manifest else None
-    denied = app_admission_denied(
-        name, manifest=admission_manifest, action="install_from_registry"
-    )
+    denied = app_admission_denied(name, manifest=admission_manifest, action="install_from_registry")
     if denied:
         sel().log_api_access(
             caller="app_install_from_registry",
@@ -1951,9 +2373,7 @@ async def install_from_registry(
 
     # detectInstalled, clone/build, dependency setup, and onInstall are all
     # executable third-party surfaces and share the same explicit admission.
-    execution_denied = app_execution_denied(
-        name, action="registry_install", caller="registry"
-    )
+    execution_denied = app_execution_denied(name, action="registry_install", caller="registry")
     if execution_denied:
         return {
             "ok": False,
@@ -1989,6 +2409,10 @@ async def install_from_registry(
             pass
 
     try:
+        # Best-effort sweep of aged .stale-* / .partial-* dirs before the
+        # install — prevents unbounded accumulation without blocking.
+        await _sweep_stale_checkouts()
+
         # Step 1: Clone the app repo and build it (npm/pip auto-detected).
         # `git clone` handles fetch + branch checkout; a subsequent install
         # run fast-forwards the existing clone instead of re-cloning.
@@ -2151,6 +2575,11 @@ async def install_from_registry(
 
             log_lines.append("Pre-registered from cloned manifest (self-managed)")
             log_lines.append("App will update its own registration on next launch")
+            # Retain moved-aside checkouts so the user can recover local
+            # edits; they will be swept after _STALE_CHECKOUT_RETENTION_DAYS.
+            for _stale in build_result.get("_pending_stale_cleanup") or []:
+                log_lines.append(f"Previous checkout retained at: {_stale}")
+                logger.info("Retained stale checkout: %s", _stale)
             return {
                 "ok": True,
                 "name": name,
@@ -2176,6 +2605,11 @@ async def install_from_registry(
         # Mark source as registry-installed
         if result.ok:
             set_app_source(result.name, f"{SOURCE_REGISTRY_PREFIX}{name}")
+            # Retain moved-aside checkouts so the user can recover local
+            # edits; they will be swept after _STALE_CHECKOUT_RETENTION_DAYS.
+            for _stale in build_result.get("_pending_stale_cleanup") or []:
+                log_lines.append(f"Previous checkout retained at: {_stale}")
+                logger.info("Retained stale checkout: %s", _stale)
 
         return {
             "ok": result.ok,

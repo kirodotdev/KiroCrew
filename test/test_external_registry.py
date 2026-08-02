@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -36,9 +39,7 @@ from kiro_crew.apps.registry import (
 @pytest.fixture(autouse=True)
 def _explicit_registry_execution_admission(monkeypatch):
     """Registry tests exercise admitted installs unless they say otherwise."""
-    monkeypatch.setattr(
-        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
-    )
+    monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
 
 
 @pytest.fixture()
@@ -717,8 +718,12 @@ class TestRegistryInstallAdmission:
         from kiro_crew.apps.manifest import AppManifest
 
         data = {
-            "name": name, "version": "1.0.0", "displayName": name,
-            "description": "d", "author": "tester", "signer": signer,
+            "name": name,
+            "version": "1.0.0",
+            "displayName": name,
+            "description": "d",
+            "author": "tester",
+            "signer": signer,
         }
         m = AppManifest.from_dict(data)
         data["signature"] = hmac.new(
@@ -731,22 +736,34 @@ class TestRegistryInstallAdmission:
         from kiro_crew.apps.registry import install_from_registry
 
         secret = "s3cr3t"
-        self._write_policy(reg_home, {
-            "mode": "enforce", "require_signature": True,
-            "approved": ["signed-reg"], "trust_keys": {"acme": secret},
-        })
+        self._write_policy(
+            reg_home,
+            {
+                "mode": "enforce",
+                "require_signature": True,
+                "approved": ["signed-reg"],
+                "trust_keys": {"acme": secret},
+            },
+        )
         manifest = self._signed_manifest("signed-reg", secret)
-        with patch(
-            "kiro_crew.apps.registry.get_registry_app",
-            return_value={"name": "signed-reg", "repo": "https://example.com/SignedRepo.git",
-                          "branch": "mainline"},
-        ), patch(
-            "kiro_crew.apps.registry._fetch_app_manifest",
-            new=AsyncMock(return_value=manifest),
-        ), patch(
-            "kiro_crew.apps.registry._clone_build_app",
-            new=AsyncMock(return_value={"ok": False, "error": "stop-after-admission"}),
-        ) as mock_build:
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "name": "signed-reg",
+                    "repo": "https://example.com/SignedRepo.git",
+                    "branch": "mainline",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value=manifest),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=AsyncMock(return_value={"ok": False, "error": "stop-after-admission"}),
+            ) as mock_build,
+        ):
             result = await install_from_registry("signed-reg")
         # Admission passed (signed manifest verified) — flow proceeded to the
         # clone/build step, which we stub to stop right after admission.
@@ -757,21 +774,33 @@ class TestRegistryInstallAdmission:
     async def test_unsigned_app_denied_under_require_signature(self, reg_home):
         from kiro_crew.apps.registry import install_from_registry
 
-        self._write_policy(reg_home, {
-            "mode": "enforce", "require_signature": True,
-            "approved": ["unsigned-reg"], "trust_keys": {"acme": "s3cr3t"},
-        })
-        with patch(
-            "kiro_crew.apps.registry.get_registry_app",
-            return_value={"name": "unsigned-reg", "repo": "https://example.com/UnsignedRepo.git",
-                          "branch": "mainline"},
-        ), patch(
-            "kiro_crew.apps.registry._fetch_app_manifest",
-            new=AsyncMock(return_value={"name": "unsigned-reg", "version": "1.0.0"}),
-        ), patch(
-            "kiro_crew.apps.registry._clone_build_app",
-            new=AsyncMock(return_value={"ok": True, "pkg_dir": reg_home}),
-        ) as mock_build:
+        self._write_policy(
+            reg_home,
+            {
+                "mode": "enforce",
+                "require_signature": True,
+                "approved": ["unsigned-reg"],
+                "trust_keys": {"acme": "s3cr3t"},
+            },
+        )
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "name": "unsigned-reg",
+                    "repo": "https://example.com/UnsignedRepo.git",
+                    "branch": "mainline",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "unsigned-reg", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=AsyncMock(return_value={"ok": True, "pkg_dir": reg_home}),
+            ) as mock_build,
+        ):
             result = await install_from_registry("unsigned-reg")
         # Denied at the gate — the app is never cloned/built.
         assert not result["ok"]
@@ -1068,6 +1097,7 @@ class TestRefreshRegistries:
         # A hostile external-registry entry name must never resolve outside the
         # manifest cache dir (GPT 5.6 HIGH: `../../config` -> config.json unlink).
         import kiro_crew.apps.registry as _reg  # module attr = the patched dir
+
         cache_root = _reg._manifest_cache_dir().resolve()
         for hostile in ("../../config", "../../../etc/passwd", "a/b/c", "..%2F..%2Fconfig"):
             resolved = _manifest_cache_path(hostile).resolve()
@@ -1197,9 +1227,7 @@ class TestFetchGitBlobSsrfGate:
         from kiro_crew.apps import routes
 
         # A malicious external index resolved this repo to a loopback URL.
-        monkeypatch.setattr(
-            routes, "_registry_git_url", lambda repo: "https://127.0.0.1:9/x"
-        )
+        monkeypatch.setattr(routes, "_registry_git_url", lambda repo: "https://127.0.0.1:9/x")
         # Guard: if the gate failed, this would raise instead of returning False.
 
         def _boom(*a, **k):
@@ -1231,25 +1259,31 @@ class TestInstallPathCredentialPosture:
 
         captured = {}
 
-        async def _fake_clone_build(git_url, name, log_lines, branch="main", *, index_originated=False):
+        async def _fake_clone_build(
+            git_url, name, log_lines, branch="main", *, index_originated=False
+        ):
             captured["index_originated"] = index_originated
             return {"ok": False, "error": "stop-after-clone-dispatch"}
 
-        with patch(
-            "kiro_crew.apps.registry.get_registry_app",
-            # Entry carries the external-index provenance marker.
-            return_value={
-                "name": "acme-app",
-                "repo": "https://github.com/acme/private-sibling.git",
-                "branch": "main",
-                "_registry": "acme",
-            },
-        ), patch(
-            "kiro_crew.apps.registry._fetch_app_manifest",
-            new=AsyncMock(return_value={"name": "acme-app", "version": "1.0.0"}),
-        ), patch(
-            "kiro_crew.apps.registry._clone_build_app",
-            new=_fake_clone_build,
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                # Entry carries the external-index provenance marker.
+                return_value={
+                    "name": "acme-app",
+                    "repo": "https://github.com/acme/private-sibling.git",
+                    "branch": "main",
+                    "_registry": "acme",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "acme-app", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=_fake_clone_build,
+            ),
         ):
             await install_from_registry("acme-app")
 
@@ -1261,24 +1295,30 @@ class TestInstallPathCredentialPosture:
 
         captured = {}
 
-        async def _fake_clone_build(git_url, name, log_lines, branch="main", *, index_originated=False):
+        async def _fake_clone_build(
+            git_url, name, log_lines, branch="main", *, index_originated=False
+        ):
             captured["index_originated"] = index_originated
             return {"ok": False, "error": "stop-after-clone-dispatch"}
 
-        with patch(
-            "kiro_crew.apps.registry.get_registry_app",
-            # Bundled/curated entry — no ``_registry`` marker.
-            return_value={
-                "name": "bundled-app",
-                "repo": "https://github.com/kirodotdev/bundled-app.git",
-                "branch": "main",
-            },
-        ), patch(
-            "kiro_crew.apps.registry._fetch_app_manifest",
-            new=AsyncMock(return_value={"name": "bundled-app", "version": "1.0.0"}),
-        ), patch(
-            "kiro_crew.apps.registry._clone_build_app",
-            new=_fake_clone_build,
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                # Bundled/curated entry — no ``_registry`` marker.
+                return_value={
+                    "name": "bundled-app",
+                    "repo": "https://github.com/kirodotdev/bundled-app.git",
+                    "branch": "main",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "bundled-app", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=_fake_clone_build,
+            ),
         ):
             await install_from_registry("bundled-app")
 
@@ -1307,12 +1347,10 @@ class TestInstallPathCredentialPosture:
             return _FakeProc()
 
         dest = tmp_path / "clone-dest"  # does not exist → fresh-clone path
-        with patch(
-            "kiro_crew.apps.registry.is_clone_host_trusted", return_value=True
-        ), patch(
-            "kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv
-        ), patch.object(
-            _asyncio, "create_subprocess_exec", new=_fake_exec
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch.object(_asyncio, "create_subprocess_exec", new=_fake_exec),
         ):
             err = await reg._git_clone_or_pull(
                 "https://github.com/acme/private-sibling.git",
@@ -1358,12 +1396,10 @@ class TestInstallPathCredentialPosture:
 
         url = "https://github.com/kirodotdev/bundled-app.git"
         dest = tmp_path / "clone-dest"
-        with patch(
-            "kiro_crew.apps.registry.is_clone_host_trusted", return_value=True
-        ), patch(
-            "kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv
-        ), patch.object(
-            _asyncio, "create_subprocess_exec", new=_fake_exec
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch.object(_asyncio, "create_subprocess_exec", new=_fake_exec),
         ):
             err = await reg._git_clone_or_pull(url, "main", dest, [], index_originated=False)
 
@@ -1374,6 +1410,389 @@ class TestInstallPathCredentialPosture:
         assert "GIT_CONFIG_GLOBAL" not in env
         # Sandbox mode is the host-derived context decision, not forced strict.
         assert captured["mode"] == reg._context_clone_sandbox_mode(url)
+
+
+# ---------------------------------------------------------------------------
+# Same-repo credential carve-out (companion to confused-deputy defense).
+# When an index entry's effective clone URL is byte-identical to the owner-
+# configured registry repo URL, the clone uses owner credentials instead of
+# the anonymous+strict posture. Sibling repos on the same host stay anonymous.
+# ---------------------------------------------------------------------------
+
+
+class TestSameRepoCredentialCarveOut:
+    """The same-repo carve-out: owner-configured registry URL gets credentials;
+    sibling repos on the same host remain anonymous+strict; bundled unchanged."""
+
+    @pytest.mark.asyncio
+    async def test_same_repo_install_uses_owner_credentials(self):
+        """Entry whose clone URL == registry config repo → credentialed install."""
+        from kiro_crew.apps.registry import install_from_registry
+
+        captured = {}
+
+        async def _fake_clone_build(
+            git_url, name, log_lines, branch="main", *, index_originated=False
+        ):
+            captured["index_originated"] = index_originated
+            return {"ok": False, "error": "stop-after-clone-dispatch"}
+
+        mock_config = MagicMock()
+        mock_config.registries = [
+            SimpleNamespace(
+                name="internal", repo="ssh://git.example.com/team/MyRegistry", branch="main"
+            )
+        ]
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "name": "my-app",
+                    "repo": "ssh://git.example.com/team/MyRegistry",
+                    "gitUrl": "ssh://git.example.com/team/MyRegistry",
+                    "branch": "main",
+                    "subdirectory": "apps/my-app",
+                    "_registry": "internal",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "my-app", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=_fake_clone_build,
+            ),
+            patch(
+                "kiro_crew.config.loader.KiroCrewConfig.load",
+                return_value=mock_config,
+            ),
+        ):
+            await install_from_registry("my-app")
+
+        # Same-repo carve-out: index_originated flipped to False → credentialed.
+        assert captured.get("index_originated") is False
+
+    @pytest.mark.asyncio
+    async def test_sibling_repo_same_host_stays_anonymous(self):
+        """Entry pointing at a DIFFERENT repo on the same host → still anonymous."""
+        from kiro_crew.apps.registry import install_from_registry
+
+        captured = {}
+
+        async def _fake_clone_build(
+            git_url, name, log_lines, branch="main", *, index_originated=False
+        ):
+            captured["index_originated"] = index_originated
+            return {"ok": False, "error": "stop-after-clone-dispatch"}
+
+        mock_config = MagicMock()
+        mock_config.registries = [
+            SimpleNamespace(
+                name="internal", repo="ssh://git.example.com/team/MyRegistry", branch="main"
+            )
+        ]
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                # repo points at a DIFFERENT package on the same host — the exact
+                # confused-deputy scenario the defense exists for.
+                return_value={
+                    "name": "sibling-app",
+                    "repo": "ssh://git.example.com/team/OtherRepo",
+                    "gitUrl": "ssh://git.example.com/team/OtherRepo",
+                    "branch": "main",
+                    "_registry": "internal",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "sibling-app", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=_fake_clone_build,
+            ),
+            patch(
+                "kiro_crew.config.loader.KiroCrewConfig.load",
+                return_value=mock_config,
+            ),
+        ):
+            await install_from_registry("sibling-app")
+
+        # Sibling repo on the same host: confused-deputy defense applies.
+        assert captured.get("index_originated") is True
+
+    @pytest.mark.asyncio
+    async def test_bundled_entry_unchanged_by_carve_out(self):
+        """Bundled entry (no _registry marker) → still owner-designated."""
+        from kiro_crew.apps.registry import install_from_registry
+
+        captured = {}
+
+        async def _fake_clone_build(
+            git_url, name, log_lines, branch="main", *, index_originated=False
+        ):
+            captured["index_originated"] = index_originated
+            return {"ok": False, "error": "stop-after-clone-dispatch"}
+
+        mock_config = MagicMock()
+        mock_config.registries = []
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "name": "bundled-app",
+                    "repo": "https://github.com/kirodotdev/bundled-app.git",
+                    "branch": "main",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "bundled-app", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=_fake_clone_build,
+            ),
+            patch(
+                "kiro_crew.config.loader.KiroCrewConfig.load",
+                return_value=mock_config,
+            ),
+        ):
+            await install_from_registry("bundled-app")
+
+        # Bundled entries have no _registry → index_originated stays False.
+        assert captured.get("index_originated") is False
+
+    @pytest.mark.asyncio
+    async def test_same_repo_manifest_fetch_uses_owner_credentials(self):
+        """_fetch_app_manifest with owner_designated=True uses minimal_env."""
+        import asyncio as _asyncio
+
+        from kiro_crew.apps import registry as reg
+
+        captured = {}
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            captured["mode"] = mode
+            return argv, None
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"", b"")
+
+        async def _fake_exec(*args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return _FakeProc()
+
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch.object(_asyncio, "create_subprocess_exec", new=_fake_exec),
+            patch(
+                "kiro_crew.apps.registry.app_source_dir",
+                return_value=MagicMock(is_file=MagicMock(return_value=False)),
+            ),
+        ):
+            await reg._fetch_app_manifest(
+                "ssh://git.example.com/team/MyRegistry",
+                "main",
+                "",
+                app_name="",
+                git_url="ssh://git.example.com/team/MyRegistry",
+                owner_designated=True,
+            )
+
+        # Owner-designated: minimal_env (no credential suppression) + context sandbox.
+        env = captured["env"]
+        assert "GIT_CONFIG_NOSYSTEM" not in env
+        assert "GIT_CONFIG_GLOBAL" not in env
+        # SSH host is trusted → context mode is standard (not forced strict).
+        assert captured["mode"] == reg._context_clone_sandbox_mode(
+            "ssh://git.example.com/team/MyRegistry"
+        )
+
+    @pytest.mark.asyncio
+    async def test_default_manifest_fetch_stays_anonymous(self):
+        """_fetch_app_manifest without owner_designated uses anonymous+strict."""
+        import asyncio as _asyncio
+
+        from kiro_crew.apps import registry as reg
+
+        captured = {}
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            captured["mode"] = mode
+            return argv, None
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"", b"")
+
+        async def _fake_exec(*args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return _FakeProc()
+
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch.object(_asyncio, "create_subprocess_exec", new=_fake_exec),
+            patch(
+                "kiro_crew.apps.registry.app_source_dir",
+                return_value=MagicMock(is_file=MagicMock(return_value=False)),
+            ),
+        ):
+            await reg._fetch_app_manifest(
+                "ssh://git.example.com/team/SiblingRepo",
+                "main",
+                "",
+                app_name="",
+                git_url="ssh://git.example.com/team/SiblingRepo",
+                owner_designated=False,
+            )
+
+        # Default (not owner-designated): anonymous env + strict sandbox.
+        env = captured["env"]
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert "GIT_CONFIG_GLOBAL" in env
+        assert "BatchMode=yes" in env["GIT_SSH_COMMAND"]
+        assert "SSH_AUTH_SOCK" not in env
+        assert captured["mode"] == "strict"
+
+    @pytest.mark.asyncio
+    async def test_same_repo_clone_or_pull_uses_owner_credentials(self, tmp_path):
+        """_git_clone_or_pull with index_originated=False (same-repo carve-out)
+        uses minimal_env + context sandbox — matching the existing
+        test_git_clone_or_pull_owner_designated_uses_minimal_env test."""
+        import asyncio as _asyncio
+
+        from kiro_crew.apps import registry as reg
+
+        captured = {}
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            captured["mode"] = mode
+            return argv, None
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"", None)
+
+        async def _fake_exec(*args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return _FakeProc()
+
+        url = "ssh://git.example.com/team/MyRegistry"
+        dest = tmp_path / "clone-dest"
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch.object(_asyncio, "create_subprocess_exec", new=_fake_exec),
+        ):
+            err = await reg._git_clone_or_pull(url, "main", dest, [], index_originated=False)
+
+        assert err is None
+        env = captured["env"]
+        # Owner-designated: minimal_env without credential suppression.
+        assert "GIT_CONFIG_NOSYSTEM" not in env
+        assert "GIT_CONFIG_GLOBAL" not in env
+        # Context sandbox mode for trusted SSH host → standard.
+        assert captured["mode"] == reg._context_clone_sandbox_mode(url)
+
+    def test_credential_grant_is_sel_audited(self):
+        """The owner-designated credential escalation leaves an SEL record.
+
+        Escalating from anonymous+strict to owner credentials is a
+        permission decision; it must be auditable like the index fetch.
+        """
+        from kiro_crew.apps import registry as reg
+
+        sel = MagicMock()
+        with patch.object(reg, "_sel_fn", return_value=sel):
+            reg._sel_credential_grant("fetch_app_manifest", "ssh://git.example.com/team/MyRegistry")
+
+        sel.log_api_access.assert_called_once()
+        kwargs = sel.log_api_access.call_args.kwargs
+        assert kwargs["caller"] == "registry"
+        assert kwargs["operation"] == "fetch_app_manifest"
+        assert kwargs["outcome"] == "granted"
+        assert "ssh://git.example.com/team/MyRegistry" in kwargs["resources"]
+
+    def test_credential_grant_audit_is_best_effort(self):
+        """A failing (or absent) SEL backend never breaks the clone path."""
+        from kiro_crew.apps import registry as reg
+
+        broken = MagicMock()
+        broken.log_api_access.side_effect = RuntimeError("sel down")
+        with patch.object(reg, "_sel_fn", return_value=broken):
+            reg._sel_credential_grant("install_from_registry", "ssh://git.example.com/team/X")
+        with patch.object(reg, "_sel_fn", None):
+            reg._sel_credential_grant("install_from_registry", "ssh://git.example.com/team/X")
+
+    def test_is_owner_designated_repo_exact_match(self):
+        """Predicate returns True only for byte-identical match to config repo."""
+        from kiro_crew.apps.registry import _is_owner_designated_repo
+
+        mock_config = MagicMock()
+        mock_config.registries = [
+            SimpleNamespace(
+                name="internal", repo="ssh://git.example.com/team/MyRegistry", branch="main"
+            )
+        ]
+
+        entry_same = {
+            "name": "app",
+            "repo": "ssh://git.example.com/team/MyRegistry",
+            "gitUrl": "ssh://git.example.com/team/MyRegistry",
+            "_registry": "internal",
+        }
+        entry_sibling = {
+            "name": "app",
+            "repo": "ssh://git.example.com/team/OtherRepo",
+            "gitUrl": "ssh://git.example.com/team/OtherRepo",
+            "_registry": "internal",
+        }
+        entry_bundled = {
+            "name": "app",
+            "repo": "https://github.com/kirodotdev/app.git",
+        }
+
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=mock_config):
+            assert _is_owner_designated_repo(entry_same) is True
+            # Different repo on the same host → NOT owner-designated.
+            assert _is_owner_designated_repo(entry_sibling) is False
+            # Bundled (no _registry) → returns False (but irrelevant since
+            # bundled entries never set index_originated=True).
+            assert _is_owner_designated_repo(entry_bundled) is False
+
+    def test_is_owner_designated_repo_no_normalization(self):
+        """No URL normalization — trailing slash difference is NOT a match."""
+        from kiro_crew.apps.registry import _is_owner_designated_repo
+
+        mock_config = MagicMock()
+        mock_config.registries = [
+            SimpleNamespace(name="r", repo="ssh://git.example.com/team/Repo", branch="main")
+        ]
+
+        # Trailing slash → not byte-identical → not owner-designated.
+        entry = {
+            "name": "app",
+            "gitUrl": "ssh://git.example.com/team/Repo/",
+            "_registry": "r",
+        }
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=mock_config):
+            assert _is_owner_designated_repo(entry) is False
 
 
 # ---------------------------------------------------------------------------
@@ -1484,23 +1903,1695 @@ class TestRegistrySubdirTraversalGate:
         (outside / "app.json").write_text('{"name": "evil"}', encoding="utf-8")
         os.symlink(outside, pkg_dir / "sub")
 
-        with patch(
-            "kiro_crew.apps.registry.get_registry_app",
-            return_value={
-                "name": "evil-app",
-                "repo": "https://github.com/acme/apps.git",
-                "branch": "main",
-                "subdirectory": "sub",
-                "_registry": "acme",
-            },
-        ), patch(
-            "kiro_crew.apps.registry._fetch_app_manifest",
-            new=AsyncMock(return_value={"name": "evil-app", "version": "1.0.0"}),
-        ), patch(
-            "kiro_crew.apps.registry._clone_build_app",
-            new=AsyncMock(return_value={"ok": True, "pkg_dir": pkg_dir}),
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "name": "evil-app",
+                    "repo": "https://github.com/acme/apps.git",
+                    "branch": "main",
+                    "subdirectory": "sub",
+                    "_registry": "acme",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "evil-app", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=AsyncMock(return_value={"ok": True, "pkg_dir": pkg_dir}),
+            ),
         ):
             result = await install_from_registry("evil-app")
 
         assert not result["ok"]
         assert "unsafe subdirectory" in result["error"]
+
+
+def _real_argv(captured_argv):
+    """Strip the spawn shim's own prologue from a captured argv.
+
+    ``create_subprocess_limited`` runs commands through the post-exec shim
+    (``python -I -S -c <shim> --rlimits=… -- <real argv>``), so a captured
+    spawn no longer starts with the command itself. Return the argv after the
+    ``--`` separator, with argv[0] reduced to its basename (git resolves to an
+    absolute path, and to ``git.EXE`` on Windows).
+    """
+    argv = list(captured_argv)
+    if "--" in argv:
+        argv = argv[argv.index("--") + 1 :]
+    if argv:
+        argv[0] = os.path.basename(argv[0]).lower().removesuffix(".exe")
+    return argv
+
+
+class TestStaleCloneOriginVerification:
+    """A persisted clone's origin must be verified before any pull.
+
+    The credential posture is decided from git_url, but `git pull origin`
+    talks to the CLONE's origin. A stale clone (e.g. a registry replaced
+    with the same app name) must be discarded, never pulled credentialed.
+    """
+
+    @staticmethod
+    def _make_fake_exec(captured, origin_url):
+        class _FakeProc:
+            returncode = 0
+
+            def __init__(self, out=b""):
+                self._out = out
+
+            async def communicate(self):
+                return (self._out, None)
+
+        async def _fake_exec(*args, **kwargs):
+            captured.setdefault("calls", []).append(list(args))
+            # The origin read is sandbox-routed + shim-wrapped now, so match on
+            # the real argv rather than the raw prefix.
+            if _real_argv(args)[:4] == ["git", "remote", "get-url", "origin"]:
+                return _FakeProc(origin_url.encode() + b"\n")
+            return _FakeProc()
+
+        return _fake_exec
+
+    @pytest.mark.asyncio
+    async def test_mismatched_origin_discards_clone_and_reclones(self, tmp_path):
+        import asyncio as _asyncio
+
+        from kiro_crew.apps import registry as reg
+
+        dest = tmp_path / "app"
+        (dest / ".git").mkdir(parents=True)  # looks like an existing clone
+
+        captured: dict = {}
+        vetted_url = "ssh://git.example.com/team/MyRegistry"
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch(
+                "kiro_crew.apps.registry.wrap_argv",
+                side_effect=lambda a, mode="standard": (a, None),
+            ),
+            # cgroup_scope_argv wraps the argv on Linux (identity on macOS) —
+            # pin it so the captured commands are platform-independent.
+            patch("kiro_crew.apps.registry.cgroup_scope_argv", side_effect=lambda a: a),
+            patch.object(
+                _asyncio,
+                "create_subprocess_exec",
+                new=self._make_fake_exec(captured, "ssh://git.example.com/team/OldSibling"),
+            ),
+        ):
+            err = await reg._git_clone_or_pull(vetted_url, "main", dest, [], index_originated=False)
+
+        assert err is None
+        argvs = [_real_argv(c) for c in captured["calls"]]
+        # Stale clone was removed (rmtree) and a FRESH clone from the vetted
+        # URL ran — never a pull against the mismatched origin.
+        assert not dest.exists()
+        assert any(a[:2] == ["git", "clone"] and vetted_url in a for a in argvs)
+        assert not any(a[:2] == ["git", "pull"] for a in argvs), argvs
+
+    @pytest.mark.asyncio
+    async def test_matching_origin_pulls_in_place(self, tmp_path):
+        import asyncio as _asyncio
+
+        from kiro_crew.apps import registry as reg
+
+        dest = tmp_path / "app"
+        (dest / ".git").mkdir(parents=True)
+
+        captured: dict = {}
+        vetted_url = "ssh://git.example.com/team/MyRegistry"
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch(
+                "kiro_crew.apps.registry.wrap_argv",
+                side_effect=lambda a, mode="standard": (a, None),
+            ),
+            # cgroup_scope_argv wraps the argv on Linux (identity on macOS) —
+            # pin it so the captured commands are platform-independent.
+            patch("kiro_crew.apps.registry.cgroup_scope_argv", side_effect=lambda a: a),
+            patch.object(
+                _asyncio,
+                "create_subprocess_exec",
+                new=self._make_fake_exec(captured, vetted_url),
+            ),
+        ):
+            err = await reg._git_clone_or_pull(vetted_url, "main", dest, [], index_originated=False)
+
+        assert err is None
+        assert dest.exists()
+        argvs = [_real_argv(c) for c in captured["calls"]]
+        assert any(a[:2] == ["git", "pull"] for a in argvs), argvs
+        assert not any(a[:2] == ["git", "clone"] for a in argvs)
+
+
+class TestManifestOriginGate:
+    """The manifest fed to admission must describe the repo that gets cloned.
+
+    ``_fetch_app_manifest`` shortcuts to the persisted clone's ``app.json``,
+    but that clone is keyed on app NAME only. When a registry is replaced, a
+    checkout of a different repo can sit under the same name — and
+    ``_git_clone_or_pull`` then discards it and re-clones from the new URL.
+    Reusing the stale ``app.json`` would admit repo A's manifest and run repo
+    B's code, so the shortcut only applies when the clone's origin matches.
+    """
+
+    @staticmethod
+    def _fake_spawn(captured, origin_url, origin_rc=0):
+        """One fake for both spawns this path makes.
+
+        The origin read and the manifest clone both go through
+        ``create_subprocess_limited``, so the fake discriminates on the argv:
+        an origin read answers with *origin_url* (or fails with *origin_rc*),
+        anything else is recorded as a clone attempt.
+        """
+
+        class _Proc:
+            def __init__(self, out=b"", rc=0):
+                self._out = out
+                self.returncode = rc
+
+            async def communicate(self):
+                return (self._out, b"")
+
+        async def _spawn(*args, **kwargs):
+            argv = list(args)
+            if argv[:4] == ["git", "remote", "get-url", "origin"]:
+                captured.setdefault("origin_reads", []).append(argv)
+                if origin_rc != 0:
+                    return _Proc(b"", origin_rc)
+                return _Proc(origin_url.encode() + b"\n")
+            captured.setdefault("clones", []).append(argv)
+            return _Proc()
+
+        return _spawn
+
+    def _seed_stale_clone(self, tmp_path, marker):
+        clone_dir = tmp_path / "app-sources" / "myapp"
+        (clone_dir / ".git").mkdir(parents=True)
+        (clone_dir / "app.json").write_text(
+            json.dumps({"name": "myapp", "version": marker}), encoding="utf-8"
+        )
+        return clone_dir
+
+    @staticmethod
+    def _patches(clone_dir, spawn):
+        """Common patch set: identity sandbox wrappers + the single spawn fake.
+
+        wrap_argv / cgroup_scope_argv are pinned to identity so the argv the
+        fake sees is the real command, platform-independently.
+        """
+        return (
+            patch("kiro_crew.apps.registry.app_source_dir", return_value=clone_dir),
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch(
+                "kiro_crew.apps.registry.wrap_argv",
+                side_effect=lambda a, mode="standard": (a, None),
+            ),
+            patch("kiro_crew.apps.registry.cgroup_scope_argv", side_effect=lambda a: a),
+            patch("kiro_crew.apps.registry.create_subprocess_limited", new=spawn),
+        )
+
+    @pytest.mark.asyncio
+    async def test_mismatched_origin_does_not_reuse_persisted_manifest(self, tmp_path):
+        """A stale clone's app.json must never be handed to the admission gate."""
+        from kiro_crew.apps import registry as reg
+
+        clone_dir = self._seed_stale_clone(tmp_path, "STALE")
+        vetted_url = "ssh://git.example.com/team/NewRepo"
+        captured: dict = {}
+        # clone left behind by the REPLACED registry
+        spawn = self._fake_spawn(captured, "ssh://git.example.com/team/OldRepo")
+
+        p1, p2, p3, p4, p5 = self._patches(clone_dir, spawn)
+        with p1, p2, p3, p4, p5:
+            manifest = await reg._fetch_app_manifest(
+                "team/NewRepo", "main", app_name="myapp", git_url=vetted_url
+            )
+
+        # The stale manifest was NOT reused...
+        assert manifest is None or manifest.get("version") != "STALE"
+        # ...and a fresh clone of the vetted URL was attempted instead.
+        assert any(vetted_url in c for c in captured.get("clones", []))
+
+    @pytest.mark.asyncio
+    async def test_matching_origin_reuses_persisted_manifest(self, tmp_path):
+        """The fast path still works when the clone really is that repo."""
+        from kiro_crew.apps import registry as reg
+
+        clone_dir = self._seed_stale_clone(tmp_path, "CURRENT")
+        vetted_url = "ssh://git.example.com/team/NewRepo"
+        captured: dict = {}
+        spawn = self._fake_spawn(captured, vetted_url)
+
+        p1, p2, p3, p4, p5 = self._patches(clone_dir, spawn)
+        with p1, p2, p3, p4, p5:
+            manifest = await reg._fetch_app_manifest(
+                "team/NewRepo", "main", app_name="myapp", git_url=vetted_url
+            )
+
+        assert manifest is not None and manifest["version"] == "CURRENT"
+        # No network clone needed.
+        assert not captured.get("clones")
+
+    @pytest.mark.asyncio
+    async def test_unreadable_origin_fails_closed(self, tmp_path):
+        """An origin that cannot be read is treated as a mismatch, not a match."""
+        from kiro_crew.apps import registry as reg
+
+        clone_dir = self._seed_stale_clone(tmp_path, "STALE")
+        vetted_url = "ssh://git.example.com/team/NewRepo"
+        captured: dict = {}
+        spawn = self._fake_spawn(captured, "", origin_rc=128)
+
+        p1, p2, p3, p4, p5 = self._patches(clone_dir, spawn)
+        with p1, p2, p3, p4, p5:
+            manifest = await reg._fetch_app_manifest(
+                "team/NewRepo", "main", app_name="myapp", git_url=vetted_url
+            )
+
+        assert manifest is None or manifest.get("version") != "STALE"
+
+
+class TestStaleCloneDeletionFailsClosed:
+    """A stale clone that cannot be moved aside must abort, never be pulled.
+
+    The move-aside rename can fail (a locked ``.git/index.lock`` on Windows, a
+    permission error). If the install continued, the surviving clone would be
+    pulled from its OWN unverified origin under the credential posture decided
+    for the vetted URL, and built under an admission decision made for a
+    different repository.
+    """
+
+    @pytest.mark.asyncio
+    async def test_surviving_stale_clone_aborts_the_install(self, tmp_path):
+        from kiro_crew.apps import registry as reg
+
+        dest = tmp_path / "app"
+        (dest / ".git").mkdir(parents=True)
+
+        captured: dict = {}
+
+        class _Proc:
+            returncode = 0
+
+            def __init__(self, out=b""):
+                self._out = out
+
+            async def communicate(self):
+                return (self._out, b"")
+
+        async def _spawn(*args, **kwargs):
+            argv = list(args)
+            captured.setdefault("calls", []).append(argv)
+            if argv[:4] == ["git", "remote", "get-url", "origin"]:
+                return _Proc(b"ssh://git.example.com/team/OldRepo\n")
+            return _Proc()
+
+        original_rename = Path.rename
+
+        def _failing_rename(self_path, target):
+            if ".stale-" in str(target):
+                raise OSError("Permission denied: locked files")
+            return original_rename(self_path, target)
+
+        log_lines: list = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch(
+                "kiro_crew.apps.registry.wrap_argv",
+                side_effect=lambda a, mode="standard": (a, None),
+            ),
+            patch("kiro_crew.apps.registry.cgroup_scope_argv", side_effect=lambda a: a),
+            patch("kiro_crew.apps.registry.create_subprocess_limited", new=_spawn),
+            # rename fails (Windows lock / permissions)
+            patch.object(Path, "rename", _failing_rename),
+        ):
+            err = await reg._git_clone_or_pull(
+                "ssh://git.example.com/team/NewRepo", "main", dest, log_lines
+            )
+
+        # Fails closed with an error dict...
+        assert err is not None and not err["ok"]
+        assert err["error"] == "stale_clone_not_removed"
+        # ...and never pulls or clones over the surviving stale checkout.
+        assert not any(c[:2] == ["git", "pull"] for c in captured["calls"])
+        assert not any(c[:2] == ["git", "clone"] for c in captured["calls"])
+
+
+class TestOriginMismatchDeleteOrder:
+    """Regression tests for the delete-order fix: origin-mismatch must move
+    aside the old checkout BEFORE cloning, and delete AFTER success.  On clone
+    failure/timeout, the old checkout is RESTORED so local changes survive.
+    """
+
+    @pytest.mark.asyncio
+    async def test_failed_reclone_preserves_old_checkout(self, tmp_path):
+        """Origin mismatch + FAILED fresh clone → old checkout still present
+        at dest, error dict returned."""
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old-origin.example.com/app.git"
+        new_url = "https://new-origin.example.com/app.git"
+
+        dest = tmp_path / "app-sources" / "myapp"
+        dest.mkdir(parents=True)
+        git_dir = dest / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+        # Marker proving old content survived.
+        (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        class _FailProc:
+            returncode = 128  # simulate git clone failure
+
+            async def communicate(self):
+                return (b"fatal: remote not found", None)
+
+        async def _fake_create_subprocess(*args, **kwargs):
+            # Simulate: dest was moved aside, clone attempted, git fails.
+            dest.mkdir(parents=True, exist_ok=True)
+            return _FailProc()
+
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_create_subprocess,
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_origin_url",
+                new=AsyncMock(return_value=stale_url),
+            ),
+        ):
+            err = await reg._git_clone_or_pull(
+                new_url,
+                "main",
+                dest,
+                log_lines,
+                index_originated=False,
+            )
+
+        # Must return error.
+        assert err is not None
+        assert err["ok"] is False
+        assert err["error"] == "git clone failed"
+        # The old checkout content MUST still be at dest (restored).
+        assert dest.is_dir()
+        assert (dest / "local-changes.txt").exists()
+        assert (dest / "local-changes.txt").read_text() == "precious"
+        # No leftover stale-* dirs visible.
+        stale_dirs = [p for p in dest.parent.iterdir() if ".stale-" in p.name]
+        assert len(stale_dirs) == 0
+
+    @pytest.mark.asyncio
+    async def test_successful_reclone_replaces_checkout(self, tmp_path):
+        """Origin mismatch + successful fresh clone → dest contains the new
+        clone, moved-aside path deferred to pending_cleanup."""
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old-origin.example.com/app.git"
+        new_url = "https://new-origin.example.com/app.git"
+
+        dest = tmp_path / "app-sources" / "myapp"
+        dest.mkdir(parents=True)
+        git_dir = dest / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+        (dest / "old-file.txt").write_text("old", encoding="utf-8")
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        class _SuccessProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"Cloning into...", None)
+
+        async def _fake_create_subprocess(*args, **kwargs):
+            # Simulate successful clone: create .git in dest.
+            dest.mkdir(parents=True, exist_ok=True)
+            new_git = dest / ".git"
+            new_git.mkdir(parents=True, exist_ok=True)
+            (new_git / "config").write_text(
+                f'[remote "origin"]\n\turl = {new_url}\n',
+                encoding="utf-8",
+            )
+            (dest / "new-file.txt").write_text("new", encoding="utf-8")
+            return _SuccessProc()
+
+        log_lines: list[str] = []
+        pending_cleanup: list[Path] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_create_subprocess,
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_origin_url",
+                new=AsyncMock(return_value=stale_url),
+            ),
+        ):
+            err = await reg._git_clone_or_pull(
+                new_url,
+                "main",
+                dest,
+                log_lines,
+                index_originated=False,
+                pending_cleanup=pending_cleanup,
+            )
+
+        # Success.
+        assert err is None
+        # New clone content present.
+        assert (dest / "new-file.txt").exists()
+        assert (dest / "new-file.txt").read_text() == "new"
+        # Old file gone (was in the moved-aside dir).
+        assert not (dest / "old-file.txt").exists()
+        # moved-aside dir deferred to pending_cleanup (not deleted yet).
+        assert len(pending_cleanup) == 1
+        assert pending_cleanup[0].exists()
+        assert ".stale-" in pending_cleanup[0].name
+
+    @pytest.mark.asyncio
+    async def test_move_aside_failure_returns_stale_clone_not_removed(self, tmp_path):
+        """Move-aside failure (mock rename to raise) → stale_clone_not_removed
+        error, mismatched clone never pulled/built."""
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old-origin.example.com/app.git"
+        new_url = "https://new-origin.example.com/app.git"
+
+        dest = tmp_path / "app-sources" / "myapp"
+        dest.mkdir(parents=True)
+        git_dir = dest / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+        (dest / "intact.txt").write_text("do not touch", encoding="utf-8")
+
+        original_rename = Path.rename
+
+        def _failing_rename(self_path, target):
+            if ".stale-" in str(target):
+                raise OSError("Permission denied: locked files")
+            return original_rename(self_path, target)
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        # Mock create_subprocess_limited to simulate `git remote get-url origin`
+        # returning the stale_url (used by _clone_origin_url before the rename).
+        class _OriginProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (stale_url.encode() + b"\n", None)
+
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=AsyncMock(return_value=_OriginProc()),
+            ),
+            patch.object(Path, "rename", _failing_rename),
+        ):
+            err = await reg._git_clone_or_pull(
+                new_url,
+                "main",
+                dest,
+                log_lines,
+                index_originated=False,
+            )
+
+        # Must return stale_clone_not_removed error.
+        assert err is not None
+        assert err["ok"] is False
+        assert err["error"] == "stale_clone_not_removed"
+        # The original clone is UNTOUCHED — no data loss.
+        assert (dest / "intact.txt").exists()
+        assert (dest / "intact.txt").read_text() == "do not touch"
+
+    @pytest.mark.asyncio
+    async def test_timeout_reclone_preserves_old_checkout(self, tmp_path):
+        """Origin mismatch + clone TIMEOUT → old checkout still present at
+        dest (same preservation guarantee as the failure path)."""
+        import asyncio as _asyncio
+
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old-origin.example.com/app.git"
+        new_url = "https://new-origin.example.com/app.git"
+
+        dest = tmp_path / "app-sources" / "myapp"
+        dest.mkdir(parents=True)
+        git_dir = dest / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+        (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        class _HangingProc:
+            returncode = None
+            pid = 99999
+
+            async def communicate(self):
+                raise _asyncio.TimeoutError()
+
+            def kill(self):
+                pass
+
+            async def wait(self):
+                self.returncode = -9
+
+        async def _fake_create_subprocess(*args, **kwargs):
+            # Simulate: dest created (partial clone) then timeout.
+            dest.mkdir(parents=True, exist_ok=True)
+            return _HangingProc()
+
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_create_subprocess,
+            ),
+            patch("kiro_crew.apps.registry._kill_process_group", new=AsyncMock()),
+            patch(
+                "kiro_crew.apps.registry._clone_origin_url",
+                new=AsyncMock(return_value=stale_url),
+            ),
+        ):
+            err = await reg._git_clone_or_pull(
+                new_url,
+                "main",
+                dest,
+                log_lines,
+                index_originated=False,
+            )
+
+        # Must return timeout error.
+        assert err is not None
+        assert err["ok"] is False
+        assert "timed out" in err["error"]
+        # The old checkout content MUST be restored at dest.
+        assert dest.is_dir()
+        assert (dest / "local-changes.txt").exists()
+        assert (dest / "local-changes.txt").read_text() == "precious"
+        # No leftover stale-* dirs.
+        stale_dirs = [p for p in dest.parent.iterdir() if ".stale-" in p.name]
+        assert len(stale_dirs) == 0
+
+    @pytest.mark.asyncio
+    async def test_spawn_exception_restores_old_checkout(self, tmp_path):
+        """Origin mismatch + create_subprocess_limited RAISES (spawn failure)
+        → old checkout restored at dest, no stale-* leftover.
+
+        Regression: prior to the try/finally guard, a spawn failure after
+        move-aside would strand the old checkout under .stale-* permanently.
+        """
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old-origin.example.com/app.git"
+        new_url = "https://new-origin.example.com/app.git"
+
+        dest = tmp_path / "app-sources" / "myapp"
+        dest.mkdir(parents=True)
+        git_dir = dest / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+        # Marker proving old content survived.
+        (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        # First call: _clone_origin_url reads the stale origin.
+        # Second call: the fresh-clone create_subprocess_limited raises.
+        call_count = 0
+
+        class _OriginProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (stale_url.encode() + b"\n", None)
+
+        async def _subprocess_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # _clone_origin_url: return stale_url
+                return _OriginProc()
+            # Fresh-clone spawn: simulate OSError (e.g. exec not found)
+            raise OSError("No such file or directory: 'git'")
+
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_subprocess_side_effect,
+            ),
+        ):
+            with pytest.raises(OSError, match="No such file"):
+                await reg._git_clone_or_pull(
+                    new_url,
+                    "main",
+                    dest,
+                    log_lines,
+                    index_originated=False,
+                )
+
+        # The old checkout content MUST be restored at dest despite the exception.
+        assert dest.is_dir()
+        assert (dest / "local-changes.txt").exists()
+        assert (dest / "local-changes.txt").read_text() == "precious"
+        # No leftover stale-* dirs.
+        stale_dirs = [p for p in dest.parent.iterdir() if ".stale-" in p.name]
+        assert len(stale_dirs) == 0
+
+    @pytest.mark.asyncio
+    async def test_cancellation_restores_old_checkout(self, tmp_path):
+        """Origin mismatch + CancelledError during clone → old checkout
+        restored at dest.
+
+        Regression: CancelledError must also trigger the try/finally restore
+        path (it propagates through the outer try without hitting the timeout
+        or returncode handlers).
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old-origin.example.com/app.git"
+        new_url = "https://new-origin.example.com/app.git"
+
+        dest = tmp_path / "app-sources" / "myapp"
+        dest.mkdir(parents=True)
+        git_dir = dest / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+        (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        call_count = 0
+
+        class _OriginProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (stale_url.encode() + b"\n", None)
+
+        async def _subprocess_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _OriginProc()
+            # Simulate cancellation during the clone spawn.
+            raise _asyncio.CancelledError()
+
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_subprocess_side_effect,
+            ),
+        ):
+            with pytest.raises(_asyncio.CancelledError):
+                await reg._git_clone_or_pull(
+                    new_url,
+                    "main",
+                    dest,
+                    log_lines,
+                    index_originated=False,
+                )
+
+        # The old checkout content MUST be restored at dest.
+        assert dest.is_dir()
+        assert (dest / "local-changes.txt").exists()
+        assert (dest / "local-changes.txt").read_text() == "precious"
+        # No leftover stale-* dirs.
+        stale_dirs = [p for p in dest.parent.iterdir() if ".stale-" in p.name]
+        assert len(stale_dirs) == 0
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_communicate_kills_process(self, tmp_path):
+        """Origin mismatch + CancelledError during proc.communicate() → process
+        is killed, partial dest removed, old checkout restored.
+
+        Regression test for GPT 5.6 finding: cancellation after the clone
+        process starts must not leave the process running or the old checkout
+        stranded.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old-origin.example.com/app.git"
+        new_url = "https://new-origin.example.com/app.git"
+
+        dest = tmp_path / "app-sources" / "myapp"
+        dest.mkdir(parents=True)
+        git_dir = dest / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+        (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        call_count = 0
+        killed = False
+
+        class _OriginProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (stale_url.encode() + b"\n", None)
+
+        class _CloneProc:
+            """Simulates a running clone process that gets cancelled."""
+
+            pid = 99999
+            returncode = None
+
+            async def communicate(self):
+                # Simulate the outer task being cancelled during this await.
+                raise _asyncio.CancelledError()
+
+            async def wait(self):
+                self.returncode = -9
+                return -9
+
+            def kill(self):
+                nonlocal killed
+                killed = True
+
+        async def _subprocess_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                # Call 1: _clone_origin_url (reads the stale origin)
+                return _OriginProc()
+            # Call 2: the actual fresh-clone spawn
+            return _CloneProc()
+
+        async def _fake_kill_process_group(proc):
+            nonlocal killed
+            killed = True
+
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_subprocess_side_effect,
+            ),
+            patch(
+                "kiro_crew.apps.registry._kill_process_group",
+                side_effect=_fake_kill_process_group,
+            ),
+        ):
+            with pytest.raises(_asyncio.CancelledError):
+                await reg._git_clone_or_pull(
+                    new_url,
+                    "main",
+                    dest,
+                    log_lines,
+                    index_originated=False,
+                )
+
+        # The process MUST have been killed.
+        assert killed, "Clone process was not killed on cancellation"
+        # The old checkout content MUST be restored at dest.
+        assert dest.is_dir()
+        assert (dest / "local-changes.txt").exists()
+        assert (dest / "local-changes.txt").read_text() == "precious"
+        # No leftover stale-* dirs.
+        stale_dirs = [p for p in dest.parent.iterdir() if ".stale-" in p.name]
+        assert len(stale_dirs) == 0
+
+
+class TestUnreadableOriginAbort:
+    """Regression: unreadable origin must NOT enter destructive move-aside path.
+
+    GPT 5.6 finding: a checkout with a corrupt .git/config or missing remote
+    previously entered the move-aside → re-clone → delete path, permanently
+    losing local edits even though the checkout might be the right repo.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unreadable_origin_returns_error_without_destroying(self, tmp_path):
+        """Checkout with unreadable origin → error, dest untouched."""
+        import kiro_crew.apps.registry as reg
+
+        git_url = "https://example.com/app.git"
+        dest = tmp_path / "app-sources" / "myapp"
+        dest.mkdir(parents=True)
+        git_dir = dest / ".git"
+        git_dir.mkdir()
+        # Corrupt config — _clone_origin_url will return None.
+        (git_dir / "config").write_text("garbage", encoding="utf-8")
+        (dest / "local-edits.txt").write_text("precious work", encoding="utf-8")
+
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch(
+                "kiro_crew.apps.registry._clone_origin_url",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            err = await reg._git_clone_or_pull(
+                git_url,
+                "main",
+                dest,
+                log_lines,
+                index_originated=False,
+            )
+
+        # Must return the unreadable_clone_origin error.
+        assert err is not None
+        assert err["ok"] is False
+        assert err["error"] == "unreadable_clone_origin"
+        # Dest is UNTOUCHED — no rename, no rmtree, no re-clone.
+        assert (dest / "local-edits.txt").exists()
+        assert (dest / "local-edits.txt").read_text() == "precious work"
+        # No stale-* dirs created.
+        stale_dirs = [p for p in dest.parent.iterdir() if ".stale-" in p.name]
+        assert len(stale_dirs) == 0
+
+    @pytest.mark.asyncio
+    async def test_readable_different_origin_still_reclones(self, tmp_path):
+        """Readable but different origin → move-aside/re-clone path (not blocked)."""
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old.example.com/app.git"
+        new_url = "https://new.example.com/app.git"
+        dest = tmp_path / "app-sources" / "myapp"
+        dest.mkdir(parents=True)
+        git_dir = dest / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        class _SuccessProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"Cloning into...", None)
+
+        async def _fake_create_subprocess(*args, **kwargs):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / ".git").mkdir(exist_ok=True)
+            return _SuccessProc()
+
+        log_lines: list[str] = []
+        pending_cleanup: list[Path] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_create_subprocess,
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_origin_url",
+                new=AsyncMock(return_value=stale_url),
+            ),
+        ):
+            err = await reg._git_clone_or_pull(
+                new_url,
+                "main",
+                dest,
+                log_lines,
+                index_originated=False,
+                pending_cleanup=pending_cleanup,
+            )
+
+        # Success — re-clone worked.
+        assert err is None
+        # moved-aside path is deferred.
+        assert len(pending_cleanup) == 1
+
+
+class TestBuildFailureRestoresOldCheckout:
+    """Regression: build failure after successful re-clone must NOT lose the
+    old checkout permanently.
+
+    GPT 5.6 finding: _git_clone_or_pull deleted moved_aside on clone success
+    BEFORE the install transaction completed. Build failure then left the app
+    broken with no way to recover the old code.
+    """
+
+    @pytest.mark.asyncio
+    async def test_build_failure_restores_old_checkout(self, tmp_path):
+        """Clone succeeds + build fails → old checkout restored at pkg_dir."""
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old.example.com/app.git"
+        new_url = "https://new.example.com/app.git"
+
+        # Set up the app-sources dir with an old checkout.
+        app_sources = tmp_path / "app-sources"
+        app_sources.mkdir()
+        pkg_dir = app_sources / "testapp"
+        pkg_dir.mkdir()
+        git_dir = pkg_dir / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+        (pkg_dir / "my-local-work.txt").write_text("important", encoding="utf-8")
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        class _SuccessProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"Cloning into...", None)
+
+        async def _fake_create_subprocess(*args, **kwargs):
+            pkg_dir.mkdir(parents=True, exist_ok=True)
+            (pkg_dir / ".git").mkdir(exist_ok=True)
+            (pkg_dir / "new-file.txt").write_text("new clone", encoding="utf-8")
+            return _SuccessProc()
+
+        # Simulate: clone succeeds, then build fails.
+        pending_cleanup: list[Path] = []
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_create_subprocess,
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_origin_url",
+                new=AsyncMock(return_value=stale_url),
+            ),
+        ):
+            clone_err = await reg._git_clone_or_pull(
+                new_url,
+                "main",
+                pkg_dir,
+                log_lines,
+                index_originated=False,
+                pending_cleanup=pending_cleanup,
+            )
+
+        # Clone succeeded.
+        assert clone_err is None
+        assert len(pending_cleanup) == 1
+        stale_path = pending_cleanup[0]
+        assert stale_path.exists()
+
+        # Simulate build failure: caller restores old checkout.
+        # (This mirrors _clone_build_app_locked's failure path.)
+        import shutil
+
+        await asyncio.to_thread(shutil.rmtree, pkg_dir, True)
+        await asyncio.to_thread(stale_path.rename, pkg_dir)
+
+        # Old checkout content restored.
+        assert (pkg_dir / "my-local-work.txt").exists()
+        assert (pkg_dir / "my-local-work.txt").read_text() == "important"
+
+    @pytest.mark.asyncio
+    async def test_install_success_cleans_up_moved_aside(self, tmp_path):
+        """Clone succeeds + build succeeds → moved-aside deleted (no stale
+        accumulation on the happy path)."""
+        import shutil
+
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old.example.com/app.git"
+        new_url = "https://new.example.com/app.git"
+
+        app_sources = tmp_path / "app-sources"
+        app_sources.mkdir()
+        pkg_dir = app_sources / "testapp"
+        pkg_dir.mkdir()
+        git_dir = pkg_dir / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        class _SuccessProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"Cloning into...", None)
+
+        async def _fake_create_subprocess(*args, **kwargs):
+            pkg_dir.mkdir(parents=True, exist_ok=True)
+            (pkg_dir / ".git").mkdir(exist_ok=True)
+            return _SuccessProc()
+
+        pending_cleanup: list[Path] = []
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_create_subprocess,
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_origin_url",
+                new=AsyncMock(return_value=stale_url),
+            ),
+        ):
+            clone_err = await reg._git_clone_or_pull(
+                new_url,
+                "main",
+                pkg_dir,
+                log_lines,
+                index_originated=False,
+                pending_cleanup=pending_cleanup,
+            )
+
+        assert clone_err is None
+        assert len(pending_cleanup) == 1
+        stale_path = pending_cleanup[0]
+        assert stale_path.exists()
+
+        # Simulate install success: caller cleans up.
+        await asyncio.to_thread(shutil.rmtree, stale_path, True)
+
+        # No stale dirs left.
+        stale_dirs = [p for p in app_sources.iterdir() if ".stale-" in p.name]
+        assert len(stale_dirs) == 0
+
+
+class TestRestoreCollision:
+    """Regression: undeletable partial clone must not prevent old checkout
+    restoration.
+
+    GPT 5.6 finding: rmtree(dest, ignore_errors=True) can silently fail
+    (e.g. locked files on Windows), then moved_aside.rename(dest) raises
+    OSError and the user's checkout is stranded.
+    """
+
+    @pytest.mark.asyncio
+    async def test_undeletable_dest_moved_aside_before_restore(self, tmp_path):
+        """rmtree(dest) fails → dest moved to .partial-*, then moved_aside
+        restored to dest."""
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old.example.com/app.git"
+        new_url = "https://new.example.com/app.git"
+
+        dest = tmp_path / "app-sources" / "myapp"
+        dest.mkdir(parents=True)
+        git_dir = dest / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+        (dest / "local-work.txt").write_text("precious", encoding="utf-8")
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        class _FailProc:
+            returncode = 128
+
+            async def communicate(self):
+                return (b"fatal: clone failed", None)
+
+        rmtree_call_count = 0
+        original_rmtree = __import__("shutil").rmtree
+
+        def _stubborn_rmtree(path, ignore_errors=False):
+            nonlocal rmtree_call_count
+            rmtree_call_count += 1
+            # ALL rmtree calls on dest silently fail (simulating locked files).
+            if Path(str(path)) == dest:
+                return  # silently fail — dest remains
+            original_rmtree(path, ignore_errors=ignore_errors)
+
+        async def _fake_create_subprocess(*args, **kwargs):
+            # Clone creates partial content at dest.
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "partial-clone-marker.txt").write_text("partial", encoding="utf-8")
+            return _FailProc()
+
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_create_subprocess,
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_origin_url",
+                new=AsyncMock(return_value=stale_url),
+            ),
+            patch("shutil.rmtree", side_effect=_stubborn_rmtree),
+        ):
+            err = await reg._git_clone_or_pull(
+                new_url,
+                "main",
+                dest,
+                log_lines,
+                index_originated=False,
+            )
+
+        # Error returned.
+        assert err is not None
+        assert err["ok"] is False
+        # Old checkout restored at dest.
+        assert dest.is_dir()
+        assert (dest / "local-work.txt").exists()
+        assert (dest / "local-work.txt").read_text() == "precious"
+        # The undeletable partial clone was moved to a .partial-* sibling.
+        partial_dirs = [p for p in dest.parent.iterdir() if ".partial-" in p.name]
+        assert len(partial_dirs) == 1
+        # Log mentions the partial aside.
+        assert any("partial" in line.lower() for line in log_lines)
+
+
+class TestInstallScriptFailurePreservesStaleCheckout:
+    """Regression: install script failure after successful clone+build must
+    NOT lose the moved-aside old checkout.
+
+    GPT 5.6 finding: _clone_build_app_locked deleted moved_aside immediately
+    after build succeeded, but install_from_registry's install script step
+    had not yet run.  If the script failed, the user's old (possibly locally
+    modified) code was permanently gone.
+
+    After the fix, _clone_build_app_locked surfaces _pending_stale_cleanup
+    in the result dict and only install_from_registry's terminal success
+    paths delete the stale dirs.
+    """
+
+    @pytest.mark.asyncio
+    async def test_clone_build_surfaces_pending_stale_cleanup(self, tmp_path):
+        """_clone_build_app_locked returns _pending_stale_cleanup paths on
+        success instead of deleting them (deferring to caller)."""
+        import kiro_crew.apps.registry as reg
+
+        stale_url = "https://old.example.com/app.git"
+        new_url = "https://new.example.com/app.git"
+
+        app_sources = tmp_path / "app-sources"
+        app_sources.mkdir()
+        pkg_dir = app_sources / "testapp"
+        pkg_dir.mkdir()
+        git_dir = pkg_dir / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {stale_url}\n',
+            encoding="utf-8",
+        )
+        (pkg_dir / "local-edits.txt").write_text("precious data", encoding="utf-8")
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        class _SuccessProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"Cloning into...", None)
+
+        async def _fake_create_subprocess(*args, **kwargs):
+            pkg_dir.mkdir(parents=True, exist_ok=True)
+            (pkg_dir / ".git").mkdir(exist_ok=True)
+            return _SuccessProc()
+
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_create_subprocess,
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_origin_url",
+                new=AsyncMock(return_value=stale_url),
+            ),
+            patch("kiro_crew.apps.registry.app_source_dir", return_value=pkg_dir),
+            patch(
+                "kiro_crew.apps.registry._run_app_build",
+                new=AsyncMock(return_value={"ok": True}),
+            ),
+            patch("kiro_crew.apps.registry._looks_like_git_url", return_value=True),
+        ):
+            result = await reg._clone_build_app_locked(
+                new_url, "testapp", [], branch="main", index_originated=False
+            )
+
+        # Build succeeded.
+        assert result["ok"]
+        # Stale paths surfaced for caller cleanup — NOT deleted.
+        stale_paths = result.get("_pending_stale_cleanup", [])
+        assert len(stale_paths) == 1
+        assert stale_paths[0].exists(), (
+            "Expected .stale-* dir to still exist after _clone_build_app_locked "
+            "success (deferred to caller)"
+        )
+        assert ".stale-" in stale_paths[0].name
+        # The old checkout content is inside the stale dir (user can recover).
+        assert (stale_paths[0] / "local-edits.txt").exists()
+        assert (stale_paths[0] / "local-edits.txt").read_text() == "precious data"
+
+    @pytest.mark.asyncio
+    async def test_stale_not_cleaned_when_install_from_registry_fails(self, tmp_path):
+        """Full install_from_registry flow: clone+build succeed but install
+        script fails → stale checkout NOT deleted."""
+        from kiro_crew.apps.registry import install_from_registry
+
+        stale_dir = tmp_path / "stale-checkout"
+        stale_dir.mkdir()
+        (stale_dir / "my-work.txt").write_text("important", encoding="utf-8")
+
+        # Mock _clone_build_app to return success with a _pending_stale_cleanup
+        # entry, simulating the origin-mismatch → move-aside → clone success flow.
+        app_source = tmp_path / "app-source"
+        app_source.mkdir()
+        (app_source / "app.json").write_text('{"setup": {"onInstall": "exit 1"}}', encoding="utf-8")
+
+        async def _fake_clone_build(git_url, app_name, log_lines, branch="main", **kwargs):
+            return {
+                "ok": True,
+                "pkg_dir": app_source,
+                "_pending_stale_cleanup": [stale_dir],
+            }
+
+        class _ScriptFailProc:
+            returncode = 1
+
+            async def communicate(self):
+                return (b"script failed", None)
+
+        def _fake_wrap_argv(argv, mode="standard"):
+            return list(argv), None
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={"repo": "https://example.com/app.git", "branch": "main"},
+            ),
+            patch(
+                "kiro_crew.apps.registry._entry_git_url",
+                return_value="https://example.com/app.git",
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=_fake_clone_build,
+            ),
+            patch(
+                "kiro_crew.apps.registry.app_admission_denied",
+                return_value=None,
+            ),
+            patch(
+                "kiro_crew.apps.registry.app_execution_denied",
+                return_value=None,
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value=None),
+            ),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                new=AsyncMock(return_value=_ScriptFailProc()),
+            ),
+            patch("kiro_crew.apps.registry.sel"),
+        ):
+            result = await install_from_registry("testapp")
+
+        # Install script failed.
+        assert not result["ok"]
+        assert "install script failed" in result.get("error", "")
+        # The stale checkout was NOT deleted — user can recover.
+        assert stale_dir.exists(), "Expected .stale-* dir to survive install script failure"
+        assert (stale_dir / "my-work.txt").read_text() == "important"
+
+
+# ---------------------------------------------------------------------------
+# Stale checkout retention on success + aged sweep
+# ---------------------------------------------------------------------------
+
+
+class TestSuccessPathRetainsStaleCheckout:
+    """Regression: install success must NOT delete moved-aside checkouts.
+
+    GPT 5.6 round 6 finding: a successful source replacement permanently
+    deletes the .stale-* dir, losing user's local edits even when the
+    install SUCCEEDED.  After the fix, the stale dir is retained and its
+    path is surfaced in the install log.
+    """
+
+    @pytest.mark.asyncio
+    async def test_success_retains_stale_checkout_and_logs_path(self, tmp_path):
+        """A successful install from registry retains the .stale-* dir and
+        names its path in the log output."""
+        import kiro_crew.apps.registry as reg
+
+        app_sources = tmp_path / "app-sources"
+        app_sources.mkdir()
+        stale_dir = app_sources / "testapp.stale-abcd1234"
+        stale_dir.mkdir()
+        (stale_dir / "local-edits.txt").write_text("important work", encoding="utf-8")
+
+        pkg_dir = app_sources / "testapp"
+        pkg_dir.mkdir()
+        (pkg_dir / "app.json").write_text(
+            json.dumps({"name": "testapp", "version": "1.0.0", "resources": "app"}),
+            encoding="utf-8",
+        )
+
+        async def _fake_clone_build(
+            git_url, name, log_lines, *, branch="main", index_originated=False
+        ):
+            return {
+                "ok": True,
+                "pkg_dir": pkg_dir,
+                "_pending_stale_cleanup": [stale_dir],
+            }
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "repo": "https://example.com/app.git",
+                    "branch": "main",
+                    "resources": "app",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._entry_git_url",
+                return_value="https://example.com/app.git",
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=_fake_clone_build,
+            ),
+            patch(
+                "kiro_crew.apps.registry.app_admission_denied",
+                return_value=None,
+            ),
+            patch(
+                "kiro_crew.apps.registry.app_execution_denied",
+                return_value=None,
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "kiro_crew.apps.registry.is_clone_host_trusted",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.apps.manager.register_external_app",
+            ),
+            patch("kiro_crew.apps.registry._sweep_stale_checkouts", new=AsyncMock()),
+            patch("kiro_crew.apps.registry.sel"),
+        ):
+            result = await reg.install_from_registry("testapp")
+
+        assert result["ok"]
+        # The stale directory must still exist — not deleted.
+        assert stale_dir.exists(), "Expected .stale-* dir to survive a successful install"
+        assert (stale_dir / "local-edits.txt").read_text() == "important work"
+        # The log must name the retained path.
+        assert str(stale_dir) in result.get("log", "")
+
+
+class TestStaleCheckoutSweep:
+    """Tests for _sweep_stale_checkouts_sync — the aged sweep mechanism."""
+
+    def test_removes_aged_stale_dirs(self, tmp_path):
+        """Dirs matching .stale-* older than retention are removed."""
+        from kiro_crew.apps.registry import _sweep_stale_checkouts_sync
+
+        sources = tmp_path / "app-sources"
+        sources.mkdir()
+        # Create an old .stale-* dir (mtime 30 days ago)
+        stale = sources / "myapp.stale-aabbccdd"
+        stale.mkdir()
+        (stale / "file.txt").write_text("old", encoding="utf-8")
+        old_mtime = time.time() - (30 * 86400)
+        os.utime(stale, (old_mtime, old_mtime))
+
+        removed = _sweep_stale_checkouts_sync(sources, time.time())
+        assert "myapp.stale-aabbccdd" in removed
+        assert not stale.exists()
+
+    def test_removes_aged_partial_dirs(self, tmp_path):
+        """Dirs matching .partial-* older than retention are removed."""
+        from kiro_crew.apps.registry import _sweep_stale_checkouts_sync
+
+        sources = tmp_path / "app-sources"
+        sources.mkdir()
+        partial = sources / "myapp.partial-11223344"
+        partial.mkdir()
+        old_mtime = time.time() - (30 * 86400)
+        os.utime(partial, (old_mtime, old_mtime))
+
+        removed = _sweep_stale_checkouts_sync(sources, time.time())
+        assert "myapp.partial-11223344" in removed
+        assert not partial.exists()
+
+    def test_keeps_fresh_stale_dirs(self, tmp_path):
+        """Dirs within the retention window are NOT removed."""
+        from kiro_crew.apps.registry import _sweep_stale_checkouts_sync
+
+        sources = tmp_path / "app-sources"
+        sources.mkdir()
+        stale = sources / "myapp.stale-freshone1"
+        stale.mkdir()
+        # mtime = now (just created) — well within retention
+
+        removed = _sweep_stale_checkouts_sync(sources, time.time())
+        assert removed == []
+        assert stale.exists()
+
+    def test_ignores_non_matching_siblings(self, tmp_path):
+        """Normal app dirs and unrelated names are never touched."""
+        from kiro_crew.apps.registry import _sweep_stale_checkouts_sync
+
+        sources = tmp_path / "app-sources"
+        sources.mkdir()
+        # A normal app directory
+        app_dir = sources / "myapp"
+        app_dir.mkdir()
+        (app_dir / "app.json").write_text("{}", encoding="utf-8")
+        # A dir with 'stale' in the name but not matching the pattern
+        oddname = sources / "stale-notes"
+        oddname.mkdir()
+        # Set both old so they'd be swept IF they matched the pattern
+        old_mtime = time.time() - (30 * 86400)
+        os.utime(app_dir, (old_mtime, old_mtime))
+        os.utime(oddname, (old_mtime, old_mtime))
+
+        removed = _sweep_stale_checkouts_sync(sources, time.time())
+        assert removed == []
+        assert app_dir.exists()
+        assert oddname.exists()
+
+    def test_symlink_outside_sources_not_followed(self, tmp_path):
+        """A symlink pointing outside app-sources is NOT followed/deleted."""
+        from kiro_crew.apps.registry import _sweep_stale_checkouts_sync
+
+        sources = tmp_path / "app-sources"
+        sources.mkdir()
+        # Create a target outside sources
+        outside = tmp_path / "outside-precious"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("do not delete", encoding="utf-8")
+        # Create a symlink inside sources that looks like a stale checkout
+        link = sources / "myapp.stale-symlink1"
+        link.symlink_to(outside)
+        # Make it old — os.utime(follow_symlinks=False) is unavailable on
+        # Windows, so use os.lstat + os.utime on platforms that support it,
+        # otherwise skip the mtime aging (the containment check rejects
+        # symlinks before the age check anyway).
+        old_mtime = time.time() - (30 * 86400)
+        if os.utime in os.supports_follow_symlinks:
+            os.utime(link, (old_mtime, old_mtime), follow_symlinks=False)
+        # On Windows: the symlink resolves outside sources_dir, so the
+        # containment check alone is sufficient to prove safety.
+
+        removed = _sweep_stale_checkouts_sync(sources, time.time())
+        # The symlink target must NOT be deleted
+        assert outside.exists()
+        assert (outside / "secret.txt").read_text() == "do not delete"
+        # The symlink itself should not appear in removed
+        assert "myapp.stale-symlink1" not in removed
+
+    def test_nonexistent_sources_dir(self, tmp_path):
+        """A missing app-sources directory returns empty (no crash)."""
+        from kiro_crew.apps.registry import _sweep_stale_checkouts_sync
+
+        removed = _sweep_stale_checkouts_sync(tmp_path / "does-not-exist", time.time())
+        assert removed == []
+
+    @pytest.mark.asyncio
+    async def test_async_sweep_called_at_install(self, tmp_path):
+        """_sweep_stale_checkouts is called at the start of
+        install_from_registry (integration coherence check)."""
+        import kiro_crew.apps.registry as reg
+
+        sweep_called = []
+
+        async def _tracking_sweep():
+            sweep_called.append(True)
+
+        async def _fake_clone_build(
+            git_url, name, log_lines, *, branch="main", index_originated=False
+        ):
+            return {"ok": False, "error": "deliberate failure for test"}
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "repo": "https://example.com/app.git",
+                    "branch": "main",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._entry_git_url",
+                return_value="https://example.com/app.git",
+            ),
+            patch(
+                "kiro_crew.apps.registry.app_admission_denied",
+                return_value=None,
+            ),
+            patch(
+                "kiro_crew.apps.registry.app_execution_denied",
+                return_value=None,
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "kiro_crew.apps.registry.is_clone_host_trusted",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=_fake_clone_build,
+            ),
+            patch(
+                "kiro_crew.apps.registry._sweep_stale_checkouts",
+                new=_tracking_sweep,
+            ),
+            patch("kiro_crew.apps.registry.sel"),
+        ):
+            result = await reg.install_from_registry("testapp")
+
+        # Clone failed but sweep must have been called before it.
+        assert sweep_called, "Expected _sweep_stale_checkouts to be invoked"
+        assert not result["ok"]
+
+    def test_move_aside_with_mtime_refresh_survives_sweep(self, tmp_path):
+        """Regression: a checkout moved aside with refreshed mtime is NOT
+        immediately swept, even if the original checkout was older than the
+        retention window.
+
+        This reproduces the bug where rename() preserves the directory's mtime,
+        so a 30-day-old checkout renamed to .stale-* would be sweep-eligible
+        on the very next install — defeating the retention promise.
+        """
+        from kiro_crew.apps.registry import (
+            _STALE_CHECKOUT_RETENTION_DAYS,
+            _sweep_stale_checkouts_sync,
+        )
+
+        sources = tmp_path / "app-sources"
+        sources.mkdir()
+
+        # Simulate a checkout that was last modified 30 days ago.
+        old_checkout = sources / "myapp"
+        old_checkout.mkdir()
+        (old_checkout / "user-edits.txt").write_text("precious", encoding="utf-8")
+        old_time = time.time() - (30 * 86400)
+        os.utime(old_checkout, (old_time, old_time))
+
+        # Simulate the move-aside: rename preserves mtime…
+        moved = sources / "myapp.stale-aabb0011"
+        old_checkout.rename(moved)
+        # …then the fix refreshes mtime to now.
+        os.utime(moved)
+
+        # Also create a genuinely aged stale dir (no refresh).
+        genuinely_old = sources / "other.stale-cc001122"
+        genuinely_old.mkdir()
+        very_old = time.time() - ((_STALE_CHECKOUT_RETENTION_DAYS + 1) * 86400)
+        os.utime(genuinely_old, (very_old, very_old))
+
+        # Run sweep.
+        removed = _sweep_stale_checkouts_sync(sources, time.time())
+
+        # The refreshed dir must survive — its mtime is now < retention.
+        assert moved.exists(), (
+            "Move-aside dir with refreshed mtime should NOT be swept"
+        )
+        assert "myapp.stale-aabb0011" not in removed
+
+        # The genuinely old one must still be swept.
+        assert not genuinely_old.exists()
+        assert "other.stale-cc001122" in removed
